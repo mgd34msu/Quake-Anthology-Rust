@@ -1,8 +1,8 @@
 use crate::{
     command_text::TextError,
-    text::FixedText,
     views::{Context, Source},
 };
+use qa_core::text::FixedText;
 
 pub const CAPACITY: usize = 65536;
 #[derive(Clone, Copy)]
@@ -31,12 +31,28 @@ impl CommandBuffer {
         }
     }
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
-        self.admit(text, 0)?;
-        if text.is_empty() {
+        self.append_text(text, context, false)
+    }
+    pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
+        self.append_text(text, context, true)
+    }
+    fn append_text(
+        &mut self,
+        text: &str,
+        context: Context,
+        newline: bool,
+    ) -> Result<(), TextError> {
+        let extra = usize::from(newline);
+        self.admit(text, extra)?;
+        if text.is_empty() && !newline {
             return Ok(());
         }
         self.text[self.bytes..self.bytes + text.len()].copy_from_slice(text.as_bytes());
         self.bytes += text.len();
+        if newline {
+            self.text[self.bytes] = b'\n';
+            self.bytes += 1;
+        }
         if let Some(last) = self.spans.last_mut().filter(|s| s.context == context) {
             last.end = self.bytes;
         } else {

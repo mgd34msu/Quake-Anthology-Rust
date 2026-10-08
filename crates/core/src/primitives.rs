@@ -271,6 +271,9 @@ pub mod buttons {
     pub const GUARDBASE: u32 = 2048;
     pub const PATROL: u32 = 4096;
     pub const FOLLOWME: u32 = 8192;
+    pub const EXTRA12: u32 = 1 << 14;
+    pub const EXTRA13: u32 = 1 << 15;
+    pub const EXTRA14: u32 = 1 << 16;
 }
 
 #[derive(Clone, Copy, Debug)]

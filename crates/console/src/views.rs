@@ -22,6 +22,8 @@ pub struct Context {
     pub side: Scope,
     pub role: Role,
     pub dedicated: bool,
+    pub seat: qa_core::sys_events::SeatId,
+    pub event_time: Option<qa_core::sys_events::EventTime>,
 }
 impl Default for Context {
     fn default() -> Self {
@@ -30,6 +32,8 @@ impl Default for Context {
             side: Scope::Client,
             role: Role::Engine,
             dedicated: false,
+            seat: qa_core::sys_events::SeatId::FIRST,
+            event_time: None,
         }
     }
 }

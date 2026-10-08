@@ -14,6 +14,8 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--owner-profile", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--commands", help="execute config commands before real X-server input")
+    parser.add_argument("--console-source", choices=("q1", "qw", "q2", "q2rr", "q3"))
     args = parser.parse_args()
     original = XClient.drive
     payloads = (b"first", b"second\0packet", bytes(range(256)))
@@ -32,10 +34,15 @@ def main():
 
     XClient.drive = drive
     cores = pinned_cores()
+    arguments = ["--udp-listen", "127.0.0.1:0", "--frames", "180",
+                 "--startup-hold-ms", "1000", "+set", "developer", "1"]
+    if args.commands is not None:
+        arguments += ["--commands", args.commands]
+    if args.console_source is not None:
+        arguments += ["--console-source", args.console_source]
     try:
         result = run(args.binary, args.owner_profile, args.evidence,
-                     ["--udp-listen", "127.0.0.1:0", "--frames", "180",
-                      "--startup-hold-ms", "1000", "+set", "developer", "1"],
+                     arguments,
                      actions=[{"key": "w", "hold_seconds": 1.25}], cores=cores)
     finally:
         XClient.drive = original
@@ -50,6 +57,7 @@ def main():
         "all_frames_drained": len(rows) == 180 and all(row["queue_remaining"] == 0 for row in rows),
         "three_udp_packets_delivered": bool(rows) and rows[-1]["network_packets"] == len(payloads),
         "seat0_forward": any(row["seat0_movement"][0] > 0 for row in rows),
+        "seat0_returns_neutral": bool(rows) and rows[-1]["seat0_movement"] == [0, 0, 0],
         "seat1_neutral": all(row["seat1_movement"] == [0, 0, 0] for row in rows),
         "no_event_or_packet_rejection": all(row["rejected"] == row["dropped_packets"] == 0 for row in rows),
         "forced_x11": ready.get("video_driver") == "x11" and ready.get("wayland_display_present") is False,
@@ -60,6 +68,7 @@ def main():
               "scope": "normal window-shell input and packet boundary; no map or protocol decoding",
               "cores": cores, "checks": checks, "normal_exit": exit_event,
               "udp_packets": len(payloads), "udp_payload_bytes": sum(map(len, payloads)),
+              "config_commands": args.commands, "console_source": args.console_source,
               "gameplay_reached": result["gameplay_reached"]}
     (args.evidence / "verification.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))

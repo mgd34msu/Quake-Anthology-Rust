@@ -1,9 +1,6 @@
 //! Command-boundary parsing from the original Q1/Q2/Q3 Cmd tokenizers.
-use crate::{
-    conversion::Text,
-    text::{FixedText, MAX_TEXT},
-    views::Source,
-};
+use crate::{conversion::Text, text::MAX_TEXT, views::Source};
+use qa_core::text::FixedText;
 use std::{fmt::Write, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

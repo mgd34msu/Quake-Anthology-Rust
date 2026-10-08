@@ -14,6 +14,8 @@ pub struct Runtime {
     pub server: Server,
     pub events: EventRing,
     pub loopback: Loopback,
+    pub input: qa_input::Input,
+    pub input_time: qa_core::sys_events::EventTime,
     script_reader: qa_formats::archive::ArchiveReader,
 }
 
@@ -26,12 +28,20 @@ impl Runtime {
             server: Server::load(64, 8192, 116, 16).map_err(|e| format!("server: {e:?}"))?,
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
             loopback: Loopback::load(),
+            input: qa_input::Input::load(),
+            input_time: qa_core::sys_events::EventTime::default(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
         })
     }
 }
 
 impl Host for Runtime {
+    fn input(&mut self) -> &mut qa_input::Input {
+        &mut self.input
+    }
+    fn input_time(&self) -> qa_core::sys_events::EventTime {
+        self.input_time
+    }
     fn print(&mut self, text: std::fmt::Arguments<'_>) {
         qa_console::logger::console(text);
     }

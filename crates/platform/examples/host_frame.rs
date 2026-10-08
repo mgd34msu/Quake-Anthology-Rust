@@ -10,9 +10,8 @@ use qa_console::{
 use qa_core::{
     loopback::Endpoint,
     primitives::{ClientId, ModuleId},
-    sys_events::{DeviceId, EventKind, EventTime, SysEvent, SysEventQueue},
+    sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
-use qa_input::Input;
 use qa_platform::{EventPump, Stopwatch};
 use qa_session::timing::{Tick, TickRate};
 use std::{hint::black_box, net::UdpSocket, time::Duration};
@@ -27,6 +26,7 @@ struct Source {
     timer: Stopwatch,
     repeats: bool,
     console: bool,
+    binds: bool,
     fixture_frame: u64,
 }
 impl FrameSource for Source {
@@ -46,6 +46,37 @@ impl FrameSource for Source {
                 time,
                 kind: EventKind::ConsoleLine("echo queue"),
             });
+            if self.binds {
+                let down = self.fixture_frame & 1 == 0;
+                let _ = queue.push(SysEvent {
+                    time,
+                    kind: EventKind::Key {
+                        device: DeviceId::Keyboard,
+                        code: 10,
+                        symbol: 103,
+                        down,
+                        repeat: false,
+                    },
+                });
+                let _ = queue.push(SysEvent {
+                    time,
+                    kind: EventKind::Key {
+                        device: DeviceId::Keyboard,
+                        code: 11,
+                        symbol: 104,
+                        down,
+                        repeat: false,
+                    },
+                });
+                let _ = queue.push(SysEvent {
+                    time,
+                    kind: EventKind::ControllerButton {
+                        device: DeviceId::Controller(42),
+                        button: 0,
+                        down,
+                    },
+                });
+            }
         } else {
             let _ = self.pump.enqueue(queue, key);
         }
@@ -88,13 +119,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_platform::allocations::{begin_frame, end_frame};
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     let local = arguments.iter().any(|s| s == "--local");
-    let console = arguments.iter().any(|s| s == "--console");
+    let binds = arguments.iter().any(|s| s == "--binds");
+    let console = binds || arguments.iter().any(|s| s == "--console");
     let content = arguments
         .windows(2)
         .find(|s| s[0] == "--content")
         .map(|s| &s[1]);
     if arguments.iter().any(|s| s == "--help") {
-        println!("host_frame [--local] [--console] [--content DIRECTORY]");
+        println!("host_frame [--local] [--console | --binds] [--content DIRECTORY]");
         return Ok(());
     }
     begin_frame();
@@ -118,6 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         timer: Stopwatch::start(),
         repeats: false,
         console,
+        binds,
         fixture_frame: 0,
     };
     let providers = [(1, 100), (2, 25), (3, 50)]
@@ -132,7 +165,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, &str>>()?;
     let mut host = FrameHost::load(
         Console::new(Context::default()),
-        Input::load(),
         Runtime::load()?,
         TickRate::fixed(50).ok_or("world rate")?,
         providers,
@@ -145,6 +177,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if console && content.is_none() {
         return Err("--console requires --content with inner.cfg".into());
+    }
+    if binds {
+        host.runtime
+            .input
+            .assign(DeviceId::Controller(42), SeatId::ALL[1]);
+        host.console.append_line("alias +edge +attack; alias -edge -attack; bind w +forward; bind g \"+jump; echo binding\"; bind h +edge; bind JOY1 +moveleft", Context::default()).map_err(|_| "initial binds")?;
+        host.console.execute_frame(&mut host.runtime);
     }
     // Resolve the fidelity checks before timing; names are command-boundary
     // lookups inside Console, never lookups in the idle frame consumer.
@@ -173,6 +212,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for source in CommandSource::ALL {
                 host.console.append("alias timed \"echo alias\"; timed; sensitivity \"echo vstr\"; vstr sensitivity; sensitivity 3; fov 120; gamma 0.8; cl_gun 3; exec inner\n", Context { source, ..Context::default() }).map_err(|_| "console append")?;
             }
+            if binds {
+                for source in CommandSource::ALL {
+                    host.console.append_line("bind w +forward; bind g \"+jump; echo binding\"; bind h +edge; bind JOY1 +moveleft; bind SEMICOLON \"echo semi\"; bind AUX32 +button10; bind MOUSE1 +attack; bind g; unbind UPARROW; bind UPARROW +forward", Context { source, ..Context::default() }).map_err(|_| "config binds")?;
+                }
+            }
         }
         if local {
             host.runtime
@@ -190,6 +234,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("host drain/lookup check failed".into());
         }
         ticks += result.server_ticks;
+        if binds
+            && frame > 0
+            && (result.commands[0].movement[0] != 127
+                || result.commands[1].movement != [0, if frame & 1 == 1 { -127 } else { 0 }, 0])
+        {
+            return Err("bind/seat fidelity check failed".into());
+        }
         black_box(result.commands);
         if frame >= 60 {
             samples[frame - 60] = if console { elapsed } else { result.total_ns };
@@ -226,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"console_workload\":{console},\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame, time, key repeats, native provider counters and same-frame local snapshots; no gameplay\",\"console_workload\":{console},\"binding_workload\":{binds},\"local_client_packets\":{local},\"warmup\":60,\"frames\":600,\"drains_per_frame\":2,\"packets\":{},\"repeats\":{},\"world_q2_rr_q3_ticks\":{native:?},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{maximum_bytes},\"median_ns\":{},\"p99_ns\":{}}}",
         host.runtime.network.packets,
         host.key_repeats,
         (samples[299] + samples[300]) as f64 * 0.5,

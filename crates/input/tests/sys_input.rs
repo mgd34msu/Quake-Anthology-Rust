@@ -13,10 +13,10 @@ impl Target for Sink {
     fn character(&mut self, _: SeatId, value: char) {
         self.characters.push(value);
     }
-    fn command(&mut self, _: SeatId, text: &str) {
-        match text {
-            "press" => self.presses += 1,
-            "release" => self.releases += 1,
+    fn command(&mut self, _: SeatId, _: EventTime, text: &str) {
+        match text.split_whitespace().next().unwrap() {
+            "+edge" => self.presses += 1,
+            "-edge" => self.releases += 1,
             _ => panic!(),
         }
     }
@@ -43,7 +43,12 @@ fn frame(input: &mut Input, ms: u64) -> [qa_core::primitives::UserCmd; 4] {
 fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
     let mut input = Input::load();
     let mut sink = Sink::default();
-    input.bind(82, Some(Binding::Action(Action::Forward)));
+    input.bind(
+        82,
+        Some(Binding::for_action(Action::Forward)),
+        EventTime(0),
+        &mut sink,
+    );
     key(&mut input, &mut sink, 10, 26, true, false);
     for time in [15, 20, 25] {
         key(&mut input, &mut sink, time, 26, true, true);
@@ -60,19 +65,20 @@ fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
 fn command_edges_and_focus_loss_do_not_stick() {
     let mut input = Input::load();
     let mut sink = Sink::default();
-    input.bind(
-        10,
-        Some(Binding::Command {
-            press: "press".into(),
-            release: Some("release".into()),
-        }),
-    );
+    input
+        .bind_text(10, "+edge", EventTime(0), &mut sink)
+        .unwrap();
     key(&mut input, &mut sink, 1, 10, true, false);
     key(&mut input, &mut sink, 2, 10, true, true);
     key(&mut input, &mut sink, 3, 10, false, false);
     assert_eq!((sink.presses, sink.releases), (1, 1));
     key(&mut input, &mut sink, 4, 26, true, false);
-    assert!(!input.bind(26, Some(Binding::Action(Action::Back))));
+    assert!(input.bind(
+        26,
+        Some(Binding::for_action(Action::Back)),
+        EventTime(4_000_000),
+        &mut sink
+    ));
     key(&mut input, &mut sink, 4, 44, true, false);
     assert_eq!(
         frame(&mut input, 5)[0].buttons & buttons::JUMP,
@@ -87,7 +93,12 @@ fn command_edges_and_focus_loss_do_not_stick() {
     );
     assert_eq!(frame(&mut input, 10)[0].movement, [0; 3]);
     assert_eq!(frame(&mut input, 15)[0].buttons, 0);
-    assert!(input.bind(26, Some(Binding::Action(Action::Back))));
+    assert!(input.bind(
+        26,
+        Some(Binding::for_action(Action::Back)),
+        EventTime(15_000_000),
+        &mut sink
+    ));
     key(&mut input, &mut sink, 16, 10, true, false);
     input.dispatch(
         SysEvent {

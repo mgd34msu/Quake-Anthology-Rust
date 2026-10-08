@@ -5,6 +5,7 @@ use qa_console::{
     cvars_generated::DEFINITIONS,
     views::{Context, Source},
 };
+use qa_core::text::FixedText;
 use std::fmt::{Arguments, Write};
 
 #[derive(Default)]
@@ -12,8 +13,15 @@ struct Capture {
     output: String,
     quit: bool,
     marks: Vec<String>,
+    input: qa_input::Input,
 }
 impl Host for Capture {
+    fn input(&mut self) -> &mut qa_input::Input {
+        &mut self.input
+    }
+    fn input_time(&self) -> qa_core::sys_events::EventTime {
+        qa_core::sys_events::EventTime::default()
+    }
     fn print(&mut self, text: Arguments<'_>) {
         self.output.write_fmt(text).unwrap();
     }
@@ -54,11 +62,29 @@ fn tokens(text: &str, source: Source) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+#[test]
+fn complete_input_line_capacity_rejection_keeps_existing_text_and_origin() {
+    let mut buffer = CommandBuffer::new();
+    let mut line = FixedText::<65536>::default();
+    let context = Context {
+        seat: qa_core::sys_events::SeatId::ALL[1],
+        event_time: Some(qa_core::sys_events::EventTime(10)),
+        ..Context::default()
+    };
+    let existing = "x".repeat(qa_console::command_buffer::CAPACITY - 2);
+    buffer.append(&existing, context).unwrap();
+    assert!(buffer.append_line("a", Context::default()).is_err());
+    let (origin, result) = buffer.next_line(&mut line).unwrap();
+    result.unwrap();
+    assert_eq!(origin, context);
+    assert_eq!(line.as_str(), existing);
+    assert!(buffer.is_empty());
+}
 fn expanded(
     text: &str,
     values: impl FnMut(&str) -> Option<qa_console::conversion::Text<'static>>,
 ) -> Result<String, TextError> {
-    let mut output = qa_console::text::FixedText::default();
+    let mut output = FixedText::default();
     output.set(text).unwrap();
     command_text::expand(&mut output, &mut command_text::Tokens::default(), values)?;
     Ok(output.as_str().to_owned())
@@ -119,7 +145,7 @@ fn buffer_preserves_append_insert_quotes_source_context_and_overflow_atomicity()
         buffer.append("llo; echo \"a;b\"\n", context).unwrap();
         buffer.insert("echo first\n", context).unwrap();
         let mut lines = Vec::new();
-        let mut line = qa_console::text::FixedText::<65536>::default();
+        let mut line = FixedText::<65536>::default();
         while let Some((source, result)) = buffer.next_line(&mut line) {
             result.unwrap();
             assert_eq!(source, context);
@@ -145,7 +171,7 @@ fn buffer_preserves_append_insert_quotes_source_context_and_overflow_atomicity()
     let mut buffer = CommandBuffer::new();
     buffer.append("fix\n", q1).unwrap();
     buffer.insert("pre", q1).unwrap();
-    let mut line = qa_console::text::FixedText::<65536>::default();
+    let mut line = FixedText::<65536>::default();
     buffer.next_line(&mut line).unwrap().1.unwrap();
     assert_eq!(line.as_str(), "prefix");
 }
@@ -265,7 +291,7 @@ fn bare_assignment_uses_argv_one_and_set_retains_native_source_rules() {
 #[test]
 fn buffer_spans_preserve_mixed_sources_after_front_inserts_and_oversized_lines() {
     let mut buffer = CommandBuffer::new();
-    let mut line = qa_console::text::FixedText::<8192>::default();
+    let mut line = FixedText::<8192>::default();
     let q1 = context(Source::Quake);
     let q2 = context(Source::Quake2);
     let q3 = context(Source::Quake3);

@@ -1,4 +1,4 @@
-use crate::text::{FixedText, MAX_TEXT};
+use crate::text::MAX_TEXT;
 use crate::{
     catalog::{Condition, ConversionKind, DefaultKind, Operation, Scope},
     conversion::{self, Input, Text},
@@ -7,6 +7,7 @@ use crate::{
     views::{Context, Role, Source},
 };
 use qa_core::primitives::CvarHandle;
+use qa_core::text::FixedText;
 use std::{borrow::Cow, fmt::Write};
 
 pub use crate::catalog::Definition;
@@ -748,6 +749,8 @@ impl Cvars {
                     side: self.context.side,
                     role: ROLES[role],
                     dedicated: self.context.dedicated,
+                    seat: qa_core::sys_events::SeatId::FIRST,
+                    event_time: None,
                 };
                 let view = View {
                     handle: self.slot(binding.row as usize, binding.seat),

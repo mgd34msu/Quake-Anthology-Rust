@@ -58,7 +58,7 @@ spawning, mixed-play and installed-binary evidence they require.
 
 Current lane: R2, after the R1 structural implementation. In order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
-THE-887, THE-888, THE-889, THE-890, THE-886, THE-891, then
+THE-887, THE-888, THE-889, THE-890, THE-886, THE-891, THE-901, then
 THE-651, THE-662, THE-669, THE-679,
 THE-735, THE-693, THE-701, THE-738, THE-742, THE-744, THE-719.
 R1 issues with live acceptance criteria remain In Progress for integration at
@@ -140,6 +140,14 @@ particle system. Native semantics come from FTE pr_bgcmd.c, pr_cmds.c,
 pr_csqc.c and Quakespasm; extension exposure still requires native negotiation.
 Carry these requirements into the existing R1-R3 services and R8 module work;
 do not add a Q1-only AD implementation or change the authorised issue order.
+
+THE-901 follows the current R2 architecture items and moves platform to SDL3.
+Use SDL_SyncWindow after state changes and SDL3 events, audio streams, gamepads
+and timers through platform only. It requires private host-frame/input/time
+and allocation checks under owned headless sway and weston as well as Xvfb.
+X11 launches retain the forced-X11 environment. The Wayland checks must use a
+separate private runtime directory and an explicitly selected owned compositor
+socket; never inherit the owner's WAYLAND_DISPLAY or desktop socket.
 
 THE-893 is a release blocker: `crates/app/src/proof.rs` and platform's gated SDL
 input injector form an input player. Remove recording/replay before any public

@@ -6,7 +6,7 @@ use qa_core::{
     primitives::{ClientId, CvarHandle, ModuleId, UserCmd},
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
-use qa_input::{Input, Target};
+use qa_input::Target;
 use qa_platform::{EventPump, Window};
 use qa_session::timing::{Tick, TickRate, TickTarget, Timeline};
 use std::time::Duration;
@@ -49,7 +49,6 @@ pub struct Provider {
 }
 pub struct FrameHost {
     pub console: Console<Runtime>,
-    pub input: Input,
     pub runtime: Runtime,
     pub queue: SysEventQueue,
     pub time: EventTime,
@@ -76,7 +75,6 @@ pub struct FrameResult {
 impl FrameHost {
     pub fn load(
         console: Console<Runtime>,
-        input: Input,
         runtime: Runtime,
         world_rate: TickRate,
         mut providers: Vec<Provider>,
@@ -91,7 +89,6 @@ impl FrameHost {
         providers.sort_unstable_by_key(|p| p.module.0);
         Ok(Self {
             console,
-            input,
             runtime,
             queue: SysEventQueue::load(1024, 256 * 1024).map_err(|e| format!("{e:?}"))?,
             time: EventTime::default(),
@@ -162,18 +159,17 @@ impl FrameHost {
     pub fn drain(&mut self, result: &mut FrameResult) {
         result.drains += 1;
         while let Some(event) = self.queue.pop() {
+            self.runtime.input_time = event.time;
             result.events += 1;
             match event.kind {
                 EventKind::Time => self.time = event.time,
                 EventKind::Quit => self.runtime.quit = true,
                 EventKind::ConsoleLine(text) => {
-                    if self
-                        .console
-                        .append(text, self.console.cvars.context())
-                        .is_ok()
-                    {
-                        let _ = self.console.append("\n", self.console.cvars.context());
-                    }
+                    let context = qa_console::views::Context {
+                        event_time: Some(event.time),
+                        ..self.console.cvars.context()
+                    };
+                    let _ = self.console.append_line(text, context);
                 }
                 EventKind::Packet {
                     socket,
@@ -184,7 +180,7 @@ impl FrameHost {
                         .network
                         .receive(socket, from, bytes, event.time);
                 }
-                _ => self.input.dispatch(
+                _ => self.runtime.input.dispatch(
                     event,
                     &mut ConsoleInput {
                         console: &mut self.console,
@@ -230,7 +226,8 @@ impl FrameHost {
         // THE-735 supplies cached per-seat movement/mouse policies; these are
         // normalized routing units until movement/prediction and scenes exist.
         let commands =
-            self.input
+            self.runtime
+                .input
                 .build_frame(self.time, [127; 3], [0.022; 2], [None; SeatId::COUNT]);
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
@@ -246,10 +243,13 @@ struct ConsoleInput<'a> {
 }
 impl Target for ConsoleInput<'_> {
     fn character(&mut self, _seat: SeatId, _value: char) {}
-    fn command(&mut self, _seat: SeatId, text: &str) {
-        let context = self.console.cvars.context();
-        let _ = self.console.append(text, context);
-        let _ = self.console.append("\n", context);
+    fn command(&mut self, seat: SeatId, time: EventTime, text: &str) {
+        let context = qa_console::views::Context {
+            seat,
+            event_time: Some(time),
+            ..self.console.cvars.context()
+        };
+        let _ = self.console.append_line(text, context);
     }
 }
 

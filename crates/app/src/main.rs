@@ -7,7 +7,6 @@ use qa_console::{
     views::{Context, Source},
 };
 use qa_core::sys_events::{DeviceId, SeatId};
-use qa_input::Input;
 use qa_platform::{EventPump, Window};
 use qa_session::timing::TickRate;
 use std::time::Duration;
@@ -35,7 +34,6 @@ fn run() -> Result<(), String> {
     let mut startup_hold = 0u64;
     #[cfg(feature = "proof")]
     let mut script = None;
-    let mut input = Input::load();
     let mut pump = EventPump::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -109,7 +107,7 @@ fn run() -> Result<(), String> {
                 let id = device.parse().map_err(|_| "invalid controller instance")?;
                 let seat = SeatId::new(seat.parse().map_err(|_| "invalid seat")?)
                     .ok_or("seat outside 0..4")?;
-                if !input.assign(DeviceId::Controller(id), seat) {
+                if !runtime.input.assign(DeviceId::Controller(id), seat) {
                     return Err("device table full".into());
                 }
             }
@@ -178,7 +176,7 @@ fn run() -> Result<(), String> {
         std::env::var_os("WAYLAND_DISPLAY").is_some()
     );
     qa_platform::pause(Duration::from_millis(startup_hold));
-    let mut host = FrameHost::load(console, input, runtime, TickRate::FrameDriven, Vec::new())?;
+    let mut host = FrameHost::load(console, runtime, TickRate::FrameDriven, Vec::new())?;
     #[cfg(feature = "proof")]
     let mut script_start = None;
     let mut completed = 0;

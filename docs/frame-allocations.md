@@ -51,3 +51,11 @@ Run development binaries only with `tools/private_run.py`, which unsets
 a window shell. Its counts and the headless probe do not establish zero
 allocations on e1m1; THE-786 remains In Progress until a gameplay run records
 zero after warm-up. No qualified installation is claimed.
+
+
+THE-888 moves fixed engine text storage to core so input and console share it.
+Bind slots, compiled clause spans and release-command scratch are reserved at
+load; changing a config bind, dispatching a known button, expanding a +/- alias
+or queuing a complete console input line does not grow heap storage. The pinned
+host probe's `--binds` mode checks those paths and both local seats over the same
+60 warm-up/600 measured-frame schedule. See `frame-times.md` for measured scope.

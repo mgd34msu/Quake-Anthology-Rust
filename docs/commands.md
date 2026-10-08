@@ -3,7 +3,7 @@
 The host constructs one `Console`, containing one command buffer, one command
 table, aliases and the shared cvar registry. Feature commands register static
 function pointers into that table. Queued text retains its caller's source,
-role and side; it never selects another console or registry. The current app
+role, side, local seat and event time; it never selects another console or registry. The current app
 constructs the command buffer only while loading the console. THE-887 uses a
 65,536-byte array, load-allocated context spans, an 8,192-byte line scratch
 and 1,024 reusable argv offsets. Byte shifts stay inside the array. Static
@@ -68,3 +68,40 @@ archival, user/guest cvar registration and tab completion remain later R2/R8
 work. `set` and `vstr` currently use registered stock cvars. THE-639 remains
 In Progress until Q1/Q2/Q3 map sessions prove the live alias sequence through
 the normal input path and the candidate qualifies for installation.
+
+THE-888 registers `bind`, `unbind`, `unbindall`, `bindlist` and the native
+movement/button names, including Q3 `+button0` through `+button14` and their
+releases. Runtime owns the single Input table. A bind compiles known action
+clauses once into cached Action values; dispatch never looks up their names.
+Each loaded slot reserves 1,024 text bytes and 512 clause spans. Normal commands
+and unknown `+` aliases enter the same fixed console buffer with the originating
+seat and time. Hardware sources have unique key numbers in release metadata.
+Quotes preserve semicolons within a command argument. Adding a complete input
+line admits both its text and newline before changing the buffer.
+
+One name table maps keyboard, mouse, wheel, JOY and AUX names and canonical Q3
+hex numbers to neutral controls. Left/right modifiers share a config binding
+and retain distinct held sources. Printable case/shift variants address the
+same physical key; character events remain separate. Unnamed native hex keys
+have reserved slots for module/device adapters.
+
+Two keys may hold one action. Repeats preserve the first press time; key-up,
+focus loss and device removal release acquired bindings. Rebinding a held key
+releases its old action and waits for physical up before the replacement can
+acquire it. Writing identical text preserves an existing hold. Manual minus
+commands without a key number clear both holders. Wheel events produce one
+momentary key pulse per nonzero axis.
+
+`tools/check_binds.py` compares 364 named/canonical hex cases and 10,000 seeded
+partial-frame hold results with extracted Q3 key/button functions. Host checks
+exercise all five command-source views, aliases, two seats, rebinding and native
+numbered-button projection. Private normal-candidate checks use real X-server
+repeat on direct, alias and composite binds. These prove routing in the window
+shell. Native movement scaling, per-seat cvar policies, centerview/editing,
+menu capture and map/combined acceptance remain the following R2/R3.5 work.
+
+```sh
+python3 tools/check_binds.py --qsrc "$QA_QSRC" --evidence "$QA_EVIDENCE/binds"
+cargo test -p qa-app --test binds
+python3 tools/check_sys_events.py --binary "$QA_CANDIDATE" --owner-profile "$QA_PROFILE" --evidence "$QA_EVIDENCE/bind-q3" --console-source q3 --commands 'unbindall; bind w "+forward; echo bound"'
+```

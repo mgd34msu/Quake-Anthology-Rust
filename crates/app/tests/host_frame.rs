@@ -12,7 +12,6 @@ use qa_core::{
     primitives::{ModuleId, PlayerTail},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
-use qa_input::Input;
 use qa_session::{
     clients::Connection,
     timing::{Tick, TickRate},
@@ -120,7 +119,6 @@ fn host() -> FrameHost {
     console.register("after_server", after);
     FrameHost::load(
         console,
-        Input::load(),
         Runtime::load().unwrap(),
         TickRate::fixed(50).unwrap(),
         vec![Provider {

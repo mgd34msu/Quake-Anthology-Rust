@@ -3,6 +3,7 @@ use qa_console::{
     command_text,
     views::{Context, Source},
 };
+use qa_core::text::FixedText;
 use std::{
     io::{self, Write},
     path::Path,
@@ -30,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let tail = if source == Source::Quake3 {
             {
-                let mut tail = qa_console::text::FixedText::<8192>::default();
+                let mut tail = FixedText::<8192>::default();
                 args.join(1, &mut tail).map_err(|e| format!("{e:?}"))?;
                 tail.as_str().to_owned()
             }
@@ -46,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut buffer = CommandBuffer::new();
         buffer.append(text, context).map_err(|e| format!("{e:?}"))?;
         let mut lines = Vec::new();
-        let mut line = qa_console::text::FixedText::<65536>::default();
+        let mut line = FixedText::<65536>::default();
         while let Some((_, result)) = buffer.next_line(&mut line) {
             result.map_err(|e| format!("{e:?}"))?;
             lines.push(line.as_str().to_owned());

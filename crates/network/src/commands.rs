@@ -37,7 +37,7 @@ pub struct Q3Cmd {
 
 const Q1_BITS: [(u32, u32); 2] = [(1, b::ATTACK), (2, b::JUMP)];
 const Q2_BITS: [(u32, u32); 3] = [(1, b::ATTACK), (2, b::USE), (128, b::ANY)];
-const Q3_BITS: [(u32, u32); 12] = [
+const Q3_BITS: [(u32, u32); 15] = [
     (1, b::ATTACK),
     (2, b::TALK),
     (4, b::USE),
@@ -50,6 +50,9 @@ const Q3_BITS: [(u32, u32); 12] = [
     (512, b::PATROL),
     (1024, b::FOLLOWME),
     (2048, b::ANY),
+    (1 << 12, b::EXTRA12),
+    (1 << 13, b::EXTRA13),
+    (1 << 14, b::EXTRA14),
 ];
 
 fn from_buttons(value: u32, table: &[(u32, u32)]) -> u32 {

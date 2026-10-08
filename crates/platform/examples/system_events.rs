@@ -1,4 +1,4 @@
-use qa_core::sys_events::{DeviceId, EventKind, SeatId, SysEventQueue};
+use qa_core::sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEventQueue};
 use qa_input::{Input, Target};
 use qa_network::ingress::PacketReceiver;
 use qa_platform::{EventPump, Stopwatch};
@@ -17,7 +17,7 @@ impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {
         self.chars += 1;
     }
-    fn command(&mut self, _: SeatId, _: &str) {}
+    fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
 }
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

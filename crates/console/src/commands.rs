@@ -3,9 +3,12 @@ use crate::{
     command_buffer::CommandBuffer,
     command_text::{self, Arguments, TextError, Tokens},
     cvars::{Cvars, WriteError},
-    text::{FixedText, MAX_TEXT},
+    text::MAX_TEXT,
     views::{Context, Source},
 };
+use qa_core::sys_events::{EventTime, SeatId};
+use qa_core::text::FixedText;
+use qa_input::{BindError, Binding, Input, Target, bindings, keys};
 use std::{
     cmp::Ordering,
     fmt::{Arguments as Output, Write},
@@ -22,6 +25,8 @@ pub trait Host {
     fn print(&mut self, text: Output<'_>);
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError>;
     fn quit(&mut self);
+    fn input(&mut self) -> &mut Input;
+    fn input_time(&self) -> EventTime;
 }
 #[derive(Debug)]
 pub enum CommandError {
@@ -31,6 +36,7 @@ pub enum CommandError {
     UnknownCvar,
     AliasName,
     Script(ScriptError),
+    Bind(BindError),
 }
 impl From<TextError> for CommandError {
     fn from(e: TextError) -> Self {
@@ -104,8 +110,16 @@ impl<H: Host> Console<H> {
             ("cmdlist", Self::cmdlist),
             ("cvarlist", Self::cvarlist),
             ("quit", Self::quit),
+            ("bind", Self::bind),
+            ("unbind", Self::unbind),
+            ("unbindall", Self::unbind_all),
+            ("bindlist", Self::bind_list),
         ] {
             console.register(name, function);
+        }
+        for entry in bindings::ACTION_NAMES {
+            console.register(entry.press, Self::button);
+            console.register(entry.release, Self::button);
         }
         console
     }
@@ -120,6 +134,9 @@ impl<H: Host> Console<H> {
     }
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append(text, context)
+    }
+    pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
+        self.buffer.append_line(text, context)
     }
     pub fn idle(&self) -> bool {
         self.buffer.is_empty()
@@ -226,6 +243,129 @@ impl<H: Host> Console<H> {
             host.print(format_args!("{text} "));
         }
         host.print(format_args!("\n"));
+        Ok(())
+    }
+    fn bind(
+        &mut self,
+        host: &mut H,
+        args: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        if args.len() < 2 {
+            return Err(CommandError::Usage);
+        }
+        let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
+        if args.len() == 2 {
+            let mut value = FixedText::<1025>::default();
+            if let Some(binding) = host.input().binding(control) {
+                write_binding(binding, &mut value);
+                host.print(format_args!(
+                    "\"{}\" = \"{}\"\n",
+                    args.get(1),
+                    value.as_str()
+                ));
+            } else {
+                host.print(format_args!("\"{}\" is not bound\n", args.get(1)));
+            }
+            return Ok(());
+        }
+        args.join(2, &mut self.joined)?;
+        let time = context.event_time.unwrap_or_else(|| host.input_time());
+        host.input()
+            .bind_text(
+                control,
+                self.joined.as_str(),
+                time,
+                &mut BindOutput {
+                    buffer: &mut self.buffer,
+                    context,
+                },
+            )
+            .map_err(CommandError::Bind)
+    }
+    fn unbind(
+        &mut self,
+        host: &mut H,
+        args: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        if args.len() != 2 {
+            return Err(CommandError::Usage);
+        }
+        let control = keys::parse(args.get(1)).ok_or(CommandError::Bind(BindError::Control))?;
+        let time = context.event_time.unwrap_or_else(|| host.input_time());
+        host.input().bind(
+            control,
+            None,
+            time,
+            &mut BindOutput {
+                buffer: &mut self.buffer,
+                context,
+            },
+        );
+        Ok(())
+    }
+    fn unbind_all(
+        &mut self,
+        host: &mut H,
+        _: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        let time = context.event_time.unwrap_or_else(|| host.input_time());
+        host.input().unbind_all(
+            time,
+            &mut BindOutput {
+                buffer: &mut self.buffer,
+                context,
+            },
+        );
+        Ok(())
+    }
+    fn bind_list(
+        &mut self,
+        host: &mut H,
+        _: &Arguments<'_>,
+        _: Context,
+    ) -> Result<(), CommandError> {
+        // Copy one fixed line at a time to end the input borrow before print.
+        for control in 0..1024 {
+            let mut line = FixedText::<1088>::default();
+            if let Some(binding) = host.input().binding(control) {
+                if keys::normalize(control) != control {
+                    continue;
+                }
+                let _ = keys::write_name(control, &mut line);
+                let _ = line.write_str(" \"");
+                write_binding(binding, &mut line);
+                let _ = line.write_str("\"\n");
+                host.print(format_args!("{}", line.as_str()));
+            }
+        }
+        Ok(())
+    }
+    fn button(
+        &mut self,
+        host: &mut H,
+        args: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        let name = args.get(0);
+        let Some(action) = bindings::action(&name[1..]) else {
+            return Err(CommandError::Usage);
+        };
+        let key = (!args.get(1).is_empty()).then(|| crate::numbers::integer(args.get(1)) as u16);
+        let time = if args.get(2).is_empty() {
+            context.event_time.unwrap_or_else(|| host.input_time())
+        } else {
+            EventTime(
+                args.get(2)
+                    .parse::<u64>()
+                    .unwrap_or(0)
+                    .saturating_mul(1_000_000),
+            )
+        };
+        host.input()
+            .button(context.seat, action, name.starts_with('+'), key, time);
         Ok(())
     }
     fn wait(&mut self, _: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
@@ -413,5 +553,26 @@ impl<H: Host> Console<H> {
         host.quit();
         self.buffer.clear();
         Ok(())
+    }
+}
+
+fn write_binding(binding: &Binding, output: &mut impl Write) {
+    let _ = output.write_str(binding.text());
+}
+struct BindOutput<'a> {
+    buffer: &'a mut CommandBuffer,
+    context: Context,
+}
+impl Target for BindOutput<'_> {
+    fn character(&mut self, _: SeatId, _: char) {}
+    fn command(&mut self, seat: SeatId, time: EventTime, text: &str) {
+        let _ = self.buffer.append_line(
+            text,
+            Context {
+                seat,
+                event_time: Some(time),
+                ..self.context
+            },
+        );
     }
 }

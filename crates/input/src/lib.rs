@@ -4,8 +4,14 @@ use qa_core::{
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
 };
 
-const CONTROLS: usize = 576;
-const ACTIONS: usize = 11;
+pub mod bindings;
+pub mod keys;
+pub use bindings::{BindError, Binding};
+use qa_core::text::FixedText;
+use std::fmt::Write;
+
+const CONTROLS: usize = 1024;
+const ACTIONS: usize = 30;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Action {
@@ -20,20 +26,32 @@ pub enum Action {
     Use,
     Crouch,
     Walk,
-}
-pub enum Binding {
-    Action(Action),
-    Command {
-        press: String,
-        release: Option<String>,
-    },
+    TurnLeft,
+    TurnRight,
+    LookUp,
+    LookDown,
+    Strafe,
+    MouseLook,
+    KeyboardLook,
+    Talk,
+    Gesture,
+    Affirmative,
+    Negative,
+    GetFlag,
+    GuardBase,
+    Patrol,
+    FollowMe,
+    Any,
+    Extra12,
+    Extra13,
+    Extra14,
 }
 pub trait Target {
     fn key(&mut self, _seat: SeatId, _control: u16, _down: bool, _repeat: bool) -> bool {
         false
     }
     fn character(&mut self, seat: SeatId, value: char);
-    fn command(&mut self, seat: SeatId, text: &str);
+    fn command(&mut self, seat: SeatId, time: EventTime, text: &str);
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct KeySource {
@@ -160,6 +178,7 @@ pub struct Input {
     seats: [Seat; SeatId::COUNT],
     previous: EventTime,
     builder: UserCmdBuilder,
+    freelook: [bool; SeatId::COUNT],
 }
 impl Default for Input {
     fn default() -> Self {
@@ -174,6 +193,7 @@ impl Input {
             seats: [Seat::default(); SeatId::COUNT],
             previous: EventTime::default(),
             builder: UserCmdBuilder::default(),
+            freelook: [true; SeatId::COUNT],
         };
         input.assign(DeviceId::Keyboard, SeatId::FIRST);
         input.assign(DeviceId::Mouse(0), SeatId::FIRST);
@@ -187,7 +207,7 @@ impl Input {
             (513, Action::Attack),
             (544, Action::Jump),
         ] {
-            input.bind(control, Some(Binding::Action(action)));
+            input.bindings[control] = Some(Binding::for_action(action));
         }
         input
     }
@@ -215,23 +235,106 @@ impl Input {
         };
         true
     }
-    pub fn bind(&mut self, control: u16, binding: Option<Binding>) -> bool {
-        // Release a live control before replacing its binding. Otherwise its
-        // old held action could never receive the corresponding key-up.
-        if self.devices.iter().any(|device| {
-            device
-                .held
-                .get(usize::from(control))
-                .copied()
-                .unwrap_or(false)
-        }) {
+    pub fn binding(&self, control: u16) -> Option<&Binding> {
+        self.bindings
+            .get(keys::normalize(control) as usize)
+            .and_then(Option::as_ref)
+    }
+    pub fn bindings(&self) -> impl Iterator<Item = (u16, &Binding)> {
+        self.bindings
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| b.as_ref().map(|b| (i as u16, b)))
+    }
+    pub fn bind_text(
+        &mut self,
+        control: u16,
+        text: &str,
+        time: EventTime,
+        target: &mut impl Target,
+    ) -> Result<(), BindError> {
+        if self
+            .binding(control)
+            .is_some_and(|binding| binding.text() == text)
+        {
+            return Ok(());
+        }
+        let binding = if text.is_empty() {
+            None
+        } else {
+            Some(Binding::parse(text)?)
+        };
+        if self.bind(control, binding, time, target) {
+            Ok(())
+        } else {
+            Err(BindError::Control)
+        }
+    }
+    pub fn bind(
+        &mut self,
+        control: u16,
+        binding: Option<Binding>,
+        time: EventTime,
+        target: &mut impl Target,
+    ) -> bool {
+        let control = keys::normalize(control);
+        if control as usize >= CONTROLS {
             return false;
         }
-        let Some(slot) = self.bindings.get_mut(usize::from(control)) else {
-            return false;
-        };
-        *slot = binding;
+        // Release the acquired old binding before replacement, while retaining
+        // physical hold state. Repeats cannot acquire the new binding until up.
+        for index in 0..self.devices.len() {
+            // Only modifiers have two physical controls for one config name.
+            for physical in [
+                Some(control),
+                (224..=227).contains(&control).then_some(control + 4),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if self.devices[index].held[usize::from(physical)]
+                    && let Some(id) = self.devices[index].id
+                {
+                    self.key(id, physical, false, false, time, target);
+                    self.devices[index].held[usize::from(physical)] = true;
+                }
+            }
+        }
+        self.bindings[control as usize] = binding;
         true
+    }
+    pub fn unbind_all(&mut self, time: EventTime, target: &mut impl Target) {
+        for control in 0..CONTROLS {
+            if self.bindings[control].is_some() {
+                self.bind(control as u16, None, time, target);
+            }
+        }
+    }
+    pub fn button(
+        &mut self,
+        seat: SeatId,
+        action: Action,
+        down: bool,
+        key: Option<u16>,
+        time: EventTime,
+    ) {
+        let button = &mut self.seats[seat.index()].actions[action as usize];
+        if !down && key.is_none() {
+            button.held = [None; 2];
+            // Keep an impulse pressed and accumulated elapsed time this frame.
+        } else {
+            button.set(
+                KeySource {
+                    device: DeviceId::Keyboard,
+                    control: key.unwrap_or(u16::MAX),
+                },
+                down,
+                time,
+            );
+        }
+    }
+    pub fn set_freelook(&mut self, seat: SeatId, enabled: bool) {
+        self.freelook[seat.index()] = enabled;
     }
     fn remove(&mut self, id: DeviceId, time: EventTime) {
         for seat in &mut self.seats {
@@ -265,9 +368,13 @@ impl Input {
                 device,
                 button,
                 down,
-            } if button < 32 => self.key(
+            } if button <= 32 => self.key(
                 device,
-                512 + u16::from(button),
+                if button == 32 {
+                    580
+                } else {
+                    512 + u16::from(button)
+                },
                 down,
                 false,
                 event.time,
@@ -285,6 +392,17 @@ impl Input {
                 event.time,
                 target,
             ),
+            EventKind::MouseWheel { device, x, y } => {
+                for (delta, positive, negative) in [(y, 576, 577), (x, 579, 578)] {
+                    let control = if delta > 0 { positive } else { negative };
+                    // Native wheel input is a momentary key, once per event
+                    // and nonzero axis, including high-resolution devices.
+                    if delta != 0 {
+                        self.key(device, control, true, false, event.time, target);
+                        self.key(device, control, false, false, event.time, target);
+                    }
+                }
+            }
             EventKind::Mouse { device, dx, dy } => {
                 if let Some(seat) = self.device_seat(device) {
                     let state = &mut self.seats[seat.index()];
@@ -358,9 +476,10 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) {
-        let Some(device) = self.devices.iter_mut().find(|entry| entry.id == Some(id)) else {
+        let Some(device_index) = self.devices.iter().position(|entry| entry.id == Some(id)) else {
             return;
         };
+        let device = &mut self.devices[device_index];
         let Some(seat) = device.seat else {
             return;
         };
@@ -379,10 +498,16 @@ impl Input {
         } else if !std::mem::take(&mut device.acquired[usize::from(control)]) {
             return;
         }
-        match &self.bindings[usize::from(control)] {
-            Some(Binding::Action(action)) => {
-                if !down || !consumed {
-                    self.seats[seat.index()].actions[*action as usize].set(
+        if let Some(binding) = &self.bindings[usize::from(keys::normalize(control))] {
+            if down && consumed {
+                return;
+            }
+            let mut button_seen = false;
+            for part in &binding.parts[..binding.count] {
+                button_seen |= part.button;
+                let text = &binding.text.as_str()[part.start as usize..part.end as usize];
+                if let Some(action) = part.action {
+                    self.seats[seat.index()].actions[action as usize].set(
                         KeySource {
                             device: id,
                             control,
@@ -390,18 +515,24 @@ impl Input {
                         down,
                         time,
                     );
-                }
-            }
-            Some(Binding::Command { press, release }) => {
-                if down {
-                    if !consumed {
-                        target.command(seat, press);
+                } else if part.button {
+                    let mut command = FixedText::<1088>::default();
+                    if down {
+                        let _ = command.write_str(text);
+                    } else {
+                        let _ = write!(command, "-{}", &text[1..]);
                     }
-                } else if let Some(text) = release {
-                    target.command(seat, text);
+                    let _ = write!(
+                        command,
+                        " {} {}",
+                        device_index * CONTROLS + control as usize,
+                        time.milliseconds()
+                    );
+                    target.command(seat, time, command.as_str());
+                } else if down || button_seen {
+                    target.command(seat, time, text);
                 }
             }
-            None => {}
         }
     }
     pub fn build_frame(
@@ -420,13 +551,31 @@ impl Input {
                 .each_mut()
                 .map(|button| button.sample(time, period));
             seat.angles.0[1] -= seat.mouse[0] as f32 * mouse_scale[0];
-            seat.angles.0[0] += seat.mouse[1] as f32 * mouse_scale[1];
+            if self.freelook[index] || sampled[Action::MouseLook as usize].1 {
+                seat.angles.0[0] += seat.mouse[1] as f32 * mouse_scale[1];
+            }
+            let seconds = period as f32 * 1e-9;
+            let turn = sampled[Action::TurnLeft as usize].0 - sampled[Action::TurnRight as usize].0;
+            if !sampled[Action::Strafe as usize].1 {
+                seat.angles.0[1] += turn * 140.0 * seconds;
+            }
+            seat.angles.0[0] += (sampled[Action::LookDown as usize].0
+                - sampled[Action::LookUp as usize].0)
+                * 140.0
+                * seconds;
             seat.mouse = [0; 2];
             let mut movement = [
                 sampled[0].0 - sampled[1].0,
                 sampled[3].0 - sampled[2].0,
                 sampled[4].0 - sampled[5].0,
             ];
+            if sampled[Action::Strafe as usize].1 {
+                movement[1] -= turn;
+            }
+            if sampled[Action::KeyboardLook as usize].1 {
+                seat.angles.0[0] -= movement[0] * 140.0 * seconds;
+                movement[0] = 0.0;
+            }
             for device in &self.devices {
                 if device.seat.is_some_and(|seat| seat.index() == index) {
                     movement[0] -= f32::from(device.axes[1]) / 32768.0;
@@ -440,6 +589,18 @@ impl Input {
                 (Action::Use, buttons::USE),
                 (Action::Crouch, buttons::CROUCH),
                 (Action::Walk, buttons::WALK),
+                (Action::Talk, buttons::TALK),
+                (Action::Gesture, buttons::GESTURE),
+                (Action::Affirmative, buttons::AFFIRMATIVE),
+                (Action::Negative, buttons::NEGATIVE),
+                (Action::GetFlag, buttons::GETFLAG),
+                (Action::GuardBase, buttons::GUARDBASE),
+                (Action::Patrol, buttons::PATROL),
+                (Action::FollowMe, buttons::FOLLOWME),
+                (Action::Any, buttons::ANY),
+                (Action::Extra12, buttons::EXTRA12),
+                (Action::Extra13, buttons::EXTRA13),
+                (Action::Extra14, buttons::EXTRA14),
             ] {
                 if sampled[action as usize].1 {
                     mask |= bit;
