@@ -55,6 +55,8 @@ pub struct EntityId {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ItemId(pub u32);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProductId(pub u16);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WeaponId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
