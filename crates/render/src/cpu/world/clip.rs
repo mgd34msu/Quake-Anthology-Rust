@@ -1,6 +1,6 @@
 //! A per-boundary clipping graph preserves the original shader-before-clip
 //! interpolation while sharing geometry clipping across material stages.
-use super::{Camera, ClipVertex, ScreenVertex, evaluated_vertex};
+use super::{evaluated_vertex, Camera, ClipVertex, ScreenVertex};
 use crate::assets::Vertex;
 use crate::edges::ProjectedVertex;
 use crate::stage::{DeformOp, PreparedStage, StageEvaluator};
@@ -34,6 +34,7 @@ pub(super) struct ClipGraph {
     geometry: Box<[ScreenVertex]>,
     input: Box<[usize]>,
     output: Box<[usize]>,
+    distances: Box<[f32]>,
     node_count: usize,
     count: usize,
 }
@@ -53,6 +54,7 @@ impl ClipGraph {
             geometry: vec![ScreenVertex::default(); max_vertices].into_boxed_slice(),
             input: vec![0; max_vertices].into_boxed_slice(),
             output: vec![0; max_vertices].into_boxed_slice(),
+            distances: vec![0.0; max_vertices].into_boxed_slice(),
             node_count: 0,
             count: 0,
         })
@@ -102,15 +104,31 @@ impl ClipGraph {
                 self.count = 0;
                 return Some(0);
             }
-            let mut out = 0;
-            let mut previous = self.input[self.count - 1];
-            let mut previous_distance = camera.distance(self.nodes[previous].base, plane);
+            // qsrc r_draw.c:268-277 leaves accepted edges untouched. Classify
+            // only this plane's active vertices: earlier planes can remove a
+            // source whose later distance overflows, or introduce new vertices.
+            let mut inside_count = 0;
             for index in 0..self.count {
-                let current = self.input[index];
-                let distance = camera.distance(self.nodes[current].base, plane);
-                if !distance.is_finite() || !previous_distance.is_finite() {
+                let distance = camera.distance(self.nodes[self.input[index]].base, plane);
+                if !distance.is_finite() {
                     return None;
                 }
+                self.distances[index] = distance;
+                inside_count += usize::from(distance >= 0.0);
+            }
+            if inside_count == self.count {
+                continue;
+            }
+            if inside_count == 0 {
+                self.count = 0;
+                return Some(0);
+            }
+            let mut out = 0;
+            let mut previous = self.input[self.count - 1];
+            let mut previous_distance = self.distances[self.count - 1];
+            for index in 0..self.count {
+                let current = self.input[index];
+                let distance = self.distances[index];
                 let inside = distance >= 0.0;
                 if inside != (previous_distance >= 0.0) {
                     let denominator = previous_distance - distance;
