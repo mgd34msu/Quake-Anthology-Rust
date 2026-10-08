@@ -173,6 +173,23 @@ impl Vfs {
         result
     }
     pub fn mount_directory(&mut self, path: &Path, priority: i32) -> Result<MountId, VfsError> {
+        self.mount_directory_filtered(path, priority, false)
+    }
+    /// The saved profile shares this VFS without indexing binary assets/saves
+    /// or allowing profile files to override higher-priority product content.
+    pub fn mount_settings_directory(
+        &mut self,
+        path: &Path,
+        priority: i32,
+    ) -> Result<MountId, VfsError> {
+        self.mount_directory_filtered(path, priority, true)
+    }
+    fn mount_directory_filtered(
+        &mut self,
+        path: &Path,
+        priority: i32,
+        settings_only: bool,
+    ) -> Result<MountId, VfsError> {
         let root = path.canonicalize()?;
         let mut pending = vec![root.clone()];
         let mut entries = Vec::new();
@@ -182,13 +199,26 @@ impl Vfs {
             for child in children {
                 let kind = child.file_type()?;
                 if kind.is_dir() {
-                    pending.push(child.path());
+                    if !settings_only
+                        || !(child.file_name().eq_ignore_ascii_case("assets")
+                            || child.file_name().eq_ignore_ascii_case("saves"))
+                    {
+                        pending.push(child.path());
+                    }
                     continue;
                 }
                 if !kind.is_file() {
                     continue;
                 }
                 let full = child.path();
+                if settings_only
+                    && !full.extension().is_some_and(|extension| {
+                        extension.eq_ignore_ascii_case("cfg")
+                            || extension.eq_ignore_ascii_case("json")
+                    })
+                {
+                    continue;
+                }
                 let relative = full.strip_prefix(&root).map_err(|_| VfsError::Path)?;
                 let name = relative
                     .to_str()
@@ -395,6 +425,22 @@ impl Vfs {
                 self.entries[entry].name.as_ref(),
             )
         })
+    }
+    /// Cold authority-bound reads can select saved settings even when a product
+    /// has a same-named file. The existing winning index remains unchanged.
+    pub fn files_in_mount(&self, id: MountId) -> impl Iterator<Item = (FileRef, &[u8])> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(move |(index, entry)| {
+                let mount = &self.mounts[entry.mount];
+                (mount.active && mount.id == id).then_some((
+                    FileRef {
+                        entry: index as u32,
+                    },
+                    entry.name.as_ref(),
+                ))
+            })
     }
     pub fn take_lookup_count(&self) -> u64 {
         self.lookups.swap(0, Ordering::Relaxed)

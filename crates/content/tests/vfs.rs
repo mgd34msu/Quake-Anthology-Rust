@@ -38,6 +38,46 @@ fn normalized_paths_reject_traversal_and_native_absolute_paths() {
 }
 
 #[test]
+fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
+    let root = Fixture::new("profile-filter");
+    for name in [
+        "q1/id1/view.JSON",
+        "config.cfg",
+        "maps/level.bsp",
+        "assets/hidden.json",
+        "SaVeS/hidden.cfg",
+    ] {
+        let path = root.0.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"saved").unwrap();
+    }
+    let product = root.0.join("product");
+    std::fs::create_dir_all(product.join("q1/id1")).unwrap();
+    std::fs::write(product.join("q1/id1/view.JSON"), b"impostor").unwrap();
+    let mut vfs = Vfs::default();
+    let profile = vfs.mount_settings_directory(&root.0, -100).unwrap();
+    vfs.mount_directory(&product, 0).unwrap();
+    assert!(vfs.open(b"maps/level.bsp").is_none());
+    assert!(vfs.open(b"assets/hidden.json").is_none());
+    assert!(vfs.open(b"saves/hidden.cfg").is_none());
+    let saved = vfs
+        .files_in_mount(profile)
+        .find(|(_, name)| *name == b"q1/id1/view.json")
+        .unwrap()
+        .0;
+    let winning = vfs.open(b"q1/id1/view.json").unwrap();
+    assert_ne!(saved, winning);
+    let mut bytes = [0; 8];
+    assert_eq!(vfs.read_at(saved, 0, &mut bytes).unwrap(), 5);
+    assert_eq!(&bytes[..5], b"saved");
+    assert_eq!(vfs.read_at(winning, 0, &mut bytes).unwrap(), 8);
+    assert_eq!(&bytes, b"impostor");
+    assert!(vfs.unmount(profile));
+    assert!(vfs.files_in_mount(profile).next().is_none());
+    assert!(vfs.read_at(saved, 0, &mut bytes).is_err());
+}
+
+#[test]
 fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     let root = Fixture::new("products");
     let mut vfs = Vfs::default();

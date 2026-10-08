@@ -357,8 +357,16 @@ impl Cvars {
     pub fn value(&self, handle: CvarHandle) -> f32 {
         self.values[handle.0 as usize].numbers[self.context.source as usize]
     }
+    /// Per-client cached views keep movement/input defaults independent of the
+    /// active map's console context; frame reads never parse text or bind names.
+    pub fn value_in(&self, handle: CvarHandle, source: Source) -> f32 {
+        self.values[handle.0 as usize].numbers[source as usize]
+    }
     pub fn integer(&self, handle: CvarHandle) -> i32 {
         self.values[handle.0 as usize].integers[self.context.source as usize]
+    }
+    pub fn integer_in(&self, handle: CvarHandle, source: Source) -> i32 {
+        self.values[handle.0 as usize].integers[source as usize]
     }
     pub fn generation(&self, handle: CvarHandle) -> u64 {
         self.values[handle.0 as usize].revision
