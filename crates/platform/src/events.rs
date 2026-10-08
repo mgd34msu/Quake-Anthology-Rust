@@ -2,14 +2,14 @@ use crate::{
     Window,
     clock::{Clock, Stopwatch},
 };
-use qa_core::sys_events::{EventKind, QueueError, SysEvent, SysEventQueue};
+use qa_core::sys_events::{EventKind, EventTime, QueueError, SysEvent, SysEventQueue};
 use std::{
     io,
     net::{SocketAddr, UdpSocket},
     time::Duration,
 };
 
-/// Polls at both host drains and during the cap wait; no receive thread.
+/// Collects physical input only at the two host event drains.
 pub struct EventPump {
     clock: Clock,
     timer: Stopwatch,
@@ -47,9 +47,9 @@ impl EventPump {
         self.sockets.push(socket);
         Ok((index, local))
     }
-    pub fn begin_frame(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
+    pub fn begin_frame(&mut self) -> EventTime {
         self.timer = Stopwatch::start();
-        self.poll_events(window, queue);
+        self.clock.now()
     }
     pub fn poll_events(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
         window.poll(queue, &self.clock);
@@ -111,16 +111,10 @@ impl EventPump {
     pub fn elapsed(&self) -> Duration {
         self.timer.elapsed()
     }
-    pub fn wait_events(
-        &mut self,
-        window: &mut Window,
-        queue: &mut SysEventQueue,
-        remaining: Duration,
-    ) {
-        // SDL has no portable poll fd. A bounded wait also admits SDL input
-        // promptly; readable UDP sockets wake this wait immediately.
-        crate::wait::readable(&self.sockets, remaining.min(Duration::from_millis(2)));
-        self.poll_events(window, queue);
+    /// Clock-only cap wait. Event admission belongs to poll_events, never here.
+    pub fn wait_time(&self, remaining: Duration) -> EventTime {
+        crate::clock::pause(remaining);
+        self.clock.now()
     }
     pub fn dropped_packets(&self) -> u64 {
         self.dropped_packets

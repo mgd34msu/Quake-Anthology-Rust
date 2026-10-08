@@ -19,8 +19,8 @@ struct Source {
     effects: usize,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self, queue: &mut SysEventQueue) {
-        self.poll_events(queue);
+    fn begin_frame(&mut self) -> EventTime {
+        EventTime(self.time * 1_000_000)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         queue
@@ -30,7 +30,7 @@ impl FrameSource for Source {
             })
             .unwrap();
     }
-    fn wait_events(&mut self, _: &mut SysEventQueue, _: Duration) {
+    fn wait_time(&mut self, _: Duration) -> EventTime {
         panic!("uncapped fixture");
     }
     fn elapsed(&self) -> Duration {

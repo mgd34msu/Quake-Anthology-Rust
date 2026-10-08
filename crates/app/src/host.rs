@@ -25,9 +25,11 @@ pub struct ClientView {
 /// The live adapter delegates every OS operation to platform. The same host
 /// function can be checked headlessly with supplied event times.
 pub trait FrameSource {
-    fn begin_frame(&mut self, queue: &mut SysEventQueue);
+    /// Starts measurement and samples platform time without collecting events.
+    fn begin_frame(&mut self) -> EventTime;
     fn poll_events(&mut self, queue: &mut SysEventQueue);
-    fn wait_events(&mut self, queue: &mut SysEventQueue, remaining: Duration);
+    /// Waits on time only. Physical intake occurs in the two poll_events calls.
+    fn wait_time(&mut self, remaining: Duration) -> EventTime;
     fn elapsed(&self) -> Duration;
     fn render(&mut self, _views: &[Option<ClientView>; SeatId::COUNT]) {}
     fn present(&mut self);
@@ -45,14 +47,14 @@ pub struct LiveFrame<'a> {
     pub renderer: &'a mut crate::renderer::Renderer,
 }
 impl FrameSource for LiveFrame<'_> {
-    fn begin_frame(&mut self, queue: &mut SysEventQueue) {
-        self.pump.begin_frame(self.window, queue);
+    fn begin_frame(&mut self) -> EventTime {
+        self.pump.begin_frame()
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.pump.poll_events(self.window, queue);
     }
-    fn wait_events(&mut self, queue: &mut SysEventQueue, remaining: Duration) {
-        self.pump.wait_events(self.window, queue, remaining);
+    fn wait_time(&mut self, remaining: Duration) -> EventTime {
+        self.pump.wait_time(remaining)
     }
     fn elapsed(&self) -> Duration {
         self.pump.elapsed()
@@ -153,24 +155,29 @@ impl FrameHost {
 
     pub fn frame(&mut self, source: &mut impl FrameSource, uncapped: bool) -> FrameResult {
         let mut result = FrameResult::default();
-        source.begin_frame(&mut self.queue);
-        self.drain(&mut result);
-        let previous = *self.previous.get_or_insert(self.time);
+        let mut now = source.begin_frame();
+        // Native lastTime starts at zero and is reset if the clock goes back.
+        let previous_ms = self
+            .previous
+            .unwrap_or_default()
+            .milliseconds()
+            .min(now.milliseconds());
         let fps = self.console.cvars.integer(self.maxfps);
         // Preserve Com_Frame's integer-millisecond cap, including uncapped
         // values <= 0 and its zero period above 1000 fps.
-        let period_ns = if uncapped || fps <= 0 {
+        let period_ms = if uncapped || fps <= 0 {
             0
         } else {
-            (1000 / fps) as u64 * 1_000_000
+            (1000 / fps) as u64
         };
-        while self.time.since(previous) < period_ns && !self.runtime.quit {
-            source.wait_events(
-                &mut self.queue,
-                Duration::from_nanos(period_ns - self.time.since(previous)),
-            );
-            self.drain(&mut result);
+        let deadline_ns = (previous_ms + period_ms) * 1_000_000;
+        while now.0 < deadline_ns && !self.runtime.quit {
+            now = source.wait_time(Duration::from_nanos(deadline_ns - now.0));
         }
+        // Owner ruling: both intake points physically poll SDL/stdin/UDP, and
+        // neither the cap wait nor any other frame phase performs intake.
+        source.poll_events(&mut self.queue);
+        self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
             self.dispatch_output(source, &mut result);

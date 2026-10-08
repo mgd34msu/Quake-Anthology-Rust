@@ -26,7 +26,7 @@ def main():
         outputs=[e for e in events if e.get('event')=='output_frame'];stdin=[e for e in events if e.get('event')=='stdin_frame']
         checks={'private_run':r['result']=='PASS','600_measured_frames':len(rows)==600,
             'monotonic_time':len(times)==600 and all(a<b for a,b in zip(times,times[1:])),
-            'host_and_wait_drains':all(e['drains']>=2 and e['queue_remaining']==0 and e['rejected']==0 for e in rows),
+            'two_physical_host_drains':all(e['drains']==2 and e['queue_remaining']==0 and e['rejected']==0 for e in rows),
             'one_output_drain':len(outputs)==600 and all(e['drains']==1 and e['remaining']==0 for e in outputs),
             'stdin_ingress':bool(stdin) and stdin[-1]['lines']==1 and stdin[-1]['errors']==0 and any(s.strip()=='sdl3_stdin' for s in log.splitlines()),
             'selected_driver':ready.get('video_driver')==('x11' if backend=='x11' else 'wayland'),

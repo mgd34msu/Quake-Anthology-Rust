@@ -37,10 +37,53 @@ struct Source {
     fixture_frame: u64,
     sounds: u64,
     effects: u64,
+    first_poll: bool,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self, queue: &mut SysEventQueue) {
+    fn begin_frame(&mut self) -> EventTime {
         self.timer = Stopwatch::start();
+        self.first_poll = true;
+        let now = self.pump.begin_frame();
+        if self.console {
+            EventTime(self.fixture_frame * 16_000_000)
+        } else {
+            now
+        }
+    }
+    fn poll_events(&mut self, queue: &mut SysEventQueue) {
+        if self.first_poll {
+            self.first_poll = false;
+            self.input(queue);
+        }
+        self.pump.poll_console(queue);
+        self.pump.poll_network(queue);
+        if self.console {
+            let _ = queue.push(SysEvent {
+                time: EventTime(self.fixture_frame * 16_000_000),
+                kind: EventKind::Time,
+            });
+        } else {
+            let _ = self.pump.enqueue(queue, EventKind::Time);
+        }
+    }
+    fn wait_time(&mut self, remaining: Duration) -> EventTime {
+        self.pump.wait_time(remaining)
+    }
+    fn elapsed(&self) -> Duration {
+        self.timer.elapsed()
+    }
+    fn present(&mut self) {}
+    fn sound(&mut self, event: SoundEvent) -> bool {
+        self.sounds += 1;
+        (1..=3).contains(&event.sound.0) && event.channel == 1 && event.volume == 1.0
+    }
+    fn effect(&mut self, event: EffectEvent) -> bool {
+        self.effects += 1;
+        (1..=3).contains(&event.effect.0) && event.count == 20
+    }
+}
+impl Source {
+    fn input(&mut self, queue: &mut SysEventQueue) {
         let key = EventKind::Key {
             device: DeviceId::Keyboard,
             code: 26,
@@ -90,35 +133,6 @@ impl FrameSource for Source {
             let _ = self.pump.enqueue(queue, key);
         }
         self.repeats = true;
-        self.poll_events(queue);
-    }
-    fn poll_events(&mut self, queue: &mut SysEventQueue) {
-        self.pump.poll_console(queue);
-        self.pump.poll_network(queue);
-        if self.console {
-            let _ = queue.push(SysEvent {
-                time: EventTime(self.fixture_frame * 16_000_000),
-                kind: EventKind::Time,
-            });
-        } else {
-            let _ = self.pump.enqueue(queue, EventKind::Time);
-        }
-    }
-    fn wait_events(&mut self, queue: &mut SysEventQueue, remaining: Duration) {
-        qa_platform::pause(remaining.min(Duration::from_millis(2)));
-        self.poll_events(queue);
-    }
-    fn elapsed(&self) -> Duration {
-        self.timer.elapsed()
-    }
-    fn present(&mut self) {}
-    fn sound(&mut self, event: SoundEvent) -> bool {
-        self.sounds += 1;
-        (1..=3).contains(&event.sound.0) && event.channel == 1 && event.volume == 1.0
-    }
-    fn effect(&mut self, event: EffectEvent) -> bool {
-        self.effects += 1;
-        (1..=3).contains(&event.effect.0) && event.count == 20
     }
 }
 fn provider(runtime: &mut Runtime, tick: Tick) {
@@ -176,6 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fixture_frame: 0,
         sounds: 0,
         effects: 0,
+        first_poll: false,
     };
     let providers = [(1, 100), (2, 25), (3, 50)]
         .map(|(id, ms)| {

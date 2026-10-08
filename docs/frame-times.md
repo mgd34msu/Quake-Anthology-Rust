@@ -1037,3 +1037,42 @@ timing was taken. Evidence under `caller-linked-trace`: `merge/result.json`,
 These are developer examples, not a shipped or installed gameplay candidate.
 Placed BSP bodies, capsules/patches, complete leaf-content and result adaptation,
 retail module execution and the three-map installed acceptance remain open.
+
+### THE-884: two physical intake points
+
+The host collects SDL, stdin and UDP before SERVER and again before CLIENT.
+Frame startup samples platform time without collection. The cap waits only on
+platform time before the first intake. Its deadline uses integer-millisecond
+timestamps and the native zero startup baseline. Both command phases and
+same-frame loopback delivery remain in place. The owner ruling replaces the
+previous cap-wait polling behavior.
+
+The existing private SDL3 check now requires exactly two drains, rather than
+accepting any count above two. The allocation-instrumented release binary and
+host example built together in 29.29 seconds. Four host fixtures cover phase
+order, cap aliases, startup/fractional deadlines and bot timing.
+
+Core 23, no debugger, 60 warm-up frames followed by 600 measured frames:
+
+| Workload | Median | p99 | Measured Rust allocations |
+| --- | ---: | ---: | ---: |
+| Headless host, UDP, repeated keys, native-rate counter providers and local packets | 5.80 us | 8.79 us | 0 |
+
+This row measures the current host workload and has no matched before/after
+baseline. It measures the calling thread; no worker is dispatched. It does not
+measure SDL/driver allocation or renderer performance.
+
+The copied candidate passed the owned Xvfb, headless sway and Weston runs.
+Each ran 60 warm-up frames and 600 measured frames, with exactly two host
+drains, one output drain, empty queues, stdin ingress and zero measured Rust
+allocations. Xvfb delivered 26 real key repeats and sway delivered 17; held
+movement and release checks passed. Weston exercised ConsoleLine input only.
+All runs selected the private display driver, quit normally, preserved the
+original profile and candidate, and left no owned processes running. The
+allocation scope contains one calling thread and zero workers; native heap
+allocation is unmeasured.
+
+Evidence folder `two-physical-intakes-20261008`: `host.json` and
+`private/verification.json`, with per-backend logs and reports. These are
+window-shell and host checks, not installed three-map or gameplay acceptance.
+No installation was performed.

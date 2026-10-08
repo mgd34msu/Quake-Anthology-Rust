@@ -4,7 +4,6 @@ mod events;
 mod profile;
 mod sdl;
 mod stdin;
-mod wait;
 mod workers;
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]

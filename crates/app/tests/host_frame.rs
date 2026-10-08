@@ -21,6 +21,7 @@ use std::time::Duration;
 struct Source {
     time: u64,
     waits: u64,
+    polls: u64,
     presents: u64,
     late_commands: bool,
     wait_key: bool,
@@ -36,12 +37,13 @@ impl Source {
     }
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self, queue: &mut SysEventQueue) {
-        assert!(queue.is_empty());
-        self.stamp(queue, EventKind::Time);
+    fn begin_frame(&mut self) -> EventTime {
+        EventTime(self.time * 1_000_000)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
-        if self.late_commands {
+        assert!(queue.is_empty());
+        self.polls += 1;
+        if self.late_commands && self.polls % 2 == 0 {
             self.stamp(queue, EventKind::ConsoleLine("after_server"));
             self.stamp(
                 queue,
@@ -52,13 +54,8 @@ impl FrameSource for Source {
                 },
             );
         }
-        self.stamp(queue, EventKind::Time);
-    }
-    fn wait_events(&mut self, queue: &mut SysEventQueue, _: Duration) {
-        assert!(queue.is_empty());
-        self.waits += 1;
-        self.time += 1;
-        if self.wait_key && self.waits == 2 {
+        if self.wait_key && self.waits >= 2 {
+            self.wait_key = false;
             self.stamp(
                 queue,
                 EventKind::Key {
@@ -69,8 +66,21 @@ impl FrameSource for Source {
                     repeat: false,
                 },
             );
+            self.stamp(
+                queue,
+                EventKind::Packet {
+                    socket: 0,
+                    from: "127.0.0.1:1234".parse().unwrap(),
+                    bytes: b"packet arrived during cap wait",
+                },
+            );
         }
         self.stamp(queue, EventKind::Time);
+    }
+    fn wait_time(&mut self, _: Duration) -> EventTime {
+        self.waits += 1;
+        self.time += 1;
+        EventTime(self.time * 1_000_000)
     }
     fn elapsed(&self) -> Duration {
         Duration::ZERO
@@ -142,6 +152,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     let mut source = Source {
         time: 0,
         waits: 0,
+        polls: 0,
         presents: 0,
         late_commands: false,
         wait_key: false,
@@ -180,30 +191,103 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
 }
 
 #[test]
-fn cap_wait_drains_keys_and_aliases_use_one_cached_fps_handle() {
+fn cap_wait_has_no_intake_and_aliases_use_one_cached_fps_handle() {
     let mut host = host();
     let cap = host.console.cvars.find("com_maxfps").unwrap();
     host.console.cvars.set(cap, 100.0).unwrap();
     let mut source = Source {
         time: 0,
         waits: 0,
+        polls: 0,
         presents: 0,
         late_commands: false,
         wait_key: true,
     };
     let frame = host.frame(&mut source, false);
     assert_eq!(source.waits, 10);
-    assert_eq!(frame.drains, 12);
+    assert_eq!(frame.drains, 2);
+    assert_eq!(source.polls, 2);
     assert_eq!(host.key_downs, 1);
-    assert!(frame.commands[0].movement[0] > 0);
+    // The first physical poll timestamps the press at the initial command's
+    // endpoint; the following frame measures the held interval.
+    assert_eq!(frame.commands[0].movement, [0; 3]);
     assert_eq!(frame.commands[1].movement, [0; 3]);
+    assert_eq!(host.runtime.network.packets, 1);
     let alias = host.console.cvars.find("cl_maxfps").unwrap();
     assert_eq!(alias, cap);
     host.console.cvars.set(alias, 200.0).unwrap();
     source.wait_key = false;
-    host.frame(&mut source, false);
+    let frame = host.frame(&mut source, false);
     assert_eq!(source.waits, 15);
+    assert_eq!(frame.drains, 2);
+    assert_eq!(source.polls, 4);
+    assert!(frame.commands[0].movement[0] > 0);
+    // Native integer division produces no delay above 1000 fps. The explicit
+    // uncapped path also skips waiting while preserving both intake points.
+    host.console.cvars.set(cap, 2001.0).unwrap();
+    host.frame(&mut source, false);
+    host.console.cvars.set(cap, 85.0).unwrap();
+    host.frame(&mut source, true);
+    assert_eq!(source.waits, 15);
+    assert_eq!(source.polls, 8);
     assert!(host.queue.is_empty());
+}
+
+#[test]
+fn cap_uses_native_millisecond_timestamps_and_zero_startup_baseline() {
+    struct ClockSource {
+        now: EventTime,
+        polls: usize,
+        waits: usize,
+    }
+    impl FrameSource for ClockSource {
+        fn begin_frame(&mut self) -> EventTime {
+            self.now
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.polls += 1;
+            queue
+                .push(SysEvent {
+                    time: self.now,
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+        fn wait_time(&mut self, remaining: Duration) -> EventTime {
+            self.waits += 1;
+            self.now.0 += remaining.as_nanos() as u64;
+            self.now
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+    }
+    let mut host = host();
+    let mut source = ClockSource {
+        now: EventTime(5_000_000_000),
+        polls: 0,
+        waits: 0,
+    };
+    host.frame(&mut source, false);
+    assert_eq!(source.waits, 0);
+    assert_eq!(source.polls, 2);
+
+    // Native 5011-5000 is 11 ms even though the precise duration is 10.002 ms.
+    source.now = EventTime(5_000_999_000);
+    host.frame(&mut source, true);
+    source.now = EventTime(5_011_001_000);
+    let frame = host.frame(&mut source, false);
+    assert_eq!(source.waits, 0);
+    assert_eq!(frame.drains, 2);
+    assert_eq!(source.polls, 6);
+
+    // At the next deadline only 9.1 ms remains, rather than a fresh 11 ms.
+    source.now = EventTime(5_012_900_000);
+    host.frame(&mut source, false);
+    assert_eq!(source.now, EventTime(5_022_000_000));
+    assert_eq!(source.waits, 1);
+    assert_eq!(source.polls, 8);
 }
 
 #[test]
@@ -230,6 +314,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let mut source = Source {
         time: 5_000,
         waits: 0,
+        polls: 0,
         presents: 0,
         late_commands: false,
         wait_key: false,
