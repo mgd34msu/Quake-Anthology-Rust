@@ -162,14 +162,14 @@ fn row_buffers(cpu: &mut CpuBackend, rows: std::ops::Range<u32>) -> Buffers<'_> 
     }
 }
 
-/// This oracle changes only scanner row ownership. The common descriptor
-/// graph is prepared once per view and reused by every independently owned rover.
+/// This unbinned oracle retains a barrier at each original draw rank. The
+/// descriptor graph is prepared once, then each owned rover consumes that rank.
 fn windowed(
     cpu: &mut CpuBackend,
     list: &CommandList,
     assets: &Assets,
     band_count: u32,
-) -> WorldStats {
+) -> (WorldStats, crate::BackendStats) {
     let mut world = cpu.world.take().unwrap();
     let budget = CpuLimits::default().cache_bytes / band_count as usize;
     let mut bands = (0..band_count)
@@ -188,7 +188,10 @@ fn windowed(
     let windows = (0..band_count)
         .map(|band| band * cpu.height / band_count..(band + 1) * cpu.height / band_count)
         .collect::<Vec<_>>();
-    let mut stats = crate::BackendStats::default();
+    let mut stats = crate::BackendStats {
+        rejected: list.rejected.min(u32::MAX as u64) as u32,
+        ..crate::BackendStats::default()
+    };
     for command in list.commands() {
         match *command {
             Command::Empty => {}
@@ -202,6 +205,8 @@ fn windowed(
             Command::Draw2d(draw) => cpu.draw_2d(draw, assets, &mut stats),
             Command::View(view) => {
                 let camera = Camera::load(view.refdef, cpu.width, cpu.height).unwrap();
+                stats.views += 1;
+                stats.pending_lights += view.scene.lights.count;
                 cpu.presentation = camera.refdef.cpu_presentation;
                 cpu.time_ms = camera.refdef.time_ms;
                 cpu.clear_depth(camera.refdef.viewport, camera.refdef.far);
@@ -286,7 +291,7 @@ fn windowed(
     }
     counters.cache = cache;
     cpu.world = Some(world);
-    counters
+    (counters, stats)
 }
 
 fn assert_band_counters(aggregate: WorldStats, bands: &[WorldStats]) {
@@ -356,12 +361,14 @@ fn assert_band_counters(aggregate: WorldStats, bands: &[WorldStats]) {
 
 fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
     let mut serial = CpuBackend::load_with_assets(29, 19, assets).unwrap();
-    assert_eq!(serial.render(list, assets).rejected, 0);
+    let reference_backend = serial.render(list, assets);
+    assert_eq!(reference_backend.rejected, 0);
     let reference = serial.world_stats();
     let mut unbinned = [WorldStats::default(); MAX_BANDS];
     for count in [1, 2, 4, 8, 19] {
         let mut cpu = CpuBackend::load_with_assets(29, 19, assets).unwrap();
-        let stats = windowed(&mut cpu, list, assets, count);
+        let (stats, backend) = windowed(&mut cpu, list, assets, count);
+        assert_eq!(backend, reference_backend);
         assert_eq!(cpu.pixels, serial.pixels, "pixels for {count} row windows");
         assert_eq!(
             cpu.inverse_depth
@@ -411,7 +418,7 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
                 }
                 Ok(())
             });
-        assert_eq!(result.unwrap().rejected, 0);
+        assert_eq!(result.unwrap(), reference_backend);
         assert!(callbacks > 0);
         assert_eq!(cpu.pixels, serial.pixels);
         assert_eq!(
@@ -444,6 +451,10 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
         let config = cpu.raster_config();
         assert_eq!(config.bands, bands);
         assert_eq!(config.total_cache_budget_bytes, 32 * 1024 * 1024);
+        assert_eq!(
+            config.mip_layout_metadata_bytes,
+            serial.raster_config().mip_layout_metadata_bytes
+        );
         assert_eq!(
             config.allocated_cache_bytes,
             config.per_band_cache_bytes * bands.count()
@@ -2052,4 +2063,197 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
         material: translucent
     }));
     exact_rows(&assets, &frame.finish());
+}
+
+#[test]
+fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
+    let mut assets = Assets::load();
+    let image = assets.register_image(1, 1, &[71, 89, 103, 255]).unwrap();
+    let materials: [MaterialId; 8] = std::array::from_fn(|index| {
+        let sky = matches!(index, 2 | 3);
+        let overlay = matches!(index, 1 | 5 | 6 | 7);
+        stages(
+            &mut assets,
+            &[Stage {
+                texture: StageTexture::Image(image),
+                texgen: if sky {
+                    TexCoordGen::CloudSky {
+                        radius: 4096.0,
+                        height: 384.0,
+                    }
+                } else {
+                    TexCoordGen::Texture
+                },
+                alpha_gen: if overlay {
+                    AlphaGen::Const(0.375)
+                } else {
+                    AlphaGen::Identity
+                },
+                depth_write: !overlay,
+                blend: overlay.then_some(StageBlend {
+                    source: BlendFactor::SourceAlpha,
+                    destination: BlendFactor::OneMinusSourceAlpha,
+                }),
+                ..Stage::default()
+            }],
+            MaterialSettings {
+                sort: index as f32 + 1.0,
+                cull: Cull::None,
+                sky: sky.then_some(Sky::Cube {
+                    outer_box: Some([image; 6]),
+                    inner_box: None,
+                    clouds: crate::sky::CloudSphere::native(384.0),
+                    rotation: None,
+                    params: CubeSkyParams::default(),
+                }),
+                ..MaterialSettings::default()
+            },
+        )
+    });
+    let worlds: Vec<_> = [0, 1, 5, 7]
+        .into_iter()
+        .map(|index| {
+            fixture_world(
+                &mut assets,
+                2.0,
+                if index == 0 { 0.35 } else { 1.5 },
+                SurfaceMaterial {
+                    material: materials[index],
+                    ..SurfaceMaterial::default()
+                },
+                None,
+                GeometryPartition::Unpartitioned,
+                |_| {},
+            )
+        })
+        .collect();
+    let vertices = [
+        [2.0, 3.0, 3.0],
+        [2.0, -3.0, 3.0],
+        [2.0, -3.0, -3.0],
+        [2.0, 3.0, -3.0],
+    ]
+    .map(|p| Vertex {
+        position: Vec3(p),
+        ..Vertex::default()
+    });
+    let sky_model = assets
+        .register_model(&vertices, &[0, 1, 2, 0, 2, 3], materials[2])
+        .unwrap();
+    let external_model = assets
+        .register_model(&vertices, &[0, 1, 2, 0, 2, 3], materials[4])
+        .unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+    for &world in &worlds {
+        assert!(frame.add_world(
+            world,
+            &[VisibleSurface {
+                surface: 0,
+                depth_key: 0
+            }]
+        ));
+    }
+    for model in [sky_model, external_model] {
+        assert!(frame.add_entity(crate::scene::SceneEntity {
+            model,
+            ..crate::scene::SceneEntity::default()
+        }));
+    }
+    assert!(frame.add_poly(materials[3], &vertices));
+    assert!(frame.add_poly(materials[6], &vertices));
+    assert!(frame.render_scene(test_view(), &[], &assets));
+    let frame = frame.finish();
+    exact_rows(&assets, &frame);
+    for bands in [
+        RasterBands::One,
+        RasterBands::Two,
+        RasterBands::Four,
+        RasterBands::Eight,
+    ] {
+        let mut cpu = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        let mut calls = 0;
+        let result: Result<_, std::convert::Infallible> =
+            cpu.render_with_dispatch(&frame, &assets, |jobs| {
+                calls += 1;
+                for job in jobs.iter_mut().rev() {
+                    super::render_band(job);
+                }
+                Ok(())
+            });
+        assert_eq!(result.unwrap().rejected, 0);
+        // Opaque, then three prepared runs separated by external entity/poly.
+        assert_eq!(calls, 4);
+        let prepared = &cpu.world.as_ref().unwrap().prepare;
+        assert!(matches!(
+            &prepared.draws[..prepared.draw_count],
+            [
+                PreparedDraw::Skip,
+                PreparedDraw::Surface(_),
+                PreparedDraw::Sky { .. },
+                PreparedDraw::Sky { .. },
+                PreparedDraw::External,
+                PreparedDraw::Surface(_),
+                PreparedDraw::External,
+                PreparedDraw::Surface(_)
+            ]
+        ));
+    }
+
+    let limits = CpuLimits {
+        bands: RasterBands::Four,
+        ..CpuLimits::default()
+    };
+    let mut paused = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
+    let mut calls = 0;
+    let result = paused.render_with_dispatch(&frame, &assets, |jobs| {
+        calls += 1;
+        if calls == 2 {
+            return Err(());
+        }
+        for job in jobs {
+            super::render_band(job);
+        }
+        Ok(())
+    });
+    assert_eq!(result, Err(()));
+    assert_eq!(calls, 2);
+    let mut before = [WorldStats::default(); MAX_BANDS];
+    assert_eq!(paused.band_stats(&mut before), 4);
+
+    let mut failed = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
+    let mut calls = 0;
+    let result = failed.render_with_dispatch(&frame, &assets, |jobs| {
+        calls += 1;
+        if calls == 2 {
+            super::render_band(&mut jobs[0]);
+            return Err(());
+        }
+        for job in jobs {
+            super::render_band(job);
+        }
+        Ok(())
+    });
+    assert_eq!(result, Err(()));
+    assert_eq!(calls, 2);
+    let mut attempted = [WorldStats::default(); MAX_BANDS];
+    assert_eq!(failed.band_stats(&mut attempted), 4);
+    assert!(attempted[0].pixels > before[0].pixels);
+    assert_eq!(&attempted[1..4], &before[1..4]);
+    let other_rows = (19 / 4) * 29;
+    assert_eq!(&failed.pixels[other_rows..], &paused.pixels[other_rows..]);
+    assert_eq!(
+        &failed.depth_ranks[other_rows..],
+        &paused.depth_ranks[other_rows..]
+    );
+    assert_band_counters(failed.world_stats(), &attempted[..4]);
 }

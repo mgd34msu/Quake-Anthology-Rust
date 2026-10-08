@@ -52,6 +52,8 @@ pub struct RasterConfig {
     pub mandatory_cache_bytes: usize,
     /// Load-owned ordered u32 index payload; separate from the rover budget.
     pub bin_index_capacity_bytes: usize,
+    /// Shared mip-layout slot payload, counted once rather than per band.
+    pub mip_layout_metadata_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -349,6 +351,18 @@ pub(super) struct Buffers<'a> {
 }
 
 impl<'a> Buffers<'a> {
+    fn reborrow(&mut self) -> Buffers<'_> {
+        Buffers {
+            first_row: self.first_row,
+            frame_height: self.frame_height,
+            pixels: &mut *self.pixels,
+            inverse_depth: &mut *self.inverse_depth,
+            depth_ranks: &mut *self.depth_ranks,
+            indices: &mut *self.indices,
+            palettes: &mut *self.palettes,
+        }
+    }
+
     fn split_rows(self, width: u32, rows: u32) -> (Self, Self) {
         let count = width as usize * rows as usize;
         let (pixels, remaining_pixels) = self.pixels.split_at_mut(count);
@@ -676,6 +690,7 @@ impl WorldRaster {
                 per_band_cache_bytes: share,
                 mandatory_cache_bytes,
                 bin_index_capacity_bytes,
+                mip_layout_metadata_bytes: catalog.surfaces_cache.mip_metadata_bytes(),
             },
         })
     }

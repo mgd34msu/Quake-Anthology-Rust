@@ -73,6 +73,22 @@ impl WorldBand {
         );
     }
 
+    pub(super) fn draw_range(
+        &mut self,
+        prepared: &WorldPrepare,
+        camera: &Camera,
+        ranks: [usize; 2],
+        assets: &Assets,
+        mut buffers: Buffers<'_>,
+        stats: &mut crate::BackendStats,
+    ) {
+        // Preserve each original rank's edge scan and rover operations. Only
+        // the platform barrier changes; rows remain exclusively owned here.
+        for rank in ranks[0]..ranks[1] {
+            self.draw_item(prepared, camera, rank, assets, buffers.reborrow(), stats);
+        }
+    }
+
     pub(super) fn draw_item(
         &mut self,
         prepared: &WorldPrepare,

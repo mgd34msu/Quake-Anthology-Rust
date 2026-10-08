@@ -112,7 +112,7 @@ fn add_counts(total: &mut Counts, counts: Counts) {
 /// Cache sizes describe the backend's load-time reservation, across all bands.
 pub fn report_cpu_config(config: RasterConfig, workers: usize) {
     qa_console::logger::console(format_args!(
-        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"bin_index_capacity_bytes\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
+        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
         config.bands.count(),
         workers,
         config.total_cache_budget_bytes,
@@ -120,6 +120,7 @@ pub fn report_cpu_config(config: RasterConfig, workers: usize) {
         config.per_band_cache_bytes,
         config.mandatory_cache_bytes,
         config.bin_index_capacity_bytes,
+        config.mip_layout_metadata_bytes,
     ));
 }
 

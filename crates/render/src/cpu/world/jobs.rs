@@ -7,7 +7,7 @@ use super::{
 #[derive(Clone, Copy)]
 enum BandPass {
     Opaque,
-    Draw(usize),
+    DrawRange([usize; 2]),
 }
 
 struct BandWork<'a> {
@@ -58,11 +58,11 @@ pub fn render_band(job: &mut BandJob<'_>) {
             work.buffers,
             &mut job.stats,
         ),
-        BandPass::Draw(rank) => {
-            work.band.draw_item(
+        BandPass::DrawRange(ranks) => {
+            work.band.draw_range(
                 work.prepared,
                 work.camera,
-                rank,
+                ranks,
                 work.assets,
                 work.buffers,
                 &mut job.stats,
@@ -130,7 +130,7 @@ impl WorldRaster {
         }
     }
 
-    pub(in crate::cpu) fn draw_item<E>(
+    pub(in crate::cpu) fn draw_run<E>(
         &mut self,
         camera: &Camera,
         rank: usize,
@@ -138,21 +138,32 @@ impl WorldRaster {
         buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
         dispatch: &mut impl for<'job> FnMut(&mut [BandJob<'job>]) -> Result<(), E>,
-    ) -> Result<bool, E> {
-        match self.draw(rank) {
-            PreparedDraw::External => Ok(false),
-            PreparedDraw::Skip => Ok(true),
-            PreparedDraw::Surface(_) | PreparedDraw::Sky { .. } => {
-                self.dispatch(
-                    camera,
-                    assets,
-                    buffers,
-                    BandPass::Draw(rank),
-                    stats,
-                    dispatch,
-                )?;
-                Ok(true)
+    ) -> Result<Option<usize>, E> {
+        let mut end = rank;
+        let mut raster = false;
+        while end < self.prepare.draw_count {
+            match self.draw(end) {
+                PreparedDraw::External => break,
+                PreparedDraw::Skip => {}
+                PreparedDraw::Surface(_) | PreparedDraw::Sky { .. } => raster = true,
             }
+            end += 1;
         }
+        if end == rank {
+            return Ok(None);
+        }
+        // Converted sky entities/polys belong to the prepared world stream.
+        // External draws remain barriers; skips alone need no worker wake-up.
+        if raster {
+            self.dispatch(
+                camera,
+                assets,
+                buffers,
+                BandPass::DrawRange([rank, end]),
+                stats,
+                dispatch,
+            )?;
+        }
+        Ok(Some(end))
     }
 }

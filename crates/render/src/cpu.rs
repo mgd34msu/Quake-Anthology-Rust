@@ -351,9 +351,11 @@ impl CpuBackend {
                     } else {
                         stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
                     }
-                    for (draw_rank, item) in list.draws(view.scene.draws).iter().enumerate() {
+                    let draws = list.draws(view.scene.draws);
+                    let mut draw_rank = 0;
+                    while draw_rank < draws.len() {
                         if let Some(world) = &mut self.world
-                            && world.draw_item(
+                            && let Some(end) = world.draw_run(
                                 &camera,
                                 draw_rank,
                                 assets,
@@ -370,8 +372,10 @@ impl CpuBackend {
                                 &mut dispatch,
                             )?
                         {
+                            draw_rank = end;
                             continue;
                         }
+                        let item = draws[draw_rank];
                         match item.kind {
                             DrawKind::Entity => self.entity(
                                 &camera,
@@ -390,6 +394,7 @@ impl CpuBackend {
                             ),
                             DrawKind::Surface => {}
                         }
+                        draw_rank += 1;
                     }
                     if camera.refdef.blend_phase == BlendPhase::AfterView {
                         self.view_blend(&camera.refdef, false, assets);
