@@ -409,3 +409,55 @@ result files describe the bounded workload. These timings are not a matched
 native-fidelity comparison, gameplay regression baseline or installation
 qualification. Foreign movement, wall/step routes, native image parity and
 combined views remain unqualified; the app still reports gameplay=false.
+
+
+## THE-862 native images and CPU cloud sky, 2026-10-08
+
+Commit `872a865b65a5fce1ccda47cbe23fa79f1b88cee1`, portable release build,
+core 23, owned Xvfb, 640×400, uncapped static spawn camera. Each map/backend
+ran 60 warm-up and 600 measured frames. No build, checker or debugger ran
+concurrently. The normal candidate built in 28.8814 s. A separate developer
+executable with calling-thread allocation tracking built in 26.2720 s from
+the same clean commit. Both disabled proof input. The tracked executable
+supplied the measurements below; it is not the shipping candidate.
+
+| Map / consumer | Simulation median / p99 ns | Client median / p99 ns | Scene median / p99 ns | Draw median / p99 ns | Present median / p99 ns |
+|---|---:|---:|---:|---:|---:|
+| e1m1 CPU | 2,050 / 4,750 | 2,240 / 4,200 | 33,010 / 49,630 | 2,442,377 / 2,618,942 | 1,835,801.5 / 2,036,022 |
+| e1m1 GL | 2,330 / 4,540 | 2,640 / 4,240 | 41,975 / 52,780 | 5,507,429 / 6,900,165 | 5,776,044 / 5,943,065 |
+| base1 CPU | 100,050 / 108,990 | 87,110 / 94,250 | 81,255 / 89,230 | 5,076,149 / 5,113,704 | 1,822,141.5 / 1,899,731 |
+| base1 GL | 100,210 / 110,600 | 86,740 / 95,130 | 96,600 / 109,000 | 8,500,266 / 12,057,568 | 4,462,483 / 4,844,884 |
+| q3dm1 CPU | 31,705 / 40,900 | 22,120 / 27,900 | 175,480 / 205,631 | 44,368,553 / 45,978,173 | 1,855,287 / 2,311,122 |
+| q3dm1 GL | 31,730 / 36,070 | 22,040 / 28,230 | 187,610 / 201,140 | 18,311,098.5 / 21,877,306 | 5,414,184 / 8,241,826 |
+
+All six aggregate allocation gates counted zero Rust allocations,
+reallocations and requested bytes, with no failing measured frames.
+Each run preserved its copied candidate/profile, exited normally and cleaned
+up its owned display. SDL, compositor and driver allocations are outside this
+counter. All GL runs recorded llvmpipe LLVM 22.1.8, GL 4.6 core, Mesa
+26.2.2-arch1.1. Draw/present times do not isolate GPU completion. The base1
+and q3dm1 CPU draw medians still exceed the 4 ms target.
+
+A separate normal-candidate walk on each map/backend accepted real key
+repeats and stdin commands. It measured 120 frames after 60 warm-up frames.
+All q3dm1 CPU render records reported zero rejected submissions and its
+capture showed the cloud sky. Base1 CPU rejected submissions in 22 measured
+frames, at most two per frame; the other five cases rejected none. Those
+counts come from the walking runs with developer diagnostics enabled.
+The static allocation runs disabled those diagnostics and recorded coverage
+only at startup, so they do not prove zero rejections across all 600 frames.
+
+The earlier `7ec5706b` timing workload lacked the CPU cloud sky and used
+different native image preparation. Its output is not fidelity-equivalent,
+so the two sets do not establish a regression percentage. Q3 CPU prepared
+RGB levels, mip selection and precombined surface caching remain open.
+Q2 indexed warp/translucency, native bitmap parity, module entities/HUD,
+foreign movement routes and combined views also remain unqualified.
+The app reports gameplay=false. These runs cannot qualify installation or
+supply a gameplay regression baseline.
+
+Evidence under `r3-20261008`: `native-tracking-report.json`, the six
+`native-tracking-{e1m1,base1,q3dm1}-{cpu,gl}-b` directories,
+`native-image-retail-report.json` and the six normal
+`native-image-{e1m1,base1,q3dm1}-{cpu,gl}-b` directories. Their runtime logs,
+result files, timing CSVs and window captures record these bounded results.
