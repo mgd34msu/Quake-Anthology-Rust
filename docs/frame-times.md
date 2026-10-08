@@ -861,3 +861,46 @@ Evidence under `r3-20261008`: `fixed-bands-paired-before-a-report.json`,
 `fixed-bands-paired-after-a-report.json`, `fixed-bands-paired-after-a-comparison.json`,
 the 24 corresponding private-run directories with raw pixels/depth and all-thread
 counts, and `profile-bands8-f9ff6bc0-q3dm1-cpu`.
+
+## THE-862 active clip-plane checkpoint, 2026-10-08
+
+Commit `3deeaa32` classifies each current clip plane using the original distance
+arithmetic and fixed scratch. Accepted planes retain their vertex order without
+copying; crossings retain the original graph and interpolation. Frozen old-loop
+fixtures include earlier removal of an overflowing source with a finite polygon
+surviving. Checker, workspace tests and tracked app compilation passed.
+
+The portable release draw example built in 33.6783 s from a cleared cache.
+The benchmark source is byte-identical to the preceding candidate. Twelve new
+private runs use the same fixed scenes, resolution, profiles, 60/600 frame counts
+and 1/2/4/8 affinity masks. No build, checker, debugger or profiler overlapped.
+
+| Map | Bands | Before median / p99 ms | After median / p99 ms |
+|---|---:|---:|---:|
+| e1m1 | 1 | 2.0312 / 2.0547 | 2.0155 / 2.0387 |
+| base1 | 1 | 4.5602 / 4.5923 | 4.5322 / 4.6707 |
+| q3dm1 | 1 | 15.7264 / 16.4951 | 15.6306 / 16.6776 |
+| e1m1 | 2 | 2.0479 / 2.1350 | 1.2477 / 2.1427 |
+| base1 | 2 | 4.2325 / 4.7453 | 4.1706 / 4.7655 |
+| q3dm1 | 2 | 13.7973 / 16.3213 | 13.5976 / 16.1838 |
+| e1m1 | 4 | 1.2446 / 1.7895 | 0.8979 / 1.3886 |
+| base1 | 4 | 2.5479 / 2.7882 | 2.5858 / 2.7589 |
+| q3dm1 | 4 | 12.2644 / 13.6680 | 11.9819 / 13.4244 |
+| e1m1 | 8 | 1.0103 / 1.7342 | 1.0132 / 1.8311 |
+| base1 | 8 | 1.6407 / 2.1675 | 1.5656 / 1.9530 |
+| q3dm1 | 8 | 8.9466 / 12.4617 | 8.2173 / 11.0006 |
+
+All private exits and profile/candidate preservation/owned cleanup checks passed.
+RGBA/depth bits, immutable workload and all aggregate/per-band counters match
+the preceding candidate and across band counts. Measured caller plus worker
+allocation/reallocation/requested-byte counts are zero. q3dm1 measured cache
+activity remains 11,863,200 hits and zero fills/evictions/rejects.
+
+q3dm1 at eight bands is 8.2173 ms median and 11.0006 ms p99, above the 4 ms
+target. The four-band e1m1 row returns below the earlier baseline on this run;
+the two-band row also varies strongly. Those changes need a repeated matched
+check before attributing a large gain or qualification. This fixed-view developer
+workload does not prove gameplay, native visual acceptance or installation.
+
+Evidence under `r3-20261008`: `fixed-bands-clip-after-a-report.json`,
+`fixed-bands-clip-after-a-comparison.json` and its twelve private-run directories.
