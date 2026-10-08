@@ -287,6 +287,18 @@ pub struct Limits {
     /// Zero derives the sum of payload capacities at load time.
     pub draws: usize,
 }
+impl Limits {
+    /// Resolve the load-time draw bound shared by front-end and consumers.
+    pub fn draw_capacity(self) -> Option<usize> {
+        if self.draws != 0 {
+            Some(self.draws)
+        } else {
+            self.surfaces
+                .checked_add(self.entities)?
+                .checked_add(self.polys)
+        }
+    }
+}
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -407,13 +419,9 @@ pub struct Frame {
 }
 impl FrontEnd {
     pub fn load(mut limits: Limits) -> Result<Self, &'static str> {
-        if limits.draws == 0 {
-            limits.draws = limits
-                .surfaces
-                .checked_add(limits.entities)
-                .and_then(|count| count.checked_add(limits.polys))
-                .ok_or("scene draw capacity overflow")?;
-        }
+        limits.draws = limits
+            .draw_capacity()
+            .ok_or("scene draw capacity overflow")?;
         if [
             limits.commands,
             limits.entities,
