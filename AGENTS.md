@@ -128,6 +128,19 @@ visible only through native checkextension, protocol or API-version
 negotiation. For AD, FitzQuake 666/QSS 999 are data on the common channel;
 its requested effects, limits and builtins use the same services and renderers.
 
+THE-896 requires Arcane Dimensions to work natively with any map, movement,
+HUD or module family, both standalone and combined. Its audited inventory is
+`port-audits/2026-10-07/arcane-dimensions-requirements.md`: 53 called extension
+builtins beyond stock, CSQC with nine entry points and 35 called builtins,
+effectinfo/weather particles, skeletal operations, surfaces, strings/files,
+sprintf, stats, skyboxes, .lit and fog. Each is a shared capability on the
+unified primitives. THE-863 hosts CSQC as a client module alongside Q3 cgame/ui;
+THE-861 supplies its common scene and 2D interface. Effectinfo feeds the one
+particle system. Native semantics come from FTE pr_bgcmd.c, pr_cmds.c,
+pr_csqc.c and Quakespasm; extension exposure still requires native negotiation.
+Carry these requirements into the existing R1-R3 services and R8 module work;
+do not add a Q1-only AD implementation or change the authorised issue order.
+
 THE-893 is a release blocker: `crates/app/src/proof.rs` and platform's gated SDL
 input injector form an input player. Remove recording/replay before any public
 release. A development proof build must never qualify as a shipping candidate.
