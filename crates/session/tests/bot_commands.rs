@@ -22,6 +22,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
                 Connection::Bot,
                 ModuleId((slot % 3) as u16),
                 PlayerTail::default(),
+                None,
             )
             .unwrap();
         assert_eq!(id.0 as usize, slot);
@@ -58,7 +59,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     server.build_bot_commands(EventTime(5_050_000_000), EventTime(5_100_000_000));
     assert_eq!(server.clients[63].command.duration_ms, 77); // disconnected slot excluded
     let reused = server
-        .connect(Connection::Bot, ModuleId(2), PlayerTail::default())
+        .connect(Connection::Bot, ModuleId(2), PlayerTail::default(), None)
         .unwrap();
     assert_eq!(reused, id);
     server.build_bot_commands(EventTime(5_100_000_000), EventTime(5_150_000_000));
@@ -80,14 +81,19 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
     .enumerate()
     {
         server
-            .connect(connection, ModuleId(2), PlayerTail::Q2 { weapon_frame: 0 })
+            .connect(
+                connection,
+                ModuleId(2),
+                PlayerTail::Q2 { weapon_frame: 0 },
+                None,
+            )
             .unwrap();
         server.clients[slot].player.movement_rules = rule;
         server.clients[slot].command.duration_ms = 7;
     }
     server.build_bot_commands(EventTime(0), EventTime(300_000_000));
     assert_eq!(
-        server.clients.map(|c| c.command.duration_ms)[..4],
+        std::array::from_fn::<_, 4, _>(|slot| server.clients[slot].command.duration_ms),
         [100, 100, 200, 7]
     );
 }

@@ -87,7 +87,12 @@ impl Runtime {
     ) -> Result<ClientId, String> {
         let id = self
             .server
-            .connect(Connection::Local, ModuleId::default(), PlayerTail::None)
+            .connect(
+                Connection::Local,
+                ModuleId::default(),
+                PlayerTail::None,
+                None,
+            )
             .ok_or("no local client slot")?;
         let client = &mut self.server.clients[id.0 as usize];
         client.player.movement_rules = movement;

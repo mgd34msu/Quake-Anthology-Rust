@@ -109,6 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 [Connection::Local, Connection::Remote, Connection::Bot][slot % 3],
                 ModuleId((slot % 3) as u16),
                 PlayerTail::Q2 { weapon_frame: 0 },
+                None,
             )
             .ok_or("client capacity")?;
         let client = &mut server.clients[slot];
@@ -156,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prediction.apply_snapshot(&client.player);
             if client.connection != Some(Connection::Bot) {
                 server.submit_command(
-                    ClientId(slot as u8),
+                    ClientId(slot as u32),
                     qa_input::UserCmdBuilder::build(
                         std::time::Duration::from_nanos(end.since(start)),
                         end,

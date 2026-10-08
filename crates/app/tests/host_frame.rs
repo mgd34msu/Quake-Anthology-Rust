@@ -146,7 +146,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     let id = host
         .runtime
         .server
-        .connect(Connection::Local, ModuleId(3), PlayerTail::default())
+        .connect(Connection::Local, ModuleId(3), PlayerTail::default(), None)
         .unwrap();
     host.local_clients[SeatId::FIRST.index()] = Some(id);
     let mut source = Source {
@@ -302,7 +302,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let bot = host
         .runtime
         .server
-        .connect(Connection::Bot, ModuleId(2), PlayerTail::default())
+        .connect(Connection::Bot, ModuleId(2), PlayerTail::default(), None)
         .unwrap();
     host.runtime.server.clients[bot.0 as usize]
         .player

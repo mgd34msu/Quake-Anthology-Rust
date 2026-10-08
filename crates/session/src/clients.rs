@@ -9,7 +9,6 @@ use qa_world::{
     entities::EntityTable,
 };
 
-pub const MAX_CLIENTS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Connection {
     Local,
@@ -33,8 +32,7 @@ pub struct Client {
 pub struct Server {
     pub entities: EntityTable,
     pub area: AreaGrid,
-    pub clients: [Client; MAX_CLIENTS],
-    limit: usize,
+    pub clients: Box<[Client]>,
     pub world_time: EventTime,
     pub world_frame: u64,
 }
@@ -56,14 +54,17 @@ impl Server {
         powerups: usize,
         weapons: usize,
     ) -> Result<Self, ServerError> {
-        if max_clients == 0 || max_clients > MAX_CLIENTS {
+        if max_clients == 0 || max_clients > u32::MAX as usize {
             return Err(ServerError::ClientCapacity);
         }
         if items == 0 || items > 65536 || powerups > 65536 || weapons > 65536 {
             return Err(ServerError::InventoryCapacity);
         }
-        let entities = EntityTable::new(entity_capacity, max_clients + 1)
-            .map_err(|_| ServerError::EntityCapacity)?;
+        let reserved = max_clients
+            .checked_add(1)
+            .ok_or(ServerError::ClientCapacity)?;
+        let entities =
+            EntityTable::new(entity_capacity, reserved).map_err(|_| ServerError::EntityCapacity)?;
         // Map load replaces these bounds before linking its entities.
         let area = AreaGrid::load(
             entity_capacity,
@@ -73,32 +74,27 @@ impl Server {
             },
         )
         .map_err(|_| ServerError::EntityCapacity)?;
-        let clients = std::array::from_fn(|slot| Client {
-            connection: None,
-            entity: EntityId {
-                slot: slot as u32 + 1,
-                generation: 1,
-            },
-            module: ModuleId::default(),
-            link_order: LinkOrder::Tail,
-            player: PlayerState::with_capacity(
-                if slot < max_clients { items } else { 0 },
-                if slot < max_clients { powerups } else { 0 },
-            ),
-            command: UserCmd::default(),
-            intent: CommandIntent::default(),
-            command_pending: false,
-            hud: HudState::with_capacity(
-                if slot < max_clients { items } else { 0 },
-                if slot < max_clients { powerups } else { 0 },
-                if slot < max_clients { weapons } else { 0 },
-            ),
-        });
+        let clients = (0..max_clients)
+            .map(|slot| Client {
+                connection: None,
+                entity: EntityId {
+                    slot: slot as u32 + 1,
+                    generation: 1,
+                },
+                module: ModuleId::default(),
+                link_order: LinkOrder::Tail,
+                player: PlayerState::with_capacity(items, powerups),
+                command: UserCmd::default(),
+                intent: CommandIntent::default(),
+                command_pending: false,
+                hud: HudState::with_capacity(items, powerups, weapons),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Ok(Self {
             entities,
             area,
             clients,
-            limit: max_clients,
             world_time: EventTime::default(),
             world_frame: 0,
         })
@@ -109,8 +105,9 @@ impl Server {
         connection: Connection,
         module: ModuleId,
         tail: PlayerTail,
+        native: Option<NativeEntity>,
     ) -> Option<ClientId> {
-        let slot = self.clients[..self.limit].iter().position(|client| {
+        let slot = self.clients.iter().position(|client| {
             client.connection.is_none() && self.entities.resolve(client.entity).is_some()
         })?;
         let client = &mut self.clients[slot];
@@ -125,13 +122,12 @@ impl Server {
         client.connection = Some(connection);
         let entity_slot = client.entity.slot as usize;
         self.entities.columns.owner[entity_slot] = module;
-        self.entities.columns.native_entity[entity_slot] = Some(NativeEntity {
-            module,
-            slot: client.entity.slot as i32,
-        });
+        // A native module supplies its own raw namespace. Q3's client zero is
+        // not the common world's reserved slot zero; an unbound shell has none.
+        self.entities.columns.native_entity[entity_slot] = native;
         self.entities.columns.collision_shape[entity_slot] = CollisionShape::Box;
         self.entities.columns.collision_contents[entity_slot] = Contents::BODY.0;
-        Some(ClientId(slot as u8))
+        Some(ClientId(slot as u32))
     }
 
     pub fn disconnect(&mut self, id: ClientId) -> bool {
@@ -160,7 +156,7 @@ impl Server {
     /// Bot modules update the same primitive intent, without local-seat state.
     pub fn build_bot_commands(&mut self, start: EventTime, end: EventTime) {
         let duration = std::time::Duration::from_nanos(end.since(start));
-        for client in &mut self.clients[..self.limit] {
+        for client in self.clients.iter_mut() {
             if client.connection == Some(Connection::Bot) {
                 let command = qa_input::UserCmdBuilder::build(duration, end, client.intent);
                 client.command =
@@ -172,7 +168,13 @@ impl Server {
 
     /// Ingress submits a command once. There is no recorded input history.
     pub fn submit_command(&mut self, id: ClientId, command: UserCmd) {
-        let client = &mut self.clients[id.0 as usize];
+        let Some(client) = self
+            .clients
+            .get_mut(id.0 as usize)
+            .filter(|client| client.connection.is_some())
+        else {
+            return;
+        };
         client.command = command;
         client.command_pending = true;
     }
@@ -186,7 +188,7 @@ impl Server {
         scratch: &mut TraceScratch,
     ) -> u32 {
         let mut steps = 0;
-        for client in &mut self.clients[..self.limit] {
+        for client in self.clients.iter_mut() {
             if client.connection.is_some() && client.command_pending {
                 client.command_pending = false;
                 let result = {

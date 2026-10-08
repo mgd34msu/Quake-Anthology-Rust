@@ -30,7 +30,7 @@ fn main() -> Result<(), &'static str> {
             print(
                 state,
                 PrintEvent {
-                    client: Some(ClientId(index as u8)),
+                    client: Some(ClientId(index as u32)),
                     kind: PrintKind::Notify,
                     text: TextId {
                         slot: index as u16,

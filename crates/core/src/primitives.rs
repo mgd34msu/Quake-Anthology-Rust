@@ -137,7 +137,9 @@ impl std::ops::BitOr for CollisionTags {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CallbackId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClientId(pub u8);
+/// Engine client identity. Native client limits and wire widths are applied at
+/// each protocol boundary, independently of this load-sized namespace.
+pub struct ClientId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerupId(pub u16);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

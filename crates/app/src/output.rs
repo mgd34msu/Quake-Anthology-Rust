@@ -90,11 +90,9 @@ impl<S: FrameSource> EventConsumer for Consumer<'_, S> {
         if event.kind == PrintKind::Console {
             return;
         }
-        let mut visited = 0u64;
-        for &id in self.local.iter().flatten() {
-            let bit = 1u64 << id.0;
-            if visited & bit == 0 && event.client.is_none_or(|to| to == id) {
-                visited |= bit;
+        for (seat, &local) in self.local.iter().enumerate() {
+            let Some(id) = local else { continue };
+            if !self.local[..seat].contains(&Some(id)) && event.client.is_none_or(|to| to == id) {
                 qa_ui::hud::print(
                     &mut self.server.clients[id.0 as usize].hud,
                     event,

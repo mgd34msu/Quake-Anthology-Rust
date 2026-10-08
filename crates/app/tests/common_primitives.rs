@@ -53,11 +53,11 @@ fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
     }
     let first = runtime
         .server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::None)
+        .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
         .unwrap();
     let second = runtime
         .server
-        .connect(Connection::Remote, ModuleId(2), PlayerTail::None)
+        .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None)
         .unwrap();
     let entities = [first, second].map(|id| runtime.server.clients[id.0 as usize].entity);
     for entity in entities {
@@ -120,6 +120,7 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
                 [Connection::Local, Connection::Remote, Connection::Bot][slot % 3],
                 ModuleId((slot % 3 + 1) as u16),
                 PlayerTail::None,
+                None,
             )
             .unwrap();
         let player = &mut runtime.server.clients[id.0 as usize].player;

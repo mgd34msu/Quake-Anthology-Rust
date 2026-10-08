@@ -52,6 +52,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
                 PlayerTail::Q1 {
                     attack_finished: 7.0,
                 },
+                None,
             )
             .unwrap();
         let client = &mut server.clients[slot];
@@ -123,10 +124,10 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
     let world = floor();
     let mut scratch = world.scratch();
     let moving = server
-        .connect(Connection::Local, ModuleId(2), PlayerTail::None)
+        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
         .unwrap();
     let obstacle = server
-        .connect(Connection::Remote, ModuleId(1), PlayerTail::None)
+        .connect(Connection::Remote, ModuleId(1), PlayerTail::None, None)
         .unwrap();
     for (id, x, rules, order) in [
         (moving, 0.0, MovementRules::Quake3, LinkOrder::Tail),

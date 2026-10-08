@@ -140,7 +140,7 @@ fn provider(runtime: &mut Runtime, tick: Tick) {
         runtime.server.clients[module.0 as usize].player.score += 1;
         let _ = runtime.loopback.send(
             Endpoint::Server,
-            ClientId(module.0 as u8),
+            ClientId(u32::from(module.0)),
             b"provider packet",
         );
     }
@@ -233,6 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Connection::Bot,
                     ModuleId((slot % 3 + 1) as u16),
                     PlayerTail::default(),
+                    None,
                 )
                 .ok_or("bot capacity")?;
             if id.0 as usize != slot {

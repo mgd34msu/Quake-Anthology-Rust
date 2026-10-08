@@ -26,6 +26,13 @@ and quits normally. Preserve the original profile. R0 windows are not gameplay.
 `crates/core/src/primitives.rs` owns entity, body, player state, usercmd, item,
 weapon, damage, sound/effect event, HUD state and cvar handle values.
 
+THE-656 stores clients in one array sized at load. Internal ClientId is u32;
+native limits (including Q2/RR 256 and Q3 64) and wire widths belong at each
+protocol/module boundary. A connection supplies its native entity namespace
+explicitly, or None before binding a native module. Never derive native entity
+numbers from common entity reservations or the module executing gameplay:
+Q3 client zero is native entity zero; Q2 client zero is native edict one.
+
 Capability crates are core, world, movement, formats, content for the VFS,
 render, audio, network, session, gameplay, compat for module hosts, navigation,
 bots, persistence, console, input, ui, platform and app. Games convert into

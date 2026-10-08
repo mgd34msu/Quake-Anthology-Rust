@@ -5,7 +5,7 @@ use qa_app::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{events::FrameEvent, primitives::*, sys_events::*};
 use qa_session::{
-    clients::Connection,
+    clients::{Connection, Server},
     timing::{Tick, TickRate},
 };
 use std::time::Duration;
@@ -72,15 +72,15 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
     let mut runtime = Runtime::load(std::iter::empty()).unwrap();
     let first = runtime
         .server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::default())
+        .connect(Connection::Local, ModuleId(1), PlayerTail::default(), None)
         .unwrap();
     let remote = runtime
         .server
-        .connect(Connection::Remote, ModuleId(2), PlayerTail::default())
+        .connect(Connection::Remote, ModuleId(2), PlayerTail::default(), None)
         .unwrap();
     let second = runtime
         .server
-        .connect(Connection::Local, ModuleId(3), PlayerTail::default())
+        .connect(Connection::Local, ModuleId(3), PlayerTail::default(), None)
         .unwrap();
     let mut host = FrameHost::load(
         Console::new(Context::default()),
@@ -172,6 +172,55 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
             .notify
             .iter()
             .all(Option::is_none)
+    );
+}
+
+#[test]
+fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() {
+    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    runtime.server = Server::load(512, 1024, 1, 0, 0).unwrap();
+    for _ in 0..512 {
+        runtime
+            .server
+            .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+            .unwrap();
+    }
+    let local = [
+        Some(ClientId(64)),
+        Some(ClientId(255)),
+        Some(ClientId(511)),
+        Some(ClientId(64)),
+    ];
+    runtime.print_event(None, PrintKind::Notify, format_args!("message\n"));
+    let mut source = Source::default();
+    let result = qa_app::output::dispatch(
+        &mut runtime,
+        &mut source,
+        &local,
+        EventTime(1_000_000_000),
+        3.0,
+        2.0,
+    );
+    assert_eq!(result.prints, 1);
+    for slot in [64, 255, 511] {
+        assert_eq!(
+            runtime.server.clients[slot]
+                .hud
+                .notify
+                .iter()
+                .flatten()
+                .count(),
+            1
+        );
+    }
+    assert_eq!(
+        runtime.server.clients[0]
+            .hud
+            .notify
+            .iter()
+            .flatten()
+            .count(),
+        0
     );
 }
 #[test]

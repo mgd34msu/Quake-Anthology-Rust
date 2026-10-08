@@ -1116,3 +1116,23 @@ fixture and compared with the required scoped Rust rejection. Free teardown
 is normalized. Caller-order fixtures are not full native frame traversal.
 Module VM execution, touch/use ABI completion, physics-phase integration,
 live monsters and installed acceptance remain open; no install was performed.
+
+## THE-656 client arena checkpoint (2026-10-08)
+
+The common server now sizes one client array at load. Internal client handles
+are u32, with native capacity and field widths applied at module/protocol
+boundaries. Native entity identities are explicit connection data; the common
+world/client reservation does not assign Q3 or Q2 entity numbers.
+
+`client_state` release example build: 14.38 s. The headless probe loaded 512
+local/remote/bot clients, exercised client 511 disconnect/reconnect and command
+building for 60 warm-up plus 600 measured iterations, and counted zero Rust
+calling-thread allocation/reallocation calls and requested bytes. The positive
+allocation control counted one call. Evidence: `native-client-state-20261008`
+`allocation.json`. Native Q2/RR capacity 256 and internal IDs above 255 are
+covered by client-state checks; HUD routing covers IDs 64, 255 and 511 with a
+duplicate local-seat binding.
+
+This is state/allocation evidence, without elapsed-time performance or worker
+measurements. Native protocol encoding, guest module binding, installed
+independent-seat gameplay and the three-map gate remain open. No install.
