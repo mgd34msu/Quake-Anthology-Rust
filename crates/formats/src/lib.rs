@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod bsp;
+pub mod entities;
 pub mod image;
 pub mod model;
 mod read;

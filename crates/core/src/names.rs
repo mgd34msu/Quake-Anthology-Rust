@@ -15,11 +15,24 @@ pub enum NamesError {
 pub struct NameTable {
     bytes: Box<[u8]>,
     entries: Box<[(u32, u32)]>,
+    compare: fn(&[u8], &[u8]) -> Ordering,
 }
 
 impl NameTable {
     /// Build once at map load. NameId(0) denotes the empty name.
     pub fn load<'a>(names: impl IntoIterator<Item = &'a [u8]>) -> Result<Self, NamesError> {
+        Self::build(names, compare)
+    }
+
+    /// Original Q1 field/function names require byte-exact lookup.
+    pub fn load_exact<'a>(names: impl IntoIterator<Item = &'a [u8]>) -> Result<Self, NamesError> {
+        Self::build(names, <[u8]>::cmp)
+    }
+
+    fn build<'a>(
+        names: impl IntoIterator<Item = &'a [u8]>,
+        compare: fn(&[u8], &[u8]) -> Ordering,
+    ) -> Result<Self, NamesError> {
         let mut unique: Vec<&[u8]> = vec![b""];
         unique.extend(names);
         unique.sort_by(|left, right| compare(left, right));
@@ -40,6 +53,7 @@ impl NameTable {
         Ok(Self {
             bytes: bytes.into_boxed_slice(),
             entries: entries.into_boxed_slice(),
+            compare,
         })
     }
 
@@ -60,7 +74,7 @@ impl NameTable {
     pub fn find(&self, name: &[u8]) -> Option<NameId> {
         self.entries
             .binary_search_by(|&(offset, len)| {
-                compare(
+                (self.compare)(
                     &self.bytes[offset as usize..offset as usize + len as usize],
                     name,
                 )

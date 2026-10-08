@@ -3,20 +3,44 @@ use crate::FormatError;
 pub(crate) struct Tokens<'a> {
     pub bytes: &'a [u8],
     pub at: usize,
+    punctuation: &'static [u8],
+    block_comments: bool,
+    limit: usize,
 }
 impl<'a> Tokens<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
+        Self {
+            bytes,
+            at: 0,
+            punctuation: b"{}()",
+            block_comments: true,
+            limit: usize::MAX,
+        }
+    }
+    pub fn entity(
+        bytes: &'a [u8],
+        punctuation: &'static [u8],
+        block_comments: bool,
+        limit: usize,
+    ) -> Self {
+        let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
+        Self {
+            bytes,
+            at: 0,
+            punctuation,
+            block_comments,
+            limit,
+        }
     }
     pub fn next(&mut self) -> Result<Option<&'a [u8]>, FormatError> {
         loop {
-            while self.bytes.get(self.at).is_some_and(u8::is_ascii_whitespace) {
+            while self.bytes.get(self.at).is_some_and(|&b| b <= 32) {
                 self.at += 1;
             }
             let rest = &self.bytes[self.at..];
             if rest.starts_with(b"//") {
                 self.at += rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
-            } else if rest.starts_with(b"/*") {
+            } else if self.block_comments && rest.starts_with(b"/*") {
                 let length = rest[2..]
                     .windows(2)
                     .position(|p| p == b"*/")
@@ -37,17 +61,23 @@ impl<'a> Tokens<'a> {
                 .position(|&b| b == b'"')
                 .ok_or(FormatError::Truncated)?;
             let result = &self.bytes[self.at..self.at + length];
+            if result.len() >= self.limit {
+                return Err(FormatError::InvalidRange);
+            }
             self.at += length + 1;
             return Ok(Some(result));
         }
-        if !b"{}()".contains(&first) {
+        if !self.punctuation.contains(&first) {
             while self
                 .bytes
                 .get(self.at)
-                .is_some_and(|b| !b.is_ascii_whitespace() && !b"{}()".contains(b))
+                .is_some_and(|&b| b > 32 && !self.punctuation.contains(&b))
             {
                 self.at += 1;
             }
+        }
+        if self.at - start >= self.limit {
+            return Err(FormatError::InvalidRange);
         }
         Ok(Some(&self.bytes[start..self.at]))
     }
