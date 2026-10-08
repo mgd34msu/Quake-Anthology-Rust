@@ -81,9 +81,9 @@ fn main() -> Result<(), &'static str> {
             *entry = Some(id);
             operations += 1;
         }
-        targets.refresh(&table, &names);
+        targets.refresh(&mut table, &names);
         if targets.find(door, NameMatch::Exact, &names).count() != 128
-            || targets.refresh(&table, &names)
+            || targets.refresh(&mut table, &names)
         {
             return Err("target index mismatch");
         }
@@ -117,7 +117,7 @@ fn main() -> Result<(), &'static str> {
                 return Err("stale handle");
             }
         }
-        targets.refresh(&table, &names);
+        targets.refresh(&mut table, &names);
         if targets
             .find(door, NameMatch::Exact, &names)
             .next()

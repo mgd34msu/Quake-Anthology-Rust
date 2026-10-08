@@ -249,11 +249,9 @@ pub fn run_thinks<C: ThinkWorld>(
     mut clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
 ) -> DispatchStats {
     let mut stats = DispatchStats::default();
-    let capacity = world.entities().capacity();
-    for slot in 0..capacity {
-        let Some(entity) = world.entities().id_at(slot) else {
-            continue;
-        };
+    let mut start = 0;
+    while let Some(entity) = world.entities().next_active(start) {
+        start = entity.slot as usize + 1;
         let result = run_think(world, table, entity, &mut clock);
         stats.called = stats.called.saturating_add(result.called);
         stats.rejected = stats.rejected.saturating_add(result.rejected);

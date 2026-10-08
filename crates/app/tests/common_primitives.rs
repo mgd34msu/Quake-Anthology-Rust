@@ -66,7 +66,7 @@ fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
     assert!(
         runtime
             .targets
-            .refresh(&runtime.server.entities, &runtime.catalog.names)
+            .refresh(&mut runtime.server.entities, &runtime.catalog.names)
     );
     assert_eq!(
         runtime
@@ -82,19 +82,19 @@ fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
     assert!(
         !runtime
             .targets
-            .refresh(&runtime.server.entities, &runtime.catalog.names)
+            .refresh(&mut runtime.server.entities, &runtime.catalog.names)
     );
     runtime.server.clients[first.0 as usize].player.health = 42;
     assert!(
         !runtime
             .targets
-            .refresh(&runtime.server.entities, &runtime.catalog.names)
+            .refresh(&mut runtime.server.entities, &runtime.catalog.names)
     );
     assert!(runtime.server.disconnect(first));
     assert!(
         runtime
             .targets
-            .refresh(&runtime.server.entities, &runtime.catalog.names)
+            .refresh(&mut runtime.server.entities, &runtime.catalog.names)
     );
     assert_eq!(
         runtime

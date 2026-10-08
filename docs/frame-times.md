@@ -1227,3 +1227,57 @@ counting zero Rust allocation/reallocation calls after cold load and one in
 its positive control (`entity-allocations.json`). No worker was created.
 Native module namespace mapping, retail trigger/door execution and installed
 combined gameplay remain open. No install.
+
+## THE-2875 liveness and named-change checkpoint (2026-10-08)
+
+Entity liveness now has one bitset, including reserved and generation-retired
+slots. Ascending think dispatch re-reads that bitset after callbacks. One target
+index consumes coalesced named changes and updates its sorted rows individually;
+unnamed allocation/release does not rebuild or sort the index.
+
+The matched baseline is `70dd962b`. Both archived source trees built the same
+`entity_tables` release probe with baseline CPU code and allocation tracking.
+Core 23 ran ABBA at each capacity, without a debugger, with 60 warm-up and 600
+measured frames per run. Each frame scheduled 64 sparse Q2-rule callbacks,
+allocated/released one unnamed entity, refreshed exact/folded target lookup,
+and checked callback order, generation handles and raw timestamp bits.
+
+Each table cell lists the two runs' median/p99 in ns, in execution order within
+that revision. Total includes unnamed churn, scheduling, dispatch and fidelity
+checks; dispatch includes its timer reads.
+
+| Capacity | Before dispatch | After dispatch | Before total | After total |
+| ---: | --- | --- | --- | --- |
+| 128 | 520/570; 520/900 | 560/560; 550/600 | 2,060/2,120; 2,080/3,300 | 750/810; 750/800 |
+| 1,024 | 850/1,230; 910/960 | 560/600; 560/940 | 3,230/5,390; 3,280/3,350 | 760/810; 790/1,320 |
+| 8,192 | 3,600/5,910; 3,560/3,600 | 570/590; 570/630 | 12,940/22,020; 12,810/17,780 | 800/850; 800/850 |
+
+The mean of the two dispatch medians increased 6.7% at capacity 128 and fell
+36.4%/84.1% at 1,024/8,192. Each run checked 38,400 ordered callbacks with zero
+fidelity mismatches and zero calling-thread Rust allocation/reallocation calls
+and requested bytes; the positive control counted one allocation. Baseline
+unnamed refreshes were 1,200 per run; the new index counted zero. The bit walk
+still examines empty words; this is not a claim of capacity-independent cost.
+
+Fresh original-C comparisons matched all 12,712 target rows, 13,390 per-entity
+think rows and 27,367 lifetime rows. Target/think comparator mutation controls
+passed.
+The separate lifecycle workload performed 2,560,000 allocations and 2,580,000
+area relinks with zero hot Rust allocation calls and one positive-control call.
+Release probe builds took 18.06 s before and 17.69 s after; the latter tree's
+target, think and lifetime builds took 7.34 s, 5.50 s and 6.71 s respectively.
+
+Evidence: `THE-2875-entities/timings.json`, `proof-build.json`,
+`targets/report.json`, `thinks/report.json`, `lifetimes/verification.json` and
+`allocations.log`. A cached baseline that wrongly showed new-index behavior
+was rejected under `invalid-artifact-reuse`; refreshed archive source timestamps
+and old/new behavior guards prevent that reuse in the recorded comparison.
+These developer fixtures do not execute native module ABIs, retail rocket/nail
+spawning or installed think/touch ordering. No workers or foreign heap were
+measured. THE-2875's e1m1/q3dm1 live acceptance remains open; no install.
+
+```sh
+timeout 300 cargo build --release -p qa-platform --example entity_tables \
+  --features allocation-tracking
+timeout 300 taskset -c "$CORE" target/release/examples/entity_tables 8192
+```

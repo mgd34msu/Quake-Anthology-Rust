@@ -762,3 +762,162 @@ fn function_handles_preserve_native_indices_above_sixteen_bits() {
         Some(CallbackId(index))
     );
 }
+
+enum ActiveMutation {
+    RemoveFuture(EntityId),
+    SpawnLower,
+    OverwriteLast,
+}
+
+struct ActiveMutationWorld {
+    entities: EntityTable,
+    calls: Vec<EntityId>,
+    mutation: Option<ActiveMutation>,
+    spawned: Option<EntityId>,
+}
+
+impl ThinkWorld for ActiveMutationWorld {
+    fn entities(&mut self) -> &mut EntityTable {
+        &mut self.entities
+    }
+}
+
+fn mutate_active_slots(
+    world: &mut ActiveMutationWorld,
+    module: ModuleId,
+    _entry: u32,
+    call: CallbackCall,
+) -> bool {
+    let CallbackCall::Think { entity, .. } = call else {
+        return false;
+    };
+    world.calls.push(entity);
+    let Some(mutation) = world.mutation.take() else {
+        return true;
+    };
+    let (now, policy) = match mutation {
+        ActiveMutation::RemoveFuture(future) => {
+            if !world.entities.release(future, 10.0) {
+                return false;
+            }
+            // The native freetime delay keeps the deleted future slot empty;
+            // allocating here extends the live higher source-slot range.
+            (10.0, AllocationPolicy::EDICT)
+        }
+        ActiveMutation::SpawnLower => (0.0, AllocationPolicy::EDICT),
+        ActiveMutation::OverwriteLast => (0.0, AllocationPolicy::QUAKEWORLD),
+    };
+    let Some(allocation) = world.entities.allocate(now, module, policy) else {
+        return false;
+    };
+    let slot = allocation.id.slot as usize;
+    world.entities.columns.next_think[slot] = Some(ThinkTime::Seconds(0.5));
+    world.entities.columns.think_fn[slot] = Some(CallbackId(0));
+    world.spawned = Some(allocation.id);
+    true
+}
+
+fn mutation_table(timing: ThinkTiming) -> Result<FunctionTable<ActiveMutationWorld>, &'static str> {
+    FunctionTable::load([(
+        ModuleId(1),
+        timing,
+        vec![FunctionBinding {
+            entry: 1,
+            call: mutate_active_slots,
+        }],
+    )])
+    .map_err(|_| "functions")
+}
+
+fn mutation_entity(world: &mut ActiveMutationWorld) -> Result<EntityId, &'static str> {
+    let id = world
+        .entities
+        .allocate(0.0, ModuleId(1), AllocationPolicy::EDICT)
+        .ok_or("entity")?
+        .id;
+    world.entities.columns.next_think[id.slot as usize] = Some(ThinkTime::Seconds(0.5));
+    world.entities.columns.think_fn[id.slot as usize] = Some(CallbackId(0));
+    Ok(id)
+}
+
+#[test]
+fn ascending_thinks_skip_deleted_slots_and_visit_new_higher_slots() -> Result<(), &'static str> {
+    // Native Q2 g_main.c and Q3 g_main.c walk live source slots dynamically,
+    // rather than snapshotting entity handles before invoking game callbacks.
+    let mut world = ActiveMutationWorld {
+        entities: EntityTable::new(130, 64).map_err(|_| "table")?,
+        calls: Vec::new(),
+        mutation: None,
+        spawned: None,
+    };
+    let first = mutation_entity(&mut world)?;
+    let removed = mutation_entity(&mut world)?;
+    let kept = mutation_entity(&mut world)?;
+    world.mutation = Some(ActiveMutation::RemoveFuture(removed));
+    let stats = run_thinks(&mut world, &mutation_table(ThinkTiming::Quake2)?, |_| {
+        frame(10.0, 0.0)
+    });
+    let spawned = world.spawned.ok_or("spawned")?;
+    assert_eq!(spawned.slot, kept.slot + 1);
+    assert_eq!((stats.called, stats.rejected), (3, 0));
+    assert_eq!(world.calls, [first, kept, spawned]);
+    assert!(world.entities.resolve(removed).is_none());
+    assert!(world.entities.columns.next_think[spawned.slot as usize].is_none());
+    Ok(())
+}
+
+#[test]
+fn ascending_thinks_do_not_revisit_new_lower_slots() -> Result<(), &'static str> {
+    let mut world = ActiveMutationWorld {
+        entities: EntityTable::new(8, 1).map_err(|_| "table")?,
+        calls: Vec::new(),
+        mutation: None,
+        spawned: None,
+    };
+    let lower = mutation_entity(&mut world)?;
+    let first = mutation_entity(&mut world)?;
+    let kept = mutation_entity(&mut world)?;
+    assert!(world.entities.release(lower, 0.0));
+    world.mutation = Some(ActiveMutation::SpawnLower);
+    let table = mutation_table(ThinkTiming::Quake)?;
+    let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
+    let spawned = world.spawned.ok_or("spawned")?;
+    assert_eq!(spawned.slot, lower.slot);
+    assert_ne!(spawned.generation, lower.generation);
+    assert_eq!((stats.called, stats.rejected), (2, 0));
+    assert_eq!(world.calls, [first, kept]);
+    assert_eq!(
+        world.entities.columns.next_think[spawned.slot as usize],
+        Some(ThinkTime::Seconds(0.5))
+    );
+    let next = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
+    assert_eq!((next.called, next.rejected), (1, 0));
+    assert_eq!(world.calls, [first, kept, spawned]);
+    Ok(())
+}
+
+#[test]
+fn ascending_thinks_resolve_replaced_future_generations() -> Result<(), &'static str> {
+    let mut world = ActiveMutationWorld {
+        entities: EntityTable::new(4, 1).map_err(|_| "table")?,
+        calls: Vec::new(),
+        mutation: None,
+        spawned: None,
+    };
+    let first = mutation_entity(&mut world)?;
+    let middle = mutation_entity(&mut world)?;
+    let displaced = mutation_entity(&mut world)?;
+    world.mutation = Some(ActiveMutation::OverwriteLast);
+    let stats = run_thinks(
+        &mut world,
+        &mutation_table(ThinkTiming::QuakeWorld)?,
+        |_| frame(1.0, 0.0),
+    );
+    let replacement = world.spawned.ok_or("replacement")?;
+    assert_eq!(replacement.slot, displaced.slot);
+    assert_ne!(replacement.generation, displaced.generation);
+    assert_eq!((stats.called, stats.rejected), (3, 0));
+    assert_eq!(world.calls, [first, middle, replacement]);
+    assert!(world.entities.resolve(displaced).is_none());
+    Ok(())
+}

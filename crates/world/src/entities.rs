@@ -237,15 +237,34 @@ impl EntityColumns {
 pub struct EntityTable {
     pub columns: EntityColumns,
     generations: Box<[u32]>,
-    live: Box<[bool]>,
     freed_at: Box<[Option<EntityTime>]>,
     reuse: Box<[ReuseDelay]>,
     last_owner: Box<[ModuleId]>,
     never_free: Box<[bool]>,
+    /// One means dead, including generation-retired slots and unused tail bits.
     free_bits: Box<[u64]>,
+    target_dirty: Box<[u64]>,
+    target_dirty_count: usize,
     reserved: usize,
     live_count: usize,
-    revision: u64,
+}
+
+fn next_bit(words: &[u64], start: usize, capacity: usize, inverse: bool) -> Option<usize> {
+    if start >= capacity {
+        return None;
+    }
+    let mut word = start / 64;
+    let mut mask = u64::MAX << (start % 64);
+    while word < words.len() {
+        let bits = if inverse { !words[word] } else { words[word] } & mask;
+        if bits != 0 {
+            let slot = word * 64 + bits.trailing_zeros() as usize;
+            return (slot < capacity).then_some(slot);
+        }
+        word += 1;
+        mask = u64::MAX;
+    }
+    None
 }
 
 impl EntityTable {
@@ -257,29 +276,27 @@ impl EntityTable {
         if reserved > capacity {
             return Err(TableError::ReservedSlots);
         }
-        let mut live = vec![false; capacity].into_boxed_slice();
-        live[..reserved].fill(true);
-        let mut free_bits = vec![0u64; capacity.div_ceil(64)].into_boxed_slice();
-        for slot in reserved..capacity {
-            free_bits[slot / 64] |= 1 << (slot % 64);
+        let mut free_bits = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
+        for slot in 0..reserved {
+            free_bits[slot / 64] &= !(1 << (slot % 64));
         }
         Ok(Self {
             columns: EntityColumns::new(capacity),
             generations: vec![1; capacity].into_boxed_slice(),
-            live,
             freed_at: vec![None; capacity].into_boxed_slice(),
             reuse: vec![ReuseDelay::EDICT; capacity].into_boxed_slice(),
             last_owner: vec![ModuleId::default(); capacity].into_boxed_slice(),
             never_free: vec![false; capacity].into_boxed_slice(),
             free_bits,
+            target_dirty: vec![0; capacity.div_ceil(64)].into_boxed_slice(),
+            target_dirty_count: 0,
             reserved,
             live_count: reserved,
-            revision: 0,
         })
     }
 
     pub fn capacity(&self) -> usize {
-        self.live.len()
+        self.generations.len()
     }
 
     pub fn len(&self) -> usize {
@@ -290,8 +307,30 @@ impl EntityTable {
         self.live_count == 0
     }
 
-    pub fn structural_revision(&self) -> u64 {
-        self.revision
+    fn mark_target_dirty(&mut self, slot: usize) {
+        let word = slot / 64;
+        let bit = 1 << (slot % 64);
+        if self.target_dirty[word] & bit == 0 {
+            self.target_dirty[word] |= bit;
+            self.target_dirty_count += 1;
+        }
+    }
+
+    pub(crate) fn take_target_change(&mut self, start: usize) -> Option<usize> {
+        if self.target_dirty_count == 0 {
+            return None;
+        }
+        let slot = next_bit(&self.target_dirty, start, self.capacity(), false)?;
+        self.target_dirty[slot / 64] &= !(1 << (slot % 64));
+        self.target_dirty_count -= 1;
+        Some(slot)
+    }
+
+    fn clear_columns(&mut self, slot: usize) {
+        if self.columns.targetname[slot].is_some() {
+            self.mark_target_dirty(slot);
+        }
+        self.columns.clear(slot);
     }
 
     pub fn set_targetname(&mut self, id: EntityId, name: Option<NameId>) -> bool {
@@ -300,39 +339,43 @@ impl EntityTable {
         };
         if self.columns.targetname[slot] != name {
             self.columns.targetname[slot] = name;
-            self.revision = self.revision.wrapping_add(1);
+            self.mark_target_dirty(slot);
         }
         true
     }
 
     pub fn id_at(&self, slot: usize) -> Option<EntityId> {
-        self.live
-            .get(slot)
-            .copied()
-            .filter(|live| *live)
-            .map(|_| EntityId {
-                slot: slot as u32,
-                generation: self.generations[slot],
-            })
+        let generation = *self.generations.get(slot)?;
+        (self.free_bits[slot / 64] & (1 << (slot % 64)) == 0).then_some(EntityId {
+            slot: slot as u32,
+            generation,
+        })
     }
 
     /// Resolve a lifetime handle once before accessing the hot columns.
     pub fn resolve(&self, id: EntityId) -> Option<usize> {
         let slot = id.slot as usize;
-        self.live
-            .get(slot)
-            .copied()
-            .filter(|live| *live)
-            .filter(|_| self.generations[slot] == id.generation)
+        self.id_at(slot)
+            .filter(|current| *current == id)
             .map(|_| slot)
     }
 
+    /// Inclusive source-slot cursor. The returned handle owns no table borrow,
+    /// so a callback can mutate lifetimes before the next ascending query.
+    pub fn next_active(&self, start: usize) -> Option<EntityId> {
+        let slot = next_bit(&self.free_bits, start, self.capacity(), true)?;
+        Some(EntityId {
+            slot: slot as u32,
+            generation: self.generations[slot],
+        })
+    }
+
     pub fn active(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.live.iter().enumerate().filter_map(|(slot, live)| {
-            live.then_some(EntityId {
-                slot: slot as u32,
-                generation: self.generations[slot],
-            })
+        let mut start = 0;
+        std::iter::from_fn(move || {
+            let id = self.next_active(start)?;
+            start = id.slot as usize + 1;
+            Some(id)
         })
     }
 
@@ -341,11 +384,10 @@ impl EntityTable {
         let slot = self
             .resolve(id)
             .filter(|slot| *slot > 0 && *slot < self.reserved)?;
-        self.columns.clear(slot);
-        self.revision = self.revision.wrapping_add(1);
+        self.clear_columns(slot);
         self.generations[slot] += 1;
         if self.generations[slot] == u32::MAX {
-            self.live[slot] = false;
+            self.free_bits[slot / 64] |= 1 << (slot % 64);
             self.live_count -= 1;
             return None;
         }
@@ -361,31 +403,29 @@ impl EntityTable {
         policy: AllocationPolicy,
     ) -> Option<Allocation> {
         let now = now.into();
-        for word in 0..self.free_bits.len() {
-            let mut bits = self.free_bits[word];
-            while bits != 0 {
-                let bit = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                let slot = word * 64 + bit;
-                if !self.reuse[slot].eligible(now, self.freed_at[slot]) {
-                    continue;
-                }
-                return self.claim(slot, owner, policy, None);
+        let mut start = self.reserved;
+        while let Some(slot) = next_bit(&self.free_bits, start, self.capacity(), false) {
+            start = slot + 1;
+            if self.generations[slot] == u32::MAX
+                || !self.reuse[slot].eligible(now, self.freed_at[slot])
+            {
+                continue;
             }
+            return Some(self.claim(slot, owner, policy, None));
         }
         if policy.full == FullTable::OverwriteLastOwned {
             if let Some(slot) = (self.reserved..self.capacity()).rev().find(|&slot| {
                 self.last_owner[slot] == owner
                     && self.generations[slot] < u32::MAX
-                    && (!self.live[slot] || self.generations[slot] < u32::MAX - 1)
+                    && (self.id_at(slot).is_none() || self.generations[slot] < u32::MAX - 1)
                     && !self.never_free[slot]
-                    && (self.live[slot] || self.freed_at[slot].is_some())
+                    && (self.id_at(slot).is_some() || self.freed_at[slot].is_some())
             }) {
                 let displaced = self.id_at(slot);
                 if displaced.is_some() {
                     self.generations[slot] += 1;
                 }
-                return self.claim(slot, owner, policy, displaced);
+                return Some(self.claim(slot, owner, policy, displaced));
             }
         }
         None
@@ -397,22 +437,23 @@ impl EntityTable {
         owner: ModuleId,
         policy: AllocationPolicy,
         displaced: Option<EntityId>,
-    ) -> Option<Allocation> {
-        self.free_bits[slot / 64] &= !(1 << (slot % 64));
-        if !self.live[slot] {
+    ) -> Allocation {
+        if self.free_bits[slot / 64] & (1 << (slot % 64)) != 0 {
             self.live_count += 1;
         }
-        self.live[slot] = true;
-        self.revision = self.revision.wrapping_add(1);
-        self.columns.clear(slot);
+        self.free_bits[slot / 64] &= !(1 << (slot % 64));
+        self.clear_columns(slot);
         self.columns.owner[slot] = owner;
         self.last_owner[slot] = owner;
         self.reuse[slot] = policy.reuse;
         self.never_free[slot] = false;
-        Some(Allocation {
-            id: self.id_at(slot)?,
+        Allocation {
+            id: EntityId {
+                slot: slot as u32,
+                generation: self.generations[slot],
+            },
             displaced,
-        })
+        }
     }
 
     /// Q3 neverFree and Q2 body queues share lifetime protection. Prefix slots
@@ -432,15 +473,11 @@ impl EntityTable {
         if slot < self.reserved || self.never_free[slot] {
             return false;
         }
-        self.live[slot] = false;
+        self.free_bits[slot / 64] |= 1 << (slot % 64);
         self.live_count -= 1;
-        self.revision = self.revision.wrapping_add(1);
         self.freed_at[slot] = Some(self.reuse[slot].freetime(now.into()));
-        self.columns.clear(slot);
+        self.clear_columns(slot);
         self.generations[slot] += 1;
-        if self.generations[slot] != u32::MAX {
-            self.free_bits[slot / 64] |= 1 << (slot % 64);
-        }
         true
     }
 }
@@ -487,6 +524,12 @@ mod tests {
         assert!(area.unlink(dying));
         assert!(table.release(dying, 3.0));
         assert_eq!(table.generations[last.slot as usize], u32::MAX);
+        assert_ne!(
+            table.free_bits[last.slot as usize / 64] & (1 << (last.slot % 64)),
+            0
+        );
+        assert!(table.id_at(last.slot as usize).is_none());
+        assert!(table.active().all(|id| id.slot != last.slot));
         assert!(table.release(replacement.id, 3.0));
         let current = table
             .allocate(4.0, ModuleId(1), AllocationPolicy::EDICT)
@@ -506,7 +549,7 @@ mod tests {
             .id;
         table.generations[id.slot as usize] = u32::MAX - 1;
         let current = table.id_at(id.slot as usize).ok_or("current")?;
-        let revision = table.structural_revision();
+        let body = table.columns.body(current.slot as usize);
         assert!(
             table
                 .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
@@ -514,7 +557,11 @@ mod tests {
         );
         assert!(table.resolve(current).is_some());
         assert_eq!(table.len(), 2);
-        assert_eq!(table.structural_revision(), revision);
+        let retained = table.columns.body(current.slot as usize);
+        assert_eq!(retained.position, body.position);
+        assert_eq!(retained.velocity, body.velocity);
+        assert_eq!(retained.mins, body.mins);
+        assert_eq!(retained.maxs, body.maxs);
         Ok(())
     }
 
@@ -526,6 +573,8 @@ mod tests {
         let client = table.id_at(1).ok_or("client")?;
         assert!(table.reset_client(client).is_none());
         assert!(table.resolve(client).is_none());
+        assert_ne!(table.free_bits[0] & (1 << 1), 0);
+        assert_eq!(table.active().map(|id| id.slot).collect::<Vec<_>>(), [0]);
         assert!(
             table
                 .allocate(5.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)

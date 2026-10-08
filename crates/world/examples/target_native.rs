@@ -74,7 +74,7 @@ fn execute(
         }
         return Ok(result);
     };
-    table.targets.refresh(&table.entities, names);
+    table.targets.refresh(&mut table.entities, names);
     let mode = match boundary {
         Boundary::Quake => NameMatch::Exact,
         Boundary::Quake2 | Boundary::Quake3 => NameMatch::Folded,
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let mut targets = TargetIndex::new(&entities);
-        targets.refresh(&entities, &names);
+        targets.refresh(&mut entities, &names);
         tables.push(Table { entities, targets });
     }
     let mut queries = Vec::with_capacity(query_count);
