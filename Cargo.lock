@@ -247,7 +247,9 @@ version = "0.1.0"
 dependencies = [
  "qa-app",
  "qa-console",
+ "qa-content",
  "qa-core",
+ "qa-formats",
  "qa-input",
  "qa-movement",
  "qa-network",
@@ -260,7 +262,10 @@ dependencies = [
 name = "qa-render"
 version = "0.1.0"
 dependencies = [
+ "qa-content",
  "qa-core",
+ "qa-formats",
+ "qa-world",
 ]
 
 [[package]]

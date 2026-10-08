@@ -20,3 +20,5 @@ qa-session = { path = "../session" }
 qa-movement = { path = "../movement" }
 qa-world = { path = "../world" }
 qa-render = { path = "../render" }
+qa-content = { path = "../content" }
+qa-formats = { path = "../formats" }

@@ -2,6 +2,8 @@
 pub mod assets;
 pub mod cpu;
 pub mod gl;
+pub mod material;
+pub mod shader;
 pub mod scene;
 pub use assets::{Assets, ImageId, MaterialId, ModelId, Vertex};
 pub use scene::{

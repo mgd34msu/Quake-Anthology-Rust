@@ -58,7 +58,7 @@ pub enum DepthFunc {
     Equal,
     Always,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stage {
     pub image: ImageId,
     pub blend: Blend,
@@ -156,7 +156,8 @@ impl Assets {
         two_sided: bool,
         sort: u16,
     ) -> Result<MaterialId, &'static str> {
-        if let Some(index) = self.materials.iter().position(|m| m.name == name) {
+        if let Some(index) = self.materials.iter().position(|m|
+            m.name == name && m.stages.as_ref() == stages && m.two_sided == two_sided && m.sort == sort) {
             return Ok(MaterialId(index as u32));
         }
         if stages.is_empty()
