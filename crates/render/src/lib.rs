@@ -1,6 +1,9 @@
 //! One scene interface and owned frame packets for every client module.
 pub mod assets;
 pub mod cpu;
+pub mod edges;
+pub mod lightmap;
+pub mod surface_cache;
 pub mod gl;
 pub mod material;
 pub mod shader;
