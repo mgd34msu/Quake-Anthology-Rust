@@ -8,6 +8,8 @@
 //! ```
 //! Select `--cpu-bands 1`, `2`, `4` or `8`; the harness records the inherited
 //! process CPU mask. `--depth-output` writes final depth scores after measurement.
+//! `--stage-timings` adds diagnostic callback timers. Keep those rows separate
+//! from the normal benchmark; the residual estimates serial/other wall cost.
 use qa_app::{
     Runtime, map, profile, render_settings,
     renderer::{CpuDispatch, parse_cpu_bands, report_cpu_config},
@@ -49,6 +51,7 @@ struct Options {
     depth_output: Option<PathBuf>,
     hold_ms: u64,
     bands: RasterBands,
+    stage_timings: bool,
 }
 impl Options {
     fn read() -> Result<Self, String> {
@@ -56,6 +59,7 @@ impl Options {
         let mut depth_output = None;
         let mut bands = None;
         let mut hold_ms = 1500;
+        let mut stage_timings = false;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -83,6 +87,7 @@ impl Options {
                         &args.next().ok_or("--cpu-bands needs 1, 2, 4 or 8")?,
                     )?);
                 }
+                "--stage-timings" if !stage_timings => stage_timings = true,
                 "--startup-hold-ms" => {
                     hold_ms = args
                         .next()
@@ -114,6 +119,7 @@ impl Options {
             depth_output,
             hold_ms,
             bands: bands.unwrap_or(RasterBands::One),
+            stage_timings,
         })
     }
 }
@@ -263,13 +269,117 @@ fn write_depth(path: &Path, depth: &[f32]) -> std::io::Result<()> {
     file.flush()
 }
 
+#[derive(Clone, Copy, Default)]
+struct DispatchTimings {
+    first_ns: u64,
+    subsequent_ns: u64,
+    count: u64,
+    maximum_ns: u64,
+}
+impl DispatchTimings {
+    fn observe(&mut self, elapsed_ns: u64) {
+        if self.count == 0 {
+            self.first_ns = elapsed_ns;
+        } else {
+            self.subsequent_ns = self.subsequent_ns.saturating_add(elapsed_ns);
+        }
+        self.count += 1;
+        self.maximum_ns = self.maximum_ns.max(elapsed_ns);
+    }
+    fn waited_ns(self) -> u64 {
+        self.first_ns.saturating_add(self.subsequent_ns)
+    }
+}
+
 fn draw(
     cpu: &mut CpuBackend,
     dispatch: &mut CpuDispatch,
     packet: &qa_render::scene::CommandList,
     assets: &Assets,
+    timings: Option<&mut DispatchTimings>,
 ) -> Result<BackendStats, qa_platform::WorkerError> {
-    cpu.render_with_dispatch(packet, assets, |jobs| dispatch.dispatch(jobs, render_band))
+    if let Some(timings) = timings {
+        cpu.render_with_dispatch(packet, assets, |jobs| {
+            let timer = Stopwatch::start();
+            let result = dispatch.dispatch(jobs, render_band);
+            timings.observe(timer.elapsed().as_nanos() as u64);
+            result
+        })
+    } else {
+        cpu.render_with_dispatch(packet, assets, |jobs| dispatch.dispatch(jobs, render_band))
+    }
+}
+
+fn timing_summary(name: &str, unit: &str, mut values: [u64; FRAMES]) {
+    values.sort_unstable();
+    logger::console(format_args!(
+        "\"{name}\":{{\"unit\":\"{unit}\",\"median\":{},\"p99\":{},\"minimum\":{},\"maximum\":{}}}",
+        values[299] as f64 * 0.5 + values[300] as f64 * 0.5,
+        values[593],
+        values[0],
+        values[FRAMES - 1],
+    ));
+}
+
+fn report_stage_timings(
+    frames: &[DispatchTimings; FRAMES],
+    total: &[u64; FRAMES],
+    bands: usize,
+    workers: usize,
+) {
+    let consistent = frames
+        .iter()
+        .zip(total)
+        .all(|(frame, total)| frame.waited_ns() <= *total);
+    logger::console(format_args!(
+        "{{\"event\":\"retail_draw_stage_timings\",\"scope\":\"diagnostic_dispatch_wall_times\",\"diagnostic_instrumentation\":true,\"timing_qualified\":false,\"cpu_time_measured\":false,\"bands\":{bands},\"workers\":{workers},\"warmup\":{WARMUP},\"frames\":{FRAMES},\"first_dispatch_role\":\"first callback; opaque for this single-view retail world packet\",\"waited_scope\":\"dispatch, completion barrier and allocation count collection\",\"residual_semantics\":\"direct total minus summed waited dispatches; approximate serial preparation and other wall cost, including instrumentation overhead\",\"nested_times_within_total\":{consistent},\"summaries\":{{"
+    ));
+    timing_summary(
+        "first_dispatch",
+        "nanoseconds",
+        std::array::from_fn(|index| frames[index].first_ns),
+    );
+    logger::console(format_args!(","));
+    timing_summary(
+        "subsequent_dispatches",
+        "nanoseconds",
+        std::array::from_fn(|index| frames[index].subsequent_ns),
+    );
+    logger::console(format_args!(","));
+    timing_summary(
+        "dispatches",
+        "count",
+        std::array::from_fn(|index| frames[index].count),
+    );
+    logger::console(format_args!(","));
+    timing_summary(
+        "maximum_dispatch",
+        "nanoseconds",
+        std::array::from_fn(|index| frames[index].maximum_ns),
+    );
+    logger::console(format_args!(","));
+    timing_summary(
+        "approximate_serial_other",
+        "nanoseconds",
+        std::array::from_fn(|index| total[index].saturating_sub(frames[index].waited_ns())),
+    );
+    logger::console(format_args!(
+        "}},\"sample_columns\":[\"first_dispatch_ns\",\"subsequent_dispatches_ns\",\"dispatch_count\",\"maximum_dispatch_ns\",\"approximate_serial_other_ns\"],\"samples\":["
+    ));
+    for (index, frame) in frames.iter().enumerate() {
+        if index != 0 {
+            logger::console(format_args!(","));
+        }
+        logger::console(format_args!(
+            "[{},{},{},{},{}]",
+            frame.first_ns,
+            frame.subsequent_ns,
+            frame.count,
+            frame.maximum_ns,
+            total[index].saturating_sub(frame.waited_ns()),
+        ));
+    }
+    logger::console(format_args!("]}}\n"));
 }
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -389,7 +499,14 @@ fn run() -> Result<(), String> {
     let mut dispatch =
         CpuDispatch::load(config.bands).map_err(|e| format!("retail CPU workers: {e}"))?;
     report_cpu_config(config, dispatch.worker_count());
-    let initial = draw(&mut cpu, &mut dispatch, &packet, &assets);
+    let mut initial_stages = DispatchTimings::default();
+    let initial = draw(
+        &mut cpu,
+        &mut dispatch,
+        &packet,
+        &assets,
+        options.stage_timings.then_some(&mut initial_stages),
+    );
     let _ = dispatch.merge_counts(qa_platform::allocations::Counts::default());
     let initial = initial.map_err(|e| format!("initial retail CPU dispatch: {e}"))?;
     if initial.rejected != 0 || !window.present_pixels(WIDTH, HEIGHT, cpu.pixels()) {
@@ -404,6 +521,7 @@ fn run() -> Result<(), String> {
     pause(Duration::from_millis(options.hold_ms));
 
     let mut samples = [0u64; FRAMES];
+    let mut stage_samples = [DispatchTimings::default(); FRAMES];
     let mut allocations = 0u64;
     let mut reallocations = 0u64;
     let mut requested_bytes = 0u64;
@@ -413,8 +531,15 @@ fn run() -> Result<(), String> {
     let mut rejected = 0u64;
     let mut final_stats = initial;
     for _ in 0..WARMUP {
+        let mut stages = DispatchTimings::default();
         let timer = Stopwatch::start();
-        let result = draw(&mut cpu, &mut dispatch, &packet, &assets);
+        let result = draw(
+            &mut cpu,
+            &mut dispatch,
+            &packet,
+            &assets,
+            options.stage_timings.then_some(&mut stages),
+        );
         let _ = timer.elapsed();
         let _ = dispatch.merge_counts(qa_platform::allocations::Counts::default());
         final_stats = result.map_err(|e| format!("warmup retail CPU dispatch: {e}"))?;
@@ -425,10 +550,16 @@ fn run() -> Result<(), String> {
     // CPU preparation, all raster dispatches/barriers and the stopwatch are
     // inside this scope. Each sample merges caller and every worker's counts.
     // No scene construction, SDL presentation or I/O occurs inside it.
-    for sample in &mut samples {
+    for (sample, stages) in samples.iter_mut().zip(&mut stage_samples) {
         begin_frame();
         let timer = Stopwatch::start();
-        let result = draw(&mut cpu, &mut dispatch, &packet, &assets);
+        let result = draw(
+            &mut cpu,
+            &mut dispatch,
+            &packet,
+            &assets,
+            options.stage_timings.then_some(stages),
+        );
         *sample = timer.elapsed().as_nanos() as u64;
         let counts = dispatch.merge_counts(end_frame());
         final_stats = result.map_err(|e| format!("measured retail CPU dispatch: {e}"))?;
@@ -518,7 +649,8 @@ fn run() -> Result<(), String> {
     let mut sorted = samples;
     sorted.sort_unstable();
     logger::console(format_args!(
-        "{{\"event\":\"retail_draw_timings\",\"scope\":\"cpu_prepare_raster_dispatch_and_barriers\",\"bands\":{},\"workers\":{},\"warmup\":{WARMUP},\"frames\":{FRAMES},\"debug_build\":{},\"median_ns\":{},\"p99_ns\":{},\"samples_ns\":[",
+        "{{\"event\":\"retail_draw_timings\",\"scope\":\"cpu_prepare_raster_dispatch_and_barriers\",\"diagnostic_instrumentation\":{},\"bands\":{},\"workers\":{},\"warmup\":{WARMUP},\"frames\":{FRAMES},\"debug_build\":{},\"median_ns\":{},\"p99_ns\":{},\"samples_ns\":[",
+        options.stage_timings,
         config.bands.count(),
         dispatch.worker_count(),
         cfg!(debug_assertions),
@@ -532,6 +664,14 @@ fn run() -> Result<(), String> {
         logger::console(format_args!("{sample}"));
     }
     logger::console(format_args!("]}}\n"));
+    if options.stage_timings {
+        report_stage_timings(
+            &stage_samples,
+            &samples,
+            config.bands.count(),
+            dispatch.worker_count(),
+        );
+    }
     logger::console(format_args!(
         "{{\"event\":\"retail_draw_stats\",\"within_run_backend_stats_match\":{stable_stats},\"backend\":"
     ));
