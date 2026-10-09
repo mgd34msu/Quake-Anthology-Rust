@@ -44,6 +44,10 @@ fn run() -> Result<(), String> {
     let mut trace_rules = None;
     let mut client_module = None;
     let mut seat_policies = [None; SeatId::COUNT];
+    // The built-in walk-through host has no native module/sign-on yet. Its
+    // explicit transport default is independent of map and movement identity.
+    let mut local_protocol = qa_network::commands::packet::Protocol::QuakeWorld28;
+    let mut seat_protocols = [None; SeatId::COUNT];
     let mut seat_count = 1;
     let mut max_clients = 64usize;
     let mut console_source_explicit = false;
@@ -123,6 +127,31 @@ fn run() -> Result<(), String> {
                 )?;
                 if seat_policies[seat.index()].replace(policy).is_some() {
                     return Err("seat-policy was supplied more than once for a seat".into());
+                }
+                seat_count = seat_count.max(seat.index() + 1);
+            }
+            "--local-protocol" => {
+                local_protocol = qa_network::commands::packet::Protocol::parse(
+                    &args.next().ok_or("--local-protocol needs 15/28/34/68")?,
+                )
+                .ok_or("unsupported local protocol")?;
+            }
+            "--seat-protocol" => {
+                let value = args
+                    .next()
+                    .ok_or("--seat-protocol needs seat:15/28/34/68")?;
+                let (seat, protocol) = value
+                    .split_once(':')
+                    .ok_or("--seat-protocol needs seat:15/28/34/68")?;
+                let seat = seat
+                    .parse()
+                    .ok()
+                    .and_then(SeatId::new)
+                    .ok_or("invalid protocol seat")?;
+                let protocol = qa_network::commands::packet::Protocol::parse(protocol)
+                    .ok_or("unsupported local protocol")?;
+                if seat_protocols[seat.index()].replace(protocol).is_some() {
+                    return Err("duplicate seat-protocol".into());
                 }
                 seat_count = seat_count.max(seat.index() + 1);
             }
@@ -371,7 +400,13 @@ fn run() -> Result<(), String> {
             let rules = policy.movement;
             let traces = policy.trace;
             let spawn = loaded.spawns[index];
-            let client = runtime.connect_local(seat, spawn, policy)?;
+            let protocol = seat_protocols[index].unwrap_or(local_protocol);
+            let client = runtime.connect_local(seat, spawn, policy, protocol)?;
+            println!(
+                "{{\"event\":\"local_channel\",\"seat\":{index},\"client\":{},\"protocol\":{},\"native_signon\":false}}",
+                client.0,
+                protocol.number()
+            );
             let player = &runtime.server.clients[client.0 as usize].player;
             println!(
                 "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"seat\":{index},\"spawned_clients\":{seat_count},\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",

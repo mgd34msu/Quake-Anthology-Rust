@@ -21,7 +21,7 @@ superseded by that owner's explicit smoke-install authorization.
 | THE-617 | `core/src/names.rs:49` NameTable owns exact bytes and cached folded groups; `world/src/targets.rs:68` updates the index; `console/src/cvars.rs:129` and commands use that implementation; `render/src/assets.rs:317` interns paths and image/material keys retain NameIds | Earlier NameIndex/hash and duplicated renderer canonicalisation are deleted. No alternate name-index or renderer cache-key implementation found. Shader parsing/VFS native path grammar is load/boundary work, not a second name identity. Native target callbacks remain THE-3169. |
 | THE-625 | `world/src/collision/scene.rs:47` WorldTrace clips world plus linked bodies; `session/src/clients.rs:251`, `app/src/host.rs:452`, and `compat/src/services.rs:210` call it. CollisionStore alone owns loaded hull/brush models. | No current production caller skips linked collision by calling a kernel directly. Kernel examples intentionally compare their specified geometry-only scope. Native cgame/QuakeC collision adapters remain THE-3169. |
 | THE-650 | `world/src/area.rs:224` link distinguishes Explicit from Commit; `session/src/clients.rs:267` commits movement through it; `compat/src/services.rs:247` makes explicit links; shared attachment transport serves SERVER and prediction | No second current link/query/attachment implementation found. Link order and model bounds are entity-role data; module touch callbacks and native pickup scenes remain THE-3169. |
-| THE-656 | `session/src/clients.rs:36` Server owns the one load-sized client array, each row containing core PlayerState; app Runtime chooses capacity. Prediction copies hot fields into the same type, not an alternate native player store. | The implicit-64 app loader is deleted. No per-game player-state copy found. `app/src/host.rs:447` still directly submits built local commands pending THE-860 native framing; this deferred bypass is tracked on THE-3169. |
+| THE-656 | `session/src/clients.rs:36` Server owns the one load-sized client array, each row containing core PlayerState; app Runtime chooses capacity. Prediction copies hot fields into the same type, not an alternate native player store. | The implicit-64 app loader is deleted. No per-game player-state copy found. THE-860 now frames local commands in `app/src/lib.rs:207`, sends them through Channel and Loopback, and submits only the decoded Packet event in `app/src/host.rs:391`. Native module/provider phases remain THE-3169. |
 | THE-702 | `ui/src/hud.rs:46` projects PlayerState into core HudState; `app/src/host.rs:513` updates every connected row; `app/src/output.rs:103` feeds print events into the same HUD and leases | No per-game HUD-state copy found. Stock Q1 sbar, Q2 layouts and Q3 cgame consumers do not exist yet; these are explicitly deferred consumers under THE-3169, not proved drawing. |
 | THE-709 | `session/src/dispatch.rs:276` runs a spawn-bound numeric entry with native timing data; `:335` scans EntityTable's live bitset. Original-C probes and all current think callers use it. | Old Think aggregate is deleted; no alternate dispatcher found. Native physics-phase callers are absent: `app/src/main.rs:401` supplies no module providers. Integrating those callers remains THE-3169. |
 | THE-2884 | `core/src/primitives.rs:345` RuleSetId is the sole five-value rule identity; client_policy selects client, movement and trace independently; movement, console, damage and scheduling consume it | MovementRules, console Source and ThinkTiming identities are deleted. Renderer texture Source enums describe resources, not game identities. Native role composition remains THE-3169. |
@@ -38,7 +38,7 @@ is unchanged.
 | --- | --- | --- |
 | THE-859 | `core/src/sys_events.rs:119` owns SysEventQueue; platform/EventPump alone collects SDL/stdin/UDP and time; `app/src/host.rs:344` dispatches input, console lines and packets. SysEventQueue and Loopback share `core/src/payloads.rs:18` storage. | No current physical-input/clock/socket bypass found. `app/src/host.rs:524` is still a no-op character editing target; console front-end editing remains THE-927/THE-1135. Native/installed multiple-seat/device proof remains THE-3169. |
 | THE-884 | `app/src/host.rs:190` owns Com_Frame; physical polls are only at `:213` and `:285`, each followed by drain and command execution. `session/src/timing.rs:97` schedules world/provider clocks independently. Cap waits collect no input. | `app/src/main.rs:401` still loads no native providers. Native phase-order logs remain THE-3169. |
-| THE-885/THE-2869 | `core/src/loopback.rs:43` owns per-client/per-direction bounded byte FIFOs. `:116` transfers in endpoint/send order into SysEventQueue; `app/src/host.rs:401` consumes queued memory through ordinary Packet dispatch. Full never overwrites. | No old overwrite transport or host direct receive loop remains. `app/src/host.rs:447` is a direct local command submission pending original per-client protocol framing; native signon/channel adoption is retained on THE-3169/THE-860. |
+| THE-885/THE-2869 | `core/src/loopback.rs:43` owns per-client/per-direction bounded byte FIFOs. `:116` transfers in endpoint/send order into SysEventQueue; `app/src/host.rs:401` consumes queued memory through ordinary Packet dispatch. Full never overwrites. | No old overwrite transport or host direct receive loop remains. Local command submission now follows native move framing, Channel, Loopback and SysEventQueue; the direct CLIENT-to-SERVER caller is deleted. Native signon remains THE-3169/THE-860. |
 | THE-887 | `console/src/command_buffer.rs:13` is the single fixed command buffer; `console/src/commands.rs:222` borrows tokenizer argv; `:254` bare cvar write takes argv1. Platform ConsoleLine, binds and EngineServices append into that buffer. | No second current command buffer/tokenizer path found. Installed alias/wait/vstr/macro runs remain THE-3169. |
 | THE-888 | `input/src/lib.rs:528` dispatches queue events into per-seat bindings; `console/src/commands.rs:295` bind parsing and button commands use those same tables. Held-source reuse leaves original press time intact. | No alternate current bind/hold implementation found. Real-button installed gameplay remains THE-3169. |
 | THE-889 | `input/src/command.rs:9` owns UserCmdBuilder; `input/src/lib.rs:915` handles human intents, `session/src/clients.rs:210` builds bots in SERVER ticks. Rule data selects native scaling/narrowing; `network/src/commands.rs` owns protocol/ABI projection values. | No second current human/bot builder found. Guest ideal-pitch updates and original native channel delivery remain THE-3169. |
@@ -63,14 +63,20 @@ exclude native modules, foreign heaps, game audio and installed gameplay.
 The deferred native-path sites are concrete:
 
 * `app/src/main.rs:401` constructs the host with no native providers.
-* `app/src/host.rs:447` directly submits local usercmds until the original
-  per-client protocol/channel exists; no invented local wire format was added.
+* THE-860 removes the direct local usercmd submission.
+  `app/src/lib.rs:207` sends original NQ15/QW28/Q2 34/Q3 68 move packets;
+  `app/src/host.rs:391` submits only the decoded Packet event. The development
+  host explicitly defaults to QW28 independently of map/client/movement rules.
+  `--local-protocol` and `--seat-protocol` select native framing per connection.
+  This is a connected development host, not a native handshake or signon.
 * THE-860 replaces the counting-only PacketReceiver with load-sized endpoint
   bindings in `network/src/ingress.rs`. `app/src/host.rs:369` dispatches queued
   packets through the bound native Channel and `:381` retires actual channel
   receipts against the binding's original output-consumer generation.
-  Handshake, payload decoding, local command framing and automatic native
-  output transmission remain unfinished; a loaded router is not signon.
+  Move payload decoding and automatic local channel binding are now adopted.
+  Full native command strings/history and negotiated Q3 keys, NQ666/999,
+  rerelease transport, handshake and automatic native output transmission
+  remain unfinished. The native acceptance is retained on THE-860/THE-3169.
 * `app/src/output.rs:123` requests remote submission through FrameSource; the
   output encoding/submission remains THE-860/THE-3169. Native channel ACK
   receipts now enter through Packet dispatch, rather than that callback.

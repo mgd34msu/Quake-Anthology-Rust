@@ -211,6 +211,7 @@ impl FrameHost {
         // Owner ruling: both intake points physically poll SDL/stdin/UDP, and
         // neither the cap wait nor any other frame phase performs intake.
         source.poll_events(&mut self.queue);
+        self.runtime.network.frame_ns = now.since(self.previous.unwrap_or_default());
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
@@ -371,14 +372,35 @@ impl FrameHost {
                             from,
                             bytes,
                             event.time,
-                            |_, endpoint, incoming| {
-                                if endpoint == qa_core::loopback::Endpoint::Server
-                                    && let qa_network::ingress::Incoming::Acknowledged {
-                                        receipt,
-                                        output: Some(output),
-                                    } = incoming
-                                {
-                                    server.events.acknowledge(output, receipt);
+                            |client, endpoint, incoming| {
+                                if endpoint == qa_core::loopback::Endpoint::Server {
+                                    match incoming {
+                                        qa_network::ingress::Incoming::Command {
+                                            command,
+                                            output,
+                                        } => {
+                                            if output.is_none()
+                                                || server.clients[client.0 as usize].output
+                                                    != output
+                                            {
+                                                return;
+                                            }
+                                            let rules = server.clients[client.0 as usize]
+                                                .player
+                                                .movement_rules;
+                                            server.submit_command(
+                                                client,
+                                                qa_movement::prepare_command(rules, command),
+                                            )
+                                        }
+                                        qa_network::ingress::Incoming::Acknowledged {
+                                            receipt,
+                                            output: Some(output),
+                                        } => {
+                                            server.events.acknowledge(output, receipt);
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             },
                         );
@@ -458,7 +480,8 @@ impl FrameHost {
         }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {
-                self.runtime.server.submit_command(*id, commands[seat]);
+                self.runtime
+                    .send_local_command(*id, &commands[seat], self.time);
                 if let Some(world) = &mut self.runtime.collision {
                     let prediction = &mut self.runtime.prediction[seat];
                     prediction.apply_snapshot(&self.runtime.server.clients[id.0 as usize].player);

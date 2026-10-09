@@ -218,7 +218,12 @@ fn the_first_local_link_uses_client_order_and_snapshot_keeps_role_ids() -> Resul
     let mut entities = Vec::new();
     for (seat, (client, movement, trace, order)) in SeatId::ALL.into_iter().zip(choices) {
         let policy = ClientPolicy::select(Some(client), None, Some(movement), Some(trace))?;
-        let id = runtime.connect_local(seat, spawn, policy)?;
+        let id = runtime.connect_local(
+            seat,
+            spawn,
+            policy,
+            qa_network::commands::packet::Protocol::QuakeWorld28,
+        )?;
         let connected = &runtime.server.clients[id.0 as usize];
         assert_eq!(connected.client_rules, client);
         assert_eq!(connected.player.movement_rules, movement);

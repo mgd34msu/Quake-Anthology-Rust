@@ -62,6 +62,7 @@ fn main() -> Result<(), String> {
                         channel: Channel::load(policy, endpoint, 8192, 16)
                             .map_err(|e| e.to_string())?,
                         output: (endpoint == Endpoint::Server).then_some(output),
+                        commands: None,
                     },
                 )
                 .map_err(|e| format!("bind {e:?}"))?;

@@ -36,6 +36,7 @@ fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
                 },
                 channel,
                 output: None,
+                commands: None,
             },
         )
         .map_err(|e| format!("bind {e:?}"))?;
@@ -87,6 +88,7 @@ fn connection(socket: u16, peer: Peer, endpoint: Endpoint) -> Result<Connection,
         channel: Channel::load(channel::QUAKEWORLD, endpoint, 1450, 16)
             .map_err(|e| e.to_string())?,
         output: None,
+        commands: None,
     })
 }
 #[test]

@@ -1,5 +1,6 @@
 //! Connected packet routing. Physical intake remains the platform event source.
 use crate::channel::{Channel, Delivery};
+use crate::commands::connection::Commands;
 pub use qa_core::sys_events::Peer;
 use qa_core::{
     events::{NativeReceipt, OutputConsumerId},
@@ -18,6 +19,7 @@ pub struct Connection {
     pub channel: Channel,
     /// Old ACKs retain this consumer generation across client-slot reuse.
     pub output: Option<OutputConsumerId>,
+    pub commands: Option<Commands>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {
@@ -28,6 +30,10 @@ pub enum BindError {
 /// Borrowed delivery callbacks never retain a packet or create another queue.
 pub enum Incoming<'a> {
     Payload(&'a [u8]),
+    Command {
+        command: qa_core::primitives::UserCmd,
+        output: Option<OutputConsumerId>,
+    },
     Acknowledged {
         receipt: NativeReceipt,
         output: Option<OutputConsumerId>,
@@ -45,6 +51,10 @@ pub struct Connections {
     pub malformed: u64,
     pub delivered: u64,
     pub acknowledged: u64,
+    pub commands: u64,
+    pub command_errors: u64,
+    pub command_duplicates: u64,
+    pub frame_ns: u64,
 }
 fn index(endpoint: Endpoint) -> usize {
     match endpoint {
@@ -65,6 +75,10 @@ impl Connections {
             malformed: 0,
             delivered: 0,
             acknowledged: 0,
+            commands: 0,
+            command_errors: 0,
+            command_duplicates: 0,
+            frame_ns: 0,
         }
     }
     /// Handshake/load supplies the endpoint and negotiated Channel explicitly.
@@ -78,6 +92,13 @@ impl Connections {
         let slot = client.0 as usize;
         let current = self.clients.get(slot).ok_or(BindError::Client)?;
         if connection.channel.endpoint() != endpoint {
+            return Err(BindError::Route);
+        }
+        if connection
+            .commands
+            .as_ref()
+            .is_some_and(|c| c.protocol.channel() != connection.channel.policy())
+        {
             return Err(BindError::Route);
         }
         if current[index(endpoint)].is_some() {
@@ -160,7 +181,32 @@ impl Connections {
             Ok(received) => {
                 if let Delivery::Payload(payload) = received.delivery {
                     self.delivered += 1;
-                    consume(client, endpoint, Incoming::Payload(payload));
+                    if endpoint == Endpoint::Server
+                        && let Some(commands) = &mut connection.commands
+                    {
+                        match commands.decode(
+                            payload,
+                            received.header.sequence,
+                            time.milliseconds() as i32,
+                            self.frame_ns,
+                        ) {
+                            Ok(Some(command)) => {
+                                self.commands += 1;
+                                consume(
+                                    client,
+                                    endpoint,
+                                    Incoming::Command {
+                                        command,
+                                        output: connection.output,
+                                    },
+                                );
+                            }
+                            Ok(None) => self.command_duplicates += 1,
+                            Err(_) => self.command_errors += 1,
+                        }
+                    } else {
+                        consume(client, endpoint, Incoming::Payload(payload));
+                    }
                 }
             }
             Err(_) => self.malformed += 1,

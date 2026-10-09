@@ -136,6 +136,7 @@ impl Runtime {
         seat: qa_core::sys_events::SeatId,
         spawn: map::SpawnAnchor,
         policy: client_policy::ClientPolicy,
+        protocol: qa_network::commands::packet::Protocol,
     ) -> Result<ClientId, String> {
         let id = self
             .server
@@ -146,6 +147,36 @@ impl Runtime {
                 None,
             )
             .ok_or("no local client slot")?;
+        self.network.unbind(id);
+        self.loopback.clear_client(id);
+        for endpoint in [
+            qa_core::loopback::Endpoint::Client,
+            qa_core::loopback::Endpoint::Server,
+        ] {
+            self.network
+                .bind(
+                    id,
+                    endpoint,
+                    qa_network::ingress::Connection {
+                        route: qa_network::ingress::Route {
+                            socket: endpoint.socket(),
+                            peer: qa_core::sys_events::Peer::Loopback(id),
+                        },
+                        channel: qa_network::channel::Channel::load(
+                            protocol.channel(),
+                            endpoint,
+                            8192,
+                            16,
+                        )
+                        .map_err(|e| e.to_string())?,
+                        output: (endpoint == qa_core::loopback::Endpoint::Server)
+                            .then_some(self.server.clients[id.0 as usize].output)
+                            .flatten(),
+                        commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    },
+                )
+                .map_err(|e| format!("local channel {e:?}"))?;
+        }
         let client = &mut self.server.clients[id.0 as usize];
         client.client_rules = policy.client;
         client.link_order = policy.link_order();
@@ -170,6 +201,57 @@ impl Runtime {
         self.prediction[seat.index()].apply_snapshot(&client.player);
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)
+    }
+
+    /// Commands are submitted only after native framing and queued ingress.
+    pub fn send_local_command(
+        &mut self,
+        id: ClientId,
+        command: &qa_core::primitives::UserCmd,
+        time: qa_core::sys_events::EventTime,
+    ) -> bool {
+        let Some(connection) = self
+            .network
+            .get_mut(id, qa_core::loopback::Endpoint::Client)
+        else {
+            return false;
+        };
+        let Some(commands) = &connection.commands else {
+            return false;
+        };
+        let mut bytes = [0; 1400];
+        let sequence = connection.channel.send_state().sequence;
+        let Ok(length) = commands.encode(command, sequence, &mut bytes) else {
+            return false;
+        };
+        // At most the load-sized control ring followed by this current move.
+        // A rejected transport keeps the exact prepared packet for retry.
+        for _ in 0..17 {
+            let packet = if let Some(packet) = connection.channel.pending_packet() {
+                packet
+            } else {
+                let Ok(Some(packet)) = connection.channel.prepare(Some(&bytes[..length]), time)
+                else {
+                    return false;
+                };
+                packet
+            };
+            let disposition = packet.unreliable;
+            if self
+                .loopback
+                .send(qa_core::loopback::Endpoint::Client, id, packet.bytes)
+                .is_err()
+            {
+                return false;
+            }
+            if connection.channel.submitted(time).is_err() {
+                return false;
+            }
+            if disposition != qa_network::channel::Unreliable::Deferred {
+                return true;
+            }
+        }
+        false
     }
 
     /// Shared print service for console and gameplay/module callers.

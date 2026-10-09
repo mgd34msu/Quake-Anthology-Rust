@@ -70,6 +70,7 @@ fn host(policy: Policy) -> Result<(FrameHost, [ClientId; 2]), String> {
                         output: (endpoint == Endpoint::Server)
                             .then_some(runtime.server.clients[id.0 as usize].output)
                             .flatten(),
+                        commands: None,
                     },
                 )
                 .map_err(|e| format!("bind {e:?}"))?;
@@ -145,6 +146,137 @@ fn acks(host: &FrameHost, client: ClientId) -> Result<u64, String> {
         .counters(output)
         .ok_or("counters")?
         .acknowledged_records)
+}
+
+fn local_host(
+    protocol: qa_network::commands::packet::Protocol,
+) -> Result<(FrameHost, ClientId), String> {
+    let mut runtime = Runtime::load(1, [])?;
+    let policy = qa_app::client_policy::ClientPolicy::select(
+        Some(qa_core::primitives::RuleSetId::QuakeWorld),
+        None,
+        None,
+        None,
+    )?;
+    let client = runtime.connect_local(
+        qa_core::sys_events::SeatId::FIRST,
+        qa_app::map::SpawnAnchor {
+            position: Default::default(),
+            angles: Default::default(),
+            entity: 0,
+            fixture_fallback: false,
+        },
+        policy,
+        protocol,
+    )?;
+    Ok((
+        FrameHost::load(
+            Console::new(Context::default()).map_err(|e| e.to_string())?,
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )?,
+        client,
+    ))
+}
+
+#[test]
+fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), String> {
+    use qa_network::commands::packet::Protocol;
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = local_host(protocol)?;
+        let command = qa_core::primitives::UserCmd {
+            duration_ms: 16,
+            server_time_ms: 16,
+            view_angles: qa_core::primitives::Vec3([2.9, 0., 0.]),
+            movement: [123., -127., 0.],
+            ..Default::default()
+        };
+        assert!(
+            host.runtime
+                .send_local_command(client, &command, EventTime(0))
+        );
+        assert_eq!(host.runtime.server.clients[0].command.server_time_ms, 0);
+        assert_eq!(host.runtime.network.commands, 0);
+        let mut clock = Clock::default();
+        let result = host.frame(&mut clock, true);
+        assert_eq!((result.drains, clock.polls), (2, 2));
+        assert_eq!(
+            (
+                host.runtime.network.commands,
+                host.runtime.network.command_errors
+            ),
+            (1, 0)
+        );
+        let decoded = host.runtime.server.clients[0].command;
+        assert_eq!(decoded.movement, [123., -127., 0.]);
+        assert_eq!(
+            decoded.duration_ms,
+            if protocol == Protocol::NetQuake15 {
+                10
+            } else {
+                16
+            }
+        );
+        if protocol == Protocol::NetQuake15 {
+            assert_eq!(decoded.duration_ns, 10_000_000);
+            assert_eq!(decoded.view_angles.0[0], 1.40625);
+        }
+        assert!(host.queue.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn old_connection_commands_cannot_mutate_a_reused_client_lifetime() -> Result<(), String> {
+    let (mut host, client) = local_host(qa_network::commands::packet::Protocol::QuakeWorld28)?;
+    let command = qa_core::primitives::UserCmd {
+        duration_ms: 16,
+        movement: [400.; 3],
+        ..Default::default()
+    };
+    assert!(
+        host.runtime
+            .send_local_command(client, &command, EventTime(0))
+    );
+    assert!(host.runtime.server.disconnect(client));
+    assert_eq!(
+        host.runtime
+            .server
+            .connect(Connection::Local, ModuleId(0), PlayerTail::None, None),
+        Some(client)
+    );
+    host.frame(&mut Clock::default(), true);
+    assert_eq!(host.runtime.server.clients[0].command.movement, [0.; 3]);
+    Ok(())
+}
+
+#[test]
+fn q3_duplicate_usercmd_time_does_not_submit_a_second_command() -> Result<(), String> {
+    let (mut host, client) = local_host(qa_network::commands::packet::Protocol::Quake3_68)?;
+    let command = qa_core::primitives::UserCmd {
+        duration_ms: 16,
+        server_time_ms: 16,
+        movement: [127., 0., 0.],
+        ..Default::default()
+    };
+    let mut clock = Clock::default();
+    for _ in 0..2 {
+        assert!(
+            host.runtime
+                .send_local_command(client, &command, EventTime(0))
+        );
+        host.frame(&mut clock, true);
+    }
+    assert_eq!(host.runtime.network.commands, 1);
+    assert_eq!(host.runtime.network.command_duplicates, 1);
+    assert_eq!(host.runtime.network.command_errors, 0);
+    Ok(())
 }
 
 #[test]

@@ -10,7 +10,7 @@ use qa_core::{
 mod transmit;
 pub use transmit::{Prepared, SendState, TransmitError, Unreliable};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     format: Format,
     datagram: bool,
@@ -130,6 +130,9 @@ pub struct Channel {
 }
 
 impl Channel {
+    pub(crate) fn policy(&self) -> Policy {
+        self.policy
+    }
     /// The negotiated module/protocol boundary supplies its maximum message.
     /// Native QW receive limits may exceed our future 1400-byte transmit limit.
     pub fn load(

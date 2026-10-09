@@ -1,7 +1,9 @@
 //! Protocol/ABI projections. Movement values retain the decoded command units;
 //! The shared input builder owns speed scaling. Packet compression enters in R11.
 use qa_core::primitives::{UserCmd, Vec3, WeaponId, buttons as b};
+pub mod connection;
 pub mod delta;
+pub mod packet;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Q1Move {

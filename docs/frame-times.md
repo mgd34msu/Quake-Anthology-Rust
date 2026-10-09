@@ -3267,3 +3267,57 @@ the extracted C, fixture, native/Rust output and comparison.json; `build.json`,
 full native command packets, host local framing, Q3 XOR/command reliability,
 entity/player snapshot tables and installed interoperability remain required.
 The accepted installation is unchanged.
+
+### THE-860: native move packets in the ordinary host
+
+Local CLIENT commands now pass through the native payload encoder, Channel,
+Loopback and SysEventQueue. Only SERVER Packet dispatch submits a decoded
+command; the direct CLIENT-to-SERVER submit caller is deleted. Bindings retain
+the original output-consumer generation, so an old connection cannot mutate
+a reused client slot. NQ duration comes from the SERVER frame rather than its
+ping timestamp; QW/Q2 advance command time by their native byte duration.
+Q3 ignores commands at or before its last accepted time.
+
+The release packet comparator matched all 2,048 seeded cases in both encoded
+wire bytes and 33 decoded native field words. It compiles unchanged NQ
+CL_SendMove, original QW/Q2/Q3 construction blocks, native CRC/delta readers,
+Com_HashKey, CL_Netchan_Encode and Q3 MSG/Huff. Cold bindings supply native
+struct/global fields and primitive byte IO. Cases include signed movements,
+float angles, sequence CRCs, three-command deltas, full-width checksum/challenge
+keys, percent/high-byte XOR substitutions and varied native command strings.
+`tools/check_command_packets.py` and the platform `command_packets` example
+repeat this comparison without ever sending fixture input to a game.
+
+The `command_host` release probe uses the ordinary FrameHost with four
+independently selected local protocols 15/28/34/68 and movement roles. Four
+controller event sources feed the one input builder. On CPU23, after 60 warm-up
+frames and over 600 measured frames, it measured **3,950 ns median / 4,030 ns
+p99**. The calling-thread allocation counter recorded zero allocations,
+reallocations and requested bytes; its one-allocation positive control passed.
+No worker dispatch or SDL/driver allocation is measured by this headless case.
+Inclusive warm-up counts are 2,636 native packets, 2,635 submitted commands,
+1,320 physical intake calls, 660 presents and one skipped initial Q3 command
+at time zero. The measured region advanced 600 SERVER ticks. This is a new
+framed workload, not a claimed speedup over the former direct-submit path.
+
+The exact final release examples build took **19.247841 seconds**, portable
+baseline CPU, empty RUSTFLAGS, fat LTO and allocation-tracking enabled; proof
+was disabled. The unchanged checker, warning-denied Clippy and all 643
+workspace/all-target tests passed.
+
+The development host explicitly defaults to QW28, independent of map and rule
+roles, with `--local-protocol 15/28/34/68` and per-client
+`--seat-protocol seat:15/28/34/68` overrides. QW/Q2 native packet APIs accept
+three caller-supplied commands; this host has no input history and sends two
+zero older commands plus the current one. Its Q3 bootstrap uses an explicit
+zero handshake/command context and native weapon NONE. Native Q3 command
+history, negotiated keys and reliable command acknowledgements, NQ666/999,
+rerelease transport, entity/player deltas, native providers, snapshots and live
+interoperability remain required. The FrameSource remote output adapter is the
+next adoption target. No map, gameplay, installation or network acceptance is
+claimed here; qfiles/qa-rust remains unchanged.
+
+Evidence directory `THE-860-command-packets-20261009`: `final-original/`
+contains original C, fixture, original/Rust outputs and comparison JSON;
+`final-build.json`, `final-timing.json`, `checker.log`, `workspace.log`,
+`clippy.log` and `source.patch` retain the bounded build/check receipts.
