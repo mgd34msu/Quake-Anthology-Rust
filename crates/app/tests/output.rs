@@ -270,6 +270,7 @@ struct PeerSource {
     source: Source,
     healthy: u64,
     reliable: u64,
+    unsent: bool,
 }
 impl FrameSource for PeerSource {
     fn begin_frame(&mut self) -> EventTime {
@@ -295,15 +296,18 @@ impl FrameSource for PeerSource {
         assert!(text.is_some());
         if client == ClientId(0) {
             self.reliable += 1;
-            qa_core::events::OutputSubmission::Reliable(qa_core::events::NativeReceipt(7))
+            if self.unsent {
+                qa_core::events::OutputSubmission::Unsent
+            } else {
+                qa_core::events::OutputSubmission::Reliable(qa_core::events::NativeReceipt(7))
+            }
         } else {
             self.healthy += 1;
             qa_core::events::OutputSubmission::BestEffort
         }
     }
 }
-#[test]
-fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks() {
+fn stalled_peer_progress(unsent: bool) {
     use qa_core::events::{EventRing, NativeReceipt, OutputTarget};
     let mut runtime = Runtime::load(std::iter::empty()).unwrap();
     runtime.server.events = EventRing::load(32, 8, 64, 256).unwrap();
@@ -347,17 +351,32 @@ fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks
         source: Source::default(),
         healthy: 0,
         reliable: 0,
+        unsent,
     };
     let mut ticks = 0;
     for frame in 0..=400 {
         source.source.time = frame * 25;
-        ticks += host.frame(&mut source, true).server_ticks;
+        let before = source.healthy;
+        let result = host.frame(&mut source, true);
+        ticks += result.server_ticks;
+        assert_eq!(host.runtime.server.world_frame, frame);
+        assert_eq!(
+            source.healthy - before,
+            result.server_ticks.saturating_sub(1)
+        );
+        if frame > 0 {
+            assert!(source.healthy > before);
+        }
     }
     // Native 10/20/40-Hz modules and 40-Hz world progress without an ACK.
     assert_eq!(ticks, 1100);
     assert_eq!(host.runtime.server.world_frame, 400);
     assert_eq!(source.healthy, 700);
-    assert_eq!(source.reliable, 32);
+    if unsent {
+        assert!(source.reliable > 0);
+    } else {
+        assert_eq!(source.reliable, 32);
+    }
     let counters = host.runtime.server.events.counters(stalled_cursor).unwrap();
     assert_eq!(
         (
@@ -403,4 +422,14 @@ fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks
     assert!(host.runtime.server.disconnect(local)); // Explicitly retires display leases.
     assert!(host.runtime.server.disconnect(stalled));
     assert!(host.runtime.server.disconnect(healthy));
+}
+
+#[test]
+fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks() {
+    stalled_peer_progress(false);
+}
+
+#[test]
+fn unsent_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks() {
+    stalled_peer_progress(true);
 }

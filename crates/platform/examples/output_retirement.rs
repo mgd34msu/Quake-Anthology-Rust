@@ -22,6 +22,7 @@ struct Source {
     stalled: u64,
     sounds: u64,
     stale: u64,
+    unsent: bool,
 }
 impl FrameSource for Source {
     fn begin_frame(&mut self) -> EventTime {
@@ -55,7 +56,11 @@ impl FrameSource for Source {
         }
         if client == ClientId(0) {
             self.stalled += 1;
-            OutputSubmission::Reliable(NativeReceipt(7))
+            if self.unsent {
+                OutputSubmission::Unsent
+            } else {
+                OutputSubmission::Reliable(NativeReceipt(7))
+            }
         } else {
             self.healthy += 1;
             OutputSubmission::BestEffort
@@ -88,7 +93,7 @@ fn consume(runtime: &mut Runtime, tick: Tick, record: OutputRecord) -> OutputSub
     player.health += 1;
     OutputSubmission::BestEffort
 }
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = Runtime::load(std::iter::empty())?;
     runtime.server.events = EventRing::load(32, 8, 64, 256).map_err(|_| "events")?;
     runtime.server.presentation = runtime
@@ -126,6 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stalled: 0,
         sounds: 0,
         stale: 0,
+        unsent,
     };
     // Positive control and all load-time allocation are outside measured frames.
     begin_frame();
@@ -138,8 +144,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = 0;
     let mut ticks = 0;
     let mut leased_id = None;
+    let mut resync_frame = None;
+    let mut continuing_frames = 0;
     for frame in 0..660 {
         source.frame = frame;
+        let healthy_before = source.healthy;
+        let sounds_before = source.sounds;
         begin_frame();
         let timer = Stopwatch::start();
         let result = host.frame(&mut source, true);
@@ -147,6 +157,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let counts = end_frame();
         if result.drains != 2 || result.output_drains != 1 {
             return Err("host drain phases".into());
+        }
+        // Check each complete SERVER -> CLIENT cycle, including the precise
+        // overflow frame. Aggregate totals alone could hide a publication wait.
+        if frame > 0 {
+            let produced = 2 * (result.server_ticks - 1);
+            if host.runtime.server.world_frame != frame
+                || source.healthy - healthy_before != produced
+                || source.sounds - sounds_before != produced / 2
+                || produced < 2
+            {
+                return Err(format!("peer stalled host progress at frame {frame}").into());
+            }
+            if frame >= 60 {
+                continuing_frames += 1;
+            }
+        }
+        if host.runtime.server.events.needs_resync(stalled) {
+            resync_frame.get_or_insert(frame);
         }
         let line = host.runtime.server.clients[2].hud.centerprint.as_ref();
         if let Some(line) = line {
@@ -184,7 +212,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let modules: [i32; 3] =
         std::array::from_fn(|slot| host.runtime.server.clients[11 + slot].player.health);
     if source.healthy != 2304
-        || source.stalled != 30
+        || (!unsent && source.stalled != 30)
+        || source.stalled == 0
         || source.sounds != 1152
         || source.stale != 0
         || counters.acknowledgements != 0
@@ -197,6 +226,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || bytes != 0
         || host.runtime.server.world_frame != 659
         || modules != [2292, 2300, 2304]
+        || continuing_frames != 600
+        || resync_frame.is_none_or(|frame| frame >= 60)
         || host.runtime.server.clients[11..14]
             .iter()
             .any(|c| c.player.armor != 0)
@@ -222,11 +253,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         leased_id.is_some_and(|id| host.runtime.server.events.texts.get(id).is_some());
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"headless Com_Frame output retirement; modeled receipts, no native channel or gameplay\",\"warmup\":60,\"frames\":600,\"server_ticks\":{ticks},\"world_frame\":659,\"module_hz\":[10,20,40],\"module_deliveries\":{modules:?},\"healthy_deliveries\":{},\"stalled_submissions\":{},\"stalled_acks\":0,\"retired_on_resync\":32,\"skipped_during_resync\":2272,\"stalled_overflow\":1,\"stalled_resyncs\":1,\"healthy_overflow\":0,\"stale_texts\":0,\"payload_retained_for_slower_module_after_hud_disconnect\":{display_after_disconnect},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame output retirement; modeled receipts, no native channel or gameplay\",\"stalled_delivery\":\"{}\",\"warmup\":60,\"frames\":600,\"continuous_healthy_and_server_frames\":{continuing_frames},\"resync_frame\":{},\"server_ticks\":{ticks},\"world_frame\":659,\"module_hz\":[10,20,40],\"module_deliveries\":{modules:?},\"healthy_deliveries\":{},\"stalled_attempts\":{},\"stalled_acks\":0,\"retired_on_resync\":32,\"skipped_during_resync\":2272,\"stalled_overflow\":1,\"stalled_resyncs\":1,\"healthy_overflow\":0,\"stale_texts\":0,\"payload_retained_for_slower_module_after_hud_disconnect\":{display_after_disconnect},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        if unsent {
+            "unsent"
+        } else {
+            "reliable_without_ack"
+        },
+        resync_frame.ok_or("missing resync")?,
         source.healthy,
         source.stalled,
         (samples[299] + samples[300]) as f64 * 0.5,
         samples[593]
     );
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    for unsent in [false, true] {
+        run(unsent)?;
+    }
     Ok(())
 }

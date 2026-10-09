@@ -64,9 +64,12 @@ taskset -c "$CORE" target/release/examples/output_retirement
 ```
 
 The host fixture runs a 40-Hz world and 10/20/40-Hz module consumers with a
-stalled reliable peer, a healthy best-effort peer and one leased local HUD.
-It verifies healthy delivery and server ticks continue after bounded overflow,
-with no ACK from the stalled peer. Sixty warm-up frames precede 600 pinned
+stalled peer, a healthy best-effort peer and one leased local HUD. It checks
+both reliable delivery without an ACK and an unavailable channel returning
+Unsent. Every SERVER-to-CLIENT cycle must deliver exactly the produced records
+to the healthy peer and advance the world, including the overflow frame.
+Each case retains the same module deliveries and HUD payloads. Sixty warm-up
+frames precede 600 pinned
 measured frames and an allocation positive control. This is headless delivery
 and Rust heap evidence, excluding game audio, native wire ACKs, guest modules,
 SDL/driver heap and installed gameplay. Full acceptance stays open on

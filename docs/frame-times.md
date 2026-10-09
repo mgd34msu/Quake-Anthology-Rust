@@ -2078,3 +2078,18 @@ these are software GL checks. Evidence: THE-617-consumers normal-tracked-* run
 receipts/screenshots, normal-tracked-qualification.json and normal-cleanup.json.
 Every run still reports gameplay_reached=false. No install, native driver heap
 measurement, audio acceptance or comparable gameplay/renderer timing is claimed.
+
+THE-697/890 continuous host check (2026-10-09): the release `output_retirement`
+example now asserts healthy delivery and 40-Hz world progress on every frame,
+not only final totals. CPU 23, 60 warm-up and 600 measured frames per case:
+reliable-without-ACK median 2,265 ns / p99 2,810 ns; Unsent median 2,170 ns /
+p99 2,810 ns. Both cases enter bounded stalled-consumer resync on frame 10,
+continue through all 600 measured frames with 1,650 SERVER/provider ticks,
+deliver 2,304 records to the healthy consumer, preserve the module counts
+[2,292, 2,300, 2,304] and record zero Rust allocations or requested bytes.
+Each stalled consumer has one overflow/resync, zero ACKs, 32 cancelled records
+and 2,272 subsequently skipped records; the healthy consumer has zero overflow.
+Evidence: `THE-697-retirement/continuous-host/pinned.jsonl`, checker and workspace
+logs under the private evidence root. This is the complete headless host output
+path with modeled native delivery results, not a live native channel, gameplay
+qualification, an installation or game-audio evidence. No production path changed.
