@@ -924,6 +924,15 @@ impl WorldPrepare {
                     Some(base.image)
                 }
             };
+            // An eye-plane wall has no coverage. Projected f32 rounding can
+            // produce a tiny area, but native gradients have no finite depth.
+            if native.is_some()
+                && surface
+                    .plane
+                    .is_some_and(|plane| plane.distance == plane.normal.dot(camera.refdef.origin))
+            {
+                continue;
+            }
             let overlay = material.stages[0].blend.is_some()
                 || material.stages[0].alpha_test != AlphaFunc::None
                 || !material.stages[0].depth_write

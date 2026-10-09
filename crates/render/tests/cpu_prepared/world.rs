@@ -1358,6 +1358,118 @@ fn indexed_palette(assets: &mut Assets) -> crate::assets::PaletteId {
 }
 
 #[test]
+fn indexed_wall_on_eye_plane_skips_without_rejecting_nearby_drawable_wall() {
+    use crate::surface_cache::{IndexedLighting, IndexedTexture};
+    let mut assets = Assets::load().unwrap();
+    let palette = indexed_palette(&mut assets);
+    let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| vec![17; (16 >> mip) * (16 >> mip)]);
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load(
+                16,
+                16,
+                std::array::from_fn(|mip| mips[mip].as_slice()),
+                false,
+            )
+            .unwrap(),
+            palette,
+        )
+        .unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            ..Stage::default()
+        }],
+        MaterialSettings::default(),
+    );
+    // Retail base1 face 2154 is a drawable wall; its eye-plane projection
+    // acquires a tiny signed area from the 135-degree camera's f32 rounding.
+    let wall = fixture_world(
+        &mut assets,
+        2.0,
+        0.5,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        Some(137),
+        GeometryPartition::SplitBsp,
+        |geometry| {
+            let points = [
+                [128.0, 128.0, 16.0],
+                [128.0, 152.0, 16.0],
+                [128.0, 152.0, 64.0],
+                [128.0, 152.0, 112.0],
+                [128.0, 128.0, 112.0],
+            ];
+            let normal = Vec3([-1.0, 0.0, 0.0]);
+            geometry.vertices = points
+                .into_iter()
+                .map(|position| WorldVertex {
+                    vertex: Vertex {
+                        position: Vec3(position),
+                        ..Vertex::default()
+                    },
+                    normal,
+                })
+                .collect();
+            geometry.indices = vec![0, 1, 2, 0, 2, 4, 0, 1, 2, 3, 4];
+            geometry.boundaries[0].count = 5;
+            let surface = &mut geometry.surfaces[0];
+            surface.vertices.count = 5;
+            surface.plane = Some(Plane {
+                normal,
+                distance: -128.0,
+                axis: None,
+            });
+            surface.bounds = Bounds {
+                mins: Vec3([128.0, 128.0, 16.0]),
+                maxs: Vec3([128.0, 152.0, 112.0]),
+            };
+            surface.texture_projection = [[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0]];
+            surface.texture_minima = [128, -112];
+            surface.texture_extents = [32, 96];
+            surface.lightmap_grid = [3, 7];
+            surface.light_samples.count = 21;
+            geometry.light_samples = vec![[137; 3]; 21];
+        },
+    );
+    let basis = qa_core::math::angle_vectors(Vec3([0.0, 135.0, 0.0]));
+    let view = Refdef {
+        viewport: Viewport {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 400,
+        },
+        origin: Vec3([128.0, -320.0, 63.0]),
+        axes: [basis.forward, -basis.right, basis.up],
+        fov: [120.0, 94.538_95],
+        cpu_presentation: CpuPresentation::Indexed {
+            palette,
+            lighting: IndexedLighting::BrightestRgb,
+            ambient: 0,
+            fullbright: false,
+        },
+        ..Refdef::default()
+    };
+    let mut cpu = CpuBackend::load_with_assets(640, 400, &assets).unwrap();
+    let edge_on = cpu.render(&packet(&assets, &[wall], view), &assets);
+    assert_eq!(edge_on.rejected, 0);
+    assert_eq!(edge_on.surfaces, 0);
+    assert_eq!(cpu.world_stats().indexed_pixels, 0);
+    let nearby = Refdef {
+        origin: Vec3([64.0, -320.0, 63.0]),
+        ..view
+    };
+    let drawn = cpu.render(&packet(&assets, &[wall], nearby), &assets);
+    assert_eq!(drawn.rejected, 0);
+    assert_eq!(drawn.surfaces, 1);
+    assert!(cpu.world_stats().indexed_pixels > 0);
+}
+
+#[test]
 fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
     use crate::surface_cache::{IndexedLighting, IndexedTexture};
     let mut assets = Assets::load().unwrap();

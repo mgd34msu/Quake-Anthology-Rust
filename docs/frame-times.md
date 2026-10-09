@@ -2749,3 +2749,36 @@ and `clock-fixture.json`. Native signon, exact legacy channel framing, real ACKs
 stock HUD/audio/effects and installed walks are consolidated in THE-3169 under
 THE-863. The explicit character editing and direct local command submission
 sites are listed in [core-adoption.md](core-adoption.md).
+
+
+## THE-916: exact eye-plane wall at the base1 spawn camera
+
+The retail CPU benchmark's unchanged startup reject gate failed on the existing
+base1 renderer at `d7720be1`. A cold, single-surface draw attributes the rejection
+to face 2154, `e1u1/ggrat4_4`, whose x=128 plane contains the native spawn camera.
+It has five non-collinear vertices, flags zero, texture extents 32x96 and valid
+style-zero lighting. This is drawable geometry, not an empty-face exemption.
+At the copied owner's 120-degree FOV, projected f32 rounding produces a tiny
+area; native gradient construction then divides by zero. The indexed path now
+skips an exact eye-plane wall before projection. Other invalid gradients and
+unsupported materials still count as rejections.
+
+The retail-coordinate regression reproduces one rejection before the change,
+then verifies no rejection or pixel writes at the eye plane and successful
+indexed writes from an offset camera. Q2 `ref_soft/r_bsp.c:573-600` admits world
+plane faces only outside `BACKFACE_EPSILON`, so its exact zero-distance case
+also contributes no coverage. This narrow correction does not claim complete
+native culling or presentation parity.
+
+Evidence directory: `THE-2866-cache-20261009`. The original failure and its
+single-face attribution are in `before-1-base1/` and
+`diagnose-final-base1/runtime.log`. `fixed-baseline-source.json` records the
+`d7720be1` source extraction with only this correction and its regression test;
+`fixed-baseline-build.json` records passing workspace tests and a portable
+release build (34.237 s). Its private 640x400 spawn-camera draws pass all three
+maps at one and eight bands, after 60 warm-up and 600 measured frames per leg,
+with zero measured caller/worker Rust heap activity and normal exit. Profiles
+and copied candidates remain unchanged; no owned PIDs remain. These developer
+CPU draws do not qualify an install, gameplay, stock HUD, GL or native visual
+parity. The source snapshot and receipts preserve the comparison boundary for
+the separate caching work.
