@@ -1,5 +1,18 @@
 //! Ordered system input. Output sound/effect/print events remain in `events`.
+pub use crate::payloads::QueueError;
+use crate::{payloads::PayloadQueue, primitives::ClientId};
 use std::net::SocketAddr;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Peer {
+    Socket(SocketAddr),
+    Loopback(ClientId),
+}
+impl From<SocketAddr> for Peer {
+    fn from(address: SocketAddr) -> Self {
+        Self::Socket(address)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EventTime(pub u64);
@@ -78,7 +91,7 @@ pub enum EventKind<'a> {
     ConsoleLine(&'a str),
     Packet {
         socket: u16,
-        from: SocketAddr,
+        from: Peer,
         bytes: &'a [u8],
     },
 }
@@ -89,36 +102,22 @@ pub struct SysEvent<'a> {
     pub kind: EventKind<'a>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QueueError {
-    Capacity,
-    Full,
-    PayloadFull,
-}
 #[derive(Clone, Copy)]
 enum StoredKind {
     Plain(EventKind<'static>),
     Console,
-    Packet { socket: u16, from: SocketAddr },
+    Packet { socket: u16, from: Peer },
 }
 #[derive(Clone, Copy)]
-struct Slot {
+struct EventHeader {
     time: EventTime,
     kind: StoredKind,
-    start: usize,
-    length: usize,
-    reserved: usize,
 }
 
 /// Payloads borrow the ring until the receiver finishes dispatching one event.
 /// FIFO release reuses bytes without allocating or retaining packet pointers.
 pub struct SysEventQueue {
-    slots: Box<[Option<Slot>]>,
-    bytes: Box<[u8]>,
-    head: usize,
-    length: usize,
-    write: usize,
-    used: usize,
+    payloads: PayloadQueue<EventHeader>,
     rejected: u64,
 }
 impl SysEventQueue {
@@ -127,23 +126,18 @@ impl SysEventQueue {
             return Err(QueueError::Capacity);
         }
         Ok(Self {
-            slots: vec![None; events].into_boxed_slice(),
-            bytes: vec![0; payload_bytes].into_boxed_slice(),
-            head: 0,
-            length: 0,
-            write: 0,
-            used: 0,
+            payloads: PayloadQueue::load(events, payload_bytes)?,
             rejected: 0,
         })
     }
     pub fn len(&self) -> usize {
-        self.length
+        self.payloads.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.length == 0
+        self.payloads.len() == 0
     }
     pub fn capacity(&self) -> usize {
-        self.slots.len()
+        self.payloads.capacity()
     }
     pub fn rejected(&self) -> u64 {
         self.rejected
@@ -159,9 +153,6 @@ impl SysEventQueue {
     fn admit(&mut self, event: SysEvent<'_>) -> Result<(), QueueError> {
         // Ordinary events cannot consume the frame's final time-marker slot.
         let reserved_time = usize::from(!matches!(event.kind, EventKind::Time));
-        if self.length >= self.slots.len() - reserved_time {
-            return Err(QueueError::Full);
-        }
         let (kind, payload) = match event.kind {
             EventKind::ConsoleLine(text) => (StoredKind::Console, text.as_bytes()),
             EventKind::Packet {
@@ -240,42 +231,17 @@ impl SysEventQueue {
             EventKind::Focus(value) => (StoredKind::Plain(EventKind::Focus(value)), &[][..]),
             EventKind::Quit => (StoredKind::Plain(EventKind::Quit), &[][..]),
         };
-        let length = payload.len();
-        let padding = if self.write + length > self.bytes.len() {
-            self.bytes.len() - self.write
-        } else {
-            0
-        };
-        let reserved = padding + length;
-        if reserved > self.bytes.len() - self.used {
-            return Err(QueueError::PayloadFull);
-        }
-        let start = if padding == 0 { self.write } else { 0 };
-        self.bytes[start..start + length].copy_from_slice(payload);
-        self.write = (start + length) % self.bytes.len();
-        self.used += reserved;
-        self.slots[(self.head + self.length) % self.slots.len()] = Some(Slot {
-            time: event.time,
-            kind,
-            start,
-            length,
-            reserved,
-        });
-        self.length += 1;
-        Ok(())
+        self.payloads.push(
+            EventHeader {
+                time: event.time,
+                kind,
+            },
+            payload,
+            reserved_time,
+        )
     }
     pub fn pop(&mut self) -> Option<SysEvent<'_>> {
-        if self.length == 0 {
-            return None;
-        }
-        let slot = self.slots[self.head].take()?;
-        self.head = (self.head + 1) % self.slots.len();
-        self.length -= 1;
-        self.used -= slot.reserved;
-        if self.used == 0 {
-            self.write = 0;
-        }
-        let payload = &self.bytes[slot.start..slot.start + slot.length];
+        let (slot, payload) = self.payloads.pop()?;
         let kind = match slot.kind {
             StoredKind::Plain(kind) => kind,
             StoredKind::Console => EventKind::ConsoleLine(std::str::from_utf8(payload).ok()?),

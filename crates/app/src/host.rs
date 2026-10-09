@@ -2,7 +2,6 @@
 use crate::Runtime;
 use qa_console::commands::Console;
 use qa_core::{
-    loopback::Endpoint,
     primitives::{ClientId, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd},
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
@@ -285,69 +284,63 @@ impl FrameHost {
 
     pub fn drain(&mut self, result: &mut FrameResult) {
         result.drains += 1;
-        while let Some(event) = self.queue.pop() {
-            self.runtime.input_time = event.time;
-            result.events += 1;
-            match event.kind {
-                EventKind::Time => {
-                    self.time = event.time;
-                    self.runtime.input.seed(event.time);
-                }
-                EventKind::Quit => self.runtime.quit = true,
-                EventKind::ConsoleLine(text) => {
-                    let context = qa_console::views::Context {
-                        event_time: Some(event.time),
-                        ..self.console.cvars.context()
-                    };
-                    let _ = self.console.append_line(text, context);
-                }
-                EventKind::Packet {
-                    socket,
-                    from,
-                    bytes,
-                } => {
-                    self.runtime
-                        .network
-                        .receive(socket, from, bytes, event.time);
-                }
-                _ => self.runtime.input.dispatch(
-                    event,
-                    &mut ConsoleInput {
-                        console: &mut self.console,
-                    },
-                ),
-            }
-            if let EventKind::Key {
-                down: true, repeat, ..
-            } = event.kind
-            {
-                self.key_downs += 1;
-                self.key_repeats += u64::from(repeat);
-            }
-            if !matches!(event.kind, EventKind::Time | EventKind::Packet { .. }) {
-                qa_console::logger::dev_print(
-                    &self.console.cvars,
-                    self.developer,
-                    1,
-                    format_args!(
-                        "{{\"event\":\"input_diagnostic\",\"time_ns\":{},\"input\":\"{}\"}}",
-                        event.time.0,
-                        event_name(event.kind)
-                    ),
-                );
-            }
-        }
-        // Com_EventLoop drains local client packets, then server packets when
-        // system events run out. Both use the same packet consumer as UDP.
-        for to in [Endpoint::Client, Endpoint::Server] {
-            while let Some(packet) = self.runtime.loopback.receive(to) {
+        loop {
+            while let Some(event) = self.queue.pop() {
+                self.runtime.input_time = event.time;
                 result.events += 1;
-                self.runtime.network.receive(
-                    to.socket(),
-                    qa_network::ingress::Peer::Loopback(packet.client),
-                    packet.bytes,
-                    self.time,
-                );
+                match event.kind {
+                    EventKind::Time => {
+                        self.time = event.time;
+                        self.runtime.input.seed(event.time);
+                    }
+                    EventKind::Quit => self.runtime.quit = true,
+                    EventKind::ConsoleLine(text) => {
+                        let context = qa_console::views::Context {
+                            event_time: Some(event.time),
+                            ..self.console.cvars.context()
+                        };
+                        let _ = self.console.append_line(text, context);
+                    }
+                    EventKind::Packet {
+                        socket,
+                        from,
+                        bytes,
+                    } => {
+                        self.runtime
+                            .network
+                            .receive(socket, from, bytes, event.time);
+                    }
+                    _ => self.runtime.input.dispatch(
+                        event,
+                        &mut ConsoleInput {
+                            console: &mut self.console,
+                        },
+                    ),
+                }
+                if let EventKind::Key {
+                    down: true, repeat, ..
+                } = event.kind
+                {
+                    self.key_downs += 1;
+                    self.key_repeats += u64::from(repeat);
+                }
+                if !matches!(event.kind, EventKind::Time | EventKind::Packet { .. }) {
+                    qa_console::logger::dev_print(
+                        &self.console.cvars,
+                        self.developer,
+                        1,
+                        format_args!(
+                            "{{\"event\":\"input_diagnostic\",\"time_ns\":{},\"input\":\"{}\"}}",
+                            event.time.0,
+                            event_name(event.kind)
+                        ),
+                    );
+                }
+            }
+            // Com_EventLoop drains local client packets, then server packets when
+            // system events run out. Both use the same packet consumer as UDP.
+            if self.runtime.loopback.enqueue(&mut self.queue, self.time) == 0 {
+                break;
             }
         }
     }

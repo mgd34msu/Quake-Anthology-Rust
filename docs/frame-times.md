@@ -1875,9 +1875,12 @@ and GL, at 640x400, with fresh copied owner settings. All six private X11 runs
 quit normally and counted zero calling/worker Rust heap over 600 measured frames
 after 60 warm-up frames. Each recorded 17 real key repeats; all 18 owned PIDs
 were absent afterward. GL was Mesa 26.2.2 llvmpipe LLVM 22.1.8 software GL.
-Input evidence is partial: CPU Q3 lookup did not reach a material angle change,
-so that row does not prove centerview. Full-button, combined-seat and qualified
-installed gameplay acceptance remain open. No install or game-audio proof.
+The initial CPU Q3 lookup row was inconclusive. An isolated retest of the same
+candidate at controlled 60 fps reached -56.24279 degrees and returned pitch to
+zero after centerview, with normal quit and zero calling/worker Rust heap over
+600 measured frames. Evidence is `q3-cpu-centerview-retest/verification.json`.
+Full-button, combined-seat and qualified installed gameplay acceptance remain
+open. No install or game-audio proof.
 
 ## THE-2852 common numeric HUD values
 
@@ -1902,3 +1905,36 @@ After moving the generic width/binding operations into core, the final release
 example build took 23.77 seconds. All 1,344 native rows stayed identical; the
 same 64-client workload measured 8.390/8.730 microseconds median/p99, zero heap
 and the same checksum. This final row is `result-core-binding.json`.
+
+## THE-2869 per-client local transport
+
+The safe typed-header/byte FIFO now backs both system events and each local
+client/direction. Admission never overwrites. Native NetQuake's unchanged
+`IntAlign`, `Loop_SendMessage` and `Loop_GetMessage` bodies delivered exactly
+the same 3,959,206 output bytes as the Rust event-queue path across 1,000
+seeded messages, including 1,401 and 8,000 bytes. This comparison scaffolds
+native buffers and checks admitted payloads. It does not qualify a live NQ
+signon or the native reliable adapter. Separate capacity tests cover 64,000
+bytes, independent clients, header/byte exhaustion, wrap and event backpressure.
+
+Core 23, portable release, no debugger, 60 warm-up and 600 measured frames:
+eight messages across four clients include 8,000/64,000-byte payloads, four
+counted Full returns each frame and complete byte comparisons. Median/p99
+were 7.190/7.350 microseconds. The calling Rust thread counted zero allocations,
+reallocations and requested bytes, with a positive control. There are no
+workers in this transport workload; native heap activity is unmeasured.
+
+A matched headless host ABBA comparison against `4f06269a`, with the same
+console/bind/local-packet workload, preserved 1,396 packets, 659 repeats and
+provider counters `[210,105,421,210]`, with zero measured Rust heap. Mean medians
+were 147.815 microseconds before and 151.243 after, an increase of 2.32%.
+Individual medians/p99 were 148.090/232.490 and 147.540/228.430 before,
+150.820/233.660 and 151.665/239.520 after. This is host overhead, not gameplay
+or a renderer timing. All four recorded host PIDs were absent afterward.
+
+Evidence: `~/.cache/qa-rust/THE-2869-loopback/`, including unchanged native
+function bodies, raw binary outputs, `native-comparison.json`,
+`transport-timing-final.json`, `host-abba.json` and workspace/checker logs.
+The final release probe build took 22.87 seconds. An intermediate allocation
+recheck overlapped tests; its timing row is excluded and retained in `bench-final.log`.
+No installation or live native-protocol acceptance is claimed.

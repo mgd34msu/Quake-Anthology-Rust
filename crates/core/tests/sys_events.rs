@@ -26,7 +26,10 @@ fn payload_wrap_is_fifo_and_rejected_writes_leave_existing_bytes_intact() {
 
 #[test]
 fn packet_and_utf8_console_bytes_are_owned_and_capacity_is_scoped() {
-    let from = "127.0.0.1:27960".parse().unwrap();
+    let from = "127.0.0.1:27960"
+        .parse::<std::net::SocketAddr>()
+        .unwrap()
+        .into();
     let mut queue = SysEventQueue::load(3, 64).unwrap();
     let mut packet = [1, 2, 3];
     queue

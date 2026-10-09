@@ -77,6 +77,17 @@ impl Runtime {
         )
         .map_err(|e| format!("server: {e:?}"))?;
         let targets = qa_world::targets::TargetIndex::new(&server.entities);
+        // Boot capacity covers the largest planned native local message.
+        // Native connection negotiation supplies narrower limits later.
+        let loopback = Loopback::load(std::iter::repeat_n(
+            qa_core::loopback::LoopbackLimits {
+                maximum_message: 64_000,
+                payload_bytes: 128_000,
+                messages: 16,
+            },
+            server.clients.len(),
+        ))
+        .map_err(|e| format!("loopback: {e:?}"))?;
         Ok(Self {
             catalog,
             vfs: Vfs::default(),
@@ -90,7 +101,7 @@ impl Runtime {
             prediction: std::array::from_fn(|_| Default::default()),
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
             texts: TextStore::load(4096, 8192).map_err(|e| format!("output text: {e:?}"))?,
-            loopback: Loopback::load(),
+            loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
             script_reader: qa_formats::archive::ArchiveReader::default(),

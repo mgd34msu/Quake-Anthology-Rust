@@ -22,7 +22,7 @@ fn nonblocking_udp_produces_owned_ordered_events_and_drops_overruns() {
             event.kind,
             EventKind::Packet {
                 socket,
-                from: sender.local_addr().unwrap(),
+                from: sender.local_addr().unwrap().into(),
                 bytes: expected
             }
         );

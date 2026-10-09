@@ -387,8 +387,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || native.iter().sum::<u64>() != ticks
         || host.runtime.loopback.pending(Endpoint::Client) != 0
         || host.runtime.loopback.pending(Endpoint::Server) != 0
-        || host.runtime.loopback.overwritten(Endpoint::Client) != 0
-        || host.runtime.loopback.overwritten(Endpoint::Server) != 0
+        || host.runtime.loopback.full(Endpoint::Client, ClientId(1)) != Some(0)
+        || host.runtime.loopback.full(Endpoint::Server, ClientId(1)) != Some(0)
     {
         return Err("host qualification failed".into());
     }

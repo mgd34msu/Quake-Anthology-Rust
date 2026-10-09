@@ -53,7 +53,10 @@ impl FrameSource for Source {
                 queue,
                 EventKind::Packet {
                     socket: 0,
-                    from: "127.0.0.1:1234".parse().unwrap(),
+                    from: "127.0.0.1:1234"
+                        .parse::<std::net::SocketAddr>()
+                        .unwrap()
+                        .into(),
                     bytes: b"late packet",
                 },
             );
@@ -74,7 +77,10 @@ impl FrameSource for Source {
                 queue,
                 EventKind::Packet {
                     socket: 0,
-                    from: "127.0.0.1:1234".parse().unwrap(),
+                    from: "127.0.0.1:1234"
+                        .parse::<std::net::SocketAddr>()
+                        .unwrap()
+                        .into(),
                     bytes: b"packet arrived during cap wait",
                 },
             );
@@ -350,4 +356,52 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
         host.runtime.server.clients[bot.0 as usize].command.movement,
         [30.0, -20.0, 10.0]
     );
+}
+
+#[test]
+fn large_local_messages_use_queued_event_dispatch_without_an_extra_intake() {
+    let mut host = host();
+    let mut source = Source {
+        time: 0,
+        waits: 0,
+        polls: 0,
+        presents: 0,
+        late_commands: false,
+        wait_key: false,
+    };
+    host.runtime
+        .loopback
+        .send(
+            Endpoint::Server,
+            qa_core::primitives::ClientId(0),
+            &[137; 8000],
+        )
+        .unwrap();
+    host.runtime
+        .loopback
+        .send(
+            Endpoint::Client,
+            qa_core::primitives::ClientId(1),
+            &[255; 64000],
+        )
+        .unwrap();
+    let frame = host.frame(&mut source, true);
+    assert_eq!(source.polls, 2);
+    assert_eq!(frame.drains, 2);
+    assert_eq!(frame.events, 4); // two Time markers and two queued local packets
+    assert_eq!(host.runtime.network.packets, 2);
+    assert_eq!(host.runtime.network.bytes, 72000);
+    assert_eq!(
+        host.runtime.network.last_socket,
+        Some(Endpoint::Server.socket())
+    );
+    assert_eq!(
+        host.runtime.network.last_from,
+        Some(qa_network::ingress::Peer::Loopback(
+            qa_core::primitives::ClientId(1)
+        ))
+    );
+    assert_eq!(host.runtime.loopback.pending(Endpoint::Client), 0);
+    assert_eq!(host.runtime.loopback.pending(Endpoint::Server), 0);
+    assert!(host.queue.is_empty());
 }

@@ -115,18 +115,32 @@ drain/commands, provider-rate server ticks, a second drain/commands, then the
 client frame. The shell client builds commands and presents its window;
 snapshot application, movement/prediction and scenes still await integration.
 The cached com_maxfps handle uses the original integer-millisecond client cap,
-including its aliases. Linux poll waits on readable sockets for at most 2 ms,
-then polls SDL too; other platforms currently use the same bounded interval
-with a timer wait. This removes the fixed 16 ms sleep and drains while waiting.
-THE-885 adds core-owned local loopback buffers feeding the same packet path.
-Each direction keeps 16 messages of at most 1400 bytes, overwriting the oldest
-on overflow as Q3 net_chan.c does. ClientId metadata survives transport so
-local clients can choose different protocol tables. Once system events run
-out, the host drains client packets then server packets through the same
-receiver as UDP, with reserved destination socket ids and a typed local peer.
-Provider-generated packets arrive in the second drain before the client
-frame. Loopback sends touch no OS socket. Netchan/codec integration remains
-THE-860; the present receiver only counts and identifies delivered packets.
+including its aliases. The cap wait uses platform time only. Physical intake occurs before SERVER
+and before CLIENT, following the owner's two-intake ruling; waits do not poll
+SDL, stdin or sockets.
+THE-2869 replaces THE-885's shared overwrite rings with one byte FIFO per
+client and endpoint, sized from explicit load-time connection limits. The one
+safe typed-header/payload FIFO implementation also backs `SysEventQueue`.
+Admission returns counted `Full` without overwriting any packet; oversize and
+unknown-client errors leave other clients untouched. Loss simulation belongs
+to netchan. No local storage pointer escapes the event queue.
+
+After physical system events run out, local packets enter `SysEventQueue` in
+client-endpoint then server-endpoint order, retaining send order across clients.
+The host consumes only that queue through the same packet receiver as UDP.
+Rejected queue admission leaves the local message pending. Additional batches
+consume queued memory only; the frame still has exactly two physical intakes.
+Core owns the single socket/local `Peer` type; destination sockets are reserved
+internal ids. They add no native wire fields or ACKs.
+
+The current app reserves 64,000-byte local messages and 128,000 payload bytes
+per client/direction at load. This is a boot capability ceiling while native
+connection negotiation remains absent; each future connection must supply its
+actual negotiated limits, including native framing overhead. Headless 8,000-
+and 64,000-byte payloads prove transport capacity, not an NQ module signon.
+Provider-generated packets enter the second drain before CLIENT. Netchan,
+codec, reliability/ACK and live signon integration remain THE-860/THE-2869;
+the current receiver counts and identifies packets only.
 
 `qa_session::timing::Timeline` schedules the world and loaded provider frame
 functions on one event timeline. Rates are data selected at load, independent

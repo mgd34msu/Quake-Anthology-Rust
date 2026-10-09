@@ -1,18 +1,6 @@
 //! System-event packet boundary. Protocol/channel consumers enter in R11.
-use qa_core::primitives::ClientId;
 use qa_core::sys_events::EventTime;
-use std::net::SocketAddr;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Peer {
-    Socket(SocketAddr),
-    Loopback(ClientId),
-}
-impl From<SocketAddr> for Peer {
-    fn from(address: SocketAddr) -> Self {
-        Self::Socket(address)
-    }
-}
+pub use qa_core::sys_events::Peer;
 
 #[derive(Default)]
 pub struct PacketReceiver {

@@ -83,7 +83,7 @@ impl EventPump {
                                     time: self.clock.now(),
                                     kind: EventKind::Packet {
                                         socket: index as u16,
-                                        from,
+                                        from: from.into(),
                                         bytes: &self.datagram[..length],
                                     },
                                 })
