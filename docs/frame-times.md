@@ -2864,3 +2864,34 @@ zero. These are diagnostic stage samples, separate from the normal ABBA timing
 gate. Evidence: `grain-prepare-profile-summary.json` and
 `grain-profile-q3dm1-{1,8}/`. The normal tracked app build took 27.123 s; its
 private three-map CPU(auto)/GL checks are pending at this commit boundary.
+
+
+The finished-slice normal app matrix at `09243a9e` then completed all six
+private CPU(auto)/GL launches, rendering e1m1, base1 and q3dm1 and exiting 0.
+Each copied candidate/profile remained unchanged and every recorded owned PID
+was cleaned. The CPU selected eight bands with seven workers; the total rover
+budget stayed 32 MiB. All six allocation gates counted zero allocations,
+reallocations and requested bytes across the caller and all workers. These
+integration runs used 60 warm-up plus **660** measured frames, not the frozen
+ABBA workload's 600. Screenshots show each map; no native-image parity or
+input/gameplay/HUD/audio/network/save acceptance is inferred. No installation.
+The Q1 profile reported seven unsupported settings; Q2/Q3 reported zero.
+
+| Normal app 640×400 | CPU auto draw median / p99 ms | Mesa software GL draw median / p99 ms |
+|---|---:|---:|
+| e1m1 | 0.950 / 1.265 | 5.713 / 7.430 |
+| base1 | 1.332 / 1.761 | 11.202 / 13.147 |
+| q3dm1 | 104.052 / 121.851 | 18.122 / 21.602 |
+
+GL driver: llvmpipe (LLVM 22.1.8, 256 bits), GL 4.6 Core Profile,
+Mesa 26.2.2-arch1.1. These software GL rows do not measure hardware GPU speed.
+The normal app uses live shader time and includes scene/client presentation;
+these draws are not fidelity-matched before/after speedup measurements.
+The live q3dm1 row is materially slower than the frozen cache checkpoint:
+its final frame records 1,845 RGBA cache hits, 47 fills and 45 evictions,
+with zero rejects; cumulative including startup/warm-up is 34,121 fills and
+32,132 evictions. The cause remains unverified. Static-scene zero fills do
+not establish live cache reuse. This gap remains open under THE-862.
+Evidence: `grain-normal-summary.json`, `grain-normal-matrix.json`, and
+`grain-normal-{cpu,gl}-{e1m1,base1,q3dm1}/{runtime.log,result.json,window.png}`
+under the same THE-2866 evidence root.
