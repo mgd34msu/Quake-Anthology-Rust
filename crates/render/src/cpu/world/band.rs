@@ -153,6 +153,10 @@ impl WorldBand {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     fn raster_range(
         &mut self,
         prepared: &WorldPrepare,
@@ -177,6 +181,10 @@ impl WorldBand {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     fn raster_indices(
         &mut self,
         prepared: &WorldPrepare,

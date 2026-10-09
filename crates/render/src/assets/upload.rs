@@ -362,6 +362,10 @@ fn rounded(value: u32, round: ExtentRound) -> u32 {
     }
 }
 
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Native GL light scaling walks complete RGBA byte pixels and modifies RGB while retaining alpha."
+)]
 fn apply_lut(pixels: &mut [u8], lut: RgbLut) {
     for pixel in pixels.chunks_exact_mut(4) {
         for channel in &mut pixel[..3] {

@@ -177,6 +177,10 @@ impl Fixture {
     }
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the measurement backend inline without changing its measured allocation ownership"
+)]
 enum Backend {
     Cpu(CpuBackend),
     Gl(GlBackend),
@@ -194,6 +198,10 @@ impl Backend {
             Self::Gl(_) => window.present_gl(),
         }
     }
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "Retain the independent packed-byte fixture and its incomplete-tail handling"
+    )]
     fn readback(&self, out: &mut [u8]) -> bool {
         match self {
             Self::Cpu(cpu) => {
@@ -239,6 +247,10 @@ fn stats_json(stats: BackendStats) {
     );
 }
 
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Retain the independent packed-byte fixture and its incomplete-tail handling"
+)]
 fn write_ppm(path: &PathBuf, rgba: &[u8]) -> std::io::Result<()> {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     write!(file, "P6\n{WIDTH} {HEIGHT}\n255\n")?;
@@ -249,6 +261,10 @@ fn write_ppm(path: &PathBuf, rgba: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Retain the independent packed-byte fixture and its incomplete-tail handling"
+)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_platform::allocations::{begin_frame, end_frame};
     let mut renderer = "cpu".to_owned();

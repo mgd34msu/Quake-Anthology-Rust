@@ -160,6 +160,10 @@ pub struct Sample {
     pub presented: bool,
     pub visible_surfaces: u32,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep load-owned backend layout inline; changing indirection requires separate measurement"
+)]
 enum Backend {
     Cpu {
         backend: CpuBackend,

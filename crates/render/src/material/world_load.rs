@@ -497,6 +497,10 @@ pub fn load_world(
     })
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "Native surface IDs index independent image and packed-region columns returned flat, without a second resource registry."
+)]
 fn prepare_lightmaps(
     geometry: &WorldGeometry,
     assets: &mut Assets,

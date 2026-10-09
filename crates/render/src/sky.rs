@@ -585,6 +585,10 @@ fn append_vertex(polygon: &mut ClipPolygon, vertex: Vec3) -> bool {
     polygon.count += 1;
     true
 }
+#[expect(
+    clippy::needless_range_loop,
+    reason = "Keep tr_sky.c AddSkyPolygon numeric s/t axis correspondence when updating face bounds."
+)]
 fn add_face_bounds(bounds: &mut [FaceBounds; 6], vertices: &[Vec3]) -> bool {
     let mut direction = Vec3([0.0; 3]);
     for &vertex in vertices {

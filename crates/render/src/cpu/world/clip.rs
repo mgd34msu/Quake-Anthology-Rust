@@ -1,6 +1,6 @@
 //! A per-boundary clipping graph preserves the original shader-before-clip
 //! interpolation while sharing geometry clipping across material stages.
-use super::{evaluated_vertex, Camera, ClipVertex, ScreenVertex};
+use super::{Camera, ClipVertex, ScreenVertex, evaluated_vertex};
 use crate::assets::Vertex;
 use crate::edges::ProjectedVertex;
 use crate::stage::{DeformOp, PreparedStage, StageEvaluator};
@@ -201,6 +201,10 @@ impl ClipGraph {
         Some(self.count)
     }
 
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "Screen, geometry and input attributes retain their distinct explicit index mappings"
+    )]
     pub fn project_stage(
         &mut self,
         stage: PreparedStage,

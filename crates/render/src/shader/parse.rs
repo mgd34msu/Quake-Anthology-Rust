@@ -261,6 +261,10 @@ impl<'t> Parser<'t, '_, '_> {
         }
     }
 
+    #[expect(
+        clippy::collapsible_if,
+        reason = "Keep tr_shader.c skyParms outer/height/inner and fogParms color/depth token reads as separate failure phases."
+    )]
     fn definition(&mut self, name: &Token) -> ShaderDef {
         let diagnostic_start = self.diagnostics.len();
         let mut definition = ShaderDef {
@@ -980,6 +984,10 @@ fn native_number(text: &str) -> (f32, bool) {
         (0.0, true)
     }
 }
+#[expect(
+    clippy::collapsible_if,
+    reason = "The qsrc atof boundary tries the hexadecimal prefix before falling back to decimal-prefix conversion."
+)]
 fn native_double(text: &str) -> (f64, bool) {
     let text = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
     let bytes = text.as_bytes();

@@ -17,6 +17,10 @@ pub(super) struct Tessellation {
     pub height_lod_error: Box<[f32]>,
 }
 
+#[expect(
+    clippy::needless_range_loop,
+    reason = "Preserve tr_curve.c direction/transposition passes and PutPointsOnCurve column-before-row updates."
+)]
 pub(super) fn subdivide(
     points: &[WorldVertex],
     dimensions: [i32; 2],

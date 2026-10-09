@@ -28,6 +28,10 @@ fn work(job: &mut Job<'_>) {
 }
 
 #[test]
+#[expect(
+    clippy::drop_non_drop,
+    reason = "The fixture explicitly ends borrowed job storage before inspecting completed outputs and counts"
+)]
 fn each_frame_merges_all_batches_once_and_terminal_frame_keeps_last_batch() {
     for bands in [RasterBands::One, RasterBands::Two] {
         let mut dispatch = CpuDispatch::load(bands).unwrap();
@@ -106,6 +110,10 @@ fn each_frame_merges_all_batches_once_and_terminal_frame_keeps_last_batch() {
 
 #[cfg(panic = "unwind")]
 #[test]
+#[expect(
+    clippy::drop_non_drop,
+    reason = "The fixture explicitly ends borrowed job storage before inspecting completed outputs and counts"
+)]
 fn failed_batch_counts_are_captured_before_error_and_empty_batch_adds_nothing() {
     let mut dispatch = CpuDispatch::load(RasterBands::Two).unwrap();
     let mut output = [0u32; 2];

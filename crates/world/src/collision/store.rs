@@ -315,6 +315,10 @@ impl CollisionStore {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Geometry, model, transform and caller rules are independent trace inputs"
+    )]
     pub fn trace_transformed(
         &self,
         geometry: GeometryId,
@@ -390,6 +394,10 @@ impl CollisionStore {
         trace
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Geometry, model, transform and caller rules are independent contents inputs"
+    )]
     pub fn point_contents_transformed(
         &self,
         geometry: GeometryId,

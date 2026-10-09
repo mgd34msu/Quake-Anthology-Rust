@@ -465,6 +465,10 @@ impl StageEvaluator {
         Ok(wave.base
             + self.tables[offset + wave_index(wave.phase + time * wave.frequency)] * wave.amplitude)
     }
+    #[expect(
+        clippy::collapsible_if,
+        reason = "Keep the native CGEN_LIGHTING_DIFFUSE selection separate from this boundary's missing-lighting failure."
+    )]
     pub fn prepare(
         &self,
         stage: &Stage,
@@ -842,6 +846,10 @@ impl StageEvaluator {
             }
         }
     }
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "Preserve tr_noise.c R_NoiseGet4f lattice indices and x/y/z/t interpolation order."
+    )]
     pub fn noise(&self, point: [f32; 4]) -> f32 {
         let cell = point.map(|p| p.floor() as i32);
         let frac = std::array::from_fn::<_, 4, _>(|i| point[i] - point[i].floor());

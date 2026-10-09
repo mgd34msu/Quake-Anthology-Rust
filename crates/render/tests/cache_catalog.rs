@@ -94,6 +94,10 @@ fn native_sources_and_samples_are_shared_while_fills_and_stamps_are_private() {
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn mixed_payloads_have_independent_pins_eviction_and_cross_cache_ownership() {
     let catalog = SurfaceCatalog::load(vec![
         lit_source(),

@@ -7,11 +7,19 @@ fn gray(values: &[u8]) -> Vec<u8> {
     values.iter().flat_map(|&v| [v, v, v, 255]).collect()
 }
 
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn channels(pixels: &[u8]) -> Vec<u8> {
     pixels.chunks_exact(4).map(|p| p[0]).collect()
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn indexed_native_neighbor_order_and_row_boundary_quirks() {
     let palette = std::array::from_fn(|i| [i as u8, i as u8, i as u8, 255]);
     for (width, height, source, expected) in [
@@ -361,6 +369,10 @@ fn native_gamma_curves_and_intensity_are_distinct_byte_operations() {
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn legacy_rectangular_tails_and_simple_one_dimensional_mips_differ() {
     for (width, height, legacy, simple) in [(2, 8, 84, 90), (8, 2, 54, 90)] {
         let pixels = gray(&(0..16).map(|v| v * 12).collect::<Vec<_>>());

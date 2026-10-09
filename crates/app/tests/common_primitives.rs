@@ -4,7 +4,7 @@ use qa_app::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::{HudLine, ItemId, ModuleId, RuleSetId, PlayerTail, WeaponId},
+    primitives::{HudLine, ItemId, ModuleId, PlayerTail, RuleSetId, WeaponId},
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
 use qa_gameplay::registry::ItemKind;

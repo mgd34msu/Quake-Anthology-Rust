@@ -980,6 +980,10 @@ fn cached_worlds_keep_independent_lightmaps_and_shared_depth_order() {
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn nearest_cache_mip_keeps_native_integer_texel_boundaries() {
     use qa_render::assets::upload::{MipmapBuild, UploadParams};
     let mut assets = Assets::load();

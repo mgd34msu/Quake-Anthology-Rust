@@ -485,6 +485,10 @@ impl Topology {
     }
 }
 
+#[expect(
+    clippy::manual_clamp,
+    reason = "Retain the original hull trace's ordered float comparisons"
+)]
 fn unit_fraction(mut fraction: f32) -> f32 {
     if fraction < 0.0 {
         fraction = 0.0;

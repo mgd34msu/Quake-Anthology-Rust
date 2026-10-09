@@ -300,6 +300,10 @@ pub fn build_quake2_rgb(
 }
 
 /// Native Q3 tr_bsp.c:100-125 shifts by map bits minus renderer bits, then normalizes.
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Native R_ColorShiftLightingBytes operates on ordered RGB byte triplets; the boundary rejects incomplete pixels."
+)]
 pub fn shift_quake3_rgb(
     rgb: &[u8],
     map_overbright: u8,

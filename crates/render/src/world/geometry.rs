@@ -392,6 +392,10 @@ fn load_legacy(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Native BSP sample offsets, styles, grid and encoding stay independent cold-load fields."
+)]
 fn legacy_samples(
     bytes: &[u8],
     offset: i32,
@@ -450,6 +454,10 @@ fn legacy_samples(
     span(first, count)
 }
 
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep flat BSP RGB-byte and triangle-index grouping with its existing ignored-remainder semantics."
+)]
 fn load_modern(
     map: &Map<'_>,
     options: GeometryOptions,

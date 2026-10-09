@@ -1735,3 +1735,29 @@ The final CI sweep finds pre-existing workspace rustfmt differences in six
 untouched files and four Clippy errors in unchanged world functions. The
 changed Rust files pass formatting. THE-2891 tracks the separate CI repair;
 neither workspace formatting nor Clippy is reported as passing for this tree.
+
+## THE-2891: restore local CI checks without runtime changes
+
+The separate repair applies rustfmt and 84 item-scoped Clippy expectations
+across 45 Rust files. Expectations document deliberate native formulas,
+explicit source indices and bounds, packed data, flat measured ownership,
+independent inputs and oracle failure/lifetime controls. They introduce no
+blanket crate/module suppression. Removing only those lint attributes and
+normalizing both revisions with rustfmt reproduces the entire previous source,
+including literal text, byte-for-byte against `cc5405cb`. Executable statements,
+types, layouts, APIs and test oracles remain unchanged.
+
+Local required checks pass: workspace formatting, all-target Clippy with
+warnings denied, all-target workspace tests, 21 developer tool tests, build
+rule/catalog freshness checks, all 103 rule fixtures and the app allocation
+feature check. Incremental Clippy finishes in 0.14 s; test compilation finishes
+in 3.72 s. The earlier compiled catalog comparison matches all 26,460 metadata
+cells across 1,260 untouched owner rows. These are developer/compilation checks,
+not a new release build, private binary run, installation or performance claim.
+
+Evidence: developer cache `THE-2891-ci/source-equivalence.json`, normalized
+comparison helper, per-check logs, `rule-fixtures/result.json` and the catalog
+comparison from `THE-884-client-policy/catalog-cells`. Prior failed Clippy logs
+are retained. THE-2893 records that the GitHub workflow still declares SDL2
+while platform links SDL3. No clean Ubuntu runner was tested here; local checks
+do not qualify remote CI dependency provisioning. Core work keeps its priority.

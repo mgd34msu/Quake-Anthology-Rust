@@ -7,6 +7,10 @@ use qa_render::{
 };
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn fence_holes_ignore_equal_depth_lightmap_pass() {
     let mut assets = Assets::load();
     let fence = assets

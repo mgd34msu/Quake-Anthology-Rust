@@ -303,6 +303,10 @@ fn carried_aet_ties_keep_crossing_and_native_insertion_history() {
 }
 
 #[test]
+#[expect(
+    clippy::reversed_empty_ranges,
+    reason = "This invalid reversed band is deliberate input for the scoped rejection fixture"
+)]
 fn band_bounds_and_polygon_capacity_failures_preserve_queued_full_view_work() {
     let viewport = view(0, 0, 8, 6);
     let background = rect(7, 9, 0, [0.0, 0.0, 8.0, 6.0], [0.0, 0.0, 0.125]);

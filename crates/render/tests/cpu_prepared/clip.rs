@@ -1,5 +1,5 @@
 use super::clip::ClipGraph;
-use super::{evaluated_vertex, Camera, ClipVertex, ScreenVertex};
+use super::{Camera, ClipVertex, ScreenVertex, evaluated_vertex};
 use crate::assets::Vertex;
 use crate::assets::{MaterialSettings, Stage, TcMod};
 use crate::edges::ProjectedVertex;

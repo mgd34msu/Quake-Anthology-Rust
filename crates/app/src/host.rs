@@ -236,6 +236,10 @@ impl FrameHost {
         result
     }
 
+    #[expect(
+        clippy::question_mark,
+        reason = "Preserve the explicit disconnected-client filter before constructing each seat view"
+    )]
     pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
         std::array::from_fn(|seat| {
             let client = self.local_clients[seat]?;

@@ -9,7 +9,7 @@ use qa_console::{
 };
 use qa_core::{
     loopback::Endpoint,
-    primitives::{CommandIntent, ModuleId, RuleSetId, PlayerTail},
+    primitives::{CommandIntent, ModuleId, PlayerTail, RuleSetId},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_session::{
@@ -40,6 +40,10 @@ impl FrameSource for Source {
     fn begin_frame(&mut self) -> EventTime {
         EventTime(self.time * 1_000_000)
     }
+    #[expect(
+        clippy::manual_is_multiple_of,
+        reason = "The fixture selects the second physical intake with explicit poll parity"
+    )]
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         assert!(queue.is_empty());
         self.polls += 1;

@@ -404,6 +404,10 @@ impl EntityTable {
 
     /// Lowest eligible slot. Reuse follows the previous owning module's rule;
     /// the new lifetime receives the requesting module's load-chosen policy.
+    #[expect(
+        clippy::collapsible_if,
+        reason = "Keep the full-table policy branch separate from its owned-slot eligibility search"
+    )]
     pub fn allocate(
         &mut self,
         now: impl Into<EntityTime>,

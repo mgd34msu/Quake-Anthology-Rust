@@ -48,6 +48,10 @@ fn coverage(
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn native_ceil_rows_and_exclusive_bottom_accept_either_winding() {
     let vertices = rect(0.2, 0.2, 5.2, 3.2);
     let mut reverse = vertices.clone();
@@ -72,6 +76,10 @@ fn native_ceil_rows_and_exclusive_bottom_accept_either_winding() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn near_depth_keys_occlude_far_surfaces_without_overdraw() {
     for near_first in [false, true] {
         let mut edges = Edges::load(8, 6, 8, 4, 32).unwrap();
@@ -149,6 +157,10 @@ fn sloped_aet_edges_reorder_when_they_cross() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn viewport_clips_top_bottom_and_right_without_distorting_slopes() {
     let mut edges = Edges::load(8, 6, 8, 4, 32).unwrap();
     assert!(edges.begin(Viewport {
@@ -181,6 +193,10 @@ fn viewport_clips_top_bottom_and_right_without_distorting_slopes() {
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn coplanar_ties_keep_active_surface_and_later_initial_leader_wins() {
     let mut edges = Edges::load(8, 2, 8, 4, 32).unwrap();
     assert!(edges.begin(view(8, 2)));
@@ -226,6 +242,10 @@ fn coplanar_ties_keep_active_surface_and_later_initial_leader_wins() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn new_row_leader_precedes_equal_u_existing_active_edge() {
     let mut edges = Edges::load(8, 3, 8, 4, 32).unwrap();
     assert!(edges.begin(view(8, 3)));
@@ -247,6 +267,14 @@ fn new_row_leader_precedes_equal_u_existing_active_edge() {
 }
 
 #[test]
+#[expect(
+    clippy::int_plus_one,
+    reason = "The edge-crossing oracle keeps the explicit one-pixel row offset"
+)]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn stepped_aet_equal_u_preserves_existing_order_then_crossing_repairs_it() {
     let mut edges = Edges::load(8, 3, 8, 4, 32).unwrap();
     assert!(edges.begin(view(8, 3)));
@@ -294,6 +322,10 @@ fn capacity_failure_is_atomic_and_span_arena_flushes_then_reuses() {
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn polygon_budget_and_invalid_geometry_leave_existing_edges_intact() {
     let mut edges = Edges::load(8, 2, 8, 1, 4).unwrap();
     assert!(edges.begin(view(8, 2)));
@@ -352,6 +384,10 @@ fn plane_rect(x: f32, y: f32, right: f32, bottom: f32, plane: [f32; 3]) -> Vec<P
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn plane_depth_ignores_misleading_partition_keys() {
     for policy in [DepthPolicy::BspKeys, DepthPolicy::PlaneDepth] {
         let mut edges = Edges::load(8, 2, 8, 4, 16).unwrap();
@@ -440,6 +476,10 @@ fn depth_envelope_handles_three_visible_planes_and_hidden_intersections() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn curved_patch_triangles_share_edge_machinery_and_actual_depth_occlusion() {
     let mut edges = Edges::load(6, 6, 12, 6, 32).unwrap();
     assert!(edges.begin_with_policy(view(6, 6), DepthPolicy::PlaneDepth));
@@ -476,6 +516,10 @@ fn curved_patch_triangles_share_edge_machinery_and_actual_depth_occlusion() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn equal_depth_planes_retain_native_initial_and_later_row_leader_ties() {
     let mut edges = Edges::load(8, 3, 8, 4, 16).unwrap();
     for start_y in [0.0, 1.0] {
@@ -504,6 +548,10 @@ fn equal_depth_planes_retain_native_initial_and_later_row_leader_ties() {
 }
 
 #[test]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "The pixel oracle states native inclusive and exclusive edges as explicit inequalities"
+)]
 fn overlapping_worlds_with_independent_keys_resolve_one_visible_depth_envelope() {
     let mut edges = Edges::load(8, 3, 10, 5, 1).unwrap();
     assert!(edges.begin_with_policy(view(8, 3), DepthPolicy::PlaneDepth));
@@ -554,6 +602,10 @@ fn depth_plane_uses_a_noncollinear_triple_after_collinear_polygon_vertices() {
 }
 
 #[test]
+#[expect(
+    clippy::identity_op,
+    reason = "The oracle keeps explicit row-times-stride plus column coordinates"
+)]
 fn widest_depth_basis_preserves_slope_lost_in_rounded_nearly_collinear_vertices() {
     let mut edges = Edges::load(4, 4, 8, 4, 8).unwrap();
     assert!(edges.begin_with_policy(view(4, 4), DepthPolicy::PlaneDepth));

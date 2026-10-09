@@ -230,6 +230,10 @@ fn product(fixture: &Fixture, cache_bytes: usize) -> Option<Product> {
 // Independent mathematical oracle: fetch the original prepared mip texel and
 // weight the four mip0 lightmap bytes in f64 inside the owned atlas rectangle.
 // It does not call any production sampler, affine field or blend helper.
+#[expect(
+    clippy::needless_range_loop,
+    reason = "Keep original channel-index accumulation order in the independent lightmap oracle"
+)]
 fn expected(
     fixture: &Fixture,
     recipe: &Product,

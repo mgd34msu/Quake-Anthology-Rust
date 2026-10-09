@@ -676,6 +676,10 @@ impl GlBackend {
 
     /// Consumes the same sealed packet as the software backend. This does not
     /// swap the SDL window; platform presents after the backend has finished.
+    #[expect(
+        clippy::collapsible_if,
+        reason = "The explicit post-HUD palette pass separates view-command selection from that view's phase and bounds validation."
+    )]
     pub fn render(&mut self, list: &CommandList, assets: &Assets) -> BackendStats {
         let mut stats = BackendStats {
             rejected: list.rejected.min(u32::MAX as u64) as u32,
@@ -919,6 +923,10 @@ impl GlBackend {
         }
     }
 
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "Registered flat triangle lists feed native sky clipping as complete triples in submission order."
+    )]
     fn collect_skies(
         &mut self,
         list: &CommandList,

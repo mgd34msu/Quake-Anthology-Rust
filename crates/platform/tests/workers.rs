@@ -111,6 +111,10 @@ fn sometimes_panic(job: &mut PanicJob<'_>) {
 }
 
 #[test]
+#[expect(
+    clippy::drop_non_drop,
+    reason = "The fixture explicitly ends borrowed job storage before inspecting completed outputs and counts"
+)]
 fn a_panicking_job_still_waits_for_other_workers_and_attempts_later_jobs() {
     let mut workers = Workers::load(2).unwrap();
     let gate = Barrier::new(2);
@@ -202,6 +206,10 @@ fn allocation_job(job: &mut AllocationJob<'_>) {
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 #[test]
+#[expect(
+    clippy::drop_non_drop,
+    reason = "The fixture explicitly ends borrowed job storage before inspecting completed outputs and counts"
+)]
 fn dispatch_counts_the_caller_and_every_worker_with_positive_controls() {
     use qa_platform::allocations::{Counts, begin_frame, end_frame};
     let mut workers = Workers::load(4).unwrap();
@@ -246,6 +254,10 @@ fn dispatch_counts_the_caller_and_every_worker_with_positive_controls() {
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 #[test]
+#[expect(
+    clippy::drop_non_drop,
+    reason = "The fixture explicitly ends borrowed job storage before inspecting completed outputs and counts"
+)]
 fn sequential_dispatch_counts_are_distinct_and_empty_dispatch_clears_them() {
     use qa_platform::allocations::Counts;
     let mut workers = Workers::load(2).unwrap();

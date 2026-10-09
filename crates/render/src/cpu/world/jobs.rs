@@ -112,6 +112,10 @@ impl WorldRaster {
         result
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     pub(in crate::cpu) fn render_opaque<E>(
         &mut self,
         camera: &Camera,

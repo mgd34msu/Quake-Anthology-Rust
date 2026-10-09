@@ -745,14 +745,18 @@ fn native_signed_zero_sort_keeps_numeric_material_registration_order() {
 
 #[test]
 fn automatic_draw_capacity_is_checked_before_allocation() {
-    assert!(FrontEnd::load(Limits {
-        entities: u32::MAX as usize,
-        ..Limits::default()
-    })
-    .is_err());
-    assert!(FrontEnd::load(Limits {
-        surfaces: usize::MAX,
-        ..Limits::default()
-    })
-    .is_err());
+    assert!(
+        FrontEnd::load(Limits {
+            entities: u32::MAX as usize,
+            ..Limits::default()
+        })
+        .is_err()
+    );
+    assert!(
+        FrontEnd::load(Limits {
+            surfaces: usize::MAX,
+            ..Limits::default()
+        })
+        .is_err()
+    );
 }

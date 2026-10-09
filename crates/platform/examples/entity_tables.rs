@@ -50,6 +50,10 @@ fn callback(world: &mut World, _: ModuleId, _: u32, call: CallbackCall) -> bool 
 }
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+#[expect(
+    clippy::manual_range_contains,
+    reason = "Keep explicit fixture capacity boundaries beside the source table limits"
+)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     let capacity: usize = args.get(1).ok_or("expected capacity")?.parse()?;

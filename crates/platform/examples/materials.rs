@@ -11,6 +11,10 @@ use qa_render::{
 };
 use std::{fmt::Write, fs::File, path::PathBuf, sync::Arc};
 
+#[expect(
+    clippy::write_with_newline,
+    reason = "Retain the existing exact report serialization format including its trailing newline"
+)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let archive_path = PathBuf::from(args.next().ok_or("archive path required")?);

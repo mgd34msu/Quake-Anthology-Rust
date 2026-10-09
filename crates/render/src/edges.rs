@@ -48,6 +48,10 @@ pub struct Stats {
 /// Certifies a polygon's native global row interval without storing scanner
 /// state. Errors must remain eligible for every active band: add_polygon still
 /// owns their scoped rejection, including fixed-edge arithmetic failures.
+#[expect(
+    clippy::result_unit_err,
+    reason = "Row certification only decides band eligibility; add_polygon owns the counted geometry rejection."
+)]
 pub fn certified_rows(
     vertices: &[ProjectedVertex],
     viewport: Viewport,

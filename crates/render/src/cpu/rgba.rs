@@ -15,12 +15,20 @@ use crate::world::{
 };
 
 #[derive(Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the measured raster recipe layout inline; a boxing change needs a separate timing comparison"
+)]
 pub(super) enum Recipe {
     Product(Product),
     Pair(Pair),
 }
 
 #[derive(Clone, Copy)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep the measured raster recipe layout inline; a boxing change needs a separate timing comparison"
+)]
 pub(super) enum Prepared {
     Product(ProductPrepared),
     Pair,
@@ -208,6 +216,10 @@ impl Factor {
 }
 
 impl Recipe {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     pub(super) fn load(
         geometry: &WorldGeometry,
         boundary: usize,
@@ -395,6 +407,14 @@ fn eligible(material: &Material) -> Option<usize> {
 }
 
 impl Product {
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "Preserve explicit source indices and the measured coordinate evaluation order"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     pub(super) fn load(
         geometry: &WorldGeometry,
         boundary: usize,
@@ -852,6 +872,10 @@ impl Product {
             },
         }
     }
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "Retain packed native pixel or triangle traversal and its incomplete-tail behavior"
+    )]
     pub(super) fn fill(
         &self,
         prepared: ProductPrepared,

@@ -228,6 +228,10 @@ fn assert_buffers(fixed: &CpuBackend, generic: &CpuBackend) {
     assert_eq!(fixed.depth_ranks, generic.depth_ranks);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Oracle axes are independent native-material cases rather than one production state object"
+)]
 fn compare(
     reverse: bool,
     linear: bool,

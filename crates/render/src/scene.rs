@@ -268,6 +268,10 @@ pub struct View {
     pub hidden_areas: Span,
 }
 #[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Load-sized command slots own copied refdefs inline; boxing view commands would allocate during frame submission."
+)]
 pub enum Command {
     #[default]
     Empty,
@@ -465,6 +469,10 @@ impl FrontEnd {
         frame.command(Command::Clear(clear));
         Some(frame)
     }
+    #[expect(
+        clippy::result_large_err,
+        reason = "Rejected recycling returns ownership of the packet's existing arenas without boxing or cloning during a frame."
+    )]
     pub fn recycle(&mut self, packet: CommandList) -> Result<(), CommandList> {
         if packet.owner != self.owner || self.lists[packet.slot].is_some() {
             return Err(packet);

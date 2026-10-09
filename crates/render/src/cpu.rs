@@ -493,6 +493,10 @@ impl CpuBackend {
         }
     }
 
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "Retain packed native pixel or triangle traversal and its incomplete-tail behavior"
+    )]
     fn entity(
         &mut self,
         camera: &Camera,
@@ -1103,6 +1107,10 @@ impl<'a> TexelView<'a> {
             intensity: self.intensity,
         })
     }
+    #[expect(
+        clippy::manual_is_multiple_of,
+        reason = "Keep the explicit zero-row check and storage-boundary remainder test"
+    )]
     fn owns(self, bounds: [u32; 4]) -> bool {
         let [x, y, width, height] = bounds;
         if width == 0

@@ -17,6 +17,10 @@ const FRAMES: usize = 600;
 const QUERIES_PER_FRAME: usize = 64;
 
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Retain the independent packed-byte fixture and its incomplete-tail handling"
+)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_platform::allocations::{begin_frame, end_frame};
     let args: Vec<_> = std::env::args().collect();

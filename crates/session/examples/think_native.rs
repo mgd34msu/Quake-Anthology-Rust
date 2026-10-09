@@ -175,6 +175,10 @@ fn input(data: &mut &[u8], timing: RuleSetId) -> Result<Input, &'static str> {
     })
 }
 
+#[expect(
+    clippy::collapsible_if,
+    reason = "The original-C comparison fixture resolves each native-slot lifetime before its fallible release."
+)]
 fn reset(world: &mut World, case: &Case) -> Result<[EntityId; ENTITIES], &'static str> {
     for slot in 1..=ENTITIES {
         if let Some(id) = world.entities.id_at(slot) {

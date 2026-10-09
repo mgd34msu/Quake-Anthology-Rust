@@ -40,6 +40,10 @@ pub(super) struct SkyState {
     pub clip: crate::sky::SkyClip,
     pub prepared: bool,
 }
+#[expect(
+    clippy::derivable_impls,
+    reason = "Keep the sky reset fields explicit alongside SkyClip::new"
+)]
 impl Default for SkyState {
     fn default() -> Self {
         Self {
@@ -217,6 +221,10 @@ impl LayeredDraw {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+)]
 pub(super) fn layered_span(
     width: u32,
     height: u32,

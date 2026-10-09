@@ -191,6 +191,10 @@ fn compare_mask(
 }
 
 #[test]
+#[expect(
+    clippy::assertions_on_constants,
+    reason = "Unexpected fixture setup failure deliberately fails before testing the native output oracle"
+)]
 fn stratified_native_sampling_matches_frozen_output_bits() {
     for [width, height] in [
         [1, 1],
@@ -241,6 +245,10 @@ fn stratified_native_sampling_matches_frozen_output_bits() {
 }
 
 #[test]
+#[expect(
+    clippy::assertions_on_constants,
+    reason = "Unexpected fixture setup failure deliberately fails before testing the native output oracle"
+)]
 fn copied_roi_preserves_native_taps_and_output_bits() {
     for [width, height, x, y, region_width, region_height] in [
         [128, 128, 13, 21, 7, 11],
@@ -402,6 +410,10 @@ fn native_sampler_filter_and_wrap_override_mask_selection() {
 }
 
 #[test]
+#[expect(
+    clippy::assertions_on_constants,
+    reason = "Unexpected fixture setup failure deliberately fails before testing the native output oracle"
+)]
 fn copied_roi_rejects_malformed_storage_and_region_extension() {
     let rgba = pixels(8, 6);
     let view = TexelView::cache(8, 6, &rgba);

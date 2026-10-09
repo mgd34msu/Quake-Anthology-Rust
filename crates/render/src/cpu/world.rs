@@ -1134,6 +1134,10 @@ impl WorldPrepare {
         stats.rejected = stats.rejected.saturating_add(1);
     }
 
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "Retain packed native pixel or triangle traversal and its incomplete-tail behavior"
+    )]
     fn collect_skies(
         &mut self,
         camera: &Camera,
@@ -1246,6 +1250,10 @@ impl WorldPrepare {
     /// The shared draw list determines when the material's single sky draw
     /// occurs. Source polygons from all worlds/entities/polys have already
     /// contributed to its clip, matching native RB_StageIteratorSky.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     fn prepare_draw(
         &mut self,
         camera: &Camera,
@@ -1486,6 +1494,10 @@ impl WorldPrepare {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     fn add_generated_sky(
         &mut self,
         camera: &Camera,
@@ -1590,6 +1602,10 @@ impl WorldPrepare {
         self.primitive_count += 1;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+    )]
     fn add_sky(
         &mut self,
         camera: &Camera,
@@ -2001,6 +2017,10 @@ fn add_edge_stats(stats: &mut WorldStats, edges: crate::edges::Stats) {
     stats.rejected = stats.rejected.saturating_add(edges.rejected);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+)]
 fn consume_span(
     width: u32,
     span: Span,
@@ -2218,6 +2238,10 @@ fn consume_span(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+)]
 fn factor_span(
     width: u32,
     span: Span,
@@ -2369,6 +2393,10 @@ fn factor_span(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+)]
 fn rgba_span(
     width: u32,
     span: Span,
@@ -2442,6 +2470,10 @@ fn rgba_span(
 /// Original D_DrawSpans8/16 fixed texture stepping: perspective correction at
 /// each bounded chunk, arithmetic shifts for complete chunks and division by
 /// count-1 at the final endpoint. 1/Z remains affine at each covered pixel.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
+)]
 fn native_span(
     width: u32,
     span: Span,

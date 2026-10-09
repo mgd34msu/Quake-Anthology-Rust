@@ -93,6 +93,10 @@ fn inputs(count: usize) -> (WorldGeometry, VisibilityWorld) {
 }
 
 #[test]
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
+)]
 fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
     let mut packer = AtlasBuilder::load(PAGE_SIZE, 1).unwrap();
     let red = packer.insert(2, 2, &[17, 0, 0].repeat(4)).unwrap();
