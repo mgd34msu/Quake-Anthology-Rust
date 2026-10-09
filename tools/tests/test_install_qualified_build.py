@@ -58,7 +58,8 @@ class InstallDestinations(unittest.TestCase):
                           dict(event="world_frame_presented", map="maps/" + name + ".bsp",
                                renderer=renderer, client_connected=True,
                                views=0 if name == self.reject_map else 1, surfaces=10,
-                               rejected=0, profile_consumed=True, native_input_policy=True),
+                               rejected=18 if name == "start" and renderer == "cpu" else 0,
+                               profile_consumed=True, native_input_policy=True),
                           dict(event="normal_exit", frames=300)])
         evidence.mkdir(parents=True)
         (evidence / "result.json").write_text(json.dumps(result))
@@ -88,6 +89,7 @@ class InstallDestinations(unittest.TestCase):
         notes = self.regular.with_suffix(".txt").read_text()
         for gap in ("native hosts", "delta channel", "stock HUD"):
             self.assertIn(gap, notes)
+        self.assertIn("start cpu: 10 surfaces presented, 18 rejected", notes)
         self.assertEqual((self.profile / "owner.cfg").read_bytes(), b"saved settings")
 
     def test_regular_still_rejects_missing_gameplay_marker(self):

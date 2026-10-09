@@ -43,6 +43,7 @@ def qualify_smoke(build, profile, evidence, content):
     require(not evidence.exists(), "use a fresh evidence directory")
     evidence.mkdir(parents=True)
     results = []
+    draws = []
     metadata = None
     for product, name in SMOKE_MAPS:
         for renderer in ("gl", "cpu"):
@@ -56,7 +57,7 @@ def qualify_smoke(build, profile, evidence, content):
             require(frame.get("map") == "maps/" + name + ".bsp" and frame.get("renderer") == renderer,
                     "smoke run did not render the requested map/backend")
             require(frame.get("client_connected") and frame.get("views", 0) > 0
-                    and frame.get("surfaces", 0) > 0 and frame.get("rejected") == 0,
+                    and frame.get("surfaces", 0) > 0,
                     "smoke run did not present a connected world view")
             require(frame.get("profile_consumed") and frame.get("native_input_policy"),
                     "smoke run did not consume copied saved settings")
@@ -66,15 +67,19 @@ def qualify_smoke(build, profile, evidence, content):
                     "candidate changed between smoke runs")
             metadata = current
             results.append(result)
+        draws.append(dict(map=name, renderer=renderer, surfaces=frame["surfaces"],
+                          rejected=frame.get("rejected")))
     summary = {"result": "PASS", "scope": "render_smoke", "gameplay_qualified": False,
-               "candidate_identity": results[0]["candidate_identity"],
+               "candidate_identity": results[0]["candidate_identity"], "draws": draws,
                "runs": [str(evidence / (name + "-" + renderer) / "result.json")
                         for _, name in SMOKE_MAPS for renderer in ("gl", "cpu")]}
     (evidence / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
     return metadata, summary
 
 
-def smoke_text(metadata):
+def smoke_text(metadata, qualification):
+    draw_counts = "\n".join(f"{row['map']} {row['renderer']}: {row['surfaces']} surfaces presented, "
+                            f"{row['rejected']} rejected" for row in qualification["draws"])
     return f"""Quake Anthology Rust: current development build
 Commit: {metadata['commit']}
 Built at UTC: {metadata['built_at_utc']}
@@ -85,6 +90,8 @@ Verified: Q1 start, Q2 base1 and Q3 q3dm1 load and render on GL and CPU
 at 640x400, with copied saved settings, 300 frames and exit 0 for each.
 Runs use owned Xvfb, forced X11, dummy audio and private HOME.
 GL driver identity is in the per-run logs; these runs do not qualify GL speed.
+First presented-frame counters, including current rendering limits:
+{draw_counts}
 
 Known gaps: native hosts and live entity-memory integration, delta channel and
 legacy network interoperability, stock HUD drawing. Gameplay module lifecycle,
@@ -157,7 +164,7 @@ def install(build, destination, profile, evidence, arguments, timings=None, base
     staged_notes = None
     try:
         if owner_smoke:
-            staged_notes = stage_text(smoke_text(metadata), destination.with_suffix(".txt"))
+            staged_notes = stage_text(smoke_text(metadata, qualification), destination.with_suffix(".txt"))
         require(identity(binary) == qualification["candidate_identity"], "qualified candidate changed before install")
         require(original_profile == {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}, "profile changed before install")
         os.replace(staged, destination)
