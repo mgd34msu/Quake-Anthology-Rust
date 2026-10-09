@@ -2224,3 +2224,43 @@ host fixture logs are retained; its prefilled queue violated the existing source
 empty-at-intake invariant, and the corrected fixture injects at physical intake.
 Native touch/pickup/module/mover and installed acceptance remain open. This closes
 the headless current-client attachment prediction gap, not those native gates.
+
+### THE-650 finished-slice normal candidate checks
+
+Clean portable normal candidate `3b85f115`, allocation tracking enabled and proof
+input disabled, built2026-10-09T10:15:10Z in27.675s. The finished slice ran eight
+copied-profile private Xvfb/Openbox checks: e1m1/base1/q3dm1 CPU(auto8) and GL,
+plus base1 Q1+Q3 movement on both backends. Each used640x400,60warm-up/600measured
+frames,cap120 and affinity4,5,6,7,8,9,10,11. All quit normally, retain two distinct
+views, observe40-42 actual key repeats and independent keyboard/pointer/both
+phases, release controls to neutral and use exactly two intakes through the common
+queue. All eight measured allocation gates pass with zero allocations,
+reallocations or requested bytes: one caller plus seven CPU workers, or no GL
+workers. The candidate and original profile remain unchanged. All24 recorded
+game/window-manager/display PIDs are absent. All eight captures were inspected.
+
+| Map / movement choices | Backend | Draw median / p99 ms | Total median / p99 ms |
+| --- | --- | ---: | ---: |
+| e1m1 Q1+Q3 | CPU edge/span | 1.433 / 2.290 | 7.942 / 9.455 |
+| e1m1 Q1+Q3 | GL (Mesa software) | 5.523 / 8.833 | 8.141 / 11.137 |
+| base1 Q2+Q3 | CPU edge/span | 1.572 / 3.897 | 7.952 / 9.427 |
+| base1 Q2+Q3 | GL (Mesa software) | 2.277 / 19.181 | 8.101 / 20.841 |
+| q3dm1 Q3+Q1 | CPU edge/span | 3.598 / 14.432 | 8.031 / 16.177 |
+| q3dm1 Q3+Q1 | GL (Mesa software) | 3.732 / 18.484 | 9.594 / 20.614 |
+| base1 Q1+Q3 | CPU edge/span | 1.518 / 2.688 | 7.964 / 8.599 |
+| base1 Q1+Q3 | GL (Mesa software) | 1.959 / 16.994 | 7.981 / 18.814 |
+
+GL identity: llvmpipe(LLVM22.1.8,256bits),Mesa26.2.2-arch1.1,GL4.6Core.
+The moving camera/input paths do not hold the prior run's camera states or draw
+work constant. In particular the changed q3dm1 draw distribution is not evidence
+of a renderer speedup or the R12 target. Total includes the frame-cap wait.
+e1m1 CPU rejects27initial/max29; base1 CPU max2; GL/q3dm1 CPU reject0.
+Fidelity remains unqualified (THE-3164 and existing render issues). These runs
+have no bound attachments or native gameplay modules, so they exercise regressions
+around the new path, not native attachment/touch/mover acceptance. Game audio,
+native wire/module and installed gameplay remain open; no installation occurred.
+
+Evidence under `THE-650-attachments/prediction`: `normal-candidate/build.json`,
+`normal-qualification/qualification.json`,
+`base1-q1-q3-qualification/qualification.json`, per-case logs/captures and
+`normal-cleanup.json`. The gameplay/timing installation gates remain unchanged.
