@@ -2267,6 +2267,12 @@ Evidence under `THE-650-attachments/prediction`: `normal-candidate/build.json`,
 
 ## THE-709 load-resolved think policy (2026-10-09)
 
+This section records committed `bebdaeb0`, measured by `abba-summary.json`.
+Its 6.107–7.222% median increases do not meet the owner's subsequent requirement
+to stay at or below the pre-commit baseline. `pointer-abi-abba.json` belongs to
+a rejected intermediate design, not `bebdaeb0`: its three medians were
+660→1,140 ns, 650→1,050 ns and 76,950→132,750 ns.
+
 Module registration now resolves seconds/milliseconds, frame-end comparison,
 Q2 tolerance, Q3 integer-to-float comparison and QW repetition into private
 timing data. Callback function pointers remain resolved at load. The shared
@@ -2301,8 +2307,8 @@ retain the comparator's existing bounds. It does not execute guest modules or
 native monster physics phases. Workspace tests pass 578 cases; all-target
 allocation-feature Clippy and the unchanged rule checker pass. Final release
 probe build took 7.066 seconds. Two measured indirect timing-call designs were
-rejected for median regressions between 61% and 86%; their receipts are retained alongside
-the accepted policy-data measurements.
+rejected for median regressions between 61% and 86%; their receipts are retained
+alongside the committed policy-data measurements.
 
 THE-656/702 source audit finds one production PlayerState definition, one
 HudState definition and one load-sized client array. The existing CLIENT loop
@@ -2322,3 +2328,49 @@ allocation-tracking -- --capacity 8192 --live 64` under the chosen CPU affinity.
 Native HUD drawing, module-phase think callers, installed five-scene think
 acceptance, native protocol connections and qualified qa-rust installation
 remain open on THE-656/702/709/859.
+
+## THE-709 spawn-bound function entries (2026-10-09)
+
+Each entity's native think function now binds to an entry in the one flat
+function table at load, spawn or a native function/owner write. That entry
+holds its module, adapter, native function index and arithmetic/repetition
+policy. The due-call path no longer resolves the module table or resolves the
+entity a second time inside `invoke`. Arithmetic still preserves native widths;
+QW rereads the current binding after a callback, and the ascending scan still
+uses the authoritative liveness bitset. Clearing a deadline preserves the
+binding. Releasing or replacing a lifetime clears both. Internal entry indices
+are never native callback identities or protocol/save fields.
+
+All callers have moved to binding at those boundaries; the old writable native
+callback column is private. Null and invalid functions retain their native
+value and module policy, clear a due deadline and reject only that call. Missing
+modules retain the deadline. The original-C comparator and its 13,390 fixture
+rows are unchanged and pass, including native function changes and QW repeats.
+Twenty focused tests cover the binding lifetime and existing dispatch behavior.
+
+Release CPU 23 A/B/B/A, 60 warm-up plus 600 measured frames, compares against
+the original `41d294e5` binary used before `bebdaeb0`. The measured loop and
+callback fixture are unchanged; only cold setup binds the entries:
+
+| Capacity / live actors | Before / after median ns | Median change | Before / after p99 ns |
+| --- | ---: | ---: | ---: |
+| 64 / 63 | 610 / 585 | −4.098% | 655 / 630 |
+| 8,192 / 64 | 660 / 635 | −3.788% | 715 / 675 |
+| 8,192 / 8,191 | 77,867.5 / 74,792.75 | −3.949% | 90,095 / 81,935 |
+
+Every median meets the at-or-below-baseline gate. Per-rule counts match:
+`[8580,8580,8580,7920,7920]`, `[9240,7920,8580,8580,7920]` and
+`[1081740,1081080,1081080,1081080,1081080]`. The probe checks final native
+timestamps, zero fidelity mismatches, zero allocations/reallocations/requested
+bytes and an allocation positive control of one. Separate four-million-call
+and 30,000 HUD-snapshot probes also count zero allocations after load. These
+are headless calling-thread measurements, without gameplay, workers or native
+module execution. Release probe build took 9.63 seconds.
+
+Evidence: local QA cache `THE-709-cost-recovery-20261009/final-abba.json`,
+`comparison/report.json`, `dispatch_allocations.log`, `hud_allocations.log`,
+`workspace.log`, `clippy.log` and `release.log`. `attempt1-abba.json` retains the
+rejected extra-indirect-call prototype. Workspace tests, all-target
+allocation-feature Clippy and the unchanged checker pass. Native physics-phase
+callers and installed five-scene acceptance remain open; this headless slice
+does not qualify a gameplay install.

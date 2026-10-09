@@ -1,5 +1,5 @@
 pub use qa_core::primitives::RuleSetId;
-use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, ThinkTime};
+use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, ThinkBinding, ThinkTime};
 use qa_world::entities::EntityTable;
 
 /// A native function, QC function or foreign export binds its boundary adapter
@@ -10,12 +10,36 @@ pub struct FunctionBinding<C> {
 }
 
 pub struct FunctionTable<C> {
-    modules: Box<[Option<ModuleFunctions<C>>]>,
+    modules: Box<[Option<ModuleBinding>]>,
+    functions: Box<[ResolvedFunction<C>]>,
 }
 
-struct ModuleFunctions<C> {
-    functions: Box<[FunctionBinding<C>]>,
+struct ResolvedFunction<C> {
+    function: FunctionBinding<C>,
+    module: ModuleId,
     timing: ThinkRules,
+}
+
+/// Immutable native function-index conversion, copied into a module at load.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModuleBinding {
+    first: u32,
+    count: u32,
+    missing: u32,
+}
+
+impl ModuleBinding {
+    /// Resolve at spawn, or whenever the native callback or owner changes.
+    /// Null and invalid functions retain their native value and use the
+    /// module's timing policy before a due call is rejected.
+    pub fn think(self, callback: Option<CallbackId>) -> ThinkBinding {
+        ThinkBinding {
+            callback,
+            path: callback
+                .filter(|id| id.0 < self.count)
+                .map_or(self.missing, |id| self.first + id.0),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -116,8 +140,22 @@ impl<C: ThinkWorld> FunctionTable<C> {
         modules: impl IntoIterator<Item = (ModuleId, RuleSetId, Vec<FunctionBinding<C>>)>,
     ) -> Result<Self, TableError> {
         let mut tables = Vec::new();
+        // Path zero is the unbound/missing-module marker, never a live entry.
+        let mut resolved = vec![ResolvedFunction {
+            function: FunctionBinding {
+                entry: 0,
+                call: |_, _, _, _| false,
+            },
+            module: ModuleId::default(),
+            timing: ThinkRules::load(RuleSetId::Quake3),
+        }];
         for (module, timing, functions) in modules {
-            if functions.len() > u32::MAX as usize {
+            let count = u32::try_from(functions.len()).map_err(|_| TableError::FunctionCapacity)?;
+            let first = u32::try_from(resolved.len()).map_err(|_| TableError::FunctionCapacity)?;
+            let missing = first
+                .checked_add(count)
+                .ok_or(TableError::FunctionCapacity)?;
+            if missing == u32::MAX {
                 return Err(TableError::FunctionCapacity);
             }
             let slot = module.0 as usize;
@@ -127,14 +165,57 @@ impl<C: ThinkWorld> FunctionTable<C> {
             if tables[slot].is_some() {
                 return Err(TableError::DuplicateModule);
             }
-            tables[slot] = Some(ModuleFunctions {
-                functions: functions.into_boxed_slice(),
+            tables[slot] = Some(ModuleBinding {
+                first,
+                count,
+                missing,
+            });
+            for function in functions {
+                resolved.push(ResolvedFunction {
+                    function,
+                    module,
+                    timing: ThinkRules::load(timing),
+                });
+            }
+            resolved.push(ResolvedFunction {
+                function: FunctionBinding {
+                    entry: 0,
+                    call: |_, _, _, _| false,
+                },
+                module,
                 timing: ThinkRules::load(timing),
             });
         }
         Ok(Self {
             modules: tables.into_boxed_slice(),
+            functions: resolved.into_boxed_slice(),
         })
+    }
+
+    pub fn module_binding(&self, module: ModuleId) -> ModuleBinding {
+        self.modules
+            .get(module.0 as usize)
+            .copied()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Bind the current lifetime at a load/spawn or native field-write boundary.
+    /// Rebind after ownership changes; internal paths never go on the wire.
+    pub fn bind_think(
+        &self,
+        entities: &mut EntityTable,
+        entity: EntityId,
+        callback: Option<CallbackId>,
+    ) -> bool {
+        let Some(slot) = entities.resolve(entity) else {
+            return false;
+        };
+        let binding = self
+            .module_binding(entities.columns.owner[slot])
+            .think(callback);
+        entities.columns.set_think_function(slot, binding);
+        true
     }
 
     pub fn invoke(
@@ -148,15 +229,16 @@ impl<C: ThinkWorld> FunctionTable<C> {
             .resolve(call.entity())
             .ok_or(CallError::StaleEntity)?;
         let module = entities.columns.owner[slot];
-        let functions = self
+        let binding = self
             .modules
             .get(module.0 as usize)
-            .and_then(Option::as_ref)
+            .copied()
+            .flatten()
             .ok_or(CallError::MissingModule)?;
-        let function = functions
-            .functions
-            .get(callback.0 as usize)
-            .ok_or(CallError::MissingFunction)?;
+        if callback.0 >= binding.count {
+            return Err(CallError::MissingFunction);
+        }
+        let function = &self.functions[(binding.first + callback.0) as usize].function;
         if (function.call)(world, module, function.entry, call) {
             Ok(())
         } else {
@@ -207,15 +289,16 @@ pub fn run_think<C: ThinkWorld>(
         let Some(due) = entities.columns.next_think[slot] else {
             return result;
         };
-        let module = entities.columns.owner[slot];
+        let binding = entities.columns.think_binding(slot);
         let Some(functions) = table
-            .modules
-            .get(module.0 as usize)
-            .and_then(Option::as_ref)
+            .functions
+            .get(binding.path as usize)
+            .filter(|_| binding.path != 0)
         else {
             result.rejected = result.rejected.saturating_add(1);
             return result;
         };
+        let module = functions.module;
         let Some(frame) = clock(module) else {
             result.rejected = result.rejected.saturating_add(1);
             return result;
@@ -228,15 +311,15 @@ pub fn run_think<C: ThinkWorld>(
                 return result;
             }
         };
-        let callback = entities.columns.think_fn[slot];
         entities.columns.next_think[slot] = None;
-        let accepted = callback
-            .ok_or(CallError::MissingFunction)
-            .and_then(|callback| {
-                table.invoke(world, callback, CallbackCall::Think { entity, time })
-            });
+        let accepted = (functions.function.call)(
+            world,
+            module,
+            functions.function.entry,
+            CallbackCall::Think { entity, time },
+        );
         result.current_lifetime = world.entities().resolve(entity).is_some();
-        if accepted.is_err() {
+        if !accepted {
             result.rejected = result.rejected.saturating_add(1);
             return result;
         }

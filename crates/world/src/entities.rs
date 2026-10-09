@@ -139,7 +139,7 @@ pub struct EntityColumns {
     pub maxs: Box<[Vec3]>,
     pub angles: Box<[Vec3]>,
     pub next_think: Box<[Option<ThinkTime>]>,
-    pub think_fn: Box<[Option<CallbackId>]>,
+    think_fn: Box<[qa_core::primitives::ThinkBinding]>,
     pub touch: Box<[Option<CallbackId>]>,
     pub use_fn: Box<[Option<CallbackId>]>,
     pub blocked: Box<[Option<CallbackId>]>,
@@ -176,7 +176,8 @@ impl EntityColumns {
             maxs: vec![Vec3::default(); capacity].into_boxed_slice(),
             angles: vec![Vec3::default(); capacity].into_boxed_slice(),
             next_think: vec![None; capacity].into_boxed_slice(),
-            think_fn: vec![None; capacity].into_boxed_slice(),
+            think_fn: vec![qa_core::primitives::ThinkBinding::default(); capacity]
+                .into_boxed_slice(),
             touch: vec![None; capacity].into_boxed_slice(),
             use_fn: vec![None; capacity].into_boxed_slice(),
             blocked: vec![None; capacity].into_boxed_slice(),
@@ -208,7 +209,7 @@ impl EntityColumns {
         self.maxs[slot] = Vec3::default();
         self.angles[slot] = Vec3::default();
         self.next_think[slot] = None;
-        self.think_fn[slot] = None;
+        self.think_fn[slot] = qa_core::primitives::ThinkBinding::default();
         self.touch[slot] = None;
         self.use_fn[slot] = None;
         self.blocked[slot] = None;
@@ -239,6 +240,18 @@ impl EntityColumns {
             mins: self.mins[slot],
             maxs: self.maxs[slot],
         }
+    }
+
+    pub fn think_binding(&self, slot: usize) -> qa_core::primitives::ThinkBinding {
+        self.think_fn[slot]
+    }
+
+    pub fn think_function(&self, slot: usize) -> Option<CallbackId> {
+        self.think_fn[slot].callback
+    }
+
+    pub fn set_think_function(&mut self, slot: usize, binding: qa_core::primitives::ThinkBinding) {
+        self.think_fn[slot] = binding;
     }
 
     pub fn set_body(&mut self, slot: usize, body: Body) {

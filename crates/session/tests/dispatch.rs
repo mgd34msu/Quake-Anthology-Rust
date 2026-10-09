@@ -8,6 +8,7 @@ struct World {
     remove: Option<EntityId>,
     reschedule: Option<ThinkTime>,
     replacement: Option<EntityId>,
+    bindings: [ModuleBinding; 8],
 }
 impl ThinkWorld for World {
     fn entities(&mut self) -> &mut EntityTable {
@@ -22,6 +23,7 @@ fn world(capacity: usize) -> World {
         remove: None,
         reschedule: None,
         replacement: None,
+        bindings: [ModuleBinding::default(); 8],
     }
 }
 
@@ -35,7 +37,25 @@ fn entity(world: &mut World, module: u16) -> EntityId {
 
 fn schedule(world: &mut World, entity: EntityId, at: ThinkTime, callback: Option<CallbackId>) {
     world.entities.columns.next_think[entity.slot as usize] = Some(at);
-    world.entities.columns.think_fn[entity.slot as usize] = callback;
+    set_function(world, entity.slot as usize, callback);
+}
+
+fn set_function(world: &mut World, slot: usize, callback: Option<CallbackId>) {
+    let module = world.entities.columns.owner[slot];
+    world
+        .entities
+        .columns
+        .set_think_function(slot, world.bindings[usize::from(module.0)].think(callback));
+}
+
+fn install(world: &mut World, table: &FunctionTable<World>) {
+    world.bindings = std::array::from_fn(|module| table.module_binding(ModuleId(module as u16)));
+    let mut start = 0;
+    while let Some(id) = world.entities.next_active(start) {
+        start = id.slot as usize + 1;
+        let callback = world.entities.columns.think_function(id.slot as usize);
+        assert!(table.bind_think(&mut world.entities, id, callback));
+    }
 }
 
 fn frame(now: f64, step: f64) -> Option<ThinkFrame> {
@@ -48,7 +68,7 @@ fn record(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -
     };
     let slot = world.entities.resolve(entity).unwrap();
     assert!(world.entities.columns.next_think[slot].is_none());
-    assert!(world.entities.columns.think_fn[slot].is_some());
+    assert!(world.entities.columns.think_function(slot).is_some());
     world.calls.push((entity.slot, module.0, entry, time));
     if let Some(remove) = world.remove.take() {
         let now = match time {
@@ -93,6 +113,7 @@ fn slot_order_clear_before_callback_clamped_time_and_removed_lifetimes() {
         )
     }))
     .unwrap();
+    install(&mut world, &table);
     let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.01));
     assert_eq!((stats.called, stats.rejected), (2, 0));
     assert_eq!(
@@ -103,10 +124,19 @@ fn slot_order_clear_before_callback_clamped_time_and_removed_lifetimes() {
         ]
     );
     assert!(world.entities.resolve(ids[1]).is_none());
-    assert!(world.entities.columns.think_fn[ids[1].slot as usize].is_none());
+    assert!(
+        world
+            .entities
+            .columns
+            .think_function(ids[1].slot as usize)
+            .is_none()
+    );
     // NetQuake does not repeat a callback which reschedules into this frame.
     assert_eq!(world.entities.columns.next_think[1], world.reschedule);
-    assert_eq!(world.entities.columns.think_fn[1], Some(CallbackId(0)));
+    assert_eq!(
+        world.entities.columns.think_function(1),
+        Some(CallbackId(0))
+    );
     assert_eq!(
         run_thinks(&mut world, &table, |_| frame(1.01, 0.01)).called,
         2
@@ -138,6 +168,7 @@ fn missing_modules_do_not_inherit_quake_timing_and_bad_functions_are_scoped() {
         Some(CallbackId(0)),
     );
     let table = table(RuleSetId::Quake);
+    install(&mut world, &table);
     let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
     assert_eq!((stats.called, stats.rejected), (1, 2));
     assert_eq!(world.calls, [(valid.slot, 1, 5, ThinkTime::Seconds(1.0))]);
@@ -147,7 +178,10 @@ fn missing_modules_do_not_inherit_quake_timing_and_bad_functions_are_scoped() {
     );
     assert!(world.entities.columns.next_think[bad_function.slot as usize].is_none());
     assert_eq!(
-        world.entities.columns.think_fn[bad_function.slot as usize],
+        world
+            .entities
+            .columns
+            .think_function(bad_function.slot as usize),
         Some(CallbackId(4))
     );
     assert_eq!(
@@ -175,10 +209,10 @@ fn null_callback_clears_only_the_due_deadline() {
         callback: None,
     };
     world.entities.columns.next_think[id.slot as usize] = think.at;
-    world.entities.columns.think_fn[id.slot as usize] = think.callback;
-    let result = run_think(&mut world, &table(RuleSetId::Quake2), id, |_| {
-        frame(1.0, 0.0)
-    });
+    set_function(&mut world, id.slot as usize, think.callback);
+    let table = table(RuleSetId::Quake2);
+    install(&mut world, &table);
+    let result = run_think(&mut world, &table, id, |_| frame(1.0, 0.0));
     assert_eq!(
         result,
         ThinkResult {
@@ -188,7 +222,13 @@ fn null_callback_clears_only_the_due_deadline() {
         }
     );
     assert!(world.entities.columns.next_think[id.slot as usize].is_none());
-    assert!(world.entities.columns.think_fn[id.slot as usize].is_none());
+    assert!(
+        world
+            .entities
+            .columns
+            .think_function(id.slot as usize)
+            .is_none()
+    );
     assert!(world.calls.is_empty());
 }
 
@@ -198,6 +238,7 @@ fn missing_clock_and_wrong_units_do_not_consume_a_deadline() {
     let id = entity(&mut world, 1);
     schedule(&mut world, id, ThinkTime::Seconds(1.0), Some(CallbackId(0)));
     let table = table(RuleSetId::Quake);
+    install(&mut world, &table);
     let missing = run_think(&mut world, &table, id, |_| None);
     assert_eq!(
         (missing.called, missing.rejected, missing.current_lifetime),
@@ -212,7 +253,7 @@ fn missing_clock_and_wrong_units_do_not_consume_a_deadline() {
         Some(ThinkTime::Seconds(1.0))
     );
     assert_eq!(
-        world.entities.columns.think_fn[id.slot as usize],
+        world.entities.columns.think_function(id.slot as usize),
         Some(CallbackId(0))
     );
     assert!(world.calls.is_empty());
@@ -223,6 +264,7 @@ fn quake_deadline_and_past_time_clamp_use_native_float_width() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
     let table = table(RuleSetId::Quake);
+    install(&mut world, &table);
     schedule(
         &mut world,
         id,
@@ -261,7 +303,7 @@ fn quake_deadline_and_past_time_clamp_use_native_float_width() {
     assert_eq!(world.calls[2].3, ThinkTime::Seconds(above));
     assert!(world.entities.columns.next_think[id.slot as usize].is_none());
     assert_eq!(
-        world.entities.columns.think_fn[id.slot as usize],
+        world.entities.columns.think_function(id.slot as usize),
         Some(CallbackId(0))
     );
 }
@@ -271,6 +313,7 @@ fn quake2_tolerance_is_double_after_native_float_clock_narrowing() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
     let table = table(RuleSetId::Quake2);
+    install(&mut world, &table);
     schedule(
         &mut world,
         id,
@@ -311,6 +354,7 @@ fn rerelease_deadlines_keep_all_integer_milliseconds() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
     let table = table(RuleSetId::Quake2Rerelease);
+    install(&mut world, &table);
     let due = 9_007_199_254_740_993;
     schedule(
         &mut world,
@@ -344,6 +388,7 @@ fn quake3_due_comparison_rounds_to_float_but_callback_time_stays_integer() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
     let table = table(RuleSetId::Quake3);
+    install(&mut world, &table);
     let boundary = 16_777_216;
     schedule(
         &mut world,
@@ -439,6 +484,7 @@ fn mixed_modules_resolve_independent_seconds_and_millisecond_frames() {
         )
     }))
     .unwrap();
+    install(&mut world, &table);
     let mut clocks = Vec::new();
     let stats = run_thinks(&mut world, &table, |module| {
         clocks.push(module);
@@ -462,7 +508,7 @@ fn mixed_modules_resolve_independent_seconds_and_millisecond_frames() {
         );
         assert!(world.entities.columns.next_think[id.slot as usize].is_none());
         assert_eq!(
-            world.entities.columns.think_fn[id.slot as usize],
+            world.entities.columns.think_function(id.slot as usize),
             Some(CallbackId(0))
         );
     }
@@ -474,11 +520,11 @@ fn chain(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) ->
     match entry {
         10 => {
             world.entities.columns.next_think[slot] = Some(ThinkTime::Seconds(0.6));
-            world.entities.columns.think_fn[slot] = Some(CallbackId(1));
+            set_function(world, slot, Some(CallbackId(1)));
         }
         20 => {
             world.entities.columns.next_think[slot] = Some(ThinkTime::Seconds(0.7));
-            world.entities.columns.think_fn[slot] = Some(CallbackId(2));
+            set_function(world, slot, Some(CallbackId(2)));
         }
         _ => {}
     }
@@ -521,6 +567,7 @@ fn quakeworld_rereads_function_and_finishes_reschedules_before_next_entity() {
         ),
     ])
     .unwrap();
+    install(&mut world, &table);
     let stats = run_thinks(&mut world, &table, |_| frame(0.5, 0.25));
     assert_eq!((stats.called, stats.rejected), (4, 0));
     assert_eq!(
@@ -533,7 +580,7 @@ fn quakeworld_rereads_function_and_finishes_reschedules_before_next_entity() {
         ]
     );
     assert_eq!(
-        world.entities.columns.think_fn[first.slot as usize],
+        world.entities.columns.think_function(first.slot as usize),
         Some(CallbackId(2))
     );
     assert!(world.entities.columns.next_think[first.slot as usize].is_none());
@@ -546,7 +593,7 @@ fn quakeworld_re_resolves_owner_and_its_clock_after_a_callback() {
         let slot = call.entity().slot as usize;
         world.entities.columns.owner[slot] = ModuleId(2);
         world.entities.columns.next_think[slot] = Some(ThinkTime::Milliseconds(42));
-        world.entities.columns.think_fn[slot] = Some(CallbackId(0));
+        set_function(world, slot, Some(CallbackId(0)));
         true
     }
     let mut world = world(4);
@@ -571,6 +618,7 @@ fn quakeworld_re_resolves_owner_and_its_clock_after_a_callback() {
         ),
     ])
     .unwrap();
+    install(&mut world, &table);
     let result = run_think(&mut world, &table, id, |module| match module.0 {
         1 => frame(0.5, 0.25),
         2 => Some(ThinkFrame::Milliseconds { now: 42 }),
@@ -609,6 +657,7 @@ fn quakeworld_rejection_stops_rescheduling_and_preserves_the_callback() {
         }],
     )])
     .unwrap();
+    install(&mut world, &table);
     let result = run_think(&mut world, &table, id, |_| frame(0.5, 0.25));
     assert_eq!(
         (result.called, result.rejected, result.current_lifetime),
@@ -620,7 +669,7 @@ fn quakeworld_rejection_stops_rescheduling_and_preserves_the_callback() {
         Some(ThinkTime::Seconds(0.5))
     );
     assert_eq!(
-        world.entities.columns.think_fn[id.slot as usize],
+        world.entities.columns.think_function(id.slot as usize),
         Some(CallbackId(0))
     );
 }
@@ -637,7 +686,13 @@ fn quakeworld_removal_and_slot_reuse_stop_the_old_generation() {
             .unwrap()
             .id;
         assert_eq!(replacement.slot, id.slot);
-        assert!(world.entities.columns.think_fn[replacement.slot as usize].is_none());
+        assert!(
+            world
+                .entities
+                .columns
+                .think_function(replacement.slot as usize)
+                .is_none()
+        );
         schedule(
             world,
             replacement,
@@ -659,6 +714,7 @@ fn quakeworld_removal_and_slot_reuse_stop_the_old_generation() {
         }],
     )])
     .unwrap();
+    install(&mut world, &table);
     let result = run_think(&mut world, &table, id, |_| frame(0.5, 0.25));
     assert_eq!(
         (result.called, result.rejected, result.current_lifetime),
@@ -690,6 +746,7 @@ fn all_entity_reactions_share_one_numeric_function_table() {
         }],
     )])
     .unwrap();
+    install(&mut world, &table);
     let event = DamageEvent {
         target: id,
         attacker: None,
@@ -748,6 +805,7 @@ fn function_handles_preserve_native_indices_above_sixteen_bits() {
             .collect(),
     )])
     .unwrap();
+    install(&mut world, &table);
     schedule(
         &mut world,
         id,
@@ -758,9 +816,72 @@ fn function_handles_preserve_native_indices_above_sixteen_bits() {
     assert_eq!((result.called, result.rejected), (1, 0));
     assert_eq!(world.calls[0].2, index);
     assert_eq!(
-        world.entities.columns.think_fn[id.slot as usize],
+        world.entities.columns.think_function(id.slot as usize),
         Some(CallbackId(index))
     );
+}
+
+#[test]
+fn stale_binding_cannot_change_a_reused_lifetime() {
+    let mut world = world(2);
+    let table = table(RuleSetId::Quake2);
+    install(&mut world, &table);
+    let old = entity(&mut world, 1);
+    assert!(table.bind_think(&mut world.entities, old, Some(CallbackId(0))));
+    assert!(world.entities.release(old, 0.0));
+    let current = entity(&mut world, 1);
+    assert_eq!(old.slot, current.slot);
+    assert_ne!(old.generation, current.generation);
+    assert_eq!(
+        world.entities.columns.think_binding(current.slot as usize),
+        ThinkBinding::default()
+    );
+    assert!(!table.bind_think(&mut world.entities, old, Some(CallbackId(0))));
+    schedule(
+        &mut world,
+        current,
+        ThinkTime::Seconds(1.0),
+        Some(CallbackId(0)),
+    );
+    let result = run_think(&mut world, &table, current, |_| frame(1.0, 0.0));
+    assert_eq!((result.called, result.rejected), (1, 0));
+}
+
+#[test]
+fn native_function_write_refreshes_only_the_bound_path() {
+    let mut world = world(4);
+    let id = entity(&mut world, 1);
+    let table = table(RuleSetId::Quake2);
+    install(&mut world, &table);
+    let slot = id.slot as usize;
+    world.entities.columns.next_think[slot] = Some(ThinkTime::Seconds(2.0));
+    assert!(table.bind_think(&mut world.entities, id, Some(CallbackId(u32::MAX))));
+    assert_eq!(
+        world.entities.columns.think_function(slot),
+        Some(CallbackId(u32::MAX))
+    );
+    // Invalid native functions are rejected only when due, after clearing the
+    // deadline, just like null native callbacks. No invented function limit.
+    assert_eq!(
+        run_think(&mut world, &table, id, |_| frame(1.0, 0.0)).rejected,
+        0
+    );
+    assert_eq!(
+        world.entities.columns.next_think[slot],
+        Some(ThinkTime::Seconds(2.0))
+    );
+    assert_eq!(
+        run_think(&mut world, &table, id, |_| frame(2.0, 0.0)).rejected,
+        1
+    );
+    assert!(world.entities.columns.next_think[slot].is_none());
+    assert!(table.bind_think(&mut world.entities, id, Some(CallbackId(0))));
+    world.entities.columns.next_think[slot] = Some(ThinkTime::Seconds(2.0));
+    assert_eq!(
+        run_think(&mut world, &table, id, |_| frame(2.0, 0.0)).called,
+        1
+    );
+    assert_eq!(world.calls, [(id.slot, 1, 5, ThinkTime::Seconds(2.0))]);
 }
 
 enum ActiveMutation {
@@ -774,6 +895,7 @@ struct ActiveMutationWorld {
     calls: Vec<EntityId>,
     mutation: Option<ActiveMutation>,
     spawned: Option<EntityId>,
+    binding: ModuleBinding,
 }
 
 impl ThinkWorld for ActiveMutationWorld {
@@ -812,7 +934,10 @@ fn mutate_active_slots(
     };
     let slot = allocation.id.slot as usize;
     world.entities.columns.next_think[slot] = Some(ThinkTime::Seconds(0.5));
-    world.entities.columns.think_fn[slot] = Some(CallbackId(0));
+    world
+        .entities
+        .columns
+        .set_think_function(slot, world.binding.think(Some(CallbackId(0))));
     world.spawned = Some(allocation.id);
     true
 }
@@ -829,6 +954,15 @@ fn mutation_table(timing: RuleSetId) -> Result<FunctionTable<ActiveMutationWorld
     .map_err(|_| "functions")
 }
 
+fn install_mutation(world: &mut ActiveMutationWorld, table: &FunctionTable<ActiveMutationWorld>) {
+    world.binding = table.module_binding(ModuleId(1));
+    let mut start = 0;
+    while let Some(id) = world.entities.next_active(start) {
+        start = id.slot as usize + 1;
+        assert!(table.bind_think(&mut world.entities, id, Some(CallbackId(0))));
+    }
+}
+
 fn mutation_entity(world: &mut ActiveMutationWorld) -> Result<EntityId, &'static str> {
     let id = world
         .entities
@@ -836,7 +970,10 @@ fn mutation_entity(world: &mut ActiveMutationWorld) -> Result<EntityId, &'static
         .ok_or("entity")?
         .id;
     world.entities.columns.next_think[id.slot as usize] = Some(ThinkTime::Seconds(0.5));
-    world.entities.columns.think_fn[id.slot as usize] = Some(CallbackId(0));
+    world
+        .entities
+        .columns
+        .set_think_function(id.slot as usize, world.binding.think(Some(CallbackId(0))));
     Ok(id)
 }
 
@@ -849,14 +986,15 @@ fn ascending_thinks_skip_deleted_slots_and_visit_new_higher_slots() -> Result<()
         calls: Vec::new(),
         mutation: None,
         spawned: None,
+        binding: ModuleBinding::default(),
     };
     let first = mutation_entity(&mut world)?;
     let removed = mutation_entity(&mut world)?;
     let kept = mutation_entity(&mut world)?;
     world.mutation = Some(ActiveMutation::RemoveFuture(removed));
-    let stats = run_thinks(&mut world, &mutation_table(RuleSetId::Quake2)?, |_| {
-        frame(10.0, 0.0)
-    });
+    let table = mutation_table(RuleSetId::Quake2)?;
+    install_mutation(&mut world, &table);
+    let stats = run_thinks(&mut world, &table, |_| frame(10.0, 0.0));
     let spawned = world.spawned.ok_or("spawned")?;
     assert_eq!(spawned.slot, kept.slot + 1);
     assert_eq!((stats.called, stats.rejected), (3, 0));
@@ -873,6 +1011,7 @@ fn ascending_thinks_do_not_revisit_new_lower_slots() -> Result<(), &'static str>
         calls: Vec::new(),
         mutation: None,
         spawned: None,
+        binding: ModuleBinding::default(),
     };
     let lower = mutation_entity(&mut world)?;
     let first = mutation_entity(&mut world)?;
@@ -880,6 +1019,7 @@ fn ascending_thinks_do_not_revisit_new_lower_slots() -> Result<(), &'static str>
     assert!(world.entities.release(lower, 0.0));
     world.mutation = Some(ActiveMutation::SpawnLower);
     let table = mutation_table(RuleSetId::Quake)?;
+    install_mutation(&mut world, &table);
     let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
     let spawned = world.spawned.ok_or("spawned")?;
     assert_eq!(spawned.slot, lower.slot);
@@ -903,14 +1043,15 @@ fn ascending_thinks_resolve_replaced_future_generations() -> Result<(), &'static
         calls: Vec::new(),
         mutation: None,
         spawned: None,
+        binding: ModuleBinding::default(),
     };
     let first = mutation_entity(&mut world)?;
     let middle = mutation_entity(&mut world)?;
     let displaced = mutation_entity(&mut world)?;
     world.mutation = Some(ActiveMutation::OverwriteLast);
-    let stats = run_thinks(&mut world, &mutation_table(RuleSetId::QuakeWorld)?, |_| {
-        frame(1.0, 0.0)
-    });
+    let table = mutation_table(RuleSetId::QuakeWorld)?;
+    install_mutation(&mut world, &table);
+    let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
     let replacement = world.spawned.ok_or("replacement")?;
     assert_eq!(replacement.slot, displaced.slot);
     assert_ne!(replacement.generation, displaced.generation);

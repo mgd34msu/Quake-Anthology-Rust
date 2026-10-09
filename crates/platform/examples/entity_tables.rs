@@ -79,7 +79,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if next < LIVE && slot == 1 + next * (capacity - 2) / (LIVE - 1) {
             ids[next] = id;
             entities.set_targetname(id, Some(if next % 2 == 0 { door } else { lower }));
-            entities.columns.think_fn[slot] = Some(CallbackId(0));
             next += 1;
         }
     }
@@ -111,6 +110,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
     )])
     .map_err(|e| format!("{e:?}"))?;
+    for id in ids {
+        if !functions.bind_think(&mut world.entities, id, Some(CallbackId(0))) {
+            return Err("think binding lifetime".into());
+        }
+    }
     let _ = Stopwatch::start().elapsed();
     allocations::begin_frame();
     let positive = black_box(Vec::<u8>::with_capacity(black_box(128)));

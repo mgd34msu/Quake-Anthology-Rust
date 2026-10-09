@@ -86,7 +86,9 @@ fn main() -> Result<(), String> {
         } else {
             ThinkTime::Milliseconds(1000)
         });
-        world.entities.columns.think_fn[id.slot as usize] = Some(CallbackId(0));
+        if !table.bind_think(&mut world.entities, id, Some(CallbackId(0))) {
+            return Err("think binding lifetime".into());
+        }
     }
     allocations::begin_frame();
     let positive = Box::new(std::hint::black_box(1u64));

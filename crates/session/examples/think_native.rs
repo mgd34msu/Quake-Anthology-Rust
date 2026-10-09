@@ -3,7 +3,7 @@
 //! example consumes no terminal input and launches no game or platform loop.
 use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, ThinkTime};
 use qa_session::dispatch::{
-    FunctionBinding, FunctionTable, RuleSetId, ThinkFrame, ThinkWorld, run_think,
+    FunctionBinding, FunctionTable, ModuleBinding, RuleSetId, ThinkFrame, ThinkWorld, run_think,
 };
 use qa_world::entities::{AllocationPolicy, EntityTable};
 use std::hint::black_box;
@@ -37,6 +37,7 @@ struct World {
     calls: [[u64; 5]; MAX_CALLS],
     call_count: usize,
     invalid: bool,
+    bindings: [ModuleBinding; ENTITIES],
 }
 
 impl ThinkWorld for World {
@@ -78,7 +79,11 @@ fn callback(world: &mut World, _: ModuleId, function: u32, call: CallbackCall) -
         u64::from(function),
         raw(time),
         world.entities.columns.next_think[slot].map_or(0, raw),
-        world.entities.columns.think_fn[slot].map_or(0, |value| u64::from(value.0)),
+        world
+            .entities
+            .columns
+            .think_function(slot)
+            .map_or(0, |value| u64::from(value.0)),
     ];
     world.call_count += 1;
     match world.input[index].mode {
@@ -92,7 +97,10 @@ fn callback(world: &mut World, _: ModuleId, function: u32, call: CallbackCall) -
         }
         1 | 2 => {
             if world.input[index].mode == 2 {
-                world.entities.columns.think_fn[slot] = Some(CallbackId(2));
+                world
+                    .entities
+                    .columns
+                    .set_think_function(slot, world.bindings[index].think(Some(CallbackId(2))));
             }
             if world.remaining[index] != 0 {
                 world.remaining[index] -= 1;
@@ -208,7 +216,10 @@ fn reset(world: &mut World, case: &Case) -> Result<[EntityId; ENTITIES], &'stati
             return Err("fixture native slot mapping differs");
         }
         world.entities.columns.next_think[index + 1] = deadline(case.entities[index].due);
-        world.entities.columns.think_fn[index + 1] = case.entities[index].callback;
+        world.entities.columns.set_think_function(
+            index + 1,
+            world.bindings[index].think(case.entities[index].callback),
+        );
     }
     Ok(ids)
 }
@@ -229,7 +240,11 @@ fn execute(
         let base = 2 + index * 6;
         let slot = index + 1;
         output[base] = world.entities.columns.next_think[slot].map_or(0, raw);
-        output[base + 1] = world.entities.columns.think_fn[slot].map_or(0, |id| u64::from(id.0));
+        output[base + 1] = world
+            .entities
+            .columns
+            .think_function(slot)
+            .map_or(0, |id| u64::from(id.0));
         output[base + 2] = u64::from(world.entities.resolve(ids[index]).is_some());
         output[base + 3] = u64::from(result.called);
         output[base + 4] = u64::from(result.rejected);
@@ -294,6 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         calls: [[0; 5]; MAX_CALLS],
         call_count: 0,
         invalid: false,
+        bindings: [ModuleBinding::default(); ENTITIES],
     };
     let table = FunctionTable::load((1..=ENTITIES).map(|module| {
         (
@@ -308,6 +324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     }))
     .map_err(|_| "fixture function table rejected")?;
+    world.bindings =
+        std::array::from_fn(|index| table.module_binding(ModuleId((index + 1) as u16)));
     let mut results = vec![[0u64; OUTPUT_WORDS]; count];
 
     allocation_counter::start();

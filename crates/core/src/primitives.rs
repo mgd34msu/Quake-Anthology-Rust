@@ -184,6 +184,14 @@ impl std::ops::BitOr for CollisionTags {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CallbackId(pub u32);
+
+/// Native callback identity plus its load/spawn-resolved engine table entry.
+/// The path is internal binding metadata and never a protocol or save field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThinkBinding {
+    pub callback: Option<CallbackId>,
+    pub path: u32,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Engine client identity. Native client limits and wire widths are applied at
 /// each protocol boundary, independently of this load-sized namespace.
