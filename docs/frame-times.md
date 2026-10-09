@@ -1552,3 +1552,20 @@ numeric cases and 344,250 conversion cases, including all three QW skin rows.
 Evidence: developer cache `THE-2885-cvar-prefix/comparison.json`, saved C helper
 source, fixture bytes, native/Rust output and build logs. This does not prove
 live userinfo or legacy protocol interoperability.
+
+THE-2886/THE-2887 fix the developer display startup: consume the whole
+newline-terminated Xvfb reply and close both pipe ends on every spawn/read
+failure. All 21 tool tests pass, including split digits/newline, EOF,
+malformed/oversized replies, timeout and a mocked spawn failure. The focused
+fixtures reject both the old single-read behavior and the old descriptor leak;
+all deliberately opened control descriptors are cleaned up.
+
+Real private q3dm1 CPU and GL runs finish 600+60 frames, quit normally,
+preserve candidate and original saved settings, and leave no owned PIDs.
+A final GL run also verifies the amended startup error handling. The same
+41.989 s normal engine build supplies these checks; no engine rebuild or
+installation is involved. Instrumented Rust heap counts are zero; GL remains
+Mesa llvmpipe software rendering. These validate developer harness behavior,
+not gameplay, performance targets or native SDL/driver allocation. Evidence:
+`THE-2886-complete-display/report.json`, `unit-tests-final.log`,
+`comparator-controls.json` and owned per-run logs/captures.

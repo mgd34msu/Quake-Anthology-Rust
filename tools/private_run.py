@@ -34,6 +34,24 @@ def settings(profile):
                   and not {"saves", "assets"}.intersection(p.relative_to(profile).parts))
 
 
+def display_number(fd, timeout=10):
+    deadline = time.monotonic() + timeout
+    reply = bytearray()
+    while b"\n" not in reply:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+            raise RuntimeError("private display startup timed out")
+        chunk = os.read(fd, 64)
+        if not chunk:
+            raise RuntimeError("private display startup ended before its reply")
+        reply.extend(chunk)
+        if len(reply) > 64:
+            raise RuntimeError("private display number is too long")
+    if reply[-1:] != b"\n" or not reply[:-1].isdigit():
+        raise RuntimeError("private display number is malformed")
+    return ":" + reply[:-1].decode("ascii")
+
+
 class XClient:
     def __init__(self, display):
         self.x = C.CDLL("libX11.so.6")
@@ -176,13 +194,11 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         if backend == "x11":
             read_fd, write_fd = os.pipe()
             try:
-                spawn("xvfb", ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", f"{size[0]}x{size[1]}x24", "-nolisten", "tcp", "-ardelay", "500", "-arinterval", "30"], env, pass_fds=(write_fd,))
-            finally:
-                os.close(write_fd)
-            try:
-                if not select.select([read_fd], [], [], 10)[0]:
-                    raise RuntimeError("private display startup timed out")
-                display = ":" + os.read(read_fd, 64).decode().strip()
+                try:
+                    spawn("xvfb", ["Xvfb", "-displayfd", str(write_fd), "-screen", "0", f"{size[0]}x{size[1]}x24", "-nolisten", "tcp", "-ardelay", "500", "-arinterval", "30"], env, pass_fds=(write_fd,))
+                finally:
+                    os.close(write_fd)
+                display = display_number(read_fd)
             finally:
                 os.close(read_fd)
             env["DISPLAY"] = display
