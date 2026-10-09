@@ -1,7 +1,7 @@
 //! Pinned developer timing of the shared primitive path, not a gameplay run.
 use qa_core::{
     primitives::{
-        Bounds, ClientId, CommandIntent, GeometryId, ModuleId, MovementRules, Plane, PlayerTail,
+        Bounds, ClientId, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId,
         SurfaceFlags, Vec3,
     },
     sys_events::EventTime,
@@ -111,11 +111,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let geometry = scene(&mut store)?;
     let mut scratch = store.scratch();
     let rules = [
-        MovementRules::Quake,
-        MovementRules::QuakeWorld,
-        MovementRules::Quake2,
-        MovementRules::Quake2Rerelease,
-        MovementRules::Quake3,
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
     ];
     for slot in 0..64 {
         server

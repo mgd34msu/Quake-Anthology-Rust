@@ -17,7 +17,7 @@ use qa_app::{
 use qa_console::{
     commands::Console,
     logger,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 use qa_core::{math::angle_vectors, sys_events::SeatId};
 use qa_platform::{Stopwatch, Window, pause};
@@ -410,7 +410,7 @@ fn run() -> Result<(), String> {
     drop(names);
     runtime.vfs = vfs;
     let source = input.native_source;
-    let rules = map::native_movement(source);
+    let rules = source;
     let mut console = Console::<Runtime>::new(Context {
         source,
         ..Context::default()
@@ -599,11 +599,11 @@ fn run() -> Result<(), String> {
     json_string(&loaded.profile_product);
     logger::console(format_args!(",\"native_source\":"));
     json_string(match source {
-        Source::Quake => "q1",
-        Source::QuakeWorld => "qw",
-        Source::Quake2 => "q2",
-        Source::Quake2Rerelease => "q2rr",
-        Source::Quake3 => "q3",
+        RuleSetId::Quake => "q1",
+        RuleSetId::QuakeWorld => "qw",
+        RuleSetId::Quake2 => "q2",
+        RuleSetId::Quake2Rerelease => "q2rr",
+        RuleSetId::Quake3 => "q3",
     });
     logger::console(format_args!(
         ",\"presentation\":\"{}\",\"origin\":{:?},\"angles\":{:?},\"axes\":[{:?},{:?},{:?}],\"fov\":{:?},\"near\":{},\"far\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"profile_consumed\":true,\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"profile_files\":[",

@@ -1,3 +1,4 @@
+pub use qa_core::primitives::RuleSetId;
 use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, ThinkTime};
 use qa_world::entities::EntityTable;
 
@@ -14,18 +15,7 @@ pub struct FunctionTable<C> {
 
 struct ModuleFunctions<C> {
     functions: Box<[FunctionBinding<C>]>,
-    timing: ThinkTiming,
-}
-
-/// Native scheduling arithmetic is selected once for the module, independently
-/// of map, movement rules and the clocks of other loaded modules.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThinkTiming {
-    Quake,
-    QuakeWorld,
-    Quake2,
-    Quake2Rerelease,
-    Quake3,
+    timing: RuleSetId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,59 +24,61 @@ pub enum ThinkFrame {
     Milliseconds { now: i64 },
 }
 
-impl ThinkTiming {
-    fn evaluate(self, due: ThinkTime, frame: ThinkFrame) -> Result<Option<ThinkTime>, CallError> {
-        match (self, due, frame) {
-            (
-                Self::Quake | Self::QuakeWorld,
-                ThinkTime::Seconds(due),
-                ThinkFrame::Seconds { now, step },
-            ) => {
-                // Q1/QW sv_phys.c SV_RunThink stores thinktime in float, but
-                // sv.time + host_frametime and the past-time test are double.
-                let mut due = due as f32;
-                if due <= 0.0 || f64::from(due) > now + step {
-                    return Ok(None);
-                }
-                if f64::from(due) < now {
-                    due = now as f32;
-                }
-                Ok(Some(ThinkTime::Seconds(f64::from(due))))
+fn evaluate_timing(
+    rules: RuleSetId,
+    due: ThinkTime,
+    frame: ThinkFrame,
+) -> Result<Option<ThinkTime>, CallError> {
+    match (rules, due, frame) {
+        (
+            RuleSetId::Quake | RuleSetId::QuakeWorld,
+            ThinkTime::Seconds(due),
+            ThinkFrame::Seconds { now, step },
+        ) => {
+            // Q1/QW sv_phys.c SV_RunThink stores thinktime in float, but
+            // sv.time + host_frametime and the past-time test are double.
+            let mut due = due as f32;
+            if due <= 0.0 || f64::from(due) > now + step {
+                return Ok(None);
             }
-            (Self::Quake2, ThinkTime::Seconds(due), ThinkFrame::Seconds { now, .. }) => {
-                // Q2 g_phys.c SV_RunThink: both stored times are float; the
-                // unsuffixed 0.001 promotes level.time before the addition.
-                let due = due as f32;
-                let now = now as f32;
-                if due <= 0.0 || f64::from(due) > f64::from(now) + 0.001 {
-                    return Ok(None);
-                }
-                Ok(Some(ThinkTime::Seconds(f64::from(now))))
+            if f64::from(due) < now {
+                due = now as f32;
             }
-            (
-                Self::Quake2Rerelease,
-                ThinkTime::Milliseconds(due),
-                ThinkFrame::Milliseconds { now },
-            ) => {
-                // Rerelease gtime_t retains int64_t milliseconds throughout.
-                if due <= 0 || due > now {
-                    return Ok(None);
-                }
-                Ok(Some(ThinkTime::Milliseconds(now)))
-            }
-            (Self::Quake3, ThinkTime::Milliseconds(due), ThinkFrame::Milliseconds { now }) => {
-                // Q3 G_RunThink narrows native int nextthink to float, then
-                // promotes int level.time to float for comparison. The callback
-                // still sees integer level.time, not that rounded float.
-                let due = (due as i32) as f32;
-                let now = now as i32;
-                if due <= 0.0 || due > now as f32 {
-                    return Ok(None);
-                }
-                Ok(Some(ThinkTime::Milliseconds(i64::from(now))))
-            }
-            _ => Err(CallError::TimeKind),
+            Ok(Some(ThinkTime::Seconds(f64::from(due))))
         }
+        (RuleSetId::Quake2, ThinkTime::Seconds(due), ThinkFrame::Seconds { now, .. }) => {
+            // Q2 g_phys.c SV_RunThink: both stored times are float; the
+            // unsuffixed 0.001 promotes level.time before the addition.
+            let due = due as f32;
+            let now = now as f32;
+            if due <= 0.0 || f64::from(due) > f64::from(now) + 0.001 {
+                return Ok(None);
+            }
+            Ok(Some(ThinkTime::Seconds(f64::from(now))))
+        }
+        (
+            RuleSetId::Quake2Rerelease,
+            ThinkTime::Milliseconds(due),
+            ThinkFrame::Milliseconds { now },
+        ) => {
+            // Rerelease gtime_t retains int64_t milliseconds throughout.
+            if due <= 0 || due > now {
+                return Ok(None);
+            }
+            Ok(Some(ThinkTime::Milliseconds(now)))
+        }
+        (RuleSetId::Quake3, ThinkTime::Milliseconds(due), ThinkFrame::Milliseconds { now }) => {
+            // Q3 G_RunThink narrows native int nextthink to float, then
+            // promotes int level.time to float for comparison. The callback
+            // still sees integer level.time, not that rounded float.
+            let due = (due as i32) as f32;
+            let now = now as i32;
+            if due <= 0.0 || due > now as f32 {
+                return Ok(None);
+            }
+            Ok(Some(ThinkTime::Milliseconds(i64::from(now))))
+        }
+        _ => Err(CallError::TimeKind),
     }
 }
 
@@ -107,7 +99,7 @@ pub enum CallError {
 
 impl<C: ThinkWorld> FunctionTable<C> {
     pub fn load(
-        modules: impl IntoIterator<Item = (ModuleId, ThinkTiming, Vec<FunctionBinding<C>>)>,
+        modules: impl IntoIterator<Item = (ModuleId, RuleSetId, Vec<FunctionBinding<C>>)>,
     ) -> Result<Self, TableError> {
         let mut tables = Vec::new();
         for (module, timing, functions) in modules {
@@ -214,7 +206,7 @@ pub fn run_think<C: ThinkWorld>(
             result.rejected = result.rejected.saturating_add(1);
             return result;
         };
-        let time = match functions.timing.evaluate(due, frame) {
+        let time = match evaluate_timing(functions.timing, due, frame) {
             Ok(Some(time)) => time,
             Ok(None) => return result,
             Err(_) => {
@@ -235,7 +227,7 @@ pub fn run_think<C: ThinkWorld>(
             return result;
         }
         result.called = result.called.saturating_add(1);
-        if !result.current_lifetime || functions.timing != ThinkTiming::QuakeWorld {
+        if !result.current_lifetime || functions.timing != RuleSetId::QuakeWorld {
             return result;
         }
     }

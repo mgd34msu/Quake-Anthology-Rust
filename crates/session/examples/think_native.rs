@@ -3,7 +3,7 @@
 //! example consumes no terminal input and launches no game or platform loop.
 use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, ThinkTime};
 use qa_session::dispatch::{
-    FunctionBinding, FunctionTable, ThinkFrame, ThinkTiming, ThinkWorld, run_think,
+    FunctionBinding, FunctionTable, RuleSetId, ThinkFrame, ThinkWorld, run_think,
 };
 use qa_world::entities::{AllocationPolicy, EntityTable};
 use std::hint::black_box;
@@ -118,7 +118,7 @@ fn header_word(data: &mut &[u8]) -> Result<u32, &'static str> {
     Ok(u32::from_le_bytes(*head))
 }
 
-fn input(data: &mut &[u8], timing: ThinkTiming) -> Result<Input, &'static str> {
+fn input(data: &mut &[u8], timing: RuleSetId) -> Result<Input, &'static str> {
     let now = word(data)?;
     let step = f64::from_bits(word(data)?);
     let due = word(data)?;
@@ -130,7 +130,7 @@ fn input(data: &mut &[u8], timing: ThinkTiming) -> Result<Input, &'static str> {
         return Err("invalid think fixture callback or frame duration");
     }
     let (frame, due, reschedule) = match timing {
-        ThinkTiming::Quake | ThinkTiming::QuakeWorld | ThinkTiming::Quake2 => {
+        RuleSetId::Quake | RuleSetId::QuakeWorld | RuleSetId::Quake2 => {
             let now = f64::from_bits(now);
             let due = f64::from_bits(due);
             let reschedule = f64::from_bits(reschedule);
@@ -139,7 +139,7 @@ fn input(data: &mut &[u8], timing: ThinkTiming) -> Result<Input, &'static str> {
                 || !reschedule.is_finite()
                 || due != f64::from(due as f32)
                 || reschedule != f64::from(reschedule as f32)
-                || (timing == ThinkTiming::Quake2 && now != f64::from(now as f32))
+                || (timing == RuleSetId::Quake2 && now != f64::from(now as f32))
             {
                 return Err("think seconds fixture violates its native float boundary");
             }
@@ -149,9 +149,9 @@ fn input(data: &mut &[u8], timing: ThinkTiming) -> Result<Input, &'static str> {
                 ThinkTime::Seconds(reschedule),
             )
         }
-        ThinkTiming::Quake2Rerelease | ThinkTiming::Quake3 => {
+        RuleSetId::Quake2Rerelease | RuleSetId::Quake3 => {
             let (now, due, reschedule) = (now as i64, due as i64, reschedule as i64);
-            if timing == ThinkTiming::Quake3
+            if timing == RuleSetId::Quake3
                 && [now, due, reschedule]
                     .iter()
                     .any(|&value| i32::try_from(value).is_err())
@@ -248,11 +248,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected q1|qw|q2|rr|q3, fixture file and result file".into());
     }
     let timing = match args[1].as_str() {
-        "q1" => ThinkTiming::Quake,
-        "qw" => ThinkTiming::QuakeWorld,
-        "q2" => ThinkTiming::Quake2,
-        "rr" => ThinkTiming::Quake2Rerelease,
-        "q3" => ThinkTiming::Quake3,
+        "q1" => RuleSetId::Quake,
+        "qw" => RuleSetId::QuakeWorld,
+        "q2" => RuleSetId::Quake2,
+        "rr" => RuleSetId::Quake2Rerelease,
+        "q3" => RuleSetId::Quake3,
         _ => return Err("invalid native think rule".into()),
     };
     let payload = std::fs::read(&args[2])?;

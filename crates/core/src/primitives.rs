@@ -297,7 +297,7 @@ pub enum PlayerTail {
 
 #[derive(Debug, Default)]
 pub struct PlayerState {
-    pub movement_rules: MovementRules,
+    pub movement_rules: RuleSetId,
     pub movement: MovementState,
     pub body: Body,
     pub view_angles: Vec3,
@@ -320,15 +320,27 @@ pub struct PlayerState {
     pub tail: PlayerTail,
 }
 
-/// Per-player physics policy, independent of map, module and wire protocol.
+/// One rule identity type. Each capability role selects its own value;
+/// geometry provenance, module policy and movement need not select the same id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MovementRules {
-    Quake,
-    QuakeWorld,
-    Quake2,
-    Quake2Rerelease,
+#[repr(u8)]
+pub enum RuleSetId {
+    Quake = 0,
+    QuakeWorld = 1,
+    Quake2 = 2,
+    Quake2Rerelease = 3,
     #[default]
-    Quake3,
+    Quake3 = 4,
+}
+
+impl RuleSetId {
+    pub const ALL: [Self; 5] = [
+        Self::Quake,
+        Self::QuakeWorld,
+        Self::Quake2,
+        Self::Quake2Rerelease,
+        Self::Quake3,
+    ];
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

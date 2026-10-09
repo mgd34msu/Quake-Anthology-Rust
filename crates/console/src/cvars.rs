@@ -4,7 +4,7 @@ use crate::{
     conversion::{self, Input, Text},
     cvars_generated::{BINDINGS, CONVERSIONS, DEFAULTS, DEFINITIONS, FLAGS, OPERANDS},
     numbers::{integer, number},
-    views::{Context, Role, Source},
+    views::{Context, Role, RuleSetId},
 };
 use qa_core::primitives::CvarHandle;
 use qa_core::text::FixedText;
@@ -344,7 +344,7 @@ impl Cvars {
     pub fn find(&self, name: &str) -> Option<CvarHandle> {
         self.bind(name, self.context).map(View::canonical)
     }
-    fn effective(&self, handle: CvarHandle, source: Source) -> &str {
+    fn effective(&self, handle: CvarHandle, source: RuleSetId) -> &str {
         let value = &self.values[handle.0 as usize];
         if value.explicit {
             self.texts[handle.0 as usize].as_str()
@@ -359,13 +359,13 @@ impl Cvars {
     }
     /// Per-client cached views keep movement/input defaults independent of the
     /// active map's console context; frame reads never parse text or bind names.
-    pub fn value_in(&self, handle: CvarHandle, source: Source) -> f32 {
+    pub fn value_in(&self, handle: CvarHandle, source: RuleSetId) -> f32 {
         self.values[handle.0 as usize].numbers[source as usize]
     }
     pub fn integer(&self, handle: CvarHandle) -> i32 {
         self.values[handle.0 as usize].integers[self.context.source as usize]
     }
-    pub fn integer_in(&self, handle: CvarHandle, source: Source) -> i32 {
+    pub fn integer_in(&self, handle: CvarHandle, source: RuleSetId) -> i32 {
         self.values[handle.0 as usize].integers[source as usize]
     }
     pub fn generation(&self, handle: CvarHandle) -> u64 {
@@ -393,12 +393,12 @@ impl Cvars {
     pub fn is_explicit(&self, handle: CvarHandle) -> bool {
         self.values[handle.0 as usize].explicit
     }
-    pub fn default_available(&self, handle: CvarHandle, source: Source) -> bool {
+    pub fn default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
         self.defaults[self.values[handle.0 as usize].row][source as usize].is_some()
     }
     /// Load-time consumers may retain native behavior for settings that the
     /// unified catalog accepts but the selected engine never registered.
-    pub fn native_default_available(&self, handle: CvarHandle, source: Source) -> bool {
+    pub fn native_default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
         let row = self.values[handle.0 as usize].row;
         let context = Context {
             source,
@@ -751,12 +751,12 @@ impl Cvars {
     fn refresh_number_at(&mut self, index: usize) {
         let numbers = std::array::from_fn(|s| {
             number(
-                self.effective(CvarHandle(index as u32), Source::ALL[s]),
-                Source::ALL[s],
+                self.effective(CvarHandle(index as u32), RuleSetId::ALL[s]),
+                RuleSetId::ALL[s],
             )
         });
         let integers = std::array::from_fn(|s| {
-            integer(self.effective(CvarHandle(index as u32), Source::ALL[s]))
+            integer(self.effective(CvarHandle(index as u32), RuleSetId::ALL[s]))
         });
         self.values[index].numbers = numbers;
         self.values[index].integers = integers;
@@ -771,7 +771,7 @@ impl Cvars {
         let projections = std::array::from_fn(|source| {
             std::array::from_fn(|role| {
                 let context = Context {
-                    source: Source::ALL[source],
+                    source: RuleSetId::ALL[source],
                     side: self.context.side,
                     role: ROLES[role],
                     dedicated: self.context.dedicated,
@@ -820,7 +820,7 @@ impl Cvars {
     }
     fn resolve_defaults(&mut self) {
         for row in 0..DEFINITIONS.len() {
-            for source in Source::ALL {
+            for source in RuleSetId::ALL {
                 self.defaults[row][source as usize] = self.resolve_default(row, source);
             }
         }
@@ -829,7 +829,7 @@ impl Cvars {
             if definition.stored {
                 continue;
             }
-            for source in Source::ALL {
+            for source in RuleSetId::ALL {
                 let context = Context {
                     source,
                     role: Role::Game,
@@ -887,7 +887,7 @@ impl Cvars {
             }
         }
     }
-    fn resolve_default(&self, row: usize, source: Source) -> Option<Cow<'static, str>> {
+    fn resolve_default(&self, row: usize, source: RuleSetId) -> Option<Cow<'static, str>> {
         let context = Context {
             source,
             role: stock_role(row, source),
@@ -969,7 +969,7 @@ fn condition(condition: Condition, context: Context) -> bool {
         Condition::Unresolved => false,
     }
 }
-fn stock_role(row: usize, source: Source) -> Role {
+fn stock_role(row: usize, source: RuleSetId) -> Role {
     let mut role = Role::Game;
     for clause in &DEFAULTS[DEFINITIONS[row].defaults[source as usize].defaults.clone()] {
         if clause.issues != 0 {

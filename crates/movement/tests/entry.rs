@@ -1,7 +1,7 @@
 mod support;
-use qa_core::primitives::{MovementRules, PlayerState, PlayerTail, UserCmd, Vec3};
+use qa_core::primitives::{PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3};
 use qa_movement::{pmove, set_bounds};
-fn player(rules: MovementRules) -> PlayerState {
+fn player(rules: RuleSetId) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
         tail: PlayerTail::Q2 { weapon_frame: 17 },
@@ -15,7 +15,7 @@ fn player(rules: MovementRules) -> PlayerState {
 #[test]
 fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
     let mut world = support::FixtureWorld::default();
-    let mut qw = player(MovementRules::QuakeWorld);
+    let mut qw = player(RuleSetId::QuakeWorld);
     let result = pmove(
         UserCmd {
             duration_ms: 101,
@@ -25,7 +25,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
         &mut qw,
         &mut world,
     );
-    let mut expected = player(MovementRules::QuakeWorld);
+    let mut expected = player(RuleSetId::QuakeWorld);
     for _ in 0..2 {
         pmove(
             UserCmd {
@@ -40,7 +40,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
     assert_eq!(result.steps, 2);
     assert_eq!(qw.body.position, expected.body.position);
     assert_eq!(qw.body.velocity, expected.body.velocity);
-    let mut q3 = player(MovementRules::Quake3);
+    let mut q3 = player(RuleSetId::Quake3);
     assert_eq!(
         pmove(
             UserCmd {
@@ -81,7 +81,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
 }
 #[test]
 fn netquake_uses_precise_duration_and_module_owns_jump() {
-    let mut state = player(MovementRules::Quake);
+    let mut state = player(RuleSetId::Quake);
     let mut world = support::FixtureWorld::default();
     let command = UserCmd {
         duration_ms: 11,
@@ -99,8 +99,8 @@ fn netquake_uses_precise_duration_and_module_owns_jump() {
 #[test]
 fn classic_quantizes_while_rerelease_keeps_floating_state() {
     let mut world = support::FixtureWorld::default();
-    let mut classic = player(MovementRules::Quake2);
-    let mut rr = player(MovementRules::Quake2Rerelease);
+    let mut classic = player(RuleSetId::Quake2);
+    let mut rr = player(RuleSetId::Quake2Rerelease);
     classic.body.position.0[0] = 0.06;
     rr.body.position.0[0] = 0.06;
     let command = UserCmd {

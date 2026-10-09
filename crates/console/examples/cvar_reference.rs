@@ -3,7 +3,7 @@ use qa_console::{
     conversion::{self, Input, Text},
     cvars_generated::{BINDINGS, CONVERSIONS},
     numbers,
-    views::{Context, Role, Source},
+    views::{Context, Role, RuleSetId},
 };
 use std::{
     fs::File,
@@ -40,7 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e.into()),
         }
-        let source = *Source::ALL.get(source[0] as usize).ok_or("source index")?;
+        let source = *RuleSetId::ALL
+            .get(source[0] as usize)
+            .ok_or("source index")?;
         if mode == "numbers" {
             let value = string(&mut input)?;
             output.write_all(&numbers::number(&value, source).to_bits().to_le_bytes())?;

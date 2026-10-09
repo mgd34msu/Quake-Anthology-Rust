@@ -8,7 +8,7 @@ static ALLOCATOR: qa_platform::allocations::CountingAllocator =
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_core::{
         primitives::{
-            ClientId, CommandIntent, ModuleId, MovementRules, NativeEntity, PlayerTail, Vec3,
+            ClientId, CommandIntent, ModuleId, NativeEntity, PlayerTail, RuleSetId, Vec3,
         },
         sys_events::EventTime,
     };
@@ -25,11 +25,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut server = Server::load(512, 1024, 2, 2, 2).map_err(|e| format!("{e:?}"))?;
     let rules = [
-        MovementRules::Quake,
-        MovementRules::QuakeWorld,
-        MovementRules::Quake2,
-        MovementRules::Quake2Rerelease,
-        MovementRules::Quake3,
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
     ];
     for slot in 0..512 {
         let connection = [Connection::Local, Connection::Remote, Connection::Bot][slot % 3];

@@ -118,6 +118,7 @@ def main():
             ("model-pose-policy", "struct ModelRules {}", "app/src"),
             ("collision-store-copy", "struct CollisionStore {}", "session/src"),
             ("trace-scratch-copy", "struct TraceScratch {}", "movement/examples"),
+            ("rule-identity-copy", "enum RuleSetId { Quake, QuakeWorld, Quake2, Quake2Rerelease, Quake3 }", "session/src"),
             ("epoch-mark-array", "impl Marks { fn begin(&mut self) { self.generation = self.generation.wrapping_add(1); if self.generation == 0 { self.values.fill(0); self.generation = 1; } } }", "world/src"),
             ("epoch-mark-batches", "impl Batches { fn begin(&mut self) { self.count = self.count.wrapping_add(1); if self.count == 0 { self.count = 1; for row in &mut self.rows { row.seen = 0; row.drawn = 0; } } } }", "render/src"),
             ("epoch-mark-reference", "fn renew(rows: &mut [u64], epoch: &mut u64) { *epoch = epoch.wrapping_add(1); if *epoch == 0 { rows.fill(0); *epoch = 1; } }", "world/examples"),
@@ -133,6 +134,33 @@ def main():
             if not passed:
                 raise RuntimeError("duplicate primitive was admitted: " + name)
             violation.unlink()
+        for name, content, relative in [
+            ("retired-movement-id", "enum MovementRules { Quake, Quake3 }", "crates/movement/src/retired_rules.rs"),
+            ("retired-think-id", "enum ThinkTiming { Quake, Quake3 }", "crates/session/src/retired_rules.rs"),
+            ("retired-movement-alias", "type MovementRules = RuleSetId;", "crates/movement/examples/retired_rules.rs"),
+            ("retired-movement-reexport", "pub use qa_core::primitives::{EntityId as Kept, RuleSetId as MovementRules};", "crates/movement/src/retired_rules.rs"),
+            ("retired-think-reexport", "pub use qa_core::primitives::RuleSetId as ThinkTiming;", "crates/session/src/retired_rules.rs"),
+            ("retired-console-reexport", "pub use qa_core::primitives::RuleSetId as Source;", "crates/console/src/views.rs"),
+            ("renamed-rule-identity", "enum Dialect { Quake, QuakeWorld, Quake2, Quake2Rerelease, Quake3 }", "crates/ui/src/retired_rules.rs"),
+            ("retired-console-source", "enum Source { Quake, QuakeWorld, Quake2, Quake2Rerelease, Quake3 }", "crates/console/src/views.rs"),
+        ]:
+            violation = root / relative
+            violation.parent.mkdir(parents=True, exist_ok=True)
+            original = violation.read_text() if violation.exists() else None
+            violation.write_text(content)
+            try:
+                result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+                output = json.loads(result.stdout)
+                passed = result.returncode != 0 and any(v["rule"] == "rule-identity" for v in output["findings"])
+                records.append({"rule": name, "rejected_before_cargo": passed})
+                (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+                if not passed:
+                    raise RuntimeError("retired or copied rule identity was admitted: " + name)
+            finally:
+                if original is None:
+                    violation.unlink()
+                else:
+                    violation.write_text(original)
         for name, content, relative in [
             ("retired-collision-world", "enum CollisionWorld { Hulls, Brushes }", "crates/world/src/retired_collision.rs"),
             ("variant-trace-scratch", "enum TraceScratch { Hulls, Brushes }", "crates/world/src/collision/store.rs"),

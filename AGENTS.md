@@ -33,6 +33,14 @@ gameplay and comparable measured gameplay timing gates.
 `crates/core/src/primitives.rs` owns entity, body, player state, usercmd, item,
 weapon, damage, sound/effect event, HUD state and cvar handle values.
 
+THE-2884: core owns the one `RuleSetId` identity type. Every capability role
+selects its own value; source provenance, module policy, movement, damage,
+trace, linking and scheduling must not inherit one another implicitly.
+Preserve its five source-column discriminants (Q1/QW/Q2/Q2RR/Q3 = 0/1/2/3/4).
+Do not recreate MovementRules, console Source or ThinkTiming identity enums,
+including renamed copies. TickRate, LinkOrder, ModelRules, TraceRules and
+DamageRules are capability data, not additional game identity types.
+
 THE-2868 keeps one CollisionStore with one flat model table for every loaded
 hull or brush resource. GeometryId generations are internal lifetimes; native
 inline ordinals and protocol fields remain unchanged. World and linked traces
@@ -254,7 +262,7 @@ no terminal reader belongs in app or a game module. Private checks use an owned
 pipe or PTY, never the owner's terminal. Other OS stdin sources remain pending.
 
 THE-891 owns `qa_movement::pmove(UserCmd, &mut PlayerState, trace)` and a
-function entry per MovementRules value. SERVER consumes local, remote and bot
+function entry per movement-role RuleSetId value. SERVER consumes local, remote and bot
 commands through that entry; current-command prediction calls it on separately
 owned hot state. Modules, wire protocols and map geometry never choose physics.
 MovementState owns grounding, stance, timers and cached tuning independently

@@ -36,11 +36,11 @@ fn main() -> Result<(), &'static str> {
         (
             ModuleId(module),
             match module {
-                1 => ThinkTiming::Quake,
-                2 => ThinkTiming::QuakeWorld,
-                3 => ThinkTiming::Quake2,
-                4 => ThinkTiming::Quake2Rerelease,
-                _ => ThinkTiming::Quake3,
+                1 => RuleSetId::Quake,
+                2 => RuleSetId::QuakeWorld,
+                3 => RuleSetId::Quake2,
+                4 => RuleSetId::Quake2Rerelease,
+                _ => RuleSetId::Quake3,
             },
             vec![FunctionBinding {
                 entry: 0,

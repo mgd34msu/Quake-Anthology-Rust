@@ -1,6 +1,6 @@
 use crate::{
     command_text::TextError,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 use qa_core::text::FixedText;
 
@@ -66,7 +66,7 @@ impl CommandBuffer {
     pub fn insert(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         let newline = usize::from(matches!(
             context.source,
-            Source::QuakeWorld | Source::Quake3
+            RuleSetId::QuakeWorld | RuleSetId::Quake3
         ));
         self.admit(text, newline)?;
         let size = text.len() + newline;
@@ -129,7 +129,7 @@ impl CommandBuffer {
                 }
                 (!quoted && b == b';')
                     || b == b'\n'
-                    || (span.context.source == Source::Quake3 && b == b'\r')
+                    || (span.context.source == RuleSetId::Quake3 && b == b'\r')
             })
             .unwrap_or(span.end);
         let result = line

@@ -5,13 +5,13 @@ use qa_app::{
 };
 use qa_console::{
     commands::Console,
-    views::{Context, Source as CommandSource},
+    views::{Context, RuleSetId as CommandSource},
 };
 use qa_core::{
     events::FrameEvent,
     loopback::Endpoint,
     primitives::{
-        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, MovementRules, PlayerTail,
+        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, RuleSetId, PlayerTail,
         PrintKind, SoundAction, SoundEvent, SoundId, Vec3, WeaponId, buttons,
     },
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
@@ -219,11 +219,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if bots {
         let rules = [
-            MovementRules::Quake,
-            MovementRules::QuakeWorld,
-            MovementRules::Quake2,
-            MovementRules::Quake2Rerelease,
-            MovementRules::Quake3,
+            RuleSetId::Quake,
+            RuleSetId::QuakeWorld,
+            RuleSetId::Quake2,
+            RuleSetId::Quake2Rerelease,
+            RuleSetId::Quake3,
         ];
         for slot in 0..64 {
             let id = host

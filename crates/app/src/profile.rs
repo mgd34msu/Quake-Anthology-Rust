@@ -5,11 +5,11 @@ use qa_console::{
     catalog::Scope,
     commands::Console,
     cvars::Cvars,
-    views::{Context, Source},
+    views::Context,
 };
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::{
-    primitives::{CvarHandle, MovementRules},
+    primitives::{CvarHandle, RuleSetId},
     sys_events::{EventTime, SeatId},
 };
 use qa_formats::archive::ArchiveReader;
@@ -54,29 +54,20 @@ fn document(vfs: &Vfs, file: FileRef) -> Result<Value, String> {
     Ok(value)
 }
 
-fn dialect(name: &str) -> Option<Source> {
+fn dialect(name: &str) -> Option<RuleSetId> {
     match name {
-        "q1" | "q1-netquake" => Some(Source::Quake),
-        "qw" | "q1-quakeworld" => Some(Source::QuakeWorld),
-        "q2" | "q2-classic" => Some(Source::Quake2),
-        "q2rr" | "q2-rerelease" => Some(Source::Quake2Rerelease),
-        "q3" => Some(Source::Quake3),
+        "q1" | "q1-netquake" => Some(RuleSetId::Quake),
+        "qw" | "q1-quakeworld" => Some(RuleSetId::QuakeWorld),
+        "q2" | "q2-classic" => Some(RuleSetId::Quake2),
+        "q2rr" | "q2-rerelease" => Some(RuleSetId::Quake2Rerelease),
+        "q3" => Some(RuleSetId::Quake3),
         _ => None,
-    }
-}
-pub fn source(rules: MovementRules) -> Source {
-    match rules {
-        MovementRules::Quake => Source::Quake,
-        MovementRules::QuakeWorld => Source::QuakeWorld,
-        MovementRules::Quake2 => Source::Quake2,
-        MovementRules::Quake2Rerelease => Source::Quake2Rerelease,
-        MovementRules::Quake3 => Source::Quake3,
     }
 }
 
 fn put(
     console: &mut Console<Runtime>,
-    source: Source,
+    source: RuleSetId,
     name: &str,
     value: &str,
     report: &mut Import,
@@ -105,7 +96,7 @@ fn put(
 fn entries(
     console: &mut Console<Runtime>,
     value: &Value,
-    source: Source,
+    source: RuleSetId,
     report: &mut Import,
 ) -> Result<(), String> {
     let rows = value.as_array().ok_or("profile entries must be a list")?;
@@ -165,7 +156,7 @@ fn seat(
     console: &mut Console<Runtime>,
     runtime: &mut Runtime,
     value: &Value,
-    source: Source,
+    source: RuleSetId,
     apply_preferences: bool,
     report: &mut Import,
 ) -> Result<(), String> {
@@ -274,7 +265,7 @@ pub fn load(
     console: &mut Console<Runtime>,
     runtime: &mut Runtime,
     product: &str,
-    movement: MovementRules,
+    movement: RuleSetId,
 ) -> Result<Import, String> {
     let mut report = Import::default();
     let Some(root) = qa_platform::saved_profile_root() else {
@@ -293,7 +284,7 @@ pub fn load(
         .iter()
         .find(|(_, name)| name.as_slice() == b"cvars/shared/canonical.json");
     let default_source = console.cvars.context().source;
-    let movement_source = source(movement);
+    let movement_source = movement;
     let prefix = format!("{product}/").to_ascii_lowercase();
     if let Some((file, name)) = canonical {
         let value = document(&runtime.vfs, *file)?;
@@ -303,7 +294,7 @@ pub fn load(
         entries(
             console,
             value.get("entries").ok_or("canonical entries missing")?,
-            Source::Quake3,
+            RuleSetId::Quake3,
             &mut report,
         )?;
         if let Some(players) = value.get("players").and_then(Value::as_array) {
@@ -312,7 +303,7 @@ pub fn load(
                     entries(
                         console,
                         player.get("entries").ok_or("player entries missing")?,
-                        Source::Quake3,
+                        RuleSetId::Quake3,
                         &mut report,
                     )?;
                 }
@@ -323,7 +314,7 @@ pub fn load(
             .push(String::from_utf8_lossy(name).into_owned());
     }
     if canonical.is_none() {
-        // Source/client archives precede movement and mouse-specific overrides.
+        // RuleSetId/client archives precede movement and mouse-specific overrides.
         for stage in [
             "cvars/fallback/",
             "cvars/source/",
@@ -444,8 +435,8 @@ impl InputHandles {
         }
         Ok(Self(handles))
     }
-    pub fn policy(&self, vars: &Cvars, rules: MovementRules) -> InputPolicy {
-        let source = source(rules);
+    pub fn policy(&self, vars: &Cvars, rules: RuleSetId) -> InputPolicy {
+        let source = rules;
         let mut policy = InputPolicy::native(rules);
         let value = |index: usize, fallback: f32| {
             let number = vars.value_in(self.0[index], source);
@@ -457,7 +448,7 @@ impl InputHandles {
             value(3, policy.speed[2]),
         ];
         policy.back_speed = if !vars.is_explicit(self.0[1])
-            && !matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld)
+            && !matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld)
         {
             policy.speed[0]
         } else {
@@ -469,11 +460,11 @@ impl InputHandles {
         ];
         policy.angle_multiplier = value(6, policy.angle_multiplier);
         policy.move_multiplier = value(7, policy.move_multiplier);
-        policy.always_run = if matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld)
+        policy.always_run = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld)
             && !vars.is_explicit(self.0[8])
         {
             false
-        } else if !matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld) {
+        } else if !matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
             vars.integer_in(self.0[8], source) != 0
         } else {
             value(8, if policy.always_run { 1.0 } else { 0.0 }) != 0.0
@@ -486,12 +477,12 @@ impl InputHandles {
         ];
         policy.mouse_side = value(13, policy.mouse_side);
         policy.mouse_forward = value(14, policy.mouse_forward);
-        policy.filter = if rules == MovementRules::Quake3 {
+        policy.filter = if rules == RuleSetId::Quake3 {
             vars.integer_in(self.0[15], source) != 0
         } else {
             value(15, 0.0) != 0.0
         };
-        policy.freelook = if rules == MovementRules::Quake3 {
+        policy.freelook = if rules == RuleSetId::Quake3 {
             vars.integer_in(self.0[16], source) != 0
         } else {
             value(16, 1.0) != 0.0

@@ -1,6 +1,6 @@
 # Shared movement
 
-THE-891 adds a Pmove-style function selected by each player's MovementRules.
+THE-891 adds a Pmove-style function selected by each player's RuleSetId.
 The call takes UserCmd, mutable PlayerState and shared trace/point-contents
 services. CollisionWorld selects the geometry algorithm independently. Module
 state, inventory, client protocol and movement rules remain separate choices.

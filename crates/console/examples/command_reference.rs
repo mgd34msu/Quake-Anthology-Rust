@@ -1,7 +1,7 @@
 use qa_console::{
     command_buffer::CommandBuffer,
     command_text,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 use qa_core::text::FixedText;
 use std::{
@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut at = 0;
     let mut out = io::BufWriter::new(io::stdout().lock());
     while at < bytes.len() {
-        let source = Source::ALL[bytes[at] as usize];
+        let source = RuleSetId::ALL[bytes[at] as usize];
         at += 1;
         let length = u16::from_le_bytes(bytes[at..at + 2].try_into()?) as usize;
         at += 2;
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             out.write_all(&(value.len() as u16).to_le_bytes())?;
             out.write_all(value.as_bytes())?;
         }
-        let tail = if source == Source::Quake3 {
+        let tail = if source == RuleSetId::Quake3 {
             {
                 let mut tail = FixedText::<8192>::default();
                 args.join(1, &mut tail).map_err(|e| format!("{e:?}"))?;

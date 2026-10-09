@@ -1,4 +1,4 @@
-use qa_core::primitives::{MovementRules, UserCmd};
+use qa_core::primitives::{RuleSetId, UserCmd};
 use qa_movement::prepare_command;
 
 #[test]
@@ -13,11 +13,11 @@ fn original_duration_rules_keep_server_time_and_command_fields() {
         (1000, [100, 100, 100, 255, 200]),
     ] {
         for (rule, value) in [
-            MovementRules::Quake,
-            MovementRules::QuakeWorld,
-            MovementRules::Quake2,
-            MovementRules::Quake2Rerelease,
-            MovementRules::Quake3,
+            RuleSetId::Quake,
+            RuleSetId::QuakeWorld,
+            RuleSetId::Quake2,
+            RuleSetId::Quake2Rerelease,
+            RuleSetId::Quake3,
         ]
         .into_iter()
         .zip(expected)

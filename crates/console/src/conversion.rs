@@ -4,7 +4,7 @@ use crate::{
     catalog::{Binding, Conversion, ConversionKind, Direction, Operation},
     cvars_generated::{MAPS, OPERANDS},
     numbers::number,
-    views::{Context, Role, Source},
+    views::{Context, Role, RuleSetId},
 };
 use std::fmt::{self, Write};
 
@@ -197,7 +197,7 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
         )]
         Operation::Skill => value = (value - 1.0).max(0.0).min(3.0),
         Operation::ViewSize => {
-            if !matches!(in_.context.source, Source::Quake | Source::QuakeWorld) {
+            if !matches!(in_.context.source, RuleSetId::Quake | RuleSetId::QuakeWorld) {
                 value = value.min(100.0);
             }
         }
@@ -224,18 +224,18 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
         }
         Operation::NoSkins => value = truth(value != 0.0),
         Operation::Download => {
-            if in_.context.source == Source::Quake2Rerelease && value < 0.0 {
+            if in_.context.source == RuleSetId::Quake2Rerelease && value < 0.0 {
                 value = 0.0;
             }
         }
         Operation::MusicMute => {
-            if cfg!(target_os = "linux") && in_.context.source == Source::Quake2 {
+            if cfg!(target_os = "linux") && in_.context.source == RuleSetId::Quake2 {
                 value = truth(value != 0.0);
             }
         }
         Operation::ForceRespawn => value = truth(value > 0.0),
         Operation::Needpass => {
-            if in_.context.source == Source::Quake3 {
+            if in_.context.source == RuleSetId::Quake3 {
                 value = truth(value != 0.0);
             }
         }
@@ -250,7 +250,7 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
         }
         Operation::QwSkin => {
             return Ok(Text::Borrowed(
-                if in_.context.source == Source::QuakeWorld {
+                if in_.context.source == RuleSetId::QuakeWorld {
                     in_.value.rsplit('/').next().unwrap_or(in_.value)
                 } else {
                     in_.value
@@ -267,7 +267,7 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
                 )
         }
         Operation::Spectator => {
-            if in_.context.source == Source::QuakeWorld {
+            if in_.context.source == RuleSetId::QuakeWorld {
                 return Ok(Text::Borrowed(in_.value));
             }
             value = truth(!in_.value.is_empty() && in_.value != "0");
@@ -347,7 +347,7 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
             }
         }
         Operation::Teamplay => {
-            if in_.context.source == Source::Quake
+            if in_.context.source == RuleSetId::Quake
                 && (value == 1.0 || value == 2.0)
                 && !c.operands.is_empty()
             {
@@ -399,14 +399,14 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
         | Operation::BoolDetail
         | Operation::SameLevel => value = truth(value != 0.0),
         Operation::NoSkins => {
-            value = truth(if in_.context.source == Source::QuakeWorld {
+            value = truth(if in_.context.source == RuleSetId::QuakeWorld {
                 value == 1.0
             } else {
                 value != 0.0
             })
         }
         Operation::Download => {
-            if in_.context.source == Source::Quake2Rerelease && value < 0.0 {
+            if in_.context.source == RuleSetId::Quake2Rerelease && value < 0.0 {
                 value = 0.0;
             }
         }
@@ -428,14 +428,14 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
             value = mapped(c, f64::from((color >> 4) & 15), Direction::AliasToCanonical);
         }
         Operation::QwSkin => {
-            if in_.context.source == Source::QuakeWorld {
+            if in_.context.source == RuleSetId::QuakeWorld {
                 let prefix = in_.current.rfind('/').map_or("", |i| &in_.current[..=i]);
                 out.prefix = Some(prefix);
             }
             return Ok(out);
         }
         Operation::MusicMute => {
-            if cfg!(target_os = "linux") && in_.context.source == Source::Quake2 {
+            if cfg!(target_os = "linux") && in_.context.source == RuleSetId::Quake2 {
                 if value == 0.0 {
                     if current != 0.0 {
                         out.detail = true;

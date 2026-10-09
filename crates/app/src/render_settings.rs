@@ -1,15 +1,15 @@
 //! Cold presentation settings from the one cvar table, selected per world.
-use qa_console::{cvars::Cvars, views::Source};
+use qa_console::{cvars::Cvars, views::RuleSetId};
 use qa_render::{assets::upload, material::resources::ImageSettings};
 
-pub fn image_settings(vars: &Cvars, source: Source) -> Result<ImageSettings, &'static str> {
+pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, &'static str> {
     let family = match source {
-        Source::Quake | Source::QuakeWorld => 1,
-        Source::Quake2 | Source::Quake2Rerelease => 2,
-        Source::Quake3 => 3,
+        RuleSetId::Quake | RuleSetId::QuakeWorld => 1,
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => 2,
+        RuleSetId::Quake3 => 3,
     };
     let mut settings = ImageSettings::native(family);
-    if source == Source::Quake2Rerelease {
+    if source == RuleSetId::Quake2Rerelease {
         settings.max_dimension = upload::MAX_DIMENSION;
     }
     let number = |name, fallback| -> Result<f32, &'static str> {
@@ -38,7 +38,7 @@ pub fn image_settings(vars: &Cvars, source: Source) -> Result<ImageSettings, &'s
     let gamma = number("r_gamma", 1.0)?;
     // tr_image.c:R_SetColorMappings clamps the native Q3 gamma value before
     // its reciprocal. Legacy gamma aliases already convert at the cvar edge.
-    let gamma = if source == Source::Quake3 {
+    let gamma = if source == RuleSetId::Quake3 {
         gamma.clamp(0.5, 3.0)
     } else {
         gamma
@@ -48,12 +48,12 @@ pub fn image_settings(vars: &Cvars, source: Source) -> Result<ImageSettings, &'s
     }
     settings.gamma_exponent = 1.0 / gamma;
     settings.intensity = number("r_intensity", settings.intensity)?;
-    if source == Source::Quake2Rerelease {
+    if source == RuleSetId::Quake2Rerelease {
         settings.intensity = settings.intensity.clamp(1.0, 5.0);
     }
     let picmip = match source {
-        Source::Quake3 => integer("r_picmip", i32::from(settings.picmip))?.clamp(0, 16) as f32,
-        Source::Quake2Rerelease => {
+        RuleSetId::Quake3 => integer("r_picmip", i32::from(settings.picmip))?.clamp(0, 16) as f32,
+        RuleSetId::Quake2Rerelease => {
             integer("r_picmip", i32::from(settings.picmip))?.clamp(0, 31) as f32
         }
         _ => number("r_picmip", f32::from(settings.picmip))?.trunc(),
@@ -63,7 +63,8 @@ pub fn image_settings(vars: &Cvars, source: Source) -> Result<ImageSettings, &'s
     }
     settings.picmip = picmip as u8;
     // Classic Q2 uses the float value; Q3/Q2 rerelease use atoi's integer.
-    settings.round_images_down = if matches!(source, Source::Quake3 | Source::Quake2Rerelease) {
+    settings.round_images_down = if matches!(source, RuleSetId::Quake3 | RuleSetId::Quake2Rerelease)
+    {
         integer("r_roundImagesDown", i32::from(settings.round_images_down))? != 0
     } else {
         number(

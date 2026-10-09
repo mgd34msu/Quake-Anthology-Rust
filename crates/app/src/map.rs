@@ -1,8 +1,7 @@
 //! Cold BSP and entity boundary conversion for the shared runtime.
 //! Spawn anchors describe the map; movement bounds are chosen by the player.
-use qa_console::views::Source;
 use qa_content::vfs::{MountKind, Vfs, normalize};
-use qa_core::primitives::{Bounds, ClipNode, GeometryId, MovementRules, SurfaceFlags, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, GeometryId, RuleSetId, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
     bsp::{Bsp, BspFormat, Lump, Map},
@@ -33,7 +32,7 @@ pub struct LoadedMap {
     pub collision_bounds: Bounds,
     pub render: LoadedWorld,
     pub spawn: SpawnAnchor,
-    pub native_source: Source,
+    pub native_source: RuleSetId,
     pub virtual_path: String,
     pub profile_product: String,
     pub entity_count: usize,
@@ -116,11 +115,11 @@ const Q3_NAME_FIELDS: &[NameField] = &[
     NameField::raw(b"noise"),
 ];
 
-fn entity_syntax(source: Source) -> EntitySyntax {
+fn entity_syntax(source: RuleSetId) -> EntitySyntax {
     match source {
-        Source::Quake | Source::QuakeWorld => EntitySyntax::Quake,
-        Source::Quake2 | Source::Quake2Rerelease => EntitySyntax::Quake2,
-        Source::Quake3 => EntitySyntax::Quake3,
+        RuleSetId::Quake | RuleSetId::QuakeWorld => EntitySyntax::Quake,
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => EntitySyntax::Quake2,
+        RuleSetId::Quake3 => EntitySyntax::Quake3,
     }
 }
 
@@ -200,40 +199,30 @@ impl NativeEntityText {
 /// validated lump directory selects its source; records are decoded at load.
 pub struct MapInput {
     bytes: Vec<u8>,
-    pub native_source: Source,
+    pub native_source: RuleSetId,
     pub virtual_path: String,
     pub profile_product: String,
     entity_source: NativeEntityText,
 }
 
-pub fn movement(name: &str) -> Result<MovementRules, &'static str> {
+pub fn movement(name: &str) -> Result<RuleSetId, &'static str> {
     match name {
-        "q1" => Ok(MovementRules::Quake),
-        "qw" => Ok(MovementRules::QuakeWorld),
-        "q2" => Ok(MovementRules::Quake2),
-        "q2rr" => Ok(MovementRules::Quake2Rerelease),
-        "q3" => Ok(MovementRules::Quake3),
+        "q1" => Ok(RuleSetId::Quake),
+        "qw" => Ok(RuleSetId::QuakeWorld),
+        "q2" => Ok(RuleSetId::Quake2),
+        "q2rr" => Ok(RuleSetId::Quake2Rerelease),
+        "q3" => Ok(RuleSetId::Quake3),
         _ => Err("movement must be q1, qw, q2, q2rr or q3"),
     }
 }
 
-pub fn movement_name(rules: MovementRules) -> &'static str {
+pub fn movement_name(rules: RuleSetId) -> &'static str {
     match rules {
-        MovementRules::Quake => "q1",
-        MovementRules::QuakeWorld => "qw",
-        MovementRules::Quake2 => "q2",
-        MovementRules::Quake2Rerelease => "q2rr",
-        MovementRules::Quake3 => "q3",
-    }
-}
-
-pub fn native_movement(source: Source) -> MovementRules {
-    match source {
-        Source::Quake => MovementRules::Quake,
-        Source::QuakeWorld => MovementRules::QuakeWorld,
-        Source::Quake2 => MovementRules::Quake2,
-        Source::Quake2Rerelease => MovementRules::Quake2Rerelease,
-        Source::Quake3 => MovementRules::Quake3,
+        RuleSetId::Quake => "q1",
+        RuleSetId::QuakeWorld => "qw",
+        RuleSetId::Quake2 => "q2",
+        RuleSetId::Quake2Rerelease => "q2rr",
+        RuleSetId::Quake3 => "q3",
     }
 }
 
@@ -258,9 +247,9 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     }
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = match bsp.format.family() {
-        1 => Source::Quake,
-        2 => Source::Quake2,
-        _ => Source::Quake3,
+        1 => RuleSetId::Quake,
+        2 => RuleSetId::Quake2,
+        _ => RuleSetId::Quake3,
     };
     let entity_source = NativeEntityText {
         syntax: entity_syntax(source),
@@ -282,9 +271,9 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     let profile_product = format!(
         "{}/{product}",
         match source {
-            Source::Quake | Source::QuakeWorld => "q1",
-            Source::Quake2 | Source::Quake2Rerelease => "q2",
-            Source::Quake3 => "q3a",
+            RuleSetId::Quake | RuleSetId::QuakeWorld => "q1",
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => "q2",
+            RuleSetId::Quake3 => "q3a",
         }
     );
     Ok(MapInput {

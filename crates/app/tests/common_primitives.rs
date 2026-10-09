@@ -4,7 +4,7 @@ use qa_app::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::{HudLine, ItemId, ModuleId, MovementRules, PlayerTail, WeaponId},
+    primitives::{HudLine, ItemId, ModuleId, RuleSetId, PlayerTail, WeaponId},
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
 use qa_gameplay::registry::ItemKind;
@@ -158,7 +158,7 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
             .unwrap();
         let player = &mut runtime.server.clients[id.0 as usize].player;
         let loadout = loadouts[slot % 3];
-        player.movement_rules = MovementRules::Quake3;
+        player.movement_rules = RuleSetId::Quake3;
         player.health = 100 - slot as i32;
         player.armor = slot as i32;
         player.score = slot as i32 * 3;

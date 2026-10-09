@@ -1,6 +1,6 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
-    primitives::{MovementRules, UserCmd, Vec3, buttons},
+    primitives::{RuleSetId, UserCmd, Vec3, buttons},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
 };
 
@@ -134,7 +134,7 @@ struct Seat {
 /// Cached command tuning; map geometry and module formats never select it.
 #[derive(Clone, Copy, Debug)]
 pub struct InputPolicy {
-    pub rules: Option<MovementRules>,
+    pub rules: Option<RuleSetId>,
     pub speed: [f32; 3],
     pub back_speed: f32,
     pub angle_speed: [f32; 2],
@@ -153,15 +153,15 @@ pub struct InputPolicy {
     pub delta_pitch: f32,
 }
 impl InputPolicy {
-    pub fn native(rules: MovementRules) -> Self {
-        let q1 = matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld);
+    pub fn native(rules: RuleSetId) -> Self {
+        let q1 = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
         Self {
             rules: Some(rules),
             speed: [200.0, if q1 { 350.0 } else { 200.0 }, 200.0],
             back_speed: 200.0,
             angle_speed: [
                 140.0,
-                if rules == MovementRules::Quake3 {
+                if rules == RuleSetId::Quake3 {
                     140.0
                 } else {
                     150.0
@@ -169,19 +169,16 @@ impl InputPolicy {
             ],
             angle_multiplier: 1.5,
             move_multiplier: 2.0,
-            always_run: matches!(
-                rules,
-                MovementRules::Quake2Rerelease | MovementRules::Quake3
-            ),
+            always_run: matches!(rules, RuleSetId::Quake2Rerelease | RuleSetId::Quake3),
             sensitivity: 3.0,
             acceleration: 0.0,
             mouse_scale: [0.022; 2],
-            mouse_side: if rules == MovementRules::Quake3 {
+            mouse_side: if rules == RuleSetId::Quake3 {
                 0.25
             } else {
                 0.8
             },
-            mouse_forward: if rules == MovementRules::Quake3 {
+            mouse_forward: if rules == RuleSetId::Quake3 {
                 0.25
             } else {
                 1.0
@@ -642,11 +639,8 @@ impl Input {
         self.previous = Some(time);
         std::array::from_fn(|index| {
             let policy = policies[index];
-            let q3 = policy.rules == Some(MovementRules::Quake3);
-            let q1 = matches!(
-                policy.rules,
-                Some(MovementRules::Quake | MovementRules::QuakeWorld)
-            );
+            let q3 = policy.rules == Some(RuleSetId::Quake3);
+            let q1 = matches!(policy.rules, Some(RuleSetId::Quake | RuleSetId::QuakeWorld));
             let seat = &mut self.seats[index];
             // Modifiers use native held state; action buttons also retain taps.
             let held = seat.actions.each_ref().map(Button::active);

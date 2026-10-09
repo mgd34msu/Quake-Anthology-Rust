@@ -2,25 +2,22 @@
 use crate::physics::Step;
 use qa_core::{
     math,
-    primitives::{MovementRules, Vec3},
+    primitives::{RuleSetId, Vec3},
 };
 
-pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: MovementRules) -> Vec3 {
+pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: RuleSetId) -> Vec3 {
     let dot = velocity.dot(normal);
-    let backoff = if rules == MovementRules::Quake3 {
+    let backoff = if rules == RuleSetId::Quake3 {
         if dot < 0.0 { dot * 1.001 } else { dot / 1.001 }
     } else {
-        dot * if matches!(
-            rules,
-            MovementRules::Quake2 | MovementRules::Quake2Rerelease
-        ) {
+        dot * if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
             1.01
         } else {
             1.0
         }
     };
     let mut out = velocity - normal * backoff;
-    if rules != MovementRules::Quake3 {
+    if rules != RuleSetId::Quake3 {
         for value in &mut out.0 {
             if *value > -0.1 && *value < 0.1 {
                 *value = 0.0;
@@ -145,7 +142,7 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
             step.player.body.velocity = clip(
                 step.player.body.velocity,
                 step.ground_normal,
-                MovementRules::Quake3,
+                RuleSetId::Quake3,
             );
         }
     }
@@ -190,14 +187,14 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
             if step.player.body.velocity.dot(planes[i]) >= 0.1 {
                 continue;
             }
-            let mut candidate = clip(step.player.body.velocity, planes[i], MovementRules::Quake3);
-            let mut end_candidate = clip(end_velocity, planes[i], MovementRules::Quake3);
+            let mut candidate = clip(step.player.body.velocity, planes[i], RuleSetId::Quake3);
+            let mut end_candidate = clip(end_velocity, planes[i], RuleSetId::Quake3);
             for j in 0..count {
                 if j == i || candidate.dot(planes[j]) >= 0.1 {
                     continue;
                 }
-                candidate = clip(candidate, planes[j], MovementRules::Quake3);
-                end_candidate = clip(end_candidate, planes[j], MovementRules::Quake3);
+                candidate = clip(candidate, planes[j], RuleSetId::Quake3);
+                end_candidate = clip(end_candidate, planes[j], RuleSetId::Quake3);
                 if candidate.dot(planes[i]) >= 0.0 {
                     continue;
                 }
@@ -303,7 +300,7 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
             step.player.body.velocity = clip(
                 step.player.body.velocity,
                 dropped.plane.normal,
-                MovementRules::Quake3,
+                RuleSetId::Quake3,
             );
         }
         return;

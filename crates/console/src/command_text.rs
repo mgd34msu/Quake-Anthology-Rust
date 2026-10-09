@@ -1,5 +1,5 @@
 //! Command-boundary parsing from the original Q1/Q2/Q3 Cmd tokenizers.
-use crate::{conversion::Text, text::MAX_TEXT, views::Source};
+use crate::{conversion::Text, text::MAX_TEXT, views::RuleSetId};
 use qa_core::text::FixedText;
 use std::{fmt::Write, ops::Range};
 
@@ -79,7 +79,7 @@ impl<'a> Arguments<'a> {
 
 pub fn tokenize<'a>(
     text: &'a str,
-    source: Source,
+    source: RuleSetId,
     tokens: &'a mut Tokens,
 ) -> Result<Arguments<'a>, TextError> {
     tokens.len = 0;
@@ -89,8 +89,8 @@ pub fn tokenize<'a>(
     if text.contains('\0') {
         return Err(TextError::Nul);
     }
-    let q3 = source == Source::Quake3;
-    let q1 = source == Source::Quake;
+    let q3 = source == RuleSetId::Quake3;
+    let q1 = source == RuleSetId::Quake;
     let maximum = if q3 { 1024 } else { 80 };
     let bytes = text.as_bytes();
     let mut at = 0;
@@ -167,10 +167,10 @@ pub fn tokenize<'a>(
             end = at;
         }
         let mut value = &text[start..end];
-        if matches!(source, Source::Quake | Source::QuakeWorld) && value.len() >= 1024 {
+        if matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld) && value.len() >= 1024 {
             return Err(TextError::TooLong);
         }
-        if matches!(source, Source::Quake2 | Source::Quake2Rerelease) && value.len() >= 128 {
+        if matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) && value.len() >= 128 {
             if first == b'"' {
                 return Err(TextError::TooLong);
             }
@@ -189,7 +189,7 @@ pub fn tokenize<'a>(
         }
     }
     let mut raw = &text[args_start..];
-    if matches!(source, Source::Quake2 | Source::Quake2Rerelease) {
+    if matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
         raw = raw.trim_end_matches(|c: char| c.is_ascii() && c <= ' ');
     }
     Ok(Arguments { text, tokens, raw })
@@ -215,7 +215,7 @@ pub fn expand<'a>(
                 quote = !quote;
             }
             if !quote && byte == b'$' {
-                let token = tokenize(&raw[at + 1..], Source::Quake2, tokens)?;
+                let token = tokenize(&raw[at + 1..], RuleSetId::Quake2, tokens)?;
                 if !token.is_empty() {
                     let name = token.get(0);
                     let start = name.as_ptr() as usize - raw.as_ptr() as usize;

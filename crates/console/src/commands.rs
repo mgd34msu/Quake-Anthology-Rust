@@ -4,7 +4,7 @@ use crate::{
     command_text::{self, Arguments, TextError, Tokens},
     cvars::{Cvars, WriteError},
     text::MAX_TEXT,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 use qa_core::sys_events::{EventTime, SeatId};
 use qa_core::text::FixedText;
@@ -163,7 +163,10 @@ impl<H: Host> Console<H> {
                 host.print(format_args!("Command rejected: {error:?}\n"));
                 continue;
             }
-            if matches!(context.source, Source::Quake2 | Source::Quake2Rerelease) {
+            if matches!(
+                context.source,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+            ) {
                 let raw = parser.line.as_str();
                 let expanded = if raw.contains('$') {
                     command_text::expand(&mut parser.line, &mut parser.tokens, |name| {
@@ -499,7 +502,10 @@ impl<H: Host> Console<H> {
             .cvars
             .bind(args.get(1), context)
             .ok_or(CommandError::UnknownCvar)?;
-        if matches!(context.source, Source::Quake2 | Source::Quake2Rerelease) {
+        if matches!(
+            context.source,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        ) {
             if args.len() > 4 || (args.len() == 4 && !matches!(args.get(3), "u" | "s")) {
                 return Err(CommandError::Usage);
             }

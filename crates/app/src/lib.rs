@@ -11,7 +11,7 @@ use qa_content::vfs::Vfs;
 use qa_core::events::{EventRing, FrameEvent, TextStore};
 use qa_core::loopback::Loopback;
 use qa_core::primitives::{
-    ClientId, GeometryId, ModuleId, MovementRules, PlayerTail, PrintEvent, PrintKind,
+    ClientId, GeometryId, ModuleId, PlayerTail, PrintEvent, PrintKind, RuleSetId,
 };
 use qa_network::ingress::PacketReceiver;
 use qa_session::clients::{Connection, Server};
@@ -97,7 +97,7 @@ impl Runtime {
         &mut self,
         seat: qa_core::sys_events::SeatId,
         spawn: map::SpawnAnchor,
-        movement: MovementRules,
+        movement: RuleSetId,
     ) -> Result<ClientId, String> {
         let id = self
             .server

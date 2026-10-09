@@ -61,7 +61,7 @@ fn record(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -
     true
 }
 
-fn table(timing: ThinkTiming) -> FunctionTable<World> {
+fn table(timing: RuleSetId) -> FunctionTable<World> {
     FunctionTable::load([(
         ModuleId(1),
         timing,
@@ -85,7 +85,7 @@ fn slot_order_clear_before_callback_clamped_time_and_removed_lifetimes() {
     let table = FunctionTable::load((1..=3).map(|module| {
         (
             ModuleId(module),
-            ThinkTiming::Quake,
+            RuleSetId::Quake,
             vec![FunctionBinding {
                 entry: u32::from(module) * 10,
                 call: record,
@@ -137,7 +137,7 @@ fn missing_modules_do_not_inherit_quake_timing_and_bad_functions_are_scoped() {
         ThinkTime::Seconds(1.0),
         Some(CallbackId(0)),
     );
-    let table = table(ThinkTiming::Quake);
+    let table = table(RuleSetId::Quake);
     let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
     assert_eq!((stats.called, stats.rejected), (1, 2));
     assert_eq!(world.calls, [(valid.slot, 1, 5, ThinkTime::Seconds(1.0))]);
@@ -176,7 +176,7 @@ fn null_callback_clears_only_the_due_deadline() {
     };
     world.entities.columns.next_think[id.slot as usize] = think.at;
     world.entities.columns.think_fn[id.slot as usize] = think.callback;
-    let result = run_think(&mut world, &table(ThinkTiming::Quake2), id, |_| {
+    let result = run_think(&mut world, &table(RuleSetId::Quake2), id, |_| {
         frame(1.0, 0.0)
     });
     assert_eq!(
@@ -197,7 +197,7 @@ fn missing_clock_and_wrong_units_do_not_consume_a_deadline() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
     schedule(&mut world, id, ThinkTime::Seconds(1.0), Some(CallbackId(0)));
-    let table = table(ThinkTiming::Quake);
+    let table = table(RuleSetId::Quake);
     let missing = run_think(&mut world, &table, id, |_| None);
     assert_eq!(
         (missing.called, missing.rejected, missing.current_lifetime),
@@ -222,7 +222,7 @@ fn missing_clock_and_wrong_units_do_not_consume_a_deadline() {
 fn quake_deadline_and_past_time_clamp_use_native_float_width() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
-    let table = table(ThinkTiming::Quake);
+    let table = table(RuleSetId::Quake);
     schedule(
         &mut world,
         id,
@@ -270,7 +270,7 @@ fn quake_deadline_and_past_time_clamp_use_native_float_width() {
 fn quake2_tolerance_is_double_after_native_float_clock_narrowing() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
-    let table = table(ThinkTiming::Quake2);
+    let table = table(RuleSetId::Quake2);
     schedule(
         &mut world,
         id,
@@ -310,7 +310,7 @@ fn quake2_tolerance_is_double_after_native_float_clock_narrowing() {
 fn rerelease_deadlines_keep_all_integer_milliseconds() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
-    let table = table(ThinkTiming::Quake2Rerelease);
+    let table = table(RuleSetId::Quake2Rerelease);
     let due = 9_007_199_254_740_993;
     schedule(
         &mut world,
@@ -343,7 +343,7 @@ fn rerelease_deadlines_keep_all_integer_milliseconds() {
 fn quake3_due_comparison_rounds_to_float_but_callback_time_stays_integer() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
-    let table = table(ThinkTiming::Quake3);
+    let table = table(RuleSetId::Quake3);
     let boundary = 16_777_216;
     schedule(
         &mut world,
@@ -380,7 +380,7 @@ fn mixed_modules_resolve_independent_seconds_and_millisecond_frames() {
     let mut world = world(8);
     let specs = [
         (
-            ThinkTiming::Quake,
+            RuleSetId::Quake,
             ThinkTime::Seconds(1.5),
             ThinkFrame::Seconds {
                 now: 1.0,
@@ -389,7 +389,7 @@ fn mixed_modules_resolve_independent_seconds_and_millisecond_frames() {
             ThinkTime::Seconds(1.5),
         ),
         (
-            ThinkTiming::QuakeWorld,
+            RuleSetId::QuakeWorld,
             ThinkTime::Seconds(2.0),
             ThinkFrame::Seconds {
                 now: 2.0,
@@ -398,7 +398,7 @@ fn mixed_modules_resolve_independent_seconds_and_millisecond_frames() {
             ThinkTime::Seconds(2.0),
         ),
         (
-            ThinkTiming::Quake2,
+            RuleSetId::Quake2,
             ThinkTime::Seconds(10.0009),
             ThinkFrame::Seconds {
                 now: 10.0,
@@ -407,13 +407,13 @@ fn mixed_modules_resolve_independent_seconds_and_millisecond_frames() {
             ThinkTime::Seconds(10.0),
         ),
         (
-            ThinkTiming::Quake2Rerelease,
+            RuleSetId::Quake2Rerelease,
             ThinkTime::Milliseconds(5000),
             ThinkFrame::Milliseconds { now: 5000 },
             ThinkTime::Milliseconds(5000),
         ),
         (
-            ThinkTiming::Quake3,
+            RuleSetId::Quake3,
             ThinkTime::Milliseconds(23000),
             ThinkFrame::Milliseconds { now: 23000 },
             ThinkTime::Milliseconds(23000),
@@ -505,7 +505,7 @@ fn quakeworld_rereads_function_and_finishes_reschedules_before_next_entity() {
     let table = FunctionTable::load([
         (
             ModuleId(1),
-            ThinkTiming::QuakeWorld,
+            RuleSetId::QuakeWorld,
             [10, 20, 30]
                 .into_iter()
                 .map(|entry| FunctionBinding { entry, call: chain })
@@ -513,7 +513,7 @@ fn quakeworld_rereads_function_and_finishes_reschedules_before_next_entity() {
         ),
         (
             ModuleId(2),
-            ThinkTiming::Quake,
+            RuleSetId::Quake,
             vec![FunctionBinding {
                 entry: 40,
                 call: record,
@@ -555,7 +555,7 @@ fn quakeworld_re_resolves_owner_and_its_clock_after_a_callback() {
     let table = FunctionTable::load([
         (
             ModuleId(1),
-            ThinkTiming::QuakeWorld,
+            RuleSetId::QuakeWorld,
             vec![FunctionBinding {
                 entry: 10,
                 call: transfer,
@@ -563,7 +563,7 @@ fn quakeworld_re_resolves_owner_and_its_clock_after_a_callback() {
         ),
         (
             ModuleId(2),
-            ThinkTiming::Quake2Rerelease,
+            RuleSetId::Quake2Rerelease,
             vec![FunctionBinding {
                 entry: 20,
                 call: record,
@@ -602,7 +602,7 @@ fn quakeworld_rejection_stops_rescheduling_and_preserves_the_callback() {
     schedule(&mut world, id, ThinkTime::Seconds(0.5), Some(CallbackId(0)));
     let table = FunctionTable::load([(
         ModuleId(1),
-        ThinkTiming::QuakeWorld,
+        RuleSetId::QuakeWorld,
         vec![FunctionBinding {
             entry: 10,
             call: reject,
@@ -652,7 +652,7 @@ fn quakeworld_removal_and_slot_reuse_stop_the_old_generation() {
     schedule(&mut world, id, ThinkTime::Seconds(0.5), Some(CallbackId(0)));
     let table = FunctionTable::load([(
         ModuleId(1),
-        ThinkTiming::QuakeWorld,
+        RuleSetId::QuakeWorld,
         vec![FunctionBinding {
             entry: 10,
             call: replace,
@@ -683,7 +683,7 @@ fn all_entity_reactions_share_one_numeric_function_table() {
     }
     let table = FunctionTable::load([(
         ModuleId(2),
-        ThinkTiming::Quake2,
+        RuleSetId::Quake2,
         vec![FunctionBinding {
             entry: 77,
             call: reaction,
@@ -739,7 +739,7 @@ fn function_handles_preserve_native_indices_above_sixteen_bits() {
     let index = 65_536;
     let table = FunctionTable::load([(
         ModuleId(1),
-        ThinkTiming::Quake,
+        RuleSetId::Quake,
         (0..=index)
             .map(|entry| FunctionBinding {
                 entry,
@@ -817,7 +817,7 @@ fn mutate_active_slots(
     true
 }
 
-fn mutation_table(timing: ThinkTiming) -> Result<FunctionTable<ActiveMutationWorld>, &'static str> {
+fn mutation_table(timing: RuleSetId) -> Result<FunctionTable<ActiveMutationWorld>, &'static str> {
     FunctionTable::load([(
         ModuleId(1),
         timing,
@@ -854,7 +854,7 @@ fn ascending_thinks_skip_deleted_slots_and_visit_new_higher_slots() -> Result<()
     let removed = mutation_entity(&mut world)?;
     let kept = mutation_entity(&mut world)?;
     world.mutation = Some(ActiveMutation::RemoveFuture(removed));
-    let stats = run_thinks(&mut world, &mutation_table(ThinkTiming::Quake2)?, |_| {
+    let stats = run_thinks(&mut world, &mutation_table(RuleSetId::Quake2)?, |_| {
         frame(10.0, 0.0)
     });
     let spawned = world.spawned.ok_or("spawned")?;
@@ -879,7 +879,7 @@ fn ascending_thinks_do_not_revisit_new_lower_slots() -> Result<(), &'static str>
     let kept = mutation_entity(&mut world)?;
     assert!(world.entities.release(lower, 0.0));
     world.mutation = Some(ActiveMutation::SpawnLower);
-    let table = mutation_table(ThinkTiming::Quake)?;
+    let table = mutation_table(RuleSetId::Quake)?;
     let stats = run_thinks(&mut world, &table, |_| frame(1.0, 0.0));
     let spawned = world.spawned.ok_or("spawned")?;
     assert_eq!(spawned.slot, lower.slot);
@@ -908,11 +908,9 @@ fn ascending_thinks_resolve_replaced_future_generations() -> Result<(), &'static
     let middle = mutation_entity(&mut world)?;
     let displaced = mutation_entity(&mut world)?;
     world.mutation = Some(ActiveMutation::OverwriteLast);
-    let stats = run_thinks(
-        &mut world,
-        &mutation_table(ThinkTiming::QuakeWorld)?,
-        |_| frame(1.0, 0.0),
-    );
+    let stats = run_thinks(&mut world, &mutation_table(RuleSetId::QuakeWorld)?, |_| {
+        frame(1.0, 0.0)
+    });
     let replacement = world.spawned.ok_or("replacement")?;
     assert_eq!(replacement.slot, displaced.slot);
     assert_ne!(replacement.generation, displaced.generation);

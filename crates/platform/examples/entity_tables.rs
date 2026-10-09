@@ -5,7 +5,7 @@ use qa_core::{
 };
 use qa_platform::{Stopwatch, allocations};
 use qa_session::dispatch::{
-    FunctionBinding, FunctionTable, ThinkFrame, ThinkTiming, ThinkWorld, run_thinks,
+    FunctionBinding, FunctionTable, RuleSetId, ThinkFrame, ThinkWorld, run_thinks,
 };
 use qa_world::{
     entities::{AllocationPolicy, EntityTable, MAX_ENTITIES},
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let functions = FunctionTable::load([(
         ModuleId(1),
-        ThinkTiming::Quake2,
+        RuleSetId::Quake2,
         vec![FunctionBinding {
             entry: 70000,
             call: callback,

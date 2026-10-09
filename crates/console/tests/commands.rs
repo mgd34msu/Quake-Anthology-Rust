@@ -3,7 +3,7 @@ use qa_console::{
     command_text::{self, TextError},
     commands::{CommandError, Console, Host, ScriptError},
     cvars_generated::DEFINITIONS,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 use qa_core::text::FixedText;
 use std::fmt::{Arguments, Write};
@@ -38,7 +38,7 @@ impl Host for Capture {
         self.quit = true;
     }
 }
-fn context(source: Source) -> Context {
+fn context(source: RuleSetId) -> Context {
     Context {
         source,
         ..Context::default()
@@ -54,7 +54,7 @@ fn mark(
     Ok(())
 }
 
-fn tokens(text: &str, source: Source) -> Vec<String> {
+fn tokens(text: &str, source: RuleSetId) -> Vec<String> {
     let mut storage = command_text::Tokens::default();
     command_text::tokenize(text, source, &mut storage)
         .unwrap()
@@ -93,27 +93,31 @@ fn expanded(
 fn source_tokenizers_keep_original_quotes_comments_punctuation_and_limits() {
     let text = "echo a\"b c\" x:y {q} //end\nnext";
     assert_eq!(
-        tokens(text, Source::Quake),
+        tokens(text, RuleSetId::Quake),
         ["echo", "a\"b", "c\"", "x", ":", "y", "{", "q", "}", "next"]
     );
     assert_eq!(
-        tokens(text, Source::Quake2),
+        tokens(text, RuleSetId::Quake2),
         ["echo", "a\"b", "c\"", "x:y", "{q}", "next"]
     );
     assert_eq!(
-        tokens(text, Source::Quake3),
+        tokens(text, RuleSetId::Quake3),
         ["echo", "a", "b c", "x:y", "{q}"]
     );
     assert_eq!(
-        tokens("echo /* skip */one\"two\" //rest", Source::Quake3),
+        tokens("echo /* skip */one\"two\" //rest", RuleSetId::Quake3),
         ["echo", "one", "two"]
     );
-    for source in Source::ALL {
+    for source in RuleSetId::ALL {
         assert_eq!(tokens("echo \"unfinished", source), ["echo", "unfinished"]);
         let many = "x ".repeat(1100);
         assert_eq!(
             tokens(&many, source).len(),
-            if source == Source::Quake3 { 1024 } else { 80 }
+            if source == RuleSetId::Quake3 {
+                1024
+            } else {
+                80
+            }
         );
     }
 }
@@ -138,7 +142,7 @@ fn q2_macros_repeat_outside_quotes_and_reject_only_the_bad_command() {
 
 #[test]
 fn buffer_preserves_append_insert_quotes_source_context_and_overflow_atomicity() {
-    for source in Source::ALL {
+    for source in RuleSetId::ALL {
         let context = context(source);
         let mut buffer = CommandBuffer::new();
         buffer.append("echo he", context).unwrap();
@@ -167,7 +171,7 @@ fn buffer_preserves_append_insert_quotes_source_context_and_overflow_atomicity()
             "kept"
         );
     }
-    let q1 = context(Source::Quake);
+    let q1 = context(RuleSetId::Quake);
     let mut buffer = CommandBuffer::new();
     buffer.append("fix\n", q1).unwrap();
     buffer.insert("pre", q1).unwrap();
@@ -178,7 +182,7 @@ fn buffer_preserves_append_insert_quotes_source_context_and_overflow_atomicity()
 
 #[test]
 fn one_table_executes_alias_wait_nested_exec_and_cvars_in_every_source() {
-    for source in Source::ALL {
+    for source in RuleSetId::ALL {
         let context = context(source);
         let mut console = Console::<Capture>::new(context);
         let mut host = Capture::default();
@@ -235,7 +239,7 @@ fn cvarlist_has_every_owner_definition_once_with_seat_values_indented() {
 
 #[test]
 fn bare_assignment_uses_argv_one_and_set_retains_native_source_rules() {
-    for source in Source::ALL {
+    for source in RuleSetId::ALL {
         let context = context(source);
         let mut console = Console::<Capture>::new(context);
         let mut host = Capture::default();
@@ -257,7 +261,7 @@ fn bare_assignment_uses_argv_one_and_set_retains_native_source_rules() {
             .append("set sensitivity \"a b\" c\n", context)
             .unwrap();
         console.execute_frame(&mut host);
-        if matches!(source, Source::Quake2 | Source::Quake2Rerelease) {
+        if matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease) {
             assert_eq!(
                 console
                     .cvars
@@ -292,9 +296,9 @@ fn bare_assignment_uses_argv_one_and_set_retains_native_source_rules() {
 fn buffer_spans_preserve_mixed_sources_after_front_inserts_and_oversized_lines() {
     let mut buffer = CommandBuffer::new();
     let mut line = FixedText::<8192>::default();
-    let q1 = context(Source::Quake);
-    let q2 = context(Source::Quake2);
-    let q3 = context(Source::Quake3);
+    let q1 = context(RuleSetId::Quake);
+    let q2 = context(RuleSetId::Quake2);
+    let q3 = context(RuleSetId::Quake3);
     buffer.append("q1", q1).unwrap();
     buffer.append("q2\n", q2).unwrap();
     buffer.insert("first", q3).unwrap();

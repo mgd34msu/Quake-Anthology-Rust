@@ -1,15 +1,7 @@
-//! Source views select defaults and conversions, never a second cvar table.
+//! RuleSetId views select defaults and conversions, never a second cvar table.
 use crate::catalog::Scope;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Source {
-    Quake,
-    QuakeWorld,
-    Quake2,
-    Quake2Rerelease,
-    Quake3,
-}
+pub use qa_core::primitives::RuleSetId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Engine,
@@ -18,7 +10,7 @@ pub enum Role {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Context {
-    pub source: Source,
+    pub source: RuleSetId,
     pub side: Scope,
     pub role: Role,
     pub dedicated: bool,
@@ -28,7 +20,7 @@ pub struct Context {
 impl Default for Context {
     fn default() -> Self {
         Self {
-            source: Source::Quake3,
+            source: RuleSetId::Quake3,
             side: Scope::Client,
             role: Role::Engine,
             dedicated: false,
@@ -36,14 +28,4 @@ impl Default for Context {
             event_time: None,
         }
     }
-}
-
-impl Source {
-    pub const ALL: [Self; 5] = [
-        Self::Quake,
-        Self::QuakeWorld,
-        Self::Quake2,
-        Self::Quake2Rerelease,
-        Self::Quake3,
-    ];
 }

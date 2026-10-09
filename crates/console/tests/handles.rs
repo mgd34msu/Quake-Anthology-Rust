@@ -1,6 +1,6 @@
 use qa_console::{
     cvars::Cvars,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
 use std::hint::black_box;
@@ -39,7 +39,7 @@ fn generations_follow_values_details_deferred_updates_and_source_defaults() {
     cvars.set_text(developer, "1").unwrap();
     assert_eq!(cvars.generation(developer), changed);
     let q2 = Context {
-        source: Source::Quake2,
+        source: RuleSetId::Quake2,
         ..Context::default()
     };
     let gun = cvars.bind("cl_gun", q2).unwrap();
@@ -52,7 +52,7 @@ fn generations_follow_values_details_deferred_updates_and_source_defaults() {
         .bind(
             "_cl_color",
             Context {
-                source: Source::Quake,
+                source: RuleSetId::Quake,
                 ..q2
             },
         )
@@ -72,7 +72,7 @@ fn generations_follow_values_details_deferred_updates_and_source_defaults() {
     let sensitivity = cvars.find("sensitivity").unwrap();
     let generation = cvars.generation(sensitivity);
     cvars.select_context(Context {
-        source: Source::Quake,
+        source: RuleSetId::Quake,
         ..q2
     });
     assert_eq!(cvars.value(sensitivity), 3.0);
@@ -93,19 +93,19 @@ fn published_hot_views_match_native_projections_after_coupled_and_seat_changes()
         catalog::Scope,
         cvars_generated::BINDINGS,
         numbers::number,
-        views::{Role, Source},
+        views::{Role, RuleSetId},
     };
     let mut cvars = Cvars::new();
     cvars.cheats = true;
     for (source, name, value) in [
-        (Source::Quake, "gamma", "0.8"),
-        (Source::Quake, "teamplay", "2"),
-        (Source::Quake, "_cl_color", "18"),
-        (Source::Quake2, "cl_gun", "3"),
-        (Source::Quake2, "sensitivity", "3.25"),
-        (Source::Quake3, "cg_fov", "110"),
-        (Source::QuakeWorld, "skin", "grunt"),
-        (Source::Quake3, "ui_seat2_language", "1"),
+        (RuleSetId::Quake, "gamma", "0.8"),
+        (RuleSetId::Quake, "teamplay", "2"),
+        (RuleSetId::Quake, "_cl_color", "18"),
+        (RuleSetId::Quake2, "cl_gun", "3"),
+        (RuleSetId::Quake2, "sensitivity", "3.25"),
+        (RuleSetId::Quake3, "cg_fov", "110"),
+        (RuleSetId::QuakeWorld, "skin", "grunt"),
+        (RuleSetId::Quake3, "ui_seat2_language", "1"),
     ] {
         let context = Context {
             source,
@@ -120,7 +120,7 @@ fn published_hot_views_match_native_projections_after_coupled_and_seat_changes()
             } else {
                 binding.scope
             };
-            for source in Source::ALL {
+            for source in RuleSetId::ALL {
                 for role in [Role::Engine, Role::Game, Role::Cgame] {
                     let context = Context {
                         source,

@@ -6,7 +6,7 @@ use qa_app::{
 };
 use qa_console::{
     commands::Console,
-    views::{Context, Source},
+    views::{Context, RuleSetId},
 };
 use qa_core::sys_events::{DeviceId, SeatId};
 use qa_platform::EventPump;
@@ -74,11 +74,11 @@ fn run() -> Result<(), String> {
                     .next()
                     .ok_or("--console-source needs q1/qw/q2/q2rr/q3")?;
                 let source = [
-                    ("q1", Source::Quake),
-                    ("qw", Source::QuakeWorld),
-                    ("q2", Source::Quake2),
-                    ("q2rr", Source::Quake2Rerelease),
-                    ("q3", Source::Quake3),
+                    ("q1", RuleSetId::Quake),
+                    ("qw", RuleSetId::QuakeWorld),
+                    ("q2", RuleSetId::Quake2),
+                    ("q2rr", RuleSetId::Quake2Rerelease),
+                    ("q3", RuleSetId::Quake3),
                 ]
                 .into_iter()
                 .find(|(n, _)| *n == name)
@@ -205,7 +205,7 @@ fn run() -> Result<(), String> {
     }
     let staged_map = if let Some(name) = map_name {
         let input = map::read(&vfs, &name)?;
-        let rules = movement_rules.unwrap_or_else(|| map::native_movement(input.native_source));
+        let rules = movement_rules.unwrap_or_else(|| input.native_source);
         Some((input, rules))
     } else {
         None
@@ -276,12 +276,12 @@ fn run() -> Result<(), String> {
         // This world clock is the native gate-world default, independent of
         // --movement. Loaded SERVER providers retain their own clocks later.
         world_rate = match loaded.native_source {
-            Source::Quake | Source::QuakeWorld => TickRate::FrameDriven,
-            Source::Quake2 => TickRate::fixed(100).ok_or("invalid Q2 world period")?,
-            Source::Quake2Rerelease => {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => TickRate::FrameDriven,
+            RuleSetId::Quake2 => TickRate::fixed(100).ok_or("invalid Q2 world period")?,
+            RuleSetId::Quake2Rerelease => {
                 TickRate::fixed(25).ok_or("invalid Q2 rerelease world period")?
             }
-            Source::Quake3 => {
+            RuleSetId::Quake3 => {
                 let fps = console.cvars.find("sv_fps").ok_or("missing sv_fps")?;
                 TickRate::fixed((1000 / console.cvars.integer(fps).max(1) as u32).max(1))
                     .ok_or("invalid Q3 world period")?
@@ -301,7 +301,7 @@ fn run() -> Result<(), String> {
         let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
         // Entity insertion is native module/world rule data, not movement.
         let entity = runtime.server.clients[client.0 as usize].entity;
-        let order = if loaded.native_source == Source::Quake3 {
+        let order = if loaded.native_source == RuleSetId::Quake3 {
             qa_world::area::LinkOrder::Head
         } else {
             qa_world::area::LinkOrder::Tail
@@ -329,8 +329,8 @@ fn run() -> Result<(), String> {
             player.view_angles.0,
             player.body.mins.0,
             player.body.maxs.0,
-            loaded.native_source == Source::Quake
-                && rules != qa_core::primitives::MovementRules::Quake,
+            loaded.native_source == RuleSetId::Quake
+                && rules != qa_core::primitives::RuleSetId::Quake,
             imported_profile.consumed()
         );
         local_client = Some(client);

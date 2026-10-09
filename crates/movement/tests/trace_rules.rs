@@ -1,6 +1,6 @@
 mod support;
 
-use qa_core::primitives::{MovementRules, PlayerState, PlayerTail, UserCmd, Vec3};
+use qa_core::primitives::{PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3};
 use qa_movement::TraceServices;
 use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules};
 use std::cell::Cell;
@@ -46,11 +46,11 @@ impl TraceServices for CheckedQueries {
 #[test]
 fn every_movement_probe_gets_player_rules_independent_of_its_module_tail() {
     for movement_rules in [
-        MovementRules::Quake,
-        MovementRules::QuakeWorld,
-        MovementRules::Quake2,
-        MovementRules::Quake2Rerelease,
-        MovementRules::Quake3,
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
     ] {
         let mut player = PlayerState {
             movement_rules,
@@ -65,22 +65,22 @@ fn every_movement_probe_gets_player_rules_independent_of_its_module_tail() {
         // stationary trace that previously bypassed the ordinary step helper.
         player.movement.ducked = matches!(
             movement_rules,
-            MovementRules::Quake2 | MovementRules::Quake2Rerelease | MovementRules::Quake3
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
         );
         if player.movement.ducked {
             player.body.maxs.0[2] = 4.0;
         }
         let mut queries = CheckedQueries {
             world: support::FixtureWorld::default(),
-            expected: if movement_rules == MovementRules::Quake3 {
+            expected: if movement_rules == RuleSetId::Quake3 {
                 TraceRules::ARENA
             } else {
                 TraceRules::LEGACY
             },
             expected_entities: match movement_rules {
-                MovementRules::Quake | MovementRules::QuakeWorld => EntityTraceRules::QUAKE,
-                MovementRules::Quake2 | MovementRules::Quake2Rerelease => EntityTraceRules::QUAKE2,
-                MovementRules::Quake3 => EntityTraceRules::ARENA,
+                RuleSetId::Quake | RuleSetId::QuakeWorld => EntityTraceRules::QUAKE,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => EntityTraceRules::QUAKE2,
+                RuleSetId::Quake3 => EntityTraceRules::ARENA,
             },
             contents_calls: Cell::new(0),
             calls: 0,
@@ -102,14 +102,14 @@ fn every_movement_probe_gets_player_rules_independent_of_its_module_tail() {
         assert!(queries.calls > 0);
         assert!(queries.contents_calls.get() > 0);
         assert_eq!(result.traces, queries.calls);
-        if movement_rules == MovementRules::Quake {
+        if movement_rules == RuleSetId::Quake {
             assert!(queries.ledge_tests > 0 && queries.point_tests > 0);
         } else {
             assert!(queries.ground_tests > 0);
         }
         if matches!(
             movement_rules,
-            MovementRules::Quake2 | MovementRules::Quake2Rerelease | MovementRules::Quake3
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
         ) {
             assert!(queries.position_tests > 0);
             assert!(!player.movement.ducked);

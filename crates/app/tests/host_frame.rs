@@ -9,7 +9,7 @@ use qa_console::{
 };
 use qa_core::{
     loopback::Endpoint,
-    primitives::{CommandIntent, ModuleId, MovementRules, PlayerTail},
+    primitives::{CommandIntent, ModuleId, RuleSetId, PlayerTail},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_session::{
@@ -306,7 +306,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
         .unwrap();
     host.runtime.server.clients[bot.0 as usize]
         .player
-        .movement_rules = MovementRules::Quake2;
+        .movement_rules = RuleSetId::Quake2;
     host.runtime.server.clients[bot.0 as usize].intent = CommandIntent {
         movement: [30, -20, 10],
         ..CommandIntent::default()

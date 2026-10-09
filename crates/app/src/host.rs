@@ -346,7 +346,7 @@ impl FrameHost {
         let mut commands = if self.native_input_policy_active() {
             let policies = std::array::from_fn(|seat| {
                 let rules = self.local_clients[seat].map_or(
-                    qa_core::primitives::MovementRules::default(),
+                    qa_core::primitives::RuleSetId::default(),
                     |id| {
                         self.runtime.server.clients[id.0 as usize]
                             .player
@@ -372,14 +372,12 @@ impl FrameHost {
                 .build_frame(self.time, [127; 3], [0.022; 2])
         };
         for (seat, command) in commands.iter_mut().enumerate() {
-            let rules = self.local_clients[seat].map_or(
-                qa_core::primitives::MovementRules::default(),
-                |id| {
+            let rules =
+                self.local_clients[seat].map_or(qa_core::primitives::RuleSetId::default(), |id| {
                     self.runtime.server.clients[id.0 as usize]
                         .player
                         .movement_rules
-                },
-            );
+                });
             *command = qa_movement::prepare_command(rules, *command);
         }
         for (seat, id) in self.local_clients.iter().enumerate() {

@@ -1,14 +1,14 @@
 #[path = "../tests/support/mod.rs"]
 mod support;
-use qa_core::primitives::{MovementRules, PlayerState, UserCmd, Vec3};
+use qa_core::primitives::{PlayerState, RuleSetId, UserCmd, Vec3};
 fn main() {
     let arena = std::env::args().nth(1).as_deref() == Some("q3");
     for scenario in 0..6 {
         let mut player = PlayerState {
             movement_rules: if arena {
-                MovementRules::Quake3
+                RuleSetId::Quake3
             } else {
-                MovementRules::Quake2
+                RuleSetId::Quake2
             },
             ..Default::default()
         };

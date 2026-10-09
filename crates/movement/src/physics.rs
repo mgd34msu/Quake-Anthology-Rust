@@ -1,8 +1,8 @@
 use qa_core::{
     math,
     primitives::{
-        EntityId, MovementMode, MovementRules, MovementTimer, PlayerState, SurfaceFlags, UserCmd,
-        Vec3, buttons,
+        EntityId, MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, UserCmd, Vec3,
+        buttons,
     },
 };
 use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace};
@@ -27,13 +27,13 @@ pub struct MovementResult {
     pub contact_count: usize,
 }
 pub type MoveEntry = fn(UserCmd, &mut PlayerState, &mut dyn TraceServices) -> MovementResult;
-pub fn entry(rules: MovementRules) -> MoveEntry {
+pub fn entry(rules: RuleSetId) -> MoveEntry {
     match rules {
-        MovementRules::Quake => quake,
-        MovementRules::QuakeWorld => quakeworld,
-        MovementRules::Quake2 => quake2,
-        MovementRules::Quake2Rerelease => rerelease,
-        MovementRules::Quake3 => arena,
+        RuleSetId::Quake => quake,
+        RuleSetId::QuakeWorld => quakeworld,
+        RuleSetId::Quake2 => quake2,
+        RuleSetId::Quake2Rerelease => rerelease,
+        RuleSetId::Quake3 => arena,
     }
 }
 pub fn pmove(
@@ -46,7 +46,7 @@ pub fn pmove(
 
 /// Spawn/stance initialization, independent of the module or map family.
 pub fn set_bounds(player: &mut PlayerState) {
-    let radius = if player.movement_rules == MovementRules::Quake3 {
+    let radius = if player.movement_rules == RuleSetId::Quake3 {
         15.0
     } else {
         16.0
@@ -56,7 +56,7 @@ pub fn set_bounds(player: &mut PlayerState) {
     player.view_offset = Vec3([
         0.0,
         0.0,
-        if player.movement_rules == MovementRules::Quake3 {
+        if player.movement_rules == RuleSetId::Quake3 {
             26.0
         } else {
             22.0
@@ -65,7 +65,7 @@ pub fn set_bounds(player: &mut PlayerState) {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Parameters {
-    pub rules: MovementRules,
+    pub rules: RuleSetId,
     pub trace_rules: TraceRules,
     pub entity_rules: EntityTraceRules,
     pub gravity: f32,
@@ -79,10 +79,10 @@ pub(crate) struct Parameters {
     pub no_step: bool,
 }
 impl Parameters {
-    fn load(rules: MovementRules, player: &PlayerState) -> Self {
+    fn load(rules: RuleSetId, player: &PlayerState) -> Self {
         let t = player.movement.tuning;
-        let legacy = matches!(rules, MovementRules::Quake | MovementRules::QuakeWorld);
-        let arena = rules == MovementRules::Quake3;
+        let legacy = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
+        let arena = rules == RuleSetId::Quake3;
         Self {
             rules,
             trace_rules: if arena {
@@ -108,11 +108,7 @@ impl Parameters {
             air: t.air_accelerate.unwrap_or(if arena { 1.0 } else { 0.0 }),
             water_accel: t.water_accelerate.unwrap_or(if arena { 4.0 } else { 10.0 }),
             water_friction: t.water_friction.unwrap_or(if arena || legacy {
-                if rules == MovementRules::Quake {
-                    4.0
-                } else {
-                    1.0
-                }
+                if rules == RuleSetId::Quake { 4.0 } else { 1.0 }
             } else {
                 1.0
             }),
@@ -162,19 +158,19 @@ impl Step<'_> {
         }
     }
     pub fn classic(&self) -> bool {
-        self.parameters.rules == MovementRules::Quake2
+        self.parameters.rules == RuleSetId::Quake2
     }
     pub fn arena(&self) -> bool {
-        self.parameters.rules == MovementRules::Quake3
+        self.parameters.rules == RuleSetId::Quake3
     }
     pub fn nq(&self) -> bool {
-        self.parameters.rules == MovementRules::Quake
+        self.parameters.rules == RuleSetId::Quake
     }
     pub fn qw(&self) -> bool {
-        self.parameters.rules == MovementRules::QuakeWorld
+        self.parameters.rules == RuleSetId::QuakeWorld
     }
     pub fn rr(&self) -> bool {
-        self.parameters.rules == MovementRules::Quake2Rerelease
+        self.parameters.rules == RuleSetId::Quake2Rerelease
     }
     pub fn accelerate(&mut self, direction: Vec3, speed: f32, accel: f32, air_cap: bool) {
         let target = if air_cap { speed.min(30.0) } else { speed };
@@ -492,9 +488,9 @@ impl Step<'_> {
             basis.right.0[2] = 0.0;
             if self.arena() && self.player.movement.grounded {
                 basis.forward =
-                    super::slide::clip(basis.forward, self.ground_normal, MovementRules::Quake3);
+                    super::slide::clip(basis.forward, self.ground_normal, RuleSetId::Quake3);
                 basis.right =
-                    super::slide::clip(basis.right, self.ground_normal, MovementRules::Quake3);
+                    super::slide::clip(basis.right, self.ground_normal, RuleSetId::Quake3);
             }
             math::normalize(&mut basis.forward);
             math::normalize(&mut basis.right);
@@ -636,7 +632,7 @@ impl Step<'_> {
             let velocity = self.player.body.velocity;
             if !water || velocity.dot(self.ground_normal) < 0.0 {
                 self.player.body.velocity =
-                    super::slide::clip(velocity, self.ground_normal, MovementRules::Quake3);
+                    super::slide::clip(velocity, self.ground_normal, RuleSetId::Quake3);
                 if ground || water {
                     math::normalize(&mut self.player.body.velocity);
                     self.player.body.velocity = self.player.body.velocity * math::length(velocity);
@@ -819,12 +815,12 @@ fn run_step(
     parameters: Parameters,
     result: &mut MovementResult,
 ) {
-    let exact_dt = if parameters.rules == MovementRules::Quake {
+    let exact_dt = if parameters.rules == RuleSetId::Quake {
         command.duration_ns as f64 / 1e9
     } else {
         f64::from(command.duration_ms) * 0.001
     };
-    let dt = if parameters.rules == MovementRules::Quake2Rerelease {
+    let dt = if parameters.rules == RuleSetId::Quake2Rerelease {
         f32::from(command.duration_ms) * 0.001
     } else {
         exact_dt as f32
@@ -858,8 +854,8 @@ fn quake(
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
 ) -> MovementResult {
-    let command = super::prepare_command(MovementRules::Quake, command);
-    let parameters = Parameters::load(MovementRules::Quake, player);
+    let command = super::prepare_command(RuleSetId::Quake, command);
+    let parameters = Parameters::load(RuleSetId::Quake, player);
     let mut result = MovementResult::default();
     run_step(command, player, world, parameters, &mut result);
     result
@@ -869,8 +865,8 @@ fn quakeworld(
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
 ) -> MovementResult {
-    let command = super::prepare_command(MovementRules::QuakeWorld, command);
-    let parameters = Parameters::load(MovementRules::QuakeWorld, player);
+    let command = super::prepare_command(RuleSetId::QuakeWorld, command);
+    let parameters = Parameters::load(RuleSetId::QuakeWorld, player);
     let mut result = MovementResult::default();
     // SV_RunCmd/CL_PredictUsercmd recursively halve both halves, dropping odd ms.
     let mut durations = [0u16; 8];
@@ -908,8 +904,8 @@ fn quake2(
     // in eighth units. Rerelease deliberately keeps its floating ABI.
     player.body.position.0 = player.body.position.0.map(eighth);
     player.body.velocity.0 = player.body.velocity.0.map(eighth);
-    let command = super::prepare_command(MovementRules::Quake2, command);
-    let parameters = Parameters::load(MovementRules::Quake2, player);
+    let command = super::prepare_command(RuleSetId::Quake2, command);
+    let parameters = Parameters::load(RuleSetId::Quake2, player);
     let mut result = MovementResult::default();
     run_step(command, player, world, parameters, &mut result);
     result
@@ -922,8 +918,8 @@ fn rerelease(
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
 ) -> MovementResult {
-    let command = super::prepare_command(MovementRules::Quake2Rerelease, command);
-    let parameters = Parameters::load(MovementRules::Quake2Rerelease, player);
+    let command = super::prepare_command(RuleSetId::Quake2Rerelease, command);
+    let parameters = Parameters::load(RuleSetId::Quake2Rerelease, player);
     let mut result = MovementResult::default();
     run_step(command, player, world, parameters, &mut result);
     result
@@ -933,7 +929,7 @@ fn arena(
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
 ) -> MovementResult {
-    let parameters = Parameters::load(MovementRules::Quake3, player);
+    let parameters = Parameters::load(RuleSetId::Quake3, player);
     let mut result = MovementResult::default();
     let end = command.server_time_ms;
     if end < player.movement.command_time_ms {

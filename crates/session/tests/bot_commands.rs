@@ -1,5 +1,5 @@
 use qa_core::{
-    primitives::{CommandIntent, ModuleId, MovementRules, PlayerTail, Vec3, WeaponId, buttons},
+    primitives::{CommandIntent, ModuleId, PlayerTail, RuleSetId, Vec3, WeaponId, buttons},
     sys_events::EventTime,
 };
 use qa_input::UserCmdBuilder;
@@ -10,11 +10,11 @@ use std::time::Duration;
 fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     let mut server = Server::load(64, 128, 1, 0, 0).unwrap();
     let rules = [
-        MovementRules::Quake,
-        MovementRules::QuakeWorld,
-        MovementRules::Quake2,
-        MovementRules::Quake2Rerelease,
-        MovementRules::Quake3,
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
     ];
     for slot in 0..64 {
         let id = server
@@ -72,10 +72,10 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
 fn bot_duration_uses_movement_policy_instead_of_module_family() {
     let mut server = Server::load(4, 16, 1, 0, 0).unwrap();
     for (slot, (connection, rule)) in [
-        (Connection::Bot, MovementRules::Quake),
-        (Connection::Bot, MovementRules::Quake2),
-        (Connection::Bot, MovementRules::Quake3),
-        (Connection::Remote, MovementRules::Quake3),
+        (Connection::Bot, RuleSetId::Quake),
+        (Connection::Bot, RuleSetId::Quake2),
+        (Connection::Bot, RuleSetId::Quake3),
+        (Connection::Remote, RuleSetId::Quake3),
     ]
     .into_iter()
     .enumerate()

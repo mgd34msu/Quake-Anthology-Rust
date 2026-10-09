@@ -1,7 +1,7 @@
 use qa_core::{
     primitives::{
-        Bounds, CommandIntent, GeometryId, ModuleId, MovementRules, Plane, PlayerTail,
-        SurfaceFlags, UserCmd, Vec3,
+        Bounds, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId, SurfaceFlags,
+        UserCmd, Vec3,
     },
     sys_events::EventTime,
 };
@@ -46,11 +46,11 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
     let (store, geometry) = floor();
     let mut scratch = store.scratch();
     let rules = [
-        MovementRules::Quake,
-        MovementRules::QuakeWorld,
-        MovementRules::Quake2,
-        MovementRules::Quake2Rerelease,
-        MovementRules::Quake3,
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
     ];
     let mut predictions: [Prediction; 15] = std::array::from_fn(|_| Prediction::default());
     for (slot, prediction) in predictions.iter_mut().enumerate() {
@@ -148,8 +148,8 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         .connect(Connection::Remote, ModuleId(1), PlayerTail::None, None)
         .unwrap();
     for (id, x, rules, order) in [
-        (moving, 0.0, MovementRules::Quake3, LinkOrder::Tail),
-        (obstacle, 48.0, MovementRules::Quake2, LinkOrder::Head),
+        (moving, 0.0, RuleSetId::Quake3, LinkOrder::Tail),
+        (obstacle, 48.0, RuleSetId::Quake2, LinkOrder::Head),
     ] {
         let client = &mut server.clients[id.0 as usize];
         client.player.movement_rules = rules;
@@ -297,7 +297,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
         .unwrap();
     let client = &mut server.clients[id.0 as usize];
-    client.player.movement_rules = MovementRules::Quake3;
+    client.player.movement_rules = RuleSetId::Quake3;
     client.player.health = 100;
     qa_movement::set_bounds(&mut client.player);
     client.player.body.position = Vec3([0.0, 0.0, 24.125]);

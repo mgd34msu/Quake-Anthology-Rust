@@ -2,10 +2,10 @@ use qa_console::{
     catalog::Scope,
     cvars::{Cvars, WriteError},
     cvars_generated::{BINDINGS, CONVERSIONS, DEFINITIONS, OPERANDS},
-    views::{Context, Role, Source},
+    views::{Context, Role, RuleSetId},
 };
 
-fn context(source: Source) -> Context {
+fn context(source: RuleSetId) -> Context {
     Context {
         source,
         ..Context::default()
@@ -28,13 +28,17 @@ fn read(cvars: &Cvars, name: &str, context: Context) -> String {
 fn all_sources_share_canonical_values_with_native_units_and_stable_handles() {
     let mut cvars = Cvars::new();
     let sensitivity = cvars.find("sensitivity").unwrap();
-    for source in Source::ALL {
+    for source in RuleSetId::ALL {
         let context = context(source);
         cvars.select_context(context);
         assert_eq!(sensitivity, cvars.find("SENSITIVITY").unwrap());
         assert_eq!(
             cvars.value(sensitivity),
-            if source == Source::Quake3 { 5.0 } else { 3.0 }
+            if source == RuleSetId::Quake3 {
+                5.0
+            } else {
+                3.0
+            }
         );
         write(&mut cvars, "fov", "110", context);
         write(&mut cvars, "viewsize", "80", context);
@@ -46,26 +50,26 @@ fn all_sources_share_canonical_values_with_native_units_and_stable_handles() {
         assert_eq!(read(&cvars, "gamma", context), "0.800000");
     }
     cvars.set_text(sensitivity, "4.25").unwrap();
-    cvars.select_context(context(Source::Quake));
+    cvars.select_context(context(RuleSetId::Quake));
     assert_eq!(cvars.value(sensitivity), 4.25);
     cvars.reset(sensitivity);
     assert_eq!(cvars.value(sensitivity), 3.0);
-    cvars.select_context(context(Source::Quake3));
+    cvars.select_context(context(RuleSetId::Quake3));
     assert_eq!(cvars.value(sensitivity), 5.0);
     let unresolved = cvars.find("net_qport").unwrap();
-    assert!(!cvars.default_available(unresolved, Source::Quake3));
+    assert!(!cvars.default_available(unresolved, RuleSetId::Quake3));
 }
 
 #[test]
 fn native_alias_details_survive_only_while_their_operands_stay_unchanged() {
     let mut cvars = Cvars::new();
-    let q2 = context(Source::Quake2);
+    let q2 = context(RuleSetId::Quake2);
     write(&mut cvars, "cl_gun", "3", q2);
     assert_eq!(read(&cvars, "cg_drawGun", q2), "1.000000");
     assert_eq!(read(&cvars, "cl_gun", q2), "3");
     write(&mut cvars, "cg_drawGun", "1.000000", q2);
     assert_eq!(read(&cvars, "cl_gun", q2), "1.000000");
-    let q1 = context(Source::Quake);
+    let q1 = context(RuleSetId::Quake);
     write(&mut cvars, "_cl_color", "18", q1);
     assert_eq!(read(&cvars, "_cl_color", q1), "18");
     write(&mut cvars, "color2", "1", q1);
@@ -76,14 +80,14 @@ fn native_alias_details_survive_only_while_their_operands_stay_unchanged() {
 #[test]
 fn teamplay_policy_updates_both_operands_and_latches_the_pair_together() {
     let binding = BINDINGS.iter().find(|b| b.name == "teamplay").unwrap();
-    let conversion = &CONVERSIONS[binding.conversions[Source::Quake as usize] as usize];
+    let conversion = &CONVERSIONS[binding.conversions[RuleSetId::Quake as usize] as usize];
     assert_eq!(conversion.operands.len(), 1);
     assert_eq!(
         DEFINITIONS[OPERANDS[conversion.operands.start].row as usize].name,
         "g_friendlyFire"
     );
     let mut cvars = Cvars::new();
-    let q1 = context(Source::Quake);
+    let q1 = context(RuleSetId::Quake);
     for (mode, friendly) in [("1", "0.000000"), ("2", "1.000000")] {
         write(&mut cvars, "teamplay", mode, q1);
         assert_eq!(read(&cvars, "g_gametype", q1), "3.000000");
@@ -107,7 +111,7 @@ fn teamplay_policy_updates_both_operands_and_latches_the_pair_together() {
 #[test]
 fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
     let mut cvars = Cvars::new();
-    let client = context(Source::QuakeWorld);
+    let client = context(RuleSetId::QuakeWorld);
     let server = Context {
         side: Scope::Server,
         ..client
@@ -120,7 +124,7 @@ fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
     write(&mut cvars, "password", "server-secret", server);
     assert_eq!(read(&cvars, "password", client), "client-secret");
     assert_eq!(read(&cvars, "password", server), "server-secret");
-    let q3 = context(Source::Quake3);
+    let q3 = context(RuleSetId::Quake3);
     assert_eq!(
         cvars.write(cvars.bind("name", q3).unwrap(), "bad;info"),
         Err(WriteError::InvalidInfo)
@@ -138,7 +142,7 @@ fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
         cvars.write(cvars.bind("fs_basepath", q3).unwrap(), "data"),
         Err(WriteError::InitOnly)
     );
-    let q2 = context(Source::Quake2);
+    let q2 = context(RuleSetId::Quake2);
     assert!(
         cvars
             .write(cvars.bind("game", q2).unwrap(), "rogue")

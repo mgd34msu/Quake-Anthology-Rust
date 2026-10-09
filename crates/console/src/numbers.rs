@@ -1,8 +1,8 @@
 //! Native console numeric views. No locale or C runtime is used.
-use crate::views::Source;
+use crate::views::RuleSetId;
 
-pub fn number(text: &str, source: Source) -> f32 {
-    if matches!(source, Source::Quake | Source::QuakeWorld) {
+pub fn number(text: &str, source: RuleSetId) -> f32 {
+    if matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld) {
         quake(text.as_bytes())
     } else {
         atof(text)

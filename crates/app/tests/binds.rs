@@ -5,7 +5,7 @@ use qa_app::{
 };
 use qa_console::{
     commands::Console,
-    views::{Context, Source as CommandSource},
+    views::{Context, RuleSetId as CommandSource},
 };
 use qa_core::{
     primitives::buttons,

@@ -1476,3 +1476,71 @@ rendering fidelity, not full original presentation, walks, gameplay or mover
 integration. No new binary was installed; the separate render preview remains
 `08ad0eb4`. Evidence: `THE-2868-inline-geometry/private-comparison.json` and
 per-run `result.json`, `runtime.log`, raw RGBA/depth and window captures.
+
+## THE-2884: shared rule identity
+
+Baseline `ad3369bf` and the canonical `RuleSetId` source snapshot use portable
+release builds with allocation tracking and no proof input. Core, session and
+console recompile in both snapshots; build times are 43.014 s and 41.989 s.
+This slice deletes the separate movement, console-source and think-timing
+identity enums, preserving their five source columns and arithmetic.
+Module tick/link selection and independent player trace roles remain the next
+integration step, rather than evidence supplied by the type replacement.
+
+The following headless workloads run ABBA on core 23, without a debugger,
+with 60 warm-up and 600 measured frames. The host uses a deterministic event
+time sequence, 64 bots, binds, console commands, local packets and shared
+sound/effect/print output. Both fixtures report identical counters and zero
+measured calling-thread Rust allocations/reallocations/requested bytes.
+Authoritative and prediction states match within every movement run.
+
+| Workload | Before median (ns) | After median (ns) | Before p99 (ns) | After p99 (ns) |
+| --- | --- | --- | --- | --- |
+| 64-client mixed-rule movement | 2,515,197 / 2,519,187 | 2,535,342 / 2,542,632 | 3,364,702 / 3,418,343 | 3,391,903 / 3,403,063 |
+| Common host with console/binds/bots/output | 162,150 / 161,460 | 162,140 / 161,705 | 251,470 / 252,610 | 244,070 / 255,650 |
+
+Pair-mean median changes are +0.866% and +0.073%; p99 changes are +0.176%
+and -0.865%. This is a matched structural comparison, not gameplay or renderer
+performance qualification. Numeric think dispatch also matches before/after:
+4,000,000 callbacks over 10,000 frames with zero measured allocations.
+
+Original think functions match 13,390 raw rows across Q1/QW/Q2/Q2RR/Q3,
+with zero calling-thread heap work and a positive allocation control.
+Original token/separator functions match 10,060 records; Q2 rerelease uses
+the shared classic parser. Analytic movement compares 1,152 states per game:
+Q2 is exact; Q3's maximum position/velocity error is 0.0000112 with exact
+integer flags/timers. The complete Rust movement rows are byte-identical
+between the baseline and candidate. These are scoped native-function checks,
+not complete native frames, retail walks, guest ABIs or legacy network proof.
+
+The C-port numeric helper matches all 100,080 records. All 344,250 cvar-view
+results are byte-identical before/after, but that C comparison initially fails
+on three QW skin writes. THE-2885 records the pre-existing developer reference
+bug: it omits `Output.prefix`; the production cvar path already writes it.
+The failed comparison and raw baseline/candidate outputs are retained.
+Do not treat the initial cvar-view oracle as passing.
+
+Rule checks pass, including 97 fixtures: 79 rejected before compilation and
+18 permitted controls. Evidence is in developer cache
+`THE-2884-rule-identity`: `headless-abba/result.json`, `native-thinks/report.json`,
+`native-commands/comparison.json`, `native-movement/result.json`,
+`cvar-views/before-after.json` and `rule-fixtures/result.json`.
+
+Twelve successful private normal-candidate runs cover e1m1, base1 and q3dm1,
+CPU and GL, before/after, at 640x400 with 600 measured frames after 60 warm-up.
+Initial world captures and scene metadata are identical. Each run consumes a
+fresh copy of saved settings, quits normally and preserves the original
+profile and candidate; every recorded PID is cleaned up. CPU uses one band.
+Rust allocation gates count one calling thread and no workers and report
+zero allocations, reallocations and requested bytes. SDL/driver heap is not
+measured. GL is **software GL**, llvmpipe LLVM 22.1.8, 256 bits, Mesa
+26.2.2-arch1.1, OpenGL 4.6 Core. No matched animated host/GL timing claim is
+made. These runs do not qualify gameplay, live role composition, modules,
+network, a complete original image or installation.
+
+One earlier q3dm1 CPU baseline attempt failed before launching the game when
+Xvfb could not finish its display-number write. Its logs and cleanup results
+are retained; a fresh retry succeeded. THE-2886 records the harness's
+single-read displayfd bug. Private evidence: `private-comparison.json` and
+per-run `result.json`, `runtime.log` and `window.png`. The installed preview
+remains `08ad0eb4`; neither primitive slice replaces it.

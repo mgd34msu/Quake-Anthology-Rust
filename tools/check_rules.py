@@ -145,8 +145,28 @@ def check(root):
                     add(path, code, match.start(), "duplicate-primitive")
                 else:
                     definitions[match[2]] = relative
+            if match[2] in ("MovementRules", "ThinkTiming") or (
+                relative == "crates/console/src/views.rs" and match[2] == "Source"
+            ):
+                add(path, code, match.start(), "rule-identity")
+            if match[1] == "enum":
+                opening = code.find("{", match.end())
+                if opening >= 0:
+                    depth, end = 1, opening + 1
+                    while depth and end < len(code):
+                        depth += (code[end] == "{") - (code[end] == "}")
+                        end += 1
+                    variants = set(re.findall(r"\b[A-Za-z_]\w*\b", code[opening:end]))
+                    if {"Quake", "QuakeWorld", "Quake2", "Quake2Rerelease", "Quake3"} <= variants and (
+                        match[2] != "RuleSetId" or relative != "crates/core/src/primitives.rs"
+                    ):
+                        add(path, code, match.start(), "rule-identity")
         for match in re.finditer(r"\benum\s+(?:CollisionWorld|TraceScratch)\b", code):
             add(path, code, match.start(), "collision-model-storage")
+        for imported in re.finditer(r"\buse\b[^;]*;", code):
+            for alias in re.finditer(r"\bas\s+(MovementRules|ThinkTiming|Source)\b", imported[0]):
+                if alias[1] != "Source" or relative == "crates/console/src/views.rs":
+                    add(path, code, imported.start() + alias.start(), "rule-identity")
         # Cold BrushTree/HullModel inputs may carry roots. The immutable
         # kernels must not retain a second model registry beside the store.
         if relative in ("crates/world/src/collision/hulls.rs", "crates/world/src/collision/tree.rs"):

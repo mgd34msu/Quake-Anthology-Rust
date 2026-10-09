@@ -44,7 +44,7 @@ enter through THE-735's cached handles. The current shell's 127 units and
 The held-key reference is Q3 `cl_input.c` IN_KeyDown, IN_KeyUp and CL_KeyState.
 Native wire projections remain in the shared network command module.
 
-MovementRules is per player, independent of map, module and client protocol.
+RuleSetId is per player, independent of map, module and client protocol.
 At the movement boundary, Q1 duration clamps to 1..100 ms, QW/Q2 replace values
 above 250 ms with 100 ms, and Q3 clamps to 1..200 ms. Q2 rerelease is bounded by
 its native byte msec field; its closed KEX client's timing policy is not claimed.
