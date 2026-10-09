@@ -316,6 +316,8 @@ pub struct PlayerState {
     pub collectibles: u64,
     pub view_offset: Vec3,
     pub punch_angles: Vec3,
+    /// Native view target supplied by the player/module boundary, not geometry.
+    pub ideal_pitch: f32,
     pub flags: u32,
     pub score: i32,
     pub frags: i32,

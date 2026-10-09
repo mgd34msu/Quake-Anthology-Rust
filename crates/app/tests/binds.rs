@@ -213,3 +213,27 @@ fn q3_numbered_button_aliases_reach_the_native_command_projection() {
         );
     }
 }
+
+#[test]
+fn centerview_console_command_retains_the_originating_seat() {
+    let mut host = host(CommandSource::Quake2);
+    let second = SeatId::new(1).unwrap();
+    for seat in [SeatId::FIRST, second] {
+        host.runtime
+            .input
+            .set_view_angles(seat, qa_core::primitives::Vec3([40.0, 5.0, 0.0]));
+    }
+    host.console
+        .append_line(
+            "centerview",
+            Context {
+                seat: second,
+                ..host.console.cvars.context()
+            },
+        )
+        .unwrap();
+    let frame = host.frame(&mut Source(20), true);
+    assert_eq!(frame.commands[0].view_angles.0, [40.0, 5.0, 0.0]);
+    assert_eq!(frame.commands[1].view_angles.0[0], 0.0);
+    assert!(host.console.idle());
+}

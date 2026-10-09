@@ -1855,3 +1855,16 @@ and logs are in `~/.cache/qa-rust/THE-889-unified/`. The pending rule-checker
 extensions and new check_usercmd.py were removed per the owner's correction;
 the existing checker remains unchanged. Centerview and the issue's private
 combined-seat/qualified installed gameplay acceptance remain open.
+
+The following centerview slice registers the shared console command, applies
+Q2/Q3 delta-pitch centering, and advances NQ/QW pitch drift in CLIENT after
+command construction. Its 20,000 synthetic view frames matched the original
+NQ/QW pitch bits, covering ground loss, NQ noclip inhibition, manual stops,
+restart and automatic drift. Native guest ideal-pitch population remains open.
+The four-seat command/view probe measured 0.800 microseconds median and 0.830
+microseconds p99, with zero calling-thread allocations/bytes and an allocation
+positive control. This is a distinct workload from the 64-intent batch above.
+A fresh host ABBA check with no concurrent owned compilation retained identical
+fidelity counters and zero allocation counts; mean medians changed -1.67%.
+Rows and cleanup are in `centerview-timings/result.json`, with the original
+view-function extracts and raw comparison rows in `native-view/`.

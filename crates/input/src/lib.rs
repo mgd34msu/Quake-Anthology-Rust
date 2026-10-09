@@ -7,6 +7,7 @@ use qa_core::{
 pub mod bindings;
 mod command;
 pub mod keys;
+mod view;
 pub use bindings::{BindError, Binding};
 pub use command::UserCmdBuilder;
 use qa_core::text::FixedText;
@@ -132,6 +133,8 @@ struct Seat {
     angles: Vec3,
     mouse: [i64; 2],
     mouse_previous: [f32; 2],
+    center: bool,
+    drift: view::PitchDrift,
 }
 
 /// Cached command tuning; map geometry and module formats never select it.
@@ -154,6 +157,9 @@ pub struct InputPolicy {
     pub look_strafe: bool,
     /// Q2 CL_ClampPitch subtracts the authoritative player's delta angle.
     pub delta_pitch: f32,
+    pub lookspring: bool,
+    pub center_speed: f32,
+    pub center_delay: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -182,6 +188,7 @@ pub(crate) struct CommandRules {
     key_limit: Option<[f32; 2]>,
     accumulation: Accumulation,
     vertical_actions: bool,
+    pitch_drift: bool,
 }
 const Q1_INPUT: CommandRules = CommandRules {
     speed: [200.0, 350.0, 200.0],
@@ -193,10 +200,12 @@ const Q1_INPUT: CommandRules = CommandRules {
     key_limit: None,
     accumulation: Accumulation::Float,
     vertical_actions: false,
+    pitch_drift: true,
 };
 const Q2_INPUT: CommandRules = CommandRules {
     speed: [200.0; 3],
     vertical_actions: true,
+    pitch_drift: false,
     ..Q1_INPUT
 };
 const INPUT_RULES: [CommandRules; 5] = [
@@ -244,6 +253,9 @@ impl InputPolicy {
             freelook: true,
             look_strafe: false,
             delta_pitch: 0.0,
+            lookspring: false,
+            center_speed: 500.0,
+            center_delay: 0.15,
         }
     }
     pub(crate) fn command_rules(self) -> CommandRules {
@@ -278,6 +290,7 @@ pub struct Input {
     devices: [Device; 16],
     seats: [Seat; SeatId::COUNT],
     previous: Option<EventTime>,
+    frame_ns: u64,
     freelook: [bool; SeatId::COUNT],
 }
 impl Default for Input {
@@ -292,6 +305,7 @@ impl Input {
             devices: [Device::default(); 16],
             seats: [Seat::default(); SeatId::COUNT],
             previous: None,
+            frame_ns: 0,
             freelook: [true; SeatId::COUNT],
         };
         input.assign(DeviceId::Keyboard, SeatId::FIRST);
@@ -344,6 +358,51 @@ impl Input {
         self.seats[seat.index()].angles = angles;
         self.seats[seat.index()].mouse = [0; 2];
         self.seats[seat.index()].mouse_previous = [0.0; 2];
+    }
+    /// CLIENT resolves this request against its current native view policy.
+    pub fn center_view(&mut self, seat: SeatId) {
+        self.seats[seat.index()].center = true;
+    }
+    /// NQ/QW render-view drift runs after command construction and prediction.
+    /// The caller supplies ground and ideal-pitch state independently of map.
+    pub fn drift_view(
+        &mut self,
+        seat: SeatId,
+        time: EventTime,
+        policy: InputPolicy,
+        player: &qa_core::primitives::PlayerState,
+        forward: f32,
+    ) -> Vec3 {
+        let state = &mut self.seats[seat.index()];
+        if policy.rules.is_some() && policy.command_rules().pitch_drift {
+            state.angles.0[0] = state.drift.advance(
+                time,
+                self.frame_ns as f64 * 1e-9,
+                state.angles.0[0],
+                view::DriftInput {
+                    grounded: player.movement.grounded,
+                    disabled: policy.rules != Some(RuleSetId::QuakeWorld)
+                        && matches!(
+                            player.movement.mode,
+                            qa_core::primitives::MovementMode::Noclip
+                        ),
+                    forward,
+                    threshold: if policy.rules == Some(RuleSetId::QuakeWorld) {
+                        200.0
+                    } else {
+                        policy.speed[0]
+                    },
+                    ideal_pitch: if policy.rules == Some(RuleSetId::QuakeWorld) {
+                        0.0
+                    } else {
+                        player.ideal_pitch
+                    },
+                    speed: policy.center_speed,
+                    delay: policy.center_delay,
+                },
+            );
+        }
+        state.angles
     }
     pub fn binding(&self, control: u16) -> Option<&Binding> {
         self.bindings
@@ -671,6 +730,9 @@ impl Input {
             freelook: self.freelook[seat],
             look_strafe: false,
             delta_pitch: 0.0,
+            lookspring: false,
+            center_speed: 500.0,
+            center_delay: 0.15,
         });
         self.build_frame_with_policy(time, &policies)
     }
@@ -681,11 +743,28 @@ impl Input {
     ) -> [UserCmd; SeatId::COUNT] {
         let period = time.since(self.previous.unwrap_or(time));
         self.previous = Some(time);
+        self.frame_ns = period;
         std::array::from_fn(|index| {
             let policy = policies[index];
             let q3 = policy.rules == Some(RuleSetId::Quake3);
             let q1 = matches!(policy.rules, Some(RuleSetId::Quake | RuleSetId::QuakeWorld));
             let seat = &mut self.seats[index];
+            let look_released = seat.actions[Action::MouseLook as usize].released;
+            let spring = look_released
+                && if q1 {
+                    policy.lookspring
+                } else if q3 {
+                    !policy.freelook
+                } else {
+                    !policy.freelook && policy.lookspring
+                };
+            if std::mem::take(&mut seat.center) || spring {
+                if q1 {
+                    seat.drift.start(time, policy.center_speed);
+                } else {
+                    seat.angles.0[0] = -policy.delta_pitch;
+                }
+            }
             // Modifiers use native held state; action buttons also retain taps.
             let held = seat.actions.each_ref().map(Button::active);
             let sampled = seat
@@ -711,6 +790,15 @@ impl Input {
             mouse.iter_mut().for_each(|value| *value *= gain);
             let horizontal_strafe = strafe || policy.look_strafe && look;
             let mouse_pitch = !strafe && (policy.freelook || look);
+            if q1
+                && (klook
+                    || look
+                    || fraction(Action::LookUp) != 0.0
+                    || fraction(Action::LookDown) != 0.0
+                    || mouse_pitch && mouse[1] != 0.0)
+            {
+                seat.drift.stop(time);
+            }
             let seconds = period as f32 * 1e-9;
             let angle_scale = if speed_key {
                 policy.angle_multiplier

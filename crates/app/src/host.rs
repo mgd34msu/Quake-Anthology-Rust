@@ -407,6 +407,24 @@ impl FrameHost {
                         Some(client.entity),
                     );
                     prediction.advance(commands[seat], &mut trace);
+                    if matches!(
+                        prediction.player.movement_rules,
+                        qa_core::primitives::RuleSetId::Quake
+                            | qa_core::primitives::RuleSetId::QuakeWorld
+                    ) {
+                        let policy = self
+                            .input_handles
+                            .policy(&self.console.cvars, prediction.player.movement_rules);
+                        if let Some(seat_id) = SeatId::new(seat as u8) {
+                            prediction.player.view_angles = self.runtime.input.drift_view(
+                                seat_id,
+                                self.time,
+                                policy,
+                                &prediction.player,
+                                commands[seat].movement[0],
+                            );
+                        }
+                    }
                 }
             }
         }

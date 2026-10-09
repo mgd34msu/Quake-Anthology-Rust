@@ -32,6 +32,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if arg == "bench" {
         return bench();
     }
+    if arg == "bench-view" {
+        return bench_view();
+    }
+    if arg == "view-q1" || arg == "view-qw" {
+        return view(arg == "view-qw");
+    }
     let index: usize = arg.parse()?;
     let rules = *RuleSetId::ALL.get(index).ok_or("native rule id")?;
     let policy = InputPolicy::native(rules);
@@ -50,6 +56,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             command.movement[2].to_bits(),
             command.buttons
         );
+    }
+    Ok(())
+}
+fn view(qw: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use qa_core::{
+        primitives::{MovementMode, PlayerState, Vec3},
+        sys_events::SeatId,
+    };
+    use qa_input::{Action, Input};
+    let mut input = Input::load();
+    input.seed(EventTime(0));
+    input.set_view_angles(SeatId::FIRST, Vec3([40.0, 5.0, 0.0]));
+    let mut player = PlayerState::default();
+    let policy = InputPolicy::native(if qw {
+        RuleSetId::QuakeWorld
+    } else {
+        RuleSetId::Quake
+    });
+    let mut ms = 0;
+    for frame in 0..10000 {
+        ms += [1, 7, 16, 33, 100][frame % 5];
+        let time = EventTime(ms * 1_000_000);
+        if frame % 137 == 0 {
+            input.center_view(SeatId::FIRST);
+        }
+        input.button(
+            SeatId::FIRST,
+            Action::MouseLook,
+            (3..6).contains(&(frame % 83)),
+            Some(1),
+            time,
+        );
+        input.build_frame_with_policy(time, &[policy; SeatId::COUNT]);
+        player.movement.grounded = frame % 17 != 0;
+        player.movement.mode = if frame % 53 == 0 {
+            MovementMode::Noclip
+        } else {
+            MovementMode::Walk
+        };
+        player.ideal_pitch = (frame % 23) as f32 - 11.0;
+        let forward = if frame % 41 < 20 { 200.0 } else { 0.0 };
+        let angles = input.drift_view(SeatId::FIRST, time, policy, &player, forward);
+        println!("{:08x}", angles.0[0].to_bits());
     }
     Ok(())
 }
@@ -108,4 +157,87 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(any(debug_assertions, feature = "allocation-tracking")))]
 fn bench() -> Result<(), Box<dyn std::error::Error>> {
     Err("bench requires allocation-tracking".into())
+}
+
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+fn bench_view() -> Result<(), Box<dyn std::error::Error>> {
+    use qa_core::{
+        primitives::{PlayerState, Vec3},
+        sys_events::SeatId,
+    };
+    use qa_input::Input;
+    use qa_platform::{
+        Stopwatch,
+        allocations::{begin_frame, end_frame},
+    };
+    let mut input = Input::load();
+    input.seed(EventTime(0));
+    let policies = [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake3,
+    ]
+    .map(InputPolicy::native);
+    let mut player = PlayerState::default();
+    player.movement.grounded = true;
+    for seat in 0..SeatId::COUNT {
+        input.set_view_angles(
+            SeatId::new(seat as u8).ok_or("seat")?,
+            Vec3([40.0, 0.0, 0.0]),
+        );
+    }
+    begin_frame();
+    let control = black_box(vec![0u8; 128]);
+    let positive = end_frame();
+    drop(control);
+    if positive.allocations != 1 {
+        return Err("allocation positive control".into());
+    }
+    let mut samples = [0u64; 600];
+    let mut allocations = 0;
+    let mut bytes = 0;
+    let mut checksum = 0u64;
+    for frame in 0..660 {
+        let time = EventTime((frame + 1) * 16_666_667);
+        begin_frame();
+        let timer = Stopwatch::start();
+        if frame % 137 == 0 {
+            for seat in 0..SeatId::COUNT {
+                input.center_view(SeatId::new(seat as u8).ok_or("seat")?);
+            }
+        }
+        let commands = black_box(input.build_frame_with_policy(time, &policies));
+        for seat in 0..SeatId::COUNT {
+            let view = black_box(input.drift_view(
+                SeatId::new(seat as u8).ok_or("seat")?,
+                time,
+                policies[seat],
+                &player,
+                commands[seat].movement[0],
+            ));
+            checksum = checksum.wrapping_add(u64::from(view.0[0].to_bits()));
+        }
+        let ns = timer.elapsed().as_nanos() as u64;
+        let counts = end_frame();
+        if frame >= 60 {
+            samples[frame as usize - 60] = ns;
+            allocations += counts.allocations + counts.reallocations;
+            bytes += counts.requested_bytes;
+        }
+    }
+    if allocations != 0 || bytes != 0 {
+        return Err("view allocation gate".into());
+    }
+    samples.sort_unstable();
+    println!(
+        "{{\"scope\":\"four-seat native command and view centering; no gameplay or native heap\",\"warmup\":60,\"frames\":600,\"allocations_or_reallocations\":{allocations},\"requested_bytes\":{bytes},\"allocation_positive_control\":1,\"checksum\":{checksum},\"median_ns\":{},\"p99_ns\":{}}}",
+        (samples[299] + samples[300]) / 2,
+        samples[593]
+    );
+    Ok(())
+}
+#[cfg(not(any(debug_assertions, feature = "allocation-tracking")))]
+fn bench_view() -> Result<(), Box<dyn std::error::Error>> {
+    Err("bench-view requires allocation-tracking".into())
 }

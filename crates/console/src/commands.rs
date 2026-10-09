@@ -114,6 +114,7 @@ impl<H: Host> Console<H> {
             ("unbind", Self::unbind),
             ("unbindall", Self::unbind_all),
             ("bindlist", Self::bind_list),
+            ("centerview", Self::center_view),
         ] {
             console.register(name, function);
         }
@@ -369,6 +370,15 @@ impl<H: Host> Console<H> {
         };
         host.input()
             .button(context.seat, action, name.starts_with('+'), key, time);
+        Ok(())
+    }
+    fn center_view(
+        &mut self,
+        host: &mut H,
+        _: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        host.input().center_view(context.seat);
         Ok(())
     }
     fn wait(&mut self, _: &mut H, args: &Arguments<'_>, _: Context) -> Result<(), CommandError> {

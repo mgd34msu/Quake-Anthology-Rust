@@ -17,6 +17,7 @@ impl Prediction {
         self.player.movement = source.movement;
         self.player.view_angles = source.view_angles;
         self.player.view_offset = source.view_offset;
+        self.player.ideal_pitch = source.ideal_pitch;
     }
     pub fn advance(&mut self, command: UserCmd, trace: &mut dyn TraceServices) -> MovementResult {
         qa_movement::pmove(command, &mut self.player, trace)

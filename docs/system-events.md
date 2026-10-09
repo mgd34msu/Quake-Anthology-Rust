@@ -52,8 +52,14 @@ short fields, Q3 byte fields and Q2 rerelease float movement remain distinct
 boundary data. Rerelease jump/crouch/holster use its native button bits; its
 server_frame is supplied at the boundary. These projections do not establish
 packet framing or interoperability with original servers. The crouch alias and
-holster action use the existing bind storage. Centerview, full private button
-and combined-seat walks, and qualified installed acceptance remain open.
+holster action use the existing bind storage. Centerview resolves the calling
+seat's current policy: Q2/Q3 subtract its authoritative delta pitch, while
+NQ/QW start the one pitch-drift state. CLIENT advances that state after command
+construction; NQ uses supplied ideal pitch, QW targets zero. Ground state,
+manual pitch input and native float narrowing are preserved. The player's
+ideal pitch is copied through prediction; native guest population remains open.
+The full private button/combined-seat walks and qualified installed acceptance
+remain open.
 
 RuleSetId is per player, independent of map, module and client protocol.
 At the movement boundary, Q1 duration clamps to 1..100 ms, QW/Q2 replace values

@@ -466,7 +466,7 @@ fn run() -> Result<(), String> {
             host.developer,
             1,
             format_args!(
-                "{{\"event\":\"system_event_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"time_ns\":{},\"events\":{},\"drains\":{},\"server_ticks\":{},\"world_frames\":{},\"client_frame\":true,\"queue_remaining\":{},\"rejected\":{},\"dropped_packets\":{},\"network_packets\":{},\"seat0_movement\":{:?},\"seat1_movement\":{:?},\"seat0_duration_ms\":{},\"seat1_duration_ms\":{},\"command_server_time_ms\":{}}}",
+                "{{\"event\":\"system_event_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"time_ns\":{},\"events\":{},\"drains\":{},\"server_ticks\":{},\"world_frames\":{},\"client_frame\":true,\"queue_remaining\":{},\"rejected\":{},\"dropped_packets\":{},\"network_packets\":{},\"seat0_movement\":{:?},\"seat1_movement\":{:?},\"seat0_buttons\":{},\"seat0_view_angles\":{:?},\"seat0_duration_ms\":{},\"seat1_duration_ms\":{},\"command_server_time_ms\":{}}}",
                 host.time.0,
                 result.events,
                 result.drains,
@@ -478,6 +478,8 @@ fn run() -> Result<(), String> {
                 host.runtime.network.packets,
                 result.commands[0].movement,
                 result.commands[1].movement,
+                result.commands[0].buttons,
+                result.commands[0].view_angles.0,
                 result.commands[0].duration_ms,
                 result.commands[1].duration_ms,
                 result.commands[0].server_time_ms

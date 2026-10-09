@@ -399,7 +399,7 @@ pub fn load(
     Ok(report)
 }
 
-const INPUT_NAMES: [&str; 19] = [
+const INPUT_NAMES: [&str; 21] = [
     "cl_forwardspeed",
     "cl_backspeed",
     "cl_sidespeed",
@@ -419,6 +419,8 @@ const INPUT_NAMES: [&str; 19] = [
     "freelook",
     "lookstrafe",
     "lookspring",
+    "v_centerspeed",
+    "v_centermove",
 ];
 pub struct InputHandles([CvarHandle; INPUT_NAMES.len()]);
 impl InputHandles {
@@ -484,6 +486,9 @@ impl InputHandles {
             value(16, 1.0) != 0.0
         };
         policy.look_strafe = value(17, 0.0) != 0.0;
+        policy.lookspring = value(18, 0.0) != 0.0;
+        policy.center_speed = value(19, policy.center_speed);
+        policy.center_delay = value(20, policy.center_delay);
         policy
     }
 }
