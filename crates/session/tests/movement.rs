@@ -12,7 +12,7 @@ use qa_session::{
 use qa_world::{
     area::{LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
+        CollisionStore, Contents, TraceQuery, TraceRules, WorldTrace,
         brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
     },
 };
@@ -264,7 +264,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
             body.position,
             Vec3([96.0, 0.0, 24.125]),
             TraceRules::ARENA,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         )
     };
     {
@@ -404,7 +404,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         Vec3([0.0, 0.0, 10.0]),
         Vec3([0.0, 0.0, -10.0]),
         TraceRules::ARENA,
-        EntityTraceRules::ARENA,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
     );
     let selected = WorldTrace::new(
         &store,

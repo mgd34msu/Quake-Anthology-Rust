@@ -8,6 +8,7 @@ use crate::{
 };
 use qa_core::names::{NameTable, NamesError};
 use qa_core::primitives::{CvarHandle, NameId};
+use qa_core::stamps::StampSet;
 use qa_core::text::FixedText;
 use std::{borrow::Cow, fmt::Write};
 
@@ -52,6 +53,7 @@ struct Value {
     explicit: bool,
     numbers: [f32; 5],
     integers: [i32; 5],
+    name_id: NameId,
     revision: u64,
     command_flags: [Option<u32>; 5],
     /// A loaded capability can hold LATCH writes independently of a server.
@@ -111,9 +113,9 @@ pub struct Cvars {
     projections: Vec<Projections>,
     dependents: Vec<Vec<u16>>,
     dirty_handles: Vec<CvarHandle>,
-    dirty_values: Vec<bool>,
+    dirty_values: StampSet,
     dirty_bindings: Vec<u16>,
-    dirty_projections: Vec<bool>,
+    dirty_projections: StampSet,
     context: Context,
     revision_clock: u64,
     pub server_active: bool,
@@ -184,6 +186,9 @@ impl Cvars {
                     .find(|b| b.canonical && b.row as usize == row && b.seat == seat);
                 let name = binding.map_or(definition.name, |b| b.name);
                 values.push(Value {
+                    name_id: names
+                        .find_folded(name.as_bytes())
+                        .ok_or(NamesError::Capacity)?,
                     name,
                     row,
                     seat,
@@ -234,9 +239,9 @@ impl Cvars {
             projections: vec![[[Ok(0.0); 3]; 5]; BINDINGS.len()],
             dependents: (0..pending_capacity).map(|_| Vec::new()).collect(),
             dirty_handles: Vec::with_capacity(pending_capacity),
-            dirty_values: vec![false; pending_capacity],
+            dirty_values: StampSet::new(pending_capacity),
             dirty_bindings: Vec::with_capacity(BINDINGS.len()),
-            dirty_projections: vec![false; BINDINGS.len()],
+            dirty_projections: StampSet::new(BINDINGS.len()),
             server_active: false,
             cheats: false,
             initialized: false,
@@ -594,8 +599,8 @@ impl Cvars {
             .enumerate()
         {
             let handle = self.slot(change.row as usize, 0);
-            let target = self.values[handle.0 as usize].name;
-            if let Some(target_view) = self.bind(target, view.context) {
+            let target = self.values[handle.0 as usize].name_id;
+            if let Some(target_view) = self.bind_id(target, view.context) {
                 if enforce {
                     self.check_write(target_view, change.text.as_str())?;
                 }
@@ -709,8 +714,7 @@ impl Cvars {
     fn mark_change(&mut self, handle: CvarHandle) {
         self.revision_clock = self.revision_clock.wrapping_add(1);
         self.values[handle.0 as usize].revision = self.revision_clock;
-        if !self.dirty_values[handle.0 as usize] {
-            self.dirty_values[handle.0 as usize] = true;
+        if !self.dirty_values.test_and_set(handle.0 as usize) {
             self.dirty_handles.push(handle);
         }
     }
@@ -815,28 +819,30 @@ impl Cvars {
         for index in 0..BINDINGS.len() {
             self.refresh_projection_at(index);
         }
-        self.dirty_values.fill(false);
-        self.dirty_projections.fill(false);
+        self.dirty_values.begin();
+        self.dirty_projections.begin();
         self.dirty_handles.clear();
         self.dirty_bindings.clear();
     }
     fn refresh_changes(&mut self) {
+        if self.dirty_handles.is_empty() {
+            return;
+        }
         for i in 0..self.dirty_handles.len() {
             let index = self.dirty_handles[i].0 as usize;
             self.refresh_number_at(index);
             for &binding in &self.dependents[index] {
-                if !self.dirty_projections[binding as usize] {
-                    self.dirty_projections[binding as usize] = true;
+                if !self.dirty_projections.test_and_set(binding as usize) {
                     self.dirty_bindings.push(binding);
                 }
             }
-            self.dirty_values[index] = false;
         }
         for i in 0..self.dirty_bindings.len() {
             let index = self.dirty_bindings[i] as usize;
             self.refresh_projection_at(index);
-            self.dirty_projections[index] = false;
         }
+        self.dirty_values.begin();
+        self.dirty_projections.begin();
         self.dirty_handles.clear();
         self.dirty_bindings.clear();
     }

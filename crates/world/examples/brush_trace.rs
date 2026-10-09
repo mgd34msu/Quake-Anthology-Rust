@@ -6,7 +6,7 @@ use qa_core::primitives::{Axis, Bounds, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::area::AreaGrid;
 use qa_world::collision::brushes::{Brush, BrushTree};
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
+    CollisionStore, Contents, EntityTracePolicy, TraceQuery, TraceRules, WorldTrace,
 };
 use qa_world::entities::EntityTable;
 use std::hint::black_box;
@@ -49,7 +49,7 @@ fn contents(raw: u32) -> Result<Contents, &'static str> {
 fn load(
     mut data: &[u8],
     rules: TraceRules,
-    entity_rules: EntityTraceRules,
+    entity_rules: EntityTracePolicy,
 ) -> Result<(CollisionStore, Vec<GeometryId>, Vec<Query>), &'static str> {
     if word(&mut data)? != 0x48535242 || word(&mut data)? != 1 {
         return Err("unsupported brush fixture");
@@ -161,8 +161,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected q2|q3, brush fixture, and result path".into());
     }
     let (rules, entity_rules) = match args[1].as_str() {
-        "q2" => (TraceRules::LEGACY, EntityTraceRules::QUAKE2),
-        "q3" => (TraceRules::ARENA, EntityTraceRules::ARENA),
+        "q2" => (
+            TraceRules::LEGACY,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+        ),
+        "q3" => (
+            TraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+        ),
         _ => return Err("expected q2 or q3 rules".into()),
     };
     let payload = std::fs::read(&args[2])?;

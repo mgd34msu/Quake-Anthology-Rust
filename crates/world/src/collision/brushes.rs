@@ -2,7 +2,7 @@ use super::tree::BrushScratch;
 use super::tree::Topology;
 pub use super::tree::{BrushTree, CollisionLeaf, ModelRoot};
 use super::{
-    AllSolid, BoundsOrigin, Contents, EntityTraceRules, FractionClamp, OutsideBrush,
+    AllSolid, BoundsOrigin, Contents, EntityTracePolicy, FractionClamp, OutsideBrush,
     PositionEndpoint, PositionRules, Trace, TraceQuery,
 };
 use qa_core::primitives::{Bounds, Plane, SurfaceFlags, Vec3};
@@ -90,10 +90,10 @@ impl BrushMap {
         &self,
         root: ModelRoot,
         point: Vec3,
-        rules: EntityTraceRules,
+        rules: EntityTracePolicy,
     ) -> Contents {
         let leaf = self.topology.point_leaf(root, point);
-        if !matches!(rules, EntityTraceRules::Quake3)
+        if rules.contents_leaf_gate() == super::LeafGate::StoredContents
             && let Some(contents) = leaf.stored_contents
         {
             return contents;

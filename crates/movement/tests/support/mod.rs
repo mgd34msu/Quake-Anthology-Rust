@@ -1,6 +1,6 @@
 use qa_core::primitives::{Plane, Vec3};
 use qa_movement::TraceServices;
-use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery};
+use qa_world::collision::{Contents, EntityTracePolicy, Trace, TraceQuery};
 
 /// Analytic native-kernel comparison fixture; no scene or retail-map claim.
 #[derive(Default)]
@@ -116,7 +116,7 @@ impl TraceServices for FixtureWorld {
         }
         result
     }
-    fn point_contents(&self, point: Vec3, _: EntityTraceRules) -> Contents {
+    fn point_contents(&self, point: Vec3, _: EntityTracePolicy) -> Contents {
         if self.water && point.0[2] < 64.0 {
             Contents::WATER
         } else {

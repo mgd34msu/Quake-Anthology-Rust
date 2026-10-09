@@ -1,7 +1,7 @@
 use qa_core::primitives::{Axis, Bounds, Plane, Vec3};
 use qa_platform::Stopwatch;
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules,
+    CollisionStore, Contents, TraceQuery, TraceRules,
     hulls::{ClipNode, HullModel},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -126,7 +126,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mins,
                 maxs,
                 mask: Contents::SOLID,
-                ..TraceQuery::point(start, end, TraceRules::LEGACY, EntityTraceRules::QUAKE)
+                ..TraceQuery::point(
+                    start,
+                    end,
+                    TraceRules::LEGACY,
+                    qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+                )
             },
             &mut scratch,
         );
@@ -178,7 +183,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mins,
                     maxs,
                     mask: Contents::SOLID,
-                    ..TraceQuery::point(start, end, TraceRules::LEGACY, EntityTraceRules::QUAKE)
+                    ..TraceQuery::point(
+                        start,
+                        end,
+                        TraceRules::LEGACY,
+                        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+                    )
                 },
                 &mut scratch,
             ));
@@ -197,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         black_box(start),
                         black_box(end),
                         TraceRules::LEGACY,
-                        EntityTraceRules::QUAKE,
+                        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
                     )
                 },
                 &mut scratch,

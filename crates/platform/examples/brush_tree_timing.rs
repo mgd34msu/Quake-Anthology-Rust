@@ -1,7 +1,7 @@
 //! Pinned developer timing over the same native-compared brush-tree fixture.
 //! No window, host, worker, input, audio or installed gameplay is created.
 use qa_platform::Stopwatch;
-use qa_world::collision::{EntityTraceRules, TraceRules};
+use qa_world::collision::TraceRules;
 use std::hint::black_box;
 
 #[path = "../../../tools/probes/brush_tree_fixture.rs"]
@@ -28,8 +28,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected q2|q3, fixture, matching native rows and JSON output".into());
     }
     let (rules, entity_rules) = match args[1].as_str() {
-        "q2" => (TraceRules::LEGACY, EntityTraceRules::QUAKE2),
-        "q3" => (TraceRules::ARENA, EntityTraceRules::ARENA),
+        "q2" => (
+            TraceRules::LEGACY,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+        ),
+        "q3" => (
+            TraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+        ),
         _ => return Err("unknown caller rule".into()),
     };
     let bytes = std::fs::read(&args[2])?;

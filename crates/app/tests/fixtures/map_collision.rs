@@ -1,7 +1,7 @@
 use super::collision;
 use qa_core::primitives::{Axis, Bounds, Plane, SurfaceFlags, Vec3};
 use qa_formats::bsp::{Brush, BrushSide, IndexRange, Map, Node, Shader};
-use qa_world::collision::{CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules};
+use qa_world::collision::{CollisionStore, Contents, TraceQuery, TraceRules};
 
 fn put(bytes: &mut [u8], at: usize, value: i32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -130,8 +130,14 @@ fn cold_conversion_keeps_models_separate_and_native_brush_numbers() {
         assert_eq!(count, 2);
         let mut scratch = store.scratch();
         for (rules, entity_rules) in [
-            (TraceRules::LEGACY, EntityTraceRules::QUAKE2),
-            (TraceRules::ARENA, EntityTraceRules::ARENA),
+            (
+                TraceRules::LEGACY,
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            ),
+            (
+                TraceRules::ARENA,
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            ),
         ] {
             let query = TraceQuery::point(
                 Vec3([140.0, 0.0, 0.0]),
@@ -175,16 +181,26 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
             geometry,
             0,
             Vec3([40.0, 0.0, 0.0]),
-            EntityTraceRules::QUAKE2
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
         ),
         Contents::WATER
     );
     assert_eq!(
-        store.point_contents_model(geometry, 0, Vec3([40.0, 0.0, 0.0]), EntityTraceRules::ARENA),
+        store.point_contents_model(
+            geometry,
+            0,
+            Vec3([40.0, 0.0, 0.0]),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+        ),
         Contents::EMPTY
     );
     assert_eq!(
-        store.point_contents_model(geometry, 0, Vec3::default(), EntityTraceRules::ARENA),
+        store.point_contents_model(
+            geometry,
+            0,
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+        ),
         Contents::SOLID
     );
     let mut scratch = store.scratch();
@@ -192,7 +208,7 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
         Vec3([40.0, 0.0, 0.0]),
         Vec3::default(),
         TraceRules::LEGACY,
-        EntityTraceRules::QUAKE2,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
     );
     assert_eq!(
         store.trace_model(geometry, 0, q2, &mut scratch).fraction,
@@ -200,7 +216,7 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
     );
     let q3 = TraceQuery {
         rules: TraceRules::ARENA,
-        entity_rules: EntityTraceRules::ARENA,
+        entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         ..q2
     };
     assert!(store.trace_model(geometry, 0, q3, &mut scratch).fraction < 1.0);
@@ -215,11 +231,21 @@ fn stored_q2_aux_leaf_contents_survive_cold_conversion() {
     let mut store = CollisionStore::new();
     let (geometry, _) = collision(&map, &mut store).unwrap();
     assert_eq!(
-        store.point_contents_model(geometry, 0, Vec3::default(), EntityTraceRules::QUAKE2),
+        store.point_contents_model(
+            geometry,
+            0,
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+        ),
         Contents::AUX | Contents::WATER
     );
     assert_eq!(
-        store.point_contents_model(geometry, 0, Vec3::default(), EntityTraceRules::ARENA),
+        store.point_contents_model(
+            geometry,
+            0,
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+        ),
         Contents::SOLID
     );
 }
@@ -248,7 +274,7 @@ fn q3_trace_contacts_convert_early_side_flags_and_modern_shader_flags() {
             Vec3([40.0, 0.0, 0.0]),
             Vec3::default(),
             TraceRules::ARENA,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         );
         assert_eq!(
             store.trace_model(geometry, 0, query, &mut scratch).surface,

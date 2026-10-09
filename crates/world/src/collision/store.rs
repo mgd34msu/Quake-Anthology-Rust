@@ -1,5 +1,5 @@
 use super::{
-    Contents, EntityTraceRules, Trace, TraceQuery,
+    Contents, EntityTracePolicy, Trace, TraceQuery,
     brushes::{Brush, BrushMap, BrushTree, GeometryError, ModelRoot},
     hulls::{HullError, HullModel, HullScratch, Q1Hulls},
     tree::BrushScratch,
@@ -294,7 +294,7 @@ impl CollisionStore {
         geometry: GeometryId,
         index: u32,
         point: Vec3,
-        rules: EntityTraceRules,
+        rules: EntityTracePolicy,
     ) -> Contents {
         match self.resolve(geometry, index) {
             Some((
@@ -352,7 +352,7 @@ impl CollisionStore {
             && angles.0.iter().any(|&angle| angle != 0.0);
         let matrix = if rotated {
             let basis = basis(angles, rules.rotation);
-            let matrix = [basis.forward, Vec3(basis.right.0.map(|v| -v)), basis.up];
+            let matrix = [basis.forward, -basis.right, basis.up];
             if rules.rotation == ModelRotation::TransposeBasis {
                 local.start = rotate(local.start, matrix);
                 local.end = rotate(local.end, matrix);
@@ -371,10 +371,7 @@ impl CollisionStore {
             && trace.fraction != 1.0
         {
             trace.plane.normal = if rules.rotation == ModelRotation::NegativeEuler {
-                point_rotate(
-                    trace.plane.normal,
-                    basis(Vec3(angles.0.map(|v| -v)), rules.rotation),
-                )
+                point_rotate(trace.plane.normal, basis(-angles, rules.rotation))
             } else {
                 let transpose = std::array::from_fn(|row| {
                     Vec3(std::array::from_fn(|column| matrix[column].0[row]))
@@ -406,7 +403,7 @@ impl CollisionStore {
         origin: Vec3,
         angles: Vec3,
         rules: ModelRules,
-        caller: EntityTraceRules,
+        caller: EntityTracePolicy,
     ) -> Contents {
         let mut local = point - origin;
         if rules.rotation != ModelRotation::TranslationOnly

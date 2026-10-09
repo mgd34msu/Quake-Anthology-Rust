@@ -3,7 +3,7 @@ use crate::{
     assets::{ImageId, MaterialId, ModelId},
     scene::{Refdef, Span},
 };
-use qa_core::primitives::{Plane, Vec3};
+use qa_core::primitives::Plane;
 use qa_formats::bsp::{Lump, Map};
 use qa_world::visibility::{
     PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityError, VisibilityWorld,
@@ -142,20 +142,12 @@ pub fn frustum(view: Refdef) -> Result<[Plane; 6], VisibilityQueryError> {
     }
     let tangent = view.fov.map(|f| (f.to_radians() * 0.5).tan());
     let normals = [
-        Vec3(std::array::from_fn(|i| {
-            view.axes[0].0[i] * tangent[0] + view.axes[1].0[i]
-        })),
-        Vec3(std::array::from_fn(|i| {
-            view.axes[0].0[i] * tangent[0] - view.axes[1].0[i]
-        })),
-        Vec3(std::array::from_fn(|i| {
-            view.axes[0].0[i] * tangent[1] + view.axes[2].0[i]
-        })),
-        Vec3(std::array::from_fn(|i| {
-            view.axes[0].0[i] * tangent[1] - view.axes[2].0[i]
-        })),
+        view.axes[0] * tangent[0] + view.axes[1],
+        view.axes[0] * tangent[0] - view.axes[1],
+        view.axes[0] * tangent[1] + view.axes[2],
+        view.axes[0] * tangent[1] - view.axes[2],
         view.axes[0],
-        Vec3(view.axes[0].0.map(|x| -x)),
+        -view.axes[0],
     ];
     Ok(std::array::from_fn(|i| Plane {
         normal: normals[i],

@@ -1,5 +1,6 @@
+use super::EntityTraceFlags;
 use super::{
-    Contents, EntityTraceRules, Trace, TraceQuery,
+    Contents, Trace, TraceQuery,
     brushes::{Brush, trace_brushes},
     hulls::{ClipNode, Frame, Hull},
 };
@@ -21,7 +22,7 @@ const fn nodes() -> [ClipNode; 6] {
 static NODES: [ClipNode; 6] = nodes();
 
 pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
-    if !matches!(query.entity_rules, EntityTraceRules::Quake { .. }) {
+    if query.entity_rules.quake_kind().is_none() {
         return trace_convex_box(query, body, entity);
     }
     let TraceQuery {
@@ -45,11 +46,7 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
             axis: Some([Axis::X, Axis::Y, Axis::Z][axis]),
         }
     });
-    let local = |point: Vec3| {
-        Vec3(std::array::from_fn(|axis| {
-            point.0[axis] - body.position.0[axis]
-        }))
-    };
+    let local = |point: Vec3| point - body.position;
     let mut stack = [Frame::default(); 7];
     let mut trace = Hull {
         nodes: &NODES,
@@ -65,9 +62,7 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
         &mut stack,
     );
     if trace.fraction < 1.0 {
-        trace.end = Vec3(std::array::from_fn(|axis| {
-            trace.end.0[axis] + body.position.0[axis]
-        }));
+        trace.end = trace.end + body.position;
     } else {
         trace.end = end;
     }
@@ -81,7 +76,11 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
 fn trace_convex_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
     let original = query;
     let mut query = query;
-    if query.entity_rules == EntityTraceRules::ARENA {
+    if query
+        .entity_rules
+        .filtering
+        .contains(EntityTraceFlags::CENTER_BOX)
+    {
         // CM_TransformedBoxTrace centers world endpoints before translation;
         // doing those f32 operations in reverse loses native rounding.
         for axis in 0..3 {
@@ -117,11 +116,7 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
             },
         }
     });
-    let local = |point: Vec3| {
-        Vec3(std::array::from_fn(|axis| {
-            point.0[axis] - body.position.0[axis]
-        }))
-    };
+    let local = |point: Vec3| point - body.position;
     let mut trace = trace_brushes(
         TraceQuery {
             start: local(query.start),

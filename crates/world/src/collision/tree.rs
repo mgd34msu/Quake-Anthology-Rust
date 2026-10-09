@@ -531,7 +531,7 @@ fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collision::{CollisionStore, EntityTraceRules, StoreError, TraceRules};
+    use crate::collision::{CollisionStore, StoreError, TraceRules};
     use qa_core::primitives::SurfaceFlags;
 
     #[test]
@@ -560,7 +560,7 @@ mod tests {
             Vec3([1.0, 0.0, 0.0]),
             Vec3([-1.0, 0.0, 0.0]),
             TraceRules::ARENA,
-            EntityTraceRules::ARENA,
+            crate::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         );
         for _ in 0..3 {
             let trace = map.trace_model(geometry, 0, query, &mut scratch);

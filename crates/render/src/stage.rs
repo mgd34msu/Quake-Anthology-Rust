@@ -14,10 +14,14 @@ use qa_core::{
 /// Native R_RotateForEntity uses a single axis-length compensation selected by
 /// the submitted entity; this is deliberately shared by both draw consumers.
 pub fn entity_view_origin(view: Vec3, entity: &crate::scene::SceneEntity) -> Vec3 {
-    let delta = Vec3(std::array::from_fn(|i| view.0[i] - entity.origin.0[i]));
+    let delta = view - entity.origin;
     let scale = if entity.non_normalized_axes {
-        let length = entity.axes[0].dot(entity.axes[0]).sqrt();
-        if length == 0.0 { 0.0 } else { 1.0 / length }
+        let axis_length = length(entity.axes[0]);
+        if axis_length == 0.0 {
+            0.0
+        } else {
+            1.0 / axis_length
+        }
     } else {
         1.0
     };

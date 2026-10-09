@@ -36,13 +36,13 @@ int main(int argc,char **argv) {
     int source;
     while((source=fgetc(in))!=EOF) {
         if(!strcmp(argv[1],"numbers")) {
-            get_text(in,0);float number=qac_number(strings[0],(qa_console_dialect)source);
+            get_text(in,0);float number=qac_number(strings[0],(qa_ruleset_id)source);
             int32_t integer=qac_integer(strings[0]);fwrite(&number,4,1,out);fwrite(&integer,4,1,out);
         } else {
             uint8_t role=(uint8_t)fgetc(in);uint16_t index;fread(&index,2,1,in);int has_detail=fgetc(in);
             if(index>=qa_cvar_catalog_binding_count) return 2;
             for(int i=0;i<7;++i) get_text(in,i);
-            qa_cvar_options options={.dialect=(qa_console_dialect)source,.role=(qa_cvar_role)role,.side=QA_CVAR_SIDE_CLIENT};
+            qa_cvar_options options={.dialect=(qa_ruleset_id)source,.role=(qa_cvar_role)role,.side=QA_CVAR_SIDE_CLIENT};
             const qa_cvar_catalog_binding *b=&qa_cvar_catalog_bindings[index];
             qac_cvar_conversion_input input={.options=&options,.conversion=&qa_cvar_catalog_conversions[b->conversion[source]],
                 .binding=b,.value=strings[0],.current=strings[1],.detail=has_detail?strings[2]:NULL,.operand=operand};

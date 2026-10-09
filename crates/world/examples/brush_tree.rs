@@ -2,7 +2,7 @@
 //! and use tools/check_brush_tree.py. Cold fixture transport is outside the
 //! allocation scope. Trees are synthetic, ordered and brush-only; this does not
 //! qualify retail gameplay, patches, transformed bodies or native wire formats.
-use qa_world::collision::{EntityTraceRules, TraceRules};
+use qa_world::collision::TraceRules;
 use std::hint::black_box;
 
 #[path = "../../../tools/probes/allocation_counter.rs"]
@@ -17,8 +17,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected q2|q3, tree fixture and result file".into());
     }
     let (rules, entity_rules) = match args[1].as_str() {
-        "q2" => (TraceRules::LEGACY, EntityTraceRules::QUAKE2),
-        "q3" => (TraceRules::ARENA, EntityTraceRules::ARENA),
+        "q2" => (
+            TraceRules::LEGACY,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+        ),
+        "q3" => (
+            TraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+        ),
         _ => return Err("invalid tree caller rules".into()),
     };
     let payload = std::fs::read(&args[2])?;

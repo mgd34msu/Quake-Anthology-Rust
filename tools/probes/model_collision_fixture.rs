@@ -3,7 +3,7 @@ use qa_core::primitives::{
     Axis, Bounds, ClipNode, GeometryId, ModelRotation, ModelRules, Plane, RotatedLinkBounds, Vec3,
 };
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, TraceScratch,
+    CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, TraceScratch,
     hulls::HullModel,
 };
 
@@ -36,11 +36,17 @@ impl Rule {
         }
     }
 
-    fn entity_rules(self) -> EntityTraceRules {
+    fn entity_rules(self) -> EntityTracePolicy {
         match self {
-            Self::Quake => EntityTraceRules::QUAKE,
-            Self::Quake2 => EntityTraceRules::QUAKE2,
-            Self::Quake3 => EntityTraceRules::ARENA,
+            Self::Quake => {
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1
+            }
+            Self::Quake2 => {
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            }
+            Self::Quake3 => {
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            }
         }
     }
 
@@ -190,7 +196,10 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
                 maxs,
                 mask,
                 rules: TraceRules::LEGACY,
-                entity_rules: EntityTraceRules::QUAKE,
+                entity_rules: qa_world::collision::trace_policy(
+                    qa_core::primitives::RuleSetId::Quake,
+                )
+                .1,
                 pass: None,
                 excluded: &[],
             },

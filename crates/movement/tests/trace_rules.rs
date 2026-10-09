@@ -2,13 +2,13 @@ mod support;
 
 use qa_core::primitives::{PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3};
 use qa_movement::TraceServices;
-use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules};
+use qa_world::collision::{Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules};
 use std::cell::Cell;
 
 struct CheckedQueries {
     world: support::FixtureWorld,
     expected: TraceRules,
-    expected_entities: EntityTraceRules,
+    expected_entities: EntityTracePolicy,
     contents_calls: Cell<u32>,
     calls: u32,
     position_tests: u32,
@@ -36,7 +36,7 @@ impl TraceServices for CheckedQueries {
         self.world.trace(query)
     }
 
-    fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents {
+    fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
         assert_eq!(rules, self.expected_entities);
         self.contents_calls.set(self.contents_calls.get() + 1);
         self.world.point_contents(point, rules)
@@ -52,27 +52,27 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
         (
             RuleSetId::Quake,
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         ),
         (
             RuleSetId::QuakeWorld,
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         ),
         (
             RuleSetId::Quake2,
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         ),
         (
             RuleSetId::Quake2Rerelease,
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         ),
         (
             RuleSetId::Quake3,
             TraceRules::ARENA,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         ),
     ];
     assert_eq!(trace_policies.map(|policy| policy.0), RuleSetId::ALL);

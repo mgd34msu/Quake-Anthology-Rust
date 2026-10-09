@@ -6,18 +6,18 @@ use qa_core::{
     },
 };
 use qa_world::collision::{
-    Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace, trace_policy,
+    Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, WorldTrace, trace_policy,
 };
 
 pub trait TraceServices {
     fn trace(&mut self, query: TraceQuery) -> Trace;
-    fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents;
+    fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents;
 }
 impl TraceServices for WorldTrace<'_> {
     fn trace(&mut self, query: TraceQuery) -> Trace {
         WorldTrace::trace(self, query)
     }
-    fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents {
+    fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
         WorldTrace::point_contents(self, point, rules, &[])
     }
 }
@@ -69,7 +69,7 @@ pub fn set_bounds(player: &mut PlayerState) {
 pub(crate) struct Parameters {
     pub rules: RuleSetId,
     pub trace_rules: TraceRules,
-    pub entity_rules: EntityTraceRules,
+    pub entity_rules: EntityTracePolicy,
     pub gravity: f32,
     pub speed: f32,
     pub friction: f32,
@@ -516,10 +516,7 @@ impl Step<'_> {
         } else {
             wish.0[2] = 0.0;
         }
-        let total = (move_axes[0] * move_axes[0]
-            + move_axes[1] * move_axes[1]
-            + move_axes[2] * move_axes[2])
-            .sqrt();
+        let total = math::length(Vec3(move_axes));
         let maximum = move_axes[0]
             .abs()
             .max(move_axes[1].abs())

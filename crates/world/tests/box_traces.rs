@@ -1,5 +1,5 @@
 use qa_core::primitives::{Body, EntityId, Vec3};
-use qa_world::collision::{Contents, EntityTraceRules, TraceQuery, TraceRules, boxes::trace_box};
+use qa_world::collision::{Contents, TraceQuery, TraceRules, boxes::trace_box};
 
 #[test]
 fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
@@ -21,7 +21,8 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
             maxs: Vec3([16.0; 3]),
             mask: Contents::SOLID,
             rules: TraceRules::LEGACY,
-            entity_rules: EntityTraceRules::QUAKE,
+            entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
+                .1,
             pass: None,
             excluded: &[],
         },
@@ -40,7 +41,8 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
             maxs: Vec3([16.0; 3]),
             mask: Contents::SOLID,
             rules: TraceRules::ARENA,
-            entity_rules: EntityTraceRules::QUAKE,
+            entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
+                .1,
             pass: None,
             excluded: &[],
         },
@@ -57,7 +59,8 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
             maxs: Vec3::default(),
             mask: Contents::SOLID,
             rules: TraceRules::LEGACY,
-            entity_rules: EntityTraceRules::QUAKE,
+            entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
+                .1,
             pass: None,
             excluded: &[],
         },
@@ -85,7 +88,7 @@ fn q2_transformed_box_reconstructs_clear_and_embedded_endpoints() {
             Vec3([8192.0, 0.0, 0.0]),
             Vec3([0.0001, 0.0, 0.0]),
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         )
     };
     let enclosed = trace_box(query, &body, entity);
@@ -125,7 +128,7 @@ fn q3_transformed_box_centers_before_subtracting_a_large_origin() {
             body.position,
             body.position,
             TraceRules::ARENA,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         )
     };
     let result = trace_box(query, &body, entity);

@@ -9,7 +9,7 @@ use crate::scene::{CpuPresentation, Viewport};
 use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, RgbGen, TexCoordGen};
 use crate::sky::{LayeredSphere, Rotation};
 use crate::surface_cache::{IndexedMip, PaletteLighting};
-use qa_core::primitives::Vec3;
+use qa_core::{math, primitives::Vec3};
 
 /// tr_sky.c clips source geometry once per material, then consumes a fixed
 /// eight-division cloud grid. Its triangles are boundary inputs to the same
@@ -209,14 +209,15 @@ impl LayeredDraw {
     fn endpoint(&self, x: u32, y: u32) -> [i64; 2] {
         let wu = 8192.0 * (i64::from(x) - self.center[0]) as f32 / self.extent;
         let wv = 8192.0 * (self.center[1] - i64::from(y)) as f32 / self.extent;
-        let mut ray = std::array::from_fn::<_, 3, _>(|i| {
-            4096.0 * self.axes[0].0[i] - wu * self.axes[1].0[i] + wv * self.axes[2].0[i]
-        });
-        ray[2] *= self.sphere.flatten_z;
-        let inverse_length = 1.0 / (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt();
-        ray = ray.map(|value| value * inverse_length);
+        let mut ray = self.axes[0] * 4096.0 - self.axes[1] * wu + self.axes[2] * wv;
+        ray.0[2] *= self.sphere.flatten_z;
+        // The previous reciprocal kernel casts its zero-ray NaNs to zero.
+        if ray.0 == [0.0; 3] {
+            return [0; 2];
+        }
+        let ray = math::normalized(ray);
         std::array::from_fn(|i| {
-            ((self.scroll + self.sphere.projected_scale * ray[i]) * 65536.0) as i64
+            ((self.scroll + self.sphere.projected_scale * ray.0[i]) * 65536.0) as i64
         })
     }
 }
@@ -521,4 +522,88 @@ fn write(
     buffers.palettes[index] = palette_id;
     buffers.inverse_depth[index] = depth;
     buffers.depth_ranks[index] = rank;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_endpoints_preserve_previous_operation_order() {
+        let mut seed = 0x534b5955u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed as i32 as f32) * (1.0 / i32::MAX as f32)
+        };
+        for index in 0..16384 {
+            let draw = LayeredDraw {
+                axes: std::array::from_fn(|_| Vec3(std::array::from_fn(|_| next()))),
+                center: [320, 200],
+                extent: 640.0,
+                sphere: LayeredSphere::NATIVE,
+                scroll: next() * 8192.0,
+                shift: 0,
+            };
+            let x = index % 641;
+            let y = index % 401;
+            let wu = 8192.0 * (i64::from(x) - draw.center[0]) as f32 / draw.extent;
+            let wv = 8192.0 * (draw.center[1] - i64::from(y)) as f32 / draw.extent;
+            let mut ray = std::array::from_fn::<_, 3, _>(|i| {
+                4096.0 * draw.axes[0].0[i] - wu * draw.axes[1].0[i] + wv * draw.axes[2].0[i]
+            });
+            ray[2] *= draw.sphere.flatten_z;
+            let inverse = 1.0 / (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt();
+            let expected: [i64; 2] = std::array::from_fn(|i| {
+                ((draw.scroll + draw.sphere.projected_scale * (ray[i] * inverse)) * 65536.0) as i64
+            });
+            assert_eq!(draw.endpoint(x, y), expected, "ray {index}");
+        }
+    }
+
+    #[test]
+    fn zero_ray_keeps_the_previous_integer_cast_result() {
+        let draw = LayeredDraw {
+            axes: [
+                Vec3([1.0, 0.0, 0.0]),
+                Vec3([1.0, 0.0, 0.0]),
+                Vec3::default(),
+            ],
+            center: [320, 200],
+            extent: 640.0,
+            sphere: LayeredSphere::NATIVE,
+            scroll: 32.0,
+            shift: 0,
+        };
+        assert_eq!(draw.endpoint(640, 200), [0; 2]);
+    }
+
+    #[test]
+    fn original_c_integer_endpoints() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(path) = std::env::var_os("QA_SKY_ENDPOINT_FIXTURE") else {
+            return Ok(());
+        };
+        let bytes = std::fs::read(path)?;
+        assert_eq!(bytes.len() % 72, 0);
+        for (index, row) in bytes.as_chunks::<72>().0.iter().enumerate() {
+            let word = |at: usize| u32::from_le_bytes(std::array::from_fn(|i| row[at + i]));
+            let (width, height, x, y) = (word(0), word(4), word(8), word(12));
+            let draw = LayeredDraw {
+                axes: std::array::from_fn(|axis| {
+                    Vec3(std::array::from_fn(|i| {
+                        f32::from_bits(word(16 + (axis * 3 + i) * 4))
+                    }))
+                }),
+                center: [i64::from(width >> 1), i64::from(height >> 1)],
+                extent: width.max(height) as f32,
+                sphere: LayeredSphere::NATIVE,
+                scroll: f32::from_bits(word(52)) * 8.0,
+                shift: 0,
+            };
+            let expected: [i64; 2] = std::array::from_fn(|i| {
+                i64::from_le_bytes(std::array::from_fn(|j| row[56 + i * 8 + j]))
+            });
+            assert_eq!(draw.endpoint(x, y), expected, "original-C ray {index}");
+        }
+        Ok(())
+    }
 }

@@ -3,7 +3,7 @@
 //! Cold fixture files avoid consuming a terminal/platform input stream. Only
 //! merge_linked calls and fixed result writes enter the allocation scope.
 use qa_core::primitives::{Axis, EntityId, Plane, SurfaceFlags, Vec3};
-use qa_world::collision::{Contents, EntityTraceRules, Trace};
+use qa_world::collision::{Contents, Trace};
 use std::hint::black_box;
 
 #[path = "../../../tools/probes/allocation_counter.rs"]
@@ -111,9 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("expected q1|q2|q3, merge fixture, and result path".into());
     }
     let rules = match args[1].as_str() {
-        "q1" => EntityTraceRules::QUAKE,
-        "q2" => EntityTraceRules::QUAKE2,
-        "q3" => EntityTraceRules::ARENA,
+        "q1" => qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+        "q2" => qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+        "q3" => qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         _ => return Err("invalid linked merge rule".into()),
     };
     let payload = std::fs::read(&args[2])?;

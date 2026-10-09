@@ -55,9 +55,15 @@ impl From<WriteError> for CommandError {
 }
 pub type CommandFn<H> =
     fn(&mut Console<H>, &mut H, &Arguments<'_>, Context) -> Result<(), CommandError>;
-struct Command<H> {
-    name: NameId,
-    function: CommandFn<H>,
+enum Command<H> {
+    Function(CommandFn<H>),
+    Button(qa_input::Action),
+}
+impl<H> Copy for Command<H> {}
+impl<H> Clone for Command<H> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 struct Alias {
     name: Option<NameId>,
@@ -71,8 +77,8 @@ struct Parser {
 pub struct Console<H> {
     pub cvars: Cvars,
     buffer: CommandBuffer,
-    commands: Vec<Command<H>>,
-    command_by_name: Box<[Option<usize>]>,
+    commands: Vec<NameId>,
+    command_by_name: Box<[Option<Command<H>>]>,
     aliases: Box<[Alias]>,
     alias_count: usize,
     parser: Option<Box<Parser>>,
@@ -126,12 +132,16 @@ impl<H: Host> Console<H> {
             console.register(name, function);
         }
         for entry in bindings::ACTION_NAMES {
-            console.register(entry.press, Self::button);
-            console.register(entry.release, Self::button);
+            for name in [entry.press, entry.release] {
+                console.register_entry(name, Command::Button(entry.action));
+            }
         }
         Ok(console)
     }
     pub fn register(&mut self, name: &'static str, function: CommandFn<H>) -> bool {
+        self.register_entry(name, Command::Function(function))
+    }
+    fn register_entry(&mut self, name: &'static str, command: Command<H>) -> bool {
         let Ok(exact) = self.cvars.names.intern(name.as_bytes()) else {
             return false;
         };
@@ -142,21 +152,11 @@ impl<H: Host> Console<H> {
             return false;
         }
         let names = &self.cvars.names;
-        let at = self.commands.partition_point(|c| {
-            compare_folded(names.get(c.name).unwrap_or_default(), name.as_bytes()) == Ordering::Less
+        let at = self.commands.partition_point(|&id| {
+            compare_folded(names.get(id).unwrap_or_default(), name.as_bytes()) == Ordering::Less
         });
-        self.commands.insert(
-            at,
-            Command {
-                name: exact,
-                function,
-            },
-        );
-        for (index, command) in self.commands.iter().enumerate() {
-            if let Some(id) = self.cvars.names.folded(command.name) {
-                self.command_by_name[id.0 as usize] = Some(index);
-            }
-        }
+        self.commands.insert(at, exact);
+        self.command_by_name[id.0 as usize] = Some(command);
         true
     }
 
@@ -235,41 +235,45 @@ impl<H: Host> Console<H> {
                 continue;
             }
             let id = self.cvars.lookup_name(name);
-            let result = if let Some(at) = id.and_then(|id| self.command_by_name[id.0 as usize]) {
-                (self.commands[at].function)(self, host, &args, context)
-            } else if let Some(view) = id.and_then(|id| self.cvars.bind_id(id, context)) {
-                if args.len() == 1 {
-                    match self.cvars.read(view) {
-                        Ok(value) => {
-                            if self.cvars.private(view) {
-                                host.print(format_args!("{name} is private\n"));
-                            } else {
-                                host.print(format_args!("{name} = \"{}\"\n", value.as_str()));
-                            }
-                            Ok(())
-                        }
-                        Err(error) => Err(CommandError::Cvar(WriteError::Conversion(error))),
+            let result =
+                if let Some(command) = id.and_then(|id| self.command_by_name[id.0 as usize]) {
+                    match command {
+                        Command::Function(function) => function(self, host, &args, context),
+                        Command::Button(action) => self.button(host, &args, context, action),
                     }
+                } else if let Some(view) = id.and_then(|id| self.cvars.bind_id(id, context)) {
+                    if args.len() == 1 {
+                        match self.cvars.read(view) {
+                            Ok(value) => {
+                                if self.cvars.private(view) {
+                                    host.print(format_args!("{name} is private\n"));
+                                } else {
+                                    host.print(format_args!("{name} = \"{}\"\n", value.as_str()));
+                                }
+                                Ok(())
+                            }
+                            Err(error) => Err(CommandError::Cvar(WriteError::Conversion(error))),
+                        }
+                    } else {
+                        self.cvars.write(view, args.get(1)).map_err(Into::into)
+                    }
+                } else if let Some(alias) = self.aliases[..self.alias_count].iter().find(|a| {
+                    a.name
+                        .and_then(|name| self.cvars.names.folded(name))
+                        .is_some_and(|name| Some(name) == id)
+                }) {
+                    aliases += 1;
+                    if aliases > 16 {
+                        host.print(format_args!("Alias expansion limit\n"));
+                        continue;
+                    }
+                    self.buffer
+                        .insert(alias.text.as_str(), context)
+                        .map_err(Into::into)
                 } else {
-                    self.cvars.write(view, args.get(1)).map_err(Into::into)
-                }
-            } else if let Some(alias) = self.aliases[..self.alias_count].iter().find(|a| {
-                a.name
-                    .and_then(|name| self.cvars.names.folded(name))
-                    .is_some_and(|name| Some(name) == id)
-            }) {
-                aliases += 1;
-                if aliases > 16 {
-                    host.print(format_args!("Alias expansion limit\n"));
-                    continue;
-                }
-                self.buffer
-                    .insert(alias.text.as_str(), context)
-                    .map_err(Into::into)
-            } else {
-                host.print(format_args!("Unknown command \"{name}\"\n"));
-                Ok(())
-            };
+                    host.print(format_args!("Unknown command \"{name}\"\n"));
+                    Ok(())
+                };
             if let Err(error) = result {
                 host.print(format_args!("Command {name} rejected: {error:?}\n"));
             }
@@ -386,11 +390,9 @@ impl<H: Host> Console<H> {
         host: &mut H,
         args: &Arguments<'_>,
         context: Context,
+        action: qa_input::Action,
     ) -> Result<(), CommandError> {
         let name = args.get(0);
-        let Some(action) = bindings::action(&name[1..]) else {
-            return Err(CommandError::Usage);
-        };
         let key = (!args.get(1).is_empty()).then(|| crate::numbers::integer(args.get(1)) as u16);
         let time = if args.get(2).is_empty() {
             context.event_time.unwrap_or_else(|| host.input_time())
@@ -583,7 +585,7 @@ impl<H: Host> Console<H> {
                 "{}\n",
                 self.cvars
                     .names
-                    .get(c.name)
+                    .get(*c)
                     .and_then(|bytes| std::str::from_utf8(bytes).ok())
                     .unwrap_or_default()
             ));

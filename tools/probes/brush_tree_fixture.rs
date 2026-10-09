@@ -3,7 +3,7 @@
 use qa_core::primitives::{Axis, Bounds, ClipNode, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::collision::brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot};
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, Trace, TraceQuery, TraceRules,
+    CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules,
 };
 
 pub const WORDS: usize = 13;
@@ -81,7 +81,7 @@ fn contents(raw: u32) -> Result<Contents, &'static str> {
 pub fn load(
     mut data: &[u8],
     rules: TraceRules,
-    entity_rules: EntityTraceRules,
+    entity_rules: EntityTracePolicy,
 ) -> Result<Fixture, &'static str> {
     if word(&mut data)? != 0x45525442 || word(&mut data)? != 1 {
         return Err("unsupported brush-tree fixture");

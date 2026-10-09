@@ -16,7 +16,7 @@ use qa_session::clients::Server;
 use qa_world::{
     area::{LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionStore, Contents, EntityTraceRules, Trace, TraceQuery, TraceScratch, WorldTrace,
+        CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceScratch, WorldTrace,
     },
     entities::{AllocationPolicy, EntityTime},
 };
@@ -221,7 +221,7 @@ impl EngineServices<'_> {
     pub fn point_contents(
         &mut self,
         point: Vec3,
-        rules: EntityTraceRules,
+        rules: EntityTracePolicy,
     ) -> Result<Contents, CallError> {
         let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
         Ok(WorldTrace::new(

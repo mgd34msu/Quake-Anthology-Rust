@@ -3371,3 +3371,58 @@ horizontal movement and two ordinary intake phases in each 300-frame map/
 backend run, and records the native local protocol explicitly. It uses a normal
 candidate without a proof input player. The six fresh runs and install are
 performed after this commit; this note does not claim they have passed yet.
+
+### THE-3174: twelve audited primitive adoptions, timing acceptance open
+
+All twelve audited sites are recorded in [core-adoption.md](core-adoption.md).
+The release candidate preserves the compared movement, collision, sky endpoint,
+retail RGBA and depth results. The unchanged checker, all 648 workspace tests
+and warning-denied Clippy pass. Core remains safe; no checker extension is added.
+
+The initial seven-byte entity policy enlarged TraceQuery to 128 bytes. Packing
+its behavior flags restores 120 bytes. An explicit internal query layout also
+restores start/end/mins/maxs offsets 68/80/92/104. Stored cvar NameId follows its
+numeric columns so numbers/integers retain offsets 72/92 in a 120-byte row.
+An alias-ID caching experiment and the extra callback NameId argument were
+removed. The final command table holds function callbacks and button actions
+under the same numeric name key. Empty cvar refreshes do no dirty-set work.
+
+CPU23, portable release, no debugger, 60 warm-up and 600 measured frames per
+leg. Headless rows aggregate five ABBA blocks, ten baseline and ten candidate
+legs each. Retail rows aggregate one ABBA block at 640x400, one CPU band and
+zero background workers. Each workload and its fidelity counters match; all
+measured Rust allocations, reallocations and requested bytes are zero. Retail
+RGBA and float-depth files match byte for byte in all four legs.
+
+| Workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| movement | 3015734.50 | 3004118.50 | -0.385% | 4179813.00 | 4166683.00 |
+| names | 11218.05 | 11332.50 | +1.020% | 14839.00 | 14839.00 |
+| q1 | 4026.50 | 4078.00 | +1.279% | 4308.00 | 4411.00 |
+| q2 | 21798.55 | 21853.00 | +0.250% | 146207.20 | 151854.10 |
+| q3 | 9440.50 | 9535.00 | +1.001% | 76675.20 | 78819.00 |
+| e1m1 CPU draw | 1867784.25 | 1845219.25 | -1.208% | 1965556.50 | 1895797.00 |
+| base1 CPU draw | 4433988.00 | 4349735.50 | -1.900% | 4554408.50 | 4489748.50 |
+| q3dm1 CPU draw | 13767227.50 | 13910185.25 | +1.038% | 15189646.00 | 15358701.00 |
+
+**Timing acceptance remains open.** Positive median shifts remain in names,
+Q1/Q2/Q3 model traces and q3dm1 CPU draw. This evidence does not establish the
+requested no-regression gate. The slice is retained on its pushed adoption WIP
+branch while those costs are investigated; main stays at the preceding verified
+commit. Repeated older trials are retained and are not substituted for this
+final candidate matrix. Earlier diagnostic runners also have failed logs,
+including a twelve-versus-twenty row-count assertion and a failed continuation.
+Those incomplete series are not acceptance evidence.
+
+Original-C checks retain 30,000 retail hull rows, 40,632 transformed-model rows,
+20,140 brush rows, 1,188 hit-merge rows and 16,384 sky integer endpoints. Another
+16,384 sky rows match the replaced Rust arithmetic. Q2/Q3 movement stays
+byte-identical to the pre-adoption Rust baseline over 1,152 rows each. Original
+Q2 is exact; Q3 keeps its pre-existing 544 float-component differences with
+maximum error 0.0000112 and exact flags/timers. No new native gameplay, module,
+foreign-heap, GL speed, multiplayer or installation acceptance is claimed.
+
+The final example build took 36.67 seconds, Cargo-reported. Evidence is under
+`THE-3174-adoption-20261009/`: query-layout-headless/summary.json,
+retail-query-layout-summary.json, sky-final-candidate/result.json, the original-C
+comparison directories, final checker/workspace/Clippy logs and build logs.

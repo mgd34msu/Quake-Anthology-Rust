@@ -1,8 +1,6 @@
 use qa_core::primitives::{Axis, Bounds, ClipNode, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::collision::brushes::{Brush, BrushTree, CollisionLeaf, GeometryError, ModelRoot};
-use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, LeafGate, StoreError, TraceQuery, TraceRules,
-};
+use qa_world::collision::{CollisionStore, Contents, LeafGate, StoreError, TraceQuery, TraceRules};
 
 struct Case {
     store: CollisionStore,
@@ -55,8 +53,12 @@ fn query(rules: TraceRules, start: [f32; 3], end: [f32; 3]) -> TraceQuery<'stati
         Vec3(end),
         rules,
         match rules.leaf_gate {
-            LeafGate::StoredContents => EntityTraceRules::QUAKE2,
-            LeafGate::Brushes => EntityTraceRules::ARENA,
+            LeafGate::StoredContents => {
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            }
+            LeafGate::Brushes => {
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            }
         },
     )
 }
@@ -116,7 +118,7 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
             map.geometry,
             0,
             Vec3([1.0, 0.0, 0.0]),
-            EntityTraceRules::QUAKE2
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
         ),
         Contents::SLIME
     );
@@ -125,7 +127,7 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
             map.geometry,
             0,
             Vec3([1.0, 0.0, 0.0]),
-            EntityTraceRules::ARENA
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
         ),
         Contents::WATER
     );
@@ -134,7 +136,7 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
             map.geometry,
             0,
             Vec3([-1.0, 0.0, 0.0]),
-            EntityTraceRules::QUAKE2
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
         ),
         Contents::LAVA
     );
@@ -143,14 +145,18 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
             map.geometry,
             0,
             Vec3([-1.0, 0.0, 0.0]),
-            EntityTraceRules::ARENA
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
         ),
         Contents::SOLID
     );
     // Points exactly on a native splitting plane select front0.
     assert_eq!(
-        map.store
-            .point_contents_model(map.geometry, 0, Vec3::default(), EntityTraceRules::QUAKE2),
+        map.store.point_contents_model(
+            map.geometry,
+            0,
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+        ),
         Contents::SLIME
     );
     assert_eq!(
@@ -158,7 +164,7 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
             map.geometry,
             1,
             Vec3([0.0, 1.0, 0.0]),
-            EntityTraceRules::ARENA
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
         ),
         Contents::PLAYER_CLIP
     );
@@ -167,13 +173,17 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
             map.geometry,
             1,
             Vec3([0.0, 3.0, 0.0]),
-            EntityTraceRules::ARENA
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
         ),
         Contents::EMPTY
     );
     assert_eq!(
-        map.store
-            .point_contents_model(map.geometry, 99, Vec3::default(), EntityTraceRules::ARENA),
+        map.store.point_contents_model(
+            map.geometry,
+            99,
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+        ),
         Contents::EMPTY
     );
     let mut scratch = map.store.scratch();
@@ -557,7 +567,10 @@ fn axial_position_bounds_accept_both_native_prefix_orders_and_foreign_sides_fall
             0,
             TraceQuery {
                 rules: TraceRules::LEGACY,
-                entity_rules: EntityTraceRules::QUAKE2,
+                entity_rules: qa_world::collision::trace_policy(
+                    qa_core::primitives::RuleSetId::Quake2,
+                )
+                .1,
                 ..position
             },
             &mut scratch,
@@ -649,7 +662,10 @@ fn caller_side_margin_and_nonaxial_offset_select_visitation_on_one_graph() {
             0,
             TraceQuery {
                 rules: TraceRules::ARENA,
-                entity_rules: EntityTraceRules::ARENA,
+                entity_rules: qa_world::collision::trace_policy(
+                    qa_core::primitives::RuleSetId::Quake3,
+                )
+                .1,
                 ..legacy
             },
             &mut scratch,

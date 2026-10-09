@@ -1,6 +1,6 @@
 use qa_core::primitives::{Axis, Bounds, GeometryId, Plane, Vec3};
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, StoreError, TraceQuery, TraceRules,
+    CollisionStore, Contents, StoreError, TraceQuery, TraceRules,
     hulls::{ClipNode, HullError, HullModel},
 };
 
@@ -53,7 +53,7 @@ fn native_hull_epsilon_and_startsolid_follow_world_c() {
             Vec3([1.0, 0.0, 0.0]),
             Vec3([-1.0, 0.0, 0.0]),
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         ),
         &mut scratch,
     );
@@ -68,7 +68,7 @@ fn native_hull_epsilon_and_startsolid_follow_world_c() {
             Vec3([-1.0, 0.0, 0.0]),
             Vec3([-2.0, 0.0, 0.0]),
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         ),
         &mut scratch,
     );
@@ -85,7 +85,7 @@ fn foreign_caller_epsilon_is_used_on_compiled_hull_topology() {
         Vec3([1.0, 0.0, 0.0]),
         Vec3([-1.0, 0.0, 0.0]),
         TraceRules::ARENA,
-        EntityTraceRules::QUAKE,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
     );
     let contact = hulls
         .store
@@ -119,13 +119,13 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
         Vec3([1.0, 0.0, 0.0]),
         Vec3([-1.0, 0.0, 0.0]),
         TraceRules::LEGACY,
-        EntityTraceRules::QUAKE,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
     );
     let embedded = TraceQuery::point(
         Vec3([-1.0, 0.0, 0.0]),
         Vec3([-2.0, 0.0, 0.0]),
         TraceRules::ARENA,
-        EntityTraceRules::QUAKE,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
     );
     for _ in 0..32 {
         let hit = geometry
@@ -191,7 +191,7 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
             Vec3([0.0, 0.0, -100.0]),
             Vec3::default(),
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         )
     };
     let stock = hulls

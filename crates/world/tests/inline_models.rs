@@ -5,7 +5,7 @@ use qa_core::primitives::{
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionStore, Contents, EntityTraceRules, QuakeTraceKind, TraceQuery, TraceRules,
+        CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, TraceQuery, TraceRules,
         WorldTrace,
         brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
         hulls::HullModel,
@@ -192,11 +192,11 @@ fn model(
     id
 }
 
-fn query(start: Vec3, end: Vec3, rules: EntityTraceRules) -> TraceQuery<'static> {
+fn query(start: Vec3, end: Vec3, rules: EntityTracePolicy) -> TraceQuery<'static> {
     TraceQuery::point(
         start,
         end,
-        if rules == EntityTraceRules::ARENA {
+        if rules == qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1 {
             TraceRules::ARENA
         } else {
             TraceRules::LEGACY
@@ -222,7 +222,7 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
         ..query(
             Vec3([50.0, 0.0, 0.0]),
             Vec3([-50.0, 0.0, 0.0]),
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         )
     };
     let mut scene = WorldTrace::new(&store, second, 1, &table, &area, &mut scratch, None);
@@ -231,11 +231,19 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
     assert_eq!(result.entity, table.id_at(0));
     assert_eq!(result.end.0[0].to_bits(), (22.0f32 + 0.03125).to_bits());
     assert_eq!(
-        scene.point_contents(Vec3([20.0, 0.0, 0.0]), EntityTraceRules::QUAKE2, &[]),
+        scene.point_contents(
+            Vec3([20.0, 0.0, 0.0]),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            &[]
+        ),
         Contents::WATER
     );
     assert_eq!(
-        scene.point_contents(Vec3::default(), EntityTraceRules::QUAKE2, &[]),
+        scene.point_contents(
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            &[]
+        ),
         Contents::EMPTY
     );
     let mut scene = WorldTrace::new(&store, second, 0, &table, &area, &mut scratch, None);
@@ -297,9 +305,9 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
         ..query(
             Vec3([50.0, 0.0, 0.0]),
             Vec3([-50.0, 0.0, 0.0]),
-            EntityTraceRules::Quake {
-                kind: QuakeTraceKind::IgnoreBoxes,
-            },
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
+                .1
+                .with_quake_kind(Some(QuakeTraceKind::IgnoreBoxes)),
         )
     };
     let result = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).trace(input);
@@ -358,9 +366,9 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
         );
         let mut scratch = store.scratch();
         for caller in [
-            EntityTraceRules::QUAKE,
-            EntityTraceRules::QUAKE2,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         ] {
             let mut scene = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None);
             let result = scene.trace(TraceQuery {
@@ -377,7 +385,12 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
             assert!(
                 (result.end.0[0]
                     - (edge
-                        + if caller == EntityTraceRules::ARENA {
+                        + if caller
+                            == qa_world::collision::trace_policy(
+                                qa_core::primitives::RuleSetId::Quake3
+                            )
+                            .1
+                        {
                             0.125
                         } else {
                             0.03125
@@ -394,7 +407,8 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
                     1.0
                 }
             );
-            if caller == EntityTraceRules::QUAKE {
+            if caller == qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1
+            {
                 // Native SV_PointContents never adds linked model contents.
                 assert_eq!(
                     scene.point_contents(Vec3([30.0, 44.0, 50.0]), caller, &[]),
@@ -582,7 +596,7 @@ fn unchanged_rotated_link_cube_does_not_freeze_the_narrow_phase_pose() {
     assert_eq!(
         WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
             point,
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             &[]
         ),
         Contents::SOLID
@@ -598,7 +612,7 @@ fn unchanged_rotated_link_cube_does_not_freeze_the_narrow_phase_pose() {
     assert_eq!(
         WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
             point,
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             &[]
         ),
         Contents::EMPTY
@@ -633,7 +647,7 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
     assert_eq!(
         WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
             point,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
         ),
         Contents::EMPTY
@@ -646,7 +660,11 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
     // querying the physical r.currentOrigin/currentAngles area bounds.
     let mut scene = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None);
     assert_eq!(
-        scene.point_contents(point, EntityTraceRules::ARENA, &[]),
+        scene.point_contents(
+            point,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            &[]
+        ),
         Contents::WATER
     );
     let result = scene.trace(TraceQuery {
@@ -654,7 +672,7 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
         ..query(
             Vec3([40.0, 40.0, 50.0]),
             Vec3([20.0, 40.0, 50.0]),
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         )
     });
     assert_eq!(result.entity, Some(target));
@@ -668,7 +686,7 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
     assert_eq!(
         WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
             Vec3([300.0, 40.0, 50.0]),
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
         ),
         Contents::EMPTY
@@ -723,7 +741,7 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
     assert_eq!(
         WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
             point,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
         ),
         Contents::BODY
@@ -734,11 +752,19 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
     });
     let scene = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None);
     assert_eq!(
-        scene.point_contents(point, EntityTraceRules::ARENA, &[]),
+        scene.point_contents(
+            point,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            &[]
+        ),
         Contents::EMPTY
     );
     assert_eq!(
-        scene.point_contents(Vec3([36.0, 40.0, 50.0]), EntityTraceRules::ARENA, &[]),
+        scene.point_contents(
+            Vec3([36.0, 40.0, 50.0]),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            &[]
+        ),
         Contents::BODY
     );
 }

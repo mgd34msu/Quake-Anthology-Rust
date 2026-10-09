@@ -1,11 +1,9 @@
+use super::EntityTraceFlags;
 use super::{
-    CollisionStore, Contents, EntityTraceRules, QuakeTraceKind, Trace, TraceQuery, TraceScratch,
-    boxes::trace_box,
+    CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceQuery, TraceScratch,
+    WorldEntityRule, boxes::trace_box,
 };
-use crate::{
-    area::{AreaGrid, LinkFlags},
-    entities::EntityTable,
-};
+use crate::{area::AreaGrid, entities::EntityTable};
 use qa_core::primitives::{
     Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, EntityPose, GeometryId,
     NativeEntity, Vec3,
@@ -49,23 +47,18 @@ impl<'a> WorldTrace<'a> {
         let mut result = self
             .store
             .trace_model(self.geometry, self.model, query, self.scratch);
-        let world_entity = match query.entity_rules {
-            EntityTraceRules::Quake { .. } => result.fraction < 1.0 || result.start_solid,
-            EntityTraceRules::Quake2 => true,
-            EntityTraceRules::Quake3 => result.fraction != 1.0,
+        let world_entity = match query.entity_rules.world_entity {
+            WorldEntityRule::HitOrStartSolid => result.fraction < 1.0 || result.start_solid,
+            WorldEntityRule::Always => true,
+            WorldEntityRule::FractionChanged => result.fraction != 1.0,
         };
         if world_entity {
             result.entity = self.entities.id_at(0);
         }
-        if result.fraction == 0.0 && !matches!(query.entity_rules, EntityTraceRules::Quake { .. }) {
+        if result.fraction == 0.0 && query.entity_rules.stop_at_zero() {
             return result;
         }
-        let missile = matches!(
-            query.entity_rules,
-            EntityTraceRules::Quake {
-                kind: QuakeTraceKind::Missile
-            }
-        );
+        let missile = query.entity_rules.quake_kind() == Some(QuakeTraceKind::Missile);
         let (mins, maxs) = if missile {
             (Vec3([-15.0; 3]), Vec3([15.0; 3]))
         } else {
@@ -81,11 +74,7 @@ impl<'a> WorldTrace<'a> {
         };
         let columns = &self.entities.columns;
         let pass_slot = query.pass.and_then(|id| self.entities.resolve(id));
-        let role = if query.entity_rules == EntityTraceRules::Quake3 {
-            LinkFlags::LINKED
-        } else {
-            LinkFlags::SOLID
-        };
+        let role = query.entity_rules.link_role;
         for linked in self.area.query(self.entities, bounds, role) {
             if result.all_solid {
                 break;
@@ -99,51 +88,56 @@ impl<'a> WorldTrace<'a> {
             if shape == CollisionShape::None {
                 continue;
             }
-            match query.entity_rules {
-                EntityTraceRules::Quake { kind } => {
-                    if kind == QuakeTraceKind::IgnoreBoxes && shape == CollisionShape::Box {
-                        continue;
-                    }
-                    if let Some(pass) = pass_slot
-                        && columns.maxs[pass].0[0] - columns.mins[pass].0[0] != 0.0
-                        && linked.maxs.0[0] - linked.mins.0[0] == 0.0
-                    {
-                        continue;
-                    }
-                }
-                EntityTraceRules::Quake2 => {
-                    if columns.collision_tags[slot].0 & CollisionTags::DEAD_MONSTER.0 != 0
-                        && !query.mask.intersects(Contents::CORPSE)
-                    {
-                        continue;
-                    }
-                }
-                EntityTraceRules::Quake3 => {
-                    if !query
-                        .mask
-                        .intersects(Contents(columns.collision_contents[slot]))
-                    {
-                        continue;
-                    }
-                }
+            if query.entity_rules.quake_kind() == Some(QuakeTraceKind::IgnoreBoxes)
+                && shape == CollisionShape::Box
+            {
+                continue;
+            }
+            if query
+                .entity_rules
+                .filtering
+                .contains(EntityTraceFlags::SKIP_POINT_ENTITIES)
+                && let Some(pass) = pass_slot
+                && columns.maxs[pass].0[0] - columns.mins[pass].0[0] != 0.0
+                && linked.maxs.0[0] - linked.mins.0[0] == 0.0
+            {
+                continue;
+            }
+            if query
+                .entity_rules
+                .filtering
+                .contains(EntityTraceFlags::DEAD_MONSTER_MASK)
+                && columns.collision_tags[slot].0 & CollisionTags::DEAD_MONSTER.0 != 0
+                && !query.mask.intersects(Contents::CORPSE)
+            {
+                continue;
+            }
+            if query
+                .entity_rules
+                .filtering
+                .contains(EntityTraceFlags::CONTENTS_MASK)
+                && !query
+                    .mask
+                    .intersects(Contents(columns.collision_contents[slot]))
+            {
+                continue;
             }
             if let Some(pass) = pass_slot {
                 let pass_id = query.pass;
                 if self.owner_is(columns.collision_owner[slot], pass_id) {
                     continue;
                 }
-                match query.entity_rules {
-                    EntityTraceRules::Quake { .. } | EntityTraceRules::Quake2 => {
-                        if self.owner_is(columns.collision_owner[pass], Some(id)) {
-                            continue;
-                        }
+                if query
+                    .entity_rules
+                    .filtering
+                    .contains(EntityTraceFlags::SHARED_OWNER)
+                {
+                    let pass_owner = self.arena_pass_owner(pass);
+                    if self.same_owner(columns.collision_owner[slot], pass_owner) {
+                        continue;
                     }
-                    EntityTraceRules::Quake3 => {
-                        let pass_owner = self.arena_pass_owner(pass);
-                        if self.same_owner(columns.collision_owner[slot], pass_owner) {
-                            continue;
-                        }
-                    }
+                } else if self.owner_is(columns.collision_owner[pass], Some(id)) {
+                    continue;
                 }
             }
             let target_query =
@@ -198,21 +192,17 @@ impl<'a> WorldTrace<'a> {
     pub fn point_contents(
         &self,
         point: Vec3,
-        rules: EntityTraceRules,
+        rules: EntityTracePolicy,
         excluded: &[EntityId],
     ) -> Contents {
         let mut result = self
             .store
             .point_contents_model(self.geometry, self.model, point, rules);
         // Q1 SV_PointContents is the world hull, without linked-body contents.
-        if matches!(rules, EntityTraceRules::Quake { .. }) {
+        if !rules.filtering.contains(EntityTraceFlags::LINKED_CONTENTS) {
             return result;
         }
-        let role = if rules == EntityTraceRules::Quake3 {
-            LinkFlags::LINKED
-        } else {
-            LinkFlags::SOLID
-        };
+        let role = rules.link_role;
         for linked in self.area.query(
             self.entities,
             Bounds {
@@ -221,7 +211,10 @@ impl<'a> WorldTrace<'a> {
             },
             role,
         ) {
-            if rules == EntityTraceRules::Quake3 && Some(linked.id) == self.pass
+            if rules
+                .filtering
+                .contains(EntityTraceFlags::EXCLUDE_CONTENTS_PASS)
+                && Some(linked.id) == self.pass
                 || excluded.contains(&linked.id)
             {
                 continue;
@@ -252,7 +245,10 @@ impl<'a> WorldTrace<'a> {
             let inside = (0..3).all(|axis| {
                 let coordinate = point.0[axis] - pose.position.0[axis];
                 coordinate >= linked.mins.0[axis]
-                    && if rules == EntityTraceRules::Quake2 {
+                    && if !rules
+                        .filtering
+                        .contains(EntityTraceFlags::INCLUSIVE_CONTENTS_MAX)
+                    {
                         coordinate < linked.maxs.0[axis]
                     } else {
                         coordinate <= linked.maxs.0[axis]

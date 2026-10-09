@@ -2,7 +2,7 @@ use qa_core::primitives::{
     Axis, Bounds, ClipNode, GeometryId, ModelRules, Plane, SurfaceFlags, Vec3,
 };
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, StoreError, TraceQuery, TraceRules,
+    CollisionStore, Contents, EntityTracePolicy, StoreError, TraceQuery, TraceRules,
     brushes::{Brush, BrushTree, CollisionLeaf, GeometryError, ModelRoot},
     hulls::{HullError, HullModel},
 };
@@ -68,7 +68,7 @@ fn add_brush(store: &mut CollisionStore) -> Result<GeometryId, StoreError> {
     )
 }
 
-fn crossing(rules: TraceRules, entities: EntityTraceRules) -> TraceQuery<'static> {
+fn crossing(rules: TraceRules, entities: EntityTracePolicy) -> TraceQuery<'static> {
     TraceQuery::point(
         Vec3([1.0, 0.0, 0.0]),
         Vec3([-1.0, 0.0, 0.0]),
@@ -89,8 +89,16 @@ fn mixed_topologies_keep_native_models_and_caller_rules_independent() -> Result<
     let mut first = store.scratch();
     let mut second = store.scratch();
     for (rules, entities, fraction) in [
-        (TraceRules::LEGACY, EntityTraceRules::QUAKE2, 0.484375),
-        (TraceRules::ARENA, EntityTraceRules::ARENA, 0.4375),
+        (
+            TraceRules::LEGACY,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            0.484375,
+        ),
+        (
+            TraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            0.4375,
+        ),
     ] {
         let query = crossing(rules, entities);
         let hull_hit = store.trace_model(hull, 0, query, &mut first);
@@ -136,7 +144,10 @@ fn removal_compacts_private_rows_and_reuse_rejects_stale_handles() -> Result<(),
     let old_hull = add_hull(&mut store)?;
     let brush = add_brush(&mut store)?;
     let mut scratch = store.scratch();
-    let query = crossing(TraceRules::ARENA, EntityTraceRules::ARENA);
+    let query = crossing(
+        TraceRules::ARENA,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+    );
     let before = store.trace_model(brush, 1, query, &mut scratch);
     assert!(store.remove(old_hull));
     assert!(!store.remove(old_hull));
@@ -147,7 +158,12 @@ fn removal_compacts_private_rows_and_reuse_rejects_stale_handles() -> Result<(),
         1.0
     );
     assert_eq!(
-        store.point_contents_model(old_hull, 0, query.end, EntityTraceRules::ARENA),
+        store.point_contents_model(
+            old_hull,
+            0,
+            query.end,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+        ),
         Contents::EMPTY
     );
     let after = store.trace_model(brush, 1, query, &mut scratch);
@@ -189,7 +205,10 @@ fn removing_the_middle_resource_preserves_both_neighbors() -> Result<(), StoreEr
     let middle = add_brush(&mut store)?;
     let last = add_hull(&mut store)?;
     let mut scratch = store.scratch();
-    let query = crossing(TraceRules::LEGACY, EntityTraceRules::QUAKE);
+    let query = crossing(
+        TraceRules::LEGACY,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+    );
     let before = [first, last].map(|geometry| store.trace_model(geometry, 0, query, &mut scratch));
     assert!(store.remove(middle));
     for (geometry, before) in [first, last].into_iter().zip(before) {
@@ -285,7 +304,10 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
             .trace_model(
                 valid,
                 1,
-                crossing(TraceRules::LEGACY, EntityTraceRules::QUAKE2),
+                crossing(
+                    TraceRules::LEGACY,
+                    qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+                ),
                 &mut scratch
             )
             .fraction,
@@ -309,7 +331,10 @@ fn terminal_hull_models_and_stale_scratch_remain_scoped() -> Result<(), StoreErr
         ],
         vec![bounds(); 3],
     )?;
-    let query = crossing(TraceRules::LEGACY, EntityTraceRules::QUAKE);
+    let query = crossing(
+        TraceRules::LEGACY,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+    );
     assert_eq!(
         store
             .trace_model(terminal, 1, query, &mut old_scratch)
@@ -329,7 +354,12 @@ fn terminal_hull_models_and_stale_scratch_remain_scoped() -> Result<(), StoreErr
     assert!(solid.start_solid && solid.all_solid);
     assert_eq!(solid.fraction, 1.0);
     assert_eq!(
-        store.point_contents_model(terminal, 2, Vec3::default(), EntityTraceRules::ARENA),
+        store.point_contents_model(
+            terminal,
+            2,
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+        ),
         Contents::WATER
     );
     let brush = add_brush(&mut store)?;
@@ -363,7 +393,7 @@ fn translated_hull_forms_the_whole_native_offset_before_subtraction() -> Result<
             Vec3([2.0, 0.0, 0.0]),
             Vec3::default(),
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         )
     };
     // world.c forms (clipmins - mins) + origin = 1 first. The resulting

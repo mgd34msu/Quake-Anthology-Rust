@@ -4,7 +4,7 @@
 //! quake/WinQuake/d_sky.c D_Sky_uv_To_st; quake-2/ref_gl/gl_warp.c
 //! DrawSkyPolygon/ClipSkyPolygon/MakeSkyVec; quake-iii-arena/code/renderer/
 //! tr_sky.c R_InitSkyTexCoords/MakeSkyVec/ClipSkyPolygon.
-use qa_core::primitives::Vec3;
+use qa_core::{math, primitives::Vec3};
 
 pub const LAYER_SIZE: usize = 128;
 pub const CLOUD_SUBDIVISIONS: usize = 8;
@@ -111,7 +111,7 @@ pub fn sphere_uv(
         return None;
     }
     let direction = Vec3([direction.0[0], direction.0[1], direction.0[2] * flatten_z]);
-    let length = direction.dot(direction).sqrt();
+    let length = math::length(direction);
     if !length.is_finite() || length <= 0.0 {
         return None;
     }
@@ -151,11 +151,7 @@ pub fn layered_uv(
 pub fn unrotate(direction: Vec3, rotation: Rotation, time_seconds: f32) -> Vec3 {
     let angle = -(time_seconds * rotation.degrees_per_second).to_radians();
     let (sine, cosine) = angle.sin_cos();
-    let cross = Vec3([
-        rotation.axis.0[1] * direction.0[2] - rotation.axis.0[2] * direction.0[1],
-        rotation.axis.0[2] * direction.0[0] - rotation.axis.0[0] * direction.0[2],
-        rotation.axis.0[0] * direction.0[1] - rotation.axis.0[1] * direction.0[0],
-    ]);
+    let cross = math::cross(rotation.axis, direction);
     direction * cosine
         + cross * sine
         + rotation.axis * (rotation.axis.dot(direction) * (1.0 - cosine))
@@ -301,7 +297,7 @@ fn cloud_intersection(direction: Vec3, sphere: CloudSphere) -> Option<(f32, [f32
     }
     let mut intersection = direction * p;
     intersection.0[2] += radius;
-    let norm = intersection.dot(intersection).sqrt();
+    let norm = math::length(intersection);
     if !norm.is_finite() || norm <= 0.0 {
         return None;
     }

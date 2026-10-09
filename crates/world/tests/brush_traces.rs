@@ -2,7 +2,7 @@ use qa_core::primitives::{Bounds, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::area::AreaGrid;
 use qa_world::collision::brushes::{Brush, BrushTree};
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace,
+    CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, WorldTrace,
 };
 use qa_world::entities::EntityTable;
 
@@ -29,11 +29,11 @@ fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Case, &'static str> {
     Ok(Case { store, geometry })
 }
 
-fn entity_rules(rules: TraceRules) -> EntityTraceRules {
+fn entity_rules(rules: TraceRules) -> EntityTracePolicy {
     if rules == TraceRules::ARENA {
-        EntityTraceRules::ARENA
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
     } else {
-        EntityTraceRules::QUAKE2
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
     }
 }
 
@@ -60,7 +60,7 @@ fn trace_world(geometry: &Case, query: TraceQuery<'_>) -> Trace {
     .trace(query)
 }
 
-fn point_contents(geometry: &Case, point: Vec3, rules: EntityTraceRules) -> Contents {
+fn point_contents(geometry: &Case, point: Vec3, rules: EntityTracePolicy) -> Contents {
     let entities = EntityTable::new(2, 1).unwrap();
     let area = AreaGrid::load(
         2,
@@ -265,7 +265,8 @@ fn q3_clamps_each_enter_fraction_before_selecting_the_contact_plane() {
         &world,
         TraceQuery {
             rules: TraceRules::LEGACY,
-            entity_rules: EntityTraceRules::QUAKE2,
+            entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2)
+                .1,
             ..query
         },
     );
@@ -311,7 +312,10 @@ fn q3_endpoint_epsilon_rejection_is_inclusive_and_caller_selected() {
             &world,
             TraceQuery {
                 rules: TraceRules::LEGACY,
-                entity_rules: EntityTraceRules::QUAKE2,
+                entity_rules: qa_world::collision::trace_policy(
+                    qa_core::primitives::RuleSetId::Quake2
+                )
+                .1,
                 end: Vec3([below, 0.0, 0.0]),
                 ..query
             }
@@ -344,7 +348,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
         maxs: Vec3([4.0, 0.0, 0.0]),
         mask: Contents::SOLID,
         rules: TraceRules::ARENA,
-        entity_rules: EntityTraceRules::ARENA,
+        entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         pass: None,
         excluded: &[],
     };
@@ -358,7 +362,8 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
         &world,
         TraceQuery {
             rules: TraceRules::LEGACY,
-            entity_rules: EntityTraceRules::QUAKE2,
+            entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2)
+                .1,
             ..query
         },
     );

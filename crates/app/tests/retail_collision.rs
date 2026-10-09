@@ -126,7 +126,7 @@ fn q3_q3dm7_plane_lump_keeps_native_axis_tags() {
 #[ignore = "requires QA_RETAIL_ROOT retail content"]
 fn retail_families_keep_inline_models_in_one_generation_checked_store() {
     use qa_core::primitives::Vec3;
-    use qa_world::collision::{Contents, EntityTraceRules, TraceQuery, TraceRules};
+    use qa_world::collision::{Contents, TraceQuery, TraceRules};
     let root = PathBuf::from(std::env::var_os("QA_RETAIL_ROOT").expect("QA_RETAIL_ROOT"));
     let mut vfs = Vfs::default();
     let cases = [
@@ -134,19 +134,19 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
             "q1/id1",
             "e1m1",
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
         ),
         (
             "q2/baseq2",
             "base1",
             TraceRules::LEGACY,
-            EntityTraceRules::QUAKE2,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         ),
         (
             "q3a/baseq3",
             "q3dm7",
             TraceRules::ARENA,
-            EntityTraceRules::ARENA,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         ),
     ];
     for (priority, (product, _, _, _)) in cases.iter().enumerate() {

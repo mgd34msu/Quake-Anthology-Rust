@@ -8,10 +8,11 @@ examples and tests, rather than future gameplay modules.
 
 Verified native-reader main was `230ac80c`. Unfinished ELF work is pushed on
 `wip/THE-2575-2026-10-09` at `2db27ef9`; that lane is stopped. The accepted
-installed `qfiles/qa-rust` is `a1d32b8c`, built 2026-10-09T15:26:36Z in 38.94 s.
-Its private three-map CPU/GL smoke passed; native hosts, delta channel, stock HUD
-and gameplay remain absent. The earlier statement that no install occurred is
-superseded by that owner's explicit smoke-install authorization.
+installed `qfiles/qa-rust` is `a7ec14a2`, built 2026-10-09T22:19:17Z in 29.39 s.
+Its owner-authorized private start/base1/q3dm1 CPU/GL smoke passed at 300 frames
+per run with normal exits and movement through native local QW28 packets.
+Native hosts, snapshot delta tables, sign-on, stock HUD and gameplay remain
+unfinished. The development install does not qualify those deferred features.
 
 ## Primitive ownership and adoption
 
@@ -87,3 +88,42 @@ The deferred native-path sites are concrete:
 
 Engine review and native acceptance are separate. Linear remains the source of
 truth; the supervisor closes reviewed engine scopes. Agents never set Done.
+
+## THE-3174: twelve supervisor-audited call sites
+
+The 2026-10-09 adoption audit resolves the following twelve sites together.
+References are relative to `crates/`. Arithmetic keeps its previous operation
+order; length-only replacements retain division rather than reciprocal
+normalization. No checker rule is added or changed.
+
+| # | Audited site | Adopted implementation and preserved behavior |
+| --- | --- | --- |
+| 1 | `render/src/stage.rs:17` | Entity-view subtraction uses Vec3; non-normalized axis compensation uses core length and the existing zero-length branch. |
+| 2 | `render/src/sky.rs:154` | Sky rotation uses core cross with the same component product/subtraction order. |
+| 3 | `render/src/sky.rs:114` | Sphere projection uses core length; finite/positive rejection and scale divided by length remain in place. |
+| 4 | `render/src/sky.rs:300` | Cloud intersection uses core length; intersection divided by norm and acos order remain in place. |
+| 5 | `render/src/cpu/sky.rs:211` | CPU screen rays use Vec3 multiply/subtract/add and core normalized. Integer endpoint fixtures compare the previous arithmetic and original WinQuake C. The zero-ray branch preserves the previous NaN-to-integer result. |
+| 6 | `render/src/world.rs:144` | Frustum normals use Vec3 multiply/add/subtract/negate in the previous order; no normalization is introduced. |
+| 7 | `movement/src/physics.rs:519` | Movement-axis magnitude uses core length with the same left-associated dot products. |
+| 8 | `world/src/collision/boxes.rs:49` and `store.rs:355` | Box-local translation and hit translation use Vec3 subtraction/addition; transformed model normals use vector negation for the right basis and inverse angles. Native centering and hull-offset order are retained. |
+| 9 | `world/src/collision/mod.rs:23` | EntityTraceRules is deleted. Caller-selected trace_policy(RuleSetId) produces behavior fields for world-entity assignment, link role, query kind, rejection gates, point contents and hit merging. Every existing caller, comparison probe, example and test uses that policy. The packed policy is four bytes; TraceQuery keeps its previous float offsets and 120-byte size through an explicit internal layout. Protocol projections still read named fields. |
+| 10 | `console/src/cvars.rs:602` | Each value stores its folded NameId at load; conversion side effects bind that numeric identity rather than resolving its text again. Exact display names remain distinct. Numeric columns retain their previous offsets and the row stays 120 bytes. |
+| 11 | `console/src/cvars.rs:116` | Dirty-value and dirty-projection membership use core StampSet. Refresh order and dependent deduplication are unchanged; the old boolean marks and per-entry clears are deleted. An empty dirty list does no refresh work. |
+| 12 | `console/src/commands.rs:136` | Registered button actions use a folded-NameId-indexed table. The same numeric dispatch table holds function callbacks and button actions; no button action string search remains. Command listing retains its ordered exact-name vector. |
+
+Remaining references to the removed identity in `tools/check_rules.py` are
+unchanged checker text, not executable identity definitions or callers.
+The twelve production sites have no remaining local arithmetic, identity,
+name-rebinding, dirty-boolean or button-action lookup copy from the audit.
+Native module and installed acceptance still remain on THE-3169.
+
+Developer evidence is retained under `THE-3174-adoption-20261009/`. The
+original-C checks cover 30,000 retail e1m1 hull traces, 40,632 transformed-model
+rows, 20,140 brush rows, 1,188 linked-merge rows and 16,384 sky endpoint rows.
+A second 16,384-row sky test compares the replaced Rust arithmetic directly.
+Q2/Q3 movement output is byte-identical to pre-adoption main across 1,152 rows
+per game. Q2 matches original C exactly; Q3 retains its previously measured
+544 differing float components with maximum error 0.0000112, while flags and
+timers remain exact. This slice does not claim to remove that existing gap.
+See [frame-times.md](frame-times.md) for the matched CPU23 timing and allocation
+scope; synthetic comparison results do not establish native gameplay parity.

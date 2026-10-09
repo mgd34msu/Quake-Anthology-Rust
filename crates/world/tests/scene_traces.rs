@@ -5,7 +5,7 @@ use qa_core::primitives::{
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionStore, Contents, EntityTraceRules, QuakeTraceKind, Trace, TraceQuery, TraceRules,
+        CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceQuery, TraceRules,
         WorldTrace,
         brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
     },
@@ -96,13 +96,14 @@ fn body(
     );
     id
 }
-fn query(rules: EntityTraceRules) -> TraceQuery<'static> {
+fn query(rules: EntityTracePolicy) -> TraceQuery<'static> {
     TraceQuery {
         mask: Contents::SOLID | Contents::BODY,
         ..TraceQuery::point(
             Vec3([-50.0, 0.0, 0.0]),
             Vec3([50.0, 0.0, 0.0]),
-            if rules == EntityTraceRules::ARENA {
+            if rules == qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            {
                 TraceRules::ARENA
             } else {
                 TraceRules::LEGACY
@@ -152,9 +153,9 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
         slot: 103,
     });
     for rules in [
-        EntityTraceRules::QUAKE,
-        EntityTraceRules::QUAKE2,
-        EntityTraceRules::ARENA,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
     ] {
         assert_eq!(
             trace(
@@ -173,7 +174,10 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
     table.columns.collision_owner[target.slot as usize] = CollisionOwner::None;
     table.columns.collision_owner[pass.slot as usize] =
         CollisionOwner::Native(table.columns.native_entity[target.slot as usize].unwrap());
-    for rules in [EntityTraceRules::QUAKE, EntityTraceRules::QUAKE2] {
+    for rules in [
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+    ] {
         assert_eq!(
             trace(
                 &world,
@@ -195,7 +199,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
             &area,
             TraceQuery {
                 pass: Some(pass),
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .entity,
@@ -210,7 +214,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
             TraceQuery {
                 pass: Some(pass),
                 excluded: &[target],
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .fraction,
@@ -228,7 +232,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
             TraceQuery {
                 pass: Some(pass),
                 excluded: &[stale],
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .entity,
@@ -267,7 +271,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &area,
             TraceQuery {
                 pass: Some(pass),
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .fraction,
@@ -280,7 +284,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &area,
             TraceQuery {
                 pass: Some(pass),
-                ..query(EntityTraceRules::QUAKE2)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1)
             }
         )
         .entity,
@@ -301,7 +305,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &area,
             TraceQuery {
                 pass: Some(pass),
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .entity,
@@ -318,7 +322,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &area,
             TraceQuery {
                 pass: Some(pass),
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .fraction,
@@ -339,12 +343,18 @@ fn caller_selects_missile_monster_bounds_no_monsters_and_point_pass_filter() {
     );
     table.columns.collision_tags[monster.slot as usize] = CollisionTags::MONSTER;
     assert_eq!(
-        trace(&world, &table, &area, query(EntityTraceRules::QUAKE)).fraction,
+        trace(
+            &world,
+            &table,
+            &area,
+            query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1)
+        )
+        .fraction,
         1.0
     );
-    let missile = EntityTraceRules::Quake {
-        kind: QuakeTraceKind::Missile,
-    };
+    let missile = qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
+        .1
+        .with_quake_kind(Some(QuakeTraceKind::Missile));
     assert_eq!(
         trace(&world, &table, &area, query(missile)).entity,
         Some(monster)
@@ -354,9 +364,11 @@ fn caller_selects_missile_monster_bounds_no_monsters_and_point_pass_filter() {
             &world,
             &table,
             &area,
-            query(EntityTraceRules::Quake {
-                kind: QuakeTraceKind::IgnoreBoxes
-            })
+            query(
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
+                    .1
+                    .with_quake_kind(Some(QuakeTraceKind::IgnoreBoxes))
+            )
         )
         .fraction,
         1.0
@@ -384,7 +396,7 @@ fn caller_selects_missile_monster_bounds_no_monsters_and_point_pass_filter() {
                 pass: Some(pass),
                 mins: Vec3([-1.0; 3]),
                 maxs: Vec3([1.0; 3]),
-                ..query(EntityTraceRules::QUAKE)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1)
             }
         )
         .fraction,
@@ -400,7 +412,7 @@ fn caller_selects_missile_monster_bounds_no_monsters_and_point_pass_filter() {
                 pass: Some(pass),
                 mins: Vec3([-1.0; 3]),
                 maxs: Vec3([1.0; 3]),
-                ..query(EntityTraceRules::QUAKE)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1)
             }
         )
         .entity,
@@ -421,7 +433,13 @@ fn native_contents_filter_and_point_contents_face_semantics() {
     );
     table.columns.collision_tags[target.slot as usize] = CollisionTags::DEAD_MONSTER;
     assert_eq!(
-        trace(&world, &table, &area, query(EntityTraceRules::QUAKE2)).entity,
+        trace(
+            &world,
+            &table,
+            &area,
+            query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1)
+        )
+        .entity,
         table.id_at(0)
     );
     assert_eq!(
@@ -431,7 +449,7 @@ fn native_contents_filter_and_point_contents_face_semantics() {
             &area,
             TraceQuery {
                 mask: Contents::BODY | Contents::CORPSE,
-                ..query(EntityTraceRules::QUAKE2)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1)
             }
         )
         .entity,
@@ -439,7 +457,13 @@ fn native_contents_filter_and_point_contents_face_semantics() {
     );
     table.columns.collision_contents[target.slot as usize] = Contents::WATER.0;
     assert_eq!(
-        trace(&world, &table, &area, query(EntityTraceRules::ARENA)).fraction,
+        trace(
+            &world,
+            &table,
+            &area,
+            query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
+        )
+        .fraction,
         1.0
     );
     assert_eq!(
@@ -449,7 +473,7 @@ fn native_contents_filter_and_point_contents_face_semantics() {
             &area,
             TraceQuery {
                 mask: Contents::WATER,
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .fraction,
@@ -462,7 +486,7 @@ fn native_contents_filter_and_point_contents_face_semantics() {
             &area,
             TraceQuery {
                 mask: Contents::BODY | Contents::WATER,
-                ..query(EntityTraceRules::ARENA)
+                ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
         .entity,
@@ -479,27 +503,51 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         None,
     );
     assert_eq!(
-        service.point_contents(Vec3::default(), EntityTraceRules::QUAKE, &[]),
+        service.point_contents(
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+            &[]
+        ),
         Contents::EMPTY
     );
     assert_eq!(
-        service.point_contents(Vec3::default(), EntityTraceRules::QUAKE2, &[]),
+        service.point_contents(
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            &[]
+        ),
         Contents::BODY
     );
     assert_eq!(
-        service.point_contents(Vec3([1.0, 0.0, 0.0]), EntityTraceRules::QUAKE2, &[]),
+        service.point_contents(
+            Vec3([1.0, 0.0, 0.0]),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            &[]
+        ),
         Contents::EMPTY
     );
     assert_eq!(
-        service.point_contents(Vec3([-1.0, 0.0, 0.0]), EntityTraceRules::QUAKE2, &[]),
+        service.point_contents(
+            Vec3([-1.0, 0.0, 0.0]),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            &[]
+        ),
         Contents::BODY
     );
     assert_eq!(
-        service.point_contents(Vec3([1.0, 0.0, 0.0]), EntityTraceRules::ARENA, &[]),
+        service.point_contents(
+            Vec3([1.0, 0.0, 0.0]),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            &[]
+        ),
         Contents::BODY
     );
     assert_eq!(
-        service.point_contents(Vec3::default(), EntityTraceRules::ARENA, &[target]),
+        service.point_contents(
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            &[target]
+        ),
         Contents::EMPTY
     );
     let pass_service = WorldTrace::new(
@@ -512,11 +560,19 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         Some(target),
     );
     assert_eq!(
-        pass_service.point_contents(Vec3::default(), EntityTraceRules::QUAKE2, &[]),
+        pass_service.point_contents(
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            &[]
+        ),
         Contents::BODY
     );
     assert_eq!(
-        pass_service.point_contents(Vec3::default(), EntityTraceRules::ARENA, &[]),
+        pass_service.point_contents(
+            Vec3::default(),
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            &[]
+        ),
         Contents::EMPTY
     );
     area.link(
@@ -528,11 +584,23 @@ fn native_contents_filter_and_point_contents_face_semantics() {
     );
     table.columns.collision_contents[target.slot as usize] = Contents::BODY.0;
     assert_eq!(
-        trace(&world, &table, &area, query(EntityTraceRules::ARENA)).entity,
+        trace(
+            &world,
+            &table,
+            &area,
+            query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
+        )
+        .entity,
         Some(target)
     );
     assert_eq!(
-        trace(&world, &table, &area, query(EntityTraceRules::QUAKE2)).fraction,
+        trace(
+            &world,
+            &table,
+            &area,
+            query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1)
+        )
+        .fraction,
         1.0
     );
 }
@@ -559,7 +627,10 @@ fn native_world_zero_fraction_returns_before_linked_body_merging() {
         Vec3([-5.0; 3]),
         Vec3([5.0; 3]),
     );
-    for rules in [EntityTraceRules::QUAKE2, EntityTraceRules::ARENA] {
+    for rules in [
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+    ] {
         let result = trace(
             &world,
             &table,

@@ -18,20 +18,85 @@ pub enum QuakeTraceKind {
     Missile,
 }
 
-/// Native filtering, temporary-body kernel and result merging belong to the caller.
+/// Caller-owned entity behaviour, resolved once alongside clipping policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntityTraceRules {
-    Quake { kind: QuakeTraceKind },
-    Quake2,
-    Quake3,
+pub struct EntityTracePolicy {
+    pub world_entity: WorldEntityRule,
+    pub link_role: crate::area::LinkFlags,
+    pub filtering: EntityTraceFlags,
 }
 
-impl EntityTraceRules {
-    pub const QUAKE: Self = Self::Quake {
-        kind: QuakeTraceKind::Normal,
-    };
-    pub const QUAKE2: Self = Self::Quake2;
-    pub const ARENA: Self = Self::Quake3;
+impl EntityTracePolicy {
+    pub const fn stop_at_zero(self) -> bool {
+        self.filtering.contains(EntityTraceFlags::STOP_AT_ZERO)
+    }
+    pub const fn quake_kind(self) -> Option<QuakeTraceKind> {
+        match (self.filtering.0 & EntityTraceFlags::KIND_MASK) >> EntityTraceFlags::KIND_SHIFT {
+            1 => Some(QuakeTraceKind::Normal),
+            2 => Some(QuakeTraceKind::IgnoreBoxes),
+            3 => Some(QuakeTraceKind::Missile),
+            _ => None,
+        }
+    }
+    pub const fn with_quake_kind(mut self, kind: Option<QuakeTraceKind>) -> Self {
+        let value = match kind {
+            Some(kind) => kind as u16 + 1,
+            None => 0,
+        };
+        self.filtering.0 = (self.filtering.0 & !EntityTraceFlags::KIND_MASK)
+            | value << EntityTraceFlags::KIND_SHIFT;
+        self
+    }
+    pub const fn contents_leaf_gate(self) -> LeafGate {
+        if self.filtering.contains(EntityTraceFlags::BRUSH_CONTENTS) {
+            LeafGate::Brushes
+        } else {
+            LeafGate::StoredContents
+        }
+    }
+    pub const fn merge(self) -> LinkedMerge {
+        if self.filtering.contains(EntityTraceFlags::MERGE_NEARER) {
+            LinkedMerge::Nearer
+        } else {
+            LinkedMerge::SolidOrNearer
+        }
+    }
+}
+
+/// Independent query behaviours packed into the hot policy word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityTraceFlags(pub u16);
+impl EntityTraceFlags {
+    pub const SKIP_POINT_ENTITIES: u16 = 1;
+    pub const DEAD_MONSTER_MASK: u16 = 2;
+    pub const CONTENTS_MASK: u16 = 4;
+    pub const SHARED_OWNER: u16 = 8;
+    pub const CENTER_BOX: u16 = 16;
+    pub const LINKED_CONTENTS: u16 = 32;
+    pub const EXCLUDE_CONTENTS_PASS: u16 = 64;
+    pub const INCLUSIVE_CONTENTS_MAX: u16 = 128;
+    pub const STOP_AT_ZERO: u16 = 256;
+    const KIND_SHIFT: u32 = 9;
+    const KIND_MASK: u16 = 3 << Self::KIND_SHIFT;
+    pub const HULL_BOX: u16 = 1 << Self::KIND_SHIFT;
+    pub const BRUSH_CONTENTS: u16 = 1 << 11;
+    pub const MERGE_NEARER: u16 = 1 << 12;
+
+    pub const fn contains(self, behaviour: u16) -> bool {
+        self.0 & behaviour != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldEntityRule {
+    HitOrStartSolid,
+    Always,
+    FractionChanged,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkedMerge {
+    SolidOrNearer,
+    Nearer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,29 +202,69 @@ impl TraceRules {
 
 /// Resolve the caller's explicit role into the shared query values. Native
 /// presets are data; neither geometry nor movement selects this role here.
-pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTraceRules) {
+pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTracePolicy) {
+    use crate::area::LinkFlags;
     match rules {
-        RuleSetId::Quake | RuleSetId::QuakeWorld => (TraceRules::LEGACY, EntityTraceRules::QUAKE),
-        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
-            (TraceRules::LEGACY, EntityTraceRules::QUAKE2)
-        }
-        RuleSetId::Quake3 => (TraceRules::ARENA, EntityTraceRules::ARENA),
+        RuleSetId::Quake | RuleSetId::QuakeWorld => (
+            TraceRules::LEGACY,
+            EntityTracePolicy {
+                world_entity: WorldEntityRule::HitOrStartSolid,
+                link_role: LinkFlags::SOLID,
+                filtering: EntityTraceFlags(
+                    EntityTraceFlags::SKIP_POINT_ENTITIES
+                        | EntityTraceFlags::HULL_BOX
+                        | EntityTraceFlags::INCLUSIVE_CONTENTS_MAX,
+                ),
+            },
+        ),
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (
+            TraceRules::LEGACY,
+            EntityTracePolicy {
+                world_entity: WorldEntityRule::Always,
+                link_role: LinkFlags::SOLID,
+                filtering: EntityTraceFlags(
+                    EntityTraceFlags::DEAD_MONSTER_MASK
+                        | EntityTraceFlags::LINKED_CONTENTS
+                        | EntityTraceFlags::STOP_AT_ZERO,
+                ),
+            },
+        ),
+        RuleSetId::Quake3 => (
+            TraceRules::ARENA,
+            EntityTracePolicy {
+                world_entity: WorldEntityRule::FractionChanged,
+                link_role: LinkFlags::LINKED,
+                filtering: EntityTraceFlags(
+                    EntityTraceFlags::CONTENTS_MASK
+                        | EntityTraceFlags::STOP_AT_ZERO
+                        | EntityTraceFlags::BRUSH_CONTENTS
+                        | EntityTraceFlags::MERGE_NEARER
+                        | EntityTraceFlags::SHARED_OWNER
+                        | EntityTraceFlags::CENTER_BOX
+                        | EntityTraceFlags::LINKED_CONTENTS
+                        | EntityTraceFlags::EXCLUDE_CONTENTS_PASS
+                        | EntityTraceFlags::INCLUSIVE_CONTENTS_MAX,
+                ),
+            },
+        ),
     }
 }
 
 /// A point or axis-aligned box sweep over the scene. Exclusions are borrowed;
 /// caller rules are independent of geometry, module format and wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
 pub struct TraceQuery<'a> {
+    pub rules: TraceRules,
+    pub excluded: &'a [EntityId],
+    pub mask: Contents,
+    pub pass: Option<EntityId>,
+    // Keep the float block's measured offsets; small policy data occupies its tail.
     pub start: Vec3,
     pub end: Vec3,
     pub mins: Vec3,
     pub maxs: Vec3,
-    pub mask: Contents,
-    pub rules: TraceRules,
-    pub entity_rules: EntityTraceRules,
-    pub pass: Option<EntityId>,
-    pub excluded: &'a [EntityId],
+    pub entity_rules: EntityTracePolicy,
 }
 
 impl TraceQuery<'_> {
@@ -167,7 +272,7 @@ impl TraceQuery<'_> {
         start: Vec3,
         end: Vec3,
         rules: TraceRules,
-        entity_rules: EntityTraceRules,
+        entity_rules: EntityTracePolicy,
     ) -> Self {
         Self {
             start,
@@ -202,16 +307,16 @@ pub struct Trace {
 impl Trace {
     /// qsrc Q1/Q2 replace on solid flags or nearer; Q3 replaces only nearer.
     /// Equal-fraction Q3 solid flags affect the retained result, not its owner.
-    pub fn merge_linked(&mut self, incoming: Self, rules: EntityTraceRules) {
-        match rules {
-            EntityTraceRules::Quake { .. } | EntityTraceRules::Quake2 => {
+    pub fn merge_linked(&mut self, incoming: Self, rules: EntityTracePolicy) {
+        match rules.merge() {
+            LinkedMerge::SolidOrNearer => {
                 if incoming.all_solid || incoming.start_solid || incoming.fraction < self.fraction {
                     let start_solid = self.start_solid;
                     *self = incoming;
                     self.start_solid |= start_solid;
                 }
             }
-            EntityTraceRules::Quake3 => {
+            LinkedMerge::Nearer => {
                 if incoming.all_solid {
                     self.all_solid = true;
                 } else if incoming.start_solid {
