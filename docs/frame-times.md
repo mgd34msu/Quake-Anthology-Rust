@@ -3051,3 +3051,45 @@ Evidence directory `THE-3171-live-cache-20261009`: `map-budget-build.json`,
 `{runtime.log,result.json,window.png}` under `live-abba-*`, `repeat-baab-*`
 and `map-budget-gl-*`. Earlier profiler and diagnostic receipts remain beside
 these. THE-862 still owns broader material/presentation work and R12's target.
+
+### THE-860 / THE-949 native header checkpoint
+
+One connected-packet header codec uses the shared message reader/writer and
+load-selected layout data. It preserves NetQuake's big-endian length/flags and
+independent sequence, QW/Q2's reliable-toggle/ACK words, client-only qport,
+negotiated q2repro short/byte/omitted qport, Q3's offset/length fragments and
+Q2pro's offset continuation bit. Q3 does not acquire an invented header ACK.
+The parser borrows the payload, checks native declared lengths, and returns
+scoped errors for connectionless or truncated packets. The caller supplies its
+fixed send buffer/MTU; receive admission can retain legacy sizes such as QW's
+1450-byte payload plus ten-byte client header.
+
+`tools/check_network_headers.py` compiles extracted original NQ, QW client and
+server, Q2, q2repro old/new and Q3 transmit functions. NetQuake ACK construction
+uses its original GetMessage statements. Transport, cvars, byte writes and cold
+channel structs are harness bindings; no C is shipped. 2,304 seeded cases in
+18 layout/direction modes match complete native header/payload bytes exactly.
+The Rust decoder also checks projected fields and borrowed payloads. Focused
+fixtures check known native byte vectors, qport omissions, Q3's zero-length
+final fragment, Q2pro continuation, declared-length truncation and connectionless
+classification. This is header construction/parsing evidence, not a channel
+loss, reliable-delivery or original-client connection proof.
+
+Portable release build 5.150 seconds, source54de74ba plus the recorded header
+slice, proof input disabled. CPU23, 60 warm-up/600 measured frames, 16 mixed
+native encode/decode peers: median **830 ns**, p99 **890 ns**, 4,726 packet bytes
+per frame and 10,560 checked packets including warm-up. Inputs and encoded
+packets pass optimisation barriers before validation. Calling-thread Rust heap
+allocations/reallocations/requested bytes are zero; the allocation positive
+control counts one. No workers, native heap, transport or gameplay are measured.
+The unchanged checker, 611 workspace tests and Clippy pass. No private game or
+installation was required for this bounded codec checkpoint.
+
+Evidence directory `THE-949-headers-20261009`: `comparison.json`, extracted
+`original-*.c`/executables, `fixture.bin`, original packet bytes and
+`rust-packets.bin`, `build.json`, `final-build.log`, `final-timing.json`,
+`final-workspace.log`, `final-clippy.log`, `final-checker.log` and the copied
+`network-headers` probe. Earlier unguarded timing remains `timing.json` and is
+not the final gate. Shared channel state, native reliable receipts, fragment
+assembly, field-table deltas and migration of host direct submit/output ACK
+adapters remain the next THE-860 work; no network issue is closed by this slice.
