@@ -547,7 +547,7 @@ fn run() -> Result<(), String> {
                 format_args!(
                     "{{\"event\":\"output_frame\",\"frame\":{frame},\"drains\":{},\"remaining\":{},\"sounds\":{},\"effects\":{},\"prints\":{},\"unhandled_sounds\":{},\"unhandled_effects\":{},\"stale_texts\":{}}}",
                     result.output_drains,
-                    host.runtime.events.len(),
+                    host.runtime.server.events.len(),
                     result.output.sounds,
                     result.output.effects,
                     result.output.prints,

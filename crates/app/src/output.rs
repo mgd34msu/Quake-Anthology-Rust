@@ -1,14 +1,11 @@
-//! Client-frame routing of the one output ring, before presentation.
+//! One client-frame pass, with independent output ownership per consumer.
 use crate::{Runtime, host::FrameSource};
 use qa_core::{
-    events::TextStore,
-    primitives::{ClientId, EffectEvent, PrintEvent, PrintKind, SoundEvent},
+    events::{FrameEvent, OutputSubmission},
+    primitives::{ClientId, PrintKind},
     sys_events::{EventTime, SeatId},
 };
-use qa_session::{
-    clients::Server,
-    events::{EventConsumer, dispatch_frame},
-};
+use qa_session::clients::Connection;
 
 #[derive(Default)]
 pub struct OutputCounts {
@@ -28,79 +25,112 @@ pub fn dispatch(
     notify_time: f64,
     center_time: f64,
 ) -> OutputCounts {
-    let mut consumer = Consumer {
-        source,
-        server: &mut runtime.server,
-        texts: &runtime.texts,
-        local,
-        now: time.0 as f64 * 1e-9,
-        notify_time,
-        center_time,
-        counts: OutputCounts::default(),
-    };
-    dispatch_frame(&mut runtime.events, &mut consumer);
-    for id in local.iter().flatten() {
-        qa_ui::hud::expire_messages(
-            &mut consumer.server.clients[id.0 as usize].hud,
-            consumer.now,
-        );
+    let server = &mut runtime.server;
+    let now = time.0 as f64 * 1e-9;
+    let mut counts = OutputCounts::default();
+    // In-process presentation resynchronization needs no native channel reset.
+    if server.events.needs_resync(server.presentation)
+        && let Some(id) = server.events.resume(server.presentation)
+    {
+        server.presentation = id;
     }
-    consumer.counts
-}
-
-struct Consumer<'a, S> {
-    source: &'a mut S,
-    server: &'a mut Server,
-    texts: &'a TextStore,
-    local: &'a [Option<ClientId>; SeatId::COUNT],
-    now: f64,
-    notify_time: f64,
-    center_time: f64,
-    counts: OutputCounts,
-}
-impl<S: FrameSource> EventConsumer for Consumer<'_, S> {
-    fn sound(&mut self, event: SoundEvent) {
-        self.counts.sounds += 1;
-        self.counts.unhandled_sounds += u64::from(!self.source.sound(event));
+    if let Some(mut batch) = server.events.batch(server.presentation) {
+        while let Some(record) = server.events.next(&mut batch) {
+            let submitted = match record.event {
+                FrameEvent::Sound(event) => {
+                    counts.sounds += 1;
+                    let sent = source.sound(event);
+                    counts.unhandled_sounds += u64::from(!sent);
+                    sent
+                }
+                FrameEvent::Effect(event) => {
+                    counts.effects += 1;
+                    let sent = source.effect(event);
+                    counts.unhandled_effects += u64::from(!sent);
+                    sent
+                }
+                FrameEvent::Print(event) => {
+                    counts.prints += 1;
+                    if let Some(text) = server.events.texts.get(event.text) {
+                        if event.client.is_none_or(|id| local.contains(&Some(id)))
+                            && matches!(
+                                event.kind,
+                                PrintKind::Console | PrintKind::Notify | PrintKind::Chat
+                            )
+                        {
+                            qa_console::logger::console_bytes(text);
+                        }
+                    } else {
+                        counts.stale_texts += 1;
+                    }
+                    true
+                }
+            };
+            server.events.submit(
+                server.presentation,
+                record.sequence,
+                if submitted {
+                    OutputSubmission::BestEffort
+                } else {
+                    OutputSubmission::Unsent
+                },
+            );
+        }
     }
-    fn effect(&mut self, event: EffectEvent) {
-        self.counts.effects += 1;
-        self.counts.unhandled_effects += u64::from(!self.source.effect(event));
-    }
-    fn print(&mut self, event: PrintEvent) {
-        self.counts.prints += 1;
-        let Some(text) = self.texts.get(event.text) else {
-            self.counts.stale_texts += 1;
-            return;
+    for (slot, client) in server.clients.iter_mut().enumerate() {
+        let Some(mut id) = client.output else {
+            continue;
         };
-        // Remote recipients go through the shared wire path when R11 lands.
-        // Console broadcasts remain visible in dedicated/headless sessions.
-        if event
-            .client
-            .is_some_and(|id| !self.local.contains(&Some(id)))
+        let client_id = ClientId(slot as u32);
+        let is_local = local.contains(&Some(client_id));
+        if server.events.needs_resync(id)
+            && (is_local
+                || (client.connection == Some(Connection::Remote)
+                    && source.resync_output(client_id)))
         {
-            return;
+            let Some(resumed) = server.events.resume(id) else {
+                continue;
+            };
+            client.output = Some(resumed);
+            id = resumed;
         }
-        if matches!(
-            event.kind,
-            PrintKind::Console | PrintKind::Notify | PrintKind::Chat
-        ) {
-            qa_console::logger::console_bytes(text);
-        }
-        if event.kind == PrintKind::Console {
-            return;
-        }
-        for (seat, &local) in self.local.iter().enumerate() {
-            let Some(id) = local else { continue };
-            if !self.local[..seat].contains(&Some(id)) && event.client.is_none_or(|to| to == id) {
-                qa_ui::hud::print(
-                    &mut self.server.clients[id.0 as usize].hud,
-                    event,
-                    self.now,
-                    self.notify_time,
-                    self.center_time,
-                );
+        if let Some(mut batch) = server.events.batch(id) {
+            while let Some(record) = server.events.next(&mut batch) {
+                let submission = if is_local {
+                    // Audio/particles have one presentation consumer. Each HUD
+                    // independently leases its text before retiring its record.
+                    let success = match record.event {
+                        FrameEvent::Print(event) => qa_ui::hud::print(
+                            &mut client.hud,
+                            &mut server.events.texts,
+                            event,
+                            now,
+                            notify_time,
+                            center_time,
+                        ),
+                        _ => true,
+                    };
+                    if success {
+                        OutputSubmission::BestEffort
+                    } else {
+                        OutputSubmission::Unsent
+                    }
+                } else if client.connection == Some(Connection::Remote) {
+                    let text = match record.event {
+                        FrameEvent::Print(p) => server.events.texts.get(p.text),
+                        _ => None,
+                    };
+                    source.output(client_id, record.event, text)
+                } else {
+                    // A local client without a bound seat is not delivered yet.
+                    OutputSubmission::Unsent
+                };
+                server.events.submit(id, record.sequence, submission);
             }
         }
+        if is_local {
+            qa_ui::hud::expire_messages(&mut client.hud, &mut server.events.texts, now);
+        }
     }
+    counts
 }

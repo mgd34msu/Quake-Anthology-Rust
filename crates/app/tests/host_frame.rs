@@ -145,6 +145,7 @@ fn host() -> FrameHost {
             module: ModuleId(2),
             rate: TickRate::fixed(100).unwrap(),
             frame: provider,
+            output: None,
         }],
     )
     .unwrap()

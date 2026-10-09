@@ -59,8 +59,13 @@ no scratch allocation. The host probe's `--bots` mode connects all slots at
 load and checks fixed intents, native duration policies and server-time output
 after every frame. This measures command construction, not bot navigation/AI.
 
-THE-890 adds the shared TextStore at load and formats directly into its rows.
-One client-frame dispatch drains console and module output, updates local HUD
-messages and expires them. `--outputs` adds sound/effect consumer callbacks and
-formatted prints to the measured host workload. The live mixer/particle backend
-is not loaded in the shell; consumer checks are delivery proof only.
+THE-697/890 now keeps event-owned text pages and independent consumer cursors.
+HUD strings hold separate display leases; replacement, expiry, reset and
+client disconnect release them. Unsent/reliable records remain retained until
+submission/native ACK respectively. Overflow resyncs only consumers holding
+the oldest record, with separate loss and ACK counters. The platform
+`output_retirement` example checks a stalled peer alongside a healthy peer,
+10/20/40-Hz modules and continuing SERVER ticks for 60 warm-up/600 measured
+frames. Its fixed load-sized storage counts the calling Rust thread, without
+workers or native heap. See `output-events.md` for lifetime and native adapter
+contracts. This fixture does not prove live protocol delivery or game audio.

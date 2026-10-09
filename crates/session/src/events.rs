@@ -1,21 +1,19 @@
-use qa_core::{
-    events::{EventRing, FrameEvent},
-    primitives::{EffectEvent, PrintEvent, SoundEvent},
-};
-
+use qa_core::events::{EventRing, OutputConsumerId, OutputRecord, OutputSubmission, TextStore};
+/// Consumers report actual successful submission, an actual native reliable
+/// receipt, or no submission. Merely reading a record never retires it.
 pub trait EventConsumer {
-    fn sound(&mut self, event: SoundEvent);
-    fn effect(&mut self, event: EffectEvent);
-    fn print(&mut self, event: PrintEvent);
+    fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission;
 }
-
-/// Called once after simulation, before audio, particles and seat HUDs update.
-pub fn dispatch_frame(events: &mut EventRing, consumer: &mut impl EventConsumer) {
-    for event in events.drain() {
-        match event {
-            FrameEvent::Sound(sound) => consumer.sound(sound),
-            FrameEvent::Effect(effect) => consumer.effect(effect),
-            FrameEvent::Print(print) => consumer.print(print),
-        }
+pub fn dispatch_consumer(
+    events: &mut EventRing,
+    id: OutputConsumerId,
+    consumer: &mut impl EventConsumer,
+) {
+    let Some(mut batch) = events.batch(id) else {
+        return;
+    };
+    while let Some(record) = events.next(&mut batch) {
+        let submission = consumer.submit(record, &mut events.texts);
+        events.submit(id, record.sequence, submission);
     }
 }

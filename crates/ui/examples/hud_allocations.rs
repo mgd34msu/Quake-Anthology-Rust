@@ -22,6 +22,8 @@ fn main() -> Result<(), &'static str> {
         player.inventory[weapon.item.0 as usize] = 1;
         player.inventory[weapon.ammo.ok_or("ammo")?.0 as usize] = 17;
     }
+    let mut texts = qa_core::events::TextStore::load(3, 32).map_err(|_| "text")?;
+    let leases: [_; 3] = std::array::from_fn(|_| texts.insert(b"message").expect("load rows"));
     allocation_counter::start();
     let mut snapshots = 0;
     for frame in 0..10_000 {
@@ -30,19 +32,17 @@ fn main() -> Result<(), &'static str> {
             bindings.update(player, state);
             print(
                 state,
+                &mut texts,
                 PrintEvent {
                     client: Some(ClientId(index as u32)),
                     kind: PrintKind::Notify,
-                    text: TextId {
-                        slot: index as u16,
-                        generation: 1,
-                    },
+                    text: leases[index].id(),
                 },
                 frame as f64,
                 3.0,
                 2.0,
             );
-            expire_messages(state, frame as f64);
+            expire_messages(state, &mut texts, frame as f64);
             if std::hint::black_box(state.health) != player.health || state.ammo != 17 {
                 return Err("snapshot differs");
             }

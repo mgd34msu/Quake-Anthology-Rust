@@ -39,6 +39,21 @@ pub trait FrameSource {
     fn effect(&mut self, _event: EffectEvent) -> bool {
         false
     }
+    /// Native adapters select submission/ACK rules from their protocol tables.
+    /// No channel currently loaded means no submission, rather than a fake ACK.
+    /// Completes a bounded native reset using already-drained channel state.
+    /// This callback must not poll SDL, sockets, stdin or physical time.
+    fn resync_output(&mut self, _client: ClientId) -> bool {
+        false
+    }
+    fn output(
+        &mut self,
+        _client: ClientId,
+        _event: qa_core::events::FrameEvent,
+        _text: Option<&[u8]>,
+    ) -> qa_core::events::OutputSubmission {
+        qa_core::events::OutputSubmission::Unsent
+    }
 }
 pub struct LiveFrame<'a> {
     pub pump: &'a mut EventPump,
@@ -70,6 +85,9 @@ pub struct Provider {
     pub module: ModuleId,
     pub rate: TickRate,
     pub frame: fn(&mut Runtime, Tick),
+    pub output: Option<
+        fn(&mut Runtime, Tick, qa_core::events::OutputRecord) -> qa_core::events::OutputSubmission,
+    >,
 }
 pub struct FrameHost {
     pub console: Console<Runtime>,
@@ -90,6 +108,7 @@ pub struct FrameHost {
     previous: Option<EventTime>,
     timeline: Timeline,
     providers: Box<[Provider]>,
+    module_outputs: Box<[Option<qa_core::events::OutputConsumerId>]>,
 }
 
 #[derive(Default)]
@@ -109,7 +128,7 @@ pub struct FrameResult {
 impl FrameHost {
     pub fn load(
         console: Console<Runtime>,
-        runtime: Runtime,
+        mut runtime: Runtime,
         world_rate: TickRate,
         mut providers: Vec<Provider>,
     ) -> Result<Self, String> {
@@ -131,6 +150,21 @@ impl FrameHost {
         let timeline = Timeline::load(world_rate, providers.iter().map(|p| (p.module, p.rate)))
             .map_err(|e| format!("provider clocks: {e:?}"))?;
         providers.sort_unstable_by_key(|p| p.module.0);
+        let module_outputs = providers
+            .iter()
+            .map(|p| {
+                if p.output.is_some() {
+                    runtime
+                        .server
+                        .events
+                        .bind(qa_core::events::OutputTarget::Module(p.module))
+                        .ok_or("module output capacity")
+                        .map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
         Ok(Self {
             console,
             runtime,
@@ -149,6 +183,7 @@ impl FrameHost {
             previous: None,
             timeline,
             providers: providers.into_boxed_slice(),
+            module_outputs,
         })
     }
 
@@ -187,6 +222,7 @@ impl FrameHost {
         let simulation = Stopwatch::start();
         let runtime = &mut self.runtime;
         let providers = &self.providers;
+        let module_outputs = &mut self.module_outputs;
         let input_handles = &self.input_handles;
         let vars = &self.console.cvars;
         result.server_ticks = self
@@ -210,7 +246,30 @@ impl FrameHost {
                     }
                 }
                 TickTarget::Provider(_) => {
-                    (providers[tick.source_slot - 1].frame)(runtime, tick);
+                    let slot = tick.source_slot - 1;
+                    let provider = &providers[slot];
+                    (provider.frame)(runtime, tick);
+                    if let (Some(consume), Some(id)) = (provider.output, module_outputs[slot]) {
+                        // Local module delivery resumes at its next native tick.
+                        let id = if runtime.server.events.needs_resync(id) {
+                            let Some(id) = runtime.server.events.resume(id) else {
+                                return;
+                            };
+                            module_outputs[slot] = Some(id);
+                            id
+                        } else {
+                            id
+                        };
+                        if let Some(mut batch) = runtime.server.events.batch(id) {
+                            while let Some(record) = runtime.server.events.next(&mut batch) {
+                                let submission = consume(runtime, tick, record);
+                                runtime
+                                    .server
+                                    .events
+                                    .submit(id, record.sequence, submission);
+                            }
+                        }
+                    }
                 }
             });
         if let Some(world) = &mut runtime.collision {

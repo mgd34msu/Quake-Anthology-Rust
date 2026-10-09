@@ -12,11 +12,10 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     let mut player =
         PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity());
     let mut state = bindings.state(16, NameId(1));
-    let text = TextId {
-        slot: 1,
-        generation: 2,
-    };
-    state.layout_text = Some(text);
+    let mut texts = qa_core::events::TextStore::load(1, 32).unwrap();
+    let lease = texts.insert(b"layout").unwrap();
+    let text = lease.id();
+    state.layout_text = Some(lease);
     for (rules, slots, persistent) in [
         (RuleSetId::Quake, 32, 0),
         (RuleSetId::QuakeWorld, 32, 0),
@@ -52,7 +51,7 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     q2.import(&mut player.values, 1234);
     bindings.update(&player, &mut state);
     assert_eq!(state.values.get(q2.id).unwrap().as_integer(), 1234);
-    assert_eq!(state.layout_text, Some(text));
+    assert_eq!(state.layout_text.as_ref().map(TextLease::id), Some(text));
     assert_eq!(state.clipped_values, 0);
     assert_ne!(q2.id, bindings.values.native(RuleSetId::Quake3).stats[2].id);
     let held = bindings.values.native(RuleSetId::Quake3).persistent[15];
@@ -64,7 +63,8 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     assert_eq!(held.export(&player.values), Some(0x8123_4567));
     assert_eq!(q2.export(&player.values), Some(1234));
     player.reset();
-    state.reset();
+    state.reset(&mut texts);
+    assert!(texts.get(text).is_none());
     assert_eq!(player.values.capacity(), 192);
     assert_eq!(state.values.capacity(), 192);
     assert_eq!(held.export(&player.values), Some(0));

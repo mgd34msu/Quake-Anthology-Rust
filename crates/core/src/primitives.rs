@@ -649,9 +649,18 @@ pub struct PrintEvent {
     pub kind: PrintKind,
     pub text: TextId,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct TextLease {
+    pub(crate) id: TextId,
+}
+impl TextLease {
+    pub fn id(&self) -> TextId {
+        self.id
+    }
+}
+#[derive(Debug)]
 pub struct HudLine {
-    pub text: TextId,
+    pub text: TextLease,
     pub started_at: f64,
     pub until: f64,
 }
@@ -673,7 +682,7 @@ pub struct HudState {
     pub powerup_until: Box<[f64]>,
     pub collectibles: u64,
     pub layout: NameId,
-    pub layout_text: Option<TextId>,
+    pub layout_text: Option<TextLease>,
     pub centerprint: Option<HudLine>,
     pub notify: [Option<HudLine>; 4],
 }
@@ -691,7 +700,22 @@ impl HudState {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub fn clear_messages(&mut self, texts: &mut crate::events::TextStore) {
+        if let Some(text) = self.layout_text.take() {
+            texts.release(text);
+        }
+        if let Some(line) = self.centerprint.take() {
+            texts.release(line.text);
+        }
+        for line in &mut self.notify {
+            if let Some(line) = line.take() {
+                texts.release(line.text);
+            }
+        }
+    }
+
+    pub fn reset(&mut self, texts: &mut crate::events::TextStore) {
+        self.clear_messages(texts);
         self.values.clear();
         self.item_counts.fill(0);
         self.item_acquired_at.fill(0.0);

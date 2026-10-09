@@ -172,17 +172,24 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
     }
     // The last registry weapon and item are reachable, including the zero slot.
     runtime.server.clients[63].player.weapon = highest_weapon;
-    let line = runtime.texts.insert(b"keep\nthis").unwrap();
+    let lease = runtime.server.events.texts.insert(b"keep\nthis").unwrap();
+    let line = lease.id();
+    let center = runtime.server.events.texts.lease(line).unwrap();
+    let notify = runtime.server.events.texts.lease(line).unwrap();
     let layout = runtime.catalog.names.find(b"item_health").unwrap();
     let hud = &mut runtime.server.clients[0].hud;
     hud.layout = layout;
-    hud.layout_text = Some(line);
+    hud.layout_text = Some(lease);
     hud.centerprint = Some(HudLine {
-        text: line,
+        text: center,
         started_at: 0.0,
         until: 10.0,
     });
-    hud.notify[3] = hud.centerprint;
+    hud.notify[3] = Some(HudLine {
+        text: notify,
+        started_at: 0.0,
+        until: 10.0,
+    });
     let mut host = FrameHost::load(
         Console::new(Context::default()),
         runtime,
@@ -227,8 +234,11 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
     }
     let hud = &host.runtime.server.clients[0].hud;
     assert_eq!(hud.layout, layout);
-    assert_eq!(hud.layout_text, Some(line));
-    assert_eq!(hud.centerprint.unwrap().text, line);
-    assert_eq!(hud.notify[3].unwrap().text, line);
-    assert_eq!(host.runtime.texts.get(line), Some(b"keep\nthis".as_slice()));
+    assert_eq!(hud.layout_text.as_ref().map(|text| text.id()), Some(line));
+    assert_eq!(hud.centerprint.as_ref().unwrap().text.id(), line);
+    assert_eq!(hud.notify[3].as_ref().unwrap().text.id(), line);
+    assert_eq!(
+        host.runtime.server.events.texts.get(line),
+        Some(b"keep\nthis".as_slice())
+    );
 }

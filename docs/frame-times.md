@@ -1951,3 +1951,51 @@ Receipts are `normal-tracked-{cpu,gl}-{map}/`,
 `normal-tracked-qualification.json` and `normal-cleanup.json` in the same
 evidence directory. These runs qualify render/queue containment and Rust heap
 counts, not native signon, complete gameplay, SDL/driver heap or installation.
+
+## THE-697/890: independent output retirement and HUD leases
+
+The destructive drain and recyclable text rows are replaced by one server-owned
+ring, fixed per-client/module delivery state and independently leased HUD text.
+Publication visits only registered consumers. An initial scan of every reserved
+consumer row increased the matched host median by 46.08%; that implementation
+was corrected before commit. The initial ABBA receipt remains in
+`host-abba-initial.json` for comparison.
+
+Portable release, core 23, no debugger, 60 warm-up/600 measured frames:
+
+| Workload | Median | p99 | Rust heap |
+|---|---:|---:|---:|
+| Stalled reliable peer, healthy peer, 10/20/40-Hz modules, 40-Hz world and one local HUD | 2.220 us | 2.840 us | 0 |
+| Matched host before, ABBA A1 (`6d164177`) | 152.191 us | 243.620 us | 0 |
+| Matched host after, ABBA B1 | 155.636 us | 246.961 us | 0 |
+| Matched host after, ABBA B2 | 156.165 us | 246.710 us | 0 |
+| Matched host before, ABBA A2 | 153.690 us | 235.840 us | 0 |
+
+The retirement fixture delivered all 2,304 records to the healthy peer, with
+1,152 sound callbacks, valid text, independent module deliveries
+`[2292,2300,2304]` and 1,650 measured SERVER/provider ticks. Slower modules
+retain their last unconsumed records. The stalled peer submitted 30 reliable
+records, supplied no ACK, then reached one bounded overflow/resync: 32 retained
+records cancelled and 2,272 subsequent records skipped during resync. The
+healthy peer had no overflow. HUD disconnect released its display leases while
+a slower module still retained the last payload. This models native receipts;
+no live legacy channel, guest module or audio backend is claimed.
+
+The matched host uses the same console/bind/loopback/output workload and emits
+byte-identical console output. Both sides retain 1,396 packet deliveries,
+659 repeats, `[210,105,421,210]` timeline counters and 1,980 sound/effect callbacks.
+Mean medians changed from 152.940 to 155.900 us (+1.94%). The four recorded PIDs
+were absent afterward. This compares host overhead rather than gameplay or
+renderer performance.
+
+The fixed event probe delivered 2,560,000 records of each kind over 10,000
+frames with no stale text, remaining records, overflow or Rust allocation.
+The leased HUD probe produced 30,000 snapshots over 10,000 frames without
+allocation. Allocation positive controls pass. These workloads have one
+instrumented calling thread, no workers and no measured native heap.
+
+Evidence: `~/.cache/qa-rust/THE-697-retirement/`, including
+`output_retirement.log`, `host-abba.json`, allocation logs, native-ACK source
+references in `docs/output-events.md`, workspace/Clippy/checker results and the
+23.61-second release probe build log. Native wire ACKs, combined guest output,
+shotgun/private audio and installed gameplay remain open acceptance criteria.

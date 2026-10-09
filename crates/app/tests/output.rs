@@ -50,7 +50,7 @@ impl FrameSource for Source {
 }
 fn emit(runtime: &mut Runtime, tick: Tick) {
     let id = tick.source_slot as u32;
-    runtime.events.push(FrameEvent::Sound(SoundEvent {
+    let _ = runtime.server.events.push(FrameEvent::Sound(SoundEvent {
         sound: SoundId(id),
         entity: None,
         channel: 1,
@@ -60,7 +60,7 @@ fn emit(runtime: &mut Runtime, tick: Tick) {
         action: SoundAction::Play,
     }));
     runtime.print_event(None, PrintKind::Center, format_args!("{id}"));
-    runtime.events.push(FrameEvent::Effect(EffectEvent {
+    let _ = runtime.server.events.push(FrameEvent::Effect(EffectEvent {
         effect: EffectId(id),
         position: Vec3::default(),
         direction: Vec3::default(),
@@ -91,6 +91,7 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
                 module: ModuleId(id),
                 rate: TickRate::fixed(20).unwrap(),
                 frame: emit,
+                output: None,
             })
             .collect(),
     )
@@ -119,15 +120,17 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
     );
     assert_eq!(source.sound_ids[..3], [1, 2, 3]);
     assert_eq!(source.effect_ids[..3], [1, 2, 3]);
-    assert!(host.runtime.events.is_empty());
+    assert_eq!(host.runtime.server.events.len(), 9); // Remote has no native channel yet.
     let center = host.runtime.server.clients[first.0 as usize]
         .hud
         .centerprint
+        .as_ref()
         .unwrap();
     assert_eq!(
         host.runtime.server.clients[second.0 as usize]
             .hud
             .centerprint
+            .as_ref()
             .unwrap()
             .text,
         center.text
@@ -240,5 +243,164 @@ fn quit_flushes_console_output_once() {
     let result = host.frame(&mut Source::default(), true);
     assert!(host.runtime.quit);
     assert_eq!((result.output_drains, result.output.prints), (1, 1));
-    assert!(host.runtime.events.is_empty());
+    assert!(host.runtime.server.events.is_empty());
+}
+
+fn consume_module(
+    runtime: &mut Runtime,
+    tick: Tick,
+    record: qa_core::events::OutputRecord,
+) -> qa_core::events::OutputSubmission {
+    let FrameEvent::Print(print) = record.event else {
+        return qa_core::events::OutputSubmission::BestEffort;
+    };
+    assert!(runtime.server.events.texts.get(print.text).is_some());
+    // Unconnected fixture rows count delivery, never infer native entity numbers.
+    runtime.server.clients[10 + tick.source_slot].player.health += 1;
+    qa_core::events::OutputSubmission::BestEffort
+}
+fn emit_print(runtime: &mut Runtime, tick: Tick) {
+    runtime.print_event(
+        None,
+        PrintKind::Center,
+        format_args!("{}:{}", tick.source_slot, tick.index),
+    );
+}
+struct PeerSource {
+    source: Source,
+    healthy: u64,
+    reliable: u64,
+}
+impl FrameSource for PeerSource {
+    fn begin_frame(&mut self) -> EventTime {
+        self.source.begin_frame()
+    }
+    fn poll_events(&mut self, q: &mut SysEventQueue) {
+        self.source.poll_events(q);
+    }
+    fn wait_time(&mut self, d: Duration) -> EventTime {
+        self.source.wait_time(d)
+    }
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn present(&mut self) {}
+    fn output(
+        &mut self,
+        client: ClientId,
+        event: FrameEvent,
+        text: Option<&[u8]>,
+    ) -> qa_core::events::OutputSubmission {
+        assert!(matches!(event, FrameEvent::Print(_)));
+        assert!(text.is_some());
+        if client == ClientId(0) {
+            self.reliable += 1;
+            qa_core::events::OutputSubmission::Reliable(qa_core::events::NativeReceipt(7))
+        } else {
+            self.healthy += 1;
+            qa_core::events::OutputSubmission::BestEffort
+        }
+    }
+}
+#[test]
+fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks() {
+    use qa_core::events::{EventRing, NativeReceipt, OutputTarget};
+    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    runtime.server.events = EventRing::load(32, 8, 64, 256).unwrap();
+    runtime.server.presentation = runtime
+        .server
+        .events
+        .bind(OutputTarget::Presentation)
+        .unwrap();
+    let stalled = runtime
+        .server
+        .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+        .unwrap();
+    let healthy = runtime
+        .server
+        .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+        .unwrap();
+    let local = runtime
+        .server
+        .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+        .unwrap();
+    let stalled_cursor = runtime.server.clients[stalled.0 as usize].output.unwrap();
+    let healthy_cursor = runtime.server.clients[healthy.0 as usize].output.unwrap();
+    let mut host = FrameHost::load(
+        Console::new(Context::default()),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        [100, 50, 25]
+            .into_iter()
+            .enumerate()
+            .map(|(slot, ms)| Provider {
+                module: ModuleId(slot as u16 + 1),
+                rate: TickRate::fixed(ms).unwrap(),
+                frame: emit_print,
+                output: Some(consume_module),
+            })
+            .collect(),
+    )
+    .unwrap();
+    host.local_clients[0] = Some(local);
+    let mut source = PeerSource {
+        source: Source::default(),
+        healthy: 0,
+        reliable: 0,
+    };
+    let mut ticks = 0;
+    for frame in 0..=400 {
+        source.source.time = frame * 25;
+        ticks += host.frame(&mut source, true).server_ticks;
+    }
+    // Native 10/20/40-Hz modules and 40-Hz world progress without an ACK.
+    assert_eq!(ticks, 1100);
+    assert_eq!(host.runtime.server.world_frame, 400);
+    assert_eq!(source.healthy, 700);
+    assert_eq!(source.reliable, 32);
+    let counters = host.runtime.server.events.counters(stalled_cursor).unwrap();
+    assert_eq!(
+        (
+            counters.acknowledgements,
+            counters.overflow,
+            counters.resyncs
+        ),
+        (0, 1, 1)
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(healthy_cursor)
+            .unwrap()
+            .overflow,
+        0
+    );
+    assert!(host.runtime.server.events.needs_resync(stalled_cursor));
+    for slot in 11..14 {
+        assert!(host.runtime.server.clients[slot].player.health > 600);
+    }
+    let line = host.runtime.server.clients[local.0 as usize]
+        .hud
+        .centerprint
+        .as_ref()
+        .unwrap();
+    assert!(
+        host.runtime
+            .server
+            .events
+            .texts
+            .get(line.text.id())
+            .is_some()
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .acknowledge(stalled_cursor, NativeReceipt(7)),
+        0
+    );
+    assert!(host.runtime.server.disconnect(local)); // Explicitly retires display leases.
+    assert!(host.runtime.server.disconnect(stalled));
+    assert!(host.runtime.server.disconnect(healthy));
 }

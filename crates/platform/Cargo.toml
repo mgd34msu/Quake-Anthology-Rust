@@ -22,3 +22,7 @@ qa-world = { path = "../world" }
 qa-render = { path = "../render" }
 qa-content = { path = "../content" }
 qa-formats = { path = "../formats" }
+
+[[example]]
+name = "output_retirement"
+required-features = ["allocation-tracking"]

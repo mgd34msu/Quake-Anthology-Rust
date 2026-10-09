@@ -198,6 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 module: ModuleId(id),
                 rate: TickRate::fixed(ms).ok_or("rate")?,
                 frame: provider,
+                output: None,
             })
         })
         .into_iter()
@@ -300,23 +301,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if outputs {
             for id in 1..=3 {
-                host.runtime.events.push(FrameEvent::Sound(SoundEvent {
-                    sound: SoundId(id),
-                    entity: None,
-                    channel: 1,
-                    position: Vec3::default(),
-                    volume: 1.0,
-                    attenuation: 1.0,
-                    action: SoundAction::Play,
-                }));
+                let _ = host
+                    .runtime
+                    .server
+                    .events
+                    .push(FrameEvent::Sound(SoundEvent {
+                        sound: SoundId(id),
+                        entity: None,
+                        channel: 1,
+                        position: Vec3::default(),
+                        volume: 1.0,
+                        attenuation: 1.0,
+                        action: SoundAction::Play,
+                    }));
                 host.runtime
                     .print_event(None, PrintKind::Console, format_args!("output {id}\n"));
-                host.runtime.events.push(FrameEvent::Effect(EffectEvent {
-                    effect: EffectId(id),
-                    position: Vec3::default(),
-                    direction: Vec3::default(),
-                    count: 20,
-                }));
+                let _ = host
+                    .runtime
+                    .server
+                    .events
+                    .push(FrameEvent::Effect(EffectEvent {
+                        effect: EffectId(id),
+                        position: Vec3::default(),
+                        direction: Vec3::default(),
+                        count: 20,
+                    }));
             }
         }
         let result = host.frame(&mut source, true);
@@ -324,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let counts = end_frame();
         if result.drains != 2
             || result.output_drains != 1
-            || !host.runtime.events.is_empty()
+            || !host.runtime.server.events.is_empty()
             || (outputs
                 && (result.output.sounds != 3
                     || result.output.effects != 3

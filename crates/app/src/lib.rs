@@ -9,9 +9,8 @@ pub mod renderer;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
-use qa_core::events::{EventRing, FrameEvent, TextStore};
 use qa_core::loopback::Loopback;
-use qa_core::primitives::{ClientId, GeometryId, ModuleId, PlayerTail, PrintEvent, PrintKind};
+use qa_core::primitives::{ClientId, GeometryId, ModuleId, PlayerTail, PrintKind};
 use qa_network::ingress::PacketReceiver;
 use qa_session::clients::{Connection, Server};
 
@@ -30,8 +29,6 @@ pub struct Runtime {
     /// Loaded geometry is independent of every player's movement rules.
     pub collision: Option<WorldCollision>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
-    pub events: EventRing,
-    pub texts: TextStore,
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
@@ -99,8 +96,6 @@ impl Runtime {
             geometry: qa_world::collision::CollisionStore::new(),
             collision: None,
             prediction: std::array::from_fn(|_| Default::default()),
-            events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,
-            texts: TextStore::load(4096, 8192).map_err(|e| format!("output text: {e:?}"))?,
             loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
@@ -158,10 +153,7 @@ impl Runtime {
         kind: PrintKind,
         text: std::fmt::Arguments<'_>,
     ) {
-        if let Some(text) = self.texts.insert_formatted(text) {
-            self.events
-                .push(FrameEvent::Print(PrintEvent { client, kind, text }));
-        }
+        let _ = self.server.events.print(client, kind, text);
     }
 }
 

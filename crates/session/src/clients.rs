@@ -1,3 +1,4 @@
+use qa_core::events::{EventRing, OutputConsumerId, OutputTarget};
 use qa_core::primitives::{
     Bounds, ClientId, CollisionShape, CommandIntent, EntityId, GeometryId, HudState, ModuleId,
     NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3,
@@ -28,6 +29,7 @@ pub struct Client {
     pub hud: HudState,
     pub command: UserCmd,
     pub intent: CommandIntent,
+    pub output: Option<OutputConsumerId>,
     command_pending: bool,
 }
 
@@ -35,6 +37,8 @@ pub struct Server {
     pub entities: EntityTable,
     pub area: AreaGrid,
     pub clients: Box<[Client]>,
+    pub events: EventRing,
+    pub presentation: OutputConsumerId,
     pub world_time: EventTime,
     pub world_frame: u64,
 }
@@ -45,6 +49,7 @@ pub enum ServerError {
     InventoryCapacity,
     ValueCapacity,
     EntityCapacity,
+    OutputCapacity,
 }
 
 impl Server {
@@ -95,11 +100,28 @@ impl Server {
                 command: UserCmd::default(),
                 intent: CommandIntent::default(),
                 command_pending: false,
+                output: None,
                 hud: HudState::with_capacity(items, powerups, weapons, values),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        // Ring pages plus six independent display slots per client/module.
+        let rows = 4096usize
+            .checked_add(
+                max_clients
+                    .checked_add(32)
+                    .and_then(|n| n.checked_mul(6))
+                    .ok_or(ServerError::OutputCapacity)?,
+            )
+            .ok_or(ServerError::OutputCapacity)?;
+        let mut events = EventRing::load(4096, max_clients + 33, rows, 8192)
+            .map_err(|_| ServerError::OutputCapacity)?;
+        let presentation = events
+            .bind(OutputTarget::Presentation)
+            .ok_or(ServerError::OutputCapacity)?;
         Ok(Self {
+            events,
+            presentation,
             entities,
             area,
             clients,
@@ -118,9 +140,18 @@ impl Server {
         let slot = self.clients.iter().position(|client| {
             client.connection.is_none() && self.entities.resolve(client.entity).is_some()
         })?;
+        let output = if connection == Connection::Bot {
+            None
+        } else {
+            Some(
+                self.events
+                    .bind(OutputTarget::Client(ClientId(slot as u32)))?,
+            )
+        };
         let client = &mut self.clients[slot];
+        client.output = output;
         client.player.reset();
-        client.hud.reset();
+        client.hud.reset(&mut self.events.texts);
         client.player.tail = tail;
         client.command = UserCmd::default();
         client.command_pending = false;
@@ -147,10 +178,13 @@ impl Server {
         else {
             return false;
         };
+        if let Some(output) = client.output.take() {
+            self.events.unbind(output);
+        }
         self.area.unlink(client.entity);
         client.connection = None;
         client.player.reset();
-        client.hud.reset();
+        client.hud.reset(&mut self.events.texts);
         client.command = UserCmd::default();
         client.command_pending = false;
         client.intent = CommandIntent::default();

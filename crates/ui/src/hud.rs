@@ -1,3 +1,4 @@
+use qa_core::events::TextStore;
 use qa_core::primitives::{HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent, PrintKind};
 use qa_gameplay::registry::Registry;
 
@@ -102,39 +103,63 @@ impl HudBindings {
 /// the bounded TextStore. Layout drawing never reads mutable PlayerState.
 pub fn print(
     state: &mut HudState,
+    texts: &mut TextStore,
     event: PrintEvent,
     now: f64,
     notify_time: f64,
     center_time: f64,
-) {
+) -> bool {
+    if event.kind == PrintKind::Console {
+        return true;
+    }
+    let Some(text) = texts.lease(event.text) else {
+        return false;
+    };
     match event.kind {
         PrintKind::Notify | PrintKind::Chat => {
             state.notify.rotate_left(1);
+            if let Some(line) = state.notify[3].take() {
+                texts.release(line.text);
+            }
             state.notify[3] = Some(HudLine {
-                text: event.text,
+                text,
                 started_at: now,
                 until: now + notify_time,
             });
         }
         PrintKind::Center => {
+            if let Some(line) = state.centerprint.take() {
+                texts.release(line.text);
+            }
             state.centerprint = Some(HudLine {
-                text: event.text,
+                text,
                 started_at: now,
                 until: now + center_time,
-            })
+            });
         }
-        PrintKind::Layout => state.layout_text = Some(event.text),
+        PrintKind::Layout => {
+            if let Some(old) = state.layout_text.replace(text) {
+                texts.release(old);
+            }
+        }
         PrintKind::Console => {}
     }
+    true
 }
-
-pub fn expire_messages(state: &mut HudState, now: f64) {
+pub fn expire_messages(state: &mut HudState, texts: &mut TextStore, now: f64) {
     for line in &mut state.notify {
-        if line.is_some_and(|line| now >= line.until) {
-            *line = None;
+        if line.as_ref().is_some_and(|line| now >= line.until)
+            && let Some(line) = line.take()
+        {
+            texts.release(line.text);
         }
     }
-    if state.centerprint.is_some_and(|line| now >= line.until) {
-        state.centerprint = None;
+    if state
+        .centerprint
+        .as_ref()
+        .is_some_and(|line| now >= line.until)
+        && let Some(line) = state.centerprint.take()
+    {
+        texts.release(line.text);
     }
 }

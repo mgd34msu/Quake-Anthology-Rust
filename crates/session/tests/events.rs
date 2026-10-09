@@ -1,28 +1,27 @@
-use qa_core::{
-    events::{EventRing, FrameEvent},
-    primitives::*,
-};
-use qa_session::events::{EventConsumer, dispatch_frame};
-
+use qa_core::{events::*, primitives::*};
+use qa_session::events::{EventConsumer, dispatch_consumer};
 #[derive(Default)]
 struct Consumer {
     events: Vec<u32>,
 }
 impl EventConsumer for Consumer {
-    fn sound(&mut self, event: SoundEvent) {
-        self.events.push(event.sound.0);
-    }
-    fn effect(&mut self, event: EffectEvent) {
-        self.events.push(event.effect.0);
-    }
-    fn print(&mut self, event: PrintEvent) {
-        self.events.push(event.text.slot as u32);
+    fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission {
+        self.events.push(match record.event {
+            FrameEvent::Sound(s) => s.sound.0,
+            FrameEvent::Effect(e) => e.effect.0,
+            FrameEvent::Print(p) => {
+                assert_eq!(texts.get(p.text), Some(b"message".as_slice()));
+                2
+            }
+        });
+        OutputSubmission::BestEffort
     }
 }
-
 #[test]
-fn one_frame_dispatch_routes_all_three_event_types_and_leaves_empty_ring() {
-    let mut ring = EventRing::load(8).unwrap();
+fn independent_module_dispatch_routes_all_types_once_and_retires_only_after_both() {
+    let mut ring = EventRing::load(8, 2, 8, 32).unwrap();
+    let first = ring.bind(OutputTarget::Module(ModuleId(1))).unwrap();
+    let second = ring.bind(OutputTarget::Module(ModuleId(2))).unwrap();
     ring.push(FrameEvent::Sound(SoundEvent {
         sound: SoundId(1),
         entity: None,
@@ -31,25 +30,29 @@ fn one_frame_dispatch_routes_all_three_event_types_and_leaves_empty_ring() {
         volume: 1.0,
         attenuation: 1.0,
         action: SoundAction::Play,
-    }));
-    ring.push(FrameEvent::Print(PrintEvent {
-        client: Some(ClientId(0)),
-        kind: PrintKind::Center,
-        text: TextId {
-            slot: 2,
-            generation: 1,
-        },
-    }));
+    }))
+    .unwrap();
+    ring.print(
+        Some(ClientId(0)),
+        PrintKind::Center,
+        format_args!("message"),
+    )
+    .unwrap();
     ring.push(FrameEvent::Effect(EffectEvent {
         effect: EffectId(3),
         position: Vec3::default(),
         direction: Vec3::default(),
         count: 20,
-    }));
-    let mut consumer = Consumer::default();
-    dispatch_frame(&mut ring, &mut consumer);
-    assert_eq!(consumer.events, [1, 2, 3]);
+    }))
+    .unwrap();
+    let mut a = Consumer::default();
+    let mut b = Consumer::default();
+    dispatch_consumer(&mut ring, first, &mut a);
+    assert_eq!(a.events, [1, 2, 3]);
+    assert_eq!(ring.len(), 3);
+    dispatch_consumer(&mut ring, first, &mut a);
+    assert_eq!(a.events, [1, 2, 3]);
+    dispatch_consumer(&mut ring, second, &mut b);
+    assert_eq!(b.events, [1, 2, 3]);
     assert!(ring.is_empty());
-    dispatch_frame(&mut ring, &mut consumer);
-    assert_eq!(consumer.events, [1, 2, 3]);
 }

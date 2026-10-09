@@ -1,42 +1,73 @@
-# Shared output dispatch
+# Shared output delivery and payload ownership
 
-Runtime loads one core EventRing with 4,096 entries and one TextStore with
-4,096 rows of 8,192 bytes. Console prints and gameplay/module producers use
-that ring. Formatted messages write directly into a reserved text row without
-an intermediate String. Long formatted messages retain a valid UTF-8 prefix;
-raw module bytes and native Quake glyphs stay byte data. Generations prevent
-recycled text from appearing as another message.
+Server owns one core EventRing and its TextStore. The app loads 4,096 record
+slots, one presentation consumer, up to 64 client consumers and 32 module
+consumers. Text capacity includes the record slots and six independent HUD
+slots per client/module, with 8,192 bytes per page. Storage is safe typed,
+allocated at load and reused without frame allocation. Formatted text writes
+straight into a page; raw module bytes preserve native glyphs and newlines.
 
-Com_Frame calls session::dispatch_frame once after the second event/command
-drain and human command construction, before presentation. Quit paths also
-flush queued output once. Console/notify/chat prints reach the console sink;
-center/layout/notify state updates only the addressed local client's HUD, or
-all local HUDs for a broadcast. Remote wire delivery remains R11. Cached
-con_notifytime and cg_centertime handles supply lifetimes, and the frame expires
-old HUD messages.
+Each consumer has its own cursor and fixed delivery state. Reading a record
+changes neither ownership nor delivery. A bounded batch visits each pending
+record at most once, so an unsent sound does not prevent a later print. Unsent
+records remain pending for the next pass. A successful best-effort submission
+retires that consumer's interest immediately. Reliable submission retains it
+until `acknowledge` receives the matching native receipt. Several records can
+share a receipt, corresponding to a native reliable message. Receipt tokens,
+consumer generations and output sequences are internal and never serialized.
 
-Sound and effect events reach the frame consumer callbacks in ring order.
-The current live shell has no loaded mixer or particle backend, so it reports
-unhandled sound/effect counts. Headless checks supply consumers and prove
-delivery and payload fidelity. They do not prove audible sounds or rendered
-particles. THE-863 supplies module service mappings; R3/R10 supply live consumers.
+The protocol adapter selects the submission result using its native delivery
+rules. It must validate the real ACK, including fragment/message completion,
+before acknowledging the internal receipt; receipt values must not be reused
+within a consumer epoch. A transmit watermark is never an ACK. In NetQuake,
+unreliable datagrams have no ACK: qsrc WinQuake/net_dgrm.c:370-395 returns them
+directly, while :397-423 validates reliable fragment ACKs and :427-431 sends
+ACKs for reliable data. QW/Q2/Q2RR/Q3 adapters retain their original framing,
+fields and widths. This storage change adds no wire field. Native channels are
+still pending, so current receipt fixtures model delivery rather than prove
+live legacy interoperability.
 
-The checker rejects other event vectors/deques, fixed arrays, boxed arrays and
-named queues outside core, including imported payload aliases and examples.
-This checks known source patterns, not arbitrary Rust type resolution.
+Com_Frame runs two physical input drains, before SERVER and CLIENT. Neither
+output delivery nor retirement performs physical intake. Modules with an
+output callback consume their own cursor at their native provider ticks.
+CLIENT dispatches once before presentation, including quit paths. Audio and
+particles have one presentation consumer; each bound local client independently
+consumes HUD prints. The native remote callback returns Unsent by default while
+its channel is unavailable. The old destructive pop/drain API and the separate
+Runtime text owner are deleted.
+
+An event slot owns one text lease. Each HUD notify, center or layout message
+acquires another lease before consuming the event. Replacing, expiring or
+resetting a display releases its lease; disconnect also releases every HUD
+lease and unbinds the client's cursor. A page is reusable only when all these
+leases release it. No payload cloning, frame reset or slow consumer can
+invalidate an active HUD string. Notify/center deadlines come from the shared
+cached cvars; layout leases last until replacement or reset.
+
+When the ring fills, only consumers still holding its oldest record enter
+resync. Their retained records are cancelled explicitly, their receipt state
+is discarded and publication visits only registered consumers and continues for healthy consumers. Counters track
+submissions, ACK operations, acknowledged records, overflow episodes, resyncs,
+records cancelled by resync and records skipped during resync separately.
+Resuming after a completed native resync changes the consumer generation, so
+old receipts cannot retire new records. Local presentation/modules resume at
+their next consumption phase. A remote peer stays in resync until its native
+adapter completes the restart. Rejected text publications are counted and do
+not stop the server.
 
 ```sh
-cargo test -p qa-app --test output --all-features
-python3 tools/verify_rules.py --evidence "$QA_EVIDENCE/output-rules"
-cargo build --release -p qa-platform --example host_frame --features allocation-tracking
-timeout 300 taskset -c "$CORE" target/release/examples/host_frame --local --binds --bots --outputs --content "$SCRIPT_PRODUCT"
-python3 tools/check_sys_events.py --binary "$QA_CANDIDATE" --owner-profile "$QA_PROFILE" --evidence "$QA_EVIDENCE/output-private" --check-output-drain --commands 'echo output'
+python3 tools/check_rules.py
+cargo test --workspace
+cargo clippy --workspace --all-targets --features qa-platform/allocation-tracking -- -D warnings
+cargo build --release -p qa-platform --features allocation-tracking --example output_retirement
+taskset -c "$CORE" target/release/examples/output_retirement
 ```
 
-The probe generates fixed data directly. No input recording or replay is added.
-Map/module output and a combined gameplay run remain acceptance work at R3.5.
-
-THE-904 makes the real-input helper wait for initial command execution before
-pressing W and require at least 30 forward frames. `--expected-output` checks
-an explicit echo marker in a composite bind. Older private bind reports that
-accepted one pre-config default-forward frame are superseded in Linear.
+The host fixture runs a 40-Hz world and 10/20/40-Hz module consumers with a
+stalled reliable peer, a healthy best-effort peer and one leased local HUD.
+It verifies healthy delivery and server ticks continue after bounded overflow,
+with no ACK from the stalled peer. Sixty warm-up frames precede 600 pinned
+measured frames and an allocation positive control. This is headless delivery
+and Rust heap evidence, excluding game audio, native wire ACKs, guest modules,
+SDL/driver heap and installed gameplay. Full acceptance stays open on
+THE-697/890 and the three-game gate.
