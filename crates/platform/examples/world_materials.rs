@@ -17,8 +17,14 @@ fn run() -> Result<(), String> {
     vfs.mount_product(std::path::Path::new(&product), 0)
         .map_err(|e| format!("mount: {e:?}"))?;
     let mut assets = Assets::load();
+    let mut collision = qa_world::collision::CollisionStore::new();
     let start = Stopwatch::start();
-    let loaded = map::read(&vfs, &name)?.load(&vfs, &mut assets, WorldLoadOptions::default())?;
+    let loaded = map::read(&vfs, &name)?.load(
+        &vfs,
+        &mut assets,
+        &mut collision,
+        WorldLoadOptions::default(),
+    )?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let world = assets
         .world(loaded.render.world)

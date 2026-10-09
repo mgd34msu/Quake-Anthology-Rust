@@ -10,7 +10,9 @@ use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::events::{EventRing, FrameEvent, TextStore};
 use qa_core::loopback::Loopback;
-use qa_core::primitives::{ClientId, ModuleId, MovementRules, PlayerTail, PrintEvent, PrintKind};
+use qa_core::primitives::{
+    ClientId, GeometryId, ModuleId, MovementRules, PlayerTail, PrintEvent, PrintKind,
+};
 use qa_network::ingress::PacketReceiver;
 use qa_session::clients::{Connection, Server};
 
@@ -24,8 +26,10 @@ pub struct Runtime {
     pub server: Server,
     /// One preallocated index over the server's generation-checked entities.
     pub targets: qa_world::targets::TargetIndex,
+    /// One owner of admitted geometry for every active world and inline model.
+    pub geometry: qa_world::collision::CollisionStore,
     /// Loaded geometry is independent of every player's movement rules.
-    pub collision: Option<LoadedCollision>,
+    pub collision: Option<WorldCollision>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub events: EventRing,
     pub texts: TextStore,
@@ -35,15 +39,24 @@ pub struct Runtime {
     script_reader: qa_formats::archive::ArchiveReader,
 }
 
-pub struct LoadedCollision {
-    pub geometry: qa_world::collision::CollisionWorld,
+pub struct WorldCollision {
+    pub geometry: GeometryId,
+    pub index: u32,
     pub scratch: qa_world::collision::TraceScratch,
 }
 
-impl LoadedCollision {
-    pub fn new(geometry: qa_world::collision::CollisionWorld) -> Self {
-        let scratch = geometry.scratch();
-        Self { geometry, scratch }
+impl WorldCollision {
+    pub fn new(
+        store: &qa_world::collision::CollisionStore,
+        geometry: GeometryId,
+        index: u32,
+    ) -> Self {
+        let scratch = store.scratch();
+        Self {
+            geometry,
+            index,
+            scratch,
+        }
     }
 }
 
@@ -66,6 +79,7 @@ impl Runtime {
             network: PacketReceiver::default(),
             server,
             targets,
+            geometry: qa_world::collision::CollisionStore::new(),
             collision: None,
             prediction: std::array::from_fn(|_| Default::default()),
             events: EventRing::load(4096).map_err(|e| format!("output events: {e:?}"))?,

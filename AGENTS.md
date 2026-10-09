@@ -33,6 +33,19 @@ gameplay and comparable measured gameplay timing gates.
 `crates/core/src/primitives.rs` owns entity, body, player state, usercmd, item,
 weapon, damage, sound/effect event, HUD state and cvar handle values.
 
+THE-2868 keeps one CollisionStore with one flat model table for every loaded
+hull or brush resource. GeometryId generations are internal lifetimes; native
+inline ordinals and protocol fields remain unchanged. World and linked traces
+pass explicit resource/model identities and caller-selected trace rules. Native
+load bounds expand once by one unit; entity linking has a separate expansion.
+Entity-role ModelRules select rotation and link bounds independently of map
+format or movement. Store-owned transforms preserve Q1 hull-offset arithmetic,
+Q2 inverse-angle normals and Q3 double centering/transpose normals. THE-2883
+retains an optional common point-contents pose for native ABIs whose published
+pose differs from their physical trace/link pose; it never changes the area
+index or adds another collision implementation. Guest ABI and live mover
+acceptance remain required beyond structural and headless checks.
+
 THE-656 stores clients in one array sized at load. Internal ClientId is u32;
 native limits (including Q2/RR 256 and Q3 64) and wire widths belong at each
 protocol/module boundary. A connection supplies its native entity namespace

@@ -1,5 +1,6 @@
+use super::tree::BrushScratch;
 use super::tree::Topology;
-pub use super::tree::{BrushScratch, BrushTree, CollisionLeaf, ModelRoot};
+pub use super::tree::{BrushTree, CollisionLeaf, ModelRoot};
 use super::{
     AllSolid, BoundsOrigin, Contents, EntityTraceRules, FractionClamp, OutsideBrush,
     PositionEndpoint, PositionRules, Trace, TraceQuery,
@@ -23,7 +24,7 @@ pub enum GeometryError {
     Capacity,
 }
 
-pub struct BrushMap {
+pub(super) struct BrushMap {
     pub(super) planes: Box<[Plane]>,
     pub(super) brushes: Box<[Brush]>,
     pub(super) surfaces: Box<[SurfaceFlags]>,
@@ -32,43 +33,13 @@ pub struct BrushMap {
 }
 
 impl BrushMap {
-    pub fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Self, GeometryError> {
-        let surfaces = vec![SurfaceFlags::default(); planes.len()];
-        Self::load_surfaces(planes, brushes, surfaces)
-    }
-
-    /// Analytic kernels use the same ordered-membership representation as BSPs.
-    pub fn load_surfaces(
-        planes: Vec<Plane>,
-        brushes: Vec<Brush>,
-        surfaces: Vec<SurfaceFlags>,
-    ) -> Result<Self, GeometryError> {
-        let count = u32::try_from(brushes.len()).map_err(|_| GeometryError::Capacity)?;
-        Self::load_tree(
-            planes,
-            brushes,
-            surfaces,
-            BrushTree {
-                planes: Vec::new(),
-                nodes: Vec::new(),
-                leaves: vec![CollisionLeaf {
-                    stored_contents: None,
-                    first_brush: 0,
-                    brush_count: count,
-                }],
-                leaf_brushes: (0..count).collect(),
-                models: vec![ModelRoot::Leaf(0)],
-            },
-        )
-    }
-
     /// Side geometry and BSP/model membership retain their original numeric IDs.
-    pub fn load_tree(
+    pub(crate) fn load_tree(
         planes: Vec<Plane>,
         brushes: Vec<Brush>,
         surfaces: Vec<SurfaceFlags>,
         tree: BrushTree,
-    ) -> Result<Self, GeometryError> {
+    ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
         if surfaces.len() != planes.len() || planes.iter().any(|plane| !valid_plane(*plane)) {
             return Err(GeometryError::Plane);
         }
@@ -79,7 +50,7 @@ impl BrushMap {
         }) {
             return Err(GeometryError::BrushRange);
         }
-        let topology = Topology::load(tree, &brushes)?;
+        let (topology, models) = Topology::load(tree, &brushes)?;
         let axial_bounds = brushes
             .iter()
             .map(|brush| {
@@ -90,48 +61,38 @@ impl BrushMap {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        Ok(Self {
-            planes: planes.into_boxed_slice(),
-            brushes: brushes.into_boxed_slice(),
-            surfaces: surfaces.into_boxed_slice(),
-            topology,
-            axial_bounds,
-        })
+        Ok((
+            Self {
+                planes: planes.into_boxed_slice(),
+                brushes: brushes.into_boxed_slice(),
+                surfaces: surfaces.into_boxed_slice(),
+                topology,
+                axial_bounds,
+            },
+            models,
+        ))
     }
 
-    pub fn scratch(&self) -> BrushScratch {
-        BrushScratch::load(self, 1024)
+    pub(crate) fn scratch_capacity(&self) -> (usize, usize) {
+        (self.topology.scratch_capacity(), self.brushes.len())
     }
 
-    /// Custom/negotiated stationary limits are provisioned before tracing.
-    pub fn scratch_with_position_capacity(
+    pub(crate) fn trace_root(
         &self,
-        capacity: usize,
-    ) -> Result<BrushScratch, GeometryError> {
-        if capacity > u32::MAX as usize || capacity > isize::MAX as usize / size_of::<u32>() {
-            return Err(GeometryError::Capacity);
-        }
-        Ok(BrushScratch::load(self, capacity))
-    }
-
-    pub fn trace_model(
-        &self,
-        model: usize,
+        root: ModelRoot,
         query: TraceQuery,
         scratch: &mut BrushScratch,
     ) -> Trace {
-        self.topology.trace(self, model, query, scratch)
+        self.topology.trace(self, root, query, scratch)
     }
 
-    pub fn point_contents_model(
+    pub(crate) fn point_contents_root(
         &self,
-        model: usize,
+        root: ModelRoot,
         point: Vec3,
         rules: EntityTraceRules,
     ) -> Contents {
-        let Some(leaf) = self.topology.point_leaf(model, point) else {
-            return Contents::EMPTY;
-        };
+        let leaf = self.topology.point_leaf(root, point);
         if !matches!(rules, EntityTraceRules::Quake3)
             && let Some(contents) = leaf.stored_contents
         {

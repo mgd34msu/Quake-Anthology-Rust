@@ -1,5 +1,8 @@
 use qa_core::{
-    primitives::{CommandIntent, ModuleId, MovementRules, Plane, PlayerTail, UserCmd, Vec3},
+    primitives::{
+        Bounds, CommandIntent, GeometryId, ModuleId, MovementRules, Plane, PlayerTail,
+        SurfaceFlags, UserCmd, Vec3,
+    },
     sys_events::EventTime,
 };
 use qa_session::{
@@ -9,13 +12,14 @@ use qa_session::{
 use qa_world::{
     area::{LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionWorld, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
-        brushes::{Brush, BrushMap},
+        CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
+        brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
     },
 };
-fn floor() -> CollisionWorld {
-    CollisionWorld::Brushes(
-        BrushMap::load(
+fn floor() -> (CollisionStore, GeometryId) {
+    let mut store = CollisionStore::new();
+    let geometry = store
+        .load_brushes(
             vec![Plane {
                 normal: Vec3([0.0, 0.0, 1.0]),
                 distance: 0.0,
@@ -26,15 +30,21 @@ fn floor() -> CollisionWorld {
                 plane_count: 1,
                 contents: Contents::SOLID,
             }],
+            vec![SurfaceFlags(0)],
+            BrushTree::direct(1).unwrap(),
+            vec![Bounds {
+                mins: Vec3([-131072.0; 3]),
+                maxs: Vec3([131072.0; 3]),
+            }],
         )
-        .unwrap(),
-    )
+        .unwrap();
+    (store, geometry)
 }
 #[test]
 fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
     let mut server = Server::load(15, 64, 1, 0, 0).unwrap();
-    let world = floor();
-    let mut scratch = world.scratch();
+    let (store, geometry) = floor();
+    let mut scratch = store.scratch();
     let rules = [
         MovementRules::Quake,
         MovementRules::QuakeWorld,
@@ -90,10 +100,15 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         }
     }
     server.build_bot_commands(EventTime(0), EventTime(16_000_000));
-    assert_eq!(server.move_pending_clients(&world, &mut scratch), 15);
+    assert_eq!(
+        server.move_pending_clients(&store, geometry, 0, &mut scratch),
+        15
+    );
     for (client, prediction) in server.clients[..15].iter().zip(&mut predictions) {
         let mut trace = WorldTrace::new(
-            &world,
+            &store,
+            geometry,
+            0,
             &server.entities,
             &server.area,
             &mut scratch,
@@ -115,14 +130,17 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
             client.player.body.position
         );
     }
-    assert_eq!(server.move_pending_clients(&world, &mut scratch), 0);
+    assert_eq!(
+        server.move_pending_clients(&store, geometry, 0, &mut scratch),
+        0
+    );
 }
 
 #[test]
 fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects() {
     let mut server = Server::load(2, 16, 1, 0, 0).unwrap();
-    let world = floor();
-    let mut scratch = world.scratch();
+    let (store, geometry) = floor();
+    let mut scratch = store.scratch();
     let moving = server
         .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
         .unwrap();
@@ -168,7 +186,9 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
     };
     {
         let mut trace = WorldTrace::new(
-            &world,
+            &store,
+            geometry,
+            0,
             &server.entities,
             &server.area,
             &mut scratch,
@@ -193,7 +213,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
             ..Default::default()
         },
     );
-    assert!(server.move_pending_clients(&world, &mut scratch) > 0);
+    assert!(server.move_pending_clients(&store, geometry, 0, &mut scratch) > 0);
     let moved = server.clients[moving.0 as usize].player.body.position;
     assert!(moved.0[0] > 0.0 && moved.0[0] < 18.0);
     assert_eq!(
@@ -210,7 +230,9 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
     );
     assert!(server.disconnect(obstacle));
     let mut trace = WorldTrace::new(
-        &world,
+        &store,
+        geometry,
+        0,
         &server.entities,
         &server.area,
         &mut scratch,
@@ -222,4 +244,132 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
     });
     assert_eq!(after_disconnect.fraction, 1.0);
     assert!(!after_disconnect.start_solid && !after_disconnect.all_solid);
+}
+
+#[test]
+fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geometry() {
+    let (mut store, first_geometry) = floor();
+    let bounds = Bounds {
+        mins: Vec3([-131072.0; 3]),
+        maxs: Vec3([131072.0; 3]),
+    };
+    // Model zero encloses the player; model one is the ordinary ground plane.
+    // The earlier geometry has only model zero, so either implicit default
+    // would produce a different trace and movement result.
+    let geometry = store
+        .load_brushes(
+            [64.0, 0.0]
+                .into_iter()
+                .map(|distance| Plane {
+                    normal: Vec3([0.0, 0.0, 1.0]),
+                    distance,
+                    axis: None,
+                })
+                .collect(),
+            (0..2)
+                .map(|first_plane| Brush {
+                    first_plane,
+                    plane_count: 1,
+                    contents: Contents::SOLID,
+                })
+                .collect(),
+            vec![SurfaceFlags(0); 2],
+            BrushTree {
+                planes: Vec::new(),
+                nodes: Vec::new(),
+                leaves: (0..2)
+                    .map(|first_brush| CollisionLeaf {
+                        stored_contents: None,
+                        first_brush,
+                        brush_count: 1,
+                    })
+                    .collect(),
+                leaf_brushes: vec![0, 1],
+                models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+            },
+            vec![bounds; 2],
+        )
+        .unwrap();
+    assert_ne!(geometry, first_geometry);
+    let mut scratch = store.scratch();
+    let mut server = Server::load(1, 8, 1, 0, 0).unwrap();
+    let id = server
+        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+        .unwrap();
+    let client = &mut server.clients[id.0 as usize];
+    client.player.movement_rules = MovementRules::Quake3;
+    client.player.health = 100;
+    qa_movement::set_bounds(&mut client.player);
+    client.player.body.position = Vec3([0.0, 0.0, 24.125]);
+    client.player.movement.grounded = true;
+    let entity = client.entity;
+    let mut prediction = Prediction::default();
+    prediction.apply_snapshot(&client.player);
+    server
+        .entities
+        .columns
+        .set_body(entity.slot as usize, client.player.body);
+    assert!(server.area.link(
+        &server.entities,
+        entity,
+        LinkFlags::SOLID,
+        LinkOrder::Tail,
+        LinkIntent::Explicit,
+    ));
+    let query = TraceQuery::point(
+        Vec3([0.0, 0.0, 10.0]),
+        Vec3([0.0, 0.0, -10.0]),
+        TraceRules::ARENA,
+        EntityTraceRules::ARENA,
+    );
+    let selected = WorldTrace::new(
+        &store,
+        geometry,
+        1,
+        &server.entities,
+        &server.area,
+        &mut scratch,
+        Some(entity),
+    )
+    .trace(query);
+    assert!(!selected.start_solid && selected.fraction > 0.0 && selected.fraction < 1.0);
+    assert!(
+        WorldTrace::new(
+            &store,
+            geometry,
+            0,
+            &server.entities,
+            &server.area,
+            &mut scratch,
+            Some(entity),
+        )
+        .trace(query)
+        .all_solid
+    );
+    let command = UserCmd {
+        duration_ms: 16,
+        server_time_ms: 16,
+        movement: [127, 0, 0],
+        ..Default::default()
+    };
+    server.submit_command(id, command);
+    assert_eq!(
+        server.move_pending_clients(&store, geometry, 1, &mut scratch),
+        1
+    );
+    let mut trace = WorldTrace::new(
+        &store,
+        geometry,
+        1,
+        &server.entities,
+        &server.area,
+        &mut scratch,
+        Some(entity),
+    );
+    prediction.advance(command, &mut trace);
+    let player = &server.clients[id.0 as usize].player;
+    assert!(player.body.position.0[0] > 0.0 && player.movement.grounded);
+    assert_eq!(player.body.position, prediction.player.body.position);
+    assert_eq!(player.body.velocity, prediction.player.body.velocity);
+    assert_eq!(player.movement, prediction.player.movement);
 }

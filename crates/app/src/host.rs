@@ -196,9 +196,12 @@ impl FrameHost {
                     runtime.server.world_frame = tick.index;
                     runtime.server.build_bot_commands(tick.start, tick.end);
                     if let Some(world) = &mut runtime.collision {
-                        runtime
-                            .server
-                            .move_pending_clients(&world.geometry, &mut world.scratch);
+                        runtime.server.move_pending_clients(
+                            &runtime.geometry,
+                            world.geometry,
+                            world.index,
+                            &mut world.scratch,
+                        );
                     }
                 }
                 TickTarget::Provider(_) => {
@@ -206,9 +209,12 @@ impl FrameHost {
                 }
             });
         if let Some(world) = &mut runtime.collision {
-            runtime
-                .server
-                .move_pending_clients(&world.geometry, &mut world.scratch);
+            runtime.server.move_pending_clients(
+                &runtime.geometry,
+                world.geometry,
+                world.index,
+                &mut world.scratch,
+            );
         }
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         // Immediate server->client packets take this path in the same frame.
@@ -384,7 +390,9 @@ impl FrameHost {
                     prediction.apply_snapshot(&self.runtime.server.clients[id.0 as usize].player);
                     let client = &self.runtime.server.clients[id.0 as usize];
                     let mut trace = qa_world::collision::WorldTrace::new(
-                        &world.geometry,
+                        &self.runtime.geometry,
+                        world.geometry,
+                        world.index,
                         &self.runtime.server.entities,
                         &self.runtime.server.area,
                         &mut world.scratch,

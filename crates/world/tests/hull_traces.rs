@@ -1,8 +1,30 @@
-use qa_core::primitives::{Axis, Plane, Vec3};
+use qa_core::primitives::{Axis, Bounds, GeometryId, Plane, Vec3};
 use qa_world::collision::{
-    Contents, EntityTraceRules, TraceQuery, TraceRules,
-    hulls::{ClipNode, HullError, HullModel, Q1Hulls},
+    CollisionStore, Contents, EntityTraceRules, StoreError, TraceQuery, TraceRules,
+    hulls::{ClipNode, HullError, HullModel},
 };
+
+struct Case {
+    store: CollisionStore,
+    geometry: GeometryId,
+}
+fn load(
+    planes: Vec<Plane>,
+    drawing: Vec<ClipNode>,
+    clips: Vec<ClipNode>,
+    models: Vec<HullModel>,
+) -> Result<Case, StoreError> {
+    let bounds = vec![
+        Bounds {
+            mins: Vec3([-32768.0; 3]),
+            maxs: Vec3([32768.0; 3])
+        };
+        models.len()
+    ];
+    let mut store = CollisionStore::new();
+    let geometry = store.load_hulls(planes, drawing, clips, models, bounds)?;
+    Ok(Case { store, geometry })
+}
 
 fn wall() -> (Vec<Plane>, Vec<ClipNode>, Vec<HullModel>) {
     (
@@ -22,9 +44,11 @@ fn wall() -> (Vec<Plane>, Vec<ClipNode>, Vec<HullModel>) {
 #[test]
 fn native_hull_epsilon_and_startsolid_follow_world_c() {
     let (planes, nodes, models) = wall();
-    let hulls = Q1Hulls::load(planes, nodes.clone(), nodes, models).unwrap();
-    let mut scratch = hulls.scratch();
-    let result = hulls.trace(
+    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    let mut scratch = hulls.store.scratch();
+    let result = hulls.store.trace_model(
+        hulls.geometry,
+        0,
         TraceQuery::point(
             Vec3([1.0, 0.0, 0.0]),
             Vec3([-1.0, 0.0, 0.0]),
@@ -37,7 +61,9 @@ fn native_hull_epsilon_and_startsolid_follow_world_c() {
     assert_eq!(result.end.0[0], 0.03125);
     assert_eq!(result.plane.normal, Vec3([1.0, 0.0, 0.0]));
     assert!(result.in_open && !result.start_solid && !result.all_solid);
-    let embedded = hulls.trace(
+    let embedded = hulls.store.trace_model(
+        hulls.geometry,
+        0,
         TraceQuery::point(
             Vec3([-1.0, 0.0, 0.0]),
             Vec3([-2.0, 0.0, 0.0]),
@@ -53,18 +79,22 @@ fn native_hull_epsilon_and_startsolid_follow_world_c() {
 #[test]
 fn foreign_caller_epsilon_is_used_on_compiled_hull_topology() {
     let (planes, nodes, models) = wall();
-    let hulls = Q1Hulls::load(planes, nodes.clone(), nodes, models).unwrap();
-    let mut scratch = hulls.scratch();
+    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
+    let mut scratch = hulls.store.scratch();
     let query = TraceQuery::point(
         Vec3([1.0, 0.0, 0.0]),
         Vec3([-1.0, 0.0, 0.0]),
         TraceRules::ARENA,
         EntityTraceRules::QUAKE,
     );
-    let contact = hulls.trace(query, &mut scratch);
+    let contact = hulls
+        .store
+        .trace_model(hulls.geometry, 0, query, &mut scratch);
     assert_eq!(contact.fraction, 0.4375);
     assert_eq!(contact.end.0[0], 0.125);
-    let embedded = hulls.trace(
+    let embedded = hulls.store.trace_model(
+        hulls.geometry,
+        0,
         TraceQuery {
             start: Vec3([-1.0, 0.0, 0.0]),
             end: Vec3([-2.0, 0.0, 0.0]),
@@ -81,10 +111,10 @@ fn foreign_caller_epsilon_is_used_on_compiled_hull_topology() {
 #[test]
 fn independent_callers_reuse_scratch_over_one_immutable_hull() {
     let (planes, nodes, models) = wall();
-    let hulls = Q1Hulls::load(planes, nodes.clone(), nodes, models).unwrap();
+    let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
     let geometry = &hulls;
-    let mut first = geometry.scratch();
-    let mut second = geometry.scratch();
+    let mut first = geometry.store.scratch();
+    let mut second = geometry.store.scratch();
     let crossing = TraceQuery::point(
         Vec3([1.0, 0.0, 0.0]),
         Vec3([-1.0, 0.0, 0.0]),
@@ -98,8 +128,12 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
         EntityTraceRules::QUAKE,
     );
     for _ in 0..32 {
-        let hit = geometry.trace(crossing, &mut first);
-        let inside = geometry.trace(embedded, &mut second);
+        let hit = geometry
+            .store
+            .trace_model(geometry.geometry, 0, crossing, &mut first);
+        let inside = geometry
+            .store
+            .trace_model(geometry.geometry, 0, embedded, &mut second);
         assert_eq!(hit.fraction.to_bits(), 0.484375f32.to_bits());
         assert_eq!(hit.end.0.map(f32::to_bits), [0.03125f32.to_bits(), 0, 0]);
         assert!(hit.in_open && !hit.start_solid && !hit.all_solid);
@@ -107,8 +141,12 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
         assert_eq!(inside.end, embedded.start);
         assert!(inside.start_solid && inside.all_solid);
         assert_eq!(inside.contents, Contents::SOLID);
-        let swapped_hit = geometry.trace(crossing, &mut second);
-        let swapped_inside = geometry.trace(embedded, &mut first);
+        let swapped_hit = geometry
+            .store
+            .trace_model(geometry.geometry, 0, crossing, &mut second);
+        let swapped_inside = geometry
+            .store
+            .trace_model(geometry.geometry, 0, embedded, &mut first);
         assert_eq!(swapped_hit.fraction.to_bits(), hit.fraction.to_bits());
         assert_eq!(
             swapped_hit.end.0.map(f32::to_bits),
@@ -121,7 +159,7 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
 
 #[test]
 fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
-    let hulls = Q1Hulls::load(
+    let hulls = load(
         vec![
             Plane {
                 normal: Vec3([0.0, 0.0, 1.0]),
@@ -145,7 +183,7 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
         vec![HullModel { roots: [0; 3] }],
     )
     .unwrap();
-    let mut scratch = hulls.scratch();
+    let mut scratch = hulls.store.scratch();
     let standing = TraceQuery {
         mins: Vec3([-16.0, -16.0, -24.0]),
         maxs: Vec3([16.0, 16.0, 32.0]),
@@ -156,9 +194,13 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
             EntityTraceRules::QUAKE,
         )
     };
-    let stock = hulls.trace(standing, &mut scratch);
+    let stock = hulls
+        .store
+        .trace_model(hulls.geometry, 0, standing, &mut scratch);
     assert_eq!(stock.end.0[2], -32.03125);
-    let crouched = hulls.trace(
+    let crouched = hulls.store.trace_model(
+        hulls.geometry,
+        0,
         TraceQuery {
             maxs: Vec3([16.0, 16.0, 4.0]),
             ..standing
@@ -168,7 +210,9 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
     // Native SV_HullForEntity chooses by X width, so the authored standing
     // ceiling remains. Rebuilding a four-unit-high hull is separate work.
     assert_eq!(crouched.end, stock.end);
-    let foreign = hulls.trace(
+    let foreign = hulls.store.trace_model(
+        hulls.geometry,
+        0,
         TraceQuery {
             maxs: Vec3([16.0, 16.0, 4.0]),
             rules: TraceRules::ARENA,
@@ -184,13 +228,13 @@ fn malformed_hulls_are_rejected_once_at_load() {
     let (planes, mut nodes, models) = wall();
     nodes[0].children[0] = 0;
     assert!(matches!(
-        Q1Hulls::load(planes, nodes.clone(), nodes, models),
-        Err(HullError::Cycle)
+        load(planes, nodes.clone(), nodes, models),
+        Err(StoreError::Hull(HullError::Cycle))
     ));
     let (planes, mut nodes, models) = wall();
     nodes[0].children[0] = 12;
     assert!(matches!(
-        Q1Hulls::load(planes, nodes.clone(), nodes, models),
-        Err(HullError::Node)
+        load(planes, nodes.clone(), nodes, models),
+        Err(StoreError::Hull(HullError::Node))
     ));
 }

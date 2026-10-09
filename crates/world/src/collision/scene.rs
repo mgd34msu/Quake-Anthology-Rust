@@ -1,5 +1,5 @@
 use super::{
-    CollisionWorld, Contents, EntityTraceRules, QuakeTraceKind, Trace, TraceQuery, TraceScratch,
+    CollisionStore, Contents, EntityTraceRules, QuakeTraceKind, Trace, TraceQuery, TraceScratch,
     boxes::trace_box,
 };
 use crate::{
@@ -7,13 +7,16 @@ use crate::{
     entities::EntityTable,
 };
 use qa_core::primitives::{
-    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, NativeEntity, Vec3,
+    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, EntityPose, GeometryId,
+    NativeEntity, Vec3,
 };
 
 /// A frozen world and its directly borrowed hot entity columns. A caller's
 /// scratch and pass entity are independent of every other trace caller.
 pub struct WorldTrace<'a> {
-    geometry: &'a CollisionWorld,
+    store: &'a CollisionStore,
+    geometry: GeometryId,
+    model: u32,
     entities: &'a EntityTable,
     area: &'a AreaGrid,
     scratch: &'a mut TraceScratch,
@@ -22,14 +25,18 @@ pub struct WorldTrace<'a> {
 
 impl<'a> WorldTrace<'a> {
     pub fn new(
-        geometry: &'a CollisionWorld,
+        store: &'a CollisionStore,
+        geometry: GeometryId,
+        model: u32,
         entities: &'a EntityTable,
         area: &'a AreaGrid,
         scratch: &'a mut TraceScratch,
         pass: Option<EntityId>,
     ) -> Self {
         Self {
+            store,
             geometry,
+            model,
             entities,
             area,
             scratch,
@@ -39,7 +46,9 @@ impl<'a> WorldTrace<'a> {
 
     pub fn trace(&mut self, mut query: TraceQuery) -> Trace {
         query.pass = query.pass.or(self.pass);
-        let mut result = self.geometry.trace_geometry(query, self.scratch);
+        let mut result = self
+            .store
+            .trace_model(self.geometry, self.model, query, self.scratch);
         let world_entity = match query.entity_rules {
             EntityTraceRules::Quake { .. } => result.fraction < 1.0 || result.start_solid,
             EntityTraceRules::Quake2 => true,
@@ -86,12 +95,13 @@ impl<'a> WorldTrace<'a> {
             if query.pass == Some(id) || query.excluded.contains(&id) {
                 continue;
             }
-            if columns.collision_shape[slot] != CollisionShape::Box {
+            let shape = columns.collision_shape[slot];
+            if shape == CollisionShape::None {
                 continue;
             }
             match query.entity_rules {
                 EntityTraceRules::Quake { kind } => {
-                    if kind == QuakeTraceKind::IgnoreBoxes {
+                    if kind == QuakeTraceKind::IgnoreBoxes && shape == CollisionShape::Box {
                         continue;
                     }
                     if let Some(pass) = pass_slot
@@ -136,13 +146,7 @@ impl<'a> WorldTrace<'a> {
                     }
                 }
             }
-            let body = Body {
-                position: *linked.position,
-                velocity: *linked.velocity,
-                mins: *linked.mins,
-                maxs: *linked.maxs,
-            };
-            let incoming = trace_box(
+            let target_query =
                 if missile && columns.collision_tags[slot].0 & CollisionTags::MONSTER.0 != 0 {
                     TraceQuery {
                         mins,
@@ -151,10 +155,41 @@ impl<'a> WorldTrace<'a> {
                     }
                 } else {
                     query
-                },
-                &body,
-                id,
-            );
+                };
+            let incoming = match shape {
+                CollisionShape::Box => trace_box(
+                    target_query,
+                    &Body {
+                        position: *linked.position,
+                        velocity: *linked.velocity,
+                        mins: *linked.mins,
+                        maxs: *linked.maxs,
+                    },
+                    id,
+                ),
+                CollisionShape::Model { geometry, index } => {
+                    // Stale lifetimes and invalid inline ordinals affect only
+                    // this candidate, never another geometry in the store.
+                    if self.store.model_bounds(geometry, index).is_none() {
+                        continue;
+                    }
+                    let mut incoming = self.store.trace_transformed(
+                        geometry,
+                        index,
+                        target_query,
+                        *linked.position,
+                        columns.angles[slot],
+                        columns.model_rules[slot],
+                        self.scratch,
+                    );
+                    if incoming.fraction < 1.0 || incoming.start_solid || incoming.all_solid {
+                        incoming.entity = Some(id);
+                    }
+                    incoming.brush_solid = true;
+                    incoming
+                }
+                CollisionShape::None => continue,
+            };
             result.merge_linked(incoming, query.entity_rules);
         }
         result
@@ -166,7 +201,9 @@ impl<'a> WorldTrace<'a> {
         rules: EntityTraceRules,
         excluded: &[EntityId],
     ) -> Contents {
-        let mut result = self.geometry.point_contents(point, rules);
+        let mut result = self
+            .store
+            .point_contents_model(self.geometry, self.model, point, rules);
         // Q1 SV_PointContents is the world hull, without linked-body contents.
         if matches!(rules, EntityTraceRules::Quake { .. }) {
             return result;
@@ -189,14 +226,31 @@ impl<'a> WorldTrace<'a> {
             {
                 continue;
             }
-            if self.entities.columns.collision_shape[linked.id.slot as usize] != CollisionShape::Box
-            {
-                continue;
+            let slot = linked.id.slot as usize;
+            let pose = self.entities.columns.point_contents_pose[slot].unwrap_or(EntityPose {
+                position: *linked.position,
+                angles: self.entities.columns.angles[slot],
+            });
+            match self.entities.columns.collision_shape[slot] {
+                CollisionShape::None => continue,
+                CollisionShape::Model { geometry, index } => {
+                    result |= self.store.point_contents_transformed(
+                        geometry,
+                        index,
+                        point,
+                        pose.position,
+                        pose.angles,
+                        self.entities.columns.model_rules[slot],
+                        rules,
+                    );
+                    continue;
+                }
+                CollisionShape::Box => {}
             }
             // CM_TransformedPointContents temporary-box contents are the native
             // BODY/MONSTER brush, independently of an entity's content filter.
             let inside = (0..3).all(|axis| {
-                let coordinate = point.0[axis] - linked.position.0[axis];
+                let coordinate = point.0[axis] - pose.position.0[axis];
                 coordinate >= linked.mins.0[axis]
                     && if rules == EntityTraceRules::Quake2 {
                         coordinate < linked.maxs.0[axis]

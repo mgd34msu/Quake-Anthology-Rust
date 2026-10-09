@@ -1,7 +1,8 @@
 //! Pinned developer timing of the shared primitive path, not a gameplay run.
 use qa_core::{
     primitives::{
-        Bounds, ClientId, CommandIntent, ModuleId, MovementRules, Plane, PlayerTail, Vec3,
+        Bounds, ClientId, CommandIntent, GeometryId, ModuleId, MovementRules, Plane, PlayerTail,
+        SurfaceFlags, Vec3,
     },
     sys_events::EventTime,
 };
@@ -12,8 +13,8 @@ use qa_session::{
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionWorld, Contents, WorldTrace,
-        brushes::{Brush, BrushMap},
+        CollisionStore, Contents, WorldTrace,
+        brushes::{Brush, BrushTree},
     },
 };
 
@@ -41,7 +42,7 @@ fn box_brush(planes: &mut Vec<Plane>, brushes: &mut Vec<Brush>, mins: Vec3, maxs
     });
 }
 
-fn scene() -> Result<CollisionWorld, String> {
+fn scene(store: &mut CollisionStore) -> Result<GeometryId, String> {
     let mut planes = vec![Plane {
         normal: Vec3([0.0, 0.0, 1.0]),
         distance: 0.0,
@@ -70,8 +71,20 @@ fn scene() -> Result<CollisionWorld, String> {
             );
         }
     }
-    BrushMap::load(planes, brushes)
-        .map(CollisionWorld::Brushes)
+    let surfaces = vec![SurfaceFlags(0); planes.len()];
+    let tree = BrushTree::direct(brushes.len())
+        .map_err(|error| format!("analytic membership: {error:?}"))?;
+    store
+        .load_brushes(
+            planes,
+            brushes,
+            surfaces,
+            tree,
+            vec![Bounds {
+                mins: Vec3([-160.0, -160.0, -512.0]),
+                maxs: Vec3([2560.0, 2560.0, 512.0]),
+            }],
+        )
         .map_err(|error| format!("analytic scene: {error:?}"))
 }
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -94,8 +107,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .map_err(|e| format!("{e:?}"))?;
     let mut predictions: [Prediction; 64] = std::array::from_fn(|_| Prediction::default());
-    let world = scene()?;
-    let mut scratch = world.scratch();
+    let mut store = CollisionStore::new();
+    let geometry = scene(&mut store)?;
+    let mut scratch = store.scratch();
     let rules = [
         MovementRules::Quake,
         MovementRules::QuakeWorld,
@@ -167,10 +181,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         server.build_bot_commands(start, end);
-        let count = server.move_pending_clients(&world, &mut scratch);
+        let count = server.move_pending_clients(&store, geometry, 0, &mut scratch);
         for (client, prediction) in server.clients.iter().zip(&mut predictions) {
             let mut trace = WorldTrace::new(
-                &world,
+                &store,
+                geometry,
+                0,
                 &server.entities,
                 &server.area,
                 &mut scratch,

@@ -54,6 +54,14 @@ pub struct EntityId {
     pub generation: u32,
 }
 
+/// Engine geometry lifetime. Native inline-model ordinals remain independent
+/// values at file, module and protocol boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeometryId {
+    pub slot: u32,
+    pub generation: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ItemId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +122,46 @@ pub enum CollisionShape {
     #[default]
     None,
     Box,
+    Model {
+        geometry: GeometryId,
+        index: u32,
+    },
+}
+
+/// A target role selects its model transform independently of geometry and
+/// the caller's trace rules. Temporary boxes never rotate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModelRotation {
+    #[default]
+    TranslationOnly,
+    /// Restore a hit normal using the basis of the negated Euler angles.
+    NegativeEuler,
+    /// Center the query before translation and restore with the basis transpose.
+    TransposeBasis,
+}
+
+/// Conservative bounds selected by a linked model's role, before the ordinary
+/// area-link expansion. Model load bounds already include their native margin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RotatedLinkBounds {
+    #[default]
+    Unrotated,
+    MaxAbsCube,
+    RadiusCube,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModelRules {
+    pub rotation: ModelRotation,
+    pub link_bounds: RotatedLinkBounds,
+}
+
+/// A module may publish a contents pose independently of its physical pose.
+/// These engine coordinates are not native protocol fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EntityPose {
+    pub position: Vec3,
+    pub angles: Vec3,
 }
 
 /// Canonical collision classifications, converted from native flags at load.

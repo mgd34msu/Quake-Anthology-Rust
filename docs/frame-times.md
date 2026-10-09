@@ -1366,3 +1366,113 @@ settings. Exact output comparisons prove this refactor's bounded fidelity,
 not complete original-game visuals, gameplay, installation or performance.
 Evidence: `THE-892-shared-stamps-q2-fixed/private-comparison.json` and each
 run's `result.json`, `runtime.log`, pixel/depth files and window capture.
+
+
+## THE-2868 / THE-2883 shared collision models (2026-10-08)
+
+The geometry owner is one `CollisionStore` with a flat model table and typed
+resource generation handles. Every query selects its resource and native model
+ordinal explicitly. Hull/brush kernels no longer retain duplicate model tables;
+all application, session and developer callers use the store. Linked models
+use entity-role rotation/link rules independently of the query's trace rules.
+An optional published point-contents pose preserves Q3's distinct `s.origin` /
+`s.angles` versus `r.currentOrigin` / `r.currentAngles`; ordinary bodies use
+their physical pose. These internal values do not alter any wire layout.
+
+The baseline is `08ad0eb4`; the staged engine tree is `075b85ed`.
+Fresh baseline-CPU release builds took 37.04 s and 41.64 s respectively,
+including the allocation-tracked app and developer probes. Proof input is
+absent. The final documentation does not change those compiled Rust sources.
+Exact staged workspace/all-target tests and the allocation-tracked app check
+pass. Six retail tests cover signed plane admission, every native model bound,
+nonzero e1m1/base1/q3dm7 model contacts, and resource removal/compaction/reload.
+Q3 q3dm1 has one model; q3dm7 supplies the nonzero retail ordinal.
+The rule sweep rejects 70 prohibited fixtures and accepts 18 permitted cases.
+
+`tools/check_model_collision.py` extracts unchanged original C transformed
+wrappers and their dependencies. The production store matches 10,432 Q1 rows
+(9 words each) and 15,100 rows per Q2/Q3 rule (13 words each), bit for bit.
+Cases include native model ordinals, Q1 hull offsets/width thresholds,
+asymmetric boxes, compound rotations, large-coordinate rounding and Q3's
+native double centering. Q1 ignores model angles, Q2 restores normals through
+negated angles, and Q3 uses the native transpose basis. Identical-row controls
+pass; one-bit fraction and flags/point mutations fail as expected. These
+controls prove comparator sensitivity, not sensitivity to every possible
+implementation mutation. The full brush runs include actual sloped contacts;
+the appended cases named nonaxial-contact alone do not establish that coverage.
+No Rust calling-thread allocations, reallocations or requested bytes occur
+inside complete row evaluation; each allocation positive control reports one.
+
+The transformed timing probe uses core 23, baseline CPU, no debugger,
+60 warm-up and 600 measured batches of 64 queries. Q1 times traces only;
+Q2/Q3 time trace plus point contents. Samples include raw result comparisons.
+
+| Transformed synthetic workload | Median (ns/batch) | p99 (ns/batch) | Median (ns/query) | Batch p99 / 64 (ns) |
+| --- | --- | --- | --- | --- |
+| Q1 hull trace | 3,880 | 4,150 | 60.625 | 64.844 |
+| Q2 brush trace + point | 21,530 | 142,440 | 336.406 | 2,225.625 |
+| Q3 brush trace + point | 9,635 | 79,930 | 150.547 | 1,248.906 |
+
+All timed samples retain native results and zero measured Rust heap work.
+There is no matching pre-transform baseline; these new rows establish a
+bounded measurement, rather than qualify a regression comparison. They do
+not measure native C heap, workers, retail loading, linked-scene merge/filter
+semantics, guest ABIs, temporary boxes, Q1 point contents, patches or capsules.
+
+The existing world-query workloads run ABBA on the same core and candidates.
+Q1 compares all 30,000 original-C e1m1 rows, then times 600,000 traces per hull
+after 600 warm-up traces over the same 10,000 seeds. Brush runs compare all
+15,045 native rows per rule, then use 600+60 batches of 64 trace/point pairs.
+Contacts/enclosed counts and raw results match throughout; all runs have zero
+measured Rust heap work.
+
+| Existing world workload | Before medians | After medians | Before p99 | After p99 |
+| --- | --- | --- | --- | --- |
+| Q1 point (ns/trace) | 160 / 160 | 170 / 170 | 1,060 / 1,060 | 1,060 / 1,060 |
+| Q1 player (ns/trace) | 160 / 160 | 160 / 160 | 730 / 740 | 750 / 750 |
+| Q1 large (ns/trace) | 150 / 150 | 150 / 150 | 630 / 640 | 640 / 640 |
+| Q2 brush pair (ns/batch) | 19,085 / 19,185 | 18,985 / 19,050 | 157,200 / 156,900 | 161,780 / 156,300 |
+| Q3 brush pair (ns/batch) | 7,425 / 7,350 | 7,260 / 7,435 | 89,440 / 89,570 | 86,440 / 86,570 |
+
+The largest change in paired mean medians is Q1 point +6.25%, within 10%.
+Headless evidence lives in developer cache `THE-2868-inline-geometry`:
+`native-models/report.json`, `native-models-timed/report.json`,
+`headless-abba/result.json`, `rule-fixtures/result.json`, and their saved
+C sources, raw native/Rust rows, timing reports and mutation controls.
+Live e1m1 doors/platforms blocking and pushing, guest pose ABI wiring and
+installed gameplay acceptance remain open on THE-2868/THE-2883.
+
+
+Private rendering checks use copied candidates and profiles, forced X11 on
+owned displays and disk audio sinks. CPU runs use one band at 640x400, core 23,
+vsync off, 60 warm-up and 600 measured static frames, in ABBA order per map.
+
+| Static CPU draw | Before medians (ms) | After medians (ms) | Before p99 (ms) | After p99 (ms) |
+| --- | --- | --- | --- | --- |
+| e1m1 | 2.032 / 2.025 | 2.020 / 2.052 | 2.393 / 2.356 | 2.378 / 2.406 |
+| base1 | 4.527 / 4.533 | 4.530 / 4.504 | 4.888 / 4.852 | 5.068 / 4.822 |
+| q3dm1 | 15.326 / 15.343 | 15.259 / 15.245 | 15.920 / 16.210 | 15.905 / 16.449 |
+
+Pair-mean median changes are +0.38%, -0.28% and -0.54%; pair-mean p99
+changes are +0.75%, +1.54% and +0.70%. All twelve CPU runs have identical raw
+RGBA/depth, workload and cache statistics, with zero measured calling-thread
+Rust allocations/reallocations/requested bytes. One band creates no workers.
+Base1 and q3dm1 remain above the 4 ms target in this bounded static draw;
+q3dm1 speed work remains paused by the owner's core order.
+
+Six GL host runs use 600+60 frames with the same copied saved settings.
+Initial fixed-time world screenshots, scene metadata and driver identity
+match exactly before/after for each map. The instrumented Rust allocation
+gate passes with zero measured heap work; these runs have one calling thread
+and no worker threads. Native SDL/driver heap is not measured. Driver:
+llvmpipe (LLVM 22.1.8, 256 bits), OpenGL 4.6 Core, Mesa 26.2.2-arch1.1:
+**software GL**. Host-driven animation lacks a matched time sequence, so no
+GL performance comparison is claimed.
+
+All eighteen runs quit normally, preserve the owner's original profile and
+copied candidate, and leave no owned PIDs. CPU probes locate the copied
+profile; GL hosts consume the saved settings. These runs establish bounded
+rendering fidelity, not full original presentation, walks, gameplay or mover
+integration. No new binary was installed; the separate render preview remains
+`08ad0eb4`. Evidence: `THE-2868-inline-geometry/private-comparison.json` and
+per-run `result.json`, `runtime.log`, raw RGBA/depth and window captures.

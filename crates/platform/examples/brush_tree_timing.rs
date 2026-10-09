@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         })
         .collect();
-    let mut scratch: Vec<_> = fixture.maps.iter().map(|map| map.scratch()).collect();
+    let mut scratch = fixture.store.scratch();
     // Warm the platform timer's frequency cache before allocation counting.
     let _ = Stopwatch::start().elapsed();
     begin_frame();
@@ -55,9 +55,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Verify every supplied row before using the rotating measured subset.
     for (query, expected) in fixture.queries.iter().zip(&expected) {
-        let map = &fixture.maps[query.map];
-        let trace = map.trace_model(query.model, query.trace, &mut scratch[query.map]);
-        let point = map.point_contents_model(query.model, query.point, entity_rules);
+        let geometry = fixture.geometries[query.map];
+        let trace =
+            fixture
+                .store
+                .trace_model(geometry, query.model as u32, query.trace, &mut scratch);
+        let point = fixture.store.point_contents_model(
+            geometry,
+            query.model as u32,
+            query.point,
+            entity_rules,
+        );
         if fixture::result(trace, point) != *expected {
             return Err("native row mismatch before timing".into());
         }
@@ -78,10 +86,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut frame_mismatches = 0;
         for _ in 0..QUERIES_PER_FRAME {
             let query = &fixture.queries[next_query];
-            let map = &fixture.maps[query.map];
-            let trace =
-                map.trace_model(query.model, black_box(query.trace), &mut scratch[query.map]);
-            let point = map.point_contents_model(query.model, black_box(query.point), entity_rules);
+            let geometry = fixture.geometries[query.map];
+            let trace = fixture.store.trace_model(
+                geometry,
+                query.model as u32,
+                black_box(query.trace),
+                &mut scratch,
+            );
+            let point = fixture.store.point_contents_model(
+                geometry,
+                query.model as u32,
+                black_box(query.point),
+                entity_rules,
+            );
             let row = black_box(fixture::result(trace, point));
             frame_mismatches += u64::from(row != expected[next_query]);
             frame_contacts += u64::from(trace.fraction < 1.0);
@@ -109,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report = format!(
         "{{\"scope\":\"synthetic brush-tree trace plus point contents, full native row comparison and sampling; no gameplay/retail/workers\",\"rule\":\"{}\",\"maps\":{},\"fixture_queries\":{},\"warmup\":{WARMUP},\"measured_frames\":{FRAMES},\"queries_per_frame\":{QUERIES_PER_FRAME},\"measured_trace_and_point_pairs\":{},\"median_batch_ns\":{median},\"p99_batch_ns\":{p99},\"median_ns_per_pair\":{},\"p99_batch_ns_per_pair\":{},\"native_row_mismatches\":{mismatches},\"contacts\":{contacts},\"enclosed\":{enclosed},\"rust_allocations\":{allocation_calls},\"rust_reallocations\":{reallocation_calls},\"rust_requested_bytes\":{requested_bytes},\"allocation_positive_control\":{}}}\n",
         args[1],
-        fixture.maps.len(),
+        fixture.geometries.len(),
         fixture.queries.len(),
         FRAMES * QUERIES_PER_FRAME,
         median / QUERIES_PER_FRAME as f64,

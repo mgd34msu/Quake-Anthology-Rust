@@ -1,11 +1,11 @@
 use qa_core::primitives::{
-    Bounds, ClientId, CollisionShape, CommandIntent, EntityId, HudState, ModuleId, NativeEntity,
-    PlayerState, PlayerTail, UserCmd, Vec3,
+    Bounds, ClientId, CollisionShape, CommandIntent, EntityId, GeometryId, HudState, ModuleId,
+    NativeEntity, PlayerState, PlayerTail, UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
-    collision::{CollisionWorld, Contents, TraceScratch, WorldTrace},
+    collision::{CollisionStore, Contents, TraceScratch, WorldTrace},
     entities::EntityTable,
 };
 
@@ -184,7 +184,9 @@ impl Server {
     /// once even when several world/provider ticks occur in a host frame.
     pub fn move_pending_clients(
         &mut self,
-        geometry: &CollisionWorld,
+        store: &CollisionStore,
+        geometry: GeometryId,
+        index: u32,
         scratch: &mut TraceScratch,
     ) -> u32 {
         let mut steps = 0;
@@ -193,7 +195,9 @@ impl Server {
                 client.command_pending = false;
                 let result = {
                     let mut trace = WorldTrace::new(
+                        store,
                         geometry,
+                        index,
                         &self.entities,
                         &self.area,
                         scratch,

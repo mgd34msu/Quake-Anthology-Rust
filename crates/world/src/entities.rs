@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    Body, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId, ModuleId, NameId,
-    NativeEntity, ThinkTime, Vec3,
+    Body, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId, EntityPose,
+    ModelRules, ModuleId, NameId, NativeEntity, ThinkTime, Vec3,
 };
 
 pub const MAX_ENTITIES: usize = 8192;
@@ -141,6 +141,10 @@ pub struct EntityColumns {
     pub native_entity: Box<[Option<NativeEntity>]>,
     pub collision_owner: Box<[CollisionOwner]>,
     pub collision_shape: Box<[CollisionShape]>,
+    pub model_rules: Box<[ModelRules]>,
+    /// None shares the physical pose. A published module contents pose does
+    /// not alter physical broadphase bounds or movement traces.
+    pub point_contents_pose: Box<[Option<EntityPose>]>,
     /// Canonical Contents bits. Protocol adapters perform native conversion;
     /// the entity columns never narrow these to a legacy wire width.
     pub collision_contents: Box<[u64]>,
@@ -173,6 +177,8 @@ impl EntityColumns {
             native_entity: vec![None; capacity].into_boxed_slice(),
             collision_owner: vec![CollisionOwner::None; capacity].into_boxed_slice(),
             collision_shape: vec![CollisionShape::None; capacity].into_boxed_slice(),
+            model_rules: vec![ModelRules::default(); capacity].into_boxed_slice(),
+            point_contents_pose: vec![None; capacity].into_boxed_slice(),
             collision_contents: vec![0; capacity].into_boxed_slice(),
             collision_tags: vec![CollisionTags::default(); capacity].into_boxed_slice(),
             classname: vec![NameId::default(); capacity].into_boxed_slice(),
@@ -202,6 +208,8 @@ impl EntityColumns {
         self.native_entity[slot] = None;
         self.collision_owner[slot] = CollisionOwner::None;
         self.collision_shape[slot] = CollisionShape::None;
+        self.model_rules[slot] = ModelRules::default();
+        self.point_contents_pose[slot] = None;
         self.collision_contents[slot] = 0;
         self.collision_tags[slot] = CollisionTags::default();
         self.classname[slot] = NameId::default();

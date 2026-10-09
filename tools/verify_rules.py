@@ -114,6 +114,10 @@ def main():
             ("stamp-example", "struct StampSet {}", "world/examples"),
             ("name-primitive", "struct NameTable {}", "console/src"),
             ("text-primitive", "struct FixedText {}", "ui/tests"),
+            ("geometry-handle", "struct GeometryId { slot:u32, generation:u32 }", "render/src"),
+            ("model-pose-policy", "struct ModelRules {}", "app/src"),
+            ("collision-store-copy", "struct CollisionStore {}", "session/src"),
+            ("trace-scratch-copy", "struct TraceScratch {}", "movement/examples"),
             ("epoch-mark-array", "impl Marks { fn begin(&mut self) { self.generation = self.generation.wrapping_add(1); if self.generation == 0 { self.values.fill(0); self.generation = 1; } } }", "world/src"),
             ("epoch-mark-batches", "impl Batches { fn begin(&mut self) { self.count = self.count.wrapping_add(1); if self.count == 0 { self.count = 1; for row in &mut self.rows { row.seen = 0; row.drawn = 0; } } } }", "render/src"),
             ("epoch-mark-reference", "fn renew(rows: &mut [u64], epoch: &mut u64) { *epoch = epoch.wrapping_add(1); if *epoch == 0 { rows.fill(0); *epoch = 1; } }", "world/examples"),
@@ -129,6 +133,28 @@ def main():
             if not passed:
                 raise RuntimeError("duplicate primitive was admitted: " + name)
             violation.unlink()
+        for name, content, relative in [
+            ("retired-collision-world", "enum CollisionWorld { Hulls, Brushes }", "crates/world/src/retired_collision.rs"),
+            ("variant-trace-scratch", "enum TraceScratch { Hulls, Brushes }", "crates/world/src/collision/store.rs"),
+            ("hull-model-registry", "struct Q1Hulls { roots: Box<[HullModel]> }", "crates/world/src/collision/hulls.rs"),
+            ("brush-model-registry", "struct Topology { models: Vec<ModelRoot> }", "crates/world/src/collision/tree.rs"),
+        ]:
+            violation = root / relative
+            original = violation.read_text() if violation.exists() else None
+            violation.write_text(content)
+            try:
+                result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+                output = json.loads(result.stdout)
+                passed = result.returncode != 0 and any(v["rule"] == "collision-model-storage" for v in output["findings"])
+                records.append({"rule": name, "rejected_before_cargo": passed})
+                (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+                if not passed:
+                    raise RuntimeError("retired collision storage was admitted: " + name)
+            finally:
+                if original is None:
+                    violation.unlink()
+                else:
+                    violation.write_text(original)
         for name, content in [
             ("owned-primitive-import", "use qa_core::stamps::StampSet; fn marks() -> StampSet { StampSet::new(16) }"),
             ("lifetime-generation", "fn retire(value: &mut u32) { *value += 1; }"),

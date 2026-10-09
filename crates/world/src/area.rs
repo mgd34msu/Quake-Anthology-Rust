@@ -1,5 +1,5 @@
 use crate::entities::{EntityTable, MAX_ENTITIES};
-use qa_core::primitives::{Bounds, EntityId, Vec3};
+use qa_core::primitives::{Bounds, CollisionShape, EntityId, RotatedLinkBounds, Vec3};
 
 const NONE: u32 = u32::MAX;
 
@@ -192,12 +192,42 @@ impl AreaGrid {
                 1.0
             }
         };
+        let rotated = matches!(columns.collision_shape[slot], CollisionShape::Model { .. })
+            && columns.angles[slot].0.iter().any(|&angle| angle != 0.0);
+        let radius = if rotated {
+            match columns.model_rules[slot].link_bounds {
+                RotatedLinkBounds::Unrotated => None,
+                // qsrc Q2 sv_world.c:219-245 uses the largest absolute bound.
+                RotatedLinkBounds::MaxAbsCube => Some(
+                    columns.mins[slot]
+                        .0
+                        .iter()
+                        .chain(&columns.maxs[slot].0)
+                        .fold(0.0f32, |radius, value| radius.max(value.abs())),
+                ),
+                // qsrc Q3 q_math.c:1050-1061 first chooses each farthest corner.
+                RotatedLinkBounds::RadiusCube => {
+                    let corner = std::array::from_fn::<_, 3, _>(|axis| {
+                        columns.mins[slot].0[axis]
+                            .abs()
+                            .max(columns.maxs[slot].0[axis].abs())
+                    });
+                    Some(qa_core::math::length(Vec3(corner)))
+                }
+            }
+        } else {
+            None
+        };
         let bounds = Bounds {
             mins: Vec3(std::array::from_fn(|axis| {
-                columns.position[slot].0[axis] + columns.mins[slot].0[axis] - expansion(axis)
+                columns.position[slot].0[axis]
+                    + radius.map_or(columns.mins[slot].0[axis], |radius| -radius)
+                    - expansion(axis)
             })),
             maxs: Vec3(std::array::from_fn(|axis| {
-                columns.position[slot].0[axis] + columns.maxs[slot].0[axis] + expansion(axis)
+                columns.position[slot].0[axis]
+                    + radius.unwrap_or(columns.maxs[slot].0[axis])
+                    + expansion(axis)
             })),
         };
         let old = self.links[slot];

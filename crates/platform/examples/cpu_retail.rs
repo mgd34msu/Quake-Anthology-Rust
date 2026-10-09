@@ -424,6 +424,7 @@ fn run() -> Result<(), String> {
     let loaded = input.load(
         &runtime.vfs,
         &mut assets,
+        &mut runtime.geometry,
         WorldLoadOptions {
             image_settings: Some(image_settings),
             ..WorldLoadOptions::default()

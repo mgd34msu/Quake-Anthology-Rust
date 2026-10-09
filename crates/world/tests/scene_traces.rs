@@ -1,19 +1,51 @@
 use qa_core::primitives::{
-    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, ModuleId, NativeEntity,
-    Plane, Vec3,
+    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, GeometryId, ModuleId,
+    NativeEntity, Plane, SurfaceFlags, Vec3,
 };
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionWorld, Contents, EntityTraceRules, QuakeTraceKind, Trace, TraceQuery, TraceRules,
+        CollisionStore, Contents, EntityTraceRules, QuakeTraceKind, Trace, TraceQuery, TraceRules,
         WorldTrace,
-        brushes::{Brush, BrushMap},
+        brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
     },
     entities::{AllocationPolicy, EntityTable},
 };
 
-fn empty() -> CollisionWorld {
-    CollisionWorld::Brushes(BrushMap::load(Vec::new(), Vec::new()).unwrap())
+struct FixtureWorld {
+    store: CollisionStore,
+    geometry: GeometryId,
+}
+fn brush_world(planes: Vec<Plane>, brushes: Vec<Brush>) -> FixtureWorld {
+    let count = brushes.len() as u32;
+    let surfaces = vec![SurfaceFlags::default(); planes.len()];
+    let mut store = CollisionStore::new();
+    let geometry = store
+        .load_brushes(
+            planes,
+            brushes,
+            surfaces,
+            BrushTree {
+                planes: Vec::new(),
+                nodes: Vec::new(),
+                leaves: vec![CollisionLeaf {
+                    stored_contents: None,
+                    first_brush: 0,
+                    brush_count: count,
+                }],
+                leaf_brushes: (0..count).collect(),
+                models: vec![ModelRoot::Leaf(0)],
+            },
+            vec![Bounds {
+                mins: Vec3([-1024.0; 3]),
+                maxs: Vec3([1024.0; 3]),
+            }],
+        )
+        .unwrap();
+    FixtureWorld { store, geometry }
+}
+fn empty() -> FixtureWorld {
+    brush_world(Vec::new(), Vec::new())
 }
 fn table() -> (EntityTable, AreaGrid) {
     (
@@ -79,9 +111,18 @@ fn query(rules: EntityTraceRules) -> TraceQuery<'static> {
         )
     }
 }
-fn trace(world: &CollisionWorld, table: &EntityTable, area: &AreaGrid, query: TraceQuery) -> Trace {
-    let mut scratch = world.scratch();
-    WorldTrace::new(world, table, area, &mut scratch, None).trace(query)
+fn trace(world: &FixtureWorld, table: &EntityTable, area: &AreaGrid, query: TraceQuery) -> Trace {
+    let mut scratch = world.store.scratch();
+    WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        table,
+        area,
+        &mut scratch,
+        None,
+    )
+    .trace(query)
 }
 
 #[test]
@@ -427,8 +468,16 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         .entity,
         Some(target)
     );
-    let mut scratch = world.scratch();
-    let service = WorldTrace::new(&world, &table, &area, &mut scratch, None);
+    let mut scratch = world.store.scratch();
+    let service = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        None,
+    );
     assert_eq!(
         service.point_contents(Vec3::default(), EntityTraceRules::QUAKE, &[]),
         Contents::EMPTY
@@ -453,7 +502,15 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         service.point_contents(Vec3::default(), EntityTraceRules::ARENA, &[target]),
         Contents::EMPTY
     );
-    let pass_service = WorldTrace::new(&world, &table, &area, &mut scratch, Some(target));
+    let pass_service = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        Some(target),
+    );
     assert_eq!(
         pass_service.point_contents(Vec3::default(), EntityTraceRules::QUAKE2, &[]),
         Contents::BODY
@@ -482,20 +539,17 @@ fn native_contents_filter_and_point_contents_face_semantics() {
 
 #[test]
 fn native_world_zero_fraction_returns_before_linked_body_merging() {
-    let world = CollisionWorld::Brushes(
-        BrushMap::load(
-            vec![Plane {
-                normal: Vec3([1.0, 0.0, 0.0]),
-                distance: 0.0,
-                axis: None,
-            }],
-            vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
-                contents: Contents::SOLID,
-            }],
-        )
-        .unwrap(),
+    let world = brush_world(
+        vec![Plane {
+            normal: Vec3([1.0, 0.0, 0.0]),
+            distance: 0.0,
+            axis: None,
+        }],
+        vec![Brush {
+            first_plane: 0,
+            plane_count: 1,
+            contents: Contents::SOLID,
+        }],
     );
     let (mut table, mut area) = table();
     body(

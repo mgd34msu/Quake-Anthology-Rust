@@ -2,11 +2,11 @@
 //! Build with `cargo build --release -p qa-world --example brush_trace`, then
 //! run through tools/check_brush_trace.py. File transport is cold; the measured
 //! allocation scope contains only analytic traces and fixed result writes.
-use qa_core::primitives::{Axis, Bounds, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{Axis, Bounds, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::area::AreaGrid;
-use qa_world::collision::brushes::{Brush, BrushMap};
+use qa_world::collision::brushes::{Brush, BrushTree};
 use qa_world::collision::{
-    CollisionWorld, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
+    CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules, WorldTrace,
 };
 use qa_world::entities::EntityTable;
 use std::hint::black_box;
@@ -50,7 +50,7 @@ fn load(
     mut data: &[u8],
     rules: TraceRules,
     entity_rules: EntityTraceRules,
-) -> Result<(Vec<CollisionWorld>, Vec<Query>), &'static str> {
+) -> Result<(CollisionStore, Vec<GeometryId>, Vec<Query>), &'static str> {
     if word(&mut data)? != 0x48535242 || word(&mut data)? != 1 {
         return Err("unsupported brush fixture");
     }
@@ -59,7 +59,8 @@ fn load(
     if !(1..=32).contains(&map_count) || !(10_000..=50_000).contains(&query_count) {
         return Err("fixture count out of bounds");
     }
-    let mut worlds = Vec::with_capacity(map_count);
+    let mut store = CollisionStore::new();
+    let mut geometries = Vec::with_capacity(map_count);
     for _ in 0..map_count {
         let brush_count = word(&mut data)? as usize;
         if !(1..=8).contains(&brush_count) {
@@ -103,10 +104,21 @@ fn load(
                 surfaces.push(SurfaceFlags(word(&mut data)?));
             }
         }
-        worlds.push(CollisionWorld::Brushes(
-            BrushMap::load_surfaces(planes, brushes, surfaces)
+        let tree = BrushTree::direct(brushes.len()).map_err(|_| "invalid fixture membership")?;
+        geometries.push(
+            store
+                .load_brushes(
+                    planes,
+                    brushes,
+                    surfaces,
+                    tree,
+                    vec![Bounds {
+                        mins: Vec3([-65536.0; 3]),
+                        maxs: Vec3([65536.0; 3]),
+                    }],
+                )
                 .map_err(|_| "invalid fixture geometry")?,
-        ));
+        );
     }
     let mut queries = Vec::with_capacity(query_count);
     for _ in 0..query_count {
@@ -116,7 +128,7 @@ fn load(
         let end = vector(&mut data)?;
         let mins = vector(&mut data)?;
         let maxs = vector(&mut data)?;
-        if map >= worlds.len()
+        if map >= geometries.len()
             || ![start, end, mins, maxs].into_iter().all(finite)
             || mins.0.iter().zip(maxs.0).any(|(min, max)| *min > max)
         {
@@ -140,7 +152,7 @@ fn load(
     if !data.is_empty() {
         return Err("trailing fixture bytes");
     }
-    Ok((worlds, queries))
+    Ok((store, geometries, queries))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -154,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("expected q2 or q3 rules".into()),
     };
     let payload = std::fs::read(&args[2])?;
-    let (worlds, queries) = load(&payload, rules, entity_rules)?;
+    let (store, geometries, queries) = load(&payload, rules, entity_rules)?;
     let entities = EntityTable::new(2, 1).map_err(|_| "invalid fixture entity capacity")?;
     let area = AreaGrid::load(
         2,
@@ -164,19 +176,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )
     .map_err(|_| "invalid fixture area bounds")?;
-    let mut scratch: Vec<_> = worlds.iter().map(CollisionWorld::scratch).collect();
-    let mut scenes: Vec<_> = worlds
-        .iter()
-        .zip(&mut scratch)
-        .map(|(geometry, scratch)| WorldTrace::new(geometry, &entities, &area, scratch, None))
-        .collect();
+    let mut scratch = store.scratch();
     let mut results = vec![[0u32; 11]; queries.len()];
     let mut contacts = 0usize;
     let mut start_solid = 0usize;
     let mut all_solid = 0usize;
     allocation_counter::start();
     for (query, row) in queries.iter().zip(&mut results) {
-        let trace = black_box(scenes[query.map].trace(black_box(query.trace)));
+        let trace = black_box(
+            WorldTrace::new(
+                &store,
+                geometries[query.map],
+                0,
+                &entities,
+                &area,
+                &mut scratch,
+                None,
+            )
+            .trace(black_box(query.trace)),
+        );
         contacts += usize::from(trace.fraction < 1.0);
         start_solid += usize::from(trace.start_solid);
         all_solid += usize::from(trace.all_solid);
@@ -206,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "{{\"scope\":\"headless convex brush kernels; no BSP traversal/gameplay/install\",\"rule\":\"{}\",\"rows\":{},\"maps\":{},\"contacts\":{contacts},\"start_solid\":{start_solid},\"all_solid\":{all_solid},\"rust_calling_thread_alloc_or_realloc\":{allocations}}}",
         args[1],
         queries.len(),
-        worlds.len()
+        geometries.len()
     );
     if allocations != 0 {
         return Err("brush trace allocation gate failed".into());

@@ -1,13 +1,16 @@
 //! Shared cold decoder and raw output projection for developer brush-tree
 //! comparison/timing fixtures. It performs no files, clocks, threads or game I/O.
-use qa_core::primitives::{Axis, ClipNode, Plane, SurfaceFlags, Vec3};
-use qa_world::collision::brushes::{Brush, BrushMap, BrushTree, CollisionLeaf, ModelRoot};
-use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules};
+use qa_core::primitives::{Axis, Bounds, ClipNode, GeometryId, Plane, SurfaceFlags, Vec3};
+use qa_world::collision::brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot};
+use qa_world::collision::{
+    CollisionStore, Contents, EntityTraceRules, Trace, TraceQuery, TraceRules,
+};
 
 pub const WORDS: usize = 13;
 
 pub struct Fixture {
-    pub maps: Vec<BrushMap>,
+    pub store: CollisionStore,
+    pub geometries: Vec<GeometryId>,
     pub queries: Vec<Query>,
 }
 
@@ -85,7 +88,8 @@ pub fn load(
     }
     let map_count = count(&mut data, 1, 10)?;
     let query_count = count(&mut data, 10000, 50000)?;
-    let mut maps = Vec::with_capacity(map_count);
+    let mut store = CollisionStore::new();
+    let mut geometries = Vec::with_capacity(map_count);
     let mut model_counts = Vec::with_capacity(map_count);
     for _ in 0..map_count {
         let brush_count = count(&mut data, 1, 16)?;
@@ -165,20 +169,28 @@ pub fn load(
             };
             models.push(model);
         }
-        maps.push(
-            BrushMap::load_tree(
-                side_planes,
-                brushes,
-                surfaces,
-                BrushTree {
-                    planes,
-                    nodes,
-                    leaves,
-                    leaf_brushes,
-                    models,
-                },
-            )
-            .map_err(|_| "native tree fixture geometry rejected")?,
+        geometries.push(
+            store
+                .load_brushes(
+                    side_planes,
+                    brushes,
+                    surfaces,
+                    BrushTree {
+                        planes,
+                        nodes,
+                        leaves,
+                        leaf_brushes,
+                        models,
+                    },
+                    vec![
+                        Bounds {
+                            mins: Vec3([-16384.0; 3]),
+                            maxs: Vec3([16384.0; 3])
+                        };
+                        model_count
+                    ],
+                )
+                .map_err(|_| "native tree fixture geometry rejected")?,
         );
         model_counts.push(model_count);
     }
@@ -192,7 +204,7 @@ pub fn load(
         let mins = vector(&mut data)?;
         let maxs = vector(&mut data)?;
         let point = vector(&mut data)?;
-        if map >= maps.len()
+        if map >= geometries.len()
             || model >= model_counts[map]
             || mins.0.iter().zip(maxs.0).any(|(min, max)| *min > max)
         {
@@ -218,7 +230,11 @@ pub fn load(
     if !data.is_empty() {
         return Err("trailing brush-tree fixture bytes");
     }
-    Ok(Fixture { maps, queries })
+    Ok(Fixture {
+        store,
+        geometries,
+        queries,
+    })
 }
 
 pub fn result(trace: Trace, point: Contents) -> [u32; WORDS] {

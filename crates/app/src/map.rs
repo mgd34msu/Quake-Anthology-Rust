@@ -2,7 +2,7 @@
 //! Spawn anchors describe the map; movement bounds are chosen by the player.
 use qa_console::views::Source;
 use qa_content::vfs::{MountKind, Vfs, normalize};
-use qa_core::primitives::{Bounds, ClipNode, MovementRules, SurfaceFlags, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, GeometryId, MovementRules, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
     bsp::{Bsp, BspFormat, Lump, Map},
@@ -13,9 +13,9 @@ use qa_render::{
     material::world_load::{LoadedWorld, SkyEnvironment, WorldLoadOptions, load_world},
 };
 use qa_world::collision::{
-    CollisionWorld, Contents,
-    brushes::{Brush, BrushMap, BrushTree, CollisionLeaf, ModelRoot},
-    hulls::{HullModel, Q1Hulls},
+    CollisionStore, Contents,
+    brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+    hulls::HullModel,
 };
 use std::borrow::Cow;
 
@@ -29,7 +29,7 @@ pub struct SpawnAnchor {
 }
 
 pub struct LoadedMap {
-    pub collision: CollisionWorld,
+    pub collision: GeometryId,
     pub collision_bounds: Bounds,
     pub render: LoadedWorld,
     pub spawn: SpawnAnchor,
@@ -307,14 +307,20 @@ impl MapInput {
         self,
         vfs: &Vfs,
         assets: &mut Assets,
+        geometry: &mut CollisionStore,
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
         let (spawn, entity_count, sky_environment) = spawn(&map)?;
-        let (collision, collision_brushes) = collision(&map)?;
+        let (collision, collision_brushes) = collision(&map, geometry)?;
         options.sky_environment = sky_environment;
-        let render =
-            load_world(vfs, &map, assets, options).map_err(|e| format!("world assets: {e:?}"))?;
+        let render = match load_world(vfs, &map, assets, options) {
+            Ok(render) => render,
+            Err(error) => {
+                geometry.remove(collision);
+                return Err(format!("world assets: {error:?}"));
+            }
+        };
         Ok(LoadedMap {
             collision,
             collision_bounds: map.models.first().ok_or("missing world model")?.bounds,
@@ -473,8 +479,18 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
         .ok_or_else(|| "no supported player spawn in the map".into())
 }
 
-fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
+fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, usize), String> {
     map.models.first().ok_or("missing world model")?;
+    // Mod_LoadSubmodels/CMod_LoadSubmodels expands collision model bounds at
+    // load. Entity linking applies its own independent one-unit expansion.
+    let bounds = map
+        .models
+        .iter()
+        .map(|model| Bounds {
+            mins: model.bounds.mins - Vec3([1.0; 3]),
+            maxs: model.bounds.maxs + Vec3([1.0; 3]),
+        })
+        .collect();
     if map.bsp.format.family() == 1 {
         let drawing_child = |child: i32| {
             if child >= 0 {
@@ -502,9 +518,16 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
                 ],
             })
             .collect();
-        let hulls = Q1Hulls::load(map.planes.clone(), drawing, map.clipnodes.clone(), models)
+        let geometry = store
+            .load_hulls(
+                map.planes.clone(),
+                drawing,
+                map.clipnodes.clone(),
+                models,
+                bounds,
+            )
             .map_err(|e| format!("Q1 collision: {e:?}"))?;
-        return Ok((CollisionWorld::Hulls(hulls), 0));
+        return Ok((geometry, 0));
     }
     // Brush numbers and ordered leaf references belong to the loaded map.
     // Model roots select membership; unplaced inline models are never part
@@ -592,9 +615,10 @@ fn collision(map: &Map<'_>) -> Result<(CollisionWorld, usize), String> {
         models,
     };
     let count = brushes.len();
-    let brushes = BrushMap::load_tree(planes, brushes, surfaces, tree)
+    let geometry = store
+        .load_brushes(planes, brushes, surfaces, tree, bounds)
         .map_err(|e| format!("brush collision: {e:?}"))?;
-    Ok((CollisionWorld::Brushes(brushes), count))
+    Ok((geometry, count))
 }
 
 #[cfg(test)]

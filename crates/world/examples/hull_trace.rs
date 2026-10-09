@@ -1,8 +1,8 @@
-use qa_core::primitives::{Axis, Plane, Vec3};
+use qa_core::primitives::{Axis, Bounds, Plane, Vec3};
 use qa_platform::Stopwatch;
 use qa_world::collision::{
-    Contents, EntityTraceRules, TraceQuery, TraceRules,
-    hulls::{ClipNode, HullModel, Q1Hulls},
+    CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules,
+    hulls::{ClipNode, HullModel},
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
@@ -86,7 +86,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let [drawing, clips] = node_sets;
-    let hulls = Q1Hulls::load(planes, drawing, clips, vec![HullModel { roots }])
+    let mut hulls = CollisionStore::new();
+    let geometry = hulls
+        .load_hulls(
+            planes,
+            drawing,
+            clips,
+            vec![HullModel { roots }],
+            vec![Bounds {
+                mins: Vec3([-65536.0; 3]),
+                maxs: Vec3([65536.0; 3]),
+            }],
+        )
         .map_err(|err| format!("hull load: {err:?}"))?;
     let mut scratch = hulls.scratch();
     let mut queries = Vec::new();
@@ -108,7 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
     {
         let (mins, maxs) = bounds[hull as usize];
-        let trace = hulls.trace(
+        let trace = hulls.trace_model(
+            geometry,
+            0,
             TraceQuery {
                 mins,
                 maxs,
@@ -158,7 +171,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let (mins, maxs) = bounds[index];
         for &(_, start, end) in group.iter().take(600) {
-            black_box(hulls.trace(
+            black_box(hulls.trace_model(
+                geometry,
+                0,
                 TraceQuery {
                     mins,
                     maxs,
@@ -171,7 +186,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         MEASURING.store(true, Ordering::Relaxed);
         for (sample, &(_, start, end)) in samples.iter_mut().zip(group.iter().cycle()) {
             let started = Stopwatch::start();
-            black_box(hulls.trace(
+            black_box(hulls.trace_model(
+                geometry,
+                0,
                 TraceQuery {
                     mins,
                     maxs,

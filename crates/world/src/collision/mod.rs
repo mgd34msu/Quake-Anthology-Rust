@@ -3,12 +3,13 @@ pub mod brushes;
 pub mod contents;
 pub mod hulls;
 pub mod scene;
+pub mod store;
 pub mod tree;
 
-use brushes::BrushMap;
 pub use contents::Contents;
 use qa_core::primitives::{EntityId, Plane, SurfaceFlags, Vec3};
 pub use scene::WorldTrace;
+pub use store::{CollisionStore, StoreError, TraceScratch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuakeTraceKind {
@@ -225,43 +226,6 @@ impl Trace {
             entity: None,
             surface: SurfaceFlags::default(),
             brush_solid: true,
-        }
-    }
-}
-
-pub enum CollisionWorld {
-    Hulls(hulls::Q1Hulls),
-    Brushes(BrushMap),
-}
-
-/// Cold-sized caller storage. Each concurrent trace caller owns its scratch.
-pub enum TraceScratch {
-    Hulls(hulls::HullScratch),
-    Brushes(brushes::BrushScratch),
-}
-
-impl CollisionWorld {
-    pub fn scratch(&self) -> TraceScratch {
-        match self {
-            Self::Hulls(map) => TraceScratch::Hulls(map.scratch()),
-            Self::Brushes(map) => TraceScratch::Brushes(map.scratch()),
-        }
-    }
-
-    pub(crate) fn trace_geometry(&self, query: TraceQuery, scratch: &mut TraceScratch) -> Trace {
-        match (self, scratch) {
-            (Self::Hulls(map), TraceScratch::Hulls(scratch)) => map.trace(query, scratch),
-            (Self::Brushes(map), TraceScratch::Brushes(scratch)) => {
-                map.trace_model(0, query, scratch)
-            }
-            _ => Trace::clear(query.end),
-        }
-    }
-
-    pub(crate) fn point_contents(&self, point: Vec3, rules: EntityTraceRules) -> Contents {
-        match self {
-            Self::Hulls(map) => map.point_contents(point),
-            Self::Brushes(map) => map.point_contents_model(0, point, rules),
         }
     }
 }

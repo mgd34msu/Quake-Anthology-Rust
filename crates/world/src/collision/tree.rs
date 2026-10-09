@@ -28,13 +28,31 @@ pub struct BrushTree {
     pub models: Vec<ModelRoot>,
 }
 
+impl BrushTree {
+    /// Ordered direct membership for analytic brush resources, including empty
+    /// ones. Model queries still supply the resource and ordinal explicitly.
+    pub fn direct(brush_count: usize) -> Result<Self, GeometryError> {
+        let count = u32::try_from(brush_count).map_err(|_| GeometryError::Capacity)?;
+        Ok(Self {
+            planes: Vec::new(),
+            nodes: Vec::new(),
+            leaves: vec![CollisionLeaf {
+                stored_contents: None,
+                first_brush: 0,
+                brush_count: count,
+            }],
+            leaf_brushes: (0..count).collect(),
+            models: vec![ModelRoot::Leaf(0)],
+        })
+    }
+}
+
 pub(super) struct Topology {
     planes: Box<[Plane]>,
     nodes: Box<[ClipNode]>,
     leaves: Box<[CollisionLeaf]>,
     leaf_brushes: Box<[u32]>,
     leaf_contents: Box<[Contents]>,
-    models: Box<[ModelRoot]>,
     max_depth: usize,
 }
 
@@ -48,17 +66,17 @@ struct Frame {
 }
 
 /// All mutable query state belongs to this caller, never to loaded geometry.
-pub struct BrushScratch {
+pub(super) struct BrushScratch {
     frames: Box<[Frame]>,
     stamps: StampSet,
     position_leaves: Box<[u32]>,
 }
 
 impl BrushScratch {
-    pub(super) fn load(map: &BrushMap, position_capacity: usize) -> Self {
+    pub(crate) fn new(depth: usize, brushes: usize, position_capacity: usize) -> Self {
         Self {
-            frames: vec![Frame::default(); map.topology.max_depth].into_boxed_slice(),
-            stamps: StampSet::new(map.brushes.len()),
+            frames: vec![Frame::default(); depth].into_boxed_slice(),
+            stamps: StampSet::new(brushes),
             position_leaves: vec![0; position_capacity].into_boxed_slice(),
         }
     }
@@ -84,7 +102,10 @@ fn root_child(root: ModelRoot) -> i32 {
 }
 
 impl Topology {
-    pub(super) fn load(tree: BrushTree, brushes: &[Brush]) -> Result<Self, GeometryError> {
+    pub(super) fn load(
+        tree: BrushTree,
+        brushes: &[Brush],
+    ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
         if tree.nodes.len() > i32::MAX as usize
             || tree.leaves.len() > i32::MAX as usize + 1
             || brushes.len() > u32::MAX as usize
@@ -200,15 +221,17 @@ impl Topology {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        Ok(Self {
-            planes: tree.planes.into_boxed_slice(),
-            nodes: tree.nodes.into_boxed_slice(),
-            leaves: tree.leaves.into_boxed_slice(),
-            leaf_brushes: tree.leaf_brushes.into_boxed_slice(),
-            leaf_contents,
-            models: tree.models.into_boxed_slice(),
-            max_depth,
-        })
+        Ok((
+            Self {
+                planes: tree.planes.into_boxed_slice(),
+                nodes: tree.nodes.into_boxed_slice(),
+                leaves: tree.leaves.into_boxed_slice(),
+                leaf_brushes: tree.leaf_brushes.into_boxed_slice(),
+                leaf_contents,
+                max_depth,
+            },
+            tree.models,
+        ))
     }
 
     pub(super) fn members(&self, leaf: &CollisionLeaf) -> &[u32] {
@@ -216,27 +239,28 @@ impl Topology {
             [leaf.first_brush as usize..leaf.first_brush as usize + leaf.brush_count as usize]
     }
 
-    pub(super) fn point_leaf(&self, model: usize, point: Vec3) -> Option<&CollisionLeaf> {
-        let mut child = root_child(*self.models.get(model)?);
+    pub(super) fn scratch_capacity(&self) -> usize {
+        self.max_depth
+    }
+
+    pub(super) fn point_leaf(&self, root: ModelRoot, point: Vec3) -> &CollisionLeaf {
+        let mut child = root_child(root);
         while child >= 0 {
             let node = self.nodes[child as usize];
             let distance = self.planes[node.plane as usize].signed_distance(point);
             child = node.children[usize::from(distance < 0.0)];
         }
-        Some(&self.leaves[leaf_index(child)])
+        &self.leaves[leaf_index(child)]
     }
 
     pub(super) fn trace(
         &self,
         map: &BrushMap,
-        model: usize,
+        root: ModelRoot,
         query: TraceQuery,
         scratch: &mut BrushScratch,
     ) -> Trace {
         let mut trace = Trace::clear(query.end);
-        let Some(&root) = self.models.get(model) else {
-            return trace;
-        };
         if scratch.frames.len() < self.max_depth || scratch.stamps.len() < map.brushes.len() {
             return trace;
         }
@@ -503,12 +527,13 @@ fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collision::{EntityTraceRules, TraceRules};
+    use crate::collision::{CollisionStore, EntityTraceRules, StoreError, TraceRules};
     use qa_core::primitives::SurfaceFlags;
 
     #[test]
-    fn successive_queries_keep_the_original_brush_contact() -> Result<(), GeometryError> {
-        let map = BrushMap::load(
+    fn successive_queries_keep_the_original_brush_contact() -> Result<(), StoreError> {
+        let mut map = CollisionStore::new();
+        let geometry = map.load_brushes(
             vec![Plane {
                 normal: Vec3([1.0, 0.0, 0.0]),
                 distance: 0.0,
@@ -519,6 +544,12 @@ mod tests {
                 plane_count: 1,
                 contents: Contents::SOLID,
             }],
+            vec![SurfaceFlags::default()],
+            BrushTree::direct(1).map_err(StoreError::Brush)?,
+            vec![Bounds {
+                mins: Vec3([-2.0; 3]),
+                maxs: Vec3([2.0; 3]),
+            }],
         )?;
         let mut scratch = map.scratch();
         let query = TraceQuery::point(
@@ -528,7 +559,7 @@ mod tests {
             EntityTraceRules::ARENA,
         );
         for _ in 0..3 {
-            let trace = map.trace_model(0, query, &mut scratch);
+            let trace = map.trace_model(geometry, 0, query, &mut scratch);
             assert_eq!(trace.fraction, (1.0 - 0.125) / 2.0);
             assert_eq!(trace.contents, Contents::SOLID);
             assert_eq!(trace.surface, SurfaceFlags::default());

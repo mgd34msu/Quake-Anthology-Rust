@@ -1,10 +1,33 @@
-use qa_core::primitives::{Bounds, Plane, Vec3};
+use qa_core::primitives::{Bounds, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::area::AreaGrid;
-use qa_world::collision::brushes::{Brush, BrushMap};
+use qa_world::collision::brushes::{Brush, BrushTree};
 use qa_world::collision::{
-    CollisionWorld, Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace,
+    CollisionStore, Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace,
 };
 use qa_world::entities::EntityTable;
+
+struct Case {
+    store: CollisionStore,
+    geometry: GeometryId,
+}
+fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Case, &'static str> {
+    let tree = BrushTree::direct(brushes.len()).map_err(|_| "tree")?;
+    let surfaces = vec![SurfaceFlags::default(); planes.len()];
+    let mut store = CollisionStore::new();
+    let geometry = store
+        .load_brushes(
+            planes,
+            brushes,
+            surfaces,
+            tree,
+            vec![Bounds {
+                mins: Vec3([-32768.0; 3]),
+                maxs: Vec3([32768.0; 3]),
+            }],
+        )
+        .map_err(|_| "store")?;
+    Ok(Case { store, geometry })
+}
 
 fn entity_rules(rules: TraceRules) -> EntityTraceRules {
     if rules == TraceRules::ARENA {
@@ -14,7 +37,7 @@ fn entity_rules(rules: TraceRules) -> EntityTraceRules {
     }
 }
 
-fn trace_world(geometry: &CollisionWorld, query: TraceQuery<'_>) -> Trace {
+fn trace_world(geometry: &Case, query: TraceQuery<'_>) -> Trace {
     let entities = EntityTable::new(2, 1).unwrap();
     let area = AreaGrid::load(
         2,
@@ -24,11 +47,20 @@ fn trace_world(geometry: &CollisionWorld, query: TraceQuery<'_>) -> Trace {
         },
     )
     .unwrap();
-    let mut scratch = geometry.scratch();
-    WorldTrace::new(geometry, &entities, &area, &mut scratch, None).trace(query)
+    let mut scratch = geometry.store.scratch();
+    WorldTrace::new(
+        &geometry.store,
+        geometry.geometry,
+        0,
+        &entities,
+        &area,
+        &mut scratch,
+        None,
+    )
+    .trace(query)
 }
 
-fn point_contents(geometry: &CollisionWorld, point: Vec3, rules: EntityTraceRules) -> Contents {
+fn point_contents(geometry: &Case, point: Vec3, rules: EntityTraceRules) -> Contents {
     let entities = EntityTable::new(2, 1).unwrap();
     let area = AreaGrid::load(
         2,
@@ -38,15 +70,20 @@ fn point_contents(geometry: &CollisionWorld, point: Vec3, rules: EntityTraceRule
         },
     )
     .unwrap();
-    let mut scratch = geometry.scratch();
-    WorldTrace::new(geometry, &entities, &area, &mut scratch, None).point_contents(
-        point,
-        rules,
-        &[],
+    let mut scratch = geometry.store.scratch();
+    WorldTrace::new(
+        &geometry.store,
+        geometry.geometry,
+        0,
+        &entities,
+        &area,
+        &mut scratch,
+        None,
     )
+    .point_contents(point, rules, &[])
 }
 
-fn box_map() -> BrushMap {
+fn box_map() -> Case {
     let planes = (0..6)
         .map(|index| {
             let mut normal = [0.0; 3];
@@ -58,7 +95,7 @@ fn box_map() -> BrushMap {
             }
         })
         .collect();
-    BrushMap::load(
+    load(
         planes,
         vec![Brush {
             first_plane: 0,
@@ -71,7 +108,7 @@ fn box_map() -> BrushMap {
 
 #[test]
 fn caller_rules_choose_contact_on_the_same_brush_geometry() {
-    let world = CollisionWorld::Brushes(box_map());
+    let world = box_map();
     for rules in [TraceRules::LEGACY, TraceRules::ARENA, TraceRules::LEGACY] {
         let epsilon = rules.contact_epsilon as f32;
         for half_width in [16.0, 16.0, 15.0] {
@@ -128,7 +165,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
 
 #[test]
 fn embedded_motion_keeps_original_brush_trace_semantics() {
-    let world = CollisionWorld::Brushes(box_map());
+    let world = box_map();
     for (rules, fraction, contents) in [
         (TraceRules::LEGACY, 1.0, Contents::EMPTY),
         (TraceRules::ARENA, 0.0, Contents::SOLID),
@@ -160,25 +197,23 @@ fn embedded_motion_keeps_original_brush_trace_semantics() {
     }
 }
 
-fn half_spaces(normals: &[Vec3]) -> CollisionWorld {
-    CollisionWorld::Brushes(
-        BrushMap::load(
-            normals
-                .iter()
-                .map(|&normal| Plane {
-                    normal,
-                    distance: 0.0,
-                    axis: None,
-                })
-                .collect(),
-            vec![Brush {
-                first_plane: 0,
-                plane_count: normals.len() as u32,
-                contents: Contents::SOLID,
-            }],
-        )
-        .unwrap(),
+fn half_spaces(normals: &[Vec3]) -> Case {
+    load(
+        normals
+            .iter()
+            .map(|&normal| Plane {
+                normal,
+                distance: 0.0,
+                axis: None,
+            })
+            .collect(),
+        vec![Brush {
+            first_plane: 0,
+            plane_count: normals.len() as u32,
+            contents: Contents::SOLID,
+        }],
     )
+    .unwrap()
 }
 
 fn point(start: Vec3, end: Vec3, rules: TraceRules) -> TraceQuery<'static> {
@@ -289,21 +324,19 @@ fn q3_endpoint_epsilon_rejection_is_inclusive_and_caller_selected() {
 #[test]
 fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
     let origin = 16_777_216.0;
-    let world = CollisionWorld::Brushes(
-        BrushMap::load(
-            vec![Plane {
-                normal: Vec3([1.0, 0.0, 0.0]),
-                distance: origin,
-                axis: None,
-            }],
-            vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
-                contents: Contents::SOLID,
-            }],
-        )
-        .unwrap(),
-    );
+    let world = load(
+        vec![Plane {
+            normal: Vec3([1.0, 0.0, 0.0]),
+            distance: origin,
+            axis: None,
+        }],
+        vec![Brush {
+            first_plane: 0,
+            plane_count: 1,
+            contents: Contents::SOLID,
+        }],
+    )
+    .unwrap();
     let query = TraceQuery {
         start: Vec3([origin + 6.0, 0.0, 0.0]),
         end: Vec3([origin + 4.0, 0.0, 0.0]),
@@ -332,36 +365,34 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
     assert_eq!(supplied.fraction, 1.0);
 }
 
-fn overlapping_contents() -> CollisionWorld {
-    CollisionWorld::Brushes(
-        BrushMap::load(
-            vec![
-                Plane {
-                    normal: Vec3([1.0, 0.0, 0.0]),
-                    distance: 0.0,
-                    axis: None,
-                },
-                Plane {
-                    normal: Vec3([1.0, 0.0, 0.0]),
-                    distance: 1.0,
-                    axis: None,
-                },
-            ],
-            vec![
-                Brush {
-                    first_plane: 0,
-                    plane_count: 1,
-                    contents: Contents::SOLID,
-                },
-                Brush {
-                    first_plane: 1,
-                    plane_count: 1,
-                    contents: Contents::PLAYER_CLIP,
-                },
-            ],
-        )
-        .unwrap(),
+fn overlapping_contents() -> Case {
+    load(
+        vec![
+            Plane {
+                normal: Vec3([1.0, 0.0, 0.0]),
+                distance: 0.0,
+                axis: None,
+            },
+            Plane {
+                normal: Vec3([1.0, 0.0, 0.0]),
+                distance: 1.0,
+                axis: None,
+            },
+        ],
+        vec![
+            Brush {
+                first_plane: 0,
+                plane_count: 1,
+                contents: Contents::SOLID,
+            },
+            Brush {
+                first_plane: 1,
+                plane_count: 1,
+                contents: Contents::PLAYER_CLIP,
+            },
+        ],
     )
+    .unwrap()
 }
 
 #[test]
@@ -419,7 +450,7 @@ fn selected_zero_contact_stops_before_an_overlapping_enclosed_brush() {
 
 #[test]
 fn unobstructed_trace_copies_endpoint_bits_without_lerp_cancellation() {
-    let world = CollisionWorld::Brushes(BrushMap::load(Vec::new(), Vec::new()).unwrap());
+    let world = load(Vec::new(), Vec::new()).unwrap();
     let end = Vec3([0.0001, -0.0, 1.0e-20]);
     for rules in [TraceRules::LEGACY, TraceRules::ARENA] {
         let trace = trace_world(&world, point(Vec3([8192.0, 10000.0, 16384.0]), end, rules));

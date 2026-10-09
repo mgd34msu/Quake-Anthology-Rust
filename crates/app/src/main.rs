@@ -267,6 +267,7 @@ fn run() -> Result<(), String> {
         let loaded = input.load(
             &runtime.vfs,
             &mut assets,
+            &mut runtime.geometry,
             WorldLoadOptions {
                 image_settings: Some(image_settings),
                 ..WorldLoadOptions::default()
@@ -292,7 +293,11 @@ fn run() -> Result<(), String> {
             loaded.collision_bounds,
         )
         .map_err(|e| format!("world area: {e:?}"))?;
-        runtime.collision = Some(qa_app::LoadedCollision::new(loaded.collision));
+        runtime.collision = Some(qa_app::WorldCollision::new(
+            &runtime.geometry,
+            loaded.collision,
+            0,
+        ));
         let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
         // Entity insertion is native module/world rule data, not movement.
         let entity = runtime.server.clients[client.0 as usize].entity;

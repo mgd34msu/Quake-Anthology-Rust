@@ -1,7 +1,7 @@
 use super::collision;
 use qa_core::primitives::{Axis, Bounds, Plane, SurfaceFlags, Vec3};
 use qa_formats::bsp::{Brush, BrushSide, IndexRange, Map, Node, Shader};
-use qa_world::collision::{CollisionWorld, Contents, EntityTraceRules, TraceQuery, TraceRules};
+use qa_world::collision::{CollisionStore, Contents, EntityTraceRules, TraceQuery, TraceRules};
 
 fn put(bytes: &mut [u8], at: usize, value: i32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -125,12 +125,10 @@ fn cold_conversion_keeps_models_separate_and_native_brush_numbers() {
         let bytes = empty_map_bytes(version);
         let mut map = Map::parse(&bytes).unwrap();
         two_models(&mut map);
-        let (world, count) = collision(&map).unwrap();
+        let mut store = CollisionStore::new();
+        let (geometry, count) = collision(&map, &mut store).unwrap();
         assert_eq!(count, 2);
-        let CollisionWorld::Brushes(brushes) = world else {
-            panic!("brush geometry expected")
-        };
-        let mut scratch = brushes.scratch();
+        let mut scratch = store.scratch();
         for (rules, entity_rules) in [
             (TraceRules::LEGACY, EntityTraceRules::QUAKE2),
             (TraceRules::ARENA, EntityTraceRules::ARENA),
@@ -141,16 +139,23 @@ fn cold_conversion_keeps_models_separate_and_native_brush_numbers() {
                 rules,
                 entity_rules,
             );
-            let unplaced = brushes.trace_model(0, query, &mut scratch);
+            let unplaced = store.trace_model(geometry, 0, query, &mut scratch);
             assert_eq!(unplaced.fraction, 1.0);
-            let inline = brushes.trace_model(1, query, &mut scratch);
+            let inline = store.trace_model(geometry, 1, query, &mut scratch);
             assert!(inline.fraction < 1.0);
             assert_eq!(inline.plane.normal, Vec3([1.0, 0.0, 0.0]));
             let world_query =
                 TraceQuery::point(Vec3([40.0, 0.0, 0.0]), Vec3::default(), rules, entity_rules);
-            assert!(brushes.trace_model(0, world_query, &mut scratch).fraction < 1.0);
+            assert!(
+                store
+                    .trace_model(geometry, 0, world_query, &mut scratch)
+                    .fraction
+                    < 1.0
+            );
             assert_eq!(
-                brushes.trace_model(1, world_query, &mut scratch).fraction,
+                store
+                    .trace_model(geometry, 1, world_query, &mut scratch)
+                    .fraction,
                 1.0
             );
         }
@@ -163,36 +168,42 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
     let mut map = Map::parse(&bytes).unwrap();
     two_models(&mut map);
     map.leaves[0].contents = 32;
-    let (world, _) = collision(&map).unwrap();
-    let CollisionWorld::Brushes(brushes) = world else {
-        panic!("brush geometry expected")
-    };
+    let mut store = CollisionStore::new();
+    let (geometry, _) = collision(&map, &mut store).unwrap();
     assert_eq!(
-        brushes.point_contents_model(0, Vec3([40.0, 0.0, 0.0]), EntityTraceRules::QUAKE2),
+        store.point_contents_model(
+            geometry,
+            0,
+            Vec3([40.0, 0.0, 0.0]),
+            EntityTraceRules::QUAKE2
+        ),
         Contents::WATER
     );
     assert_eq!(
-        brushes.point_contents_model(0, Vec3([40.0, 0.0, 0.0]), EntityTraceRules::ARENA),
+        store.point_contents_model(geometry, 0, Vec3([40.0, 0.0, 0.0]), EntityTraceRules::ARENA),
         Contents::EMPTY
     );
     assert_eq!(
-        brushes.point_contents_model(0, Vec3::default(), EntityTraceRules::ARENA),
+        store.point_contents_model(geometry, 0, Vec3::default(), EntityTraceRules::ARENA),
         Contents::SOLID
     );
-    let mut scratch = brushes.scratch();
+    let mut scratch = store.scratch();
     let q2 = TraceQuery::point(
         Vec3([40.0, 0.0, 0.0]),
         Vec3::default(),
         TraceRules::LEGACY,
         EntityTraceRules::QUAKE2,
     );
-    assert_eq!(brushes.trace_model(0, q2, &mut scratch).fraction, 1.0);
+    assert_eq!(
+        store.trace_model(geometry, 0, q2, &mut scratch).fraction,
+        1.0
+    );
     let q3 = TraceQuery {
         rules: TraceRules::ARENA,
         entity_rules: EntityTraceRules::ARENA,
         ..q2
     };
-    assert!(brushes.trace_model(0, q3, &mut scratch).fraction < 1.0);
+    assert!(store.trace_model(geometry, 0, q3, &mut scratch).fraction < 1.0);
 }
 
 #[test]
@@ -201,16 +212,14 @@ fn stored_q2_aux_leaf_contents_survive_cold_conversion() {
     let mut map = Map::parse(&bytes).unwrap();
     two_models(&mut map);
     map.leaves[0].contents = 4 | 32;
-    let (world, _) = collision(&map).unwrap();
-    let CollisionWorld::Brushes(brushes) = world else {
-        panic!("brush geometry expected")
-    };
+    let mut store = CollisionStore::new();
+    let (geometry, _) = collision(&map, &mut store).unwrap();
     assert_eq!(
-        brushes.point_contents_model(0, Vec3::default(), EntityTraceRules::QUAKE2),
+        store.point_contents_model(geometry, 0, Vec3::default(), EntityTraceRules::QUAKE2),
         Contents::AUX | Contents::WATER
     );
     assert_eq!(
-        brushes.point_contents_model(0, Vec3::default(), EntityTraceRules::ARENA),
+        store.point_contents_model(geometry, 0, Vec3::default(), EntityTraceRules::ARENA),
         Contents::SOLID
     );
 }
@@ -232,11 +241,9 @@ fn q3_trace_contacts_convert_early_side_flags_and_modern_shader_flags() {
             side.flags = if version == 44 { 2 } else { 0 };
             side.shader = if version == 44 { None } else { Some(0) };
         }
-        let (world, _) = collision(&map).unwrap();
-        let CollisionWorld::Brushes(brushes) = world else {
-            panic!("brush geometry expected")
-        };
-        let mut scratch = brushes.scratch();
+        let mut store = CollisionStore::new();
+        let (geometry, _) = collision(&map, &mut store).unwrap();
+        let mut scratch = store.scratch();
         let query = TraceQuery::point(
             Vec3([40.0, 0.0, 0.0]),
             Vec3::default(),
@@ -244,7 +251,7 @@ fn q3_trace_contacts_convert_early_side_flags_and_modern_shader_flags() {
             EntityTraceRules::ARENA,
         );
         assert_eq!(
-            brushes.trace_model(0, query, &mut scratch).surface,
+            store.trace_model(geometry, 0, query, &mut scratch).surface,
             SurfaceFlags::SLICK
         );
     }

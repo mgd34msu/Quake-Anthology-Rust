@@ -230,26 +230,33 @@ fn validate(nodes: &[ClipNode], plane_count: usize) -> Result<Vec<usize>, HullEr
     Ok(depths)
 }
 
-pub struct Q1Hulls {
+pub(super) struct Q1Hulls {
     planes: Box<[Plane]>,
     drawing: Box<[ClipNode]>,
     clips: Box<[ClipNode]>,
-    models: Box<[HullModel]>,
     stack_capacity: usize,
 }
 
 /// Per-caller traversal state, allocated from its immutable geometry at load.
 /// The arena is reused between queries; geometry may be shared by callers.
-pub struct HullScratch {
+pub(super) struct HullScratch {
     stack: Box<[Frame]>,
 }
 
+impl HullScratch {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            stack: vec![Frame::default(); capacity].into_boxed_slice(),
+        }
+    }
+}
+
 impl Q1Hulls {
-    pub fn load(
+    pub(crate) fn load(
         planes: Vec<Plane>,
         drawing: Vec<ClipNode>,
         clips: Vec<ClipNode>,
-        models: Vec<HullModel>,
+        models: &[HullModel],
     ) -> Result<Self, HullError> {
         if models.is_empty() {
             return Err(HullError::EmptyModels);
@@ -277,7 +284,7 @@ impl Q1Hulls {
         let drawing_depth = validate(&drawing, planes.len())?;
         let clip_depth = validate(&clips, planes.len())?;
         let mut depth = 0;
-        for model in &models {
+        for model in models {
             for (index, root) in model.roots.iter().enumerate() {
                 let depths = if index == 0 {
                     &drawing_depth
@@ -293,25 +300,22 @@ impl Q1Hulls {
             planes: planes.into_boxed_slice(),
             drawing: drawing.into_boxed_slice(),
             clips: clips.into_boxed_slice(),
-            models: models.into_boxed_slice(),
             stack_capacity: depth + 1,
         })
     }
 
-    pub fn scratch(&self) -> HullScratch {
-        HullScratch {
-            stack: vec![Frame::default(); self.stack_capacity].into_boxed_slice(),
-        }
+    pub(crate) fn scratch_capacity(&self) -> usize {
+        self.stack_capacity
     }
 
-    pub fn point_contents(&self, point: Vec3) -> Contents {
+    pub(crate) fn point_contents(&self, model: HullModel, point: Vec3) -> Contents {
         Contents::from_q1(
             Hull {
                 nodes: &self.drawing,
                 planes: &self.planes,
-                root: self.models[0].roots[0],
+                root: model.roots[0],
             }
-            .point_contents(point, self.models[0].roots[0]),
+            .point_contents(point, model.roots[0]),
         )
     }
 
@@ -320,49 +324,44 @@ impl Q1Hulls {
     /// 30-wide Q3 player and capsules are not rebuilt into exact hull shapes.
     /// Caller rules still select contact epsilon and all-solid behavior.
     /// Scratch must be provisioned from this geometry before querying.
-    pub fn trace(&self, query: TraceQuery, scratch: &mut HullScratch) -> Trace {
-        let TraceQuery {
-            start,
-            end,
-            mins,
-            maxs,
-            ..
-        } = query;
-        let width = maxs.0[0] - mins.0[0];
-        let index = if width < 3.0 {
+    fn hull_index(query: TraceQuery) -> usize {
+        let width = query.maxs.0[0] - query.mins.0[0];
+        if width < 3.0 {
             0
         } else if width <= 32.0 {
             1
         } else {
             2
-        };
+        }
+    }
+
+    pub(crate) fn clip_offset(query: TraceQuery) -> Vec3 {
+        let index = Self::hull_index(query);
         let hull_mins = [[0.0; 3], [-16.0, -16.0, -24.0], [-32.0, -32.0, -24.0]][index];
-        let offset = Vec3(std::array::from_fn(|axis| hull_mins[axis] - mins.0[axis]));
-        let local = |point: Vec3| Vec3(std::array::from_fn(|axis| point.0[axis] - offset.0[axis]));
-        let mut trace = Hull {
+        Vec3(std::array::from_fn(|axis| {
+            hull_mins[axis] - query.mins.0[axis]
+        }))
+    }
+
+    pub(crate) fn trace_local(
+        &self,
+        model: HullModel,
+        query: TraceQuery,
+        scratch: &mut HullScratch,
+    ) -> Trace {
+        if scratch.stack.len() < self.stack_capacity {
+            return Trace::clear(query.end);
+        }
+        let index = Self::hull_index(query);
+        Hull {
             nodes: if index == 0 {
                 &self.drawing
             } else {
                 &self.clips
             },
             planes: &self.planes,
-            root: self.models[0].roots[index],
+            root: model.roots[index],
         }
-        .trace(
-            TraceQuery {
-                start: local(start),
-                end: local(end),
-                ..query
-            },
-            &mut scratch.stack,
-        );
-        trace.end = if trace.fraction == 1.0 {
-            end
-        } else {
-            Vec3(std::array::from_fn(|axis| {
-                trace.end.0[axis] + offset.0[axis]
-            }))
-        };
-        trace
+        .trace(query, &mut scratch.stack)
     }
 }

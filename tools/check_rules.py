@@ -113,6 +113,11 @@ def check(root):
         for match in type_definitions(code):
             if path.name == "primitives.rs" or re.search(r"\bpub(?:\s*\([^)]*\))?\s*$", code[:match.start()]):
                 primitives.setdefault(match[2], path.relative_to(root).as_posix())
+    # Collision resources share one store and one caller-owned scratch type.
+    primitives.update({
+        "CollisionStore": "crates/world/src/collision/store.rs",
+        "TraceScratch": "crates/world/src/collision/store.rs",
+    })
     allow_file = root / "tools/rules-allowlist.json"
     allowed = json.loads(allow_file.read_text()) if allow_file.exists() else []
     for row in allowed:
@@ -140,6 +145,17 @@ def check(root):
                     add(path, code, match.start(), "duplicate-primitive")
                 else:
                     definitions[match[2]] = relative
+        for match in re.finditer(r"\benum\s+(?:CollisionWorld|TraceScratch)\b", code):
+            add(path, code, match.start(), "collision-model-storage")
+        # Cold BrushTree/HullModel inputs may carry roots. The immutable
+        # kernels must not retain a second model registry beside the store.
+        if relative in ("crates/world/src/collision/hulls.rs", "crates/world/src/collision/tree.rs"):
+            for match in re.finditer(r"\bstruct\s+(?:Q1Hulls|Topology)\b[^;{]*\{", code):
+                opening = code.index("{", match.start(), match.end())
+                body = code[opening:delimiter_end(code, opening)]
+                registry = re.search(r"\b(?:models|model_roots|roots)\s*:\s*(?:Vec|Box)\s*<", body)
+                if registry:
+                    add(path, code, opening + registry.start(), "collision-model-storage")
         # Renaming an epoch-mark implementation must not hide its duplication.
         # Lifetime generations and protocol counters without bulk mark resets
         # are different data and remain permitted.
