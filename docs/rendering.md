@@ -86,7 +86,13 @@ unqualified.
 CPU raster bands are automatic at renderer load. Platform counts physical cores
 inside the process affinity, and the CPU renderer selects 1/2/4/8 bands while
 respecting framebuffer rows and the mandatory surface-cache reservation. The
-32 MiB cache budget is shared across bands. `r_cpuBands` defaults to `0` (auto)
+map-sized cache budget is shared across bands, with a 32 MiB floor and enough
+room for each band's largest mandatory surface. The total sums registered mip
+reservations, including optional recipes; it does not guarantee that duplicate
+band copies all remain resident. `CpuLimits.cache_bytes = 0` selects this load
+policy; a nonzero value selects a fixed diagnostic budget. Cache reports
+distinguish absent-slot fills, changed-state refills and payload residency.
+`r_cpuBands` defaults to `0` (auto)
 in every native cvar view; `1`, `2`, `4` and `8` are archived, latched overrides.
 A running CPU renderer holds writes until a renderer load boundary. The
 `--cpu-bands` option takes precedence for benchmark runs.

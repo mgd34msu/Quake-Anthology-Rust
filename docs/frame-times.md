@@ -2971,3 +2971,83 @@ Evidence directory: `THE-3171-live-cache-20261009`, including `perf.data`,
 `diagnostic-summary.json` and `diagnostic-q3dm1/{runtime.log,result.json,window.png}`.
 The owner's 13:49 ruling now permits load-time map-working-set sizing; the
 budget correction and matched live timing remain the next step.
+
+### THE-862 / THE-3171: load-sized rover budget
+
+The default CPU budget now comes from the loaded maps' registered, aligned mip
+reservations. It has a 32 MiB floor, also fits the largest mandatory surface in
+every selected band, and rounds the total to eight-byte band shares. The one
+rover, cache keys, spans and animated-stage executor are unchanged. The app and
+developer draws both use this policy; a nonzero CpuLimits.cache_bytes remains
+a fixed diagnostic override. The earlier fixed-budget policy is superseded by
+the owner's 13:49 ruling. Recipe admission no longer rejects a static chart
+merely because the former total budget was 32 MiB. No sampler arithmetic,
+shader clock or animation was changed.
+
+A portable normal-app build took 34.469 seconds, with allocation tracking and
+proof input disabled. Its build receipt identifies 447d15f9 plus the recorded
+source diff (`source_tree_dirty=true`); it is not an installed candidate.
+Private normal-app CPU comparisons use 640x400, copied owner settings, automatic
+eight bands/seven workers on mask16-23, 60 warm-up and 600 measured frames per
+leg. Initial time-zero screenshots have identical decoded RGBA bytes in all
+before/after legs for all three maps. Live shader time remains active; these
+screenshots do not prove that differently timed later animation frames match.
+
+| Live CPU draw | Order | Before median / p99 ms | After median / p99 ms | Median / p99 change |
+|---|---|---:|---:|---:|
+| q3dm1 | ABBA | 103.363 / 105.875 | 5.264 / 6.164 | -94.91% / -94.18% |
+| e1m1 | BAAB repeat | 1.210 / 1.828 | 1.196 / 1.642 | -1.11% / -10.20% |
+| base1 | BAAB repeat | 1.867 / 3.205 | 1.863 / 2.943 | -0.19% / -8.18% |
+
+The Q3 live median is below the earlier frozen eight-band checkpoint's
+5.837 ms, satisfying the owner's roughly 25% proximity gate. This compares
+different live/frozen workloads, not an additional fidelity-matched speedup.
+The separate under-4-ms R12 target remains unmet.
+
+The first e1m1/base1 ABBA series failed the no-regression gate: e1m1
+0.886/1.354 -> 0.993/1.429 ms (+12.13%/+5.53%), base1
+1.285/2.217 -> 1.312/2.759 ms (+2.14%/+24.43%). It is retained in
+`live-abba-summary.json`. The unchanged candidate's reversed-order repeat above
+has no median or p99 increase. Concurrent unowned cc1 processes were observed
+with affinity0-95 during that repeat; they were not stopped. This observation
+does not establish the cause of every earlier timing increase. The spread
+limits precision of small e1m1/base1 percentage comparisons.
+
+| Map | Total / band arena bytes | Resident payload bytes | Cumulative cold fills | Changed-input refills / evictions | Final fills / evictions |
+|---|---:|---:|---:|---:|---:|
+| e1m1 | 73,270,528 / 9,158,816 | 610,120 | 200 | 0 / 0 | 0 / 0 |
+| base1 | 87,410,176 / 10,926,272 | 1,062,864 | 353 | 0 / 0 | 0 / 0 |
+| q3dm1 | 264,146,176 / 33,018,272 | 17,630,960 | 2,011 | 0 / 0 | 0 / 0 |
+
+These counters include startup and warm-up. The Q3 before legs each fill
+2,945,692,504 bytes and evict 2,928,624,848 bytes in 661 rendered frames;
+after legs fill 17,630,960 bytes once with no evictions. Q3's 47-fill/45-eviction
+final frame becomes zero/zero. The map-sized bound is conservative: it includes
+every mip and optional indexed/RGB layouts, and therefore allocates much more
+space than this view's resident payload. It is a total budget divided among
+bands, not a guarantee that duplicated band copies fit for every possible view.
+All storage is sized at load; no arena grows during frames.
+
+All 20 CPU legs and three finished-slice GL checks exit zero, preserve the
+owner's profile and copied binaries, clean every owned PID, and report zero
+measured Rust allocations/reallocations/bytes across the caller and workers.
+The same existing load fixture now checks that an 8 MiB native chart keeps
+eight automatic bands with map sizing but reduces to four under an explicit
+32 MiB budget. Fixed-budget rejection and byte-exact cache/span fixtures remain
+in place. The checker, 607 workspace tests and Clippy pass.
+
+The three GL rows are Mesa **software GL**, not hardware GPU measurements:
+llvmpipe (LLVM22.1.8,256bits), GL4.6 Core Profile, Mesa26.2.2-arch1.1.
+At640x400 their draw median/p99 ms are e1m1 6.625/8.967,
+base1 14.303/15.810, q3dm1 19.401/24.100. They prove rendering and normal exit,
+not hardware targets, native-image parity or gameplay. No install, stock HUD,
+module/network, audio or save acceptance is claimed by this cache slice.
+
+Evidence directory `THE-3171-live-cache-20261009`: `map-budget-build.json`,
+`map-budget-source.patch`, `map-budget-boundary.log`,
+`map-budget-final-workspace.log`, `map-budget-final-clippy.log`,
+`map-budget-checker.log`, `live-abba-{raw,summary}.json`,
+`repeat-baab-{raw,summary}.json`, `gl-matrix-raw.json`, and per-leg
+`{runtime.log,result.json,window.png}` under `live-abba-*`, `repeat-baab-*`
+and `map-budget-gl-*`. Earlier profiler and diagnostic receipts remain beside
+these. THE-862 still owns broader material/presentation work and R12's target.

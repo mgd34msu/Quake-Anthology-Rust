@@ -78,6 +78,8 @@ pub struct RasterConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub struct CpuLimits {
+    /// Zero sizes the total rover at load from registered map mip reservations,
+    /// with a 32 MiB floor. A nonzero value is an exact fixed-budget override.
     pub cache_bytes: usize,
     pub max_spans: usize,
     pub scene: crate::scene::Limits,
@@ -88,7 +90,7 @@ pub struct CpuLimits {
 impl Default for CpuLimits {
     fn default() -> Self {
         Self {
-            cache_bytes: 32 * 1024 * 1024,
+            cache_bytes: 0,
             max_spans: 4096,
             scene: crate::scene::Limits::default(),
             bands: RasterBands::One,
@@ -458,7 +460,11 @@ impl WorldRaster {
         if band_count > height as usize {
             return Err("CPU band count exceeds framebuffer rows");
         }
-        let mut share = (limits.cache_bytes / 8 / band_count) * 8;
+        let recipe_budget = if limits.cache_bytes == 0 {
+            usize::MAX
+        } else {
+            limits.cache_bytes
+        };
         let mut offsets = Vec::with_capacity(assets.worlds().len());
         let mut sources = Vec::new();
         let mut surfaces = Vec::new();
@@ -579,7 +585,7 @@ impl WorldRaster {
                         evaluator,
                         &mut sources,
                         &mut factors,
-                        limits.cache_bytes,
+                        recipe_budget,
                     )? {
                         rgba[boundary_offset + boundary_index] = Some(recipe);
                     }
@@ -668,10 +674,31 @@ impl WorldRaster {
                 );
             }
         }
+        let total_cache_budget_bytes = if limits.cache_bytes == 0 {
+            // Mips are partitioned over the band rovers. This is a map-derived
+            // total budget, not a promise that duplicate band residents fit.
+            let alignment = 8 * band_count;
+            let required = surfaces_cache
+                .working_set_bytes()
+                .max(
+                    mandatory_cache_bytes
+                        .checked_mul(band_count)
+                        .ok_or("CPU cache budget overflow")?,
+                )
+                .max(32 * 1024 * 1024);
+            required
+                .checked_add(alignment - 1)
+                .ok_or("CPU cache budget overflow")?
+                / alignment
+                * alignment
+        } else {
+            limits.cache_bytes
+        };
+        let mut share = (total_cache_budget_bytes / 8 / band_count) * 8;
         while limits.auto_bands && mandatory_cache_bytes > share && band_count > 1 {
             selected_bands = RasterBands::at_most(band_count / 2);
             band_count = selected_bands.count();
-            share = (limits.cache_bytes / 8 / band_count) * 8;
+            share = (total_cache_budget_bytes / 8 / band_count) * 8;
         }
         if mandatory_cache_bytes > share {
             return Err("CPU cache cannot hold a mandatory surface");
@@ -768,7 +795,7 @@ impl WorldRaster {
             bands,
             config: RasterConfig {
                 bands: selected_bands,
-                total_cache_budget_bytes: limits.cache_bytes,
+                total_cache_budget_bytes,
                 allocated_cache_bytes: share * band_count,
                 per_band_cache_bytes: share,
                 mandatory_cache_bytes,

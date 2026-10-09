@@ -171,7 +171,7 @@ fn windowed(
     band_count: u32,
 ) -> (WorldStats, crate::BackendStats) {
     let mut world = cpu.world.take().unwrap();
-    let budget = CpuLimits::default().cache_bytes / band_count as usize;
+    let budget = (world.config.total_cache_budget_bytes / 8 / band_count as usize) * 8;
     let mut bands = (0..band_count)
         .map(|_| {
             WorldBand::load(
@@ -2008,6 +2008,46 @@ fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share()
         );
         assert!(config.allocated_cache_bytes <= config.total_cache_budget_bytes);
     }
+    // A map chart larger than the old 4 MiB band share must keep all requested
+    // automatic lanes, while an explicit fixed budget still reduces them.
+    fixture_world(
+        &mut assets,
+        3.0,
+        1.0,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |geometry| geometry.surfaces[0].texture_extents = [4096, 2048],
+    );
+    let automatic = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Eight,
+            auto_bands: true,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(automatic.raster_config().bands, RasterBands::Eight);
+    assert!(automatic.raster_config().per_band_cache_bytes >= 8 * 1024 * 1024);
+    let fixed = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Eight,
+            auto_bands: true,
+            cache_bytes: 32 * 1024 * 1024,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(fixed.raster_config().bands, RasterBands::Four);
 }
 
 #[test]

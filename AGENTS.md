@@ -266,7 +266,14 @@ with matched workload and fidelity, without a debugger.
 
 THE-892 checks platform ownership and duplicate event/output storage, including
 examples and imported aliases. Developer timers also use platform. CPU raster
-selects 1/2/4/8 bands at load, dividing one total 32 MiB cache budget across them.
+selects 1/2/4/8 bands at load, dividing one load-sized cache budget across them.
+The owner's 2026-10-09 13:49 ruling supersedes the fixed 32 MiB budget:
+THE-3171 sizes the default total from registered map mip reservations, with
+a 32 MiB floor and enough space for each band's largest mandatory surface.
+Report allocated, resident and evicted bytes separately. The map sum includes
+optional recipes and every registered mip; it does not guarantee simultaneous
+residency of duplicated band copies. A nonzero CpuLimits.cache_bytes remains
+an explicit fixed-budget diagnostic override; zero selects map sizing.
 Platform owns the persistent worker pool. The one scoped dispatcher uses
 bounded atomic index claims shared by the caller and background workers, with
 one wake condition per worker. Results stay in their original job slots and
@@ -290,7 +297,7 @@ a worker wake/barrier that does not earn its tail cost. Check
 actual clipped output counts before the ordered merge. Prepared RGB color state
 is one view-owned table, resolved before parallel jobs and borrowed read-only.
 Preparation arrays, span-group arrays and coverage-bin storage are reported
-separately from the total 32 MiB surface-cache budget.
+separately from the load-sized total surface-cache budget.
 Static indexed, RGB-product and independent-factor spans are grouped by surface
 within each bounded scanner flush, retaining their original order and mip
 choice. Each group borrows cached texels only until its rover batch ends;
