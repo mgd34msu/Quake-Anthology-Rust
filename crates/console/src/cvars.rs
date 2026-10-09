@@ -101,6 +101,7 @@ pub struct Cvars {
     pub(crate) names: NameTable,
     name_bindings: Box<[NameSlot]>,
     binding_names: Box<[NameId]>,
+    autoswitch_text_name: NameId,
     flag_names: Box<[Option<NameId>]>,
     stock_roles: Box<[[Role; 5]]>,
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
@@ -157,6 +158,9 @@ impl Cvars {
                     .ok_or(NamesError::Capacity)
             })
             .collect::<Result<Box<[_]>, _>>()?;
+        let autoswitch_text_name = names
+            .find_folded(b"qts_weapon_autoswitch")
+            .ok_or(NamesError::Capacity)?;
         let flag_names = FLAGS
             .iter()
             .map(|c| names.find_folded(c.member.as_bytes()))
@@ -201,6 +205,7 @@ impl Cvars {
             names,
             name_bindings,
             binding_names,
+            autoswitch_text_name,
             flag_names,
             stock_roles,
             #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
@@ -431,7 +436,8 @@ impl Cvars {
         conversion::read(Input {
             context: view.context,
             conversion: self.conversion(view),
-            binding: b,
+            name: self.binding_names[view.binding as usize],
+            autoswitch_text_name: self.autoswitch_text_name,
             value: text,
             current: text,
             detail,
@@ -545,7 +551,8 @@ impl Cvars {
         let out = conversion::write(Input {
             context: view.context,
             conversion: c,
-            binding,
+            name: self.binding_names[view.binding as usize],
+            autoswitch_text_name: self.autoswitch_text_name,
             value: text,
             current,
             detail,
@@ -869,7 +876,8 @@ impl Cvars {
                     let out = conversion::write(Input {
                         context,
                         conversion: c,
-                        binding: b,
+                        name: self.binding_names[binding as usize],
+                        autoswitch_text_name: self.autoswitch_text_name,
                         value: clause.value,
                         current: clause.value,
                         detail: None,
@@ -919,12 +927,13 @@ impl Cvars {
                 clause.member
             };
             let binding = self.lookup_binding(member, context.side);
-            let Some(b) = binding.map(|i| &BINDINGS[i as usize]) else {
+            let Some(binding) = binding else {
                 if DEFINITIONS[row].family_count > 1 {
                     selected = Some(Cow::Borrowed(clause.value));
                 }
                 continue;
             };
+            let b = &BINDINGS[binding as usize];
             let c = &CONVERSIONS[b.conversions[source as usize] as usize];
             let joined = matches!(
                 c.operation,
@@ -939,7 +948,8 @@ impl Cvars {
             let Ok(out) = conversion::write(Input {
                 context,
                 conversion: c,
-                binding: b,
+                name: self.binding_names[binding as usize],
+                autoswitch_text_name: self.autoswitch_text_name,
                 value: clause.value,
                 current,
                 detail: None,

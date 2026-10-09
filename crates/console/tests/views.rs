@@ -158,3 +158,23 @@ fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
     };
     assert!(cvars.bind("fov", game_role).is_some());
 }
+
+#[test]
+fn interned_autoswitch_alias_keeps_text_details_and_numeric_native_modes() {
+    let mut cvars = Cvars::new().unwrap();
+    for source in RuleSetId::ALL {
+        let context = context(source);
+        let canonical = cvars.bind("CG_AUTOSWITCH", context).unwrap();
+        for (text, expected) in [("NEVER", 0.0), ("new", 1.0), ("always", 1.0)] {
+            write(&mut cvars, "QTS_WEAPON_AUTOSWITCH", text, context);
+            assert_eq!(cvars.numeric(canonical).unwrap(), expected);
+            assert_eq!(read(&cvars, "qts_weapon_autoswitch", context), text);
+        }
+        write(&mut cvars, "cg_autoswitch", "0", context);
+        assert_eq!(read(&cvars, "qts_weapon_autoswitch", context), "never");
+        write(&mut cvars, "autoswitch", "3", context);
+        assert_eq!(cvars.numeric(canonical).unwrap(), 0.0);
+        write(&mut cvars, "autoswitch", "2", context);
+        assert_eq!(cvars.numeric(canonical).unwrap(), 1.0);
+    }
+}

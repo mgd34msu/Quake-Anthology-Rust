@@ -1,11 +1,12 @@
 //! Pure alias projections from the C port's cvars_conversion.c. Calls occur at
 //! command/module boundaries; engine frame consumers read cached canonical values.
 use crate::{
-    catalog::{Binding, Conversion, ConversionKind, Direction, Operation},
+    catalog::{Conversion, ConversionKind, Direction, Operation},
     cvars_generated::{MAPS, OPERANDS},
     numbers::number,
     views::{Context, Role, RuleSetId},
 };
+use qa_core::primitives::NameId;
 use std::fmt::{self, Write};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +73,8 @@ impl Text<'_> {
 pub struct Input<'a, 'o> {
     pub context: Context,
     pub conversion: &'static Conversion,
-    pub binding: &'static Binding,
+    pub name: NameId,
+    pub autoswitch_text_name: NameId,
     pub value: &'a str,
     pub current: &'a str,
     pub detail: Option<&'a str>,
@@ -206,11 +208,7 @@ pub fn read<'a>(in_: Input<'a, '_>) -> Result<Text<'a>, Error> {
         Operation::Teamplay => value = truth(competitive(value, true)),
         Operation::Ctf => value = truth(value == 4.0),
         Operation::Autoswitch => {
-            if in_
-                .binding
-                .name
-                .eq_ignore_ascii_case("qts_weapon_autoswitch")
-            {
+            if in_.name == in_.autoswitch_text_name {
                 return Ok(Text::Borrowed(if value == 0.0 {
                     "never"
                 } else {
@@ -369,11 +367,7 @@ pub fn write<'a>(in_: Input<'a, '_>) -> Result<Output<'a>, Error> {
         }
         Operation::ForceRespawn => value = if value != 0.0 { current.max(1.0) } else { 0.0 },
         Operation::Autoswitch => {
-            value = if in_
-                .binding
-                .name
-                .eq_ignore_ascii_case("qts_weapon_autoswitch")
-            {
+            value = if in_.name == in_.autoswitch_text_name {
                 truth(!in_.value.eq_ignore_ascii_case("never"))
             } else {
                 truth(value != 3.0)

@@ -2455,3 +2455,35 @@ Stock HUD drawing and native module/transport integration are still absent.
 Existing private render/input walks are candidate evidence, not installed
 qa-rust gameplay. The gameplay/timing installer gates remain intact, and these
 issues remain In Progress for their original installed/native acceptance.
+
+
+## THE-617: converted cvar names use the shared name primitive
+
+The remaining two cvar-name comparisons in `console::conversion` selected the
+text autoswitch alias by scanning its name on read and write. Both now compare
+NameIds resolved once through the cvar table's NameTable at load. The converted
+read/write/default callers and the existing C-reference example migrated to
+that input; the old Binding/string input is deleted. Value parsing (including
+`never`/`new` alias details) retains its native behavior. No generated catalog,
+checker rule or wire field changes.
+
+Workspace all-target tests (581), tracked Clippy and the unchanged checker pass.
+The focused fixture checks uppercase alias lookup, retained text details,
+canonical invalidation and numeric autoswitch modes across all five sources.
+Extracted C-port comparison: all 100080 number records and 344475 conversion
+records remain byte-identical. This compares headless conversion helpers, not
+native game modules or installed trigger/door dispatch.
+
+Portable tracked release probes built 2026-10-09T12:32:54Z in 17.497 s. Matched
+64-client headless host ABBA against ee5cb1ff, CPU23, identical 0.25 s CPU
+preconditioning before 60 warm-up plus 600 measured frames: mean process medians
+231257.5 ns before / 227353 ns after (-1.688%). Every non-timing fixture field
+matches and measured Rust heap calls/bytes are zero. The separate app-loaded
+512-client/reconnect and numeric HUD probes also retain zero measured heap and
+HUD checksum 892087680. These runs create no raster workers and do not measure
+foreign library heaps; host timing does not isolate conversion cost.
+
+Evidence: `~/.cache/qa-rust/THE-617-conversion-names-20261009/` has `checks.json`,
+`adoption.json`, `abba.json`, raw logs, `client_state.log`, `hud_values.log` and
+`c-reference/comparison.json`. Original installed target/door/native module
+acceptance remains open; no install or gate waiver occurred.

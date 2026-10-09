@@ -5,6 +5,7 @@ use qa_console::{
     numbers,
     views::{Context, Role, RuleSetId},
 };
+use qa_core::names::NameTable;
 use std::{
     fs::File,
     io::{self, BufReader, Read, Write},
@@ -33,6 +34,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = args.next().ok_or("mode required")?;
     let mut input = BufReader::new(File::open(args.next().ok_or("fixture path required")?)?);
     let mut output = io::stdout().lock();
+    let names = NameTable::load(BINDINGS.iter().map(|binding| binding.name.as_bytes()))?;
+    let binding_names = BINDINGS
+        .iter()
+        .map(|binding| {
+            names
+                .find_folded(binding.name.as_bytes())
+                .ok_or("binding name")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let autoswitch_text_name = names
+        .find_folded(b"qts_weapon_autoswitch")
+        .ok_or("autoswitch name")?;
     loop {
         let mut source = [0];
         match input.read_exact(&mut source) {
@@ -56,7 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 2 => Role::Cgame,
                 _ => return Err("role index".into()),
             };
-            let binding = &BINDINGS[u16::from_le_bytes([header[1], header[2]]) as usize];
+            let binding_index = u16::from_le_bytes([header[1], header[2]]) as usize;
+            let binding = &BINDINGS[binding_index];
             let c = &CONVERSIONS[binding.conversions[source as usize] as usize];
             let value = string(&mut input)?;
             let current = string(&mut input)?;
@@ -82,7 +96,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conversion::read(Input {
                     context,
                     conversion: c,
-                    binding,
+                    name: binding_names[binding_index],
+                    autoswitch_text_name,
                     value: &value,
                     current: &current,
                     detail,
@@ -92,7 +107,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let out = conversion::write(Input {
                 context,
                 conversion: c,
-                binding,
+                name: binding_names[binding_index],
+                autoswitch_text_name,
                 value: &value,
                 current: &current,
                 detail,
