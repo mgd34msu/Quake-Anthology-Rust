@@ -1938,3 +1938,16 @@ function bodies, raw binary outputs, `native-comparison.json`,
 The final release probe build took 22.87 seconds. An intermediate allocation
 recheck overlapped tests; its timing row is excluded and retained in `bench-final.log`.
 No installation or live native-protocol acceptance is claimed.
+
+At slice completion, clean normal non-proof commit `11af1d03` built in 40.19
+seconds at 2026-10-09T06:16:10Z with allocation tracking. Fresh copied owner
+profiles privately rendered e1m1/base1/q3dm1 on CPU automatic eight bands and
+GL at 640x400, with controlled 120 fps, real key repeats and normal quits.
+All six runs counted zero calling/all-worker Rust heap over 600 measured frames
+after 60 warm-up. CPU used seven workers. GL used Mesa 26.2.2 llvmpipe LLVM
+22.1.8 software rendering; these are not hardware GL timing rows. Profile and
+candidate bytes stayed unchanged. All 18 owned PIDs were absent afterward.
+Receipts are `normal-tracked-{cpu,gl}-{map}/`,
+`normal-tracked-qualification.json` and `normal-cleanup.json` in the same
+evidence directory. These runs qualify render/queue containment and Rust heap
+counts, not native signon, complete gameplay, SDL/driver heap or installation.
