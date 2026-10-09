@@ -2,7 +2,7 @@
 //! projection have already been evaluated by the common view preparation.
 use super::{
     Assets, Buffers, Camera, DepthPolicy, PreparedDraw, RasterSelection, WorldBand, WorldPrepare,
-    add_edge_stats, consume_span,
+    add_edge_stats, consume_spans,
 };
 
 impl WorldBand {
@@ -30,6 +30,10 @@ impl WorldBand {
                 std::sync::Arc::clone(&catalog.surfaces_cache),
                 cache_bytes,
             )?,
+            span_groups: super::span_groups::SpanGroups::load(
+                catalog.primitive_capacity,
+                max_spans,
+            ),
             catalog,
             stats: super::WorldStats::default(),
             selection,
@@ -111,7 +115,7 @@ impl WorldBand {
             PreparedDraw::Surface(range) => {
                 let indices = prepared.bins.range(self.selection, range);
                 for &index in indices {
-                    let primitive = &prepared.primitives[index as usize];
+                    let primitive = &prepared.geometry.primitives[index as usize];
                     if primitive.overlay {
                         self.raster_indices(
                             prepared,
@@ -208,11 +212,11 @@ impl WorldBand {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
         } else {
             for &index in indices {
-                let primitive = &prepared.primitives[index as usize];
+                let primitive = &prepared.geometry.primitives[index as usize];
                 if opaque_only && primitive.overlay {
                     continue;
                 }
-                let vertices = &prepared.coverage
+                let vertices = &prepared.geometry.coverage
                     [primitive.first_coverage..primitive.first_coverage + primitive.coverage_count];
                 if !self.edges.add_polygon(
                     index,
@@ -227,13 +231,15 @@ impl WorldBand {
             let cache = &mut self.cache;
             let counters = &mut self.stats;
             let catalog = &self.catalog;
+            let groups = &mut self.span_groups;
             let edge_stats = self.edges.scan(|spans| {
-                for &span in spans {
-                    consume_span(
+                groups.consume(spans, |surface, chain, mips| {
+                    consume_spans(
                         width,
-                        span,
-                        prepared.primitives[span.surface as usize],
-                        &prepared.stages,
+                        chain,
+                        mips,
+                        prepared.geometry.primitives[surface],
+                        &prepared.geometry.stages,
                         cache,
                         &catalog.rgba,
                         &prepared.rgba_prepared,
@@ -243,7 +249,7 @@ impl WorldBand {
                         buffers,
                         counters,
                     );
-                }
+                });
             });
             add_edge_stats(&mut self.stats, edge_stats);
         }

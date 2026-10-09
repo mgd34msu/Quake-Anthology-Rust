@@ -17,6 +17,12 @@ pinned timings. Deferred native-module and installed acceptance is consolidated
 under THE-863 in THE-3169. Report remaining bypass sites with file and line;
 do not silently turn deferred native integration into an engine completion claim.
 
+Supervisor review, 2026-10-09 11:3x: the ordered primitive/event engine scopes
+are accepted. Next is THE-862 caching, including THE-2866 per-surface cache
+lookup and parallel view preparation; then THE-860 native channel/delta encoder,
+then the remaining THE-863 hosts and THE-3169. Native work stays paused until
+that order reaches it. Preserve every native/installed deferred criterion.
+
 Linear project Quake-Rust, P-THE-3, team The Artificery, is the source of truth.
 The owner rules and working protocol apply. Set issues In Progress when starting,
 put THE ids in commit subjects, and leave completed work In Review with evidence.
@@ -275,6 +281,21 @@ the instrumented calling thread and every worker after every completed or
 rejected dispatch, then consumes those counts once in ordinary and quit frames.
 Discard startup counts; do not report only the final batch. SDL/driver heap work
 needs separate measurement and is not proved by the Rust counter.
+
+THE-2866 uses that same dispatcher for fixed reference preparation chunks and
+screen-band raster jobs. Chunk-private output capacity divides the load-sized
+total; references that cannot fit a chunk use the same serial preparer. Views
+with fewer than 64 loaded boundary primitives per job also stay serial to avoid
+a worker wake/barrier that does not earn its tail cost. Check
+actual clipped output counts before the ordered merge. Prepared RGB color state
+is one view-owned table, resolved before parallel jobs and borrowed read-only.
+Preparation arrays, span-group arrays and coverage-bin storage are reported
+separately from the total 32 MiB surface-cache budget.
+Static indexed, RGB-product and independent-factor spans are grouped by surface
+within each bounded scanner flush, retaining their original order and mip
+choice. Each group borrows cached texels only until its rover batch ends;
+animated stages keep the shared stage executor. Overlay draw barriers remain
+ordered. Neither cache borrowing nor preparation creates another worker pool.
 
 THE-861 scene contract: asset registration happens at load and returns numeric
 material/model handles. The shared front end clears a scene, adds entities,

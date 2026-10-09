@@ -40,6 +40,15 @@ pub(super) struct ClipGraph {
 }
 
 impl ClipGraph {
+    pub fn capacity_bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.originals)
+            + std::mem::size_of_val(&*self.nodes)
+            + std::mem::size_of_val(&*self.attributes)
+            + std::mem::size_of_val(&*self.geometry)
+            + std::mem::size_of_val(&*self.input)
+            + std::mem::size_of_val(&*self.output)
+            + std::mem::size_of_val(&*self.distances)
+    }
     pub fn load(max_vertices: usize) -> Result<Self, &'static str> {
         let nodes = max_vertices
             .checked_mul(7)

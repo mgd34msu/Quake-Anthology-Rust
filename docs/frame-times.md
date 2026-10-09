@@ -2782,3 +2782,85 @@ and copied candidates remain unchanged; no owned PIDs remain. These developer
 CPU draws do not qualify an install, gameplay, stock HUD, GL or native visual
 parity. The source snapshot and receipts preserve the comparison boundary for
 the separate caching work.
+
+
+## THE-862 / THE-2866: grouped cache spans and parallel preparation
+
+Static indexed, RGB-product and independent-factor spans now resolve assets and
+borrow rover texels per surface/mip group within a bounded scanner flush.
+Changing stages retain the common stage executor. Group membership uses core
+StampSet; overlay barriers, each surface's span order and per-span mip choices
+remain native. Replaced static per-span consumers and the raster-only job API
+are deleted; the app and developer draws use the same scoped CPU dispatcher.
+
+One reference preparer serves serial and parallel execution. Fixed contiguous
+chunks own disjoint load-sized outputs; one view-owned color table is resolved
+before workers run. Ordered merging adjusts stage/coverage ranges and preserves
+primitive order, draw ranks, depth keys and native counters. Static admission
+and actual output checks select bounded serial fallback for oversized chunks.
+The final scheduling data requires 64 loaded boundary primitives per job:
+smaller views stay serial, avoiding the extra worker barrier. The exact-row
+fixtures force parallel execution separately from that performance policy.
+
+Portable release, 640x400, fixed native spawn camera, copied owner profile
+(120-degree FOV), 60 warm-up plus 600 measured draws per ABBA leg. One band pins
+the caller to CPU23; eight bands use mask16-23 with seven workers and the caller
+participating. Workers inherit the process mask; individual workers are not
+pinned. The following numbers pool each variant's two 600-frame legs. These
+are CPU preparation/raster timings, excluding presentation, input, movement,
+native heap and gameplay. Diagnostic nested timers are disabled.
+
+| Map | Bands | Before median / p99 ms | After median / p99 ms | Median / p99 change |
+| --- | ---: | ---: | ---: | ---: |
+| e1m1 | 1 | 1.976 / 2.001 | 1.843 / 1.888 | -6.72% / -5.65% |
+| base1 | 1 | 4.576 / 4.618 | 4.345 / 4.381 | -5.06% / -5.12% |
+| q3dm1 | 1 | 14.597 / 14.873 | 13.523 / 14.016 | -7.35% / -5.76% |
+| e1m1 | 8 | 0.743 / 0.995 | 0.701 / 0.870 | -5.64% / -12.58% |
+| base1 | 8 | 1.149 / 1.691 | 1.098 / 1.621 | -4.44% / -4.14% |
+| q3dm1 | 8 | 6.641 / 7.151 | 5.837 / 6.457 | -12.10% / -9.71% |
+
+All 24 private legs exit zero, preserve copied candidates and owner profiles,
+and leave no owned PIDs. Exact RGBA/depth bytes, immutable workloads and native
+polygon/span/pixel/stage counters match. Calling-thread and every-dispatch worker
+Rust allocations, reallocations and requested bytes are zero in measured frames.
+This proves the instrumented Rust path; SDL/driver heap work is excluded.
+
+| Map | Bands | Cache hits per frame before / after | Measured fills / evictions / rejects |
+| --- | ---: | ---: | ---: |
+| e1m1 | 1 | 3712 / 123 | 0 / 0 / 0 |
+| base1 | 1 | 6278 / 211 | 0 / 0 / 0 |
+| q3dm1 | 1 | 19772 / 1754 | 0 / 0 / 0 |
+| e1m1 | 8 | 3712 / 195 | 0 / 0 / 0 |
+| base1 | 8 | 6278 / 289 | 0 / 0 / 0 |
+| q3dm1 | 8 | 19772 / 1948 | 0 / 0 / 0 |
+
+The eight-band preparation arrays occupy 39,042,200 / 49,170,076 / 89,544,700
+bytes for e1m1/base1/q3dm1 (37.23 / 46.89 / 85.40 MiB), including one color table
+and all private outputs. This is separate from the unchanged total 32 MiB rover
+budget, span groups, coverage bins and shared immutable catalogs. Dividing
+output capacity across jobs removes 74-75% of the full-output prototype's
+preparation storage. Canonical color tables are counted once.
+
+Earlier results are retained: grouped-only `counted-abba-summary.json` missed
+two timing rows; `parallel-abba-diagnostic-summary.json` records exact pixels but
+an omitted static-stage counter merge; `bounded-abba-summary.json` and
+`final-abba-summary.json` miss tail/median rows. Concurrent compilation was
+observed, with base1 baseline medians varying 1.076-2.374 ms; it does not establish
+that every miss was contention. The final minimum-work policy specifically
+addresses the repeatedly slower e1m1 parallel-preparation tail.
+
+Evidence directory `THE-2866-cache-20261009`: final `grain-abba-{raw,summary}.json`,
+per-leg raw frames and private receipts, `grain-checks-build.json` (checker,
+602 workspace tests), `grain-final-build.json` (Clippy and 34.191 s release build).
+The Q3 eight-band result still exceeds the under-4-ms R12 target. Native visual
+parity, gameplay and installed acceptance are not inferred from these draws.
+
+The final direct diagnostic records Q3 preparation median/p99 of 2.317/2.873 ms
+at one band and 1.412/1.823 ms at eight bands. The eight-band view runs exactly
+one preparation dispatch with eight jobs, followed by two raster dispatches;
+one-band preparation has no worker dispatch. Nested times fit within total
+draw time, RGBA/depth remain exact, and measured caller/worker Rust heap remains
+zero. These are diagnostic stage samples, separate from the normal ABBA timing
+gate. Evidence: `grain-prepare-profile-summary.json` and
+`grain-profile-q3dm1-{1,8}/`. The normal tracked app build took 27.123 s; its
+private three-map CPU(auto)/GL checks are pending at this commit boundary.

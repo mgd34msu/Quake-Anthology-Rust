@@ -17,10 +17,16 @@ use crate::scene::{
 };
 use qa_core::primitives::Vec3;
 pub use world::{
-    BandJob, CpuLimits, MAX_BANDS, RasterBands, RasterConfig, WorldStats, render_band,
+    CpuJob, CpuLimits, JobKind, MAX_BANDS, RasterBands, RasterConfig, WorldStats, run_cpu_job,
 };
 
 const CLIP_VERTICES: usize = 12;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparePoint {
+    Begin,
+    End,
+}
 
 pub struct CpuBackend {
     width: u32,
@@ -283,7 +289,7 @@ impl CpuBackend {
         let result: Result<BackendStats, std::convert::Infallible> =
             self.render_with_dispatch(list, assets, |jobs| {
                 for job in jobs {
-                    render_band(job);
+                    run_cpu_job(job);
                 }
                 Ok(())
             });
@@ -299,7 +305,19 @@ impl CpuBackend {
         &mut self,
         list: &CommandList,
         assets: &Assets,
-        mut dispatch: impl for<'job> FnMut(&mut [BandJob<'job>]) -> Result<(), E>,
+        dispatch: impl for<'job> FnMut(&mut [CpuJob<'job>]) -> Result<(), E>,
+    ) -> Result<BackendStats, E> {
+        self.render_observed(list, assets, dispatch, |_| {})
+    }
+
+    /// Optional stage observation owns no clock and shares the ordinary draw
+    /// implementation. The normal entry's empty observer is optimized away.
+    pub fn render_observed<E>(
+        &mut self,
+        list: &CommandList,
+        assets: &Assets,
+        mut dispatch: impl for<'job> FnMut(&mut [CpuJob<'job>]) -> Result<(), E>,
+        mut observe: impl FnMut(PreparePoint),
     ) -> Result<BackendStats, E> {
         let mut stats = BackendStats {
             rejected: list.rejected.min(u32::MAX as u64) as u32,
@@ -330,24 +348,34 @@ impl CpuBackend {
                     self.time_ms = camera.refdef.time_ms;
                     self.clear_depth(camera.refdef.viewport, camera.refdef.far);
                     if let Some(world) = &mut self.world {
-                        world.render_opaque(
+                        observe(PreparePoint::Begin);
+                        let prepared = world.prepare_view_dispatched(
                             &camera,
                             list,
                             view.scene,
                             assets,
                             &self.evaluator,
-                            world::Buffers {
-                                first_row: 0,
-                                frame_height: self.height,
-                                pixels: &mut self.pixels,
-                                inverse_depth: &mut self.inverse_depth,
-                                depth_ranks: &mut self.depth_ranks,
-                                indices: &mut self.indices,
-                                palettes: &mut self.palettes,
-                            },
                             &mut stats,
                             &mut dispatch,
-                        )?;
+                        );
+                        observe(PreparePoint::End);
+                        if prepared? {
+                            world.render_opaque(
+                                &camera,
+                                assets,
+                                world::Buffers {
+                                    first_row: 0,
+                                    frame_height: self.height,
+                                    pixels: &mut self.pixels,
+                                    inverse_depth: &mut self.inverse_depth,
+                                    depth_ranks: &mut self.depth_ranks,
+                                    indices: &mut self.indices,
+                                    palettes: &mut self.palettes,
+                                },
+                                &mut stats,
+                                &mut dispatch,
+                            )?;
+                        }
                     } else {
                         stats.rejected = stats.rejected.saturating_add(view.scene.surfaces.count);
                     }

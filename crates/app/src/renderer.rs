@@ -4,7 +4,7 @@ use qa_core::{math::angle_vectors, sys_events::SeatId};
 use qa_platform::{Stopwatch, Window, WorkerError, Workers};
 use qa_render::{
     Assets, BackendStats, BlendPhase, FrontEnd, Limits, Refdef, Viewport,
-    cpu::{CpuBackend, CpuLimits, RasterBands, RasterConfig, render_band},
+    cpu::{CpuBackend, CpuLimits, RasterBands, RasterConfig, run_cpu_job},
     gl::GlBackend,
     material::world_load::{LoadedWorld, PresentationDefaults},
     world::WorldView,
@@ -47,7 +47,7 @@ pub fn cpu_band_setting(
     Ok((handle, selected))
 }
 
-/// The app owns worker scheduling; render only lends disjoint raster jobs.
+/// The app owns worker scheduling; render lends scoped preparation or raster jobs.
 /// Developer retail draws use this same dispatcher and allocation accounting.
 pub struct CpuDispatch {
     workers: Workers,
@@ -122,7 +122,7 @@ fn add_counts(total: &mut Counts, counts: Counts) {
 /// Cache sizes describe the backend's load-time reservation, across all bands.
 pub fn report_cpu_config(config: RasterConfig, workers: usize) {
     qa_console::logger::console(format_args!(
-        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
+        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"span_group_capacity_bytes\":{},\"preparation_capacity_bytes\":{},\"prepare_minimum_primitives_per_job\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
         config.bands.count(),
         workers,
         config.total_cache_budget_bytes,
@@ -131,6 +131,9 @@ pub fn report_cpu_config(config: RasterConfig, workers: usize) {
         config.mandatory_cache_bytes,
         config.bin_index_capacity_bytes,
         config.mip_layout_metadata_bytes,
+        config.span_group_capacity_bytes,
+        config.preparation_capacity_bytes,
+        config.prepare_minimum_primitives_per_job,
     ));
 }
 
@@ -394,7 +397,7 @@ impl Renderer {
         let result = match &mut self.backend {
             Backend::Cpu { backend, dispatch } => {
                 backend.render_with_dispatch(&packet, &self.assets, |jobs| {
-                    dispatch.dispatch(jobs, render_band)
+                    dispatch.dispatch(jobs, run_cpu_job)
                 })
             }
             Backend::Gl(gl) => Ok(gl.render(&packet, &self.assets)),

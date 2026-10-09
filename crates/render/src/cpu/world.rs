@@ -19,8 +19,9 @@ mod bins;
 mod clip;
 mod jobs;
 mod packed;
+mod span_groups;
 use bins::{CoverageBins, RasterSelection};
-pub use jobs::{BandJob, render_band};
+pub use jobs::{CpuJob, JobKind, run_cpu_job};
 
 pub const MAX_BANDS: usize = 8;
 
@@ -66,6 +67,12 @@ pub struct RasterConfig {
     pub bin_index_capacity_bytes: usize,
     /// Shared mip-layout slot payload, counted once rather than per band.
     pub mip_layout_metadata_bytes: usize,
+    /// Per-band bounded span links, mip choices and surface membership marks.
+    pub span_group_capacity_bytes: usize,
+    /// Owned view preparation arrays, including private chunks and one color table.
+    pub preparation_capacity_bytes: usize,
+    /// Small views avoid the extra worker wake/barrier before rasterization.
+    pub prepare_minimum_primitives_per_job: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -143,6 +150,7 @@ struct SurfaceInfo {
     mip_adjust: f32,
     sky: Option<super::sky::Source>,
     raster_empty: bool,
+    preparation: PrepareCapacity,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -314,10 +322,8 @@ enum PreparedDraw {
     Skip,
 }
 
-struct WorldPrepare {
+struct SurfacePrepare {
     catalog: Arc<WorldCatalog>,
-    rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
-    rgba_colors: Box<[super::rgba::ProductColorCache]>,
     primitives: Box<[Primitive]>,
     primitive_count: usize,
     stages: Box<[StagePlanes]>,
@@ -327,16 +333,26 @@ struct WorldPrepare {
     projected: Box<[ProjectedVertex]>,
     coverage: Box<[ProjectedVertex]>,
     coverage_count: usize,
+    surface_draws: Box<[PreparedDraw]>,
+    stats: WorldStats,
+    backgrounds: Box<[Option<super::sky::Source>]>,
+    certified: bool,
+    capacity_exhausted: bool,
+}
+
+struct WorldPrepare {
+    geometry: SurfacePrepare,
+    catalog: Arc<WorldCatalog>,
+    rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
+    rgba_colors: Box<[super::rgba::ProductColorCache]>,
     sky_states: Box<[super::sky::SkyState]>,
     sky_stages: Box<[Option<PreparedStage>]>,
     draws: Box<[PreparedDraw]>,
-    surface_draws: Box<[PreparedDraw]>,
     reference_base: u32,
     draw_count: usize,
     opaque_count: usize,
     policy: DepthPolicy,
     background: Option<super::sky::BackgroundDraw>,
-    stats: WorldStats,
     bins: CoverageBins,
 }
 
@@ -345,12 +361,14 @@ struct WorldBand {
     catalog: Arc<WorldCatalog>,
     edges: Edges,
     cache: SurfaceCache,
+    span_groups: span_groups::SpanGroups,
     stats: WorldStats,
     selection: RasterSelection,
 }
 
 pub(super) struct WorldRaster {
     prepare: WorldPrepare,
+    lanes: Box<[SurfacePrepare]>,
     bands: Box<[WorldBand]>,
     config: RasterConfig,
 }
@@ -520,6 +538,7 @@ impl WorldRaster {
                     mip_adjust: mip_adjust(surface.texture_projection),
                     sky: None,
                     raster_empty: false,
+                    preparation: PrepareCapacity::default(),
                 });
                 let loops = geometry
                     .boundaries
@@ -547,6 +566,7 @@ impl WorldRaster {
                     .checked_add(loops.len())
                     .ok_or("world polygon count overflow")?;
                 let mut raster_empty = material.settings.deforms.iter().all(Option::is_none);
+                let mut reference_coverage = 0usize;
                 for (loop_index, boundary) in loops.iter().enumerate() {
                     let boundary_index = surface.boundaries.first as usize + loop_index;
                     if let Some(recipe) = super::rgba::Recipe::load(
@@ -578,6 +598,9 @@ impl WorldRaster {
                         .len()
                         .checked_add(6)
                         .ok_or("world clip count overflow")?;
+                    reference_coverage = reference_coverage
+                        .checked_add(clipped)
+                        .ok_or("reference coverage overflow")?;
                     max_vertices = max_vertices.max(clipped);
                     max_edges = max_edges
                         .checked_add(clipped)
@@ -585,6 +608,11 @@ impl WorldRaster {
                 }
                 if let Some(info) = surfaces.last_mut() {
                     info.raster_empty = raster_empty;
+                    info.preparation = PrepareCapacity {
+                        primitives: loops.len(),
+                        stages: loops.len() * material.stages.len(),
+                        coverage: reference_coverage,
+                    };
                 }
             }
         }
@@ -676,37 +704,66 @@ impl WorldRaster {
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice();
+        let span_group_capacity_bytes = bands
+            .iter()
+            .map(|band| band.span_groups.capacity_bytes())
+            .sum();
+        let prepare = WorldPrepare {
+            geometry: SurfacePrepare::load(
+                Arc::clone(&catalog),
+                boundaries.max(1),
+                stage_capacity.max(1),
+                max_vertices,
+                coverage_capacity.max(3),
+                limits.scene.surfaces,
+            )?,
+            catalog: Arc::clone(&catalog),
+            rgba_prepared: vec![None; rgba_count].into_boxed_slice(),
+            rgba_colors: vec![super::rgba::ProductColorCache::default(); rgba_count]
+                .into_boxed_slice(),
+            sky_states: (0..sky_state_count)
+                .map(|_| super::sky::SkyState::default())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
+            draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
+            reference_base: 0,
+            draw_count: 0,
+            opaque_count: 0,
+            policy: DepthPolicy::PlaneDepth,
+            background: None,
+            bins,
+        };
+        let lanes: Box<[SurfacePrepare]> = if band_count > 1 {
+            (0..band_count)
+                .map(|_| {
+                    SurfacePrepare::load(
+                        Arc::clone(&catalog),
+                        boundaries.div_ceil(band_count).max(1),
+                        stage_capacity.div_ceil(band_count).max(1),
+                        max_vertices,
+                        coverage_capacity.div_ceil(band_count).max(3),
+                        limits.scene.surfaces.div_ceil(band_count),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_boxed_slice()
+        } else {
+            Box::default()
+        };
+        let preparation_capacity_bytes = prepare.geometry.capacity_bytes()
+            + lanes
+                .iter()
+                .map(SurfacePrepare::capacity_bytes)
+                .sum::<usize>()
+            + std::mem::size_of_val(&*prepare.rgba_prepared)
+            + std::mem::size_of_val(&*prepare.rgba_colors)
+            + std::mem::size_of_val(&*prepare.sky_states)
+            + std::mem::size_of_val(&*prepare.sky_stages)
+            + std::mem::size_of_val(&*prepare.draws);
         Ok(Self {
-            prepare: WorldPrepare {
-                catalog: Arc::clone(&catalog),
-                rgba_prepared: vec![None; rgba_count].into_boxed_slice(),
-                rgba_colors: vec![super::rgba::ProductColorCache::default(); rgba_count]
-                    .into_boxed_slice(),
-                primitives: vec![Primitive::default(); boundaries.max(1)].into_boxed_slice(),
-                primitive_count: 0,
-                stages: vec![StagePlanes::default(); stage_capacity.max(1)].into_boxed_slice(),
-                stage_count: 0,
-                clip: clip::ClipGraph::load(max_vertices)?,
-                screen: vec![ScreenVertex::default(); max_vertices].into_boxed_slice(),
-                projected: vec![ProjectedVertex::default(); max_vertices].into_boxed_slice(),
-                coverage: vec![ProjectedVertex::default(); coverage_capacity.max(3)]
-                    .into_boxed_slice(),
-                coverage_count: 0,
-                sky_states: (0..sky_state_count)
-                    .map(|_| super::sky::SkyState::default())
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-                sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
-                draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
-                surface_draws: vec![PreparedDraw::Skip; limits.scene.surfaces].into_boxed_slice(),
-                reference_base: 0,
-                draw_count: 0,
-                opaque_count: 0,
-                policy: DepthPolicy::PlaneDepth,
-                background: None,
-                stats: WorldStats::default(),
-                bins,
-            },
+            prepare,
+            lanes,
             bands,
             config: RasterConfig {
                 bands: selected_bands,
@@ -716,12 +773,15 @@ impl WorldRaster {
                 mandatory_cache_bytes,
                 bin_index_capacity_bytes,
                 mip_layout_metadata_bytes: catalog.surfaces_cache.mip_metadata_bytes(),
+                span_group_capacity_bytes,
+                preparation_capacity_bytes,
+                prepare_minimum_primitives_per_job: 64,
             },
         })
     }
 
     pub(super) fn stats(&self) -> WorldStats {
-        let mut total = self.prepare.stats;
+        let mut total = self.prepare.geometry.stats;
         let mut cache = CacheStats::default();
         for band in &self.bands {
             total = merge_stats(total, band.stats);
@@ -747,24 +807,11 @@ impl WorldRaster {
         self.bands.len()
     }
     pub(super) fn reset_stats(&mut self) {
-        self.prepare.stats = WorldStats::default();
+        self.prepare.geometry.stats = WorldStats::default();
         for band in &mut self.bands {
             band.stats = WorldStats::default();
         }
     }
-    pub(super) fn prepare_view(
-        &mut self,
-        camera: &Camera,
-        list: &CommandList,
-        scene: SceneRanges,
-        assets: &Assets,
-        evaluator: &StageEvaluator,
-        stats: &mut crate::BackendStats,
-    ) -> bool {
-        self.prepare
-            .prepare_view(camera, list, scene, assets, evaluator, stats)
-    }
-
     fn draw(&self, rank: usize) -> PreparedDraw {
         self.prepare
             .draws
@@ -785,346 +832,74 @@ impl WorldPrepare {
         evaluator: &StageEvaluator,
         stats: &mut crate::BackendStats,
     ) -> bool {
-        self.primitive_count = 0;
-        self.stage_count = 0;
-        self.coverage_count = 0;
+        if !self.begin_view(camera, list, scene, assets, stats) {
+            return false;
+        }
+        let references = list.surfaces(scene.surfaces);
+        if !self.geometry.prepare_references(
+            camera,
+            references,
+            references.first().map(|r| r.world),
+            assets,
+            evaluator,
+            RgbaInput::Live {
+                prepared: &mut self.rgba_prepared,
+                colors: &mut self.rgba_colors,
+            },
+            stats,
+        ) {
+            return false;
+        }
+        self.finish_view(camera, list, scene, assets, evaluator, stats)
+    }
+    fn begin_view(
+        &mut self,
+        camera: &Camera,
+        list: &CommandList,
+        scene: SceneRanges,
+        assets: &Assets,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
+        self.geometry.primitive_count = 0;
+        self.geometry.stage_count = 0;
+        self.geometry.coverage_count = 0;
         self.opaque_count = 0;
         self.draw_count = 0;
         self.bins.clear();
         self.background = None;
         if list.draws(scene.draws).len() > self.draws.len() {
-            self.reject(stats);
+            self.geometry.reject(stats);
             return false;
         }
         self.collect_skies(camera, list, scene, assets, stats);
-        let references = list.surfaces(scene.surfaces);
-        let reference_base = scene.surfaces.first;
-        self.reference_base = reference_base;
-        if references.len() > self.surface_draws.len() {
-            self.reject(stats);
+        self.reference_base = scene.surfaces.first;
+        if list.surfaces(scene.surfaces).len() > self.geometry.surface_draws.len() {
+            self.geometry.reject(stats);
             return false;
         }
-        self.surface_draws[..references.len()].fill(PreparedDraw::Skip);
+        true
+    }
+    fn finish_view(
+        &mut self,
+        camera: &Camera,
+        list: &CommandList,
+        scene: SceneRanges,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
+        let references = list.surfaces(scene.surfaces);
+        let certified = self.geometry.certified;
         let mut background = None;
-        let first_world = references.first().map(|r| r.world);
-        let mut certified = first_world.is_some_and(|id| {
-            assets
-                .world(id)
-                .is_some_and(|world| world.geometry().partition == GeometryPartition::SplitBsp)
-        });
-        for (reference_index, reference) in references.iter().enumerate() {
-            certified &= Some(reference.world) == first_world;
-            let Some(world) = assets.world(reference.world) else {
-                self.reject(stats);
-                continue;
-            };
-            let Some(surface) = world.geometry().surfaces.get(reference.surface as usize) else {
-                self.reject(stats);
-                continue;
-            };
-            let Some(binding) = world.bindings().get(reference.surface as usize) else {
-                self.reject(stats);
-                continue;
-            };
-            let Some(material) = assets.material(binding.material) else {
-                self.reject(stats);
-                continue;
-            };
-            let Some(info) = self
-                .catalog
-                .offsets
-                .get(reference.world.0 as usize)
-                .and_then(|offset| {
-                    self.catalog
-                        .surfaces
-                        .get(offset + reference.surface as usize)
-                })
-                .copied()
-            else {
-                self.reject(stats);
-                continue;
-            };
-            if info.raster_empty {
-                continue;
-            }
-            if material.settings.sky.is_some() {
-                if self
-                    .catalog
-                    .skies
-                    .get(binding.material.0 as usize)
-                    .is_some_and(|batch| batch.enabled)
-                    && matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
-                {
-                    stats.surfaces = stats.surfaces.saturating_add(1);
-                    continue;
-                }
-                let Some(source) = info.sky else {
-                    self.reject(stats);
-                    continue;
-                };
-                if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Indexed { palette, .. } if assets.palette(palette).is_some())
-                {
-                    self.reject(stats);
-                    continue;
-                }
-                if self.add_sky(
-                    camera, *reference, source, material, assets, evaluator, stats,
-                ) {
-                    stats.surfaces = stats.surfaces.saturating_add(1);
-                    if matches!(source, super::sky::Source::BackgroundCube { .. }) {
-                        if background.is_some_and(|old| old != source) {
-                            // Multiple independently selected full-view backgrounds
-                            // need a combined-game policy, not a backend sorter.
-                            self.reject(stats);
-                        } else {
-                            background = Some(source);
-                        }
-                    }
-                }
-                continue;
-            }
-            if material.stages.is_empty()
-                || material.settings.fog.is_some()
-                || material.settings.portal
-                || material.settings.polygon_offset
-            {
-                self.reject(stats);
-                continue;
-            }
-            certified &= material.settings.deforms.iter().all(Option::is_none);
-            let inputs = DrawInputs {
-                time_ms: camera.refdef.time_ms,
-                view_origin: camera.refdef.origin,
-                identity_light: camera.refdef.identity_light,
-                lightmap: binding.lightmap,
-                texture_scale: binding.texture_scale,
-                ..DrawInputs::default()
-            };
-            let Ok(base) = evaluator.prepare(&material.stages[0], material.settings, inputs) else {
-                self.reject(stats);
-                continue;
-            };
-            let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
-                self.reject(stats);
-                continue;
-            };
-            let native = match camera.refdef.cpu_presentation {
-                CpuPresentation::Rgb => None,
-                CpuPresentation::Indexed { palette, .. } => {
-                    if assets.palette(palette).is_none()
-                        || !info.cache_supported
-                        || !cached_material(material)
-                        || assets
-                            .image(base.image)
-                            .is_none_or(|image| image.indexed.is_none())
-                    {
-                        self.reject(stats);
-                        continue;
-                    }
-                    Some(base.image)
-                }
-            };
-            // An eye-plane wall has no coverage. Projected f32 rounding can
-            // produce a tiny area, but native gradients have no finite depth.
-            if native.is_some()
-                && surface
-                    .plane
-                    .is_some_and(|plane| plane.distance == plane.normal.dot(camera.refdef.origin))
-            {
-                continue;
-            }
-            let overlay = material.stages[0].blend.is_some()
-                || material.stages[0].alpha_test != AlphaFunc::None
-                || !material.stages[0].depth_write
-                || material.stages[0].depth_func != DepthFunc::Lequal
-                || native.is_some_and(|image| {
-                    assets
-                        .image(image)
-                        .and_then(|i| i.indexed.as_ref())
-                        .is_some_and(|t| t.cutout())
-                });
-            let loops = surface.boundaries.indices();
-            if loops.is_empty() {
-                self.reject(stats);
-                continue;
-            }
-            let before = self.primitive_count;
-            for boundary in loops {
-                if self.primitive_count == self.primitives.len() {
-                    self.reject(stats);
-                    break;
-                }
-                let mut primitive = Primitive {
-                    world: reference.world,
-                    surface: reference.surface,
-                    boundary: boundary as u32,
-                    depth_key: reference.depth_key,
-                    draw_rank: reference.draw_rank,
-                    cache: info.cache,
-                    cache_image: native,
-                    sky: None,
-                    mip: 0,
-                    fixed_adjust: [0; 2],
-                    planes: Planes::default(),
-                    overlay,
-                    first_stage: self.stage_count,
-                    stages: 0,
-                    deforms,
-                    patch: surface.patch.is_some(),
-                    rgba: if native.is_none() {
-                        self.catalog
-                            .boundary_offsets
-                            .get(reference.world.0 as usize)
-                            .map(|offset| offset + boundary)
-                            .filter(|&index| {
-                                self.catalog.rgba[index]
-                                    .as_ref()
-                                    .is_some_and(|recipe| recipe.current(assets))
-                            })
-                    } else {
-                        None
-                    },
-                    ..Primitive::default()
-                };
-                if let Some(index) = primitive.rgba {
-                    let prepared = self.catalog.rgba[index].as_ref().and_then(|recipe| {
-                        recipe.prepare_cached(
-                            &camera.refdef,
-                            evaluator,
-                            &mut self.rgba_colors[index],
-                        )
-                    });
-                    if let Some(prepared) = prepared {
-                        self.rgba_prepared[index] = Some(prepared);
-                    } else {
-                        primitive.rgba = None;
-                    }
-                }
-                let product = primitive.rgba.is_some_and(|index| {
-                    self.catalog.rgba[index]
-                        .as_ref()
-                        .is_some_and(|recipe| recipe.product())
-                });
-                let Some(count) = self.prepare_clip(
-                    camera,
-                    assets,
-                    primitive,
-                    if native.is_some() || product {
-                        None
-                    } else {
-                        Some(base)
-                    },
-                    evaluator,
-                ) else {
-                    self.reject(stats);
-                    continue;
-                };
-                if count < 3 {
-                    continue;
-                }
-                let area = polygon_area(&self.screen[..count]);
-                if area == 0.0
-                    || match material.settings.cull {
-                        Cull::Front => area < 0.0,
-                        Cull::Back => area > 0.0,
-                        Cull::None => false,
-                    }
-                {
-                    continue;
-                }
-                if native.is_some() {
-                    let nearzi = self.screen[..count]
-                        .iter()
-                        .map(|v| v.inverse_depth)
-                        .fold(0.0, f32::max);
-                    let scale = (camera.refdef.viewport.width as f32 / (2.0 * camera.tangent[0]))
-                        .max(camera.refdef.viewport.height as f32 / (2.0 * camera.tangent[1]));
-                    let distance = nearzi * scale * info.mip_adjust;
-                    primitive.mip = if distance >= 1.0 {
-                        0
-                    } else if distance >= 0.4 {
-                        1
-                    } else if distance >= 0.2 {
-                        2
-                    } else {
-                        3
-                    };
-                    let Some((planes, adjust)) = native_planes(camera, surface, primitive.mip)
-                    else {
-                        self.reject(stats);
-                        continue;
-                    };
-                    primitive.planes = planes;
-                    primitive.fixed_adjust = adjust;
-                } else if product {
-                    let Some(planes) = Planes::load(&self.screen[..count]) else {
-                        self.reject(stats);
-                        continue;
-                    };
-                    primitive.planes = planes;
-                    stats.stages = stats.stages.saturating_add(2);
-                } else {
-                    if self.stage_count + material.stages.len() > self.stages.len() {
-                        self.reject(stats);
-                        continue;
-                    }
-                    let mut valid = true;
-                    for (stage_index, stage) in material.stages.iter().enumerate() {
-                        let Ok(prepared) = evaluator.prepare(stage, material.settings, inputs)
-                        else {
-                            valid = false;
-                            break;
-                        };
-                        let Some(image) = assets.image(prepared.image) else {
-                            valid = false;
-                            break;
-                        };
-                        let stage_count = if stage_index == 0 {
-                            Some(count)
-                        } else {
-                            self.clip
-                                .project_stage(prepared, evaluator, &mut self.screen)
-                        };
-                        let Some(stage_count) = stage_count else {
-                            valid = false;
-                            break;
-                        };
-                        let Some(planes) = Planes::load(&self.screen[..stage_count]) else {
-                            valid = false;
-                            break;
-                        };
-                        self.stages[self.stage_count] = StagePlanes {
-                            prepared: Some(prepared),
-                            planes,
-                            sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
-                        };
-                        self.stage_count += 1;
-                        primitive.stages += 1;
-                    }
-                    if !valid {
-                        self.stage_count = primitive.first_stage;
-                        self.reject(stats);
-                        continue;
-                    }
-                    primitive.planes = self.stages[primitive.first_stage].planes;
-                }
-                if !self.keep_coverage(&mut primitive, count) {
-                    self.stage_count = primitive.first_stage;
-                    self.reject(stats);
-                    continue;
-                }
-                self.primitives[self.primitive_count] = primitive;
-                self.primitive_count += 1;
-            }
-            if self.primitive_count > before {
-                stats.surfaces = stats.surfaces.saturating_add(1);
-                if self.primitives[before..self.primitive_count]
-                    .iter()
-                    .any(|p| p.overlay)
-                {
-                    self.surface_draws[reference_index] =
-                        PreparedDraw::Surface([before, self.primitive_count]);
-                }
+        for source in self.geometry.backgrounds[..references.len()]
+            .iter()
+            .copied()
+            .flatten()
+        {
+            if background.is_some_and(|old| old != source) {
+                reject(&mut self.geometry.stats, stats);
+            } else {
+                background = Some(source);
             }
         }
         self.policy = if certified {
@@ -1134,7 +909,7 @@ impl WorldPrepare {
         };
         self.background = background
             .and_then(|source| super::sky::BackgroundDraw::prepare(source, camera, assets));
-        self.opaque_count = self.primitive_count;
+        self.opaque_count = self.geometry.primitive_count;
         for (rank, &item) in list.draws(scene.draws).iter().enumerate() {
             self.draws[rank] =
                 self.prepare_draw(camera, item, rank as u32, list, assets, evaluator, stats);
@@ -1144,28 +919,24 @@ impl WorldPrepare {
             camera.refdef.viewport,
             self.policy,
             self.opaque_count,
-            &self.primitives[..self.primitive_count],
-            &self.coverage[..self.coverage_count],
+            &self.geometry.primitives[..self.geometry.primitive_count],
+            &self.geometry.coverage[..self.geometry.coverage_count],
         );
-        self.stats.polygons = self
+        self.geometry.stats.polygons = self
+            .geometry
             .stats
             .polygons
-            .saturating_add(self.primitive_count as u64);
-        self.stats.patch_polygons = self.stats.patch_polygons.saturating_add(
-            self.primitives[..self.primitive_count]
+            .saturating_add(self.geometry.primitive_count as u64);
+        self.geometry.stats.patch_polygons = self.geometry.stats.patch_polygons.saturating_add(
+            self.geometry.primitives[..self.geometry.primitive_count]
                 .iter()
                 .filter(|p| p.patch)
                 .count() as u64,
         );
         stats.stages = stats
             .stages
-            .saturating_add(self.stage_count.min(u32::MAX as usize) as u32);
+            .saturating_add(self.geometry.stage_count.min(u32::MAX as usize) as u32);
         true
-    }
-
-    fn reject(&mut self, stats: &mut crate::BackendStats) {
-        self.stats.rejected = self.stats.rejected.saturating_add(1);
-        stats.rejected = stats.rejected.saturating_add(1);
     }
 
     #[expect(
@@ -1277,7 +1048,7 @@ impl WorldPrepare {
             .clip
             .add_polygon(&points, camera.refdef.origin)
         {
-            self.reject(stats);
+            self.geometry.reject(stats);
         }
     }
 
@@ -1302,7 +1073,7 @@ impl WorldPrepare {
             DrawKind::Surface => item
                 .index
                 .checked_sub(self.reference_base)
-                .and_then(|index| self.surface_draws.get(index as usize))
+                .and_then(|index| self.geometry.surface_draws.get(index as usize))
                 .copied()
                 .unwrap_or(PreparedDraw::Skip),
             _ => PreparedDraw::External,
@@ -1331,7 +1102,7 @@ impl WorldPrepare {
             return PreparedDraw::Skip;
         }
         let Some(material) = assets.material(id) else {
-            self.reject(stats);
+            self.geometry.reject(stats);
             return PreparedDraw::Skip;
         };
         let Some(Sky::Cube {
@@ -1355,7 +1126,7 @@ impl WorldPrepare {
             identity_light: camera.refdef.identity_light,
             ..DrawInputs::default()
         };
-        let old_primitive_count = self.primitive_count;
+        let old_primitive_count = self.geometry.primitive_count;
         let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);
         if let Some(images) = outer_box {
             let settings = MaterialSettings {
@@ -1419,11 +1190,11 @@ impl WorldPrepare {
                     ..Stage::default()
                 };
                 let Ok(prepared) = evaluator.prepare(&stage, settings, inputs) else {
-                    self.reject(stats);
+                    self.geometry.reject(stats);
                     continue;
                 };
                 self.sky_stages[0] = Some(prepared);
-                self.add_generated_sky(
+                self.geometry.add_generated_sky(
                     camera,
                     &vertices,
                     1,
@@ -1431,17 +1202,18 @@ impl WorldPrepare {
                     Cull::None,
                     rank,
                     depth_override,
+                    &self.sky_stages,
                     assets,
                     evaluator,
                     stats,
                 );
             }
         }
-        let boxes = [old_primitive_count, self.primitive_count];
-        let first_cloud = self.primitive_count;
+        let boxes = [old_primitive_count, self.geometry.primitive_count];
+        let first_cloud = self.geometry.primitive_count;
         if !material.stages.is_empty() {
             let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
-                self.reject(stats);
+                self.geometry.reject(stats);
                 return PreparedDraw::Sky {
                     boxes,
                     clouds: [first_cloud, first_cloud],
@@ -1484,7 +1256,7 @@ impl WorldPrepare {
                             ] {
                                 let Some(grid) = self.catalog.skies[id.0 as usize].cloud.as_ref()
                                 else {
-                                    self.reject(stats);
+                                    self.geometry.reject(stats);
                                     continue;
                                 };
                                 let vertices = cell.map(|[s, t]| {
@@ -1502,7 +1274,7 @@ impl WorldPrepare {
                                         ..Vertex::default()
                                     }
                                 });
-                                self.add_generated_sky(
+                                self.geometry.add_generated_sky(
                                     camera,
                                     &vertices,
                                     material.stages.len(),
@@ -1510,6 +1282,7 @@ impl WorldPrepare {
                                     material.settings.cull,
                                     rank,
                                     depth_override,
+                                    &self.sky_stages,
                                     assets,
                                     evaluator,
                                     stats,
@@ -1519,15 +1292,357 @@ impl WorldPrepare {
                     }
                 }
             } else {
-                self.reject(stats);
+                self.geometry.reject(stats);
             }
         }
         PreparedDraw::Sky {
             boxes,
-            clouds: [first_cloud, self.primitive_count],
+            clouds: [first_cloud, self.geometry.primitive_count],
         }
     }
+}
 
+impl SurfacePrepare {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Scoped reference preparation has independent frozen inputs"
+    )]
+    fn prepare_references(
+        &mut self,
+        camera: &Camera,
+        references: &[SurfaceRef],
+        first_world: Option<WorldId>,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+        mut rgba: RgbaInput<'_>,
+        stats: &mut crate::BackendStats,
+    ) -> bool {
+        self.primitive_count = 0;
+        self.stage_count = 0;
+        self.coverage_count = 0;
+        self.capacity_exhausted = false;
+        if references.len() > self.surface_draws.len() {
+            self.reject(stats);
+            return false;
+        }
+        self.surface_draws[..references.len()].fill(PreparedDraw::Skip);
+        self.backgrounds[..references.len()].fill(None);
+        let mut certified = first_world.is_some_and(|id| {
+            assets
+                .world(id)
+                .is_some_and(|world| world.geometry().partition == GeometryPartition::SplitBsp)
+        });
+        for (reference_index, reference) in references.iter().enumerate() {
+            certified &= Some(reference.world) == first_world;
+            let Some(world) = assets.world(reference.world) else {
+                self.reject(stats);
+                continue;
+            };
+            let Some(surface) = world.geometry().surfaces.get(reference.surface as usize) else {
+                self.reject(stats);
+                continue;
+            };
+            let Some(binding) = world.bindings().get(reference.surface as usize) else {
+                self.reject(stats);
+                continue;
+            };
+            let Some(material) = assets.material(binding.material) else {
+                self.reject(stats);
+                continue;
+            };
+            let Some(info) = self
+                .catalog
+                .offsets
+                .get(reference.world.0 as usize)
+                .and_then(|offset| {
+                    self.catalog
+                        .surfaces
+                        .get(offset + reference.surface as usize)
+                })
+                .copied()
+            else {
+                self.reject(stats);
+                continue;
+            };
+            if info.raster_empty {
+                continue;
+            }
+            if material.settings.sky.is_some() {
+                if self
+                    .catalog
+                    .skies
+                    .get(binding.material.0 as usize)
+                    .is_some_and(|batch| batch.enabled)
+                    && matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
+                {
+                    stats.surfaces = stats.surfaces.saturating_add(1);
+                    continue;
+                }
+                let Some(source) = info.sky else {
+                    self.reject(stats);
+                    continue;
+                };
+                if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Indexed { palette, .. } if assets.palette(palette).is_some())
+                {
+                    self.reject(stats);
+                    continue;
+                }
+                if self.add_sky(
+                    camera, *reference, source, material, assets, evaluator, stats,
+                ) {
+                    stats.surfaces = stats.surfaces.saturating_add(1);
+                    if matches!(source, super::sky::Source::BackgroundCube { .. }) {
+                        self.backgrounds[reference_index] = Some(source);
+                    }
+                }
+                continue;
+            }
+            if material.stages.is_empty()
+                || material.settings.fog.is_some()
+                || material.settings.portal
+                || material.settings.polygon_offset
+            {
+                self.reject(stats);
+                continue;
+            }
+            certified &= material.settings.deforms.iter().all(Option::is_none);
+            let inputs = DrawInputs {
+                time_ms: camera.refdef.time_ms,
+                view_origin: camera.refdef.origin,
+                identity_light: camera.refdef.identity_light,
+                lightmap: binding.lightmap,
+                texture_scale: binding.texture_scale,
+                ..DrawInputs::default()
+            };
+            let Ok(base) = evaluator.prepare(&material.stages[0], material.settings, inputs) else {
+                self.reject(stats);
+                continue;
+            };
+            let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
+                self.reject(stats);
+                continue;
+            };
+            let native = match camera.refdef.cpu_presentation {
+                CpuPresentation::Rgb => None,
+                CpuPresentation::Indexed { palette, .. } => {
+                    if assets.palette(palette).is_none()
+                        || !info.cache_supported
+                        || !cached_material(material)
+                        || assets
+                            .image(base.image)
+                            .is_none_or(|image| image.indexed.is_none())
+                    {
+                        self.reject(stats);
+                        continue;
+                    }
+                    Some(base.image)
+                }
+            };
+            // An eye-plane wall has no coverage. Projected f32 rounding can
+            // produce a tiny area, but native gradients have no finite depth.
+            if native.is_some()
+                && surface
+                    .plane
+                    .is_some_and(|plane| plane.distance == plane.normal.dot(camera.refdef.origin))
+            {
+                continue;
+            }
+            let overlay = material.stages[0].blend.is_some()
+                || material.stages[0].alpha_test != AlphaFunc::None
+                || !material.stages[0].depth_write
+                || material.stages[0].depth_func != DepthFunc::Lequal
+                || native.is_some_and(|image| {
+                    assets
+                        .image(image)
+                        .and_then(|i| i.indexed.as_ref())
+                        .is_some_and(|t| t.cutout())
+                });
+            let loops = surface.boundaries.indices();
+            if loops.is_empty() {
+                self.reject(stats);
+                continue;
+            }
+            let before = self.primitive_count;
+            for boundary in loops {
+                if self.primitive_count == self.primitives.len() {
+                    self.capacity_exhausted = true;
+                    self.reject(stats);
+                    break;
+                }
+                let mut primitive = Primitive {
+                    world: reference.world,
+                    surface: reference.surface,
+                    boundary: boundary as u32,
+                    depth_key: reference.depth_key,
+                    draw_rank: reference.draw_rank,
+                    cache: info.cache,
+                    cache_image: native,
+                    sky: None,
+                    mip: 0,
+                    fixed_adjust: [0; 2],
+                    planes: Planes::default(),
+                    overlay,
+                    first_stage: self.stage_count,
+                    stages: 0,
+                    deforms,
+                    patch: surface.patch.is_some(),
+                    rgba: if native.is_none() {
+                        self.catalog
+                            .boundary_offsets
+                            .get(reference.world.0 as usize)
+                            .map(|offset| offset + boundary)
+                            .filter(|&index| {
+                                self.catalog.rgba[index]
+                                    .as_ref()
+                                    .is_some_and(|recipe| recipe.current(assets))
+                            })
+                    } else {
+                        None
+                    },
+                    ..Primitive::default()
+                };
+                if let Some(index) = primitive.rgba {
+                    let prepared = self.catalog.rgba[index]
+                        .as_ref()
+                        .and_then(|recipe| rgba.resolve(index, recipe, &camera.refdef, evaluator));
+                    if prepared.is_none() {
+                        primitive.rgba = None;
+                    }
+                }
+                let product = primitive.rgba.is_some_and(|index| {
+                    self.catalog.rgba[index]
+                        .as_ref()
+                        .is_some_and(|recipe| recipe.product())
+                });
+                let Some(count) = self.prepare_clip(
+                    camera,
+                    assets,
+                    primitive,
+                    if native.is_some() || product {
+                        None
+                    } else {
+                        Some(base)
+                    },
+                    evaluator,
+                ) else {
+                    self.reject(stats);
+                    continue;
+                };
+                if count < 3 {
+                    continue;
+                }
+                let area = polygon_area(&self.screen[..count]);
+                if area == 0.0
+                    || match material.settings.cull {
+                        Cull::Front => area < 0.0,
+                        Cull::Back => area > 0.0,
+                        Cull::None => false,
+                    }
+                {
+                    continue;
+                }
+                if native.is_some() {
+                    let nearzi = self.screen[..count]
+                        .iter()
+                        .map(|v| v.inverse_depth)
+                        .fold(0.0, f32::max);
+                    let scale = (camera.refdef.viewport.width as f32 / (2.0 * camera.tangent[0]))
+                        .max(camera.refdef.viewport.height as f32 / (2.0 * camera.tangent[1]));
+                    let distance = nearzi * scale * info.mip_adjust;
+                    primitive.mip = if distance >= 1.0 {
+                        0
+                    } else if distance >= 0.4 {
+                        1
+                    } else if distance >= 0.2 {
+                        2
+                    } else {
+                        3
+                    };
+                    let Some((planes, adjust)) = native_planes(camera, surface, primitive.mip)
+                    else {
+                        self.reject(stats);
+                        continue;
+                    };
+                    primitive.planes = planes;
+                    primitive.fixed_adjust = adjust;
+                } else if product {
+                    let Some(planes) = Planes::load(&self.screen[..count]) else {
+                        self.reject(stats);
+                        continue;
+                    };
+                    primitive.planes = planes;
+                    stats.stages = stats.stages.saturating_add(2);
+                } else {
+                    if self.stage_count + material.stages.len() > self.stages.len() {
+                        self.capacity_exhausted = true;
+                        self.reject(stats);
+                        continue;
+                    }
+                    let mut valid = true;
+                    for (stage_index, stage) in material.stages.iter().enumerate() {
+                        let Ok(prepared) = evaluator.prepare(stage, material.settings, inputs)
+                        else {
+                            valid = false;
+                            break;
+                        };
+                        let Some(image) = assets.image(prepared.image) else {
+                            valid = false;
+                            break;
+                        };
+                        let stage_count = if stage_index == 0 {
+                            Some(count)
+                        } else {
+                            self.clip
+                                .project_stage(prepared, evaluator, &mut self.screen)
+                        };
+                        let Some(stage_count) = stage_count else {
+                            valid = false;
+                            break;
+                        };
+                        let Some(planes) = Planes::load(&self.screen[..stage_count]) else {
+                            valid = false;
+                            break;
+                        };
+                        self.stages[self.stage_count] = StagePlanes {
+                            prepared: Some(prepared),
+                            planes,
+                            sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
+                        };
+                        self.stage_count += 1;
+                        primitive.stages += 1;
+                    }
+                    if !valid {
+                        self.stage_count = primitive.first_stage;
+                        self.reject(stats);
+                        continue;
+                    }
+                    primitive.planes = self.stages[primitive.first_stage].planes;
+                }
+                if !self.keep_coverage(&mut primitive, count) {
+                    self.stage_count = primitive.first_stage;
+                    self.reject(stats);
+                    continue;
+                }
+                self.primitives[self.primitive_count] = primitive;
+                self.primitive_count += 1;
+            }
+            if self.primitive_count > before {
+                stats.surfaces = stats.surfaces.saturating_add(1);
+                if self.primitives[before..self.primitive_count]
+                    .iter()
+                    .any(|p| p.overlay)
+                {
+                    self.surface_draws[reference_index] =
+                        PreparedDraw::Surface([before, self.primitive_count]);
+                }
+            }
+        }
+        self.certified = certified;
+        true
+    }
+    fn reject(&mut self, stats: &mut crate::BackendStats) {
+        reject(&mut self.stats, stats);
+    }
     #[expect(
         clippy::too_many_arguments,
         reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
@@ -1541,6 +1656,7 @@ impl WorldPrepare {
         cull: Cull,
         rank: u32,
         depth_override: Option<f32>,
+        sky_stages: &[Option<PreparedStage>],
         assets: &Assets,
         evaluator: &StageEvaluator,
         stats: &mut crate::BackendStats,
@@ -1559,7 +1675,7 @@ impl WorldPrepare {
             depth_override,
             ..Primitive::default()
         };
-        let Some(base) = self.sky_stages.first().copied().flatten() else {
+        let Some(base) = sky_stages.first().copied().flatten() else {
             self.reject(stats);
             return;
         };
@@ -1592,8 +1708,8 @@ impl WorldPrepare {
         {
             return;
         }
-        for stage in 0..stages {
-            let Some(prepared) = self.sky_stages[stage] else {
+        for (stage, prepared) in sky_stages[..stages].iter().copied().enumerate() {
+            let Some(prepared) = prepared else {
                 self.stage_count = primitive.first_stage;
                 self.reject(stats);
                 return;
@@ -1692,6 +1808,7 @@ impl WorldPrepare {
                 continue;
             };
             if self.primitive_count == self.primitives.len() {
+                self.capacity_exhausted = true;
                 self.reject(stats);
                 break;
             }
@@ -1767,9 +1884,11 @@ impl WorldPrepare {
 
     fn keep_coverage(&mut self, primitive: &mut Primitive, count: usize) -> bool {
         let Some(end) = self.coverage_count.checked_add(count) else {
+            self.capacity_exhausted = true;
             return false;
         };
         let Some(target) = self.coverage.get_mut(self.coverage_count..end) else {
+            self.capacity_exhausted = true;
             return false;
         };
         target.copy_from_slice(&self.projected[..count]);
@@ -2055,9 +2174,10 @@ fn add_edge_stats(stats: &mut WorldStats, edges: crate::edges::Stats) {
     clippy::too_many_arguments,
     reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
 )]
-fn consume_span(
+fn consume_spans(
     width: u32,
-    span: Span,
+    spans: span_groups::SpanChain<'_>,
+    mips: &mut [[u8; 2]],
     primitive: Primitive,
     stages: &[StagePlanes],
     cache: &mut SurfaceCache,
@@ -2072,21 +2192,24 @@ fn consume_span(
     let refdef = &camera.refdef;
     if let Some(source) = primitive.sky {
         let depth = primitive.planes.inverse_depth;
-        super::sky::layered_span(
-            width,
-            buffers.frame_height,
-            span,
-            source,
-            camera,
-            assets,
-            [depth.x, depth.y, depth.origin],
-            primitive.draw_rank,
-            buffers,
-            stats,
-        );
+        for (_, span) in spans {
+            super::sky::layered_span(
+                width,
+                buffers.frame_height,
+                span,
+                source,
+                camera,
+                assets,
+                [depth.x, depth.y, depth.origin],
+                primitive.draw_rank,
+                buffers,
+                stats,
+            );
+        }
         return;
     }
     if let Some(image) = primitive.cache_image {
+        let count = spans.count() as u64;
         let CpuPresentation::Indexed {
             palette,
             lighting,
@@ -2094,19 +2217,19 @@ fn consume_span(
             fullbright,
         } = refdef.cpu_presentation
         else {
-            stats.rejected += 1;
+            stats.rejected += count;
             return;
         };
         let Some(texture) = assets.image(image).and_then(|image| image.indexed.as_ref()) else {
-            stats.rejected += 1;
+            stats.rejected += count;
             return;
         };
         let Some(palette_resource) = assets.palette(palette) else {
-            stats.rejected += 1;
+            stats.rejected += count;
             return;
         };
         let Some(source) = cache.surface(primitive.cache) else {
-            stats.rejected += 1;
+            stats.rejected += count;
             return;
         };
         let styles = source.lightmap().map_or([255; 4], |grid| grid.styles());
@@ -2125,7 +2248,7 @@ fn consume_span(
             ..BuildState::default()
         };
         if !cache.begin_batch() {
-            stats.rejected += 1;
+            stats.rejected += count;
             return;
         }
         let cached = cache.prepare(
@@ -2137,136 +2260,153 @@ fn consume_span(
         );
         if let Some(cached) = cached {
             if let Some(texels) = cache.pixels(cached) {
-                let before = stats.pixels;
-                stats.indexed_spans = stats.indexed_spans.saturating_add(1);
-                native_span(
-                    width,
-                    span,
-                    primitive.planes,
-                    primitive.fixed_adjust,
-                    primitive.draw_rank,
-                    cached.width,
-                    cached.height,
-                    cached.transparent_index,
-                    texels,
-                    palette_resource,
-                    palette.0,
-                    refdef.perspective_step.pixels(),
-                    buffers,
-                    stats,
-                );
-                stats.indexed_pixels = stats
-                    .indexed_pixels
-                    .saturating_add(stats.pixels.saturating_sub(before));
+                for (_, span) in spans {
+                    let before = stats.pixels;
+                    stats.indexed_spans = stats.indexed_spans.saturating_add(1);
+                    native_span(
+                        width,
+                        span,
+                        primitive.planes,
+                        primitive.fixed_adjust,
+                        primitive.draw_rank,
+                        cached.width,
+                        cached.height,
+                        cached.transparent_index,
+                        texels,
+                        palette_resource,
+                        palette.0,
+                        refdef.perspective_step.pixels(),
+                        buffers,
+                        stats,
+                    );
+                    stats.indexed_pixels = stats
+                        .indexed_pixels
+                        .saturating_add(stats.pixels.saturating_sub(before));
+                }
             } else {
-                stats.rejected += 1;
+                stats.rejected += count;
             }
         } else {
-            stats.rejected += 1;
+            stats.rejected += count;
         }
         cache.end_batch();
     } else if let Some(index) = primitive.rgba {
         let (Some(recipe), Some(prepared)) = (rgba[index].as_ref(), rgba_prepared[index].as_ref())
         else {
-            stats.rejected += 1;
+            stats.rejected += spans.count() as u64;
             return;
         };
         match (recipe, prepared) {
             (super::rgba::Recipe::Product(recipe), super::rgba::Prepared::Product(prepared)) => {
-                rgba_span(
-                    width, span, primitive, recipe, prepared, cache, assets, buffers, stats,
+                rgba_spans(
+                    width, spans, mips, primitive, recipe, prepared, cache, assets, buffers, stats,
                 );
             }
             (super::rgba::Recipe::Pair(pair), super::rgba::Prepared::Pair) => {
-                factor_span(
-                    width, span, primitive, pair, stages, factors, cache, assets, buffers, stats,
+                factor_spans(
+                    width, spans, mips, primitive, pair, stages, factors, cache, assets, buffers,
+                    stats,
                 );
             }
-            _ => stats.rejected = stats.rejected.saturating_add(1),
+            _ => stats.rejected = stats.rejected.saturating_add(spans.count() as u64),
         }
     } else {
-        for stage in &stages[primitive.first_stage..primitive.first_stage + primitive.stages] {
-            let Some(prepared) = stage.prepared else {
+        for (_, span) in spans {
+            stage_span(width, span, primitive, stages, assets, buffers, stats);
+        }
+    }
+}
+
+fn stage_span(
+    width: u32,
+    span: Span,
+    primitive: Primitive,
+    stages: &[StagePlanes],
+    assets: &Assets,
+    buffers: &mut Buffers<'_>,
+    stats: &mut WorldStats,
+) {
+    for stage in &stages[primitive.first_stage..primitive.first_stage + primitive.stages] {
+        let Some(prepared) = stage.prepared else {
+            stats.rejected += 1;
+            continue;
+        };
+        let Some(image) = assets.image(prepared.image) else {
+            stats.rejected += 1;
+            continue;
+        };
+        let Some(sampler) = stage.sampler else {
+            stats.rejected += 1;
+            continue;
+        };
+        let midpoint = span.x as f32 + span.count as f32 * 0.5;
+        let mip = stage
+            .planes
+            .mip(image, prepared.stage.sampler, midpoint, span.y as f32);
+        let mut texels = super::TexelView::image(image, mip, prepared.stage.texture_intensity);
+        if prepared.stage.texture == StageTexture::Lightmap
+            && primitive.domain == PrimitiveDomain::WorldSurface
+        {
+            let Some(bounded) = texels.region(
+                assets
+                    .world(primitive.world)
+                    .and_then(|world| world.bindings().get(primitive.surface as usize))
+                    .and_then(|binding| binding.lightmap_region),
+            ) else {
                 stats.rejected += 1;
                 continue;
             };
-            let Some(image) = assets.image(prepared.image) else {
-                stats.rejected += 1;
+            texels = bounded;
+        }
+        let before = stats.pixels;
+        for x in span.x..span.x + span.count {
+            let px = x as f32;
+            let py = span.y as f32;
+            let zi = stage.planes.inverse_depth.at(px, py);
+            if zi <= 0.0 || !zi.is_finite() {
                 continue;
-            };
-            let Some(sampler) = stage.sampler else {
-                stats.rejected += 1;
-                continue;
-            };
-            let midpoint = span.x as f32 + span.count as f32 * 0.5;
-            let mip = stage
-                .planes
-                .mip(image, prepared.stage.sampler, midpoint, span.y as f32);
-            let mut texels = super::TexelView::image(image, mip, prepared.stage.texture_intensity);
-            if prepared.stage.texture == StageTexture::Lightmap
-                && primitive.domain == PrimitiveDomain::WorldSurface
-            {
-                let Some(bounded) = texels.region(
-                    assets
-                        .world(primitive.world)
-                        .and_then(|world| world.bindings().get(primitive.surface as usize))
-                        .and_then(|binding| binding.lightmap_region),
-                ) else {
-                    stats.rejected += 1;
-                    continue;
-                };
-                texels = bounded;
             }
-            let before = stats.pixels;
-            for x in span.x..span.x + span.count {
-                let px = x as f32;
-                let py = span.y as f32;
-                let zi = stage.planes.inverse_depth.at(px, py);
-                if zi <= 0.0 || !zi.is_finite() {
-                    continue;
-                }
-                let index = buffers.offset(width, x, span.y);
-                let depth = primitive.depth_override.unwrap_or(zi);
-                if !super::depth_passes(
-                    prepared.stage.depth_func,
-                    depth,
-                    buffers.inverse_depth[index],
-                    primitive.draw_rank,
-                    buffers.depth_ranks[index],
-                ) {
-                    continue;
-                }
-                let z = 1.0 / zi;
-                let uv = stage.planes.texture.map(|plane| plane.at(px, py) * z);
-                let color = stage.planes.color.map(|plane| plane.at(px, py) * z);
-                let source = sampler(texels, uv, color);
-                if !alpha_pass(prepared.stage.alpha_test, source[3]) {
-                    continue;
-                }
-                buffers.pixels[index] =
-                    super::composite(buffers.pixels[index], source, prepared.stage.blend);
-                buffers.palettes[index] = u32::MAX;
-                if prepared.stage.depth_write {
-                    buffers.inverse_depth[index] = depth;
-                    buffers.depth_ranks[index] = primitive.draw_rank;
-                }
-                stats.pixels = stats.pixels.saturating_add(1);
+            let index = buffers.offset(width, x, span.y);
+            let depth = primitive.depth_override.unwrap_or(zi);
+            if !super::depth_passes(
+                prepared.stage.depth_func,
+                depth,
+                buffers.inverse_depth[index],
+                primitive.draw_rank,
+                buffers.depth_ranks[index],
+            ) {
+                continue;
             }
-            let written = stats.pixels.saturating_sub(before);
-            if primitive.domain == PrimitiveDomain::GeneratedSky {
-                stats.sky_spans = stats.sky_spans.saturating_add(1);
-                stats.sky_pixels = stats.sky_pixels.saturating_add(written);
-            } else {
-                stats.stage_spans = stats.stage_spans.saturating_add(1);
-                stats.stage_pixels = stats.stage_pixels.saturating_add(written);
-                if primitive.patch {
-                    stats.curve_spans = stats.curve_spans.saturating_add(1);
-                    stats.curve_pixels = stats.curve_pixels.saturating_add(written);
-                }
-                if primitive.stages > 1 {
-                    stats.multistage_spans = stats.multistage_spans.saturating_add(1);
-                    stats.multistage_pixels = stats.multistage_pixels.saturating_add(written);
-                }
+            let z = 1.0 / zi;
+            let uv = stage.planes.texture.map(|plane| plane.at(px, py) * z);
+            let color = stage.planes.color.map(|plane| plane.at(px, py) * z);
+            let source = sampler(texels, uv, color);
+            if !alpha_pass(prepared.stage.alpha_test, source[3]) {
+                continue;
+            }
+            buffers.pixels[index] =
+                super::composite(buffers.pixels[index], source, prepared.stage.blend);
+            buffers.palettes[index] = u32::MAX;
+            if prepared.stage.depth_write {
+                buffers.inverse_depth[index] = depth;
+                buffers.depth_ranks[index] = primitive.draw_rank;
+            }
+            stats.pixels = stats.pixels.saturating_add(1);
+        }
+        let written = stats.pixels.saturating_sub(before);
+        if primitive.domain == PrimitiveDomain::GeneratedSky {
+            stats.sky_spans = stats.sky_spans.saturating_add(1);
+            stats.sky_pixels = stats.sky_pixels.saturating_add(written);
+        } else {
+            stats.stage_spans = stats.stage_spans.saturating_add(1);
+            stats.stage_pixels = stats.stage_pixels.saturating_add(written);
+            if primitive.patch {
+                stats.curve_spans = stats.curve_spans.saturating_add(1);
+                stats.curve_pixels = stats.curve_pixels.saturating_add(written);
+            }
+            if primitive.stages > 1 {
+                stats.multistage_spans = stats.multistage_spans.saturating_add(1);
+                stats.multistage_pixels = stats.multistage_pixels.saturating_add(written);
             }
         }
     }
@@ -2276,9 +2416,10 @@ fn consume_span(
     clippy::too_many_arguments,
     reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
 )]
-fn factor_span(
+fn factor_spans(
     width: u32,
-    span: Span,
+    spans: span_groups::SpanChain<'_>,
+    choices: &mut [[u8; 2]],
     primitive: Primitive,
     pair: &super::rgba::Pair,
     stages: &[StagePlanes],
@@ -2293,137 +2434,161 @@ fn factor_span(
     let (Some(first), Some(second), Some(sample_a), Some(sample_b)) =
         (a.prepared, b.prepared, a.sampler, b.sampler)
     else {
-        stats.rejected = stats.rejected.saturating_add(1);
+        stats.rejected = stats.rejected.saturating_add(spans.count() as u64);
         return;
     };
     let (Some(image_a), Some(image_b)) = (assets.image(first.image), assets.image(second.image))
     else {
-        stats.rejected = stats.rejected.saturating_add(1);
+        stats.rejected = stats.rejected.saturating_add(spans.count() as u64);
         return;
     };
-    let midpoint = span.x as f32 + span.count as f32 * 0.5;
-    let mips = [
-        a.planes
-            .mip(image_a, first.stage.sampler, midpoint, span.y as f32),
-        b.planes
-            .mip(image_b, second.stage.sampler, midpoint, span.y as f32),
-    ];
+    let mut pairs = [0u32; 32];
+    let mut first_levels = 0u32;
+    for (index, span) in spans {
+        let midpoint = span.x as f32 + span.count as f32 * 0.5;
+        let mips = [
+            a.planes
+                .mip(image_a, first.stage.sampler, midpoint, span.y as f32),
+            b.planes
+                .mip(image_b, second.stage.sampler, midpoint, span.y as f32),
+        ];
+        choices[index] = mips;
+        first_levels |= 1 << mips[0];
+        pairs[mips[0] as usize] |= 1 << mips[1];
+    }
     let region = assets
         .world(primitive.world)
         .and_then(|world| world.bindings().get(primitive.surface as usize))
         .and_then(|binding| binding.lightmap_region);
-    let raw_a = super::TexelView::image(image_a, mips[0], first.stage.texture_intensity).region(
-        (first.stage.texture == StageTexture::Lightmap)
-            .then_some(region)
-            .flatten(),
-    );
-    let raw_b = super::TexelView::image(image_b, mips[1], second.stage.texture_intensity).region(
-        (second.stage.texture == StageTexture::Lightmap)
-            .then_some(region)
-            .flatten(),
-    );
-    let (Some(raw_a), Some(raw_b)) = (raw_a, raw_b) else {
-        stats.rejected = stats.rejected.saturating_add(1);
-        return;
-    };
-    let before_cache = cache.stats();
-    let active = cache.begin_batch();
-    let cached = if active {
-        [
-            factors[pair.factors[0]].prepare(mips[0], assets, cache),
-            factors[pair.factors[1]].prepare(mips[1], assets, cache),
-        ]
-    } else {
-        [None; 2]
-    };
-    let after_cache = cache.stats();
-    stats.factor_hits = stats
-        .factor_hits
-        .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
-    stats.factor_fills = stats
-        .factor_fills
-        .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
-    stats.factor_evictions = stats
-        .factor_evictions
-        .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
-    stats.factor_rejected = stats
-        .factor_rejected
-        .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
-    let copied_a = cached[0]
-        .and_then(|block| cache.rgba_pixels(block))
-        .and_then(|pixels| raw_a.copied(pixels));
-    let copied_b = cached[1]
-        .and_then(|block| cache.rgba_pixels(block))
-        .and_then(|pixels| raw_b.copied(pixels));
-    if copied_a.is_none() || copied_b.is_none() {
-        stats.factor_fallback_spans = stats.factor_fallback_spans.saturating_add(1);
-    }
-    let texels_a = copied_a.unwrap_or(raw_a);
-    let texels_b = copied_b.unwrap_or(raw_b);
-    let before = stats.pixels;
-    for x in span.x..span.x + span.count {
-        let px = x as f32;
-        let py = span.y as f32;
-        let zi_a = a.planes.inverse_depth.at(px, py);
-        if zi_a <= 0.0 || !zi_a.is_finite() {
-            continue;
+    while first_levels != 0 {
+        let first_mip = first_levels.trailing_zeros() as u8;
+        first_levels &= first_levels - 1;
+        let mut second_levels = pairs[first_mip as usize];
+        while second_levels != 0 {
+            let second_mip = second_levels.trailing_zeros() as u8;
+            second_levels &= second_levels - 1;
+            let mips = [first_mip, second_mip];
+            let selected = spans.filter(|(index, _)| choices[*index] == mips);
+            let count = selected.clone().count() as u64;
+            let raw_a = super::TexelView::image(image_a, mips[0], first.stage.texture_intensity)
+                .region(
+                    (first.stage.texture == StageTexture::Lightmap)
+                        .then_some(region)
+                        .flatten(),
+                );
+            let raw_b = super::TexelView::image(image_b, mips[1], second.stage.texture_intensity)
+                .region(
+                    (second.stage.texture == StageTexture::Lightmap)
+                        .then_some(region)
+                        .flatten(),
+                );
+            let (Some(raw_a), Some(raw_b)) = (raw_a, raw_b) else {
+                stats.rejected = stats.rejected.saturating_add(count);
+                continue;
+            };
+            let before_cache = cache.stats();
+            let active = cache.begin_batch();
+            let cached = if active {
+                [
+                    factors[pair.factors[0]].prepare(mips[0], assets, cache),
+                    factors[pair.factors[1]].prepare(mips[1], assets, cache),
+                ]
+            } else {
+                [None; 2]
+            };
+            let after_cache = cache.stats();
+            stats.factor_hits = stats
+                .factor_hits
+                .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
+            stats.factor_fills = stats
+                .factor_fills
+                .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
+            stats.factor_evictions = stats
+                .factor_evictions
+                .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
+            stats.factor_rejected = stats
+                .factor_rejected
+                .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
+            let copied_a = cached[0]
+                .and_then(|block| cache.rgba_pixels(block))
+                .and_then(|pixels| raw_a.copied(pixels));
+            let copied_b = cached[1]
+                .and_then(|block| cache.rgba_pixels(block))
+                .and_then(|pixels| raw_b.copied(pixels));
+            if copied_a.is_none() || copied_b.is_none() {
+                stats.factor_fallback_spans = stats.factor_fallback_spans.saturating_add(count);
+            }
+            let texels_a = copied_a.unwrap_or(raw_a);
+            let texels_b = copied_b.unwrap_or(raw_b);
+            for (_, span) in selected {
+                let before = stats.pixels;
+                for x in span.x..span.x + span.count {
+                    let px = x as f32;
+                    let py = span.y as f32;
+                    let zi_a = a.planes.inverse_depth.at(px, py);
+                    if zi_a <= 0.0 || !zi_a.is_finite() {
+                        continue;
+                    }
+                    let index = buffers.offset(width, x, span.y);
+                    if !super::depth_passes(
+                        first.stage.depth_func,
+                        zi_a,
+                        buffers.inverse_depth[index],
+                        primitive.draw_rank,
+                        buffers.depth_ranks[index],
+                    ) {
+                        continue;
+                    }
+                    let z_a = 1.0 / zi_a;
+                    let source_a = sample_a(
+                        texels_a,
+                        a.planes.texture.map(|plane| plane.at(px, py) * z_a),
+                        a.planes.color.map(|plane| plane.at(px, py) * z_a),
+                    );
+                    let first_pixel = u32::from_le_bytes(
+                        source_a.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
+                    );
+                    let zi_b = b.planes.inverse_depth.at(px, py);
+                    let color = if zi_b > 0.0
+                        && zi_b.is_finite()
+                        && super::depth_passes(
+                            second.stage.depth_func,
+                            zi_b,
+                            zi_a,
+                            primitive.draw_rank,
+                            primitive.draw_rank,
+                        ) {
+                        let z_b = 1.0 / zi_b;
+                        let source_b = sample_b(
+                            texels_b,
+                            b.planes.texture.map(|plane| plane.at(px, py) * z_b),
+                            b.planes.color.map(|plane| plane.at(px, py) * z_b),
+                        );
+                        super::rgba::multiply_pixel(first_pixel, source_b)
+                    } else {
+                        first_pixel
+                    };
+                    buffers.pixels[index] = color;
+                    buffers.palettes[index] = u32::MAX;
+                    buffers.inverse_depth[index] = zi_a;
+                    buffers.depth_ranks[index] = primitive.draw_rank;
+                    stats.pixels = stats.pixels.saturating_add(1);
+                }
+                stats.factor_spans = stats.factor_spans.saturating_add(1);
+                let written = stats.pixels.saturating_sub(before);
+                stats.factor_pixels = stats.factor_pixels.saturating_add(written);
+                if primitive.patch {
+                    stats.factor_curve_spans = stats.factor_curve_spans.saturating_add(1);
+                    stats.factor_curve_pixels = stats.factor_curve_pixels.saturating_add(written);
+                }
+                if mips != [0; 2] {
+                    stats.factor_minified_spans = stats.factor_minified_spans.saturating_add(1);
+                }
+            }
+            if active {
+                cache.end_batch();
+            }
         }
-        let index = buffers.offset(width, x, span.y);
-        if !super::depth_passes(
-            first.stage.depth_func,
-            zi_a,
-            buffers.inverse_depth[index],
-            primitive.draw_rank,
-            buffers.depth_ranks[index],
-        ) {
-            continue;
-        }
-        let z_a = 1.0 / zi_a;
-        let source_a = sample_a(
-            texels_a,
-            a.planes.texture.map(|plane| plane.at(px, py) * z_a),
-            a.planes.color.map(|plane| plane.at(px, py) * z_a),
-        );
-        let first_pixel =
-            u32::from_le_bytes(source_a.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8));
-        let zi_b = b.planes.inverse_depth.at(px, py);
-        let color = if zi_b > 0.0
-            && zi_b.is_finite()
-            && super::depth_passes(
-                second.stage.depth_func,
-                zi_b,
-                zi_a,
-                primitive.draw_rank,
-                primitive.draw_rank,
-            ) {
-            let z_b = 1.0 / zi_b;
-            let source_b = sample_b(
-                texels_b,
-                b.planes.texture.map(|plane| plane.at(px, py) * z_b),
-                b.planes.color.map(|plane| plane.at(px, py) * z_b),
-            );
-            super::rgba::multiply_pixel(first_pixel, source_b)
-        } else {
-            first_pixel
-        };
-        buffers.pixels[index] = color;
-        buffers.palettes[index] = u32::MAX;
-        buffers.inverse_depth[index] = zi_a;
-        buffers.depth_ranks[index] = primitive.draw_rank;
-        stats.pixels = stats.pixels.saturating_add(1);
-    }
-    stats.factor_spans = stats.factor_spans.saturating_add(1);
-    let written = stats.pixels.saturating_sub(before);
-    stats.factor_pixels = stats.factor_pixels.saturating_add(written);
-    if primitive.patch {
-        stats.factor_curve_spans = stats.factor_curve_spans.saturating_add(1);
-        stats.factor_curve_pixels = stats.factor_curve_pixels.saturating_add(written);
-    }
-    if mips != [0; 2] {
-        stats.factor_minified_spans = stats.factor_minified_spans.saturating_add(1);
-    }
-    if active {
-        cache.end_batch();
     }
 }
 
@@ -2431,9 +2596,10 @@ fn factor_span(
     clippy::too_many_arguments,
     reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
 )]
-fn rgba_span(
+fn rgba_spans(
     width: u32,
-    span: Span,
+    spans: span_groups::SpanChain<'_>,
+    mips: &mut [[u8; 2]],
     primitive: Primitive,
     recipe: &super::rgba::Product,
     prepared: &super::rgba::ProductPrepared,
@@ -2443,62 +2609,78 @@ fn rgba_span(
     stats: &mut WorldStats,
 ) {
     let Some(base) = assets.image(recipe.base) else {
-        stats.rejected += 1;
+        stats.rejected += spans.count() as u64;
         return;
     };
-    let chart_derivatives = primitive
-        .planes
-        .derivatives(span.x as f32 + span.count as f32 * 0.5, span.y as f32);
-    let derivatives = chart_derivatives.map(|d| recipe.texture.map(|p| p[0] * d[0] + p[1] * d[1]));
-    let mip = super::image_mip(base, recipe.base_sampler(), derivatives);
-    if !cache.begin_batch() {
-        stats.rejected += 1;
-        stats.rgba_rejected = stats.rgba_rejected.saturating_add(1);
-        return;
+    let mut levels = 0u32;
+    let mut mip_counts = [0usize; 32];
+    for (index, span) in spans {
+        let chart_derivatives = primitive
+            .planes
+            .derivatives(span.x as f32 + span.count as f32 * 0.5, span.y as f32);
+        let derivatives =
+            chart_derivatives.map(|d| recipe.texture.map(|p| p[0] * d[0] + p[1] * d[1]));
+        let mip = super::image_mip(base, recipe.base_sampler(), derivatives);
+        mips[index][0] = mip;
+        levels |= 1 << mip;
+        mip_counts[mip as usize] += 1;
     }
-    let before_cache = cache.stats();
-    let block = cache.prepare_rgba(recipe.cache, mip, prepared.state, |destination| {
-        recipe.fill(*prepared, mip, assets, destination);
-    });
-    let after_cache = cache.stats();
-    stats.rgba_hits = stats
-        .rgba_hits
-        .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
-    stats.rgba_fills = stats
-        .rgba_fills
-        .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
-    stats.rgba_evictions = stats
-        .rgba_evictions
-        .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
-    stats.rgba_rejected = stats
-        .rgba_rejected
-        .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
-    if let Some(block) = block {
-        if let Some(pixels) = cache.rgba_pixels(block) {
-            let before = stats.pixels;
-            stats.pixels = stats.pixels.saturating_add(packed::cached_rgba_span(
-                width,
-                span,
-                &primitive.planes,
-                primitive.draw_rank,
-                block,
-                pixels,
-                buffers,
-            ) as u64);
-            stats.rgba_spans = stats.rgba_spans.saturating_add(1);
-            if mip != 0 {
-                stats.rgba_minified_spans = stats.rgba_minified_spans.saturating_add(1);
-            }
-            stats.rgba_pixels = stats
-                .rgba_pixels
-                .saturating_add(stats.pixels.saturating_sub(before));
-        } else {
-            stats.rejected += 1;
+    // Pin only one level at a time, so the existing mandatory-surface cache
+    // bound still applies. Span coordinates and mip choice remain unchanged.
+    while levels != 0 {
+        let mip = levels.trailing_zeros() as u8;
+        levels &= levels - 1;
+        let selected = spans.filter(|(index, _)| mips[*index][0] == mip);
+        let count = mip_counts[mip as usize] as u64;
+        if !cache.begin_batch() {
+            stats.rejected += count;
+            stats.rgba_rejected = stats.rgba_rejected.saturating_add(1);
+            continue;
         }
-    } else {
-        stats.rejected += 1;
+        let before_cache = cache.stats();
+        let block = cache.prepare_rgba(recipe.cache, mip, prepared.state, |destination| {
+            recipe.fill(*prepared, mip, assets, destination);
+        });
+        let after_cache = cache.stats();
+        stats.rgba_hits = stats
+            .rgba_hits
+            .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
+        stats.rgba_fills = stats
+            .rgba_fills
+            .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
+        stats.rgba_evictions = stats
+            .rgba_evictions
+            .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
+        stats.rgba_rejected = stats
+            .rgba_rejected
+            .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
+        if let Some(block) = block {
+            if let Some(pixels) = cache.rgba_pixels(block) {
+                for (_, span) in selected {
+                    let written = packed::cached_rgba_span(
+                        width,
+                        span,
+                        &primitive.planes,
+                        primitive.draw_rank,
+                        block,
+                        pixels,
+                        buffers,
+                    ) as u64;
+                    stats.pixels = stats.pixels.saturating_add(written);
+                    stats.rgba_spans = stats.rgba_spans.saturating_add(1);
+                    stats.rgba_pixels = stats.rgba_pixels.saturating_add(written);
+                    if mip != 0 {
+                        stats.rgba_minified_spans = stats.rgba_minified_spans.saturating_add(1);
+                    }
+                }
+            } else {
+                stats.rejected += count;
+            }
+        } else {
+            stats.rejected += count;
+        }
+        cache.end_batch();
     }
-    cache.end_batch();
 }
 
 /// Original D_DrawSpans8/16 fixed texture stepping: perspective correction at
@@ -2672,5 +2854,195 @@ mod tests {
         assert_eq!(planes.texture[1].at(1.0, 1.0), 0.5);
         assert_eq!(planes.color[0].at(1.0, 1.0), 0.625);
         assert_eq!(planes.color[1].at(1.0, 1.0), 0.3125);
+    }
+}
+
+fn reject(world: &mut WorldStats, backend: &mut crate::BackendStats) {
+    world.rejected = world.rejected.saturating_add(1);
+    backend.rejected = backend.rejected.saturating_add(1);
+}
+
+enum RgbaInput<'a> {
+    Live {
+        prepared: &'a mut [Option<super::rgba::Prepared>],
+        colors: &'a mut [super::rgba::ProductColorCache],
+    },
+    Ready(&'a [Option<super::rgba::Prepared>]),
+}
+impl RgbaInput<'_> {
+    fn resolve(
+        &mut self,
+        index: usize,
+        recipe: &super::rgba::Recipe,
+        refdef: &crate::Refdef,
+        evaluator: &StageEvaluator,
+    ) -> Option<super::rgba::Prepared> {
+        match self {
+            Self::Live { prepared, colors } => {
+                let result = recipe.prepare_cached(refdef, evaluator, &mut colors[index]);
+                prepared[index] = result;
+                result
+            }
+            Self::Ready(prepared) => prepared[index],
+        }
+    }
+}
+
+impl SurfacePrepare {
+    fn load(
+        catalog: Arc<WorldCatalog>,
+        primitives: usize,
+        stages: usize,
+        vertices: usize,
+        coverage: usize,
+        references: usize,
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            catalog,
+            primitives: vec![Primitive::default(); primitives].into_boxed_slice(),
+            primitive_count: 0,
+            stages: vec![StagePlanes::default(); stages].into_boxed_slice(),
+            stage_count: 0,
+            clip: clip::ClipGraph::load(vertices)?,
+            screen: vec![ScreenVertex::default(); vertices].into_boxed_slice(),
+            projected: vec![ProjectedVertex::default(); vertices].into_boxed_slice(),
+            coverage: vec![ProjectedVertex::default(); coverage].into_boxed_slice(),
+            coverage_count: 0,
+            surface_draws: vec![PreparedDraw::Skip; references].into_boxed_slice(),
+            backgrounds: vec![None; references].into_boxed_slice(),
+            certified: false,
+            capacity_exhausted: false,
+            stats: WorldStats::default(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct PrepareCapacity {
+    primitives: usize,
+    stages: usize,
+    coverage: usize,
+}
+impl SurfacePrepare {
+    fn capacity_bytes(&self) -> usize {
+        self.clip.capacity_bytes()
+            + std::mem::size_of_val(&*self.primitives)
+            + std::mem::size_of_val(&*self.stages)
+            + std::mem::size_of_val(&*self.screen)
+            + std::mem::size_of_val(&*self.projected)
+            + std::mem::size_of_val(&*self.coverage)
+            + std::mem::size_of_val(&*self.surface_draws)
+            + std::mem::size_of_val(&*self.backgrounds)
+    }
+
+    fn admits(&self, references: &[SurfaceRef]) -> bool {
+        self.requirements(references)
+            .is_some_and(|total| self.fits(total))
+    }
+    fn requirements(&self, references: &[SurfaceRef]) -> Option<PrepareCapacity> {
+        let mut total = PrepareCapacity::default();
+        for reference in references {
+            let info = self
+                .catalog
+                .offsets
+                .get(reference.world.0 as usize)
+                .and_then(|offset| {
+                    self.catalog
+                        .surfaces
+                        .get(offset + reference.surface as usize)
+                })?;
+            let primitives = total.primitives.checked_add(info.preparation.primitives)?;
+            let stages = total.stages.checked_add(info.preparation.stages)?;
+            let coverage = total.coverage.checked_add(info.preparation.coverage)?;
+            total = PrepareCapacity {
+                primitives,
+                stages,
+                coverage,
+            };
+        }
+        Some(total)
+    }
+    fn fits(&self, total: PrepareCapacity) -> bool {
+        total.primitives <= self.primitives.len()
+            && total.stages <= self.stages.len()
+            && total.coverage <= self.coverage.len()
+    }
+    fn append(&mut self, source: &Self, reference_start: usize, references: usize) {
+        let first_primitive = self.primitive_count;
+        let first_stage = self.stage_count;
+        let first_coverage = self.coverage_count;
+        self.stages[first_stage..first_stage + source.stage_count]
+            .copy_from_slice(&source.stages[..source.stage_count]);
+        self.coverage[first_coverage..first_coverage + source.coverage_count]
+            .copy_from_slice(&source.coverage[..source.coverage_count]);
+        for primitive in &source.primitives[..source.primitive_count] {
+            let mut primitive = *primitive;
+            primitive.first_stage += first_stage;
+            primitive.first_coverage += first_coverage;
+            self.primitives[self.primitive_count] = primitive;
+            self.primitive_count += 1;
+        }
+        self.stage_count += source.stage_count;
+        self.coverage_count += source.coverage_count;
+        for (output, draw) in self.surface_draws[reference_start..reference_start + references]
+            .iter_mut()
+            .zip(&source.surface_draws[..references])
+        {
+            *output = match *draw {
+                PreparedDraw::Surface([first, end]) => {
+                    PreparedDraw::Surface([first + first_primitive, end + first_primitive])
+                }
+                other => other,
+            };
+        }
+        self.backgrounds[reference_start..reference_start + references]
+            .copy_from_slice(&source.backgrounds[..references]);
+        self.certified &= source.certified;
+        self.stats.rejected = self.stats.rejected.saturating_add(source.stats.rejected);
+    }
+}
+impl WorldPrepare {
+    fn prepare_colors(
+        &mut self,
+        references: &[SurfaceRef],
+        camera: &Camera,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+    ) {
+        if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
+            return;
+        }
+        let mut rgba = RgbaInput::Live {
+            prepared: &mut self.rgba_prepared,
+            colors: &mut self.rgba_colors,
+        };
+        for reference in references {
+            let Some(world) = assets.world(reference.world) else {
+                continue;
+            };
+            let Some(surface) = world.geometry().surfaces.get(reference.surface as usize) else {
+                continue;
+            };
+            let Some(offset) = self
+                .catalog
+                .boundary_offsets
+                .get(reference.world.0 as usize)
+            else {
+                continue;
+            };
+            for boundary in surface.boundaries.indices() {
+                let index = offset + boundary;
+                let Some(recipe) = self
+                    .catalog
+                    .rgba
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .filter(|recipe| recipe.current(assets))
+                else {
+                    continue;
+                };
+                let _ = rgba.resolve(index, recipe, &camera.refdef, evaluator);
+            }
+        }
     }
 }

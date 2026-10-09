@@ -279,7 +279,7 @@ fn windowed(
         }
     }
     assert_eq!(stats.rejected, 0);
-    let mut counters = world.prepare.stats;
+    let mut counters = world.prepare.geometry.stats;
     let mut cache = CacheStats::default();
     for band in &bands {
         counters = merge_stats(counters, band.stats);
@@ -408,13 +408,19 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
             },
         )
         .unwrap();
+        // Exercise parallel semantics even for these deliberately small fixtures.
+        cpu.world
+            .as_mut()
+            .unwrap()
+            .config
+            .prepare_minimum_primitives_per_job = 0;
         let mut callbacks = 0usize;
         let result: Result<_, std::convert::Infallible> =
             cpu.render_with_dispatch(list, assets, |jobs| {
                 callbacks += 1;
                 assert_eq!(jobs.len(), bands.count());
                 for job in jobs.iter_mut().rev() {
-                    super::render_band(job);
+                    super::run_cpu_job(job);
                 }
                 Ok(())
             });
@@ -770,27 +776,30 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
             ..MaterialSettings::default()
         },
     );
-    let world = fixture_world(
-        &mut assets,
-        2.0,
-        1.0,
-        SurfaceMaterial {
-            material,
-            lightmap: light,
-            ..SurfaceMaterial::default()
-        },
-        None,
-        GeometryPartition::Unpartitioned,
-        |g| {
-            g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
-            for (i, v) in g.vertices.iter_mut().enumerate() {
-                let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][i];
-                v.vertex.texcoord = uv;
-                v.vertex.lightmap_coord = uv;
-            }
-        },
-    );
-    let frame = packet(&assets, &[world], test_view());
+    let create_world = |assets: &mut Assets| {
+        fixture_world(
+            assets,
+            2.0,
+            1.0,
+            SurfaceMaterial {
+                material,
+                lightmap: light,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |g| {
+                g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
+                for (i, v) in g.vertices.iter_mut().enumerate() {
+                    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][i];
+                    v.vertex.texcoord = uv;
+                    v.vertex.lightmap_coord = uv;
+                }
+            },
+        )
+    };
+    let worlds: [WorldId; 8] = std::array::from_fn(|_| create_world(&mut assets));
+    let frame = packet(&assets, &worlds, test_view());
     let admission = CpuBackend::load_with_assets(29, 19, &assets)
         .unwrap()
         .raster_config();
@@ -828,8 +837,53 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
     let counters = exact_rows(&assets, &frame);
     assert!(counters.rgba_spans > 0);
     assert!(counters.rgba_pixels > 0);
-    assert!(counters.rgba_hits > 0);
+    assert_eq!(counters.rgba_hits, 0);
     assert!(counters.rgba_fills > 0);
+
+    // A view that cannot fit a private chunk uses the same bounded serial
+    // preparer; losing the chunk must not lose surfaces or static stage counts.
+    let mut bounded = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Eight,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    bounded
+        .world
+        .as_mut()
+        .unwrap()
+        .config
+        .prepare_minimum_primitives_per_job = 0;
+    bounded.world.as_mut().unwrap().lanes[0].coverage =
+        vec![ProjectedVertex::default(); 3].into_boxed_slice();
+    let fallback: Result<_, std::convert::Infallible> =
+        bounded.render_with_dispatch(&frame, &assets, |jobs| {
+            assert_eq!(jobs[0].kind(), JobKind::Raster);
+            for job in jobs {
+                super::run_cpu_job(job);
+            }
+            Ok(())
+        });
+    let mut serial = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    assert_eq!(fallback.unwrap(), serial.render(&frame, &assets));
+    assert_eq!(bounded.pixels, serial.pixels);
+    assert_eq!(bounded.inverse_depth, serial.inverse_depth);
+    assert_eq!(bounded.depth_ranks, serial.depth_ranks);
+    let mut warm = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    assert_eq!(warm.render(&frame, &assets).rejected, 0);
+    let first_pixels = warm.pixels.clone();
+    let first_depth = warm.inverse_depth.clone();
+    let first_ranks = warm.depth_ranks.clone();
+    assert_eq!(warm.render(&frame, &assets).rejected, 0);
+    assert!(warm.world_stats().rgba_hits > 0);
+    assert_eq!(warm.world_stats().rgba_fills, 0);
+    assert_eq!(warm.pixels, first_pixels);
+    assert_eq!(warm.inverse_depth, first_depth);
+    assert_eq!(warm.depth_ranks, first_ranks);
     let mut old = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let mut old_rows = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assets
@@ -1024,6 +1078,7 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
                     .collect::<Vec<_>>();
                 assert_eq!(
                     prepared
+                        .geometry
                         .clip
                         .sources(boundary.count as usize)
                         .unwrap()
@@ -1152,14 +1207,27 @@ fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
             }
         },
     );
-    let counters = exact_rows(&assets, &packet(&assets, &[world], test_view()));
+    let list = packet(&assets, &[world], test_view());
+    let counters = exact_rows(&assets, &list);
     assert!(counters.factor_spans > 0);
     assert!(counters.factor_pixels > 0);
-    assert!(counters.factor_hits > 0);
+    assert_eq!(counters.factor_hits, 0);
     assert!(counters.factor_fills > 0);
     assert_eq!(counters.rgba_spans, 0);
     assert_eq!(counters.factor_hits, counters.cache.hits);
     assert_eq!(counters.factor_fills, counters.cache.fills);
+    let mut warm = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
+    warm.render(&list, &assets);
+    let pixels = warm.pixels.to_vec();
+    let depth = warm.inverse_depth.to_vec();
+    let ranks = warm.depth_ranks.to_vec();
+    warm.render(&list, &assets);
+    let reused = warm.world_stats();
+    assert!(reused.factor_hits > 0);
+    assert_eq!(reused.factor_fills, 0);
+    assert_eq!(warm.pixels.as_ref(), pixels);
+    assert_eq!(warm.inverse_depth.as_ref(), depth);
+    assert_eq!(warm.depth_ranks.as_ref(), ranks);
 }
 
 #[test]
@@ -1707,7 +1775,7 @@ fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
     assert_eq!(cpu.render(&frame, &assets).rejected, 0);
     let prepared = &cpu.world.as_ref().unwrap().prepare;
     assert!(prepared.background.is_some());
-    assert_eq!(prepared.primitive_count, 0);
+    assert_eq!(prepared.geometry.primitive_count, 0);
     for band in 0..8 {
         assert!(
             prepared
@@ -1770,7 +1838,7 @@ fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
     let mut calls = 0;
     let failed = cpu.render_with_dispatch(&frame, &assets, |jobs| {
         calls += 1;
-        super::render_band(&mut jobs[0]);
+        super::run_cpu_job(&mut jobs[0]);
         Err("dispatch rejected")
     });
     assert_eq!(failed, Err("dispatch rejected"));
@@ -1781,16 +1849,30 @@ fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
     assert!(per_band[1..4].iter().all(|stats| stats.pixels == 0));
     assert_eq!(cpu.world_stats().pixels, per_band[0].pixels);
     let mut callbacks = 0;
-    let complete: Result<_, std::convert::Infallible> =
-        cpu.render_with_dispatch(&frame, &assets, |jobs| {
+    let observed = std::cell::Cell::new(0);
+    let complete: Result<_, std::convert::Infallible> = cpu.render_observed(
+        &frame,
+        &assets,
+        |jobs| {
+            assert_eq!(observed.get(), 2);
             callbacks += 1;
             for job in jobs {
-                super::render_band(job);
+                super::run_cpu_job(job);
             }
             Ok(())
-        });
+        },
+        |point| match point {
+            super::super::PreparePoint::Begin => {
+                assert_eq!(observed.replace(1), 0);
+            }
+            super::super::PreparePoint::End => {
+                assert_eq!(observed.replace(2), 1);
+            }
+        },
+    );
     assert_eq!(complete.unwrap().rejected, 0);
     assert_eq!(callbacks, 1);
+    assert_eq!(observed.get(), 2);
     let mut fresh = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assert_eq!(fresh.render(&frame, &assets).rejected, 0);
     assert_eq!(fresh.pixels, cpu.pixels);
@@ -2315,18 +2397,35 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
             },
         )
         .unwrap();
+        cpu.world
+            .as_mut()
+            .unwrap()
+            .config
+            .prepare_minimum_primitives_per_job = 0;
         let mut calls = 0;
+        let mut preparations = 0;
         let result: Result<_, std::convert::Infallible> =
             cpu.render_with_dispatch(&frame, &assets, |jobs| {
-                calls += 1;
+                match jobs[0].kind() {
+                    JobKind::Prepare => {
+                        assert_eq!(calls, 0);
+                        preparations += 1;
+                        assert!(jobs.iter().all(|job| job.rows().is_none()));
+                    }
+                    JobKind::Raster => calls += 1,
+                }
                 for job in jobs.iter_mut().rev() {
-                    super::render_band(job);
+                    super::run_cpu_job(job);
                 }
                 Ok(())
             });
         assert_eq!(result.unwrap().rejected, 0);
         // Opaque, then three prepared runs separated by external entity/poly.
         assert_eq!(calls, 4);
+        assert_eq!(
+            preparations,
+            usize::from(bands.count() > 1 && bands.count() <= worlds.len())
+        );
         let prepared = &cpu.world.as_ref().unwrap().prepare;
         assert!(matches!(
             &prepared.draws[..prepared.draw_count],
@@ -2348,14 +2447,22 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
         ..CpuLimits::default()
     };
     let mut paused = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
+    paused
+        .world
+        .as_mut()
+        .unwrap()
+        .config
+        .prepare_minimum_primitives_per_job = 0;
     let mut calls = 0;
     let result = paused.render_with_dispatch(&frame, &assets, |jobs| {
-        calls += 1;
-        if calls == 2 {
+        if jobs[0].kind() == JobKind::Raster {
+            calls += 1;
+        }
+        if jobs[0].kind() == JobKind::Raster && calls == 2 {
             return Err(());
         }
         for job in jobs {
-            super::render_band(job);
+            super::run_cpu_job(job);
         }
         Ok(())
     });
@@ -2365,15 +2472,23 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     assert_eq!(paused.band_stats(&mut before), 4);
 
     let mut failed = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
+    failed
+        .world
+        .as_mut()
+        .unwrap()
+        .config
+        .prepare_minimum_primitives_per_job = 0;
     let mut calls = 0;
     let result = failed.render_with_dispatch(&frame, &assets, |jobs| {
-        calls += 1;
-        if calls == 2 {
-            super::render_band(&mut jobs[0]);
+        if jobs[0].kind() == JobKind::Raster {
+            calls += 1;
+        }
+        if jobs[0].kind() == JobKind::Raster && calls == 2 {
+            super::run_cpu_job(&mut jobs[0]);
             return Err(());
         }
         for job in jobs {
-            super::render_band(job);
+            super::run_cpu_job(job);
         }
         Ok(())
     });
@@ -2390,4 +2505,41 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
         &paused.depth_ranks[other_rows..]
     );
     assert_band_counters(failed.world_stats(), &attempted[..4]);
+
+    let mut preparation_failed = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
+    preparation_failed
+        .world
+        .as_mut()
+        .unwrap()
+        .config
+        .prepare_minimum_primitives_per_job = 0;
+    let result = preparation_failed.render_with_dispatch(&frame, &assets, |jobs| {
+        assert_eq!(jobs[0].kind(), JobKind::Prepare);
+        super::run_cpu_job(&mut jobs[0]);
+        Err("preparation rejected")
+    });
+    assert_eq!(result, Err("preparation rejected"));
+    assert_eq!(preparation_failed.world_stats().pixels, 0);
+    assert!(preparation_failed.depth_ranks.iter().all(|&rank| rank == 0));
+    assert!(
+        preparation_failed
+            .pixels
+            .iter()
+            .all(|&pixel| pixel == u32::from_le_bytes([3, 5, 7, 255]))
+    );
+    let retry: Result<_, std::convert::Infallible> =
+        preparation_failed.render_with_dispatch(&frame, &assets, |jobs| {
+            for job in jobs.iter_mut().rev() {
+                super::run_cpu_job(job);
+                // The output loan is consumed once, including preparation jobs.
+                super::run_cpu_job(job);
+            }
+            Ok(())
+        });
+    let mut fresh = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
+    assert_eq!(retry.unwrap(), fresh.render(&frame, &assets));
+    assert_eq!(preparation_failed.pixels, fresh.pixels);
+    assert_eq!(preparation_failed.inverse_depth, fresh.inverse_depth);
+    assert_eq!(preparation_failed.depth_ranks, fresh.depth_ranks);
+    assert_eq!(preparation_failed.world_stats(), fresh.world_stats());
 }

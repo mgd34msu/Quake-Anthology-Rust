@@ -23,7 +23,10 @@ use qa_core::{math::angle_vectors, sys_events::SeatId};
 use qa_platform::{Stopwatch, Window, pause};
 use qa_render::{
     Assets, BackendStats, CpuPresentation, FrontEnd, Limits, Refdef, Viewport,
-    cpu::{CpuBackend, CpuLimits, MAX_BANDS, RasterBands, WorldStats, render_band},
+    cpu::{
+        CpuBackend, CpuLimits, JobKind, MAX_BANDS, PreparePoint, RasterBands, WorldStats,
+        run_cpu_job,
+    },
     material::world_load::WorldLoadOptions,
     world::WorldView,
 };
@@ -271,6 +274,9 @@ fn write_depth(path: &Path, depth: &[f32]) -> std::io::Result<()> {
 
 #[derive(Clone, Copy, Default)]
 struct DispatchTimings {
+    prepare_ns: u64,
+    prepare_dispatches: u64,
+    prepare_jobs: u64,
     first_ns: u64,
     subsequent_ns: u64,
     count: u64,
@@ -299,14 +305,39 @@ fn draw(
     timings: Option<&mut DispatchTimings>,
 ) -> Result<BackendStats, qa_platform::WorkerError> {
     if let Some(timings) = timings {
-        cpu.render_with_dispatch(packet, assets, |jobs| {
-            let timer = Stopwatch::start();
-            let result = dispatch.dispatch(jobs, render_band);
-            timings.observe(timer.elapsed().as_nanos() as u64);
-            result
-        })
+        let mut prepare_timer = None;
+        let mut dispatch_timings = DispatchTimings::default();
+        let result = cpu.render_observed(
+            packet,
+            assets,
+            |jobs| {
+                let kind = jobs.first().map(|job| job.kind());
+                let timer = Stopwatch::start();
+                let result = dispatch.dispatch(jobs, run_cpu_job);
+                if kind == Some(JobKind::Raster) {
+                    dispatch_timings.observe(timer.elapsed().as_nanos() as u64);
+                } else {
+                    dispatch_timings.prepare_dispatches += 1;
+                    dispatch_timings.prepare_jobs += jobs.len() as u64;
+                }
+                result
+            },
+            |point| match point {
+                PreparePoint::Begin => prepare_timer = Some(Stopwatch::start()),
+                PreparePoint::End => {
+                    if let Some(timer) = prepare_timer.take() {
+                        timings.prepare_ns = timings
+                            .prepare_ns
+                            .saturating_add(timer.elapsed().as_nanos() as u64);
+                    }
+                }
+            },
+        );
+        dispatch_timings.prepare_ns = timings.prepare_ns;
+        *timings = dispatch_timings;
+        result
     } else {
-        cpu.render_with_dispatch(packet, assets, |jobs| dispatch.dispatch(jobs, render_band))
+        cpu.render_with_dispatch(packet, assets, |jobs| dispatch.dispatch(jobs, run_cpu_job))
     }
 }
 
@@ -330,10 +361,28 @@ fn report_stage_timings(
     let consistent = frames
         .iter()
         .zip(total)
-        .all(|(frame, total)| frame.waited_ns() <= *total);
+        .all(|(frame, total)| frame.prepare_ns.saturating_add(frame.waited_ns()) <= *total);
     logger::console(format_args!(
-        "{{\"event\":\"retail_draw_stage_timings\",\"scope\":\"diagnostic_dispatch_wall_times\",\"diagnostic_instrumentation\":true,\"timing_qualified\":false,\"cpu_time_measured\":false,\"bands\":{bands},\"workers\":{workers},\"warmup\":{WARMUP},\"frames\":{FRAMES},\"first_dispatch_role\":\"first callback; opaque for this single-view retail world packet\",\"waited_scope\":\"dispatch, completion barrier and allocation count collection\",\"residual_semantics\":\"direct total minus summed waited dispatches; approximate serial preparation and other wall cost, including instrumentation overhead\",\"nested_times_within_total\":{consistent},\"summaries\":{{"
+        "{{\"event\":\"retail_draw_stage_timings\",\"scope\":\"diagnostic_dispatch_wall_times\",\"diagnostic_instrumentation\":true,\"timing_qualified\":false,\"cpu_time_measured\":false,\"bands\":{bands},\"workers\":{workers},\"warmup\":{WARMUP},\"frames\":{FRAMES},\"first_raster_dispatch_role\":\"opaque for this single-view retail world packet\",\"waited_scope\":\"dispatch, completion barrier and allocation count collection\",\"residual_semantics\":\"direct total minus view preparation and waited raster dispatches; other wall cost including instrumentation overhead\",\"nested_times_within_total\":{consistent},\"summaries\":{{"
     ));
+    timing_summary(
+        "view_prepare",
+        "nanoseconds",
+        std::array::from_fn(|index| frames[index].prepare_ns),
+    );
+    logger::console(format_args!(","));
+    timing_summary(
+        "preparation_dispatches",
+        "count",
+        std::array::from_fn(|index| frames[index].prepare_dispatches),
+    );
+    logger::console(format_args!(","));
+    timing_summary(
+        "preparation_jobs",
+        "count",
+        std::array::from_fn(|index| frames[index].prepare_jobs),
+    );
+    logger::console(format_args!(","));
     timing_summary(
         "first_dispatch",
         "nanoseconds",
@@ -359,24 +408,33 @@ fn report_stage_timings(
     );
     logger::console(format_args!(","));
     timing_summary(
-        "approximate_serial_other",
+        "other_wall",
         "nanoseconds",
-        std::array::from_fn(|index| total[index].saturating_sub(frames[index].waited_ns())),
+        std::array::from_fn(|index| {
+            total[index].saturating_sub(
+                frames[index]
+                    .prepare_ns
+                    .saturating_add(frames[index].waited_ns()),
+            )
+        }),
     );
     logger::console(format_args!(
-        "}},\"sample_columns\":[\"first_dispatch_ns\",\"subsequent_dispatches_ns\",\"dispatch_count\",\"maximum_dispatch_ns\",\"approximate_serial_other_ns\"],\"samples\":["
+        "}},\"sample_columns\":[\"view_prepare_ns\",\"preparation_dispatch_count\",\"preparation_job_count\",\"first_dispatch_ns\",\"subsequent_dispatches_ns\",\"dispatch_count\",\"maximum_dispatch_ns\",\"other_wall_ns\"],\"samples\":["
     ));
     for (index, frame) in frames.iter().enumerate() {
         if index != 0 {
             logger::console(format_args!(","));
         }
         logger::console(format_args!(
-            "[{},{},{},{},{}]",
+            "[{},{},{},{},{},{},{},{}]",
+            frame.prepare_ns,
+            frame.prepare_dispatches,
+            frame.prepare_jobs,
             frame.first_ns,
             frame.subsequent_ns,
             frame.count,
             frame.maximum_ns,
-            total[index].saturating_sub(frame.waited_ns()),
+            total[index].saturating_sub(frame.prepare_ns.saturating_add(frame.waited_ns())),
         ));
     }
     logger::console(format_args!("]}}\n"));
@@ -525,8 +583,39 @@ fn run() -> Result<(), String> {
     );
     let _ = dispatch.merge_counts(qa_platform::allocations::Counts::default());
     let initial = initial.map_err(|e| format!("initial retail CPU dispatch: {e}"))?;
-    if initial.rejected != 0 || !window.present_pixels(WIDTH, HEIGHT, cpu.pixels()) {
-        return Err("initial retail draw or presentation failed".into());
+    if initial.rejected != 0 {
+        let mut diagnosis = FrontEnd::load(limits)?;
+        for surface in surfaces {
+            let mut isolated = diagnosis
+                .begin_frame([18, 26, 34, 255])
+                .ok_or("diagnostic scene packet unavailable")?;
+            isolated.clear_scene();
+            if !isolated.add_world(loaded.render.world, std::slice::from_ref(surface))
+                || !isolated.render_scene(refdef, &[], &assets)
+            {
+                return Err("diagnostic scene capacity".into());
+            }
+            let packet = isolated.finish();
+            let result = cpu.render(&packet, &assets);
+            if result.rejected != 0 {
+                logger::console(format_args!(
+                    "{{\"event\":\"retail_surface_rejected\",\"surface\":{},\"rejected\":{},\"material\":{}}}\n",
+                    surface.surface,
+                    result.rejected,
+                    world.bindings()[surface.surface as usize].material.0,
+                ));
+            }
+            diagnosis
+                .recycle(packet)
+                .map_err(|_| "diagnostic packet ownership")?;
+        }
+        return Err(format!(
+            "initial retail draw rejected {} submissions",
+            initial.rejected
+        ));
+    }
+    if !window.present_pixels(WIDTH, HEIGHT, cpu.pixels()) {
+        return Err("initial retail presentation failed".into());
     }
     logger::console(format_args!(
         "{{\"event\":\"window_ready\",\"gameplay\":false,\"renderer\":\"cpu\",\"video_driver\":\"x11\",\"scope\":\"fixed_time_retail_draw\"}}\n"
