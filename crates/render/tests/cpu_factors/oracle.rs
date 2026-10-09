@@ -242,7 +242,7 @@ fn compare(
     depth: DepthFunc,
     alternate_multiply: bool,
 ) {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let bytes: Vec<_> = (0..64)
         .flat_map(|i| {
             [
@@ -389,7 +389,7 @@ fn factor_multiply_forms_and_depth_functions_keep_generic_ties_and_clipping() {
 fn invalid_prepared_region_preserves_each_generic_stage_and_depth() {
     use crate::assets::upload::{ExtentRound, UploadExtent};
     for reverse in [false, true] {
-        let mut assets = Assets::load();
+        let mut assets = Assets::load().unwrap();
         let base = assets.register_image(1, 1, &[255; 4]).unwrap();
         let light = assets.register_image(8, 8, &[255; 8 * 8 * 4]).unwrap();
         let material = material(&mut assets, base, reverse, true, DepthFunc::Equal, false);
@@ -448,7 +448,7 @@ fn invalid_prepared_region_preserves_each_generic_stage_and_depth() {
 fn numeric_factor_sources_share_native_mips_and_distinguish_regions() {
     use super::Factor;
     use crate::surface_cache::SurfaceCache;
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let bytes: Vec<_> = (0..16)
         .flat_map(|value| [value * 13, value * 7, value * 3, 255])
         .collect();

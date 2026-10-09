@@ -6,7 +6,8 @@ pub use crate::shader::{AlphaFunc as AlphaTest, Cull, TexCoordGen as TcGen};
 use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use crate::world::{SurfaceBinding, SurfaceMaterial, World, WorldId, geometry::WorldGeometry};
-use qa_core::primitives::Vec3;
+use qa_core::names::{NameTable, NamesError};
+use qa_core::primitives::{NameId, Vec3};
 use qa_world::visibility::VisibilityWorld;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -258,7 +259,7 @@ impl Default for MaterialSettings {
     }
 }
 pub struct Material {
-    pub name: String,
+    pub name: NameId,
     pub stages: Box<[Stage]>,
     pub settings: MaterialSettings,
 }
@@ -268,20 +269,19 @@ pub struct Model {
     pub material: MaterialId,
 }
 pub struct Assets {
+    names: NameTable,
     images: Vec<Image>,
     materials: Vec<Material>,
     models: Vec<Model>,
     worlds: Vec<World>,
     palettes: Vec<PaletteLighting>,
 }
-impl Default for Assets {
-    fn default() -> Self {
-        Self::load()
-    }
-}
 impl Assets {
-    pub fn load() -> Self {
-        Self {
+    pub fn load() -> Result<Self, NamesError> {
+        let names = NameTable::load_reserved([b"*white".as_slice()], 65536, 4 * 1024 * 1024)?;
+        let white = names.find_path("*white").ok_or(NamesError::Capacity)?;
+        Ok(Self {
+            names,
             images: vec![Image {
                 width: 1,
                 height: 1,
@@ -292,7 +292,7 @@ impl Assets {
                 native_sampler: None,
             }],
             materials: vec![Material {
-                name: "*white".into(),
+                name: white,
                 stages: vec![Stage {
                     rgb_gen: RgbGen::ExactVertex,
                     alpha_gen: AlphaGen::Vertex,
@@ -312,7 +312,15 @@ impl Assets {
             }],
             worlds: Vec::new(),
             palettes: Vec::new(),
-        }
+        })
+    }
+    pub fn intern_name(&mut self, path: &str) -> Result<NameId, &'static str> {
+        self.names
+            .intern_path(path)
+            .map_err(|_| "asset name table full")
+    }
+    pub fn name(&self, id: NameId) -> Option<&str> {
+        std::str::from_utf8(self.names.get(id)?).ok()
     }
     pub fn register_image(
         &mut self,
@@ -465,6 +473,7 @@ impl Assets {
         stages: &[Stage],
         settings: MaterialSettings,
     ) -> Result<MaterialId, &'static str> {
+        let name = self.intern_name(name)?;
         if let Some(index) = self
             .materials
             .iter()
@@ -482,7 +491,7 @@ impl Assets {
         let id =
             MaterialId(u32::try_from(self.materials.len()).map_err(|_| "material table full")?);
         self.materials.push(Material {
-            name: name.into(),
+            name,
             stages: stages.into(),
             settings,
         });

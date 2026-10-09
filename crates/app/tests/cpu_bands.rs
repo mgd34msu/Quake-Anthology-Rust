@@ -4,7 +4,7 @@ use qa_render::cpu::RasterBands;
 
 #[test]
 fn benchmark_override_wins_and_zero_requests_auto() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let handle = cvars.find("r_cpuBands").unwrap();
     assert_eq!(cpu_band_setting(&cvars, None).unwrap(), (handle, None));
     cvars.set(handle, 4.0).unwrap();

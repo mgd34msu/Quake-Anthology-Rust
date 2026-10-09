@@ -26,7 +26,7 @@ fn read(cvars: &Cvars, name: &str, context: Context) -> String {
 
 #[test]
 fn all_sources_share_canonical_values_with_native_units_and_stable_handles() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let sensitivity = cvars.find("sensitivity").unwrap();
     for source in RuleSetId::ALL {
         let context = context(source);
@@ -62,7 +62,7 @@ fn all_sources_share_canonical_values_with_native_units_and_stable_handles() {
 
 #[test]
 fn native_alias_details_survive_only_while_their_operands_stay_unchanged() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let q2 = context(RuleSetId::Quake2);
     write(&mut cvars, "cl_gun", "3", q2);
     assert_eq!(read(&cvars, "cg_drawGun", q2), "1.000000");
@@ -86,7 +86,7 @@ fn teamplay_policy_updates_both_operands_and_latches_the_pair_together() {
         DEFINITIONS[OPERANDS[conversion.operands.start].row as usize].name,
         "g_friendlyFire"
     );
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let q1 = context(RuleSetId::Quake);
     for (mode, friendly) in [("1", "0.000000"), ("2", "1.000000")] {
         write(&mut cvars, "teamplay", mode, q1);
@@ -110,7 +110,7 @@ fn teamplay_policy_updates_both_operands_and_latches_the_pair_together() {
 
 #[test]
 fn scoped_names_and_native_flags_protect_only_the_requested_boundary() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let client = context(RuleSetId::QuakeWorld);
     let server = Context {
         side: Scope::Server,

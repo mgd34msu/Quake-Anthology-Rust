@@ -483,7 +483,7 @@ fn stages(assets: &mut Assets, stages: &[Stage], settings: MaterialSettings) -> 
 
 #[test]
 fn offset_row_windows_keep_three_stage_depth_blend_and_rank_bits() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets
         .register_image(
             2,
@@ -571,7 +571,7 @@ fn offset_row_windows_keep_three_stage_depth_blend_and_rank_bits() {
 
 #[test]
 fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets
         .register_image(
             2,
@@ -727,7 +727,7 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
 
 #[test]
 fn cached_rgba_and_changed_preparation_views_keep_row_output() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets
         .register_image(
             2,
@@ -850,7 +850,7 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
 #[test]
 fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
     for (red, can_reject_rounding) in [([64, 96, 128, 96], false), ([0, 1, 2, 1], true)] {
-        let mut assets = Assets::load();
+        let mut assets = Assets::load().unwrap();
         let image = assets
             .register_image(
                 2,
@@ -1091,7 +1091,7 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
 
 #[test]
 fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets
         .register_image(
             2,
@@ -1164,7 +1164,7 @@ fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
 
 #[test]
 fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let red = assets.register_image(1, 1, &[30, 2, 1, 255]).unwrap();
     let blue = assets.register_image(1, 1, &[1, 3, 40, 255]).unwrap();
     let mut worlds = Vec::new();
@@ -1360,7 +1360,7 @@ fn indexed_palette(assets: &mut Assets) -> crate::assets::PaletteId {
 #[test]
 fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
     use crate::surface_cache::{IndexedLighting, IndexedTexture};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = indexed_palette(&mut assets);
     let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| {
         (0..(16 >> mip) * (16 >> mip))
@@ -1518,7 +1518,7 @@ fn native_cache_and_full_seat_layered_sky_keep_one_row_bits() {
 #[test]
 fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
     use crate::surface_cache::{IndexedLighting, IndexedTexture};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = indexed_palette(&mut assets);
     let images = std::array::from_fn(|face| {
         let indices = (0..64)
@@ -1619,7 +1619,7 @@ fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
 
 #[test]
 fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[91, 117, 143, 255]).unwrap();
     let material = stages(
         &mut assets,
@@ -1688,7 +1688,7 @@ fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
 #[test]
 fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share() {
     use crate::surface_cache::IndexedTexture;
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = indexed_palette(&mut assets);
     let mip_bytes: [Vec<u8>; 4] = std::array::from_fn(|mip| vec![17; (16 >> mip) * (16 >> mip)]);
     let image = assets
@@ -1882,7 +1882,7 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
 
 #[test]
 fn single_offset_camera_row_uses_one_bin_with_exact_unbinned_output() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[91, 117, 143, 255]).unwrap();
     let material = stages(
         &mut assets,
@@ -1939,7 +1939,7 @@ fn single_offset_camera_row_uses_one_bin_with_exact_unbinned_output() {
 
 #[test]
 fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let red = assets.register_image(1, 1, &[193, 31, 47, 255]).unwrap();
     let blue = assets.register_image(1, 1, &[17, 53, 211, 255]).unwrap();
     let opaque = stages(
@@ -2089,7 +2089,7 @@ fn public_dispatch_keeps_deferred_entity_poly_hud_and_overlapping_view_order() {
 
 #[test]
 fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[71, 89, 103, 255]).unwrap();
     let materials: [MaterialId; 8] = std::array::from_fn(|index| {
         let sky = matches!(index, 2 | 3);

@@ -134,7 +134,7 @@ fn after(
 }
 
 fn host() -> FrameHost {
-    let mut console = Console::new(Context::default());
+    let mut console = Console::new(Context::default()).unwrap();
     console.register("before_server", before);
     console.register("after_server", after);
     FrameHost::load(
@@ -304,7 +304,7 @@ fn cap_uses_native_millisecond_timestamps_and_zero_startup_baseline() {
 #[test]
 fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let mut host = FrameHost::load(
-        Console::new(Context::default()),
+        Console::new(Context::default()).unwrap(),
         Runtime::load(std::iter::empty()).unwrap(),
         TickRate::fixed(20).unwrap(),
         vec![],

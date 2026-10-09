@@ -1,4 +1,4 @@
-use qa_core::names::{NameMatch, NameTable};
+use qa_core::names::{NameMatch, NameTable, NamesError, canonical_path, compare_folded};
 use qa_core::primitives::NameId;
 
 #[test]
@@ -123,4 +123,63 @@ fn empty_name_has_zero_identity_and_a_stable_folded_group() {
     assert_eq!(repeated.find(b""), Some(NameId(0)));
     assert_eq!(repeated.find(b"\0"), Some(NameId(1)));
     assert_eq!(repeated.find_folded(b"\0"), Some(NameId(1)));
+}
+
+#[test]
+fn registrations_preserve_loaded_ids_and_group_ids_across_sort_insertions() {
+    let mut names = NameTable::load_reserved([b"middle".as_slice(), b"z"], 4, 16).unwrap();
+    let middle = names.find(b"middle").unwrap();
+    let end = names.find(b"z").unwrap();
+    let before = names.intern(b"a").unwrap();
+    let upper = names.intern(b"MIDDLE").unwrap();
+    assert_ne!(upper, middle);
+    assert_eq!(names.folded(upper), Some(middle));
+    assert_eq!(names.find(b"MIDDLE"), Some(upper));
+    assert_eq!(names.find_folded(b"MiDdLe"), Some(middle));
+    assert_eq!(names.get(middle), Some(b"middle".as_slice()));
+    assert_eq!(names.get(end), Some(b"z".as_slice()));
+    assert_eq!(names.find(b"a"), Some(before));
+    assert_eq!(names.intern(b"a").unwrap(), before);
+    assert_eq!(names.find(b""), Some(NameId(0)));
+}
+
+#[test]
+fn fixed_registration_storage_rejects_without_corrupting_prior_names() {
+    let mut names = NameTable::load_reserved([], 1, 2).unwrap();
+    assert_eq!(names.intern(b"abc"), Err(NamesError::Capacity));
+    let id = names.intern(b"ab").unwrap();
+    assert_eq!(names.intern(b"c"), Err(NamesError::Capacity));
+    assert_eq!(names.get(id), Some(b"ab".as_slice()));
+    assert_eq!(names.find_folded(b"AB"), Some(id));
+    assert_eq!(names.len(), 2);
+}
+
+#[test]
+fn path_keys_share_one_conversion_without_changing_exact_name_rules() {
+    let mut names = NameTable::load_reserved([], 4, 128).unwrap();
+    let id = names.intern_path("Textures\\WALL.Ä.TGA").unwrap();
+    assert_eq!(names.get(id), Some("textures/wall.Ä.tga".as_bytes()));
+    assert_eq!(names.intern_path("TEXTURES/wall.Ä.tga").unwrap(), id);
+    assert_eq!(names.find_path("textures\\Wall.Ä.TGA"), Some(id));
+    assert_eq!(names.find_path("textures/wall.ä.tga"), None);
+    assert_eq!(canonical_path("A\\B.Ä"), "a/b.Ä");
+    let raw = names.intern(b"A\\B").unwrap();
+    let slash = names.intern(b"a/b").unwrap();
+    assert_ne!(names.folded(raw), names.folded(slash));
+    assert_eq!(compare_folded(b"B", b"a"), std::cmp::Ordering::Greater);
+    assert_eq!(compare_folded(b"A", b"a"), std::cmp::Ordering::Equal);
+    assert_eq!(compare_folded(b"z", b"_"), std::cmp::Ordering::Less);
+}
+
+#[test]
+fn path_registration_does_not_reuse_or_merge_a_raw_case_variant() {
+    let mut names = NameTable::load_reserved([b"WALL".as_slice()], 1, 4).unwrap();
+    let raw = names.find(b"WALL").unwrap();
+    assert_eq!(names.find_path("Wall"), None);
+    let path = names.intern_path("Wall").unwrap();
+    assert_ne!(raw, path);
+    assert_eq!(names.get(raw), Some(b"WALL".as_slice()));
+    assert_eq!(names.get(path), Some(b"wall".as_slice()));
+    assert_eq!(names.find_path("WALL"), Some(path));
+    assert_eq!(names.find_folded(b"wall"), Some(raw));
 }

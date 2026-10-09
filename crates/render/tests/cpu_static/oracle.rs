@@ -22,7 +22,7 @@ struct Fixture {
 }
 
 fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base_pixels: Vec<_> = (0..4)
         .flat_map(|y| {
             (0..4).flat_map(move |x| {

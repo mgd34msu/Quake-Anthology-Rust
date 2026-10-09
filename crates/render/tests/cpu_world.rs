@@ -58,7 +58,7 @@ fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
         assets::TcMod,
         shader::{BlendFactor, StageBlend, TexMod},
     };
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[20, 30, 40, 255]).unwrap();
     let add = assets.register_image(1, 1, &[5, 6, 7, 255]).unwrap();
     // Retail tim_hell uses two scrolling/scaled stages and additive clouds.
@@ -162,7 +162,7 @@ fn cloud_grid_stages_draw_once_across_world_and_poly_sources() {
 #[test]
 fn cloud_uv_interpolates_native_grid_diagonal_before_ordered_texmods() {
     use qa_render::{assets::TcMod, shader::TexMod};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let rgba: Vec<_> = (0..128)
         .flat_map(|y| (0..128).flat_map(move |x| [x as u8, y as u8, 0, 255]))
         .collect();
@@ -228,7 +228,7 @@ fn cloud_uv_interpolates_native_grid_diagonal_before_ordered_texmods() {
 
 #[test]
 fn cloud_far_depth_does_not_occlude_world_behind_its_generated_cube() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
     let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
     let clouds = cloud_material(&mut assets, &[cloud_stage(red)]);
@@ -272,7 +272,7 @@ fn cloud_far_depth_does_not_occlude_world_behind_its_generated_cube() {
 fn cloud_native_generated_winding_obeys_front_and_back_culling() {
     for reverse_source in [false, true] {
         for cull in [Cull::Front, Cull::Back] {
-            let mut assets = Assets::load();
+            let mut assets = Assets::load().unwrap();
             let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
             let clouds = cloud_material_with_cull(&mut assets, &[cloud_stage(red)], cull);
             let sky = world_mutated(
@@ -328,7 +328,7 @@ fn cloud_native_generated_winding_obeys_front_and_back_culling() {
 
 #[test]
 fn equal_cloud_stage_matches_clear_far_depth_and_rejects_nearer_geometry() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
     let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
     let clouds = cloud_material(
@@ -385,7 +385,7 @@ fn clipped_cube_uses_native_face_uv_and_typed_rotation() {
         assets::{CubeSkyParams, Sky},
         sky::{CloudSphere, Rotation},
     };
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let images = std::array::from_fn(|face| {
         // A 2x2 native-oriented image makes texture axes observable.
         let base = (face as u8 + 1) * 20;
@@ -747,7 +747,7 @@ fn rgba_view() -> Refdef {
 #[test]
 fn static_base_lightmap_pairs_cache_in_both_orders_and_reuse_blocks() {
     for light_first in [false, true] {
-        let mut assets = Assets::load();
+        let mut assets = Assets::load().unwrap();
         let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
         let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
         let material = rgba_pair(&mut assets, base, light_first, false);
@@ -774,7 +774,7 @@ fn static_base_lightmap_pairs_cache_in_both_orders_and_reuse_blocks() {
 
 #[test]
 fn static_cache_preserves_negative_constant_and_one_dimensional_uv_area() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets
         .register_image(2, 1, &[200, 0, 0, 255, 0, 200, 0, 255])
         .unwrap();
@@ -812,7 +812,7 @@ fn static_cache_preserves_negative_constant_and_one_dimensional_uv_area() {
 
 #[test]
 fn cached_face_lightmap_clamps_taps_to_its_atlas_rectangle() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[255; 4]).unwrap();
     let light = assets
         .register_image(
@@ -857,7 +857,7 @@ fn cached_face_lightmap_clamps_taps_to_its_atlas_rectangle() {
 #[test]
 fn cache_uses_native_mips_and_invalidates_explicit_identity_light() {
     use qa_render::assets::upload::{MipmapBuild, UploadParams};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let source: Vec<_> = (0..64)
         .flat_map(|y| {
             (0..64).flat_map(move |x| {
@@ -930,7 +930,7 @@ fn cache_uses_native_mips_and_invalidates_explicit_identity_light() {
 
 #[test]
 fn cached_worlds_keep_independent_lightmaps_and_shared_depth_order() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[255; 4]).unwrap();
     let red = assets.register_image(1, 1, &[200, 0, 0, 255]).unwrap();
     let blue = assets.register_image(1, 1, &[0, 0, 200, 255]).unwrap();
@@ -986,7 +986,7 @@ fn cached_worlds_keep_independent_lightmaps_and_shared_depth_order() {
 )]
 fn nearest_cache_mip_keeps_native_integer_texel_boundaries() {
     use qa_render::assets::upload::{MipmapBuild, UploadParams};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets
         .register_image(
             4,
@@ -1038,7 +1038,7 @@ fn nearest_cache_mip_keeps_native_integer_texel_boundaries() {
 
 #[test]
 fn insufficient_product_budget_uses_independent_factor_sampling() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
     let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
     let material = rgba_pair(&mut assets, base, false, false);
@@ -1077,7 +1077,7 @@ fn transformed_2d_coordinates_select_the_native_prepared_mip() {
         },
         shader::TexMod,
     };
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let pixels: Vec<_> = (0..256)
         .flat_map(|y| {
             (0..256).flat_map(move |x| {
@@ -1143,7 +1143,7 @@ fn transformed_2d_coordinates_select_the_native_prepared_mip() {
 #[test]
 fn linear_rank_one_texture_uses_native_texel_lattice_and_reuses_cache() {
     use qa_render::shader::{BlendFactor, StageBlend, TexCoordGen};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let pixels: Vec<_> = [0, 0, 1, 3]
         .into_iter()
         .flat_map(|value| [value, value, value, 255])
@@ -1218,7 +1218,7 @@ fn linear_rank_one_texture_uses_native_texel_lattice_and_reuses_cache() {
 #[test]
 fn variable_linear_lightmap_is_baked_on_native_texture_lattice() {
     use qa_render::shader::{BlendFactor, StageBlend, TexCoordGen};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets
         .register_image(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255])
         .unwrap();
@@ -1297,7 +1297,7 @@ fn variable_linear_lightmap_is_baked_on_native_texture_lattice() {
 #[test]
 fn linear_identity_lattice_invalidates_on_lighting_change_and_then_reuses() {
     use qa_render::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets
         .register_image(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255])
         .unwrap();
@@ -1405,7 +1405,7 @@ fn linear_identity_lattice_invalidates_on_lighting_change_and_then_reuses() {
 #[test]
 fn changed_prepared_image_disables_stale_cold_recipe_until_reload() {
     use qa_render::assets::upload::UploadParams;
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[200, 0, 0, 255]).unwrap();
     let light = assets.register_image(1, 1, &[255; 4]).unwrap();
     let material = rgba_pair(&mut assets, base, false, false);
@@ -1433,7 +1433,7 @@ fn changed_prepared_image_disables_stale_cold_recipe_until_reload() {
 #[test]
 fn prepared_lightmap_region_mismatch_is_scoped_before_sampling() {
     use qa_render::assets::upload::{ExtentRound, UploadExtent, UploadParams};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[255; 4]).unwrap();
     let light = assets.register_image(8, 8, &[255; 8 * 8 * 4]).unwrap();
     assets
@@ -1480,7 +1480,7 @@ fn prepared_lightmap_region_mismatch_is_scoped_before_sampling() {
 
 #[test]
 fn tiny_uv_basis_keeps_original_stage_planes_when_product_fields_overflow() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[255; 4]).unwrap();
     let light = assets.register_image(1, 1, &[255; 4]).unwrap();
     let material = rgba_pair(&mut assets, base, false, false);
@@ -1502,7 +1502,7 @@ fn tiny_uv_basis_keeps_original_stage_planes_when_product_fields_overflow() {
 
 #[test]
 fn cached_boundary_keeps_attributes_through_partial_near_clipping() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let base = assets.register_image(1, 1, &[127, 151, 173, 255]).unwrap();
     let light = assets.register_image(1, 1, &[93, 101, 117, 255]).unwrap();
     let material = rgba_pair(&mut assets, base, false, false);
@@ -1544,7 +1544,7 @@ fn cached_boundary_keeps_attributes_through_partial_near_clipping() {
 
 #[test]
 fn retail_collinear_face_is_skipped_but_nonempty_zero_extent_is_rejected() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, false);
     let image = texture(&mut assets, palette, 11, false);
     let material = material(&mut assets, image, false);
@@ -1613,7 +1613,7 @@ fn retail_collinear_face_is_skipped_but_nonempty_zero_extent_is_rejected() {
 #[test]
 fn positional_bulge_keeps_raw_collinear_world_vertices_drawable() {
     use qa_render::shader::Deform;
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let white = assets.register_image(1, 1, &[255; 4]).unwrap();
     let material = assets
         .register_material(
@@ -1732,7 +1732,7 @@ fn packet(
 
 #[test]
 fn native_indexed_world_uses_cache_and_updates_style_generation() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, true);
     let image = texture(&mut assets, palette, 7, false);
     let material = material(&mut assets, image, false);
@@ -1770,7 +1770,7 @@ fn native_indexed_world_uses_cache_and_updates_style_generation() {
 
 #[test]
 fn cached_fence_holes_keep_the_opaque_world_behind_them() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, false);
     let background_image = texture(&mut assets, palette, 20, false);
     let fence_image = texture(&mut assets, palette, 10, true);
@@ -1825,7 +1825,7 @@ fn cached_fence_holes_keep_the_opaque_world_behind_them() {
 
 #[test]
 fn overlapping_certified_worlds_ignore_their_unrelated_bsp_keys() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, false);
     let back_image = texture(&mut assets, palette, 20, false);
     let front_image = texture(&mut assets, palette, 10, false);
@@ -1864,7 +1864,7 @@ fn overlapping_certified_worlds_ignore_their_unrelated_bsp_keys() {
 
 #[test]
 fn rgb_world_uses_edge_spans_and_shared_stage_sampling() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets.register_image(1, 1, &[11, 22, 33, 255]).unwrap();
     let material = material(&mut assets, image, false);
     let world = world(
@@ -1896,7 +1896,7 @@ fn rgb_world_uses_edge_spans_and_shared_stage_sampling() {
 }
 
 fn transformed_hud(operation: PaletteOperation) -> Vec<u32> {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let colors = [5, 19, 101].repeat(256);
     let colormap: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
     let palette = assets
@@ -1980,7 +1980,7 @@ fn native_combined_palette_blend_truncates_before_gamma_lookup() {
 
 #[test]
 fn coincident_worlds_use_shared_draw_rank_for_lequal_ties() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let red_image = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
     let blue_image = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
     let red_material = material(&mut assets, red_image, false);
@@ -2049,7 +2049,7 @@ fn coincident_worlds_use_shared_draw_rank_for_lequal_ties() {
 #[test]
 fn coincident_entity_and_world_obey_the_same_shared_draw_order() {
     for entity_sort in [2.0, 4.0] {
-        let mut assets = Assets::load();
+        let mut assets = Assets::load().unwrap();
         let red = assets.register_image(1, 1, &[255, 0, 0, 255]).unwrap();
         let blue = assets.register_image(1, 1, &[0, 0, 255, 255]).unwrap();
         let entity_material = assets
@@ -2187,7 +2187,7 @@ fn layered_material(
 
 #[test]
 fn layered_sky_occludes_far_world_and_retains_unlit_masked_indices() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, false);
     let image = texture(&mut assets, palette, 20, false);
     let solid = material(&mut assets, image, false);
@@ -2248,7 +2248,7 @@ fn layered_sky_occludes_far_world_and_retains_unlit_masked_indices() {
 
 #[test]
 fn layered_sky_uses_full_seat_integer_center_and_ignores_fov() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, false);
     let back: Vec<_> = (0..128 * 128).map(|i| (i % 128) as u8).collect();
     let material = layered_material(&mut assets, palette, &back, &vec![0; 128 * 128]);
@@ -2296,7 +2296,7 @@ fn layered_sky_uses_full_seat_integer_center_and_ignores_fov() {
 
 #[test]
 fn layered_sky_indices_bypass_world_colormap_lighting() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     // Every supplied colormap row changes index11, including the fullbright
     // row. Sky indices are palette inputs rather than lit cache texels.
     let palette = palette(&mut assets, true);
@@ -2326,7 +2326,7 @@ fn layered_sky_indices_bypass_world_colormap_lighting() {
 
 #[test]
 fn layered_sky_front_scroll_truncates_its_extra_shift_separately() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = palette(&mut assets, false);
     let mut front = vec![0; 128 * 128];
     front[122] = 201;
@@ -2409,7 +2409,7 @@ fn cube_material(assets: &mut Assets, cpu_rotation: bool) -> MaterialId {
 #[test]
 fn cube_background_uses_original_index_dimensions_and_typed_rotation_policy() {
     for cpu_rotation in [false, true] {
-        let mut assets = Assets::load();
+        let mut assets = Assets::load().unwrap();
         let palette = palette(&mut assets, false);
         let sky_material = cube_material(&mut assets, cpu_rotation);
         let sky = world_with_extent(

@@ -29,7 +29,7 @@ pub fn parse_sources(sources: &[ShaderSource<'_>]) -> ShaderCatalog {
                         );
                         continue;
                     }
-                    parser.shader = Some(canonical_name(&name.text));
+                    parser.shader = Some(canonical_path(&name.text));
                     let Some(open) = parser.next(true) else {
                         parser.report(
                             name.line,
@@ -268,7 +268,7 @@ impl<'t> Parser<'t, '_, '_> {
     fn definition(&mut self, name: &Token) -> ShaderDef {
         let diagnostic_start = self.diagnostics.len();
         let mut definition = ShaderDef {
-            name: canonical_name(&name.text),
+            name: canonical_path(&name.text),
             source: self.source.into(),
             line: name.line,
             valid: true,
@@ -379,10 +379,10 @@ impl<'t> Parser<'t, '_, '_> {
                             if let Some(inner) = self.argument(&key, token.line) {
                                 definition.sky = Some(SkyParms {
                                     outer_box: (outer.text != "-")
-                                        .then(|| canonical_name(&outer.text)),
+                                        .then(|| canonical_path(&outer.text)),
                                     cloud_height: if height == 0.0 { 512.0 } else { height },
                                     inner_box: (inner.text != "-")
-                                        .then(|| canonical_name(&inner.text)),
+                                        .then(|| canonical_path(&inner.text)),
                                 });
                             }
                         }
@@ -558,7 +558,7 @@ impl<'t> Parser<'t, '_, '_> {
             match key.as_str() {
                 "map" | "clampmap" => {
                     if let Some(value) = self.argument(&key, token.line) {
-                        let image = canonical_name(&value.text);
+                        let image = canonical_path(&value.text);
                         stage.map = Some(if key == "map" && image == "$whiteimage" {
                             TextureMap::White
                         } else if key == "map" && image == "$lightmap" {
@@ -589,7 +589,7 @@ impl<'t> Parser<'t, '_, '_> {
                             images: images
                                 .iter()
                                 .take(MAX_ANIMATIONS)
-                                .map(|image| canonical_name(image))
+                                .map(|image| canonical_path(image))
                                 .collect::<Vec<_>>()
                                 .into_boxed_slice(),
                         });
@@ -597,7 +597,7 @@ impl<'t> Parser<'t, '_, '_> {
                 }
                 "videomap" => {
                     if let Some(value) = self.argument(&key, token.line) {
-                        stage.map = Some(TextureMap::Video(canonical_name(&value.text)));
+                        stage.map = Some(TextureMap::Video(canonical_path(&value.text)));
                         unsupported.push(UnsupportedDeclaration {
                             keyword: token.text.clone(),
                             arguments: vec![value.text.clone()].into_boxed_slice(),

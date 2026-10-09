@@ -12,7 +12,7 @@ use qa_render::{
     reason = "Keep the independent packed-pixel or triangle oracle and incomplete-tail expectations unchanged"
 )]
 fn fence_holes_ignore_equal_depth_lightmap_pass() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let fence = assets
         .register_image(2, 1, &[255, 255, 255, 0, 255, 255, 255, 255])
         .unwrap();
@@ -89,7 +89,7 @@ fn fence_holes_ignore_equal_depth_lightmap_pass() {
 
 #[test]
 fn final_palette_phase_covers_statusbar_after_2d() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut cpu = CpuBackend::load(4, 4).unwrap();
     for phase in [BlendPhase::AfterView, BlendPhase::FinalPalette] {
@@ -141,7 +141,7 @@ fn final_palette_phase_covers_statusbar_after_2d() {
 
 #[test]
 fn two_dimensional_color_alpha_blends_and_submission_failures_are_reported() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let mut frontend = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = frontend.begin_frame([0, 0, 255, 255]).unwrap();
     assert!(!frame.add_poly(MaterialId(0), &[]));
@@ -165,7 +165,7 @@ fn native_first_image_sampler_overrides_later_material_requests() {
         (Wrap::Clamp, Wrap::Repeat, [0, 0, 255, 255]),
         (Wrap::Repeat, Wrap::Clamp, [255, 0, 0, 255]),
     ] {
-        let mut assets = Assets::load();
+        let mut assets = Assets::load().unwrap();
         let image = assets
             .register_image(2, 1, &[255, 0, 0, 255, 0, 0, 255, 255])
             .unwrap();

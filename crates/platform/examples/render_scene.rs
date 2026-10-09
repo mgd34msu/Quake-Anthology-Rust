@@ -284,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !matches!(renderer.as_str(), "cpu" | "gl") || hold_ms > 10_000 {
         return Err("invalid fixture options".into());
     }
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().map_err(|e| e.to_string())?;
     let fixture = Fixture::load(&mut assets)?;
     let mut front = FrontEnd::load(Limits::default())?;
     let mut window = if renderer == "gl" {

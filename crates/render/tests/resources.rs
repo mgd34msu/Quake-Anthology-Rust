@@ -65,7 +65,7 @@ fn indexed_pcx_uses_selected_global_palette_and_explicit_mask() {
     let root = Fixture::new();
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root.0, 0).unwrap();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = assets.register_palette(palette()).unwrap();
     let mut images = Images::new(
         &vfs,
@@ -106,7 +106,7 @@ fn sky_resource_keeps_distinct_native_tga_pixels_and_pcx_dimensions() {
     let root = Fixture::new();
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root.0, 0).unwrap();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = assets.register_palette(palette()).unwrap();
     let mut images = Images::new(
         &vfs,
@@ -149,7 +149,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
     root.tga("env/odd.tga", 3, 3, [17, 23, 31]);
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root.0, 0).unwrap();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let settings = ImageSettings {
         picmip: 1,
         intensity: 2.5,
@@ -200,7 +200,7 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
     root.tga("env/first.tga", 4, 4, [20, 30, 40]);
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root.0, 0).unwrap();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let mut images = Images::new(
         &vfs,
         &mut assets,
@@ -252,7 +252,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     root.tga("env/nopic.tga", 4, 4, [17, 23, 31]);
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root.0, 0).unwrap();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let settings = ImageSettings {
         intensity: 2.0,
         gamma_exponent: 2.0,

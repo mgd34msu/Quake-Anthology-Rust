@@ -54,6 +54,36 @@ fn mark(
     Ok(())
 }
 
+#[test]
+fn numeric_command_and_alias_lookup_preserves_folded_order_and_dispatch_priority() {
+    let context = Context::default();
+    let mut console = Console::new(context).unwrap();
+    let mut host = Capture::default();
+    assert!(console.register("Zoo", mark));
+    assert!(console.register("Alpine", mark));
+    assert!(console.register("al", mark));
+    assert!(console.register("_Last", mark));
+    assert!(!console.register("ALPINE", mark));
+    console.append("cmdlist\n", context).unwrap();
+    console.execute_frame(&mut host);
+    // Native Q_stricmp uppercases letters, placing '_' after letters.
+    let custom: Vec<_> = host
+        .output
+        .lines()
+        .filter(|name| ["al", "Alpine", "Zoo", "_Last"].contains(name))
+        .collect();
+    assert_eq!(custom, ["al", "Alpine", "Zoo", "_Last"]);
+    host.output.clear();
+    console.append("alias MiXeD \"Zoo first\"; mixed; alias MIXED \"al second\"; mIxEd; alias Zoo \"echo hidden\"; zOo third; alias FOV \"echo hidden\"; fOv 117; unalias mixed; alias mixed \"Alpine fourth\"; MIXED\n", context).unwrap();
+    console.execute_frame(&mut host);
+    assert_eq!(host.marks, ["first", "second", "third", "fourth"]);
+    assert_eq!(
+        console.cvars.value(console.cvars.find("cg_fov").unwrap()),
+        117.0
+    );
+    assert!(!host.output.contains("hidden"));
+}
+
 fn tokens(text: &str, source: RuleSetId) -> Vec<String> {
     let mut storage = command_text::Tokens::default();
     command_text::tokenize(text, source, &mut storage)
@@ -184,7 +214,7 @@ fn buffer_preserves_append_insert_quotes_source_context_and_overflow_atomicity()
 fn one_table_executes_alias_wait_nested_exec_and_cvars_in_every_source() {
     for source in RuleSetId::ALL {
         let context = context(source);
-        let mut console = Console::<Capture>::new(context);
+        let mut console = Console::<Capture>::new(context).unwrap();
         let mut host = Capture::default();
         assert!(console.register("mark", mark));
         console.append("alias a \"mark hi; wait; mark there\"; a; fov 110; cg_fov; exec outer; quit; mark unreachable\n", context).unwrap();
@@ -203,7 +233,7 @@ fn one_table_executes_alias_wait_nested_exec_and_cvars_in_every_source() {
 
 #[test]
 fn unknown_text_and_recursive_alias_stay_scoped_and_never_become_chat() {
-    let mut console = Console::<Capture>::new(Context::default());
+    let mut console = Console::<Capture>::new(Context::default()).unwrap();
     let mut host = Capture::default();
     console.register("mark", mark);
     console
@@ -220,7 +250,7 @@ fn unknown_text_and_recursive_alias_stay_scoped_and_never_become_chat() {
 
 #[test]
 fn cvarlist_has_every_owner_definition_once_with_seat_values_indented() {
-    let mut console = Console::<Capture>::new(Context::default());
+    let mut console = Console::<Capture>::new(Context::default()).unwrap();
     let mut host = Capture::default();
     console.append("cvarlist\n", Context::default()).unwrap();
     console.execute_frame(&mut host);
@@ -241,7 +271,7 @@ fn cvarlist_has_every_owner_definition_once_with_seat_values_indented() {
 fn bare_assignment_uses_argv_one_and_set_retains_native_source_rules() {
     for source in RuleSetId::ALL {
         let context = context(source);
-        let mut console = Console::<Capture>::new(context);
+        let mut console = Console::<Capture>::new(context).unwrap();
         let mut host = Capture::default();
         console
             .append("fov 100 ignored; sensitivity \"3 4\" ignored\n", context)

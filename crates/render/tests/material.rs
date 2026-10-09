@@ -9,7 +9,7 @@ fn same_name_with_different_resolved_images_retains_distinct_numeric_materials()
         Assets,
         assets::{MaterialSettings, Stage, StageTexture},
     };
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let a = assets.register_image(1, 1, &[0, 0, 0, 255]).unwrap();
     let b = assets.register_image(1, 1, &[255; 4]).unwrap();
     let first = assets
@@ -33,6 +33,22 @@ fn same_name_with_different_resolved_images_retains_distinct_numeric_materials()
         )
         .unwrap();
     assert_ne!(first, second);
+    assert_eq!(
+        assets.material(first).unwrap().name,
+        assets.material(second).unwrap().name
+    );
+    let repeat = assets
+        .register_material(
+            "WALL",
+            assets.material(first).unwrap().stages.to_vec().as_slice(),
+            MaterialSettings::default(),
+        )
+        .unwrap();
+    assert_eq!(repeat, first);
+    assert_eq!(
+        assets.name(assets.material(first).unwrap().name),
+        Some("wall")
+    );
     assert_eq!(
         assets
             .register_material(

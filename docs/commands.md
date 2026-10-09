@@ -7,10 +7,15 @@ role, side, local seat and event time; it never selects another console or regis
 constructs the command buffer only while loading the console. THE-887 uses a
 65,536-byte array, load-allocated context spans, an 8,192-byte line scratch
 and 1,024 reusable argv offsets. Byte shifts stay inside the array. Static
-command names are sorted at registration and searched without allocating.
+command names use core `NameTable` IDs. Its folded lookup resolves each command
+token once, then numeric tables dispatch commands, cvars or aliases. The command
+listing retains Q3 `Q_stricmp` order, including punctuation. Names keep their
+exact spelling separately from their cached folded equivalence.
 Aliases use load-selected slots (4,096 by default); callers can select their
 session capacity before play. Native alias text is bounded to 1,024 bytes.
 Capacity errors admit no partial alias or buffer change.
+The console reserves name slots/bytes at load; alias replacement and removal
+never allocate. Cvar flag members and native default roles also resolve at load.
 
 `echo`, `wait`, `alias`, `unalias`, `exec`, `vstr`, `set`, `cmdlist`, `cvarlist`
 and `quit` work through that table. Commands take precedence over cvars, then

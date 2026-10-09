@@ -83,7 +83,7 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
         .connect(Connection::Local, ModuleId(3), PlayerTail::default(), None)
         .unwrap();
     let mut host = FrameHost::load(
-        Console::new(Context::default()),
+        Console::new(Context::default()).unwrap(),
         runtime,
         TickRate::fixed(20).unwrap(),
         (1..=3)
@@ -229,7 +229,7 @@ fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() 
 #[test]
 fn quit_flushes_console_output_once() {
     let mut host = FrameHost::load(
-        Console::new(Context::default()),
+        Console::new(Context::default()).unwrap(),
         Runtime::load(std::iter::empty()).unwrap(),
         TickRate::FrameDriven,
         vec![],
@@ -327,7 +327,7 @@ fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks
     let stalled_cursor = runtime.server.clients[stalled.0 as usize].output.unwrap();
     let healthy_cursor = runtime.server.clients[healthy.0 as usize].output.unwrap();
     let mut host = FrameHost::load(
-        Console::new(Context::default()),
+        Console::new(Context::default()).unwrap(),
         runtime,
         TickRate::fixed(25).unwrap(),
         [100, 50, 25]

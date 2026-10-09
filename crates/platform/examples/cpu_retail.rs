@@ -415,7 +415,8 @@ fn run() -> Result<(), String> {
     let mut console = Console::<Runtime>::new(Context {
         source,
         ..Context::default()
-    });
+    })
+    .map_err(|e| e.to_string())?;
     let profile_product = input.profile_product(policy.client).into_owned();
     let imported = profile::load(
         &mut console,
@@ -428,7 +429,7 @@ fn run() -> Result<(), String> {
         return Err("copied saved profile contained no applicable settings".into());
     }
     let image_settings = render_settings::image_settings(&console.cvars, source)?;
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().map_err(|e| e.to_string())?;
     let loaded = input.load(
         &runtime.vfs,
         &mut assets,

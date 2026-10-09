@@ -7,7 +7,7 @@ use qa_formats::{
 use qa_render::world::geometry::{GeometryKind, GeometryOptions, load_geometry};
 use qa_render::{
     material::load_catalog,
-    shader::{Severity, canonical_name},
+    shader::{Severity, canonical_path},
 };
 use std::{fmt::Write, fs::File, path::PathBuf, sync::Arc};
 
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if index != 0 {
             report.push(',');
         }
-        let name = canonical_name(std::str::from_utf8(shader.name)?);
+        let name = canonical_path(std::str::from_utf8(shader.name)?);
         if let Some(definition) = catalog.find_canonical(&name) {
             scripted += 1;
             invalid += usize::from(!definition.valid);

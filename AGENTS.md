@@ -76,6 +76,12 @@ at the caller boundary; map geometry does not select string semantics. Native
 item/function classname dispatch uses exact names per qsrc strcmp. Optional target fields retain
 the difference between an absent string and an explicit empty NameId(0).
 Q1 native import maps its zero string offset to that explicit empty value.
+Console cvars, commands and aliases use core NameTable's folded lookup and
+cached numeric bindings; command listing retains native Q_stricmp ordering.
+Renderer image/material names use its one canonical-path conversion and
+interned NameIds. Registration uses storage reserved at load; successful cache
+lookup and alias replacement allocate nothing. Never merge raw exact names
+merely because their path or folded forms compare equal.
 
 Capability crates are core, world, movement, formats, content for the VFS,
 render, audio, network, session, gameplay, compat for module hosts, navigation,

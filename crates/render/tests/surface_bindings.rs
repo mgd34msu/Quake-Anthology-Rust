@@ -109,7 +109,7 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
         .chunks_exact(3)
         .flat_map(|color| [color[0], color[1], color[2], 255])
         .collect();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     assets.register_image(1, 1, &[41; 4]).unwrap();
     let image = assets.register_image(PAGE_SIZE, PAGE_SIZE, &rgba).unwrap();
     assert_ne!(image.0, red.page);
@@ -144,7 +144,7 @@ fn registered_packed_faces_keep_distinct_corners_on_one_numeric_image() {
 
 #[test]
 fn packed_bounds_fail_once_before_world_or_mesh_registration() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets.register_image(4, 4, &[128; 64]).unwrap();
     let worlds_before = assets.worlds().len();
     let models_before = assets.models().len();
@@ -208,7 +208,7 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
 
 #[test]
 fn authored_full_page_keeps_uvs_and_default_region_none() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let image = assets
         .register_image(
             PAGE_SIZE,

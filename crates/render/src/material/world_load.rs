@@ -19,7 +19,7 @@ use crate::{
     },
     shader::{
         AlphaFunc, AlphaGen, BlendFactor, Cull, Deform, RgbGen, ShaderDef, StageBlend, TexCoordGen,
-        TextureMap, canonical_name,
+        TextureMap, canonical_path,
     },
     sky::{CloudSphere, LayeredSphere, split_layered_sky},
     surface_cache::{IndexedLighting, IndexedTexture},
@@ -393,7 +393,7 @@ pub fn load_world(
                 .source_shader
                 .ok_or(WorldMaterialError::Boundary("missing source shader"))?
                 as usize];
-            let name = canonical_name(
+            let name = canonical_path(
                 std::str::from_utf8(shader.name)
                     .map_err(|_| WorldMaterialError::Boundary("invalid shader name"))?,
             );
@@ -487,7 +487,12 @@ pub fn load_world(
     for conflict in &images.conflicts {
         diagnostics.push(format!(
             "native first-image flags retained: {} ({:?} requested {:?})",
-            conflict.name, conflict.first, conflict.requested
+            images
+                .assets
+                .name(conflict.name)
+                .unwrap_or("<unknown image>"),
+            conflict.first,
+            conflict.requested
         ));
     }
     Ok(LoadedWorld {

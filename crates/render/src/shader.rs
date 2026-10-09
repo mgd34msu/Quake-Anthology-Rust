@@ -4,6 +4,7 @@ mod lexer;
 mod parse;
 pub use crate::assets::DepthFunc;
 pub use parse::parse_sources;
+pub use qa_core::names::canonical_path;
 
 pub const MAX_STAGES: usize = 8;
 pub const MAX_TEXMODS: usize = 4;
@@ -27,10 +28,6 @@ impl ShaderCatalog {
             .ok()
             .map(|index| &self.definitions[index])
     }
-}
-/// Canonicalisation belongs to the load boundary, never a frame lookup.
-pub fn canonical_name(name: &str) -> String {
-    name.replace('\\', "/").to_ascii_lowercase()
 }
 
 #[derive(Clone, Debug, PartialEq)]

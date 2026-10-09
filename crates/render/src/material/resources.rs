@@ -2,6 +2,7 @@
 use crate::assets::{Assets, ImageId, PaletteId, Sampler, upload};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use qa_content::vfs::{Vfs, VfsError};
+use qa_core::primitives::NameId;
 use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
@@ -113,9 +114,29 @@ pub struct ResolvedImage {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageConflict {
-    pub name: String,
+    pub name: NameId,
     pub first: ImageUse,
     pub requested: ImageUse,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImageRecipe {
+    Wal {
+        palette: PaletteId,
+        cutout: bool,
+    },
+    Pcx {
+        palette: PaletteId,
+        transparent_index: Option<u8>,
+        rgba_override: Option<NameId>,
+        usage: ImageUse,
+    },
+    Raster(RasterPolicy),
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ImageKey {
+    name: NameId,
+    recipe: ImageRecipe,
 }
 
 struct ImageRecipes {
@@ -351,7 +372,7 @@ pub struct Images<'a> {
     vfs: &'a Vfs,
     reader: ArchiveReader,
     recipes: ImageRecipes,
-    resolved: Vec<(String, ResolvedImage, ImageUse)>,
+    resolved: Vec<(ImageKey, ResolvedImage, ImageUse)>,
     pub conflicts: Vec<ImageConflict>,
 }
 impl<'a> Images<'a> {
@@ -430,8 +451,14 @@ impl<'a> Images<'a> {
         palette: PaletteId,
         cutout: bool,
     ) -> Result<ImageId, ResourceError> {
-        let key = format!("wal:{name}:{}:{cutout}", palette.0);
-        if let Ok(index) = self.resolved.binary_search_by(|entry| entry.0.cmp(&key)) {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_name(name)
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::Wal { palette, cutout },
+        };
+        if let Some(index) = self.find(key) {
             return Ok(self.resolved[index].1.id);
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
@@ -451,11 +478,22 @@ impl<'a> Images<'a> {
         rgba_override: Option<&str>,
         usage: ImageUse,
     ) -> Result<ImageId, ResourceError> {
-        let key = format!(
-            "pcx:{name}:{}:{transparent_index:?}:{rgba_override:?}:{usage:?}",
-            palette.0
-        );
-        if let Ok(index) = self.resolved.binary_search_by(|entry| entry.0.cmp(&key)) {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_name(name)
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::Pcx {
+                palette,
+                transparent_index,
+                rgba_override: rgba_override
+                    .map(|path| self.assets.intern_name(path))
+                    .transpose()
+                    .map_err(ResourceError::Asset)?,
+                usage,
+            },
+        };
+        if let Some(index) = self.find(key) {
             return Ok(self.resolved[index].1.id);
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
@@ -508,9 +546,14 @@ impl<'a> Images<'a> {
     /// supported extensions are retained; newer formats use the same decoder.
     pub fn raster(&mut self, name: &str, usage: ImageUse) -> Result<ResolvedImage, ResourceError> {
         let policy = self.recipes.policy;
-        let canonical = name.replace('\\', "/").to_ascii_lowercase();
-        let key = format!("raster:{policy:?}:{canonical}");
-        if let Ok(index) = self.resolved.binary_search_by(|entry| entry.0.cmp(&key)) {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_name(name)
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::Raster(policy),
+        };
+        if let Some(index) = self.find(key) {
             let first = self.resolved[index].2;
             let requested = self.recipes.effective_use(usage);
             if policy == RasterPolicy::Quake3
@@ -519,16 +562,21 @@ impl<'a> Images<'a> {
                 && !self
                     .conflicts
                     .iter()
-                    .any(|entry| entry.name == canonical && entry.requested == requested)
+                    .any(|entry| entry.name == key.name && entry.requested == requested)
             {
                 self.conflicts.push(ImageConflict {
-                    name: canonical,
+                    name: key.name,
                     first,
                     requested,
                 });
             }
             return Ok(self.resolved[index].1);
         }
+        let canonical = self
+            .assets
+            .name(key.name)
+            .ok_or(ResourceError::Asset("missing image name"))?
+            .to_owned();
         let known = ImageFormat::from_path(canonical.as_bytes());
         let candidates = if known.is_some() {
             let jpeg = canonical
@@ -597,7 +645,17 @@ impl<'a> Images<'a> {
         }
         Ok(())
     }
-    fn remember(&mut self, key: String, id: ImageId, usage: ImageUse) -> ResolvedImage {
+    fn find(&self, key: ImageKey) -> Option<usize> {
+        let at = self
+            .resolved
+            .partition_point(|entry| entry.0.name.0 < key.name.0);
+        self.resolved[at..]
+            .iter()
+            .take_while(|entry| entry.0.name == key.name)
+            .position(|entry| entry.0 == key)
+            .map(|index| at + index)
+    }
+    fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
         let usage = self.recipes.effective_use(usage);
         let resolved = ResolvedImage {
             id,
@@ -605,8 +663,7 @@ impl<'a> Images<'a> {
         };
         let at = self
             .resolved
-            .binary_search_by(|entry| entry.0.cmp(&key))
-            .unwrap_or_else(|at| at);
+            .partition_point(|entry| entry.0.name.0 <= key.name.0);
         self.resolved.insert(at, (key, resolved, usage));
         resolved
     }

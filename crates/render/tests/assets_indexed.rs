@@ -11,7 +11,7 @@ fn palette(offset: u8) -> PaletteLighting {
 
 #[test]
 fn one_image_retains_original_mips_and_resolved_gl_palette() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let first = assets.register_palette(palette(0)).unwrap();
     let second = assets.register_palette(palette(13)).unwrap();
     let indices = [7, 255, 19, 44];
@@ -34,7 +34,7 @@ fn one_image_retains_original_mips_and_resolved_gl_palette() {
 
 #[test]
 fn opaque_index_255_is_not_a_transparent_pixel() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let palette = assets.register_palette(palette(0)).unwrap();
     let texture = IndexedTexture::load(1, 1, [&[255]; 4], false).unwrap();
     let id = assets.register_indexed_image(texture, palette).unwrap();

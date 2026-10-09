@@ -105,7 +105,7 @@ fn sorted_items(assets: &Assets, materials: &[MaterialId], keys: &[usize]) -> Ve
 
 #[test]
 fn original_draw_sort_fixture_export() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let materials: Vec<_> = (0..32)
         .map(|key| {
             assets

@@ -16,7 +16,7 @@ fn run() -> Result<(), String> {
     let mut vfs = Vfs::default();
     vfs.mount_product(std::path::Path::new(&product), 0)
         .map_err(|e| format!("mount: {e:?}"))?;
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().map_err(|e| e.to_string())?;
     let mut collision = qa_world::collision::CollisionStore::new();
     let start = Stopwatch::start();
     let loaded = map::read(&vfs, &name)?.load(

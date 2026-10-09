@@ -5,7 +5,7 @@ use qa_console::{
 
 #[test]
 fn renderer_latch_holds_every_native_view_until_load_boundary() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     for source in RuleSetId::ALL {
         let view = cvars
             .bind(

@@ -46,7 +46,8 @@ fn foreign_movement_and_trace_overrides_do_not_select_native_clock_or_link_order
     let mut cvars = Cvars::with_context(Context {
         source: RuleSetId::QuakeWorld,
         ..Context::default()
-    });
+    })
+    .unwrap();
     for client in RuleSetId::ALL {
         let (rate, order) = match client {
             RuleSetId::Quake | RuleSetId::QuakeWorld => (TickRate::FrameDriven, LinkOrder::Tail),
@@ -92,7 +93,7 @@ fn q3_tick_period_and_low_rate_repair_use_the_client_view_in_every_console_diale
                 source: dialect,
                 ..Context::default()
             };
-            let mut cvars = Cvars::with_context(context);
+            let mut cvars = Cvars::with_context(context).unwrap();
             let fps = cvars.find("sv_fps").ok_or("missing sv_fps")?;
             if let Some(input) = input {
                 cvars
@@ -135,7 +136,7 @@ fn q3_tick_period_and_low_rate_repair_use_the_client_view_in_every_console_diale
 #[test]
 fn non_q3_clients_do_not_repair_q3_sv_fps() -> Result<(), String> {
     for (input, expected_fps) in [("0", 0), ("-8", -8)] {
-        let mut cvars = Cvars::new();
+        let mut cvars = Cvars::new().unwrap();
         let fps = cvars.find("sv_fps").ok_or("missing sv_fps")?;
         cvars
             .set_text(fps, input)

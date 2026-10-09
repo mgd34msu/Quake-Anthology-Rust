@@ -2013,3 +2013,52 @@ owned PIDs were absent. The adjacent `normal-tracked-qualification.json`,
 These are private render/queue/heap checks; actual gameplay and installation
 remain unqualified. THE-859 still requires installed multiple-seat/device and
 combined-movement acceptance; the normal app currently creates one seat.
+
+## THE-617 console and renderer name consumers (2026-10-09)
+
+Core NameTable now supplies one folded bucket lookup, stable exact IDs and
+load-reserved registration. Console NameIndex/hash and local comparison are
+deleted; commands, cvars and aliases dispatch from a single token lookup into
+numeric bindings. Flag members and native default roles resolve at load.
+Materials/images use canonical-path NameIds and typed recipe keys; their
+String-key and duplicate path-conversion implementations are deleted. Parser
+keyword handling is unchanged. See names.md for storage/lifetime rules.
+
+Checker, 567 workspace tests (129 suites) and all-target Clippy with allocation
+tracking passed. Release probe rebuild: 16.60 s. The unchanged qsrc Q3
+Q_stricmpn function (q_shared.c:727-764) matched all 10,256 ASCII ordering pairs,
+including punctuation. Original Q1/QW/Q2/Q3 target comparisons still match all
+12,712 rows, with zero counted calling-thread allocations after cold load.
+Owner catalog cells remain identical (26,460 cells); numeric/pure conversion
+comparisons match 100,080 number and 344,475 view records. These fixtures retain
+the earlier C-string/native namespace limitations.
+
+The release name_consumers example ran on CPU 23 with 60 warm-up and 600
+measured frames, 64 lookup groups per frame. It checks exact-name distinction,
+missing lookups, stable registrations, repeated image/material registration,
+Q3 first-image sampler ownership, and alias replacement/removal with native
+console output. Median 11,080 ns, p99 14,190 ns; zero Rust calling-thread
+allocation/reallocation calls and requested bytes. Positive control: one
+allocation. This is a headless lookup workload, without rendering or workers.
+
+Matched host ABBA against 84aae4af (engine d240a025), CPU 23, same console/bind,
+output and local UDP workload, 60 warm-up plus 600 measured frames per run:
+
+| Run | Median ns | p99 ns |
+| --- | ---: | ---: |
+| Before A1 | 155,630.5 | 247,040 |
+| After B1 | 153,810 | 252,280 |
+| After B2 | 153,590 | 245,110 |
+| Before A2 | 155,900 | 246,060 |
+
+Mean medians: 155,765.25 -> 153,700 ns (-1.33%). All counters and the complete
+stdout prefix match; every run counted zero Rust calling-thread allocations.
+This small median difference is bounded host-path evidence, not a renderer or
+gameplay speed claim. All four recorded processes exited. Fixed frame-scratch
+allocation qualification also passed.
+
+Evidence: local THE-617-consumers directory, names.json, host-abba.json,
+order/comparison.json, targets-native/report.json, cvar-cells/comparison.json,
+cvar-views/comparison.json, tests.log, clippy.log and rules.json. No gameplay
+installation, retail trigger/door execution or native module/protocol acceptance
+is asserted by these checks.

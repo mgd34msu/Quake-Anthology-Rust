@@ -6,7 +6,8 @@ use crate::{
     numbers::{integer, number},
     views::{Context, Role, RuleSetId},
 };
-use qa_core::primitives::CvarHandle;
+use qa_core::names::{NameTable, NamesError};
+use qa_core::primitives::{CvarHandle, NameId};
 use qa_core::text::FixedText;
 use std::{borrow::Cow, fmt::Write};
 
@@ -18,83 +19,6 @@ const ROLES: [Role; 3] = [Role::Engine, Role::Game, Role::Cgame];
 struct NameSlot {
     first: u16,
     second: u16,
-}
-struct NameIndex {
-    slots: Vec<NameSlot>,
-    #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
-    lookups: std::cell::Cell<u64>,
-}
-impl NameIndex {
-    fn load() -> Self {
-        let mut index = Self {
-            #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
-            lookups: std::cell::Cell::new(0),
-            slots: vec![
-                NameSlot {
-                    first: EMPTY,
-                    second: EMPTY
-                };
-                4096
-            ],
-        };
-        for (binding, b) in BINDINGS.iter().enumerate() {
-            let mut bucket = index.bucket(b.name);
-            loop {
-                let slot = &mut index.slots[bucket];
-                if slot.first == EMPTY {
-                    slot.first = binding as u16;
-                    break;
-                }
-                if BINDINGS[slot.first as usize]
-                    .name
-                    .eq_ignore_ascii_case(b.name)
-                {
-                    slot.second = binding as u16;
-                    break;
-                }
-                bucket = (bucket + 1) & (index.slots.len() - 1);
-            }
-        }
-        index
-    }
-    fn bucket(&self, name: &str) -> usize {
-        // Bucket key only; this does not identify content or persist/cache a digest.
-        let mut key = 2166136261u32;
-        for byte in name.bytes() {
-            key = (key ^ u32::from(byte.to_ascii_lowercase())).wrapping_mul(16777619);
-        }
-        key as usize & (self.slots.len() - 1)
-    }
-    fn lookup(&self, name: &str, side: Scope) -> Option<u16> {
-        #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
-        self.lookups.set(self.lookups.get().wrapping_add(1));
-        let mut bucket = self.bucket(name);
-        loop {
-            let slot = self.slots[bucket];
-            if slot.first == EMPTY {
-                return None;
-            }
-            if BINDINGS[slot.first as usize]
-                .name
-                .eq_ignore_ascii_case(name)
-            {
-                let mut fallback = None;
-                for id in [slot.first, slot.second] {
-                    if id == EMPTY {
-                        continue;
-                    }
-                    let scope = BINDINGS[id as usize].scope;
-                    if scope == Scope::Any {
-                        fallback = Some(id);
-                    } else if scope == side || (scope == Scope::Client && side == Scope::Any) {
-                        return Some(id);
-                    }
-                }
-                return fallback;
-            }
-            bucket = (bucket + 1) & (self.slots.len() - 1);
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,7 +98,13 @@ pub struct Cvars {
     texts: Box<[FixedText<MAX_TEXT>]>,
     offsets: Vec<usize>,
     defaults: Vec<[Option<Cow<'static, str>>; 5]>,
-    index: NameIndex,
+    pub(crate) names: NameTable,
+    name_bindings: Box<[NameSlot]>,
+    binding_names: Box<[NameId]>,
+    flag_names: Box<[Option<NameId>]>,
+    stock_roles: Box<[[Role; 5]]>,
+    #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
+    lookups: std::cell::Cell<u64>,
     details: Vec<[Option<Box<Detail>>; 5]>,
     pending: Vec<PendingWrite>,
     projections: Vec<Projections>,
@@ -191,11 +121,49 @@ pub struct Cvars {
 }
 
 impl Cvars {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, NamesError> {
         Self::with_context(Context::default())
     }
-    pub fn with_context(context: Context) -> Self {
-        let index = NameIndex::load();
+    pub fn with_context(context: Context) -> Result<Self, NamesError> {
+        let names = NameTable::load_reserved(
+            BINDINGS.iter().map(|b| b.name.as_bytes()),
+            32768,
+            1024 * 1024,
+        )?;
+        let mut name_bindings = vec![
+            NameSlot {
+                first: EMPTY,
+                second: EMPTY
+            };
+            names.len()
+        ]
+        .into_boxed_slice();
+        for (binding, b) in BINDINGS.iter().enumerate() {
+            let id = names
+                .find_folded(b.name.as_bytes())
+                .ok_or(NamesError::Capacity)?;
+            let slot = &mut name_bindings[id.0 as usize];
+            if slot.first == EMPTY {
+                slot.first = binding as u16;
+            } else {
+                slot.second = binding as u16;
+            }
+        }
+        let binding_names: Box<[NameId]> = BINDINGS
+            .iter()
+            .map(|b| {
+                names
+                    .find_folded(b.name.as_bytes())
+                    .ok_or(NamesError::Capacity)
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
+        let flag_names = FLAGS
+            .iter()
+            .map(|c| names.find_folded(c.member.as_bytes()))
+            .collect();
+        let stock_roles = (0..DEFINITIONS.len())
+            .map(|row| RuleSetId::ALL.map(|source| stock_role(&names, &binding_names, row, source)))
+            .collect();
         let mut values =
             Vec::with_capacity(DEFINITIONS.iter().map(|d| d.family_count as usize).sum());
         let mut offsets = Vec::with_capacity(DEFINITIONS.len());
@@ -230,7 +198,13 @@ impl Cvars {
             values,
             texts,
             offsets,
-            index,
+            names,
+            name_bindings,
+            binding_names,
+            flag_names,
+            stock_roles,
+            #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
+            lookups: std::cell::Cell::new(0),
             context,
             revision_clock: 0,
             defaults: (0..DEFINITIONS.len())
@@ -284,7 +258,7 @@ impl Cvars {
         registry.resolve_defaults();
         registry.refresh_numbers();
         registry.refresh_projections();
-        registry
+        Ok(registry)
     }
     pub fn context(&self) -> Context {
         self.context
@@ -334,8 +308,32 @@ impl Cvars {
                 }) as u32,
         )
     }
-    pub fn bind(&self, name: &str, context: Context) -> Option<View> {
-        let binding = self.index.lookup(name, context.side)?;
+    pub(crate) fn lookup_name(&self, name: &str) -> Option<NameId> {
+        #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
+        self.lookups.set(self.lookups.get().wrapping_add(1));
+        self.names.find_folded(name.as_bytes())
+    }
+    fn binding_id(&self, id: NameId, side: Scope) -> Option<u16> {
+        let slot = *self.name_bindings.get(id.0 as usize)?;
+        let mut fallback = None;
+        for binding in [slot.first, slot.second] {
+            if binding == EMPTY {
+                continue;
+            }
+            let scope = BINDINGS[binding as usize].scope;
+            if scope == Scope::Any {
+                fallback = Some(binding);
+            } else if scope == side || (scope == Scope::Client && side == Scope::Any) {
+                return Some(binding);
+            }
+        }
+        fallback
+    }
+    fn lookup_binding(&self, name: &str, side: Scope) -> Option<u16> {
+        self.binding_id(self.lookup_name(name)?, side)
+    }
+    pub(crate) fn bind_id(&self, id: NameId, context: Context) -> Option<View> {
+        let binding = self.binding_id(id, context.side)?;
         let b = &BINDINGS[binding as usize];
         Some(View {
             handle: self.slot(b.row as usize, b.seat),
@@ -343,6 +341,10 @@ impl Cvars {
             context,
         })
     }
+    pub fn bind(&self, name: &str, context: Context) -> Option<View> {
+        self.bind_id(self.lookup_name(name)?, context)
+    }
+
     /// Canonical engine handle; converted boundaries retain a View instead.
     pub fn find(&self, name: &str) -> Option<CvarHandle> {
         self.bind(name, self.context).map(View::canonical)
@@ -384,11 +386,11 @@ impl Cvars {
     }
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
     pub fn reset_lookup_count(&self) {
-        self.index.lookups.set(0);
+        self.lookups.set(0);
     }
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
     pub fn lookup_count(&self) -> u64 {
-        self.index.lookups.get()
+        self.lookups.get()
     }
     pub fn text(&self, handle: CvarHandle) -> &str {
         self.effective(handle, self.context.source)
@@ -405,7 +407,7 @@ impl Cvars {
         let row = self.values[handle.0 as usize].row;
         let context = Context {
             source,
-            role: stock_role(row, source),
+            role: self.stock_roles[row][source as usize],
             ..self.context
         };
         self.default_available(handle, source)
@@ -469,10 +471,11 @@ impl Cvars {
             row.home.map_or(view.context.source as usize, usize::from)
         };
         let mut flags = u32::from(row.archive);
-        for clause in &FLAGS[row.defaults[source].flags.clone()] {
+        for index in row.defaults[source].flags.clone() {
+            let clause = &FLAGS[index];
             if clause.issues == 0
                 && (clause.member.is_empty()
-                    || clause.member.eq_ignore_ascii_case(b.name)
+                    || self.flag_names[index] == Some(self.binding_names[view.binding as usize])
                     || b.canonical
                     || !native)
             {
@@ -854,7 +857,7 @@ impl Cvars {
                     {
                         continue;
                     }
-                    let Some(binding) = self.index.lookup(clause.member, context.side) else {
+                    let Some(binding) = self.lookup_binding(clause.member, context.side) else {
                         continue;
                     };
                     let b = &BINDINGS[binding as usize];
@@ -902,7 +905,7 @@ impl Cvars {
     fn resolve_default(&self, row: usize, source: RuleSetId) -> Option<Cow<'static, str>> {
         let context = Context {
             source,
-            role: stock_role(row, source),
+            role: self.stock_roles[row][source as usize],
             ..self.context
         };
         let mut selected: Option<Cow<'static, str>> = None;
@@ -915,7 +918,7 @@ impl Cvars {
             } else {
                 clause.member
             };
-            let binding = self.index.lookup(member, context.side);
+            let binding = self.lookup_binding(member, context.side);
             let Some(b) = binding.map(|i| &BINDINGS[i as usize]) else {
                 if DEFINITIONS[row].family_count > 1 {
                     selected = Some(Cow::Borrowed(clause.value));
@@ -952,11 +955,7 @@ impl Cvars {
         selected
     }
 }
-impl Default for Cvars {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+
 fn role_index(role: Role) -> usize {
     match role {
         Role::Engine => 0,
@@ -981,7 +980,7 @@ fn condition(condition: Condition, context: Context) -> bool {
         Condition::Unresolved => false,
     }
 }
-fn stock_role(row: usize, source: RuleSetId) -> Role {
+fn stock_role(names: &NameTable, binding_names: &[NameId], row: usize, source: RuleSetId) -> Role {
     let mut role = Role::Game;
     for clause in &DEFAULTS[DEFINITIONS[row].defaults[source as usize].defaults.clone()] {
         if clause.issues != 0 {
@@ -991,10 +990,14 @@ fn stock_role(row: usize, source: RuleSetId) -> Role {
             role = Role::Engine;
         }
         if matches!(clause.condition, Condition::Cgame | Condition::Always)
-            && let Some(b) = BINDINGS
+            && let Some(id) = names.find_folded(clause.member.as_bytes())
+            && let Some(binding) = binding_names
                 .iter()
-                .find(|b| b.name.eq_ignore_ascii_case(clause.member) && b.scope != Scope::Server)
+                .enumerate()
+                .find(|&(index, &name)| name == id && BINDINGS[index].scope != Scope::Server)
+                .map(|(index, _)| index)
         {
+            let b = &BINDINGS[binding];
             let c = &CONVERSIONS[b.conversions[source as usize] as usize];
             if c.cgame_only && c.kind == ConversionKind::Reciprocal {
                 return Role::Cgame;

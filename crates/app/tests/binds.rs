@@ -40,7 +40,8 @@ fn host(source: CommandSource) -> FrameHost {
         Console::new(Context {
             source,
             ..Context::default()
-        }),
+        })
+        .unwrap(),
         Runtime::load(std::iter::empty()).unwrap(),
         TickRate::FrameDriven,
         vec![],

@@ -424,7 +424,7 @@ fn native_specular_uses_fixed_light_without_diffuse_sampling() {
 
 #[test]
 fn material_registration_validates_at_load_and_handles_remain_numeric() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let invalid = Stage {
         texture: StageTexture::Animation {
             images: [ImageId(0); 8],

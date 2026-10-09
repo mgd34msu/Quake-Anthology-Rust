@@ -8,7 +8,7 @@ use std::hint::black_box;
 #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
 #[test]
 fn canonical_and_converted_consumers_read_cached_fields_without_name_lookup() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let gamma = cvars.bind("gamma", cvars.context()).unwrap();
     let canonical = gamma.canonical();
     cvars.set_text(canonical, "1.25").unwrap();
@@ -30,7 +30,7 @@ fn canonical_and_converted_consumers_read_cached_fields_without_name_lookup() {
 
 #[test]
 fn generations_follow_values_details_deferred_updates_and_source_defaults() {
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     let developer = cvars.find("developer").unwrap();
     let initial = cvars.generation(developer);
     cvars.set_text(developer, "1").unwrap();
@@ -95,7 +95,7 @@ fn published_hot_views_match_native_projections_after_coupled_and_seat_changes()
         numbers::number,
         views::{Role, RuleSetId},
     };
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     cvars.cheats = true;
     for (source, name, value) in [
         (RuleSetId::Quake, "gamma", "0.8"),

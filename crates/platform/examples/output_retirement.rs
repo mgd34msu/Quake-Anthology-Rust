@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stalled = runtime.server.clients[0].output.ok_or("stalled cursor")?;
     let healthy = runtime.server.clients[1].output.ok_or("healthy cursor")?;
     let mut host = FrameHost::load(
-        Console::new(Context::default()),
+        Console::new(Context::default()).map_err(|e| e.to_string())?,
         runtime,
         TickRate::fixed(25).ok_or("world rate")?,
         [100, 50, 25]

@@ -1,7 +1,9 @@
 # Shared cvar views
 
-The process owns one `Cvars` registry. A load-time, case-insensitive name index
-resolves canonical names and aliases to stable numeric handles. A `View` adds
+The process owns one `Cvars` registry. Core `NameTable` supplies the single
+folded lookup shared with command/alias dispatch, replacing the console's
+separate hash and comparison. Cached IDs resolve bindings to stable handles.
+A `View` adds
 the caller's source, role and side; it never owns another value table. Q1,
 QuakeWorld, Q2 classic, Q2 rerelease and Q3 defaults are metadata projections
 of unset values. An explicit setting survives source changes.

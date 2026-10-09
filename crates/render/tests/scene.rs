@@ -151,7 +151,7 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
 
 #[test]
 fn world_submissions_copy_surface_ids_and_keep_prior_views_on_overflow() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let first_world = world(&mut assets, &[SurfaceMaterial::default(); 2]);
     let second_world = world(&mut assets, &[SurfaceMaterial::default(); 2]);
     let mut front = FrontEnd::load(Limits {
@@ -190,7 +190,7 @@ fn world_submissions_copy_surface_ids_and_keep_prior_views_on_overflow() {
 // qsrc Q3 tr_scene.c ClearScene/RenderScene preserve earlier scene payloads.
 #[test]
 fn scenes_copy_payloads_and_advance_ranges() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     let first = SceneEntity {
@@ -250,7 +250,7 @@ fn two_outstanding_packets_prevent_reuse_until_returned() {
 
 #[test]
 fn rejected_poly_and_view_leave_existing_payloads_intact() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let limits = Limits {
         commands: 3,
         entities: 1,
@@ -280,7 +280,7 @@ fn rejected_poly_and_view_leave_existing_payloads_intact() {
 // the sorted shader/instance key. Surface submission time cannot override it.
 #[test]
 fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let translucent = alpha_material(&mut assets, "translucent", 8.25);
     let opaque = material(&mut assets, "opaque", 3.0);
     let middle = material(&mut assets, "middle", 5.0);
@@ -329,7 +329,7 @@ fn shared_draw_order_places_translucent_surfaces_after_opaque_entities() {
 
 #[test]
 fn shared_draw_order_retains_fractional_sorts_and_numeric_material_ties() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let later = material(&mut assets, "later", 3.75);
     let earlier = material(&mut assets, "earlier", 3.25);
     let tied_first = material(&mut assets, "tied-first", 3.25);
@@ -356,7 +356,7 @@ fn shared_draw_order_retains_fractional_sorts_and_numeric_material_ties() {
 
 #[test]
 fn equal_native_keys_keep_native_cross_kind_shortsort_swaps() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let material = alpha_material(&mut assets, "same-alpha", 8.0);
     let world = world(
         &mut assets,
@@ -400,7 +400,7 @@ fn equal_native_keys_keep_native_cross_kind_shortsort_swaps() {
 // swaps the middle pivot to the front before its <=/>= scans skip an equal run.
 #[test]
 fn native_equal_alpha_order_matches_three_eight_and_nine_plus_draws() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let material = alpha_material(&mut assets, "equal-alpha", 8.0);
     for (count, expected) in [
         (3, vec![1, 2, 0]),
@@ -417,7 +417,7 @@ fn native_equal_alpha_order_matches_three_eight_and_nine_plus_draws() {
 
 #[test]
 fn native_mixed_partition_keys_keep_original_equal_group_swaps() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let lower = alpha_material(&mut assets, "lower-alpha", 7.0);
     let upper = alpha_material(&mut assets, "upper-alpha", 8.0);
     let cases = [
@@ -432,7 +432,7 @@ fn native_mixed_partition_keys_keep_original_equal_group_swaps() {
 
 #[test]
 fn draw_keys_group_lightmaps_without_reordering_raw_depth_surfaces() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let material = material(&mut assets, "lightmapped", 3.0);
     let image = assets.register_image(1, 1, &[128; 4]).unwrap();
     let world = world(
@@ -491,7 +491,7 @@ fn draw_keys_group_lightmaps_without_reordering_raw_depth_surfaces() {
 
 #[test]
 fn surface_draw_ranks_are_native_view_local_and_preserve_bsp_depth_keys() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let material = material(&mut assets, "coincident", 3.0);
     let world = world(
         &mut assets,
@@ -563,7 +563,7 @@ fn surface_draw_ranks_are_native_view_local_and_preserve_bsp_depth_keys() {
 
 #[test]
 fn separately_sorted_view_ranges_keep_absolute_payload_indices() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let late = material(&mut assets, "late", 7.0);
     let early = material(&mut assets, "early", 2.0);
     let mut front = FrontEnd::load(Limits::default()).unwrap();
@@ -609,7 +609,7 @@ fn separately_sorted_view_ranges_keep_absolute_payload_indices() {
 
 #[test]
 fn draw_capacity_drops_whole_payload_submissions_atomically() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let mut front = FrontEnd::load(Limits {
         draws: 2,
         ..Limits::default()
@@ -634,7 +634,7 @@ fn draw_capacity_drops_whole_payload_submissions_atomically() {
 
 #[test]
 fn failed_view_preserves_previous_draws_and_native_pending_order() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let mut front = FrontEnd::load(Limits {
         commands: 3,
         area_bytes: 1,
@@ -679,7 +679,7 @@ fn failed_view_preserves_previous_draws_and_native_pending_order() {
 
 #[test]
 fn invalid_frozen_handles_only_drop_the_affected_draw() {
-    let assets = Assets::load();
+    let assets = Assets::load().unwrap();
     let mut front = FrontEnd::load(Limits::default()).unwrap();
     let mut frame = front.begin_frame([0; 4]).unwrap();
     assert!(frame.add_poly(MaterialId(999), &[Vertex::default(); 3]));
@@ -721,7 +721,7 @@ fn invalid_frozen_handles_only_drop_the_affected_draw() {
 
 #[test]
 fn native_signed_zero_sort_keeps_numeric_material_registration_order() {
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let positive = material(&mut assets, "positive-zero", 0.0);
     let negative = material(&mut assets, "negative-zero", -0.0);
     let mut front = FrontEnd::load(Limits::default()).unwrap();

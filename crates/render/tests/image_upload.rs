@@ -106,7 +106,7 @@ fn native_rounding_keeps_original_pixels_and_independent_legacy_caps() {
 #[test]
 fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
     use qa_render::{Assets, surface_cache::IndexedTexture};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let indices = [0, 17, 255, 23];
     let disk_mips: [&[u8]; 4] = [&indices, &[5], &[6], &[7]];
     let indexed = IndexedTexture::load_masked(2, 2, disk_mips, Some(0)).unwrap();
@@ -183,7 +183,7 @@ fn asset_preparation_preserves_raw_rgba_disk_mips_mask_and_prior_success() {
 #[test]
 fn alternate_gl_expansion_keeps_raw_sources_and_prior_preparation_on_failure() {
     use qa_render::{Assets, surface_cache::IndexedTexture};
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let indices = [0, 17, 255, 23];
     let indexed = IndexedTexture::load_base(2, 2, &indices, Some(0)).unwrap();
     let raw = gray(&[7, 11, 19, 23]);
@@ -228,7 +228,7 @@ fn numeric_preparation_revision_tracks_replacements_even_with_identical_pixels()
         assets::Sampler,
         surface_cache::{IndexedTexture, PaletteLighting},
     };
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     assert_eq!(
         assets
             .image(qa_render::assets::ImageId(0))

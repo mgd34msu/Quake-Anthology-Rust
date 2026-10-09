@@ -62,7 +62,7 @@ fn load_retail(product: &str, name: &str, family: u8) {
         .expect("map input")
         .load(
             &vfs,
-            &mut Assets::load(),
+            &mut Assets::load().unwrap(),
             &mut geometry,
             WorldLoadOptions::default(),
         )
@@ -154,7 +154,7 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
             .expect("retail product in shared VFS");
     }
     let mut geometry = CollisionStore::new();
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().unwrap();
     let mut loaded = Vec::new();
     for (_, name, rules, entity_rules) in cases {
         let map = qa_app::map::read(&vfs, name)

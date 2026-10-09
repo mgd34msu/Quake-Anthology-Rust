@@ -529,10 +529,12 @@ impl GlBackend {
                     Some(Sky::Cube { clouds, .. })
                         if clouds.valid() && !material.stages.is_empty() =>
                     {
-                        Some(
-                            CloudGrid::generate(clouds)
-                                .map_err(|error| format!("{}: {error}", material.name))?,
-                        )
+                        Some(CloudGrid::generate(clouds).map_err(|error| {
+                            format!(
+                                "{}: {error}",
+                                assets.name(material.name).unwrap_or("<unknown material>")
+                            )
+                        })?)
                     }
                     _ => None,
                 };

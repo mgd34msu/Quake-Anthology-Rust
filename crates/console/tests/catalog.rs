@@ -10,7 +10,7 @@ fn every_canonical_alias_and_seat_has_a_slot_and_seats_remain_independent() {
         DEFINITIONS.len(),
         OWNER_DEFINITION_COUNT + ENGINE_DEFINITION_COUNT
     );
-    let mut cvars = Cvars::new();
+    let mut cvars = Cvars::new().unwrap();
     assert_eq!(cvars.entries().count(), 1293 + ENGINE_DEFINITION_COUNT);
     for binding in BINDINGS {
         if binding.scope == qa_console::catalog::Scope::Server {
@@ -36,7 +36,7 @@ fn every_canonical_alias_and_seat_has_a_slot_and_seats_remain_independent() {
 fn cpu_bands_is_an_archived_latched_extension_in_every_source_view() {
     use qa_console::views::{Context, RuleSetId};
 
-    let cvars = Cvars::new();
+    let cvars = Cvars::new().unwrap();
     let handle = cvars.find("r_cpuBands").unwrap();
     let row = DEFINITIONS
         .iter()

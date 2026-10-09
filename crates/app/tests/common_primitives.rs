@@ -191,7 +191,7 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
         until: 10.0,
     });
     let mut host = FrameHost::load(
-        Console::new(Context::default()),
+        Console::new(Context::default()).unwrap(),
         runtime,
         TickRate::FrameDriven,
         vec![],

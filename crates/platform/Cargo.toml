@@ -26,3 +26,7 @@ qa-formats = { path = "../formats" }
 [[example]]
 name = "output_retirement"
 required-features = ["allocation-tracking"]
+
+[[example]]
+name = "name_consumers"
+required-features = ["allocation-tracking"]

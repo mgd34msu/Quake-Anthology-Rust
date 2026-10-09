@@ -27,7 +27,7 @@ mod proof;
 mod allocation_gate;
 
 fn run() -> Result<(), String> {
-    let mut console = Console::<Runtime>::new(Context::default());
+    let mut console = Console::<Runtime>::new(Context::default()).map_err(|e| e.to_string())?;
     let mut vfs = qa_content::vfs::Vfs::default();
     let mut device_assignments = Vec::new();
     let mut frames = 120u32;
@@ -282,7 +282,7 @@ fn run() -> Result<(), String> {
             .write(view, value)
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
-    let mut assets = Assets::load();
+    let mut assets = Assets::load().map_err(|e| e.to_string())?;
     if let Some((input, policy)) = staged_map {
         let rules = policy.movement;
         let traces = policy.trace;

@@ -9,6 +9,7 @@ fn vars(source: RuleSetId) -> Cvars {
         source,
         ..Context::default()
     })
+    .unwrap()
 }
 
 fn set(vars: &mut Cvars, source: RuleSetId, name: &str, value: &str) {

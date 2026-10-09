@@ -8,6 +8,10 @@ use crate::{
 };
 use qa_core::sys_events::{EventTime, SeatId};
 use qa_core::text::FixedText;
+use qa_core::{
+    names::{NamesError, compare_folded},
+    primitives::NameId,
+};
 use qa_input::{BindError, Binding, Input, Target, bindings, keys};
 use std::{
     cmp::Ordering,
@@ -31,6 +35,7 @@ pub trait Host {
 #[derive(Debug)]
 pub enum CommandError {
     Text(TextError),
+    Names(NamesError),
     Cvar(WriteError),
     Usage,
     UnknownCvar,
@@ -51,11 +56,11 @@ impl From<WriteError> for CommandError {
 pub type CommandFn<H> =
     fn(&mut Console<H>, &mut H, &Arguments<'_>, Context) -> Result<(), CommandError>;
 struct Command<H> {
-    name: &'static str,
+    name: NameId,
     function: CommandFn<H>,
 }
 struct Alias {
-    name: FixedText<32>,
+    name: Option<NameId>,
     text: FixedText<1024>,
 }
 #[derive(Default)]
@@ -67,30 +72,32 @@ pub struct Console<H> {
     pub cvars: Cvars,
     buffer: CommandBuffer,
     commands: Vec<Command<H>>,
+    command_by_name: Box<[Option<usize>]>,
     aliases: Box<[Alias]>,
     alias_count: usize,
     parser: Option<Box<Parser>>,
     joined: FixedText<MAX_TEXT>,
     script: Box<[u8]>,
 }
-fn compare(a: &str, b: &str) -> Ordering {
-    a.bytes()
-        .map(|b| b.to_ascii_lowercase())
-        .cmp(b.bytes().map(|b| b.to_ascii_lowercase()))
-}
 impl<H: Host> Console<H> {
-    pub fn new(context: Context) -> Self {
+    pub fn new(context: Context) -> Result<Self, NamesError> {
         Self::with_alias_capacity(context, 4096)
     }
     /// Select the session's alias storage while loading; commands never grow it.
-    pub fn with_alias_capacity(context: Context, alias_capacity: usize) -> Self {
+    pub fn with_alias_capacity(
+        context: Context,
+        alias_capacity: usize,
+    ) -> Result<Self, NamesError> {
+        let cvars = Cvars::with_context(context)?;
+        let command_by_name = vec![None; cvars.names.capacity()].into_boxed_slice();
         let mut console = Self {
-            cvars: Cvars::with_context(context),
+            cvars,
+            command_by_name,
             buffer: CommandBuffer::new(),
             commands: Vec::with_capacity(64),
             aliases: (0..alias_capacity)
                 .map(|_| Alias {
-                    name: FixedText::default(),
+                    name: None,
                     text: FixedText::default(),
                 })
                 .collect(),
@@ -122,17 +129,37 @@ impl<H: Host> Console<H> {
             console.register(entry.press, Self::button);
             console.register(entry.release, Self::button);
         }
-        console
+        Ok(console)
     }
     pub fn register(&mut self, name: &'static str, function: CommandFn<H>) -> bool {
-        match self.commands.binary_search_by(|c| compare(c.name, name)) {
-            Ok(_) => false,
-            Err(at) => {
-                self.commands.insert(at, Command { name, function });
-                true
+        let Ok(exact) = self.cvars.names.intern(name.as_bytes()) else {
+            return false;
+        };
+        let Some(id) = self.cvars.names.folded(exact) else {
+            return false;
+        };
+        if self.command_by_name[id.0 as usize].is_some() {
+            return false;
+        }
+        let names = &self.cvars.names;
+        let at = self.commands.partition_point(|c| {
+            compare_folded(names.get(c.name).unwrap_or_default(), name.as_bytes()) == Ordering::Less
+        });
+        self.commands.insert(
+            at,
+            Command {
+                name: exact,
+                function,
+            },
+        );
+        for (index, command) in self.commands.iter().enumerate() {
+            if let Some(id) = self.cvars.names.folded(command.name) {
+                self.command_by_name[id.0 as usize] = Some(index);
             }
         }
+        true
     }
+
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append(text, context)
     }
@@ -202,9 +229,10 @@ impl<H: Host> Console<H> {
             if name.is_empty() {
                 continue;
             }
-            let result = if let Ok(at) = self.commands.binary_search_by(|c| compare(c.name, name)) {
+            let id = self.cvars.lookup_name(name);
+            let result = if let Some(at) = id.and_then(|id| self.command_by_name[id.0 as usize]) {
                 (self.commands[at].function)(self, host, &args, context)
-            } else if let Some(view) = self.cvars.bind(name, context) {
+            } else if let Some(view) = id.and_then(|id| self.cvars.bind_id(id, context)) {
                 if args.len() == 1 {
                     match self.cvars.read(view) {
                         Ok(value) => {
@@ -220,10 +248,11 @@ impl<H: Host> Console<H> {
                 } else {
                     self.cvars.write(view, args.get(1)).map_err(Into::into)
                 }
-            } else if let Some(alias) = self.aliases[..self.alias_count]
-                .iter()
-                .find(|a| !a.name.as_str().is_empty() && a.name.as_str().eq_ignore_ascii_case(name))
-            {
+            } else if let Some(alias) = self.aliases[..self.alias_count].iter().find(|a| {
+                a.name
+                    .and_then(|name| self.cvars.names.folded(name))
+                    .is_some_and(|name| Some(name) == id)
+            }) {
                 aliases += 1;
                 if aliases > 16 {
                     host.print(format_args!("Alias expansion limit\n"));
@@ -398,11 +427,15 @@ impl<H: Host> Console<H> {
         if args.len() == 1 {
             for alias in self.aliases[..self.alias_count]
                 .iter()
-                .filter(|a| !a.name.as_str().is_empty())
+                .filter(|a| a.name.is_some())
             {
                 host.print(format_args!(
                     "{} : {}",
-                    alias.name.as_str(),
+                    alias
+                        .name
+                        .and_then(|id| self.cvars.names.get(id))
+                        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                        .unwrap_or_default(),
                     alias.text.as_str()
                 ));
             }
@@ -420,21 +453,29 @@ impl<H: Host> Console<H> {
         let mut text = FixedText::<1024>::default();
         args.join(2, &mut text)?;
         text.write_str("\n").map_err(|_| TextError::TooLong)?;
+        let folded = self.cvars.lookup_name(name);
         let index = self.aliases[..self.alias_count]
             .iter()
-            .position(|a| a.name.as_str().eq_ignore_ascii_case(name))
+            .position(|a| {
+                a.name.is_some() && a.name.and_then(|id| self.cvars.names.folded(id)) == folded
+            })
             .or_else(|| {
                 self.aliases[..self.alias_count]
                     .iter()
-                    .position(|a| a.name.as_str().is_empty())
+                    .position(|a| a.name.is_none())
             })
             .unwrap_or(self.alias_count);
         if index == self.aliases.len() {
             return Err(TextError::TooLong.into());
         }
+        let exact = self
+            .cvars
+            .names
+            .intern(name.as_bytes())
+            .map_err(CommandError::Names)?;
         self.alias_count = self.alias_count.max(index + 1);
         let alias = &mut self.aliases[index];
-        alias.name.set(name).map_err(|_| TextError::TooLong)?;
+        alias.name = Some(exact);
         alias.text = text;
         Ok(())
     }
@@ -442,11 +483,11 @@ impl<H: Host> Console<H> {
         if args.len() != 2 {
             return Err(CommandError::Usage);
         }
-        if let Some(alias) = self.aliases[..self.alias_count]
-            .iter_mut()
-            .find(|a| a.name.as_str().eq_ignore_ascii_case(args.get(1)))
-        {
-            alias.name.clear();
+        let folded = self.cvars.lookup_name(args.get(1));
+        if let Some(alias) = self.aliases[..self.alias_count].iter_mut().find(|a| {
+            a.name.is_some() && a.name.and_then(|id| self.cvars.names.folded(id)) == folded
+        }) {
+            alias.name = None;
             alias.text.clear();
         }
         Ok(())
@@ -533,7 +574,14 @@ impl<H: Host> Console<H> {
     }
     fn cmdlist(&mut self, host: &mut H, _: &Arguments<'_>, _: Context) -> Result<(), CommandError> {
         for c in &self.commands {
-            host.print(format_args!("{}\n", c.name));
+            host.print(format_args!(
+                "{}\n",
+                self.cvars
+                    .names
+                    .get(c.name)
+                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                    .unwrap_or_default()
+            ));
         }
         Ok(())
     }
