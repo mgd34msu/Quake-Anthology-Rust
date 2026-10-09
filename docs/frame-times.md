@@ -1999,3 +1999,17 @@ Evidence: `~/.cache/qa-rust/THE-697-retirement/`, including
 references in `docs/output-events.md`, workspace/Clippy/checker results and the
 23.61-second release probe build log. Native wire ACKs, combined guest output,
 shotgun/private audio and installed gameplay remain open acceptance criteria.
+
+At slice completion, exact clean normal d240a025 built in 30.18 seconds at
+2026-10-09T07:10:02Z with allocation tracking and proof disabled. All six private
+e1m1/base1/q3dm1 CPU/GL runs at 640x400 and controlled 120 fps completed 600
+measured frames after 60 warm-up frames, with 17 real X repeats each and
+normal quit. Calling/all-worker Rust allocation, reallocation and requested
+bytes were zero; CPU selected eight automatic bands/seven workers, GL used
+llvmpipe LLVM 22.1.8 / Mesa 26.2.2 software rendering with no workers. Fresh
+copied saved settings and candidate bytes stayed unchanged, and all 18 recorded
+owned PIDs were absent. The adjacent `normal-tracked-qualification.json`,
+`normal-tracked-{cpu,gl}-{map}/` and `normal-cleanup.json` retain these receipts.
+These are private render/queue/heap checks; actual gameplay and installation
+remain unqualified. THE-859 still requires installed multiple-seat/device and
+combined-movement acceptance; the normal app currently creates one seat.
