@@ -100,7 +100,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             output.write_all(&[u8::from(out.is_ok())])?;
             if let Ok(out) = out {
-                text(&mut output, out.text.as_str())?;
+                let prefix = out.prefix.unwrap_or("");
+                let suffix = out.text.as_str();
+                output.write_all(&((prefix.len() + suffix.len()) as u32).to_le_bytes())?;
+                output.write_all(prefix.as_bytes())?;
+                output.write_all(suffix.as_bytes())?;
                 output.write_all(&[u8::from(out.detail), u8::from(out.detail_value.is_some())])?;
                 if let Some(value) = out.detail_value {
                     text(&mut output, value)?;

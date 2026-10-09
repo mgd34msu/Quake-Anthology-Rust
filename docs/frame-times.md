@@ -1544,3 +1544,11 @@ are retained; a fresh retry succeeded. THE-2886 records the harness's
 single-read displayfd bug. Private evidence: `private-comparison.json` and
 per-run `result.json`, `runtime.log` and `window.png`. The installed preview
 remains `08ad0eb4`; neither primitive slice replaces it.
+
+THE-2885 then corrects only the developer reference's write serialization:
+the length and bytes include both prefix and suffix, as the production cvar
+path already does. The full C-port helper comparison now passes all 100,080
+numeric cases and 344,250 conversion cases, including all three QW skin rows.
+Evidence: developer cache `THE-2885-cvar-prefix/comparison.json`, saved C helper
+source, fixture bytes, native/Rust output and build logs. This does not prove
+live userinfo or legacy protocol interoperability.
