@@ -1569,3 +1569,70 @@ Mesa llvmpipe software rendering. These validate developer harness behavior,
 not gameplay, performance targets or native SDL/driver allocation. Evidence:
 `THE-2886-complete-display/report.json`, `unit-tests-final.log`,
 `comparator-controls.json` and owned per-run logs/captures.
+
+
+## THE-625 / THE-891: independent player trace rules
+
+Each player now carries separate movement and trace `RuleSetId` values.
+The one movement entry resolves every clipping and entity-filtering probe from
+that explicit trace id; prediction copies it with the hot state. The app's
+`--trace-rules` selects it independently. Native presets retain their previous
+pairing at the current command-line boundary. Client-module tick/link policy
+is the next slice; this does not complete native module integration.
+
+The exact tested source tree is `334e1ea962f4e6ec3268e13044bb42555000042a`.
+Portable release builds against `002f78d7` took 39.055 s before and 39.140 s
+after, with fat LTO, one codegen unit, allocation tracking and no proof input.
+Core, movement and session were rebuilt for each copied source snapshot.
+Workspace all-target tests and the app allocation-feature check pass. All
+100 checker fixtures pass: 82 forbidden cases rejected before Cargo and
+18 permitted cases admitted, including rejection of movement-derived trace
+selection. The 25 movement/trace combinations use a separate native-policy
+oracle; a session fixture distinguishes Q2's 1/32 and Q3's 1/8 contact offsets
+on Q2 geometry while retaining Q3 physics and copying the trace id to prediction.
+
+Original Q2/Q3 Pmove comparisons pass 1,152 analytic states each. Q2 is exact.
+Q3 integer flags/timers are exact; its maximum float difference is 0.0000112
+units across 544 differing components, unchanged from the earlier comparison.
+Raw Rust state rows are byte-identical before/after for both native presets.
+These checks do not prove all movement modes or module/wire compatibility.
+
+Pinned core 23, ABBA order, 60 warm-up plus 600 measured frames, no debugger:
+
+| Workload | Before medians (us) | After medians (us) | Median change | Before p99 (us) | After p99 (us) |
+|---|---|---|---:|---|---|
+| 64 mixed-rule clients, SERVER movement and prediction | 2925.502 / 2524.536 | 2717.206 / 2562.951 | -3.12% | 5171.533 / 3406.823 | 5062.713 / 3521.952 |
+| Host console/binds, 64 bots, local commands and outputs | 162.035 / 163.400 | 160.620 / 161.060 | -1.15% | 262.870 / 253.440 | 252.830 / 253.711 |
+
+Changes compare the mean of each pair of medians. The variability in the
+movement rows is retained; this is a regression check, not an optimization
+claim. Reported workload/fidelity counters match and measured calling-thread
+Rust allocations/requested bytes are zero. SERVER/prediction states match
+within each movement run. A separate 4,000,000-callback dispatch run retains
+its counters and zero allocation after load. These synthetic workloads do
+not qualify renderer targets, installed gameplay or native heap behavior.
+
+Twelve private normal-candidate runs compare before/after e1m1, base1 and
+q3dm1 on CPU and GL at 640x400, with 600+60 frames, copied saved settings,
+fixed initial captures and metadata, normal quit and no remaining owned PIDs.
+Captures/scene metadata match; measured Rust heap work is zero (one calling
+thread, no workers). GL is Mesa llvmpipe software rendering, version 4.6 Core
+Profile, Mesa 26.2.2-arch1.1, LLVM 22.1.8. No SDL/driver heap measurement or
+animated-frame performance comparison is claimed.
+
+A separate private base1 CPU run selects Q3 movement and Q2 trace rules,
+uses 24 actual X11 key repeats, observes displacement, finishes 180 measured
+frames after 60 warm-up frames and quits normally with zero counted Rust
+allocations. Its first attempt used the unsupported test option `--set`;
+that pre-window failure is retained, with preserved profile/candidate and
+complete owned-PID cleanup. The corrected `+set` run passes. This is bounded
+command-line/routing evidence, not the three-game gameplay gate.
+
+Evidence is in developer cache `THE-625-trace-role`: source archives/build
+reports; `trace-role-tests.log`; `rule-fixtures/result.json`;
+`native-movement/result.json`; `headless-abba/result.json` and raw state rows;
+`private-comparison.json`; `private-override.json`; and per-run runtime logs,
+results and window captures. No installation replaces the existing preview.
+Native references: Q2 `qcommon/cmodel.c` DIST_EPSILON and `server/sv_world.c`
+SV_Trace/SV_PointContents; Q3 `qcommon/cm_local.h` SURFACE_CLIP_EPSILON and
+`server/sv_world.c` SV_Trace/SV_PointContents. No Muse code was used.

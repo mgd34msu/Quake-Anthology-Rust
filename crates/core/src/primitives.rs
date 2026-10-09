@@ -298,6 +298,8 @@ pub enum PlayerTail {
 #[derive(Debug, Default)]
 pub struct PlayerState {
     pub movement_rules: RuleSetId,
+    /// Caller clipping/filtering policy, independent of movement and geometry.
+    pub trace_rules: RuleSetId,
     pub movement: MovementState,
     pub body: Body,
     pub view_angles: Vec3,
@@ -341,6 +343,27 @@ impl RuleSetId {
         Self::Quake2Rerelease,
         Self::Quake3,
     ];
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "q1" => Some(Self::Quake),
+            "qw" => Some(Self::QuakeWorld),
+            "q2" => Some(Self::Quake2),
+            "q2rr" => Some(Self::Quake2Rerelease),
+            "q3" => Some(Self::Quake3),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Quake => "q1",
+            Self::QuakeWorld => "qw",
+            Self::Quake2 => "q2",
+            Self::Quake2Rerelease => "q2rr",
+            Self::Quake3 => "q3",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

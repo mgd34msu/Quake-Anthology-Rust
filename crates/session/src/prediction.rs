@@ -13,6 +13,7 @@ impl Prediction {
     pub fn apply_snapshot(&mut self, source: &PlayerState) {
         self.player.body = source.body;
         self.player.movement_rules = source.movement_rules;
+        self.player.trace_rules = source.trace_rules;
         self.player.movement = source.movement;
         self.player.view_angles = source.view_angles;
         self.player.view_offset = source.view_offset;

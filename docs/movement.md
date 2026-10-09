@@ -1,16 +1,22 @@
 # Shared movement
 
-THE-891 adds a Pmove-style function selected by each player's RuleSetId.
-The call takes UserCmd, mutable PlayerState and shared trace/point-contents
-services. CollisionWorld selects the geometry algorithm independently. Module
-state, inventory, client protocol and movement rules remain separate choices.
+THE-891 provides a Pmove-style function selected by each player's movement
+RuleSetId. The call takes UserCmd, mutable PlayerState and shared
+trace/point-contents services. A separate trace RuleSetId selects clipping
+and entity filtering for every probe. CollisionStore selects the geometry
+algorithm from its loaded resource. Module state, inventory, client protocol,
+movement and trace rules remain separate choices.
 
 Server command consumption and current-command client prediction call this
 function. Bots use the same SERVER usercmd builder and movement consumer in
 client-id order. Entity columns receive the authoritative body. Prediction
-copies only hot movement fields, without cloning inventory or module arenas.
-The app runs these phases when its collision world is loaded. The current
-window shell has no map and does not execute player movement.
+copies hot movement fields and both rule ids, without cloning inventory or
+module arenas. The app runs these phases with loaded geometry; a window-only
+launch has no player movement. Native command-line presets currently initialize
+matching movement and trace ids. `--movement` and `--trace-rules` accept q1, qw,
+q2, q2rr or q3; an explicit trace choice survives authoritative movement and
+prediction. Client-module selection of tick and link rules is a separate
+integration step.
 
 The shared implementation contains acceleration, friction, fluid sampling,
 ground classification, bounded plane clipping, 18-unit steps, stance and wire
@@ -59,7 +65,12 @@ rounding in the reference, corresponding to the native engine callback.
 The session test runs all five rules on Q2 brush geometry, with local, remote
 and bot clients carrying a different module tail, and compares server and
 prediction state. It also verifies that a consumed command is not run twice.
-This is a primitive composition check. THE-839 must still load/render/walk
+A second fixture uses Q3 movement over Q2 geometry with independently chosen
+Q2 and Q3 trace policies. It checks their native 1/32 and 1/8 contact offsets
+and that snapshot application replaces the prediction trace id. Movement
+probe fixtures cover all 25 movement/trace choices with a separate native
+policy table, including contents, stance and ground probes. These are primitive
+composition checks. THE-839 must still load/render/walk
 retail e1m1, base1 and q3dm1 with native and foreign movement in private runs.
 
 The timing example measures 64 mixed-rule clients, including bot command

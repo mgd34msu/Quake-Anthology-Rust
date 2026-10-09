@@ -44,76 +44,98 @@ impl TraceServices for CheckedQueries {
 }
 
 #[test]
-fn every_movement_probe_gets_player_rules_independent_of_its_module_tail() {
-    for movement_rules in [
-        RuleSetId::Quake,
-        RuleSetId::QuakeWorld,
-        RuleSetId::Quake2,
-        RuleSetId::Quake2Rerelease,
-        RuleSetId::Quake3,
-    ] {
-        let mut player = PlayerState {
-            movement_rules,
-            tail: PlayerTail::Q2 { weapon_frame: 9 },
-            ..Default::default()
-        };
-        qa_movement::set_bounds(&mut player);
-        player.body.position = Vec3([0.0, 0.0, 24.0]);
-        player.body.velocity = Vec3([32.0, 0.0, 0.0]);
-        player.movement.grounded = true;
-        // The first command stands up from a crouch, exercising the direct
-        // stationary trace that previously bypassed the ordinary step helper.
-        player.movement.ducked = matches!(
-            movement_rules,
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
-        );
-        if player.movement.ducked {
-            player.body.maxs.0[2] = 4.0;
-        }
-        let mut queries = CheckedQueries {
-            world: support::FixtureWorld::default(),
-            expected: if movement_rules == RuleSetId::Quake3 {
-                TraceRules::ARENA
-            } else {
-                TraceRules::LEGACY
-            },
-            expected_entities: match movement_rules {
-                RuleSetId::Quake | RuleSetId::QuakeWorld => EntityTraceRules::QUAKE,
-                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => EntityTraceRules::QUAKE2,
-                RuleSetId::Quake3 => EntityTraceRules::ARENA,
-            },
-            contents_calls: Cell::new(0),
-            calls: 0,
-            position_tests: 0,
-            ground_tests: 0,
-            point_tests: 0,
-            ledge_tests: 0,
-        };
-        let result = qa_movement::pmove(
-            UserCmd {
-                duration_ms: 16,
-                server_time_ms: 16,
-                movement: [127, 0, 0],
+fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
+    // Explicit native caller table: Q1/QW use SV_Move filtering, Q2/RR use
+    // SV_Trace filtering and legacy clipping, Q3 uses SV_Trace/CM_BoxTrace.
+    // The production selector resolver is deliberately not this oracle.
+    let trace_policies = [
+        (
+            RuleSetId::Quake,
+            TraceRules::LEGACY,
+            EntityTraceRules::QUAKE,
+        ),
+        (
+            RuleSetId::QuakeWorld,
+            TraceRules::LEGACY,
+            EntityTraceRules::QUAKE,
+        ),
+        (
+            RuleSetId::Quake2,
+            TraceRules::LEGACY,
+            EntityTraceRules::QUAKE2,
+        ),
+        (
+            RuleSetId::Quake2Rerelease,
+            TraceRules::LEGACY,
+            EntityTraceRules::QUAKE2,
+        ),
+        (
+            RuleSetId::Quake3,
+            TraceRules::ARENA,
+            EntityTraceRules::ARENA,
+        ),
+    ];
+    assert_eq!(trace_policies.map(|policy| policy.0), RuleSetId::ALL);
+    for movement_rules in RuleSetId::ALL {
+        for (trace_rules, expected, expected_entities) in trace_policies {
+            let mut player = PlayerState {
+                movement_rules,
+                trace_rules,
+                tail: PlayerTail::Q2 { weapon_frame: 9 },
                 ..Default::default()
-            },
-            &mut player,
-            &mut queries,
-        );
-        assert!(queries.calls > 0);
-        assert!(queries.contents_calls.get() > 0);
-        assert_eq!(result.traces, queries.calls);
-        if movement_rules == RuleSetId::Quake {
-            assert!(queries.ledge_tests > 0 && queries.point_tests > 0);
-        } else {
-            assert!(queries.ground_tests > 0);
+            };
+            qa_movement::set_bounds(&mut player);
+            player.body.position = Vec3([0.0, 0.0, 24.0]);
+            player.body.velocity = Vec3([32.0, 0.0, 0.0]);
+            player.movement.grounded = true;
+            // The first command stands up from a crouch, exercising the direct
+            // stationary trace that previously bypassed the ordinary step helper.
+            player.movement.ducked = matches!(
+                movement_rules,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
+            );
+            if player.movement.ducked {
+                player.body.maxs.0[2] = 4.0;
+            }
+            let mut queries = CheckedQueries {
+                world: support::FixtureWorld::default(),
+                expected,
+                expected_entities,
+                contents_calls: Cell::new(0),
+                calls: 0,
+                position_tests: 0,
+                ground_tests: 0,
+                point_tests: 0,
+                ledge_tests: 0,
+            };
+            let result = qa_movement::pmove(
+                UserCmd {
+                    duration_ms: 16,
+                    server_time_ms: 16,
+                    movement: [127, 0, 0],
+                    ..Default::default()
+                },
+                &mut player,
+                &mut queries,
+            );
+            assert!(queries.calls > 0);
+            assert!(queries.contents_calls.get() > 0);
+            assert_eq!(result.traces, queries.calls);
+            if movement_rules == RuleSetId::Quake {
+                assert!(queries.ledge_tests > 0 && queries.point_tests > 0);
+            } else {
+                assert!(queries.ground_tests > 0);
+            }
+            if matches!(
+                movement_rules,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
+            ) {
+                assert!(queries.position_tests > 0);
+                assert!(!player.movement.ducked);
+            }
+            assert_eq!(player.tail, PlayerTail::Q2 { weapon_frame: 9 });
+            assert_eq!(player.movement_rules, movement_rules);
+            assert_eq!(player.trace_rules, trace_rules);
         }
-        if matches!(
-            movement_rules,
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease | RuleSetId::Quake3
-        ) {
-            assert!(queries.position_tests > 0);
-            assert!(!player.movement.ducked);
-        }
-        assert_eq!(player.tail, PlayerTail::Q2 { weapon_frame: 9 });
     }
 }

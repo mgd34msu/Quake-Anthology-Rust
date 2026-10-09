@@ -5,7 +5,9 @@ use qa_core::{
         buttons,
     },
 };
-use qa_world::collision::{Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace};
+use qa_world::collision::{
+    Contents, EntityTraceRules, Trace, TraceQuery, TraceRules, WorldTrace, trace_policy,
+};
 
 pub trait TraceServices {
     fn trace(&mut self, query: TraceQuery) -> Trace;
@@ -83,20 +85,11 @@ impl Parameters {
         let t = player.movement.tuning;
         let legacy = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
         let arena = rules == RuleSetId::Quake3;
+        let (trace_rules, entity_rules) = trace_policy(player.trace_rules);
         Self {
             rules,
-            trace_rules: if arena {
-                TraceRules::ARENA
-            } else {
-                TraceRules::LEGACY
-            },
-            entity_rules: if legacy {
-                EntityTraceRules::QUAKE
-            } else if arena {
-                EntityTraceRules::ARENA
-            } else {
-                EntityTraceRules::QUAKE2
-            },
+            trace_rules,
+            entity_rules,
             gravity: t.gravity.unwrap_or(800.0) * t.gravity_multiplier,
             speed: t
                 .max_speed

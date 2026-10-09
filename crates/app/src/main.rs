@@ -41,6 +41,7 @@ fn run() -> Result<(), String> {
     let mut cpu_bands_explicit = false;
     let mut map_name = None;
     let mut movement_rules = None;
+    let mut trace_rules = None;
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
     let mut startup_sets = Vec::new();
@@ -73,17 +74,7 @@ fn run() -> Result<(), String> {
                 let name = args
                     .next()
                     .ok_or("--console-source needs q1/qw/q2/q2rr/q3")?;
-                let source = [
-                    ("q1", RuleSetId::Quake),
-                    ("qw", RuleSetId::QuakeWorld),
-                    ("q2", RuleSetId::Quake2),
-                    ("q2rr", RuleSetId::Quake2Rerelease),
-                    ("q3", RuleSetId::Quake3),
-                ]
-                .into_iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, s)| s)
-                .ok_or("unknown console source")?;
+                let source = RuleSetId::parse(&name).ok_or("unknown console source")?;
                 console.cvars.select_context(Context {
                     source,
                     ..console.cvars.context()
@@ -99,9 +90,16 @@ fn run() -> Result<(), String> {
             }
             "--map" => map_name = Some(args.next().ok_or("--map needs a virtual map name")?),
             "--movement" => {
-                movement_rules = Some(map::movement(
-                    &args.next().ok_or("--movement needs q1/qw/q2/q2rr/q3")?,
-                )?);
+                movement_rules = Some(
+                    RuleSetId::parse(&args.next().ok_or("--movement needs q1/qw/q2/q2rr/q3")?)
+                        .ok_or("unknown movement rule set")?,
+                );
+            }
+            "--trace-rules" => {
+                trace_rules = Some(
+                    RuleSetId::parse(&args.next().ok_or("--trace-rules needs q1/qw/q2/q2rr/q3")?)
+                        .ok_or("unknown trace rule set")?,
+                );
             }
             #[cfg(feature = "proof")]
             "--proof-script" => {
@@ -200,19 +198,21 @@ fn run() -> Result<(), String> {
     if cpu_bands_explicit && matches!(renderer_kind, Kind::Gl) {
         return Err("--cpu-bands requires --renderer cpu".into());
     }
-    if movement_rules.is_some() && map_name.is_none() {
-        return Err("--movement needs a loaded --map".into());
+    if (movement_rules.is_some() || trace_rules.is_some()) && map_name.is_none() {
+        return Err("movement and trace roles need a loaded --map".into());
     }
     let staged_map = if let Some(name) = map_name {
         let input = map::read(&vfs, &name)?;
         let rules = movement_rules.unwrap_or_else(|| input.native_source);
-        Some((input, rules))
+        // Native presets initialize both roles; an explicit trace choice stays
+        // independent for all later server/prediction probes.
+        Some((input, rules, trace_rules.unwrap_or(rules)))
     } else {
         None
     };
     let names = staged_map
         .as_ref()
-        .map(|(input, _)| input.catalog_names())
+        .map(|(input, _, _)| input.catalog_names())
         .transpose()?
         .unwrap_or_default();
     let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref()))?;
@@ -229,7 +229,7 @@ fn run() -> Result<(), String> {
     let mut map_path = None;
     let mut selected_movement = None;
     let mut imported_profile = qa_app::profile::Import::default();
-    if let Some((input, rules)) = &staged_map {
+    if let Some((input, rules, _)) = &staged_map {
         if !console_source_explicit {
             console.cvars.select_context(Context {
                 source: input.native_source,
@@ -261,7 +261,7 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
     let mut assets = Assets::load();
-    if let Some((input, rules)) = staged_map {
+    if let Some((input, rules, traces)) = staged_map {
         let image_settings =
             qa_app::render_settings::image_settings(&console.cvars, input.native_source)?;
         let loaded = input.load(
@@ -298,7 +298,7 @@ fn run() -> Result<(), String> {
             loaded.collision,
             0,
         ));
-        let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules)?;
+        let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules, traces)?;
         // Entity insertion is native module/world rule data, not movement.
         let entity = runtime.server.clients[client.0 as usize].entity;
         let order = if loaded.native_source == RuleSetId::Quake3 {
@@ -316,9 +316,10 @@ fn run() -> Result<(), String> {
         );
         let player = &runtime.server.clients[client.0 as usize].player;
         println!(
-            "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"spawned_clients\":1,\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
+            "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"spawned_clients\":1,\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
             json_string(&loaded.virtual_path),
-            map::movement_name(rules),
+            rules.name(),
+            traces.name(),
             loaded.render.world.0,
             client.0,
             loaded.entity_count,
@@ -469,7 +470,7 @@ fn run() -> Result<(), String> {
                 1,
                 format_args!(
                     "{{\"event\":\"walk_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"movement\":\"{}\",\"position\":{:?},\"velocity\":{:?},\"predicted_position\":{:?},\"view_angles\":{:?},\"grounded\":{},\"ground_normal\":{:?},\"ducked\":{},\"water_level\":{},\"simulation_ns\":{},\"client_ns\":{}}}",
-                    map::movement_name(rules),
+                    rules.name(),
                     authoritative.body.position.0,
                     authoritative.body.velocity.0,
                     predicted.body.position.0,

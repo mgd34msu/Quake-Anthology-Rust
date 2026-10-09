@@ -98,6 +98,7 @@ impl Runtime {
         seat: qa_core::sys_events::SeatId,
         spawn: map::SpawnAnchor,
         movement: RuleSetId,
+        trace: RuleSetId,
     ) -> Result<ClientId, String> {
         let id = self
             .server
@@ -110,6 +111,7 @@ impl Runtime {
             .ok_or("no local client slot")?;
         let client = &mut self.server.clients[id.0 as usize];
         client.player.movement_rules = movement;
+        client.player.trace_rules = trace;
         qa_movement::set_bounds(&mut client.player);
         client.player.body.position = spawn.position;
         client.player.view_angles = spawn.angles;

@@ -67,6 +67,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
             .unwrap();
         let client = &mut server.clients[slot];
         client.player.movement_rules = rules[slot % 5];
+        client.player.trace_rules = rules[slot % 5];
         qa_movement::set_bounds(&mut client.player);
         client.player.body.position = Vec3([0.0, slot as f32 * 128.0, 24.125]);
         client.player.movement.grounded = true;
@@ -153,6 +154,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
     ] {
         let client = &mut server.clients[id.0 as usize];
         client.player.movement_rules = rules;
+        client.player.trace_rules = rules;
         client.link_order = order;
         qa_movement::set_bounds(&mut client.player);
         client.player.body.position = Vec3([x, 0.0, 24.125]);
@@ -298,6 +300,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         .unwrap();
     let client = &mut server.clients[id.0 as usize];
     client.player.movement_rules = RuleSetId::Quake3;
+    client.player.trace_rules = RuleSetId::Quake3;
     client.player.health = 100;
     qa_movement::set_bounds(&mut client.player);
     client.player.body.position = Vec3([0.0, 0.0, 24.125]);
@@ -372,4 +375,87 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
     assert_eq!(player.body.position, prediction.player.body.position);
     assert_eq!(player.body.velocity, prediction.player.body.velocity);
     assert_eq!(player.movement, prediction.player.movement);
+}
+
+#[test]
+fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
+-> Result<(), &'static str> {
+    let (store, geometry) = floor();
+    let mut scratch = store.scratch();
+    for (trace_rules, expected_height) in
+        [(RuleSetId::Quake3, 24.125), (RuleSetId::Quake2, 24.03125)]
+    {
+        let mut server = Server::load(1, 8, 1, 0, 0).map_err(|_| "server capacity")?;
+        let id = server
+            .connect(
+                Connection::Local,
+                ModuleId(2),
+                PlayerTail::Q2 { weapon_frame: 29 },
+                None,
+            )
+            .ok_or("client slot")?;
+        let client = &mut server.clients[id.0 as usize];
+        client.player.movement_rules = RuleSetId::Quake3;
+        client.player.trace_rules = trace_rules;
+        client.player.health = 100;
+        qa_movement::set_bounds(&mut client.player);
+        client.player.body.position = Vec3([0.0, 0.0, 25.0]);
+        client.player.body.velocity = Vec3([0.0, 0.0, -100.0]);
+        client.player.movement.tuning.no_step = true;
+        let entity = client.entity;
+        let mut prediction = Prediction::default();
+        prediction.player.trace_rules = RuleSetId::QuakeWorld;
+        prediction.apply_snapshot(&client.player);
+        assert_eq!(prediction.player.movement_rules, RuleSetId::Quake3);
+        assert_eq!(prediction.player.trace_rules, trace_rules);
+        if trace_rules == RuleSetId::Quake2 {
+            assert_ne!(
+                prediction.player.movement_rules,
+                prediction.player.trace_rules
+            );
+        }
+        server
+            .entities
+            .columns
+            .set_body(entity.slot as usize, client.player.body);
+        assert!(server.area.link(
+            &server.entities,
+            entity,
+            LinkFlags::SOLID,
+            LinkOrder::Tail,
+            LinkIntent::Explicit,
+        ));
+        let command = UserCmd {
+            duration_ms: 16,
+            server_time_ms: 16,
+            ..Default::default()
+        };
+        server.submit_command(id, command);
+        assert_eq!(
+            server.move_pending_clients(&store, geometry, 0, &mut scratch),
+            1
+        );
+        let mut trace = WorldTrace::new(
+            &store,
+            geometry,
+            0,
+            &server.entities,
+            &server.area,
+            &mut scratch,
+            Some(entity),
+        );
+        assert!(prediction.advance(command, &mut trace).traces > 0);
+        let player = &server.clients[id.0 as usize].player;
+        // Native Q2 DIST_EPSILON is 1/32; Q3 SURFACE_CLIP_EPSILON is 1/8.
+        // Standing mins.z=-24 makes the distinct caller bias observable here.
+        assert!((player.body.position.0[2] - expected_height).abs() < 0.00001);
+        assert!(player.movement.grounded);
+        assert_eq!(player.body.position, prediction.player.body.position);
+        assert_eq!(player.body.velocity, prediction.player.body.velocity);
+        assert_eq!(player.movement, prediction.player.movement);
+        assert_eq!(player.trace_rules, prediction.player.trace_rules);
+        assert_eq!(player.tail, PlayerTail::Q2 { weapon_frame: 29 });
+        assert_eq!(prediction.player.tail, PlayerTail::None);
+    }
+    Ok(())
 }

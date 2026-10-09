@@ -128,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("client capacity")?;
         let client = &mut server.clients[slot];
         client.player.movement_rules = rules[slot % 5];
+        client.player.trace_rules = rules[slot % 5];
         qa_movement::set_bounds(&mut client.player);
         // All rooms stay inside native Q2's signed eighth-unit origin range.
         client.player.body.position =

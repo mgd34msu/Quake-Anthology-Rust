@@ -27,6 +27,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
             .unwrap();
         assert_eq!(id.0 as usize, slot);
         server.clients[slot].player.movement_rules = rules[slot % rules.len()];
+        server.clients[slot].player.trace_rules = rules[slot % rules.len()];
         server.clients[slot].intent = CommandIntent {
             movement: [slot as i16, -(slot as i16), 17],
             view_angles: Vec3([1.0, slot as f32, 3.0]),
@@ -89,6 +90,7 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
             )
             .unwrap();
         server.clients[slot].player.movement_rules = rule;
+        server.clients[slot].player.trace_rules = rule;
         server.clients[slot].command.duration_ms = 7;
     }
     server.build_bot_commands(EventTime(0), EventTime(300_000_000));

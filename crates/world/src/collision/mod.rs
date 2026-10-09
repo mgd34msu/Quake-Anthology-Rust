@@ -7,7 +7,7 @@ pub mod store;
 pub mod tree;
 
 pub use contents::Contents;
-use qa_core::primitives::{EntityId, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{EntityId, Plane, RuleSetId, SurfaceFlags, Vec3};
 pub use scene::WorldTrace;
 pub use store::{CollisionStore, StoreError, TraceScratch};
 
@@ -133,6 +133,18 @@ impl TraceRules {
         position_endpoint: PositionEndpoint::ByFraction,
         position_leaf_limit: 1024,
     };
+}
+
+/// Resolve the caller's explicit role into the shared query values. Native
+/// presets are data; neither geometry nor movement selects this role here.
+pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTraceRules) {
+    match rules {
+        RuleSetId::Quake | RuleSetId::QuakeWorld => (TraceRules::LEGACY, EntityTraceRules::QUAKE),
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
+            (TraceRules::LEGACY, EntityTraceRules::QUAKE2)
+        }
+        RuleSetId::Quake3 => (TraceRules::ARENA, EntityTraceRules::ARENA),
+    }
 }
 
 /// A point or axis-aligned box sweep over the scene. Exclusions are borrowed;

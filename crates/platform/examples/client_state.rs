@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let client = &mut server.clients[slot];
         client.player.movement_rules = rules[slot % rules.len()];
+        client.player.trace_rules = rules[slot % rules.len()];
         client.intent = CommandIntent {
             movement: [1, 2, 3],
             view_angles: Vec3([0.0, 90.0, 0.0]),

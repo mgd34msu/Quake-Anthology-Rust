@@ -11,8 +11,8 @@ use qa_core::{
     events::FrameEvent,
     loopback::Endpoint,
     primitives::{
-        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, RuleSetId, PlayerTail,
-        PrintKind, SoundAction, SoundEvent, SoundId, Vec3, WeaponId, buttons,
+        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, PlayerTail, PrintKind, RuleSetId,
+        SoundAction, SoundEvent, SoundId, Vec3, WeaponId, buttons,
     },
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
@@ -241,6 +241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let client = &mut host.runtime.server.clients[slot];
             client.player.movement_rules = rules[slot % rules.len()];
+            client.player.trace_rules = rules[slot % rules.len()];
             client.intent = CommandIntent {
                 movement: [slot as i16, -(slot as i16), 17],
                 buttons: buttons::ATTACK,

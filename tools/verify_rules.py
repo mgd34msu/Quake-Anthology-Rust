@@ -134,6 +134,24 @@ def main():
             if not passed:
                 raise RuntimeError("duplicate primitive was admitted: " + name)
             violation.unlink()
+        for name, content in [
+            ("movement-derived-trace-role", "impl Parameters { fn load(rules: RuleSetId, player: &PlayerState) -> Self { let (trace_rules, entity_rules) = trace_policy(rules); Self { trace_rules, entity_rules } } }"),
+            ("movement-field-trace-role", "impl Parameters { fn load(rules: RuleSetId, player: &PlayerState) -> Self { let (trace_rules, entity_rules) = trace_policy(player.movement_rules); Self { trace_rules, entity_rules } } }"),
+            ("inline-movement-trace-selection", "impl Parameters { fn load(rules: RuleSetId, player: &PlayerState) -> Self { let trace_rules = if rules == RuleSetId::Quake3 { TraceRules::ARENA } else { TraceRules::LEGACY }; Self { trace_rules } } }"),
+        ]:
+            violation = root / "crates/movement/src/physics.rs"
+            original = violation.read_text()
+            violation.write_text(content)
+            try:
+                result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+                output = json.loads(result.stdout)
+                passed = result.returncode != 0 and any(v["rule"] == "trace-role-selection" for v in output["findings"])
+                records.append({"rule": name, "rejected_before_cargo": passed})
+                (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+                if not passed:
+                    raise RuntimeError("movement-derived trace policy was admitted: " + name)
+            finally:
+                violation.write_text(original)
         for name, content, relative in [
             ("retired-movement-id", "enum MovementRules { Quake, Quake3 }", "crates/movement/src/retired_rules.rs"),
             ("retired-think-id", "enum ThinkTiming { Quake, Quake3 }", "crates/session/src/retired_rules.rs"),

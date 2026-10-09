@@ -4,6 +4,7 @@ use qa_movement::{pmove, set_bounds};
 fn player(rules: RuleSetId) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
+        trace_rules: rules,
         tail: PlayerTail::Q2 { weapon_frame: 17 },
         ..Default::default()
     };

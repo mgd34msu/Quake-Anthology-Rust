@@ -205,27 +205,6 @@ pub struct MapInput {
     entity_source: NativeEntityText,
 }
 
-pub fn movement(name: &str) -> Result<RuleSetId, &'static str> {
-    match name {
-        "q1" => Ok(RuleSetId::Quake),
-        "qw" => Ok(RuleSetId::QuakeWorld),
-        "q2" => Ok(RuleSetId::Quake2),
-        "q2rr" => Ok(RuleSetId::Quake2Rerelease),
-        "q3" => Ok(RuleSetId::Quake3),
-        _ => Err("movement must be q1, qw, q2, q2rr or q3"),
-    }
-}
-
-pub fn movement_name(rules: RuleSetId) -> &'static str {
-    match rules {
-        RuleSetId::Quake => "q1",
-        RuleSetId::QuakeWorld => "qw",
-        RuleSetId::Quake2 => "q2",
-        RuleSetId::Quake2Rerelease => "q2rr",
-        RuleSetId::Quake3 => "q3",
-    }
-}
-
 /// Read once and establish the settings source before asset preparation.
 pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     let path = virtual_path(name)?;

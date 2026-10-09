@@ -156,6 +156,11 @@ complete. Every capability must accept independent choices per world, entity,
 player and client. Each playable feature needs per-game and combined-mode proof,
 such as a Q1 map with Q3 movement, Q2 monsters and a Q2 client.
 
+PlayerState stores independent movement and trace RuleSetIds. Native presets
+initialize both at the boundary; an explicit trace choice survives SERVER,
+prediction and bot processing. Movement probes resolve the caller trace id,
+never movement or geometry. CLI `--trace-rules` permits the independent choice.
+
 This is a new unified engine, not a Q3 engine extended with other games. qsrc
 defines gameplay results, stock appearance and byte-exact legacy protocols;
 it does not prescribe the engine's storage, allocator or scheduling structure.

@@ -167,6 +167,15 @@ def check(root):
             for alias in re.finditer(r"\bas\s+(MovementRules|ThinkTiming|Source)\b", imported[0]):
                 if alias[1] != "Source" or relative == "crates/console/src/views.rs":
                     add(path, code, imported.start() + alias.start(), "rule-identity")
+        if relative == "crates/movement/src/physics.rs":
+            for function in re.finditer(r"\bfn\s+load\b", code):
+                end, _ = annotated_item_end(code, function.start())
+                body = code[function.start():end]
+                if "TraceRules" in body or "EntityTraceRules" in body:
+                    add(path, code, function.start(), "trace-role-selection")
+                for choice in re.finditer(r"\btrace_policy\s*\(\s*([^)]*)\)", body):
+                    if not re.fullmatch(r"player\s*\.\s*trace_rules\s*", choice[1]):
+                        add(path, code, function.start() + choice.start(), "trace-role-selection")
         # Cold BrushTree/HullModel inputs may carry roots. The immutable
         # kernels must not retain a second model registry beside the store.
         if relative in ("crates/world/src/collision/hulls.rs", "crates/world/src/collision/tree.rs"):

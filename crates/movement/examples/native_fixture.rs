@@ -3,13 +3,15 @@ mod support;
 use qa_core::primitives::{PlayerState, RuleSetId, UserCmd, Vec3};
 fn main() {
     let arena = std::env::args().nth(1).as_deref() == Some("q3");
+    let rules = if arena {
+        RuleSetId::Quake3
+    } else {
+        RuleSetId::Quake2
+    };
     for scenario in 0..6 {
         let mut player = PlayerState {
-            movement_rules: if arena {
-                RuleSetId::Quake3
-            } else {
-                RuleSetId::Quake2
-            },
+            movement_rules: rules,
+            trace_rules: rules,
             ..Default::default()
         };
         qa_movement::set_bounds(&mut player);
