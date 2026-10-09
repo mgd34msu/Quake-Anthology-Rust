@@ -36,6 +36,16 @@ impl ModuleMemory {
     pub fn read(&self, address: u64, length: usize) -> Result<&[u8], MemoryError> {
         Ok(&self.bytes[self.range(address, length)?])
     }
+    pub fn read_mut(&mut self, address: u64, length: usize) -> Result<&mut [u8], MemoryError> {
+        let range = self.range(address, length)?;
+        Ok(&mut self.bytes[range])
+    }
+    pub fn copy(&mut self, to: u64, from: u64, length: usize) -> Result<(), MemoryError> {
+        let source = self.range(from, length)?;
+        let target = self.range(to, length)?;
+        self.bytes.copy_within(source, target.start);
+        Ok(())
+    }
     pub fn write(&mut self, address: u64, bytes: &[u8]) -> Result<(), MemoryError> {
         let range = self.range(address, bytes.len())?;
         self.bytes[range].copy_from_slice(bytes);

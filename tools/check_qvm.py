@@ -28,7 +28,7 @@ def image(ops, data=bytes(64)):
         elif op == 33:
             code.append(value)
     code.extend(bytes((-len(code)) % 4))
-    return struct.pack("<8i", 0x12721444, len(ops), 32, len(code), 32+len(code), 64, 0, 65536-64) + code + data
+    return struct.pack("<8i", 0x12721444, len(ops), 32, len(code), 32+len(code), len(data), 0, 65536-len(data)) + code + data
 
 
 def run(args):

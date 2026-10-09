@@ -31,6 +31,12 @@ pub enum CallError {
     Text,
     Geometry,
     ConfigString,
+    Memory,
+}
+impl From<crate::memory::MemoryError> for CallError {
+    fn from(_: crate::memory::MemoryError) -> Self {
+        Self::Memory
+    }
 }
 
 /// Supplied by the module host. No capability inherits another role's rules.
@@ -151,6 +157,7 @@ pub struct EngineCallTable {
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub file_open: FileOpenCall,
+    pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
     pub file_read:
         fn(&mut EngineServices<'_>, ModuleId, u32, &mut [u8]) -> Result<usize, CallError>,
     pub file_close: fn(&mut EngineServices<'_>, ModuleId, u32) -> Result<(), CallError>,
@@ -169,6 +176,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     command: |s, c, t| s.command(c, t),
     configstring: |s, m, i, t| s.configstring(m, i, t),
     file_open: |s, m, p| s.file_open(m, p),
+    file_length: |s, p| s.file_length(p),
     file_read: |s, m, h, b| s.file_read(m, h, b),
     file_close: |s, m, h| s.file_close(m, h),
 };
@@ -306,6 +314,10 @@ impl EngineServices<'_> {
             cursor: 0,
         });
         Ok((slot as u32 + 1, length))
+    }
+    pub fn file_length(&self, path: &[u8]) -> Result<u64, CallError> {
+        let reference = self.vfs.open(path).ok_or(CallError::File)?;
+        self.vfs.length(reference).map_err(|_| CallError::File)
     }
     fn file(&mut self, owner: ModuleId, handle: u32) -> Result<&mut OpenFile, CallError> {
         self.storage

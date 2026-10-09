@@ -2570,3 +2570,26 @@ case. Baseq3 pak8 and Team Arena pak0 qagame/cgame/ui images all passed the
 reader; no retail module entry point or gameplay was executed. Checker,
 workspace tests and Clippy passed. Native channels, native libraries, services
 ABI integration and installed acceptance remain open.
+
+## THE-863 numbered module calls (2026-10-09)
+
+Portable release probe built at 14:25:29 UTC in 13.703 seconds. CPU23, 60
+warm-up and 600 measured frames, 64 QVM calls per frame. Each call sets fov,
+prints, appends a console command and reads the cvar through Q3 server import
+ordinals; the frame retires prints through existing best-effort submission and
+executes the shared console buffer. Three median/p99 measurements were
+149.9105/157.110, 149.230/157.340 and 150.2205/159.040 microseconds per frame.
+All runs returned checksum 4,435,200, published 42,240 records, counted no
+unknown imports or ordinary-loop hook instructions, and recorded zero
+calling-thread allocations/reallocations/requested bytes with positive control
+one. This is a new service workload, not a comparable optimization baseline.
+
+Evidence: `$XDG_CACHE_HOME/qa-rust/THE-863-abi-20261009/` or the default
+`.cache/qa-rust`, `checks.json`, `services.qvm`, `timing-{1,2,3}.json` and
+`reference/comparison.json`. The original 8,151 execution/memory comparison
+rows remain exact. Checker, 593 workspace tests and Clippy pass. Boundary tests
+exercise full-width addresses above 32 bits, original role-specific ordinals,
+atoi versus float views, byte strings, bounded unknown logs and supplied clock
+width. No native machine code, retail gameplay, driver heap or installed
+acceptance is qualified. Native entity binding, dynamic cvars, registrations,
+remaining imports and native transport remain open.

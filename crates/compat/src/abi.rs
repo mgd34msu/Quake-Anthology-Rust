@@ -1,0 +1,430 @@
+//! Numbered boundary entries. QVM and native pointers share these handlers.
+use crate::{
+    memory::ModuleMemory,
+    qvm,
+    services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
+};
+use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
+use std::fmt::Write;
+
+#[derive(Clone, Copy)]
+pub enum Addresses {
+    Qvm { mask: u32 },
+    Native,
+}
+pub struct Invocation<'a, 'engine> {
+    pub services: &'a mut EngineServices<'engine>,
+    pub memory: &'a mut ModuleMemory,
+    pub context: CallContext,
+    pub platform_time: EventTime,
+    pub command: &'a [&'a [u8]],
+    pub addresses: Addresses,
+    pub arguments: &'a [u64],
+}
+impl Invocation<'_, '_> {
+    fn arg(&self, index: usize) -> Result<u64, CallError> {
+        self.arguments.get(index).copied().ok_or(CallError::Memory)
+    }
+    fn pointer(&self, index: usize) -> Result<u64, CallError> {
+        Ok(match self.addresses {
+            Addresses::Qvm { mask } => u64::from(self.arg(index)? as u32 & mask),
+            Addresses::Native => self.arg(index)?,
+        })
+    }
+    fn length(&self, index: usize) -> Result<usize, CallError> {
+        let value = self.arg(index)? as u32 as i32;
+        usize::try_from(value).map_err(|_| CallError::Memory)
+    }
+    fn string(&self, index: usize) -> Result<&[u8], CallError> {
+        Ok(self.memory.cstring(self.pointer(index)?)?)
+    }
+    fn text(&self, index: usize) -> Result<&str, CallError> {
+        std::str::from_utf8(self.string(index)?).map_err(|_| CallError::Text)
+    }
+}
+
+type Entry = fn(&mut Invocation<'_, '_>) -> Result<u64, CallError>;
+pub struct CallTable {
+    entries: [Option<Entry>; 256],
+}
+pub struct UnknownCalls {
+    numbers: NameTable,
+    pub calls: u64,
+    pub capacity_drops: u64,
+}
+impl UnknownCalls {
+    pub fn load(capacity: usize) -> Result<Self, qa_core::names::NamesError> {
+        Ok(Self {
+            numbers: NameTable::load_reserved(
+                std::iter::empty(),
+                capacity,
+                capacity.saturating_mul(4),
+            )?,
+            calls: 0,
+            capacity_drops: 0,
+        })
+    }
+}
+impl CallTable {
+    pub fn invoke(
+        &self,
+        number: u32,
+        call: &mut Invocation<'_, '_>,
+        unknown: &mut UnknownCalls,
+    ) -> Result<u64, CallError> {
+        if let Some(Some(entry)) = self.entries.get(number as usize) {
+            return entry(call);
+        }
+        unknown.calls = unknown.calls.saturating_add(1);
+        let key = number.to_le_bytes();
+        if unknown.numbers.find(&key).is_none() {
+            if unknown.numbers.intern(&key).is_ok() {
+                let mut text = FixedText::<128>::default();
+                writeln!(
+                    text,
+                    "module {}: unknown system call {number}",
+                    call.context.module.0
+                )
+                .map_err(|_| CallError::Text)?;
+                // A full output ring counts its loss; an unsupported import
+                // still returns zero without aborting the module or engine.
+                let _ =
+                    (ENGINE_CALLS.print)(call.services, None, PrintKind::Console, text.as_bytes());
+            } else {
+                unknown.capacity_drops = unknown.capacity_drops.saturating_add(1);
+            }
+        }
+        Ok(0)
+    }
+}
+
+const fn common() -> CallTable {
+    let mut table = CallTable {
+        entries: [None; 256],
+    };
+    table.entries[100] = Some(memset);
+    table.entries[101] = Some(memcpy);
+    table.entries[102] = Some(strncpy);
+    table.entries[103] = Some(sin);
+    table.entries[104] = Some(cos);
+    table.entries[105] = Some(atan2);
+    table.entries[106] = Some(sqrt);
+    table.entries[107] = Some(floor);
+    table.entries[108] = Some(ceil);
+    table
+}
+const fn server() -> CallTable {
+    let mut t = common();
+    t.entries[107] = None;
+    t.entries[108] = None;
+    t.entries[110] = Some(floor);
+    t.entries[111] = Some(ceil);
+    t.entries[0] = Some(print);
+    t.entries[1] = Some(abort);
+    t.entries[2] = Some(milliseconds);
+    t.entries[5] = Some(cvar_set);
+    t.entries[6] = Some(cvar_integer);
+    t.entries[7] = Some(cvar_string);
+    t.entries[8] = Some(argc);
+    t.entries[9] = Some(argv);
+    t.entries[10] = Some(file_open);
+    t.entries[11] = Some(file_read);
+    t.entries[13] = Some(file_close);
+    t.entries[14] = Some(command);
+    t.entries[18] = Some(config_set);
+    t.entries[19] = Some(config_get);
+    t
+}
+const fn client() -> CallTable {
+    let mut t = common();
+    t.entries[0] = Some(print);
+    t.entries[1] = Some(abort);
+    t.entries[2] = Some(milliseconds);
+    t.entries[5] = Some(cvar_set);
+    t.entries[6] = Some(cvar_string);
+    t.entries[7] = Some(argc);
+    t.entries[8] = Some(argv);
+    t.entries[10] = Some(file_open);
+    t.entries[11] = Some(file_read);
+    t.entries[13] = Some(file_close);
+    t.entries[14] = Some(command_append);
+    t.entries[111] = Some(acos);
+    t
+}
+const fn ui() -> CallTable {
+    let mut t = common();
+    t.entries[0] = Some(abort);
+    t.entries[1] = Some(print);
+    t.entries[2] = Some(milliseconds);
+    t.entries[3] = Some(cvar_set);
+    t.entries[4] = Some(cvar_number);
+    t.entries[5] = Some(cvar_string);
+    t.entries[10] = Some(argc);
+    t.entries[11] = Some(argv);
+    t.entries[13] = Some(file_open);
+    t.entries[14] = Some(file_read);
+    t.entries[16] = Some(file_close);
+    t
+}
+// Original Q3 1.32 import ordinals. UI's ExecuteText and game's
+// SendConsoleCommand have different argument layouts and are not aliases.
+pub const Q3_SERVER: CallTable = server();
+pub const Q3_CLIENT: CallTable = client();
+pub const Q3_UI: CallTable = ui();
+
+pub struct QvmCalls<'a, 'engine> {
+    pub services: &'a mut EngineServices<'engine>,
+    pub table: &'a CallTable,
+    pub context: CallContext,
+    pub platform_time: EventTime,
+    pub command: &'a [&'a [u8]],
+    pub unknown: &'a mut UnknownCalls,
+}
+impl qvm::SystemCalls for QvmCalls<'_, '_> {
+    fn call(&mut self, vm: &mut qvm::Vm, number: u32, arguments: &[i32]) -> Result<i32, qvm::Trap> {
+        let mut native = [0u64; 15];
+        let args = arguments.get(1..).ok_or(qvm::Trap::Syscall)?;
+        if args.len() > native.len() {
+            return Err(qvm::Trap::Syscall);
+        }
+        for (to, &from) in native.iter_mut().zip(args) {
+            *to = u64::from(from as u32);
+        }
+        let mask = vm.memory.len() as u32 - 1;
+        let mut call = Invocation {
+            services: self.services,
+            memory: &mut vm.memory,
+            context: self.context,
+            platform_time: self.platform_time,
+            command: self.command,
+            addresses: Addresses::Qvm { mask },
+            arguments: &native[..args.len()],
+        };
+        self.table
+            .invoke(number, &mut call, self.unknown)
+            .map(|r| r as i32)
+            .map_err(|_| qvm::Trap::Syscall)
+    }
+}
+
+fn print(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let text = c.memory.cstring(c.pointer(0)?)?;
+    (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text)?;
+    Ok(0)
+}
+fn abort(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    print(c)?;
+    Err(CallError::Aborted)
+}
+fn milliseconds(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(c.platform_time.milliseconds() as u32 as u64)
+}
+fn cvar_set(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let name = c.text(0)?;
+    let view = c
+        .services
+        .cvars
+        .bind(name, c.context.console)
+        .ok_or(CallError::Cvar)?;
+    let value =
+        std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
+    (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
+    Ok(0)
+}
+fn cvar_integer(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {
+        return Ok(0);
+    };
+    let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
+    Ok(qa_console::numbers::integer(text.as_str()) as u32 as u64)
+}
+fn cvar_number(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {
+        return Ok(0);
+    };
+    Ok(c.services
+        .cvars
+        .numeric(view)
+        .map_err(|_| CallError::Cvar)?
+        .to_bits() as u64)
+}
+fn write_string(
+    memory: &mut ModuleMemory,
+    target: u64,
+    length: usize,
+    text: &[u8],
+) -> Result<(), CallError> {
+    let buffer = memory.read_mut(target, length)?;
+    if length != 0 {
+        let copied = text.len().min(length - 1);
+        buffer[..copied].copy_from_slice(&text[..copied]);
+        buffer[copied] = 0;
+    }
+    Ok(())
+}
+fn cvar_string(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let target = c.pointer(1)?;
+    let length = c.length(2)?;
+    let view = c.services.cvars.bind(c.text(0)?, c.context.console);
+    if let Some(view) = view {
+        let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
+        write_string(c.memory, target, length, text.as_str().as_bytes())?;
+    } else {
+        write_string(c.memory, target, length, b"")?;
+    }
+    Ok(0)
+}
+fn argc(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(c.command.len() as u64)
+}
+fn argv(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let index = c.arg(0)? as u32 as usize;
+    let target = c.pointer(1)?;
+    let length = c.length(2)?;
+    write_string(
+        c.memory,
+        target,
+        length,
+        c.command.get(index).copied().unwrap_or(b""),
+    )?;
+    Ok(0)
+}
+fn command(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let text =
+        std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
+    // Only EXEC_APPEND is implemented; immediate/insert execution must use the
+    // existing command buffer's native ordering before those imports are enabled.
+    if c.arg(0)? != 2 {
+        return Err(CallError::Text);
+    }
+    (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
+    Ok(0)
+}
+fn command_append(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let text =
+        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
+    Ok(0)
+}
+fn file_open(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    if c.arg(2)? != 0 {
+        return Err(CallError::File);
+    }
+    if c.arg(1)? == 0 {
+        return match (ENGINE_CALLS.file_length)(c.services, c.memory.cstring(c.pointer(0)?)?) {
+            Ok(length) => Ok(length as u32 as u64),
+            Err(CallError::File) => Ok(u32::MAX as u64),
+            Err(error) => Err(error),
+        };
+    }
+    let target = c.pointer(1)?;
+    c.memory.read(target, 4)?;
+    let result = (ENGINE_CALLS.file_open)(
+        c.services,
+        c.context.module,
+        c.memory.cstring(c.pointer(0)?)?,
+    );
+    match result {
+        Ok((handle, length)) => {
+            c.memory.write_word(target, handle as i32)?;
+            Ok(length as u32 as u64)
+        }
+        Err(CallError::File) => {
+            c.memory.write_word(target, 0)?;
+            Ok(u32::MAX as u64)
+        }
+        Err(error) => Err(error),
+    }
+}
+fn file_read(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let target = c.pointer(0)?;
+    let length = c.length(1)?;
+    let handle = c.arg(2)? as u32;
+    (ENGINE_CALLS.file_read)(
+        c.services,
+        c.context.module,
+        handle,
+        c.memory.read_mut(target, length)?,
+    )?;
+    Ok(0)
+}
+fn file_close(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    (ENGINE_CALLS.file_close)(c.services, c.context.module, c.arg(0)? as u32)?;
+    Ok(0)
+}
+fn config_set(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    (ENGINE_CALLS.configstring)(
+        c.services,
+        c.context.module,
+        c.length(0)?,
+        c.memory.cstring(c.pointer(1)?)?,
+    )?;
+    Ok(0)
+}
+fn config_get(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let target = c.pointer(1)?;
+    let length = c.length(2)?;
+    let (text, _) = c
+        .services
+        .storage
+        .configstring(c.context.module, c.length(0)?)?;
+    write_string(c.memory, target, length, text)?;
+    Ok(0)
+}
+fn memset(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let target = c.pointer(0)?;
+    let value = c.arg(1)? as u8;
+    let length = c.length(2)?;
+    c.memory.read_mut(target, length)?.fill(value);
+    Ok(0)
+}
+fn memcpy(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    c.memory.copy(c.pointer(0)?, c.pointer(1)?, c.length(2)?)?;
+    Ok(0)
+}
+fn strncpy(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let from = c.pointer(1)?;
+    let to = c.pointer(0)?;
+    let length = c.length(2)?;
+    // Validate both extents before writes; strncpy may read an unterminated
+    // source when its first n bytes fit. Padding starts at the first zero.
+    c.memory.read(to, length)?;
+    let mut zero = false;
+    for i in 0..length {
+        let byte = if zero {
+            0
+        } else {
+            c.memory.read(from + i as u64, 1)?[0]
+        };
+        zero |= byte == 0;
+        c.memory.write(to + i as u64, &[byte])?;
+    }
+    c.arg(0)
+}
+fn float(c: &Invocation<'_, '_>, index: usize) -> Result<f64, CallError> {
+    Ok(f32::from_bits(c.arg(index)? as u32) as f64)
+}
+fn bits(value: f64) -> u64 {
+    (value as f32).to_bits() as u64
+}
+fn sin(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.sin()))
+}
+fn cos(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.cos()))
+}
+fn atan2(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.atan2(float(c, 1)?)))
+}
+fn sqrt(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.sqrt()))
+}
+fn floor(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.floor()))
+}
+fn ceil(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.ceil()))
+}
+fn acos(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(bits(float(c, 0)?.acos()))
+}

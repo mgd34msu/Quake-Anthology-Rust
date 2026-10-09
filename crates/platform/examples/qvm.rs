@@ -76,6 +76,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    if mode == "--engine-timings" {
+        return engine_timings(&bytes);
+    }
     if mode != "--timings" {
         return Err("mode".into());
     }
@@ -116,6 +119,103 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     samples.sort_unstable();
     println!(
         "{{\"scope\":\"headless QVM interpreted fixture; no native module gameplay\",\"warmup\":60,\"frames\":600,\"calls_per_frame\":1000,\"checksum\":{checksum},\"heap\":{heap},\"requested_bytes\":{requested},\"hook_instructions\":{},\"median_ns\":{},\"p99_ns\":{},\"positive_control\":{}}}",
+        vm.hooks.instructions,
+        (samples[299] + samples[300]) as f64 * 0.5,
+        samples[593],
+        positive.allocations
+    );
+    Ok(())
+}
+
+fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    use qa_compat::{
+        abi::{Q3_SERVER, QvmCalls, UnknownCalls},
+        services::{CallContext, ServiceStorage},
+    };
+    use qa_core::{events::OutputSubmission, primitives::ModuleId, sys_events::EventTime};
+    use qa_world::{
+        area::LinkOrder,
+        entities::{AllocationPolicy, EntityTime},
+    };
+    let mut vm = Vm::load(Image::parse(bytes).map_err(|e| format!("{e:?}"))?)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut runtime = qa_app::Runtime::load(4, std::iter::empty())?;
+    let mut console = qa_console::commands::Console::new(qa_console::views::Context::default())?;
+    let mut storage =
+        ServiceStorage::load(&[(ModuleId(1), 16)], 8).map_err(|e| format!("{e:?}"))?;
+    let mut scratch = runtime.geometry.scratch();
+    let mut unknown = UnknownCalls::load(64)?;
+    let mut samples = [0u64; 600];
+    let mut checksum = 0u64;
+    let mut heap = 0;
+    let mut requested = 0;
+    let mut publications = 0;
+    begin_frame();
+    black_box(vec![0u8; 32]);
+    let positive = end_frame();
+    if positive.allocations != 1 {
+        return Err("positive control".into());
+    }
+    for frame in 0..660 {
+        begin_frame();
+        let timer = Stopwatch::start();
+        {
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let context = CallContext {
+                module: ModuleId(1),
+                clock: EntityTime::Milliseconds(frame),
+                console: qa_console::views::Context::default(),
+                allocation: AllocationPolicy::EDICT,
+                link_order: LinkOrder::Head,
+            };
+            let mut calls = QvmCalls {
+                services: &mut services,
+                table: &Q3_SERVER,
+                context,
+                platform_time: EventTime(frame as u64 * 1_000_000),
+                command: &[],
+                unknown: &mut unknown,
+            };
+            for _ in 0..64 {
+                checksum = checksum.wrapping_add(
+                    vm.call(&mut calls, black_box([0; 10]), 1000, false)
+                        .map_err(|e| format!("{e:?}"))? as u32 as u64,
+                );
+            }
+            let consumer = services.server.presentation;
+            let mut batch = services.server.events.batch(consumer).ok_or("batch")?;
+            while let Some(record) = services.server.events.next(&mut batch) {
+                if !services.server.events.submit(
+                    consumer,
+                    record.sequence,
+                    OutputSubmission::BestEffort,
+                ) {
+                    return Err("submission".into());
+                }
+                publications += 1;
+            }
+        }
+        console.execute_frame(&mut runtime);
+        let elapsed = timer.elapsed().as_nanos() as u64;
+        let count = end_frame();
+        if frame >= 60 {
+            samples[frame as usize - 60] = elapsed;
+            heap += count.allocations + count.reallocations;
+            requested += count.requested_bytes;
+        }
+    }
+    if heap != 0
+        || requested != 0
+        || unknown.calls != 0
+        || checksum != 4_435_200
+        || publications != 42240
+    {
+        return Err("engine VM fixture/heap".into());
+    }
+    samples.sort_unstable();
+    println!(
+        "{{\"scope\":\"headless QVM numbered engine calls, cvars, print retirement and console; no retail gameplay\",\"warmup\":60,\"frames\":600,\"calls_per_frame\":64,\"checksum\":{checksum},\"publications\":{publications},\"unknown_calls\":{},\"heap\":{heap},\"requested_bytes\":{requested},\"hook_instructions\":{},\"median_ns\":{},\"p99_ns\":{},\"positive_control\":{}}}",
+        unknown.calls,
         vm.hooks.instructions,
         (samples[299] + samples[300]) as f64 * 0.5,
         samples[593],

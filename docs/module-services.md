@@ -34,7 +34,23 @@ reverse-word overlapping block copies. It does not establish the compiled
 QVM ABI, retail gameplay or a native library backend. The retail baseq3 and
 Team Arena qagame/cgame/ui images pass structural loading only.
 
-Numbered ABI tables, native live entity binding, asset registration, filesystem
+Q3 server, cgame and UI import tables now select the same boundary handlers
+for the implemented print/error, supplied platform time, catalog cvar reads and
+writes, command arguments, read-only VFS, configstring and memory/math calls.
+Their native import numbers and different argument layouts remain separate.
+QVM words are widened at the boundary and pointers use the original mask;
+native callers retain full-width owned-memory addresses. This is an ABI entry
+path, not native machine-code execution. Unknown calls log once in bounded
+load-sized storage and return zero; output loss and unknown-log capacity drops
+are counted separately. `G_ERROR` rejects the current module call.
+
+The headless engine-call fixture executes real QVM instructions through these
+tables, changes a shared cvar, publishes print records, retires them by the
+existing best-effort submission rule and executes appended commands through
+the existing console. It does not supply native channel ACKs or retail play.
+Only catalog cvars and read-only files are implemented. The server console call
+currently supports EXEC_APPEND; immediate/insert commands and UI ExecuteText
+remain pending. Registration/update, native live entity binding, asset registration, filesystem
 writes, dynamic module cvar registration and remaining imports must follow
 before retail modules or installed gameplay can be claimed. There is no native
 execution backend yet.
