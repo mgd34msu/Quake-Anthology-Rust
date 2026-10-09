@@ -5,7 +5,7 @@ use qa_core::primitives::{
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
-    area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
+    area::{AreaGrid, AttachmentTransport, LinkFlags, LinkIntent, LinkOrder},
     collision::{CollisionStore, Contents, TraceScratch, WorldTrace},
     entities::EntityTable,
 };
@@ -272,6 +272,22 @@ impl Server {
                 );
             }
         }
+        self.commit_attachments();
         steps
+    }
+
+    /// Authoritative body commits transport the shared graph once, then update
+    /// attached clients' hot state before snapshots and prediction are copied.
+    pub fn commit_attachments(&mut self) -> AttachmentTransport {
+        let result = self.area.transport_attachments(&mut self.entities);
+        if result.moved != 0 {
+            for client in self.clients.iter_mut() {
+                if client.connection.is_some() && self.entities.attachment(client.entity).is_some()
+                {
+                    client.player.body = self.entities.columns.body(client.entity.slot as usize);
+                }
+            }
+        }
+        result
     }
 }

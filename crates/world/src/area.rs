@@ -1,5 +1,10 @@
 use crate::entities::{EntityTable, MAX_ENTITIES};
-use qa_core::primitives::{Bounds, CollisionShape, EntityId, RotatedLinkBounds, Vec3};
+use qa_core::{
+    primitives::{
+        BodyAttachment, BodyFollow, Bounds, CollisionShape, EntityId, RotatedLinkBounds, Vec3,
+    },
+    stamps::StampSet,
+};
 
 const NONE: u32 = u32::MAX;
 
@@ -81,6 +86,16 @@ pub struct AreaGrid {
     nodes: [Node; 31],
     links: Box<[Link]>,
     pub relinks: u64,
+    attachment_visited: StampSet,
+    attachment_chain: Vec<(EntityId, BodyAttachment)>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttachmentTransport {
+    pub visited: u32,
+    pub moved: u32,
+    pub relinked: u32,
+    pub rejected: u32,
 }
 
 fn create(nodes: &mut [Node; 31], next: &mut u8, depth: u8, bounds: Bounds) -> u8 {
@@ -136,6 +151,8 @@ impl AreaGrid {
             nodes,
             links: vec![Link::default(); capacity].into_boxed_slice(),
             relinks: 0,
+            attachment_visited: StampSet::new(capacity),
+            attachment_chain: Vec::with_capacity(capacity),
         })
     }
 
@@ -284,6 +301,76 @@ impl AreaGrid {
         }
         self.relinks += 1;
         true
+    }
+
+    /// C body.c:644-695: insertion order, parent first, captured follow modes.
+    /// No module callback runs inside this commit, so a slot's lifetime cannot
+    /// change while its shared StampSet mark is in use. Attach rejects cycles.
+    pub fn transport_attachments(&mut self, table: &mut EntityTable) -> AttachmentTransport {
+        let mut result = AttachmentTransport::default();
+        if table.attachment_count() == 0 {
+            return result;
+        }
+        if table.capacity() != self.links.len() {
+            result.rejected = table.attachment_count() as u32;
+            return result;
+        }
+        self.attachment_visited.begin();
+        for index in 0..table.attachment_count() {
+            let mut id = table.attachment_at(index);
+            while let Some(follow) = table.attachment(id) {
+                if self.attachment_visited.contains(id.slot as usize) {
+                    break;
+                }
+                self.attachment_chain.push((id, follow));
+                id = follow.anchor;
+            }
+            while let Some((id, follow)) = self.attachment_chain.pop() {
+                self.attachment_visited.mark(id.slot as usize);
+                let Some(slot) = table.resolve(id) else {
+                    continue;
+                };
+                let Some(anchor) = table.resolve(follow.anchor) else {
+                    continue;
+                };
+                result.visited += 1;
+                let columns = &mut table.columns;
+                let position = Vec3(std::array::from_fn(|axis| {
+                    let offset = match follow.follow {
+                        BodyFollow::Translation => follow.offset.0[axis],
+                        BodyFollow::Center => {
+                            (columns.mins[anchor].0[axis] + columns.maxs[anchor].0[axis]) * 0.5
+                        }
+                        BodyFollow::BoundsMin => {
+                            columns.mins[anchor].0[axis] + follow.offset.0[axis]
+                        }
+                    };
+                    columns.position[anchor].0[axis] + offset
+                }));
+                if !position.0.iter().all(|value| value.is_finite()) {
+                    result.rejected += 1;
+                    continue;
+                }
+                let unchanged = (0..3).all(|axis| {
+                    let left = columns.position[slot].0[axis];
+                    let right = position.0[axis];
+                    left == right
+                        && (left != 0.0 || left.is_sign_negative() == right.is_sign_negative())
+                });
+                if unchanged {
+                    continue;
+                }
+                columns.position[slot] = position;
+                result.moved += 1;
+                let link = self.links[slot];
+                if link.id == Some(id)
+                    && self.link(table, id, link.flags, link.order, LinkIntent::Explicit)
+                {
+                    result.relinked += 1;
+                }
+            }
+        }
+        result
     }
 
     pub fn query<'a>(

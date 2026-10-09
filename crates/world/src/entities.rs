@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    Body, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId, EntityPose,
-    ModelRules, ModuleId, NameId, NativeEntity, ThinkTime, Vec3,
+    Body, BodyAttachment, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId,
+    EntityPose, ModelRules, ModuleId, NameId, NativeEntity, ThinkTime, Vec3,
 };
 
 pub const MAX_ENTITIES: usize = 8192;
@@ -124,6 +124,14 @@ pub enum TableError {
     ReservedSlots,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentError {
+    Entity,
+    Anchor,
+    Offset,
+    Cycle,
+}
+
 pub struct EntityColumns {
     pub position: Box<[Vec3]>,
     pub velocity: Box<[Vec3]>,
@@ -151,6 +159,7 @@ pub struct EntityColumns {
     pub collision_tags: Box<[CollisionTags]>,
     pub classname: Box<[NameId]>,
     targetname: Box<[Option<NameId>]>,
+    attachment: Box<[Option<BodyAttachment>]>,
     pub flags: Box<[u32]>,
     pub model: Box<[u32]>,
     pub frame: Box<[u32]>,
@@ -183,6 +192,7 @@ impl EntityColumns {
             collision_tags: vec![CollisionTags::default(); capacity].into_boxed_slice(),
             classname: vec![NameId::default(); capacity].into_boxed_slice(),
             targetname: vec![None; capacity].into_boxed_slice(),
+            attachment: vec![None; capacity].into_boxed_slice(),
             flags: vec![0; capacity].into_boxed_slice(),
             model: vec![0; capacity].into_boxed_slice(),
             frame: vec![0; capacity].into_boxed_slice(),
@@ -214,6 +224,7 @@ impl EntityColumns {
         self.collision_tags[slot] = CollisionTags::default();
         self.classname[slot] = NameId::default();
         self.targetname[slot] = None;
+        self.attachment[slot] = None;
         self.flags[slot] = 0;
         self.model[slot] = 0;
         self.frame[slot] = 0;
@@ -255,6 +266,9 @@ pub struct EntityTable {
     target_dirty_count: usize,
     reserved: usize,
     live_count: usize,
+    /// Fixed load capacity, ordered by first attachment insertion. Updating an
+    /// attachment retains its position; detach and reattach moves it to the end.
+    attachment_order: Vec<EntityId>,
 }
 
 fn next_bit(words: &[u64], start: usize, capacity: usize, inverse: bool) -> Option<usize> {
@@ -300,6 +314,7 @@ impl EntityTable {
             target_dirty_count: 0,
             reserved,
             live_count: reserved,
+            attachment_order: Vec::with_capacity(capacity),
         })
     }
 
@@ -335,10 +350,78 @@ impl EntityTable {
     }
 
     fn clear_columns(&mut self, slot: usize) {
+        // Called for release, client reset and QW displacement as well as claim.
+        // Clear direct children before the slot can acquire another lifetime.
+        self.attachment_order.retain(|id| {
+            let child = id.slot as usize;
+            if child == slot
+                || self.columns.attachment[child]
+                    .is_some_and(|follow| follow.anchor.slot as usize == slot)
+            {
+                self.columns.attachment[child] = None;
+                false
+            } else {
+                true
+            }
+        });
         if self.columns.targetname[slot].is_some() {
             self.mark_target_dirty(slot);
         }
         self.columns.clear(slot);
+    }
+
+    /// Match C body.c:389-406 without allocating an insertion record in play.
+    pub fn attach(&mut self, id: EntityId, follow: BodyAttachment) -> Result<(), AttachmentError> {
+        let slot = self.resolve(id).ok_or(AttachmentError::Entity)?;
+        if !follow.offset.0.iter().all(|value| value.is_finite()) {
+            return Err(AttachmentError::Offset);
+        }
+        self.resolve(follow.anchor).ok_or(AttachmentError::Anchor)?;
+        let mut anchor = Some(follow.anchor);
+        for _ in 0..self.capacity() {
+            let Some(current) = anchor else { break };
+            if current == id {
+                return Err(AttachmentError::Cycle);
+            }
+            anchor = self.attachment(current).map(|attachment| attachment.anchor);
+        }
+        if anchor.is_some() {
+            return Err(AttachmentError::Cycle);
+        }
+        if self.columns.attachment[slot].is_none() {
+            self.attachment_order.push(id);
+        }
+        self.columns.attachment[slot] = Some(follow);
+        Ok(())
+    }
+
+    pub fn detach(&mut self, id: EntityId) -> bool {
+        let Some(slot) = self.resolve(id) else {
+            return false;
+        };
+        if self.columns.attachment[slot].take().is_none() {
+            return false;
+        }
+        self.attachment_order.retain(|attached| *attached != id);
+        true
+    }
+
+    pub fn attachment(&self, id: EntityId) -> Option<BodyAttachment> {
+        self.columns.attachment[self.resolve(id)?]
+    }
+
+    pub fn attachments(&self) -> impl Iterator<Item = (EntityId, BodyAttachment)> + '_ {
+        self.attachment_order
+            .iter()
+            .filter_map(|&id| self.attachment(id).map(|follow| (id, follow)))
+    }
+
+    pub(crate) fn attachment_count(&self) -> usize {
+        self.attachment_order.len()
+    }
+
+    pub(crate) fn attachment_at(&self, index: usize) -> EntityId {
+        self.attachment_order[index]
     }
 
     pub fn set_targetname(&mut self, id: EntityId, name: Option<NameId>) -> bool {

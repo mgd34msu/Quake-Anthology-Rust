@@ -40,6 +40,86 @@ fn floor() -> (CollisionStore, GeometryId) {
         .unwrap();
     (store, geometry)
 }
+
+#[test]
+fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
+    use qa_core::primitives::{BodyAttachment, BodyFollow};
+    let mut server = Server::load(2, 16, 1, 0, 0, 0).unwrap();
+    let (store, geometry) = floor();
+    let mut scratch = store.scratch();
+    let moving = server
+        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+        .unwrap();
+    let attached = server
+        .connect(Connection::Bot, ModuleId(1), PlayerTail::None, None)
+        .unwrap();
+    for (slot, rules, order) in [
+        (0, RuleSetId::Quake3, LinkOrder::Tail),
+        (1, RuleSetId::Quake, LinkOrder::Head),
+    ] {
+        let client = &mut server.clients[slot];
+        client.player.movement_rules = rules;
+        client.player.trace_rules = rules;
+        client.link_order = order;
+        qa_movement::set_bounds(&mut client.player);
+        client.player.body.position = Vec3([0.0, slot as f32 * 128.0, 24.125]);
+        client.player.movement.grounded = true;
+        server
+            .entities
+            .columns
+            .set_body(client.entity.slot as usize, client.player.body);
+        server.area.link(
+            &server.entities,
+            client.entity,
+            LinkFlags::SOLID,
+            order,
+            LinkIntent::Explicit,
+        );
+    }
+    let root = server.clients[moving.0 as usize].entity;
+    let child = server.clients[attached.0 as usize].entity;
+    server
+        .entities
+        .attach(
+            child,
+            BodyAttachment {
+                anchor: root,
+                follow: BodyFollow::Translation,
+                offset: Vec3([0.0, 128.0, 0.0]),
+            },
+        )
+        .unwrap();
+    server.submit_command(
+        moving,
+        UserCmd {
+            duration_ms: 16,
+            server_time_ms: 16,
+            movement: [127.0, 0.0, 0.0],
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        server.move_pending_clients(&store, geometry, 0, &mut scratch),
+        1
+    );
+    let origin = server.clients[0].player.body.position;
+    assert!(origin.0[0] > 0.0);
+    assert_eq!(
+        server.clients[1].player.body.position,
+        origin + Vec3([0.0, 128.0, 0.0])
+    );
+    assert_eq!(
+        server.entities.columns.position[child.slot as usize],
+        server.clients[1].player.body.position
+    );
+    assert_eq!(server.clients[1].player.movement_rules, RuleSetId::Quake);
+    let mut prediction = Prediction::default();
+    prediction.apply_snapshot(&server.clients[1].player);
+    assert_eq!(
+        prediction.player.body.position,
+        server.clients[1].player.body.position
+    );
+}
 #[test]
 fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
     let mut server = Server::load(15, 64, 1, 0, 0, 0).unwrap();

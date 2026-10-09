@@ -2141,3 +2141,41 @@ Evidence: `THE-859-local-seats/normal-candidate/build.json`,
 `workspace-tests-final.log` (569 passes), retail loads (six passes), Clippy,
 unchanged checker and developer-tool logs under the private evidence root.
 No old single-seat startup or singular map spawn API remains.
+
+## THE-650: attachment transport and area links
+
+The shared authoritative body commit now transports attachments through the
+existing entity SoA and area grid. Follow modes and parent-first insertion-order
+semantics come from the proven C port's `src/world/body.c`. Its unchanged
+`qa_world_attach` (389-407) and transport/helper block (640-693) were compiled
+with developer body-access/link-count stubs. Seed `0x650`, 512 cases, 16,384 body
+rows and two transports per case matched all final position, velocity and local
+bound bits plus both link counts. Transport heap activity was zero. This is a
+C-port behavior comparison; it is not an original native module/touch comparison.
+
+Portable release probes were built in 23.046 s; the final developer-probe lint
+cleanup rebuilt in 5.283 s. Pinned core 23, 60 warm-up frames and 600 measured
+frames, no debugger, workers, display or game: a reverse-inserted chain exercises
+all three follow modes. Every moved body retains its velocity/angles and reaches
+the expected exact pose. A second transport remains unchanged. Allocation
+qualification also includes detach/reattach and 8,192 explicit unlink/link cycles
+per frame. The positive control records one allocation.
+
+| Capacity / followed bodies | Transport median / p99 µs | 8,192 link cycles median / p99 µs |
+| --- | ---: | ---: |
+| 64 / 63 | 2.120 / 2.870 | 182.891 / 193.560 |
+| 1,024 / 1,023 | 26.780 / 31.980 | 148.265 / 156.910 |
+| 8,192 / 8,191 | 213.960 / 220.931 | 147.650 / 156.080 |
+
+All three probes record zero Rust allocations, reallocations, requested bytes and
+fidelity mismatches across every measured frame. No prior Rust attachment
+implementation existed, so these are new-workload measurements with no claimed
+before/after speedup. Native touch logs, installed mixed pickups, live module
+binding and active-client attachment prediction remain open; THE-650 remains
+In Progress. No renderer qualification or installation is claimed for this slice.
+
+Evidence under `THE-650-attachments`: `pinned.json`, capacity-specific reports,
+`c-port-comparison-final/comparison.json` and exact extracted helper source,
+`build-time.json`, `build-time-final.json`, workspace tests, Clippy and unchanged
+checker logs. All three recorded probe PIDs are absent after their normal exits.
+See [body attachments](body-attachments.md) for ownership and invocation details.

@@ -2,6 +2,59 @@ use qa_core::primitives::{ClientId, ModuleId, NativeEntity, PlayerTail, WeaponId
 use qa_session::clients::{Connection, Server};
 
 #[test]
+fn authoritative_attachment_commit_updates_local_remote_and_bot_hot_state() {
+    use qa_core::primitives::{BodyAttachment, BodyFollow, Vec3};
+    use qa_world::area::{LinkFlags, LinkIntent, LinkOrder};
+    let mut server = Server::load(3, 8, 2, 2, 2, 0).unwrap();
+    for connection in [Connection::Local, Connection::Remote, Connection::Bot] {
+        server
+            .connect(connection, ModuleId(1), PlayerTail::None, None)
+            .unwrap();
+    }
+    let root = server.clients[0].entity;
+    let parent = server.clients[1].entity;
+    let child = server.clients[2].entity;
+    server.entities.columns.position[root.slot as usize] = Vec3([10.0, 20.0, 30.0]);
+    for (id, anchor) in [(child, parent), (parent, root)] {
+        server
+            .entities
+            .attach(
+                id,
+                BodyAttachment {
+                    anchor,
+                    follow: BodyFollow::Translation,
+                    offset: Vec3([1.0; 3]),
+                },
+            )
+            .unwrap();
+        assert!(server.area.link(
+            &server.entities,
+            id,
+            LinkFlags::SOLID,
+            LinkOrder::Head,
+            LinkIntent::Explicit
+        ));
+    }
+    let result = server.commit_attachments();
+    assert_eq!((result.moved, result.relinked), (2, 2));
+    assert_eq!(
+        server.clients[1].player.body.position,
+        Vec3([11.0, 21.0, 31.0])
+    );
+    assert_eq!(
+        server.clients[2].player.body.position,
+        Vec3([12.0, 22.0, 32.0])
+    );
+    assert_eq!(
+        server.clients[2].player.body.position,
+        server.entities.columns.position[child.slot as usize]
+    );
+    assert!(server.disconnect(ClientId(1)));
+    assert!(server.entities.attachment(child).is_none());
+    assert_eq!(server.commit_attachments().moved, 0);
+}
+
+#[test]
 fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     let mut server = Server::load(2, 512, 256, 16, 8, 0).unwrap();
     let first = server

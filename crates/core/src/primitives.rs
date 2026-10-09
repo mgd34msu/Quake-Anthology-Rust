@@ -259,6 +259,24 @@ pub struct Body {
     pub maxs: Vec3,
 }
 
+/// Translation-only attachment capabilities; independently chosen by a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyFollow {
+    Translation,
+    /// The local bounds center replaces the supplied offset.
+    Center,
+    BoundsMin,
+}
+
+/// Engine lifetimes stay internal. Native adapters publish the resulting pose,
+/// without adding attachment handles or generations to a legacy protocol.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyAttachment {
+    pub anchor: EntityId,
+    pub follow: BodyFollow,
+    pub offset: Vec3,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bounds {
     pub mins: Vec3,
