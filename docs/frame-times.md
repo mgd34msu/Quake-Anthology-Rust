@@ -3138,3 +3138,55 @@ Evidence directory `THE-949-receive-20261009`: `comparison.json`, extracted
 `original-*.c`/executables, grouped `*-fixture.bin`, `*-original.bin` and
 `*-rust.bin`, `network-receive`, `build.json`, `final-build.log`, `timing.json`,
 `workspace.log`, `clippy.log`, `checker.log` and `committed-source.patch`.
+
+### THE-860 / THE-949 native transmit checkpoint
+
+The same Channel now owns a bounded reliable-record FIFO, one native flight,
+fragment storage and a fixed 1400-byte output packet. The existing core FIFO
+provides indexed reads for batch construction; no second queue implementation
+was added. A prepared packet survives rejected transport admission unchanged.
+Sequence advancement follows successful submission. NetQuake reliable retry
+uses its own last-send clock, separate from unreliable packets, and advances
+fragments only on the matching native ACK. QW/Q2 preserve toggle ACKs and their
+classic next-sequence resend threshold; q2repro uses its current-sequence
+threshold. Q2pro fragment flags retain its existing-flight behavior. Q3 keeps
+1300-byte fragments and an empty final packet for exact multiples.
+
+Native ACK receive processing returns the internal receipts of retired NQ/QW/
+Q2 records; receipts never enter the wire or come from a transmit watermark.
+They are consumed before the next receive. Q3 command reliability still belongs
+to its payload layer: this checkpoint rejects its generic reliable enqueue and
+cannot fabricate a header receipt. Eleven focused tests include queue overflow,
+transport rejection, stale/duplicate ACKs, batched final-ACK retirement, pending
+Q2pro ACKs, offset-width limits and an ACK arriving during a blocked resend.
+
+`tools/check_network_transmit.py` compiles unchanged original send and receive
+functions with cold transport/clock/byte-buffer bindings. Across 1,024 seeded
+transcripts and 16 policy/direction modes, **13,312 operations** match outgoing
+packet bytes and native sequence, reliable-flight and fragment state exactly.
+Queued native message input is assembled by the tooling; NetQuake's next send
+released inside GetMessage is normalized to the shared channel's deferred
+prepare/submission boundary. Rejected transport is covered by Rust fixtures,
+not claimed as original-C equivalence. The unchanged receive comparison still
+matches all 22,528 rows after this extension.
+
+Portable release example rebuild **8.370 seconds**, source4a738aab plus the
+recorded transmit slice, empty RUSTFLAGS, allocation tracking enabled and proof
+disabled. CPU23, 60 warm-up/600 measured frames, 16 mixed sender/receiver peers:
+**4,140 ns median / 4,300 ns p99** for header encoding, prepare/submission,
+ordered receive and NQ/QW/Q2 native ACK receipts. Including warm-up: 33,000
+packets, 10,560 delivered messages, 15,079,680 delivered bytes and 9,240 reliable
+receipts. Calling-thread Rust allocations/reallocations/requested bytes are zero;
+positive control one. No workers, physical transport or game modules are timed.
+The final receive-only ABBA average median/p99 is 1,075/1,150 ns before versus
+1,062.5/1,110 ns after, with identical counts and zero heap on every leg.
+The checker, 628 workspace tests and warning-denied Clippy pass.
+
+Evidence directory `THE-949-transmit-20261009`: `final-native/comparison.json`,
+`final-receive/comparison.json` and their extracted C/fixture/output bytes,
+`network-{transmit,receive}`, `build.json`, `final-build.log`, `timing.json`,
+`final-receive-abba.json`, final workspace/Clippy/checker logs and
+`committed-source.patch`. Earlier pre-boundary receipts are retained separately.
+Q3 command ACK/XOR, native rate/handshake policy, field-table deltas, snapshot
+rings and host/loopback adoption remain open. No install, loss-simulation live
+run, original-client connection or full network acceptance is claimed.

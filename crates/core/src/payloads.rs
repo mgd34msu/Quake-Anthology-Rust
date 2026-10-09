@@ -88,7 +88,14 @@ impl<T: Copy> PayloadQueue<T> {
     }
 
     pub fn front(&self) -> Option<(T, &[u8])> {
-        let slot = self.slots[self.head].as_ref()?;
+        self.get(0)
+    }
+
+    pub fn get(&self, offset: usize) -> Option<(T, &[u8])> {
+        if offset >= self.length {
+            return None;
+        }
+        let slot = self.slots[(self.head + offset) % self.slots.len()].as_ref()?;
         Some((
             slot.header,
             &self.bytes[slot.start..slot.start + slot.length],

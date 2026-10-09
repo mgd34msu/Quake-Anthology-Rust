@@ -7,26 +7,41 @@ use qa_core::{
     sys_events::EventTime,
 };
 
+mod transmit;
+pub use transmit::{Prepared, SendState, TransmitError, Unreliable};
+
 #[derive(Clone, Copy, Debug)]
 pub struct Policy {
     format: Format,
     datagram: bool,
     toggle_ack: bool,
     early_ack: bool,
+    reliable_bias: u32,
+    fragment_payload: usize,
+    fragment_inclusive: bool,
 }
 pub const NETQUAKE: Policy = Policy {
     format: headers::NETQUAKE,
     datagram: true,
     toggle_ack: false,
     early_ack: false,
+    reliable_bias: 0,
+    fragment_payload: 0,
+    fragment_inclusive: false,
 };
-pub const QUAKEWORLD: Policy = q2_old(QPort::Short);
+pub const QUAKEWORLD: Policy = Policy {
+    reliable_bias: 1,
+    ..q2_old(QPort::Short)
+};
 pub const QUAKE2: Policy = QUAKEWORLD;
 pub const QUAKE3: Policy = Policy {
     format: headers::QUAKE3,
     datagram: false,
     toggle_ack: false,
     early_ack: false,
+    reliable_bias: 0,
+    fragment_payload: 1300,
+    fragment_inclusive: true,
 };
 pub const fn q2_old(qport: QPort) -> Policy {
     Policy {
@@ -34,6 +49,9 @@ pub const fn q2_old(qport: QPort) -> Policy {
         datagram: false,
         toggle_ack: true,
         early_ack: false,
+        reliable_bias: 0,
+        fragment_payload: 0,
+        fragment_inclusive: false,
     }
 }
 pub const fn q2_new(qport_present: bool) -> Policy {
@@ -42,6 +60,9 @@ pub const fn q2_new(qport_present: bool) -> Policy {
         datagram: false,
         toggle_ack: true,
         early_ack: true,
+        reliable_bias: 0,
+        fragment_payload: 1300,
+        fragment_inclusive: false,
     }
 }
 
@@ -105,6 +126,7 @@ pub struct Channel {
     counts: Counts,
     assembly: Box<[u8]>,
     controls: PayloadQueue<Header>,
+    transmit: transmit::Transmit,
 }
 
 impl Channel {
@@ -129,6 +151,7 @@ impl Channel {
             counts: Counts::default(),
             assembly: vec![0; maximum_message].into_boxed_slice(),
             controls: PayloadQueue::load(controls, 1).map_err(|_| Error::Capacity)?,
+            transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
         })
     }
 
@@ -152,6 +175,7 @@ impl Channel {
         packet: &'a [u8],
         time: EventTime,
     ) -> Result<Received<'a>, Error> {
+        self.transmit.receipt_count = 0;
         let (header, payload) = match headers::decode(self.policy.format, self.direction, packet) {
             Ok(decoded) => decoded,
             Err(error) => {
@@ -173,6 +197,7 @@ impl Channel {
         // Q2pro observes the toggle before even a rejected/pending fragment.
         if self.policy.early_ack {
             self.state.reliable_acknowledged = header.reliable_ack;
+            self.transmit.ack_toggle(header.reliable_ack);
         }
         let assembled = if let Some(fragment) = header.fragment {
             if header.sequence != self.state.fragment_sequence {
@@ -206,6 +231,9 @@ impl Channel {
             self.state.acknowledged = header.acknowledgement;
             self.state.reliable_acknowledged = header.reliable_ack;
             self.state.reliable_sequence ^= header.reliable;
+            if !self.policy.early_ack {
+                self.transmit.ack_toggle(header.reliable_ack);
+            }
         }
         self.state.last_received = time;
         self.counts.delivered = self.counts.delivered.saturating_add(1);
@@ -257,6 +285,7 @@ impl Channel {
             });
         }
         if header.datagram_flags & datagram::ACK != 0 {
+            self.transmit.ack_datagram(header.sequence);
             return Ok(Received {
                 header,
                 delivery: Delivery::Control,

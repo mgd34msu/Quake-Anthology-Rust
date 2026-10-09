@@ -147,7 +147,7 @@ impl Format {
             QPort::None
         }
     }
-    fn size(self, direction: Direction, fragmented: bool) -> Result<usize, Error> {
+    pub fn size(self, direction: Direction, fragmented: bool) -> Result<usize, Error> {
         let extra = if fragmented {
             match self.fragments {
                 FragmentLayout::None => return Err(Error::Fragment),
