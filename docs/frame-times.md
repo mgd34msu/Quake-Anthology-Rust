@@ -2374,3 +2374,32 @@ rejected extra-indirect-call prototype. Workspace tests, all-target
 allocation-feature Clippy and the unchanged checker pass. Native physics-phase
 callers and installed five-scene acceptance remain open; this headless slice
 does not qualify a gameplay install.
+
+### THE-709 measurement repeatability check
+
+A fresh command verification rebuilt `think_dispatch` and reran all 20 focused
+dispatcher tests successfully. The original `final-abba.json` raw samples
+recompute to the table above. A subsequent unconditioned ABBA run failed the
+sparse 8,192/64 gate: before medians 640/640 ns, after medians 1,080/630 ns,
+so its averages were 640/855 ns. The other two workloads passed. This failed
+run is retained as `hook-stop8-verification.json`; an unconditional repeatability
+claim is withdrawn. The cause of the elevated first sparse B run is unproven.
+
+To check sensitivity to process-start conditions, each A and B process then
+received the same 250 ms CPU-bound preconditioning on CPU 23 before executing
+its binary. No governor or machine setting changed. Each binary still performs
+60 fixture warm-up and 600 measured frames with unchanged callback counts and
+timestamps. Three complete ABBA blocks per workload all passed:
+
+| Capacity / live | Block 1 before / after median ns | Block 2 | Block 3 |
+| --- | ---: | ---: | ---: |
+| 64 / 63 | 610 / 585 | 610 / 585 | 605 / 585 |
+| 8,192 / 64 | 660 / 630 | 655 / 645 | 660 / 635 |
+| 8,192 / 8,191 | 77,042.5 / 73,880 | 77,195 / 74,360 | 77,067.5 / 73,625 |
+
+All 36 processes report matching fixture counts, zero fidelity mismatches,
+zero allocations/reallocations/requested bytes and positive control one.
+`hook-stop8-conditioned-abba.json` retains every run and its preconditioning
+metadata. This supports the headless comparison under those stated conditions;
+it does not establish the cause of the unconditioned variance or qualify live
+gameplay. No engine changes were made during this verification.
