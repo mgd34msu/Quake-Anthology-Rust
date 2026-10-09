@@ -2179,3 +2179,48 @@ Evidence under `THE-650-attachments`: `pinned.json`, capacity-specific reports,
 `build-time.json`, `build-time-final.json`, workspace tests, Clippy and unchanged
 checker logs. All three recorded probe PIDs are absent after their normal exits.
 See [body attachments](body-attachments.md) for ownership and invocation details.
+
+### THE-650: predicted attachment poses
+
+The CLIENT phase now uses the same attachment walk after per-seat movement.
+Its predicted pose view retains computed intermediate-anchor positions in
+load-sized scratch, while the physical world and link lists stay frozen. A full
+FrameHost fixture follows a Q3-movement local anchor with a Q1-movement local
+client through the normal queue, bind, SERVER, snapshot and prediction paths.
+The world fixture also covers an intermediate body without a local pose and a
+remote authoritative anchor. Neither fixture establishes native module gameplay.
+
+The unchanged C-port comparison still matches all 512 cases / 16,384 body rows
+and both transport counts. Checker, 578 workspace tests and allocation-feature
+Clippy pass. Portable release developer probes built in 22.341 s. Pinned core23,
+60 warm-up / 600 measured frames; matched physical transport ABBA comparison
+against 5a2e7517 preserves all workload, move/link, fidelity and allocation counts.
+
+| Capacity | Before / after mean transport median µs | Median change | Before / after mean p99 µs |
+| --- | ---: | ---: | ---: |
+| 64 | 1.675 / 1.780 | +6.269% | 1.745 / 1.830 |
+| 1,024 | 26.560 / 28.455 | +7.135% | 30.480 / 32.620 |
+| 8,192 | 213.245 / 229.195 | +7.480% | 232.730 / 238.390 |
+
+The separate two-client predicted workload measures the new feature, including
+unmapped bodies between the predicted clients:
+
+| Capacity / followed bodies | Prediction median / p99 µs |
+| --- | ---: |
+| 64 / 63 | 0.880 / 0.890 |
+| 1,024 / 1,023 | 13.700 / 17.430 |
+| 8,192 / 8,191 | 109.706 / 116.510 |
+
+Every measured frame has zero Rust allocation/reallocation/requested bytes and
+physical pose/link mismatches. The headless host ABBA workload retains its exact
+fixture counters and zero heap activity: mean median153.225 to151.263µs (-1.281%),
+mean p99242.420 to231.216µs (-4.622%). That host workload has no map geometry;
+it does not measure the new prediction feature or qualify gameplay/installation.
+
+Evidence: `THE-650-attachments/prediction/{physical-abba.json,host-abba.json,
+predicted-*.jsonl,c-port-comparison/comparison.json,workspace-final.log,
+clippy-final.log,checker-final.json,build-time.json,cleanup.json}`. Initial failed
+host fixture logs are retained; its prefilled queue violated the existing source's
+empty-at-intake invariant, and the corrected fixture injects at physical intake.
+Native touch/pickup/module/mover and installed acceptance remain open. This closes
+the headless current-client attachment prediction gap, not those native gates.

@@ -88,6 +88,46 @@ pub struct AreaGrid {
     pub relinks: u64,
     attachment_visited: StampSet,
     attachment_chain: Vec<(EntityId, BodyAttachment)>,
+    attachment_positions: Box<[Vec3]>,
+}
+
+enum AttachmentBodies<'a> {
+    Authoritative(&'a mut EntityTable),
+    Predicted {
+        table: &'a EntityTable,
+        poses: &'a mut [Option<(EntityId, Vec3)>],
+    },
+}
+
+impl AttachmentBodies<'_> {
+    fn table(&self) -> &EntityTable {
+        match self {
+            Self::Authoritative(table) => table,
+            Self::Predicted { table, .. } => table,
+        }
+    }
+
+    fn position(&self, id: EntityId, slot: usize) -> Vec3 {
+        if let Self::Predicted { poses, .. } = self
+            && let Some((_, position)) = poses.iter().flatten().find(|(entity, _)| *entity == id)
+        {
+            return *position;
+        }
+        self.table().columns.position[slot]
+    }
+
+    fn set_position(&mut self, id: EntityId, slot: usize, position: Vec3) {
+        match self {
+            Self::Authoritative(table) => table.columns.position[slot] = position,
+            Self::Predicted { poses, .. } => {
+                if let Some((_, pose)) =
+                    poses.iter_mut().flatten().find(|(entity, _)| *entity == id)
+                {
+                    *pose = position;
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -153,6 +193,7 @@ impl AreaGrid {
             relinks: 0,
             attachment_visited: StampSet::new(capacity),
             attachment_chain: Vec::with_capacity(capacity),
+            attachment_positions: vec![Vec3::default(); capacity].into_boxed_slice(),
         })
     }
 
@@ -307,18 +348,37 @@ impl AreaGrid {
     /// No module callback runs inside this commit, so a slot's lifetime cannot
     /// change while its shared StampSet mark is in use. Attach rejects cycles.
     pub fn transport_attachments(&mut self, table: &mut EntityTable) -> AttachmentTransport {
+        self.transport_attachment_bodies(AttachmentBodies::Authoritative(table))
+    }
+
+    /// Current-command prediction uses the same graph over separately owned
+    /// client poses. Unmapped intermediate anchors keep computed positions in
+    /// load-sized scratch; the physical entity columns and area links stay frozen.
+    pub fn predict_attachments(
+        &mut self,
+        table: &EntityTable,
+        poses: &mut [Option<(EntityId, Vec3)>],
+    ) -> AttachmentTransport {
+        self.transport_attachment_bodies(AttachmentBodies::Predicted { table, poses })
+    }
+
+    fn transport_attachment_bodies(
+        &mut self,
+        mut bodies: AttachmentBodies<'_>,
+    ) -> AttachmentTransport {
         let mut result = AttachmentTransport::default();
-        if table.attachment_count() == 0 {
+        if bodies.table().attachment_count() == 0 {
             return result;
         }
-        if table.capacity() != self.links.len() {
-            result.rejected = table.attachment_count() as u32;
+        if bodies.table().capacity() != self.links.len() {
+            result.rejected = bodies.table().attachment_count() as u32;
             return result;
         }
+        let predicted = matches!(&bodies, AttachmentBodies::Predicted { .. });
         self.attachment_visited.begin();
-        for index in 0..table.attachment_count() {
-            let mut id = table.attachment_at(index);
-            while let Some(follow) = table.attachment(id) {
+        for index in 0..bodies.table().attachment_count() {
+            let mut id = bodies.table().attachment_at(index);
+            while let Some(follow) = bodies.table().attachment(id) {
                 if self.attachment_visited.contains(id.slot as usize) {
                     break;
                 }
@@ -327,14 +387,23 @@ impl AreaGrid {
             }
             while let Some((id, follow)) = self.attachment_chain.pop() {
                 self.attachment_visited.mark(id.slot as usize);
-                let Some(slot) = table.resolve(id) else {
+                let Some(slot) = bodies.table().resolve(id) else {
                     continue;
                 };
-                let Some(anchor) = table.resolve(follow.anchor) else {
+                let Some(anchor) = bodies.table().resolve(follow.anchor) else {
                     continue;
                 };
                 result.visited += 1;
-                let columns = &mut table.columns;
+                let current = bodies.position(id, slot);
+                if predicted {
+                    self.attachment_positions[slot] = current;
+                }
+                let anchor_position = if predicted && self.attachment_visited.contains(anchor) {
+                    self.attachment_positions[anchor]
+                } else {
+                    bodies.position(follow.anchor, anchor)
+                };
+                let columns = &bodies.table().columns;
                 let position = Vec3(std::array::from_fn(|axis| {
                     let offset = match follow.follow {
                         BodyFollow::Translation => follow.offset.0[axis],
@@ -345,14 +414,14 @@ impl AreaGrid {
                             columns.mins[anchor].0[axis] + follow.offset.0[axis]
                         }
                     };
-                    columns.position[anchor].0[axis] + offset
+                    anchor_position.0[axis] + offset
                 }));
                 if !position.0.iter().all(|value| value.is_finite()) {
                     result.rejected += 1;
                     continue;
                 }
                 let unchanged = (0..3).all(|axis| {
-                    let left = columns.position[slot].0[axis];
+                    let left = current.0[axis];
                     let right = position.0[axis];
                     left == right
                         && (left != 0.0 || left.is_sign_negative() == right.is_sign_negative())
@@ -360,11 +429,21 @@ impl AreaGrid {
                 if unchanged {
                     continue;
                 }
-                columns.position[slot] = position;
+                if predicted {
+                    self.attachment_positions[slot] = position;
+                }
+                bodies.set_position(id, slot, position);
                 result.moved += 1;
                 let link = self.links[slot];
-                if link.id == Some(id)
-                    && self.link(table, id, link.flags, link.order, LinkIntent::Explicit)
+                if !predicted
+                    && link.id == Some(id)
+                    && self.link(
+                        bodies.table(),
+                        id,
+                        link.flags,
+                        link.order,
+                        LinkIntent::Explicit,
+                    )
                 {
                     result.relinked += 1;
                 }

@@ -123,7 +123,7 @@ fn compare(input: &str, output: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn timed(capacity: usize) -> Result<(), String> {
+fn timed(capacity: usize, predict: bool) -> Result<(), String> {
     let (mut table, mut grid) = loaded(capacity)?;
     if capacity < 2 {
         return Err("capacity requires an anchor".into());
@@ -174,6 +174,7 @@ fn timed(capacity: usize) -> Result<(), String> {
         return Err("positive control".into());
     }
     let mut transport = [0u64; 600];
+    let mut prediction = [0u64; 600];
     let mut links = [0u64; 600];
     let mut allocated = 0;
     let mut reallocated = 0;
@@ -204,6 +205,30 @@ fn timed(capacity: usize) -> Result<(), String> {
         if grid.transport_attachments(&mut table).moved != 0 {
             return Err("unchanged transport".into());
         }
+        let predicted_elapsed = if predict {
+            let last = table.id_at(capacity - 1).ok_or("last")?;
+            let old_position = table.columns.position[capacity - 1];
+            let old_relinks = grid.relinks;
+            let mut poses = [
+                Some((table.id_at(0).ok_or("root")?, Vec3([frame as f32 + 2.0; 3]))),
+                Some((last, Vec3([-1.0; 3]))),
+            ];
+            let timer = Stopwatch::start();
+            let result = grid.predict_attachments(&table, &mut poses);
+            let elapsed = timer.elapsed().as_nanos() as u64;
+            if result.rejected != 0
+                || result.relinked != 0
+                || result.visited != capacity as u32 - 1
+                || poses[1] != Some((last, old_position + Vec3([1.0; 3])))
+                || table.columns.position[capacity - 1] != old_position
+                || grid.relinks != old_relinks
+            {
+                return Err("predicted chain fidelity".into());
+            }
+            elapsed
+        } else {
+            0
+        };
         let timer = Stopwatch::start();
         for operation in 0..8192 {
             let slot = 1 + operation % (capacity - 1);
@@ -235,6 +260,7 @@ fn timed(capacity: usize) -> Result<(), String> {
         let count = allocations::end_frame();
         if frame >= 60 {
             transport[frame - 60] = elapsed;
+            prediction[frame - 60] = predicted_elapsed;
             links[frame - 60] = link_elapsed;
             allocated += count.allocations;
             reallocated += count.reallocations;
@@ -243,6 +269,7 @@ fn timed(capacity: usize) -> Result<(), String> {
         }
     }
     transport.sort_unstable();
+    prediction.sort_unstable();
     links.sort_unstable();
     let median = |samples: &[u64; 600]| (samples[299] as f64 + samples[300] as f64) * 0.5;
     println!(
@@ -253,6 +280,13 @@ fn timed(capacity: usize) -> Result<(), String> {
         median(&links),
         links[593]
     );
+    if predict {
+        println!(
+            "{{\"scope\":\"headless current-client pose transport over frozen authoritative bodies; no gameplay\",\"capacity\":{capacity},\"warmup\":60,\"measured_frames\":600,\"predicted_clients\":2,\"prediction_median_ns\":{},\"prediction_p99_ns\":{},\"physical_pose_and_link_mismatches\":0,\"rust_allocations\":{allocated},\"rust_reallocations\":{reallocated},\"rust_requested_bytes\":{requested}}}",
+            median(&prediction),
+            prediction[593]
+        );
+    }
     if allocated + reallocated + requested != 0 {
         return Err("hot allocation gate".into());
     }
@@ -263,8 +297,11 @@ fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().collect();
     if args.len() == 4 && args[1] == "--compare" {
         compare(&args[2], &args[3])
-    } else if args.len() == 2 {
-        timed(args[1].parse::<usize>().map_err(|e| e.to_string())?)
+    } else if args.len() == 2 || (args.len() == 3 && args[2] == "--prediction") {
+        timed(
+            args[1].parse::<usize>().map_err(|e| e.to_string())?,
+            args.len() == 3,
+        )
     } else {
         Err("expected capacity or --compare input output".into())
     }

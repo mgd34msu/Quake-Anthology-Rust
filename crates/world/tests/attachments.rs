@@ -269,3 +269,59 @@ fn overflowing_follow_is_scoped_and_mismatched_scratch_cannot_grow_or_panic() {
     let result = smaller.transport_attachments(&mut table);
     assert_eq!((result.visited, result.rejected), (0, 2));
 }
+
+#[test]
+fn predicted_chain_uses_unmapped_intermediate_anchors_and_keeps_physical_state_frozen() {
+    let (mut table, mut grid) = setup(6, 1);
+    let root = spawn(&mut table);
+    let middle = spawn(&mut table);
+    let child = spawn(&mut table);
+    let remote = spawn(&mut table);
+    table.columns.mins[middle.slot as usize] = Vec3([-10.0; 3]);
+    table.columns.maxs[middle.slot as usize] = Vec3([14.0; 3]);
+    table.columns.position[remote.slot as usize] = Vec3([500.0; 3]);
+    table
+        .attach(child, follow(middle, BodyFollow::Center, [99.0; 3]))
+        .unwrap();
+    table
+        .attach(middle, follow(root, BodyFollow::Translation, [1.0; 3]))
+        .unwrap();
+    for id in [root, middle, child] {
+        grid.link(
+            &table,
+            id,
+            LinkFlags::SOLID,
+            LinkOrder::Head,
+            LinkIntent::Explicit,
+        );
+    }
+    let physical = table.columns.position.to_vec();
+    let relinks = grid.relinks;
+    let mut poses = [
+        Some((child, Vec3([-100.0; 3]))),
+        None,
+        Some((root, Vec3([20.0; 3]))),
+    ];
+    let result = grid.predict_attachments(&table, &mut poses);
+    assert_eq!(
+        (
+            result.visited,
+            result.moved,
+            result.relinked,
+            result.rejected
+        ),
+        (2, 2, 0, 0)
+    );
+    assert_eq!(poses[0], Some((child, Vec3([23.0; 3]))));
+    assert_eq!(poses[2], Some((root, Vec3([20.0; 3]))));
+    assert_eq!(&*table.columns.position, &physical);
+    assert_eq!(grid.relinks, relinks);
+    // Root is now remote: use its authoritative position, without old marks.
+    table
+        .attach(middle, follow(remote, BodyFollow::BoundsMin, [2.0; 3]))
+        .unwrap();
+    grid.predict_attachments(&table, &mut poses);
+    assert_eq!(poses[0], Some((child, Vec3([504.0; 3]))));
+    assert_eq!(&*table.columns.position, &physical);
+    assert_eq!(grid.relinks, relinks);
+}

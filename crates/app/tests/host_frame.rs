@@ -152,6 +152,119 @@ fn host() -> FrameHost {
 }
 
 #[test]
+fn client_frame_transports_followers_over_predicted_anchors_without_relinking_world() {
+    use qa_app::{WorldCollision, client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::primitives::{BodyAttachment, BodyFollow, Bounds, Plane, SurfaceFlags, Vec3};
+    use qa_world::collision::{
+        Contents,
+        brushes::{Brush, BrushTree},
+    };
+    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    let geometry = runtime
+        .geometry
+        .load_brushes(
+            vec![Plane {
+                normal: Vec3([0.0, 0.0, 1.0]),
+                distance: 0.0,
+                axis: None,
+            }],
+            vec![Brush {
+                first_plane: 0,
+                plane_count: 1,
+                contents: Contents::SOLID,
+            }],
+            vec![SurfaceFlags(0)],
+            BrushTree::direct(1).unwrap(),
+            vec![Bounds {
+                mins: Vec3([-131072.0; 3]),
+                maxs: Vec3([131072.0; 3]),
+            }],
+        )
+        .unwrap();
+    runtime.collision = Some(WorldCollision {
+        geometry,
+        index: 0,
+        scratch: runtime.geometry.scratch(),
+    });
+    let mut local = [None; SeatId::COUNT];
+    for (seat, rules, y) in [
+        (SeatId::FIRST, RuleSetId::Quake3, 0.0),
+        (SeatId::new(1).unwrap(), RuleSetId::Quake, 128.0),
+    ] {
+        let policy =
+            ClientPolicy::select(Some(rules), None, Some(rules), Some(RuleSetId::Quake3)).unwrap();
+        let client = runtime
+            .connect_local(
+                seat,
+                SpawnAnchor {
+                    position: Vec3([0.0, y, 24.125]),
+                    angles: Vec3::default(),
+                    entity: seat.index() + 1,
+                    fixture_fallback: false,
+                },
+                policy,
+            )
+            .unwrap();
+        runtime.server.clients[client.0 as usize]
+            .player
+            .movement
+            .grounded = true;
+        local[seat.index()] = Some(client);
+    }
+    let root = runtime.server.clients[0].entity;
+    let child = runtime.server.clients[1].entity;
+    runtime
+        .server
+        .entities
+        .attach(
+            child,
+            BodyAttachment {
+                anchor: root,
+                follow: BodyFollow::Translation,
+                offset: Vec3([0.0, 128.0, 0.0]),
+            },
+        )
+        .unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    console
+        .append_line("bind w +forward", Context::default())
+        .unwrap();
+    let mut host = FrameHost::load(console, runtime, TickRate::FrameDriven, vec![]).unwrap();
+    host.local_clients = local;
+    // The source's queued-key fixture injects at the first physical intake.
+    let mut source = Source {
+        time: 0,
+        waits: 2,
+        polls: 0,
+        presents: 0,
+        late_commands: false,
+        wait_key: true,
+    };
+    for ms in [0, 16, 32] {
+        source.time = ms;
+        let result = host.frame(&mut source, true);
+        assert_eq!(result.drains, 2);
+        let predicted_root = host.runtime.prediction[0].player.body.position;
+        assert_eq!(
+            host.runtime.prediction[1].player.body.position,
+            predicted_root + Vec3([0.0, 128.0, 0.0])
+        );
+        assert_eq!(
+            host.runtime.server.entities.columns.position[child.slot as usize],
+            host.runtime.server.clients[0].player.body.position + Vec3([0.0, 128.0, 0.0])
+        );
+    }
+    assert!(
+        host.runtime.prediction[0].player.body.position.0[0]
+            > host.runtime.server.clients[0].player.body.position.0[0]
+    );
+    assert_eq!(
+        host.runtime.prediction[1].player.movement_rules,
+        RuleSetId::Quake
+    );
+}
+
+#[test]
 fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     let mut host = host();
     let id = host

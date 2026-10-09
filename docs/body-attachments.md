@@ -31,9 +31,12 @@ updates, then synchronizes attached local, remote and bot client body state befo
 snapshot copying. Native providers can use the same commit entry at their own
 body-commit phase. Attachment handles never become protocol entity numbers:
 legacy adapters publish the resulting native pose using their existing fields.
-Native module binding, touch callbacks, live mover integration and prediction of
-an actively followed client remain open. This slice supplies no client attachment
-prediction algorithm and does not establish a universal native physics phase.
+CLIENT passes its separately owned predicted poses through that same attachment
+walk after per-seat movement. Unmapped intermediate anchors use load-sized
+position scratch; authoritative columns and area links stay frozen. This has
+headless world and full host coverage, including a Q1 follower with a Q3 anchor.
+Native module binding, touch callbacks and live mover/client integration remain
+open. This does not establish a universal native physics phase.
 
 Developer comparison:
 
@@ -44,6 +47,8 @@ python3 tools/compare_attachments.py --c-port "$C_REFERENCE" \
   --binary target/release/examples/body_attachments --evidence "$EVIDENCE"
 timeout 300 taskset -c "$PINNED_CPU" \
   target/release/examples/body_attachments 8192
+timeout 300 taskset -c "$PINNED_CPU" \
+  target/release/examples/body_attachments 8192 --prediction
 ```
 
 The comparison extracts unchanged attachment and transport functions from the
@@ -53,4 +58,6 @@ field access or touch callbacks. The release probe uses a reverse-inserted chain
 all three modes, mixed native insertion rules and 8,192 link/unlink cycles per
 frame. Its allocation gate includes stable second transports, detach/reattach and
 fidelity checks; its reported stage times cover transport and link cycles only.
+The optional prediction workload measures two client poses over the same chain
+and verifies frozen authoritative positions and link state.
 See [frame times](frame-times.md) for the measured scope and limits.

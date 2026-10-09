@@ -480,6 +480,27 @@ impl FrameHost {
                 }
             }
         }
+        if self.runtime.collision.is_some() {
+            let mut predicted_poses = std::array::from_fn::<_, { SeatId::COUNT }, _>(|seat| {
+                let client = self.local_clients[seat]?;
+                let client = &self.runtime.server.clients[client.0 as usize];
+                client.connection.map(|_| {
+                    (
+                        client.entity,
+                        self.runtime.prediction[seat].player.body.position,
+                    )
+                })
+            });
+            self.runtime
+                .server
+                .area
+                .predict_attachments(&self.runtime.server.entities, &mut predicted_poses);
+            for (seat, pose) in predicted_poses.iter().enumerate() {
+                if let Some((_, position)) = pose {
+                    self.runtime.prediction[seat].player.body.position = *position;
+                }
+            }
+        }
         self.runtime.targets.refresh(
             &mut self.runtime.server.entities,
             &self.runtime.catalog.names,
