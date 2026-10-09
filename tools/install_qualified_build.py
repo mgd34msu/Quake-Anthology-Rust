@@ -54,7 +54,7 @@ def qualify_smoke(build, profile, evidence, content, movement=False):
                          "--startup-hold-ms", "1500"]
             if movement:
                 arguments += ["+set", "developer", "1", "+set", "com_maxfps", "85",
-                              "+set", "r_swapInterval", "0", "+bind", "UpArrow", "+forward"]
+                              "+set", "r_swapInterval", "0", "--commands", "bind UPARROW +forward"]
             else:
                 arguments += ["--uncapped"]
             current, result = qualify(build, profile, folder, arguments,
