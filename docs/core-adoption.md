@@ -32,6 +32,25 @@ the audited tree; the core aggregate deletion shifts later primitives.rs lines.
 No new checker rule or primitive-use tool was introduced. The existing checker
 is unchanged.
 
+## Event-system ownership and adoption
+
+| Issues | One implementation and migrated callers | Remaining bypass / deferred consumer |
+| --- | --- | --- |
+| THE-859 | `core/src/sys_events.rs:119` owns SysEventQueue; platform/EventPump alone collects SDL/stdin/UDP and time; `app/src/host.rs:344` dispatches input, console lines and packets. SysEventQueue and Loopback share `core/src/payloads.rs:18` storage. | No current physical-input/clock/socket bypass found. `app/src/host.rs:524` is still a no-op character editing target; console front-end editing is not implemented. Native/installed multiple-seat/device proof remains THE-3169. |
+| THE-884 | `app/src/host.rs:190` owns Com_Frame; physical polls are only at `:213` and `:285`, each followed by drain and command execution. `session/src/timing.rs:97` schedules world/provider clocks independently. Cap waits collect no input. | `app/src/main.rs:401` still loads no native providers. Native phase-order logs remain THE-3169. |
+| THE-885/THE-2869 | `core/src/loopback.rs:43` owns per-client/per-direction bounded byte FIFOs. `:116` transfers in endpoint/send order into SysEventQueue; `app/src/host.rs:401` consumes queued memory through ordinary Packet dispatch. Full never overwrites. | No old overwrite transport or host direct receive loop remains. `app/src/host.rs:447` is a direct local command submission pending original per-client protocol framing; native signon/channel adoption is retained on THE-3169/THE-860. |
+| THE-887 | `console/src/command_buffer.rs:13` is the single fixed command buffer; `console/src/commands.rs:222` borrows tokenizer argv; `:254` bare cvar write takes argv1. Platform ConsoleLine, binds and EngineServices append into that buffer. | No second current command buffer/tokenizer path found. Installed alias/wait/vstr/macro runs remain THE-3169. |
+| THE-888 | `input/src/lib.rs:528` dispatches queue events into per-seat bindings; `console/src/commands.rs:295` bind parsing and button commands use those same tables. Held-source reuse leaves original press time intact. | No alternate current bind/hold implementation found. Real-button installed gameplay remains THE-3169. |
+| THE-889 | `input/src/command.rs:9` owns UserCmdBuilder; `input/src/lib.rs:915` handles human intents, `session/src/clients.rs:210` builds bots in SERVER ticks. Rule data selects native scaling/narrowing; `network/src/commands.rs` owns protocol/ABI projection values. | No second current human/bot builder found. Guest ideal-pitch updates and original native channel delivery remain THE-3169. |
+| THE-697/THE-890 | `core/src/events.rs:83` owns the one ring, payload leases and per-client/module cursors; Server allocates it; app/output uses it once per CLIENT/quit frame. Module output consumes its own cursor at native ticks. `:383` accepts actual native ACK receipts, never a send watermark. | No destructive-drain ring, shared publication wait or frame-reset text ownership remains. `app/src/output.rs:123` still awaits the real native submission/ACK adapter; stock audio/particle/HUD consumers remain deferred. |
+
+The shared `session/src/events.rs` consumer helper also uses EventRing's
+batch/submit API; it has no queue, text store or independent retirement rule.
+Current examples and tests exercise either those primitives or app/FrameHost.
+Raw character delivery is tested in the input fixture, but an editable console
+UI is not claimed. Native wire framing was not replaced by a private invented
+protocol to hide the pending direct-submit site.
+
 ## Evidence and limits
 
 Fresh release probes and original-C comparisons are in the developer cache
@@ -46,7 +65,7 @@ The deferred native-path sites are concrete:
 * `app/src/main.rs:401` constructs the host with no native providers.
 * `app/src/host.rs:447` directly submits local usercmds until the original
   per-client protocol/channel exists; no invented local wire format was added.
-* `network/src/ingress.rs:9` PacketReceiver currently validates/counts ingress,
+* `network/src/ingress.rs:14` PacketReceiver currently counts ingress,
   without native handshake, channel or snapshot decoding.
 * `app/src/output.rs:123` requests remote submission through FrameSource; the
   actual protocol ACK/submission adapter remains THE-860/THE-3169.

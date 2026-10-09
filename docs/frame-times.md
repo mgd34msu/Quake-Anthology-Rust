@@ -2662,12 +2662,12 @@ timing arithmetic, or native callback widths change. This is dead API removal,
 not a claimed performance optimization. THE-3169 under THE-863 retains native
 module and installed acceptance for the primitive/event issues.
 
-Fresh main230ac80c plus this deletion passes the unchanged checker, 601 workspace
+Fresh main 230 ac 80 c plus this deletion passes the unchanged checker, 601 workspace
 all-target tests and tracked Clippy. Portable tracked release examples built in
-37.221 seconds. CPU23, no debugger, 60 warm-up/600 measured frames, A/B/B/A
+37.221 seconds. CPU 23, no debugger, 60 warm-up / 600 measured frames, A/B/B/A
 against copies of the pre-deletion release probes:
 
-| Workload | Before / after mean median ns | Before / after mean p99 ns | Median change |
+| Workload | Before / after mean median ns | Before / after mean p 99 ns | Median change |
 | --- | ---: | ---: | ---: |
 | entities | 800 / 790 | 1075 / 885 | -1.250% |
 | think-dense | 75835 / 75545 | 93560.5 / 89240 | -0.382% |
@@ -2685,11 +2685,11 @@ The linked-hit merge and transformed-model comparisons pass for all three caller
 rules, including their byte/field mutation controls. Kernel/model comparisons
 are geometry fixtures; they do not prove installed native scene trace logs.
 
-The current client probe exercises 512 rows and 600 reconnects of ClientId511,
+The current client probe exercises 512 rows and 600 reconnects of ClientId 511,
 with stable inventory storage and zero heap activity. The HUD probe checks
-checksum892087680; the sparse entity probe checks38,400 ordered callbacks and
-zero unnamed target refreshes at capacities128,1024,8192. Shared attachment
-transport moves4,914,600 bodies and performs8,192 link/unlink cycles per measured
+checksum 892087680; the sparse entity probe checks 38,400 ordered callbacks and
+zero unnamed target refreshes at capacities 128,1024,8192. Shared attachment
+transport moves 4,914,600 bodies and performs 8,192 link/unlink cycles per measured
 frame with unchanged pose/link fixtures and zero heap counts. Core's safe scratch
 probe counts its allocation/reallocation positive controls and zero measured
 heap calls. These are instrumented calling-thread results, without workers,
@@ -2702,3 +2702,50 @@ raw probe logs. `primitive-checks.json` retains one rejected invocation of a
 nonexistent target_reference example; `primitive-checks-corrected.json` records
 the corrected target_native build and successful comparisons. See
 [core-adoption.md](core-adoption.md) for current callers and deferred bypasses.
+
+### Event-system engine acceptance refresh
+
+The same CPU 23 portable tracked examples use 60 warm-up and 600 measured frames.
+These current-run medians/p 99 are bounded fixture measurements, not new speedup
+comparisons or installed gameplay timings:
+
+| Workload | Median ns | p 99 ns |
+| --- | ---: | ---: |
+| Queue/seat dispatch plus loopback UDP | 1,990 | 2,050 |
+| Four-client FIFO,8 KB/64 KB payloads, counted Full | 7,240 | 8,750 |
+|64 mixed-rule human/bot intents | 1,490 | 1,550 |
+| Com_Frame, reliable stalled peer plus healthy peer | 2,270 | 2,810 |
+| Com_Frame, unsent stalled peer plus healthy peer | 2,270 | 2,820 |
+| Com_Frame, bind/alias/console/bot/local packets/output | 185,145 | 315,651 |
+
+Every measured probe counts zero instrumented calling-thread Rust heap and
+validates its positive control. The host has two drains and one output pass per
+frame,1,396 packets,659 repeats,12,288 measured bot commands, and provider/world
+counters[210,105,421,210]. These repeats are synthetic headless events; real X
+repeat evidence remains in the earlier private receipts and deferred installed
+acceptance. The event/UDP probe delivers 660 packets and 660 characters. FIFO
+checks 107,448,000 payload bytes,8 messages and 4 Full responses per fixture frame.
+
+Both stalled-peer host cases retain continuous healthy/server progress through
+all 600 measured frames:2,304 healthy deliveries,1,650 SERVER/provider ticks,
+module deliveries[2292,2300,2304],zero stale text or healthy overflow. The stalled
+consumer receives no ACK, enters exactly one bounded resync, cancels 32 retained
+records and skips 2,272 while resyncing. Reliable and unsent cases are separate;
+real native channel receipts are not exercised. Disconnecting the HUD does not
+invalidate the slower module's retained payload.
+
+Fresh unchanged original tokenizer/separator comparisons match 10,060 records
+across Q 1/QW/Q 2/Q 3. Native key-name/hold comparison matches 364 canonical key
+cases and 10,000 frames, including 31,005 two-key holds. Existing workspace tests
+cover bare cvar argv 1, command priority, aliases, overflow atomicity, button
+release/focus loss, startup duration, two physical polls, native millisecond cap
+boundaries and per-client loopback backpressure. An isolated planted
+Instant::now outside platform is rejected by the unchanged checker; its clean
+baseline passes. No new checker rule was added.
+
+Evidence: `core-priority-20261009/final-probes.json`, `final-{host,output,
+system-events,loopback,usercmd}.log`, `console-comparison/`, `bind-comparison/`,
+and `clock-fixture.json`. Native signon, exact legacy channel framing, real ACKs,
+stock HUD/audio/effects and installed walks are consolidated in THE-3169 under
+THE-863. The explicit character editing and direct local command submission
+sites are listed in [core-adoption.md](core-adoption.md).
