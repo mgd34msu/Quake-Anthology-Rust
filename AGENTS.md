@@ -20,6 +20,13 @@ Private displays and captured private audio only. Stop recorded owned PIDs only.
 Install into qfiles/qa-rust only through the qualified installer after an exact
 candidate run using a fresh copy of the owner's saved profile reaches gameplay
 and quits normally. Preserve the original profile. R0 windows are not gameplay.
+Owner decision THE-2882 (2026-10-08 19:1x): the exact qa-rust-preview destination
+may receive a clean normal render preview after copied-profile private GL/CPU
+runs of e1m1, base1 and q3dm1 quit normally. The installer writes the adjacent
+qa-rust-preview.txt with commit, build time, supported maps/backends, limits and
+run examples. Preview receipts explicitly have no gameplay/timing qualification;
+later previews replace only that destination and notes. qa-rust keeps both its
+gameplay and comparable measured gameplay timing gates.
 
 ## Workspace
 

@@ -10,6 +10,7 @@ jobs:
           components: clippy, rustfmt
       - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
       - run: python3 tools/build.py --check-only
+      - run: python3 -m unittest discover -s tools/tests
       - run: python3 tools/verify_rules.py --evidence "$RUNNER_TEMP/rule-fixtures"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
