@@ -8,6 +8,15 @@ those extensions are cancelled. Keep the existing checker unchanged. The
 supervisor audits remaining bypasses and sends corrections. Owner playtest
 fatals still preempt. Never set Linear issues Done; submit proved work for review.
 
+Owner priority, 2026-10-09 11:0x: stop THE-863/796/2563/2575 after the verified
+native-loader step; retain unfinished ELF work on its pushed WIP branch. Finish
+THE-611, 617, 625, 650, 656, 702, 709, 2884 and 2875, then THE-859, 884,
+885/2869, 887/888, 889 and 697/890. Engine-level acceptance covers complete
+implementation, all existing callers migrated, old copies deleted, tests and
+pinned timings. Deferred native-module and installed acceptance is consolidated
+under THE-863 in THE-3169. Report remaining bypass sites with file and line;
+do not silently turn deferred native integration into an engine completion claim.
+
 Linear project Quake-Rust, P-THE-3, team The Artificery, is the source of truth.
 The owner rules and working protocol apply. Set issues In Progress when starting,
 put THE ids in commit subjects, and leave completed work In Review with evidence.
@@ -150,8 +159,9 @@ type selects rules per role: movement, damage, link order, tick rate and trace;
 client module rules, never map format, choose tick rate and insertion order.
 Then THE-2872/THE-2865 supplies one job dispatcher and automatic raster bands,
 THE-889, interned NameIds for renderer material/image caches and folded cvar/
-command lookup, THE-2869, then THE-859 and THE-697/890. The shared StampSet and
-THE-892 duplicate checker apply to collision, visibility and GL sky marking.
+command lookup, THE-2869, then THE-859 and THE-697/890. The shared StampSet
+applies to collision, visibility and GL sky marking; checker extensions were
+cancelled by the owner.
 Unfinished R1 work remains required. THE-862 q3dm1 speed work stays paused.
 Earlier structural commits do not satisfy live acceptance criteria by themselves.
 R1 issues with live acceptance criteria remain In Progress for integration at
@@ -190,7 +200,8 @@ or simplicity. Preserve observable native ordering and arithmetic without
 copying recursive stacks, global mutable scratch or per-game capability code.
 
 Every primitive has exactly one implementation. When it replaces an old copy,
-delete that copy in the same slice and extend the duplicate checker. Collision,
+delete that copy in the same slice. Do not extend the checker for primitive use
+or duplicates; the supervisor audits adoption. Collision,
 visibility, GL sky marking and surface-cache pins use the one core StampSet.
 The checker rejects duplicate public core types and renamed epoch-mark loops
 in production, examples and tests. Core forbids unsafe

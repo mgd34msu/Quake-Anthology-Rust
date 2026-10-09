@@ -212,12 +212,6 @@ pub enum ThinkTime {
     Milliseconds(i64),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Think {
-    pub at: Option<ThinkTime>,
-    pub callback: Option<CallbackId>,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum CallbackCall {
     Think {
@@ -297,13 +291,6 @@ impl Bounds {
             self.mins.0[axis] <= other.maxs.0[axis] && self.maxs.0[axis] >= other.mins.0[axis]
         })
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct Entity {
-    pub id: EntityId,
-    pub body: Body,
-    pub next_think: Option<Think>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -2652,3 +2652,53 @@ full private renderer qualification was repeated for this unused cold reader.
 The separately accepted installed development build remains `a1d32b8c`;
 its six private map/backend smoke runs are in
 `~/.cache/qa-rust/THE-863-install-20261009/smoke-installed/`.
+
+## Core-first engine acceptance refresh (2026-10-09)
+
+THE-611/THE-709/THE-2875 delete the unused core Entity/Think aggregates.
+EntityTable's SoA columns remain the only entity/think storage; the null-think
+fixture now writes those columns directly. No production execution, wire fields,
+timing arithmetic, or native callback widths change. This is dead API removal,
+not a claimed performance optimization. THE-3169 under THE-863 retains native
+module and installed acceptance for the primitive/event issues.
+
+Fresh main230ac80c plus this deletion passes the unchanged checker, 601 workspace
+all-target tests and tracked Clippy. Portable tracked release examples built in
+37.221 seconds. CPU23, no debugger, 60 warm-up/600 measured frames, A/B/B/A
+against copies of the pre-deletion release probes:
+
+| Workload | Before / after mean median ns | Before / after mean p99 ns | Median change |
+| --- | ---: | ---: | ---: |
+| entities | 800 / 790 | 1075 / 885 | -1.250% |
+| think-dense | 75835 / 75545 | 93560.5 / 89240 | -0.382% |
+| names | 11125 / 11145 | 15870.5 / 16200 | +0.180% |
+| hud | 8455 / 8712.5 | 12665 / 13580 | +3.046% |
+
+All non-timing receipt fields match in each ABBA workload, including fixture
+counts/order, timestamps, checksums, exact-name identity, cache reuse and
+allocation controls. Every measured allocation/reallocation/byte field is zero.
+These small positive/negative timing changes are recorded; no speedup is claimed.
+
+Fresh original-C comparison tools pass 27,367 lifetime rows, 12,712 target rows
+and 13,390 think rows. Their reports retain their native-width and fixture limits.
+The linked-hit merge and transformed-model comparisons pass for all three caller
+rules, including their byte/field mutation controls. Kernel/model comparisons
+are geometry fixtures; they do not prove installed native scene trace logs.
+
+The current client probe exercises 512 rows and 600 reconnects of ClientId511,
+with stable inventory storage and zero heap activity. The HUD probe checks
+checksum892087680; the sparse entity probe checks38,400 ordered callbacks and
+zero unnamed target refreshes at capacities128,1024,8192. Shared attachment
+transport moves4,914,600 bodies and performs8,192 link/unlink cycles per measured
+frame with unchanged pose/link fixtures and zero heap counts. Core's safe scratch
+probe counts its allocation/reallocation positive controls and zero measured
+heap calls. These are instrumented calling-thread results, without workers,
+foreign heaps, native modules, live touch callbacks or game audio.
+
+Evidence: developer cache `core-priority-20261009/`, including
+`post-delete-checks.json`, `final-probes.json`, `lifetimes/verification.json`,
+`targets/report.json`, `thinks/report.json`, `merge/result.json`, `models/`, and
+raw probe logs. `primitive-checks.json` retains one rejected invocation of a
+nonexistent target_reference example; `primitive-checks-corrected.json` records
+the corrected target_native build and successful comparisons. See
+[core-adoption.md](core-adoption.md) for current callers and deferred bypasses.

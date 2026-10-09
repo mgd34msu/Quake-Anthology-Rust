@@ -1,53 +1,56 @@
-# Core adoption and native acceptance
+# Core adoption and deferred native acceptance
 
-Checked after d79e5660 on 2026-10-09. The following slices are committed and
-pushed, with their matched timings and bounded proof in [frame-times.md](frame-times.md):
+The owner 2026-10-09 11:0x ruling separates engine acceptance from native-module
+and installed acceptance. THE-3169 is the one deferred item under THE-863. It
+retains the original live requirements; no render smoke or headless fixture
+counts as gameplay. The engine audit below covers current Rust callers, including
+examples and tests, rather than future gameplay modules.
 
-| Slice | Change | Removed paths |
+Verified native-reader main was `230ac80c`. Unfinished ELF work is pushed on
+`wip/THE-2575-2026-10-09` at `2db27ef9`; that lane is stopped. The accepted
+installed `qfiles/qa-rust` is `a1d32b8c`, built 2026-10-09T15:26:36Z in 38.94 s.
+Its private three-map CPU/GL smoke passed; native hosts, delta channel, stock HUD
+and gameplay remain absent. The earlier statement that no install occurred is
+superseded by that owner's explicit smoke-install authorization.
+
+## Primitive ownership and adoption
+
+| Issue | One implementation and current callers | Removed copies / remaining sites |
 | --- | --- | --- |
-| THE-656/702 ee5cb1ff | App chooses its client capacity at load; all loader callers moved | One implicit-64 app loader |
-| THE-617 a696f10c | Converted cvar names use load-interned NameIds | Two cvar-name string comparisons |
-| THE-3165/THE-711 d79e5660 | Renderer uses core vector operators/math | Eleven copied helpers |
+| THE-611 | `world/src/entities.rs:269` EntityTable owns generations and hot columns; `session/src/clients.rs:79` creates it; `compat/src/services.rs:266` allocates and `:275` releases through it; area, targets and trace borrow it | Removed unused core Entity aggregate and Think aggregate; the remaining test uses actual SoA columns. No alternate current entity store found. Native spawn/free adapters remain THE-3169. |
+| THE-617 | `core/src/names.rs:49` NameTable owns exact bytes and cached folded groups; `world/src/targets.rs:68` updates the index; `console/src/cvars.rs:129` and commands use that implementation; `render/src/assets.rs:317` interns paths and image/material keys retain NameIds | Earlier NameIndex/hash and duplicated renderer canonicalisation are deleted. No alternate name-index or renderer cache-key implementation found. Shader parsing/VFS native path grammar is load/boundary work, not a second name identity. Native target callbacks remain THE-3169. |
+| THE-625 | `world/src/collision/scene.rs:47` WorldTrace clips world plus linked bodies; `session/src/clients.rs:251`, `app/src/host.rs:452`, and `compat/src/services.rs:210` call it. CollisionStore alone owns loaded hull/brush models. | No current production caller skips linked collision by calling a kernel directly. Kernel examples intentionally compare their specified geometry-only scope. Native cgame/QuakeC collision adapters remain THE-3169. |
+| THE-650 | `world/src/area.rs:224` link distinguishes Explicit from Commit; `session/src/clients.rs:267` commits movement through it; `compat/src/services.rs:247` makes explicit links; shared attachment transport serves SERVER and prediction | No second current link/query/attachment implementation found. Link order and model bounds are entity-role data; module touch callbacks and native pickup scenes remain THE-3169. |
+| THE-656 | `session/src/clients.rs:36` Server owns the one load-sized client array, each row containing core PlayerState; app Runtime chooses capacity. Prediction copies hot fields into the same type, not an alternate native player store. | The implicit-64 app loader is deleted. No per-game player-state copy found. `app/src/host.rs:447` still directly submits built local commands pending THE-860 native framing; this deferred bypass is tracked on THE-3169. |
+| THE-702 | `ui/src/hud.rs:46` projects PlayerState into core HudState; `app/src/host.rs:513` updates every connected row; `app/src/output.rs:103` feeds print events into the same HUD and leases | No per-game HUD-state copy found. Stock Q1 sbar, Q2 layouts and Q3 cgame consumers do not exist yet; these are explicitly deferred consumers under THE-3169, not proved drawing. |
+| THE-709 | `session/src/dispatch.rs:276` runs a spawn-bound numeric entry with native timing data; `:335` scans EntityTable's live bitset. Original-C probes and all current think callers use it. | Old Think aggregate is deleted; no alternate dispatcher found. Native physics-phase callers are absent: `app/src/main.rs:401` supplies no module providers. Integrating those callers remains THE-3169. |
+| THE-2884 | `core/src/primitives.rs:345` RuleSetId is the sole five-value rule identity; client_policy selects client, movement and trace independently; movement, console, damage and scheduling consume it | MovementRules, console Source and ThinkTiming identities are deleted. Renderer texture Source enums describe resources, not game identities. Native role composition remains THE-3169. |
+| THE-2875 | `world/src/entities.rs:277` free_bits is the sole liveness record; active/think walks use it; named changes alone update TargetIndex. Core forbids unsafe code. | FrameArena, its test/use and the separate live bool array are deleted. Unnamed churn produces zero target refreshes in the measured fixture. Retail think/touch and rocket/nail scenes remain THE-3169. |
 
-The latest workspace has 582 passing all-target tests; the unchanged checker,
-tracked Clippy, original-C comparisons and allocation gates pass. This is
-bounded evidence for those slices, not a claim that every bypass is absent.
-No new primitive-use checker was added.
+File references in this table are relative to `crates/`. Line numbers describe
+the audited tree; the core aggregate deletion shifts later primitives.rs lines.
+No new checker rule or primitive-use tool was introduced. The existing checker
+is unchanged.
 
-Current player/HUD ownership is in `session::Server::clients`: one load-sized
-array, each row holding core PlayerState and HudState. The host's CLIENT phase
-projects every connected client through the shared HudBindings; output dispatch
-uses the same HUD and text leases. No stock HUD drawer is implemented yet.
-THE-702 still needs its Q1 sbar consumer, and THE-656 still needs installed play.
+## Evidence and limits
 
-THE-859's retained candidate receipts cover six CPU/GL three-map split-seat
-walks plus two base1 Q1+Q3 runs, with real X repeat and independent keyboard and
-pointer phases. They belong to clean normal candidate3b85f115, not current main
-or an installed qa-rust. Native gameplay qualification remains open.
+Fresh release probes and original-C comparisons are in the developer cache
+`core-priority-20261009/`, with commands, exit codes and build times. Pinned
+CPU23 probes use 60 warm-up and 600 measured frames; each checks its stated
+fixture outputs and Rust calling-thread allocation gate. See
+[frame-times.md](frame-times.md) for measured scopes and results. These checks
+exclude native modules, foreign heaps, game audio and installed gameplay.
 
-The remaining original acceptance gates have these concrete dependencies:
+The deferred native-path sites are concrete:
 
-* `compat/src/lib.rs` contains no module host or EngineServices implementation
-  (THE-863 and its ABI-host issues). Main constructs FrameHost with an empty
-  provider list and explicitly reports gameplay=false and native entity count0.
-  THE-884 cannot produce original game phase logs or combined native providers.
-* `app/src/host.rs` still calls Server::submit_command directly for local seats.
-  `network::PacketReceiver` counts incoming payloads; native channel framing is
-  absent (THE-860). THE-885/2869 therefore cannot prove that every local native
-  message takes the shared loopback/event/channel route. A second invented local
-  wire format would not satisfy legacy protocol requirements.
-* `tools/install_qualified_build.py` requires actual gameplay before replacing
-  qa-rust. Current candidates cannot meet that gate, so THE-859/887/888 cannot
-  complete their installed acceptance. The preview exception does not qualify
-  those gates. No install or gate waiver has occurred.
+* `app/src/main.rs:401` constructs the host with no native providers.
+* `app/src/host.rs:447` directly submits local usercmds until the original
+  per-client protocol/channel exists; no invented local wire format was added.
+* `network/src/ingress.rs:9` PacketReceiver currently validates/counts ingress,
+  without native handshake, channel or snapshot decoding.
+* `app/src/output.rs:123` requests remote submission through FrameSource; the
+  actual protocol ACK/submission adapter remains THE-860/THE-3169.
+* `ui/src/hud.rs:46` implements projection, with stock layout drawing deferred.
 
-THE-656/702/617/859/884/885/887/888 remain In Progress for their native/installed
-criteria; THE-3165 is In Review for its recorded math-adoption criteria. No issue
-was set Done. Native host/HUD/channel integration must precede the outstanding
-installed proofs; its placement in the core-first order is pending owner direction.
-
-Evidence: `~/.cache/qa-rust/core-order-20261009/adoption-and-gates.json` and
-`historical-walk-receipts.json`, plus the per-slice evidence recorded in
-frame-times.md. The four current math CPU runs' twelve recorded owned PIDs are
-confirmed absent in THE-3165's `cleanup-confirmation.json`. Working-tree state,
-remote main and issue/comment writes are checked separately after reporting.
+Engine review and native acceptance are separate. Linear remains the source of
+truth; the supervisor closes reviewed engine scopes. Agents never set Done.

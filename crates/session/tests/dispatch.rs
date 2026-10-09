@@ -204,12 +204,8 @@ fn missing_modules_do_not_inherit_quake_timing_and_bad_functions_are_scoped() {
 fn null_callback_clears_only_the_due_deadline() {
     let mut world = world(4);
     let id = entity(&mut world, 1);
-    let think = Think {
-        at: Some(ThinkTime::Seconds(1.0)),
-        callback: None,
-    };
-    world.entities.columns.next_think[id.slot as usize] = think.at;
-    set_function(&mut world, id.slot as usize, think.callback);
+    world.entities.columns.next_think[id.slot as usize] = Some(ThinkTime::Seconds(1.0));
+    set_function(&mut world, id.slot as usize, None);
     let table = table(RuleSetId::Quake2);
     install(&mut world, &table);
     let result = run_think(&mut world, &table, id, |_| frame(1.0, 0.0));
