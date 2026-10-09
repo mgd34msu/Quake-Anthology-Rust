@@ -2062,3 +2062,19 @@ order/comparison.json, targets-native/report.json, cvar-cells/comparison.json,
 cvar-views/comparison.json, tests.log, clippy.log and rules.json. No gameplay
 installation, retail trigger/door execution or native module/protocol acceptance
 is asserted by these checks.
+
+The exact clean normal candidate cac06994 built in 32.293 s at
+2026-10-09T07:57:44Z (portable baseline, allocation instrumentation, no proof
+feature). Private copied-profile/candidate checks rendered e1m1, base1 and
+q3dm1 on CPU automatic eight bands and GL at 640x400, 120 fps cap, 60 warm-up
+and 600 measured frames. All six normal exits logged 23 key downs and 17 real
+X11 auto-repeat events. Every measured frame counted zero Rust allocation,
+reallocation and requested bytes, including all seven CPU workers; GL had none.
+Copied candidates and original owner profiles remained unchanged. All 18
+recorded owned PIDs are absent after cleanup. Screenshots show the loaded worlds.
+
+GL driver: llvmpipe (LLVM 22.1.8, 256 bits), Mesa 26.2.2-arch1.1, 4.6 Core;
+these are software GL checks. Evidence: THE-617-consumers normal-tracked-* run
+receipts/screenshots, normal-tracked-qualification.json and normal-cleanup.json.
+Every run still reports gameplay_reached=false. No install, native driver heap
+measurement, audio acceptance or comparable gameplay/renderer timing is claimed.
