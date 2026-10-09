@@ -22,31 +22,7 @@ impl From<crate::memory::MemoryError> for Trap {
 pub trait SystemCalls {
     fn call(&mut self, vm: &mut Vm, number: u32, arguments: &[i32]) -> Result<i32, Trap>;
 }
-pub struct Hooks {
-    pub instructions: u64,
-    pub stores: u64,
-    pub calls: u64,
-    dirty_words: Box<[u64]>,
-}
-impl Hooks {
-    pub fn take_dirty_word(&mut self, word: usize) -> bool {
-        let Some(bits) = self.dirty_words.get_mut(word / 64) else {
-            return false;
-        };
-        let mask = 1 << (word % 64);
-        let dirty = *bits & mask != 0;
-        *bits &= !mask;
-        dirty
-    }
-    fn write(&mut self, address: usize, length: usize) {
-        if length == 0 {
-            return;
-        }
-        for word in address / 4..=(address + length - 1) / 4 {
-            self.dirty_words[word / 64] |= 1 << (word % 64);
-        }
-    }
-}
+pub use crate::hooks::Hooks;
 
 pub struct Vm {
     pub memory: ModuleMemory,
@@ -64,12 +40,7 @@ impl Vm {
             mask: (memory.len() - 1) as u32,
             memory,
             image,
-            hooks: Hooks {
-                instructions: 0,
-                stores: 0,
-                calls: 0,
-                dirty_words: vec![0; program_stack.div_ceil(256)].into_boxed_slice(),
-            },
+            hooks: Hooks::load(program_stack),
             program_stack,
             stack_bottom: program_stack.saturating_sub(65536),
         })
@@ -333,14 +304,7 @@ impl Vm {
                         NegI => a.wrapping_neg(),
                         NegF => (-f32::from_bits(a as u32)).to_bits() as i32,
                         CvIF => (a as f32).to_bits() as i32,
-                        _ => {
-                            let f = f32::from_bits(a as u32);
-                            if (-2147483648.0..2147483648.0).contains(&f) {
-                                f as i32
-                            } else {
-                                i32::MIN
-                            }
-                        }
+                        _ => crate::numbers::native_integer(f32::from_bits(a as u32)),
                     };
                 }
                 Bcom => {

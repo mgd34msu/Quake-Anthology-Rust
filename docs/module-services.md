@@ -55,6 +55,31 @@ writes, dynamic module cvar registration and remaining imports must follow
 before retail modules or installed gameplay can be claimed. There is no native
 execution backend yet.
 
+The version-six QuakeC reader retains native global words, field ordinals,
+function handles and file string offsets. Header CRC policy comes from the ABI
+caller. It computes the original file CRC once. Statement operand/branch errors
+become invalid prepared instructions; an unreachable bad statement does not
+prevent loading. Execution traps that statement only if it runs, then restores
+the call's local frames so another call can proceed. Function parameter writes
+and saved locals have independent extents, matching retail mission-pack QCC
+output and the original enter/leave code.
+
+The QC VM borrows the same optional hook implementation as QVM, with one dirty
+bitmap policy and one native signed-conversion helper. Ordinary instruction
+execution does not record trace PCs or hook counters. Builtin calls select a
+boundary host; its services mapping is still pending. Native edict values are
+byte offsets into one owned backing with a caller-supplied header/stride. Engine
+code can read those bytes directly, but collision has not yet adopted the
+native field binding. `OP_STATE` resolves self/time/nextthink/frame/think once
+at load and uses the supplied step, preserving double-literal narrowing and
+the original frame comparison.
+
+The original QC functions match the defined seeded global/entity-memory
+fixtures. Rerelease id1, Hipnotic, Rogue and AD server/client programs pass
+structural loading. Stock builtins, native strings/extensions, providers,
+spawning and live gameplay remain open. Those reader results do not qualify
+AD, module gameplay or installation.
+
 The native behavior references are qsrc `quake/WinQuake/pr_cmds.c`'s builtin
 table, `quake-2/game/game.h`'s `game_import_t`, and
 `quake-iii-arena/code/server/sv_game.c`'s `SV_GameSystemCalls`. Tests exercise

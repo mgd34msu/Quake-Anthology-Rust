@@ -2593,3 +2593,35 @@ atoi versus float views, byte strings, bounded unknown logs and supplied clock
 width. No native machine code, retail gameplay, driver heap or installed
 acceptance is qualified. Native entity binding, dynamic cvars, registrations,
 remaining imports and native transport remain open.
+
+## THE-793 / THE-863 QuakeC interpreter foundation (2026-10-09)
+
+Portable tracked probes built at 14:49:05 UTC in 21.256 seconds. CPU23, 60
+warm-up and 600 measured frames, 1,000 calls per frame to the same three-opcode
+QC arithmetic/return fixture. Three median/p99 frame times were 19.960/24.490,
+21.390/29.160 and 20.180/24.770 microseconds. Each returned checksum
+821,631,974,078,520, zero calling-thread allocations/reallocations/requested
+bytes and zero ordinary-loop hook instructions; allocator positive control
+one. This new QC workload has no previous comparable Rust baseline and
+does not qualify native module gameplay or driver/worker heap.
+
+Evidence: `$XDG_CACHE_HOME/qa-rust/THE-793-quakec-20261009/` or the default
+`.cache/qa-rust`, `checks.json`, `reference/comparison.json`, `retail.json`,
+`timing-{1,2,3}.json` and `qvm-hooks-abba.json`. All 5,136 defined seeded rows
+match unmodified PR_EnterFunction/PR_LeaveFunction/PR_ExecuteProgram: 64 global
+words and 192 entity bytes per row. This includes signed-zero branches, raw
+strcmp results, overlapping component/return copies, native local restoration,
+mission-pack parameters outside the saved-local span and OP_STATE. The five
+retail QC/CSQC images load with zero invalid prepared statements; no retail
+entry point is executed. The original 8,151 QVM rows remain exact.
+
+The shared hook/numeric implementation was also checked on the existing QVM
+engine-call workload against its saved 6828f011 probe, CPU23 ABBA with 60+600
+frames each. Median of the two run medians: 149.1125 us before, 149.145 us after
+(+0.0218%). Individual medians overlapped at 148.700/149.525 versus
+148.890/149.400 us; individual p99s were 170.320/156.730 versus
+157.200/155.650 us. All fixture counters and zero-allocation results matched.
+This is no measured speedup claim; the extraction removes duplicate hook and
+numeric implementations. Checker, 597 workspace tests and Clippy pass. QC
+builtins, native entity binding, native execution and installed acceptance remain
+open.
