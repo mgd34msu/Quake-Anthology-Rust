@@ -33,8 +33,13 @@ down for the same device/control does not change its press time. Partial-frame
 hold time supplies movement fractions. Focus loss and controller removal
 release acquired bindings. A UI-consumed press does not acquire a binding.
 Release a live control before rebinding or reassigning its device. Human
-intents and bot intents use the same stateless UserCmdBuilder, with duration
-and absolute server time supplied by the caller. THE-889 seeds human command
+intents and bot intents use the same stateless UserCmdBuilder. Both supply
+unscaled positive/negative key fractions, ordered device axes and an explicit
+movement policy. The builder owns scaling and native accumulation: NQ and Q2
+rerelease retain floats, QW/Q2 narrow each assignment to signed shorts, and Q3
+uses integer contributions and signed-byte bounds. Human-only movement assembly
+and the bot path accepting already-scaled native units are removed. Duration
+and absolute server time are supplied by the caller. THE-889 seeds human command
 time at the first Time event and builds all 64 connected bot slots in SERVER
 world ticks, in client-id order. Client frames do not override bot commands.
 The bot module supplies each client's primitive intent; navigation/AI and
@@ -42,7 +47,13 @@ physics remain later work. Movement speed, mouse policy and seat settings
 enter through THE-735's cached handles. The current shell's 127 units and
 0.022 mouse scale are routing fixtures.
 The held-key reference is Q3 `cl_input.c` IN_KeyDown, IN_KeyUp and CL_KeyState.
-Native wire projections remain in the shared network command module.
+Native wire projections remain in the shared network command module. NQ/QW/Q2
+short fields, Q3 byte fields and Q2 rerelease float movement remain distinct
+boundary data. Rerelease jump/crouch/holster use its native button bits; its
+server_frame is supplied at the boundary. These projections do not establish
+packet framing or interoperability with original servers. The crouch alias and
+holster action use the existing bind storage. Centerview, full private button
+and combined-seat walks, and qualified installed acceptance remain open.
 
 RuleSetId is per player, independent of map, module and client protocol.
 At the movement boundary, Q1 duration clamps to 1..100 ms, QW/Q2 replace values

@@ -97,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             maximum = maximum.max(counts.allocations + counts.reallocations);
             maximum_bytes = maximum_bytes.max(counts.requested_bytes);
         }
-        if commands[1].movement != [0, 100, 0] {
+        if commands[1].movement != [0.0, 100.0, 0.0] {
             return Err("seat routing failed".into());
         }
     }

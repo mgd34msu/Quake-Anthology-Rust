@@ -112,7 +112,7 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
                 UserCmd {
                     duration_ms: 16,
                     server_time_ms: 16,
-                    movement: [127, 0, 0],
+                    movement: [127.0, 0.0, 0.0],
                     ..Default::default()
                 },
                 &mut player,

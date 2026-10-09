@@ -13,7 +13,7 @@ pub const ACTION_NAMES: &[ActionName] = names![
     "moveleft" => Left, "moveright" => Right,
     "moveup" => Up, "movedown" => Down,
     "attack" => Attack, "jump" => Jump,
-    "use" => Use, "duck" => Crouch,
+    "use" => Use, "duck" => Crouch, "crouch" => Crouch, "holster" => Holster,
     "speed" => Walk, "walk" => Walk,
     "left" => TurnLeft, "right" => TurnRight,
     "lookup" => LookUp, "lookdown" => LookDown,

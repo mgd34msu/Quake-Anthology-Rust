@@ -1,5 +1,13 @@
 # Quake-Rust instructions
 
+Owner correction, 2026-10-08 23:4x: finish common primitives and the event system
+before format parity or features. Migrate every caller and delete old copies
+and bypasses in the same slice. Do not add primitive-use, bypass or duplicate
+checker extensions, including check_primitive_rules.py; earlier requests for
+those extensions are cancelled. Keep the existing checker unchanged. The
+supervisor audits remaining bypasses and sends corrections. Owner playtest
+fatals still preempt. Never set Linear issues Done; submit proved work for review.
+
 Linear project Quake-Rust, P-THE-3, team The Artificery, is the source of truth.
 The owner rules and working protocol apply. Set issues In Progress when starting,
 put THE ids in commit subjects, and leave completed work In Review with evidence.

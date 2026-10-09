@@ -107,7 +107,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     }
     assert_eq!(
         input.build_frame(EventTime(40_000_000), [127; 3], [0.022; 2])[0].movement[0],
-        127
+        127.0
     );
     input.dispatch(
         SysEvent {
@@ -130,6 +130,6 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     );
     assert_eq!(
         input.build_frame(EventTime(60_000_000), [127; 3], [0.022; 2])[0].movement,
-        [0; 3]
+        [0.0; 3]
     );
 }

@@ -188,13 +188,19 @@ impl FrameHost {
         let simulation = Stopwatch::start();
         let runtime = &mut self.runtime;
         let providers = &self.providers;
+        let input_handles = &self.input_handles;
+        let vars = &self.console.cvars;
         result.server_ticks = self
             .timeline
             .advance(server_time, |tick| match tick.target {
                 TickTarget::World => {
                     runtime.server.world_time = tick.end;
                     runtime.server.world_frame = tick.index;
-                    runtime.server.build_bot_commands(tick.start, tick.end);
+                    runtime
+                        .server
+                        .build_bot_commands(tick.start, tick.end, |rules| {
+                            input_handles.policy(vars, rules)
+                        });
                     if let Some(world) = &mut runtime.collision {
                         runtime.server.move_pending_clients(
                             &runtime.geometry,

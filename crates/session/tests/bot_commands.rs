@@ -29,21 +29,26 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
         server.clients[slot].player.movement_rules = rules[slot % rules.len()];
         server.clients[slot].player.trace_rules = rules[slot % rules.len()];
         server.clients[slot].intent = CommandIntent {
-            movement: [slot as i16, -(slot as i16), 17],
             view_angles: Vec3([1.0, slot as f32, 3.0]),
             buttons: buttons::ATTACK,
             impulse: slot as u8,
             weapon: Some(WeaponId(3)),
             light_level: 127,
+            ..CommandIntent::moving([slot as f32 / 64.0, -(slot as f32) / 64.0, 17.0 / 64.0])
         };
     }
-    server.build_bot_commands(EventTime(5_000_000_000), EventTime(5_050_000_000));
+    server.build_bot_commands(
+        EventTime(5_000_000_000),
+        EventTime(5_050_000_000),
+        qa_input::InputPolicy::native,
+    );
     for slot in 0..64 {
         let client = &server.clients[slot];
         let local = UserCmdBuilder::build(
             Duration::from_millis(50),
             EventTime(5_050_000_000),
             client.intent,
+            qa_input::InputPolicy::native(client.player.movement_rules),
         );
         assert_eq!(client.command.duration_ms, 50);
         assert_eq!(client.command.server_time_ms, 5050);
@@ -57,14 +62,22 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     let id = qa_core::primitives::ClientId(63);
     assert!(server.disconnect(id));
     server.clients[63].command.duration_ms = 77;
-    server.build_bot_commands(EventTime(5_050_000_000), EventTime(5_100_000_000));
+    server.build_bot_commands(
+        EventTime(5_050_000_000),
+        EventTime(5_100_000_000),
+        qa_input::InputPolicy::native,
+    );
     assert_eq!(server.clients[63].command.duration_ms, 77); // disconnected slot excluded
     let reused = server
         .connect(Connection::Bot, ModuleId(2), PlayerTail::default(), None)
         .unwrap();
     assert_eq!(reused, id);
-    server.build_bot_commands(EventTime(5_100_000_000), EventTime(5_150_000_000));
-    assert_eq!(server.clients[63].command.movement, [0; 3]);
+    server.build_bot_commands(
+        EventTime(5_100_000_000),
+        EventTime(5_150_000_000),
+        qa_input::InputPolicy::native,
+    );
+    assert_eq!(server.clients[63].command.movement, [0.0; 3]);
     assert_eq!(server.clients[63].command.weapon, None);
     assert_eq!(server.clients[63].command.duration_ms, 50);
 }
@@ -93,7 +106,11 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
         server.clients[slot].player.trace_rules = rule;
         server.clients[slot].command.duration_ms = 7;
     }
-    server.build_bot_commands(EventTime(0), EventTime(300_000_000));
+    server.build_bot_commands(
+        EventTime(0),
+        EventTime(300_000_000),
+        qa_input::InputPolicy::native,
+    );
     assert_eq!(
         std::array::from_fn::<_, 4, _>(|slot| server.clients[slot].command.duration_ms),
         [100, 100, 200, 7]

@@ -35,13 +35,22 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
         20
     );
     let intent = CommandIntent {
-        movement: [10, -20, 30],
         view_angles: Vec3([15.0, 25.0, 0.0]),
         weapon: Some(WeaponId(3)),
-        ..CommandIntent::default()
+        ..CommandIntent::moving([0.1, -0.2, 0.3])
     };
-    let first = UserCmdBuilder::build(Duration::from_millis(25), EventTime(9_000_000_000), intent);
-    let other = UserCmdBuilder::build(Duration::from_millis(10), EventTime(50_000_000), intent);
+    let first = UserCmdBuilder::build(
+        Duration::from_millis(25),
+        EventTime(9_000_000_000),
+        intent,
+        qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3),
+    );
+    let other = UserCmdBuilder::build(
+        Duration::from_millis(10),
+        EventTime(50_000_000),
+        intent,
+        qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3),
+    );
     assert_eq!(first.duration_ms, 25);
     assert_eq!(other.duration_ms, 10);
     assert_eq!(first.weapon, Some(WeaponId(3)));

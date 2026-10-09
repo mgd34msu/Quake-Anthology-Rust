@@ -56,11 +56,11 @@ fn repeated_down_preserves_partial_frame_time_and_two_keys_hold_one_action() {
     }
     key(&mut input, &mut sink, 26, 82, true, false);
     key(&mut input, &mut sink, 30, 26, false, false);
-    assert_eq!(frame(&mut input, 40)[0].movement[0], 150); // down 30/40 ms
-    assert_eq!(frame(&mut input, 60)[0].movement[0], 200);
+    assert_eq!(frame(&mut input, 40)[0].movement[0], 150.0); // down 30/40 ms
+    assert_eq!(frame(&mut input, 60)[0].movement[0], 200.0);
     key(&mut input, &mut sink, 70, 82, false, false);
-    assert_eq!(frame(&mut input, 80)[0].movement[0], 100);
-    assert_eq!(frame(&mut input, 100)[0].movement[0], 0);
+    assert_eq!(frame(&mut input, 80)[0].movement[0], 100.0);
+    assert_eq!(frame(&mut input, 100)[0].movement[0], 0.0);
 }
 #[test]
 fn command_edges_and_focus_loss_do_not_stick() {
@@ -93,7 +93,7 @@ fn command_edges_and_focus_loss_do_not_stick() {
         },
         &mut sink,
     );
-    assert_eq!(frame(&mut input, 10)[0].movement, [0; 3]);
+    assert_eq!(frame(&mut input, 10)[0].movement, [0.0; 3]);
     assert_eq!(frame(&mut input, 15)[0].buttons, 0);
     assert!(input.bind(
         26,
@@ -142,8 +142,8 @@ fn two_devices_route_independently_and_disconnect_releases_actions() {
         &mut sink,
     );
     let commands = frame(&mut input, 20);
-    assert_eq!(commands[0].movement, [200, 0, 0]);
-    assert_eq!(commands[1].movement, [0, 100, 0]);
+    assert_eq!(commands[0].movement, [200.0, 0.0, 0.0]);
+    assert_eq!(commands[1].movement, [0.0, 100.0, 0.0]);
     assert_eq!(commands[0].buttons & buttons::JUMP, 0);
     assert_eq!(commands[1].buttons & buttons::JUMP, buttons::JUMP);
     input.dispatch(
@@ -153,5 +153,5 @@ fn two_devices_route_independently_and_disconnect_releases_actions() {
         },
         &mut sink,
     );
-    assert_eq!(frame(&mut input, 40)[1].movement, [0; 3]);
+    assert_eq!(frame(&mut input, 40)[1].movement, [0.0; 3]);
 }

@@ -5,13 +5,15 @@ use qa_core::{
 };
 
 pub mod bindings;
+mod command;
 pub mod keys;
 pub use bindings::{BindError, Binding};
+pub use command::UserCmdBuilder;
 use qa_core::text::FixedText;
 use std::fmt::Write;
 
 const CONTROLS: usize = 1024;
-const ACTIONS: usize = 30;
+const ACTIONS: usize = 31;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Action {
@@ -45,6 +47,7 @@ pub enum Action {
     Extra12,
     Extra13,
     Extra14,
+    Holster,
 }
 pub trait Target {
     fn key(&mut self, _seat: SeatId, _control: u16, _down: bool, _repeat: bool) -> bool {
@@ -152,42 +155,100 @@ pub struct InputPolicy {
     /// Q2 CL_ClampPitch subtracts the authoritative player's delta angle.
     pub delta_pitch: f32,
 }
+
+#[derive(Clone, Copy)]
+pub(crate) enum Accumulation {
+    Float,
+    Short,
+    Int,
+}
+impl Accumulation {
+    pub(crate) fn narrow(self, value: f32) -> f32 {
+        match self {
+            Self::Float => value,
+            Self::Short => (value as i32 as i16) as f32,
+            Self::Int => (value as i32) as f32,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) struct CommandRules {
+    speed: [f32; 3],
+    pitch_speed: f32,
+    always_run: bool,
+    mouse_side: f32,
+    mouse_forward: f32,
+    key_scale: Option<[f32; 2]>,
+    key_limit: Option<[f32; 2]>,
+    accumulation: Accumulation,
+    vertical_actions: bool,
+}
+const Q1_INPUT: CommandRules = CommandRules {
+    speed: [200.0, 350.0, 200.0],
+    pitch_speed: 150.0,
+    always_run: false,
+    mouse_side: 0.8,
+    mouse_forward: 1.0,
+    key_scale: None,
+    key_limit: None,
+    accumulation: Accumulation::Float,
+    vertical_actions: false,
+};
+const Q2_INPUT: CommandRules = CommandRules {
+    speed: [200.0; 3],
+    vertical_actions: true,
+    ..Q1_INPUT
+};
+const INPUT_RULES: [CommandRules; 5] = [
+    Q1_INPUT,
+    CommandRules {
+        accumulation: Accumulation::Short,
+        ..Q1_INPUT
+    },
+    CommandRules {
+        accumulation: Accumulation::Short,
+        ..Q2_INPUT
+    },
+    CommandRules {
+        always_run: true,
+        ..Q2_INPUT
+    },
+    CommandRules {
+        pitch_speed: 140.0,
+        always_run: true,
+        mouse_side: 0.25,
+        mouse_forward: 0.25,
+        key_scale: Some([64.0, 127.0]),
+        key_limit: Some([-128.0, 127.0]),
+        accumulation: Accumulation::Int,
+        ..Q2_INPUT
+    },
+];
 impl InputPolicy {
     pub fn native(rules: RuleSetId) -> Self {
-        let q1 = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
+        let data = INPUT_RULES[rules as usize];
         Self {
             rules: Some(rules),
-            speed: [200.0, if q1 { 350.0 } else { 200.0 }, 200.0],
+            speed: data.speed,
             back_speed: 200.0,
-            angle_speed: [
-                140.0,
-                if rules == RuleSetId::Quake3 {
-                    140.0
-                } else {
-                    150.0
-                },
-            ],
+            angle_speed: [140.0, data.pitch_speed],
             angle_multiplier: 1.5,
             move_multiplier: 2.0,
-            always_run: matches!(rules, RuleSetId::Quake2Rerelease | RuleSetId::Quake3),
+            always_run: data.always_run,
             sensitivity: 3.0,
             acceleration: 0.0,
             mouse_scale: [0.022; 2],
-            mouse_side: if rules == RuleSetId::Quake3 {
-                0.25
-            } else {
-                0.8
-            },
-            mouse_forward: if rules == RuleSetId::Quake3 {
-                0.25
-            } else {
-                1.0
-            },
+            mouse_side: data.mouse_side,
+            mouse_forward: data.mouse_forward,
             filter: false,
             freelook: true,
             look_strafe: false,
             delta_pitch: 0.0,
         }
+    }
+    pub(crate) fn command_rules(self) -> CommandRules {
+        self.rules
+            .map_or(Q1_INPUT, |rules| INPUT_RULES[rules as usize])
     }
 }
 #[derive(Clone, Copy)]
@@ -211,23 +272,6 @@ impl Default for Device {
 }
 
 pub use qa_core::primitives::CommandIntent;
-/// One stateless intent conversion for local, remote-module and bot callers.
-pub struct UserCmdBuilder;
-impl UserCmdBuilder {
-    pub fn build(duration: std::time::Duration, time: EventTime, intent: CommandIntent) -> UserCmd {
-        UserCmd {
-            duration_ms: duration.as_millis().min(u128::from(u16::MAX)) as u16,
-            duration_ns: duration.as_nanos().min(u128::from(u64::MAX)) as u64,
-            server_time_ms: time.milliseconds() as i32,
-            view_angles: intent.view_angles,
-            movement: intent.movement,
-            buttons: intent.buttons,
-            impulse: intent.impulse,
-            weapon: intent.weapon,
-            light_level: intent.light_level,
-        }
-    }
-}
 
 pub struct Input {
     bindings: Box<[Option<Binding>]>,
@@ -653,7 +697,6 @@ impl Input {
             let look = held[Action::MouseLook as usize];
             let klook = held[Action::KeyboardLook as usize] && !q3;
             let speed_key = held[Action::Walk as usize];
-            let running = speed_key != policy.always_run;
             let previous_pitch = seat.angles.0[0];
             let raw = seat.mouse.map(|value| value as f32);
             let mut mouse = if policy.filter {
@@ -697,63 +740,34 @@ impl Input {
                 seat.angles.0[2] = seat.angles.0[2].clamp(-50.0, 50.0);
             }
 
-            // CL_BaseMove/CL_KeyMove add each independently scaled key. Q3's
-            // integer accumulators truncate after each contribution.
-            let key_speed = if running { 127.0 } else { 64.0 };
-            let speeds = if q3 { [key_speed; 3] } else { policy.speed };
-            let back_speed = if q3 { key_speed } else { policy.back_speed };
-            let add = |value: f32, amount: f32| {
-                let total = value + amount;
-                if q3 { total.trunc() } else { total }
+            let mut intent = CommandIntent {
+                movement: [
+                    if klook {
+                        [0.0; 2]
+                    } else {
+                        [fraction(Action::Forward), fraction(Action::Back)]
+                    },
+                    [fraction(Action::Right), fraction(Action::Left)],
+                    [fraction(Action::Up), fraction(Action::Down)],
+                ],
+                vertical_actions: [fraction(Action::Jump), fraction(Action::Crouch)],
+                strafe: if strafe {
+                    [fraction(Action::TurnRight), fraction(Action::TurnLeft)]
+                } else {
+                    [0.0; 2]
+                },
+                speed_modifier: speed_key,
+                ..CommandIntent::default()
             };
-            let mut movement = [0.0; 3];
-            if strafe {
-                movement[1] = add(movement[1], speeds[1] * fraction(Action::TurnRight));
-                movement[1] = add(movement[1], -speeds[1] * fraction(Action::TurnLeft));
-            }
-            movement[1] = add(movement[1], speeds[1] * fraction(Action::Right));
-            movement[1] = add(movement[1], -speeds[1] * fraction(Action::Left));
-            let up = if policy.rules.is_some() && !q1 {
-                fraction(Action::Up).max(fraction(Action::Jump))
-            } else {
-                fraction(Action::Up)
-            };
-            let down = if policy.rules.is_some() && !q1 {
-                fraction(Action::Down).max(fraction(Action::Crouch))
-            } else {
-                fraction(Action::Down)
-            };
-            movement[2] = add(movement[2], speeds[2] * up);
-            movement[2] = add(movement[2], -speeds[2] * down);
-            if !klook {
-                movement[0] = add(movement[0], speeds[0] * fraction(Action::Forward));
-                movement[0] = add(movement[0], -back_speed * fraction(Action::Back));
-            }
-            if !q3 && running {
-                movement
-                    .iter_mut()
-                    .for_each(|value| *value *= policy.move_multiplier);
-            }
-            if q3 {
-                movement
-                    .iter_mut()
-                    .for_each(|value| *value = value.clamp(-128.0, 127.0));
-            }
             if !horizontal_strafe {
                 seat.angles.0[1] -= mouse[0] * policy.mouse_scale[0];
             } else {
-                movement[1] = add(movement[1], mouse[0] * policy.mouse_side);
-                if q3 {
-                    movement[1] = movement[1].clamp(-128.0, 127.0);
-                }
+                intent.mouse_movement[0] = mouse[0];
             }
             if mouse_pitch {
                 seat.angles.0[0] += mouse[1] * policy.mouse_scale[1];
             } else {
-                movement[0] = add(movement[0], -mouse[1] * policy.mouse_forward);
-                if q3 {
-                    movement[0] = movement[0].clamp(-128.0, 127.0);
-                }
+                intent.mouse_movement[1] = mouse[1];
             }
             if q1 {
                 seat.angles.0[0] = seat.angles.0[0].clamp(-70.0, 80.0);
@@ -770,19 +784,11 @@ impl Input {
             }
             for device in &self.devices {
                 if device.seat.is_some_and(|seat| seat.index() == index) {
-                    let multiplier = if !q3 && running {
-                        policy.move_multiplier
-                    } else {
-                        1.0
-                    };
-                    movement[0] = add(
-                        movement[0],
-                        -f32::from(device.axes[1]) / 32768.0 * speeds[0] * multiplier,
-                    );
-                    movement[1] = add(
-                        movement[1],
-                        f32::from(device.axes[0]) / 32768.0 * speeds[1] * multiplier,
-                    );
+                    intent.axes[usize::from(intent.axis_count)] = [
+                        -f32::from(device.axes[1]) / 32768.0,
+                        f32::from(device.axes[0]) / 32768.0,
+                    ];
+                    intent.axis_count += 1;
                 }
             }
             let mut mask = 0;
@@ -804,16 +810,10 @@ impl Input {
                 (Action::Extra12, buttons::EXTRA12),
                 (Action::Extra13, buttons::EXTRA13),
                 (Action::Extra14, buttons::EXTRA14),
+                (Action::Holster, buttons::HOLSTER),
             ] {
                 if sampled[action as usize].1 {
                     mask |= bit;
-                }
-            }
-            if q3 {
-                if running {
-                    mask &= !buttons::WALK;
-                } else {
-                    mask |= buttons::WALK;
                 }
             }
             if self.devices.iter().any(|device| {
@@ -822,22 +822,14 @@ impl Input {
             }) {
                 mask |= buttons::ANY;
             }
-            let intent = CommandIntent {
-                movement: std::array::from_fn(|axis| {
-                    let (low, high) = if q3 {
-                        (-128.0, 127.0)
-                    } else if policy.rules.is_none() {
-                        (-policy.speed[axis], policy.speed[axis])
-                    } else {
-                        (f32::from(i16::MIN), f32::from(i16::MAX))
-                    };
-                    movement[axis].clamp(low, high) as i16
-                }),
-                view_angles: seat.angles,
-                buttons: mask,
-                ..CommandIntent::default()
-            };
-            UserCmdBuilder::build(std::time::Duration::from_nanos(period), time, intent)
+            intent.view_angles = seat.angles;
+            intent.buttons = mask;
+            UserCmdBuilder::build(
+                std::time::Duration::from_nanos(period),
+                time,
+                intent,
+                policy,
+            )
         })
     }
 }

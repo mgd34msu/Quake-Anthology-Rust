@@ -1,4 +1,12 @@
-Resume from this file after the owner's 22:55 account-switch pause. The engine
+Resume from this file after the owner's 22:55 account-switch pause. Update after
+the switch: the six normal-app runs passed and their evidence is on main at
+`b8967a13`. The owner-authorized cleanup deleted `wip/the-2852-2026-10-08` locally
+and remotely; THE-2852 records why its unverified fixture drafts were discarded.
+Their separate NativeSource identity was incompatible with the current common
+RuleSetId. Do not recreate that branch or treat the historical draft references
+below as current work. THE-889 is now the active core slice.
+
+The historical pause state follows. The engine
 slice is committed and pushed as `5862373da1e7b685efce748b4773f5a7604c5f08`
 (THE-2872/THE-2865). The following documentation commit records this handoff and
 its verified measurements; it changes no engine code. The working tree was clean

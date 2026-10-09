@@ -478,15 +478,35 @@ impl SurfaceFlags {
     }
 }
 
-/// Input/AI intent before the caller supplies command time and duration.
+/// Input/AI intent before rule-selected scaling, time and duration.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CommandIntent {
-    pub movement: [i16; 3],
+    /// Positive/negative fractions for forward, side and up, kept separate so
+    /// native integer accumulation can truncate each contribution in order.
+    pub movement: [[f32; 2]; 3],
+    pub vertical_actions: [f32; 2],
+    /// Right/left contributions from turning while strafe is held.
+    pub strafe: [f32; 2],
+    /// Calibrated mouse deltas routed to side/forward rather than view angles.
+    pub mouse_movement: [f32; 2],
+    /// Normalized forward/side axes, in device order, after keyboard and mouse.
+    pub axes: [[f32; 2]; 16],
+    pub axis_count: u8,
+    pub speed_modifier: bool,
     pub view_angles: Vec3,
     pub buttons: u32,
     pub impulse: u8,
     pub light_level: u8,
     pub weapon: Option<WeaponId>,
+}
+
+impl CommandIntent {
+    pub fn moving(axes: [f32; 3]) -> Self {
+        Self {
+            movement: axes.map(|value| [value.max(0.0), (-value).max(0.0)]),
+            ..Self::default()
+        }
+    }
 }
 
 impl PlayerState {
@@ -522,7 +542,8 @@ pub struct UserCmd {
     pub duration_ns: u64,
     pub server_time_ms: i32,
     pub view_angles: Vec3,
-    pub movement: [i16; 3],
+    /// Native float commands remain exact; wire codecs narrow at their boundary.
+    pub movement: [f32; 3],
     pub buttons: u32,
     pub impulse: u8,
     pub light_level: u8,
@@ -547,6 +568,7 @@ pub mod buttons {
     pub const EXTRA12: u32 = 1 << 14;
     pub const EXTRA13: u32 = 1 << 15;
     pub const EXTRA14: u32 = 1 << 16;
+    pub const HOLSTER: u32 = 1 << 17;
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -1825,3 +1825,33 @@ installation. `normal-qualification.json`, `normal-cleanup.json`, the six
 `normal-{cpu,gl}-{map}/` receipts, screenshots and runtime logs retain the
 evidence. The next core slice is THE-889; the historical account-switch state
 remains in [the resume note](handoff/2026-10-08-account-switch.md).
+## THE-889 shared human/bot command construction
+
+The builder accepts unscaled intent for both human seats and SERVER bots.
+Its native keyboard arithmetic matched 10,000 seeded cases each from original
+NQ, QW, Q2 and Q3 input functions, including per-contribution short/integer
+narrowing. This comparison covers already-sampled key fractions, not mouse,
+controller, view, KEX client or gameplay behavior. The existing hold-state
+comparison passed 364 cases and 10,000 frames. Existing Q2/Q3 movement checks
+passed 1,152 states each; Q2 matched exactly, while Q3 retained its accepted
+float tolerance with exact flags/timers. No complete native physics claim follows.
+
+Portable release developer examples took 15.80 seconds before and 18.30 seconds
+after. Core 23 was pinned, without a debugger, for 60 warm-up and 600 measured
+frames. A batch of 64 mixed-rule intents measured 1.380 microseconds median and
+1.430 microseconds p99 with zero measured Rust allocations/bytes. The bot host
+probe built 12,288 commands with zero measured heap counts; the 512-client probe
+also passed its allocation gate. These are headless workloads, excluding
+native heap, rendering, gameplay and network framing.
+
+The matched human bind/console/UDP host ABBA rows measured before medians
+210.430/210.500 microseconds and after 208.656/208.471 microseconds, with matching
+packet/repeat/provider counters and zero allocations. The initial baseline
+overlapped a reference-helper compilation, so this set is retained as bounded
+regression evidence rather than an isolated speed comparison.
+
+Raw comparisons, source extracts, binaries/build metadata, allocation controls
+and logs are in `~/.cache/qa-rust/THE-889-unified/`. The pending rule-checker
+extensions and new check_usercmd.py were removed per the owner's correction;
+the existing checker remains unchanged. Centerview and the issue's private
+combined-seat/qualified installed gameplay acceptance remain open.

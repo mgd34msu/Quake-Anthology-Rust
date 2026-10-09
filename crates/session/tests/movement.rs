@@ -71,10 +71,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         qa_movement::set_bounds(&mut client.player);
         client.player.body.position = Vec3([0.0, slot as f32 * 128.0, 24.125]);
         client.player.movement.grounded = true;
-        client.intent = CommandIntent {
-            movement: [127, 0, 0],
-            ..Default::default()
-        };
+        client.intent = CommandIntent::moving([1.0, 0.0, 0.0]);
         prediction.apply_snapshot(&client.player);
         let entity = client.entity;
         server
@@ -94,13 +91,17 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
                 UserCmd {
                     duration_ms: 16,
                     server_time_ms: 16,
-                    movement: [127, 0, 0],
+                    movement: [127.0, 0.0, 0.0],
                     ..Default::default()
                 },
             );
         }
     }
-    server.build_bot_commands(EventTime(0), EventTime(16_000_000));
+    server.build_bot_commands(
+        EventTime(0),
+        EventTime(16_000_000),
+        qa_input::InputPolicy::native,
+    );
     assert_eq!(
         server.move_pending_clients(&store, geometry, 0, &mut scratch),
         15
@@ -211,7 +212,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         UserCmd {
             duration_ms: 200,
             server_time_ms: 200,
-            movement: [127, 0, 0],
+            movement: [127.0, 0.0, 0.0],
             ..Default::default()
         },
     );
@@ -352,7 +353,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
     let command = UserCmd {
         duration_ms: 16,
         server_time_ms: 16,
-        movement: [127, 0, 0],
+        movement: [127.0, 0.0, 0.0],
         ..Default::default()
     };
     server.submit_command(id, command);

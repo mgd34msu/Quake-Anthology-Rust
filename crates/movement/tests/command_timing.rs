@@ -27,14 +27,14 @@ fn original_duration_rules_keep_server_time_and_command_fields() {
                 UserCmd {
                     duration_ms: raw,
                     server_time_ms: 5500,
-                    movement: [200, -150, 10],
+                    movement: [200.0, -150.0, 10.0],
                     buttons: 129,
                     ..UserCmd::default()
                 },
             );
             assert_eq!(command.duration_ms, value);
             assert_eq!(command.server_time_ms, 5500);
-            assert_eq!(command.movement, [200, -150, 10]);
+            assert_eq!(command.movement, [200.0, -150.0, 10.0]);
             assert_eq!(command.buttons, 129);
         }
     }

@@ -214,8 +214,8 @@ fn cap_wait_has_no_intake_and_aliases_use_one_cached_fps_handle() {
     assert_eq!(host.key_downs, 1);
     // The first physical poll timestamps the press at the initial command's
     // endpoint; the following frame measures the held interval.
-    assert_eq!(frame.commands[0].movement, [0; 3]);
-    assert_eq!(frame.commands[1].movement, [0; 3]);
+    assert_eq!(frame.commands[0].movement, [0.0; 3]);
+    assert_eq!(frame.commands[1].movement, [0.0; 3]);
     assert_eq!(host.runtime.network.packets, 1);
     let alias = host.console.cvars.find("cl_maxfps").unwrap();
     assert_eq!(alias, cap);
@@ -225,7 +225,7 @@ fn cap_wait_has_no_intake_and_aliases_use_one_cached_fps_handle() {
     assert_eq!(source.waits, 15);
     assert_eq!(frame.drains, 2);
     assert_eq!(source.polls, 4);
-    assert!(frame.commands[0].movement[0] > 0);
+    assert!(frame.commands[0].movement[0] > 0.0);
     // Native integer division produces no delay above 1000 fps. The explicit
     // uncapped path also skips waiting while preserving both intake points.
     host.console.cvars.set(cap, 2001.0).unwrap();
@@ -311,10 +311,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     host.runtime.server.clients[bot.0 as usize]
         .player
         .movement_rules = RuleSetId::Quake2;
-    host.runtime.server.clients[bot.0 as usize].intent = CommandIntent {
-        movement: [30, -20, 10],
-        ..CommandIntent::default()
-    };
+    host.runtime.server.clients[bot.0 as usize].intent = CommandIntent::moving([0.15, -0.1, 0.05]);
     let mut source = Source {
         time: 5_000,
         waits: 0,
@@ -339,7 +336,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let command = host.runtime.server.clients[bot.0 as usize].command;
     assert_eq!(command.duration_ms, 20); // 50 Hz world, independent of client frame
     assert_eq!(command.server_time_ms, 5_020);
-    assert_eq!(command.movement, [30, -20, 10]);
+    assert_eq!(command.movement, [30.0, -20.0, 10.0]);
     source.time += 5;
     let next = host.frame(&mut source, true);
     assert_eq!(next.commands[0].duration_ms, 5);
@@ -351,6 +348,6 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     );
     assert_eq!(
         host.runtime.server.clients[bot.0 as usize].command.movement,
-        [30, -20, 10]
+        [30.0, -20.0, 10.0]
     );
 }

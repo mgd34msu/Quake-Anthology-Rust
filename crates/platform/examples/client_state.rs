@@ -51,9 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.player.movement_rules = rules[slot % rules.len()];
         client.player.trace_rules = rules[slot % rules.len()];
         client.intent = CommandIntent {
-            movement: [1, 2, 3],
             view_angles: Vec3([0.0, 90.0, 0.0]),
-            ..Default::default()
+            ..CommandIntent::moving([0.01, 0.02, 0.03])
         };
     }
     let inventory = server.clients[511].player.inventory.as_ptr();
@@ -80,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.build_bot_commands(
             EventTime(frame * 50_000_000),
             EventTime((frame + 1) * 50_000_000),
+            qa_input::InputPolicy::native,
         );
         for (slot, client) in server.clients.iter_mut().enumerate() {
             client.player.inventory[1] = slot as i32;

@@ -290,7 +290,7 @@ impl Step<'_> {
         }
         self.player.body.mins.0[2] = -24.0;
         let old_ducked = self.player.movement.ducked;
-        let duck = self.command.movement[2] < 0 || self.command.buttons & buttons::CROUCH != 0;
+        let duck = self.command.movement[2] < 0.0 || self.command.buttons & buttons::CROUCH != 0;
         if duck && (!self.classic() || self.player.movement.grounded)
             || self.classic() && self.player.movement.mode == MovementMode::Dead
         {
@@ -412,7 +412,7 @@ impl Step<'_> {
         if self.arena() && self.player.movement.water_level >= 2 {
             return false;
         }
-        let pressed = self.command.buttons & buttons::JUMP != 0 || self.command.movement[2] >= 10;
+        let pressed = self.command.buttons & buttons::JUMP != 0 || self.command.movement[2] >= 10.0;
         if !pressed {
             self.player.movement.jump_held = false;
             return false;
@@ -488,7 +488,7 @@ impl Step<'_> {
             math::normalize(&mut basis.forward);
             math::normalize(&mut basis.right);
         }
-        let mut move_axes = self.command.movement.map(f32::from);
+        let mut move_axes = self.command.movement;
         if self.nq()
             && f64::from(self.command.server_time_ms) * 0.001
                 < self.player.movement.teleport_hold_until
@@ -749,7 +749,7 @@ impl Step<'_> {
             self.player.movement.mode,
             MovementMode::Dead | MovementMode::Gib
         ) {
-            self.command.movement = [0; 3];
+            self.command.movement = [0.0; 3];
             self.command.buttons = 0;
         }
         if matches!(
@@ -941,7 +941,7 @@ fn arena(
         command.server_time_ms = player.movement.command_time_ms;
         run_step(command, player, world, parameters, &mut result);
         if player.movement.jump_held {
-            command.movement[2] = 20;
+            command.movement[2] = 20.0;
         }
     }
     result

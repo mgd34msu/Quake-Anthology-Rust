@@ -5,7 +5,7 @@ use qa_network::commands::*;
 fn each_boundary_roundtrips_its_original_shape() {
     let q1 = Q1Move {
         view_angles: Vec3([-90.0, 180.0, 0.0]),
-        movement: [200.0, -200.0, 0.0],
+        movement: [200, -200, 0],
         buttons: 3,
         impulse: 10,
     };
@@ -83,4 +83,51 @@ fn every_original_short_angle_survives_the_boundary_projection() {
             q3.angles
         );
     }
+}
+
+#[test]
+fn rerelease_preserves_native_float_fields_and_byte_button_table() {
+    // qsrc rerelease/game.h:416-438: holster=4, jump=8, crouch=16,
+    // float angles/forwardmove/sidemove, uint32 server_frame, byte msec.
+    let native = Q2RrCmd {
+        msec: 255,
+        buttons: 0x9f,
+        angles: Vec3([12.25, -719.125, -0.0]),
+        movement: [123.456, -0.0],
+        server_frame: u32::MAX,
+    };
+    let common = from_q2_rr_usercmd(native, i32::MAX);
+    assert_eq!(
+        common.buttons,
+        b::ATTACK | b::USE | b::HOLSTER | b::JUMP | b::CROUCH | b::ANY
+    );
+    let result = to_q2_rr_usercmd(&common, native.server_frame);
+    assert_eq!(result.msec, native.msec);
+    assert_eq!(result.buttons, native.buttons);
+    assert_eq!(result.server_frame, native.server_frame);
+    assert_eq!(
+        result.angles.0.map(f32::to_bits),
+        native.angles.0.map(f32::to_bits)
+    );
+    assert_eq!(
+        result.movement.map(f32::to_bits),
+        native.movement.map(f32::to_bits)
+    );
+    assert_eq!(to_q1_move(&common).buttons, 3);
+    assert_eq!(to_qw_usercmd(&common).buttons, 3);
+    assert_eq!(to_q2_usercmd(&common).buttons, 131);
+    assert_eq!(to_q3_usercmd(&common, 0).buttons, 2053);
+}
+
+#[test]
+fn native_short_and_byte_codecs_narrow_independently_of_float_movement_role() {
+    let common = UserCmd {
+        movement: [32768.5, -32769.75, 1.25],
+        ..Default::default()
+    };
+    assert_eq!(to_q1_move(&common).movement, [i16::MIN, i16::MAX, 1]);
+    assert_eq!(to_qw_usercmd(&common).movement, [i16::MIN, i16::MAX, 1]);
+    assert_eq!(to_q2_usercmd(&common).movement, [i16::MIN, i16::MAX, 1]);
+    assert_eq!(to_q3_usercmd(&common, 0).movement, [127, -128, 1]);
+    assert_eq!(to_q2_rr_usercmd(&common, 3).movement, [32768.5, -32769.75]);
 }

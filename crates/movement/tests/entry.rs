@@ -20,7 +20,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
     let result = pmove(
         UserCmd {
             duration_ms: 101,
-            movement: [320, 0, 0],
+            movement: [320.0, 0.0, 0.0],
             ..Default::default()
         },
         &mut qw,
@@ -31,7 +31,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
         pmove(
             UserCmd {
                 duration_ms: 50,
-                movement: [320, 0, 0],
+                movement: [320.0, 0.0, 0.0],
                 ..Default::default()
             },
             &mut expected,
@@ -87,7 +87,7 @@ fn netquake_uses_precise_duration_and_module_owns_jump() {
     let command = UserCmd {
         duration_ms: 11,
         duration_ns: 11_764_705,
-        movement: [320, 0, 200],
+        movement: [320.0, 0.0, 200.0],
         ..Default::default()
     };
     pmove(command, &mut state, &mut world);
@@ -106,7 +106,7 @@ fn classic_quantizes_while_rerelease_keeps_floating_state() {
     rr.body.position.0[0] = 0.06;
     let command = UserCmd {
         duration_ms: 16,
-        movement: [300, 0, 0],
+        movement: [300.0, 0.0, 0.0],
         ..Default::default()
     };
     pmove(command, &mut classic, &mut world);

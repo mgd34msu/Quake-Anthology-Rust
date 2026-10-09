@@ -160,28 +160,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (slot, prediction) in predictions.iter_mut().enumerate() {
             let client = &mut server.clients[slot];
             let intent = CommandIntent {
-                movement: [
-                    127,
-                    if frame / 48 % 2 == 0 { 64 } else { -64 },
-                    if frame % 96 < 8 { 127 } else { 0 },
-                ],
                 view_angles: Vec3([0.0, (frame / 96 % 4) as f32 * 90.0, 0.0]),
-                ..Default::default()
+                ..CommandIntent::moving([
+                    1.0,
+                    if frame / 48 % 2 == 0 {
+                        64.0 / 127.0
+                    } else {
+                        -64.0 / 127.0
+                    },
+                    if frame % 96 < 8 { 1.0 } else { 0.0 },
+                ])
             };
             client.intent = intent;
             prediction.apply_snapshot(&client.player);
             if client.connection != Some(Connection::Bot) {
-                server.submit_command(
-                    ClientId(slot as u32),
-                    qa_input::UserCmdBuilder::build(
-                        std::time::Duration::from_nanos(end.since(start)),
-                        end,
-                        intent,
-                    ),
+                let command = qa_input::UserCmdBuilder::build(
+                    std::time::Duration::from_nanos(end.since(start)),
+                    end,
+                    intent,
+                    qa_input::InputPolicy::native(client.player.movement_rules),
                 );
+                server.submit_command(ClientId(slot as u32), command);
             }
         }
-        server.build_bot_commands(start, end);
+        server.build_bot_commands(start, end, qa_input::InputPolicy::native);
         let count = server.move_pending_clients(&store, geometry, 0, &mut scratch);
         for (client, prediction) in server.clients.iter().zip(&mut predictions) {
             let mut trace = WorldTrace::new(

@@ -243,12 +243,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             client.player.movement_rules = rules[slot % rules.len()];
             client.player.trace_rules = rules[slot % rules.len()];
             client.intent = CommandIntent {
-                movement: [slot as i16, -(slot as i16), 17],
                 buttons: buttons::ATTACK,
                 impulse: slot as u8,
                 light_level: 127,
                 weapon: Some(WeaponId(3)),
-                ..CommandIntent::default()
+                ..CommandIntent::moving([slot as f32 / 64.0, -(slot as f32) / 64.0, 17.0 / 64.0])
             };
         }
     }
@@ -343,7 +342,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if command.duration_ms != 50
                     || command.server_time_ms
                         != host.runtime.server.world_time.milliseconds() as i32
-                    || command.movement != [slot as i16, -(slot as i16), 17]
+                    || command.movement != expected_bot_move(client.player.movement_rules, slot)
                     || command.buttons != buttons::ATTACK
                     || command.impulse != slot as u8
                     || command.weapon != Some(WeaponId(3))
@@ -360,8 +359,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if binds
             && frame > 0
-            && (result.commands[0].movement[0] != 127
-                || result.commands[1].movement != [0, if frame & 1 == 1 { -127 } else { 0 }, 0])
+            && (result.commands[0].movement[0] != 127.0
+                || result.commands[1].movement
+                    != [0.0, if frame & 1 == 1 { -127.0 } else { 0.0 }, 0.0])
         {
             return Err("bind/seat fidelity check failed".into());
         }
@@ -415,4 +415,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(any(debug_assertions, feature = "allocation-tracking")))]
 fn main() {
     println!("Run with allocation-tracking enabled.");
+}
+
+fn expected_bot_move(rules: RuleSetId, slot: usize) -> [f32; 3] {
+    let scales = match rules {
+        RuleSetId::Quake | RuleSetId::QuakeWorld => [200.0, 350.0, 200.0],
+        RuleSetId::Quake2 => [200.0; 3],
+        RuleSetId::Quake2Rerelease => [400.0; 3],
+        RuleSetId::Quake3 => [127.0; 3],
+    };
+    [
+        slot as f32 / 64.0 * scales[0],
+        -(slot as f32) / 64.0 * scales[1],
+        17.0 / 64.0 * scales[2],
+    ]
+    .map(|value| {
+        if matches!(
+            rules,
+            RuleSetId::QuakeWorld | RuleSetId::Quake2 | RuleSetId::Quake3
+        ) {
+            value.trunc()
+        } else {
+            value
+        }
+    })
 }

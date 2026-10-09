@@ -28,21 +28,21 @@ fn main() {
                 duration_ms: 8 + (seed % 17) as u16,
                 movement: [
                     if scenario < 2 {
-                        300
+                        300.0
                     } else {
-                        ((seed >> 8) % 601) as i16 - 300
+                        ((seed >> 8) % 601) as f32 - 300.0
                     },
                     if scenario < 2 {
-                        0
+                        0.0
                     } else {
-                        ((seed >> 18) % 401) as i16 - 200
+                        ((seed >> 18) % 401) as f32 - 200.0
                     },
                     if scenario == 4 && frame % 64 < 32 {
-                        -200
+                        -200.0
                     } else if scenario == 3 && frame % 48 < 8 {
-                        200
+                        200.0
                     } else {
-                        0
+                        0.0
                     },
                 ],
                 view_angles: Vec3([
@@ -64,21 +64,21 @@ fn main() {
                 time += i32::from(command.duration_ms);
                 command.server_time_ms = time;
                 command.movement[0] = if scenario < 2 {
-                    127
+                    127.0
                 } else {
-                    ((seed >> 8) % 255) as i16 - 127
+                    ((seed >> 8) % 255) as f32 - 127.0
                 };
                 command.movement[1] = if scenario < 2 {
-                    0
+                    0.0
                 } else {
-                    ((seed >> 18) % 255) as i16 - 127
+                    ((seed >> 18) % 255) as f32 - 127.0
                 };
                 command.movement[2] = if scenario == 4 && frame % 64 < 32 {
-                    -127
+                    -127.0
                 } else if scenario == 3 && frame % 48 < 8 {
-                    127
+                    127.0
                 } else {
-                    0
+                    0.0
                 };
             }
             qa_movement::pmove(command, &mut player, &mut world);

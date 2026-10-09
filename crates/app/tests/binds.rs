@@ -87,17 +87,17 @@ fn every_source_config_reaches_one_table_and_preserves_repeat_and_two_key_time()
         key(&mut host, 26, 82, true, false);
         key(&mut host, 30, 26, false, false);
         let frame = host.frame(&mut Source(40), true);
-        assert_eq!(frame.commands[0].movement[0], 95); // 30/40 * 127
-        assert_eq!(frame.commands[1].movement, [0; 3]);
+        assert_eq!(frame.commands[0].movement[0], 95.0); // 30/40 * 127
+        assert_eq!(frame.commands[1].movement, [0.0; 3]);
         assert_eq!(host.key_repeats, 3);
         key(&mut host, 50, 82, false, false);
         assert_eq!(
             host.frame(&mut Source(60), true).commands[0].movement[0],
-            63
+            63.0
         );
         assert_eq!(
             host.frame(&mut Source(80), true).commands[0].movement,
-            [0; 3]
+            [0.0; 3]
         );
         assert!(host.console.idle());
     }
@@ -125,8 +125,8 @@ fn alias_button_metadata_and_manual_commands_keep_the_originating_seat() {
         },
     );
     let commands = host.frame(&mut Source(20), true).commands;
-    assert_eq!(commands[0].movement, [0; 3]);
-    assert!(commands[1].movement[0] > 0);
+    assert_eq!(commands[0].movement, [0.0; 3]);
+    assert!(commands[1].movement[0] > 0.0);
     event(
         &mut host,
         25,
@@ -135,7 +135,7 @@ fn alias_button_metadata_and_manual_commands_keep_the_originating_seat() {
     host.frame(&mut Source(40), true);
     assert_eq!(
         host.frame(&mut Source(60), true).commands[1].movement,
-        [0; 3]
+        [0.0; 3]
     );
     let context = Context {
         seat: second,
@@ -170,13 +170,13 @@ fn held_rebind_releases_old_action_and_repeat_cannot_acquire_replacement() {
     key(&mut host, 45, 26, true, true);
     assert_eq!(
         host.frame(&mut Source(60), true).commands[0].movement,
-        [0; 3]
+        [0.0; 3]
     );
     key(&mut host, 65, 26, false, false);
     key(&mut host, 70, 26, true, false);
     assert_eq!(
         host.frame(&mut Source(80), true).commands[0].movement[0],
-        -63
+        -63.0
     );
     event(
         &mut host,
@@ -187,7 +187,7 @@ fn held_rebind_releases_old_action_and_repeat_cannot_acquire_replacement() {
     key(&mut host, 110, 26, true, true);
     assert_eq!(
         host.frame(&mut Source(120), true).commands[0].movement,
-        [0; 3]
+        [0.0; 3]
     );
 }
 #[test]
