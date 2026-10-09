@@ -1,4 +1,7 @@
-use qa_formats::{FormatError, program::native::Image};
+use qa_formats::{
+    FormatError,
+    program::native::{Image, LoadRole},
+};
 fn put(file: &mut [u8], at: usize, value: u64, width: usize) {
     file[at..at + width].copy_from_slice(&value.to_le_bytes()[..width]);
 }
@@ -73,7 +76,7 @@ fn native_exports_keep_aliases_ordinals_and_full_width_rebasing() {
         rva(&mut f, 0x11e4, 12, 4);
         rva(&mut f, 0x11e8, if bits == 64 { 0xa080 } else { 0x3080 }, 2);
         rva(&mut f, 0x1080, preferred + 0x1088, bits / 8);
-        let image = Image::parse(&f, Some(base)).unwrap();
+        let image = Image::parse(&f, Some(base), LoadRole::Library).unwrap();
         assert_eq!(image.symbols.len(), 3);
         assert_eq!(image.symbol(b"GetGameAPI").unwrap().address, base + 0x1080);
         assert_eq!(image.symbol(b"Alias").unwrap().ordinal, Some(7));
@@ -89,27 +92,27 @@ fn native_exports_keep_aliases_ordinals_and_full_width_rebasing() {
 #[test]
 fn fixed_images_and_bad_headers_or_mapped_gaps_are_refused() {
     let original = fixture(32);
-    assert!(Image::parse(&original, None).is_ok());
+    assert!(Image::parse(&original, None, LoadRole::Library).is_ok());
     assert_eq!(
-        Image::parse(&original, Some(0x11000000)).err(),
+        Image::parse(&original, Some(0x11000000), LoadRole::Library).err(),
         Some(FormatError::InvalidReference("PE fixed base", 5))
     );
     for length in [0, 1, 63, 128, 152, 376, 1023] {
-        assert!(Image::parse(&original[..length], None).is_err());
+        assert!(Image::parse(&original[..length], None, LoadRole::Library).is_err());
     }
     let mut f = original.clone();
     put(&mut f, 376 + 12, 0, 4);
-    assert!(Image::parse(&f, None).is_err());
+    assert!(Image::parse(&f, None, LoadRole::Library).is_err());
     let mut f = original.clone();
     directory(&mut f, 32, 0, 0x800, 40);
-    assert!(Image::parse(&f, None).is_err());
+    assert!(Image::parse(&f, None, LoadRole::Library).is_err());
     let mut f = original.clone();
     directory(&mut f, 32, 14, 0x1000, 40);
     assert_eq!(
-        Image::parse(&f, None).err(),
+        Image::parse(&f, None, LoadRole::Library).err(),
         Some(FormatError::InvalidReference("PE CLR", 14))
     );
-    assert!(Image::parse(&original, Some(u64::MAX - 100)).is_err());
+    assert!(Image::parse(&original, Some(u64::MAX - 100), LoadRole::Library).is_err());
 }
 #[test]
 fn imports_keep_names_hints_ordinals_and_require_valid_terminated_tables() {
@@ -125,7 +128,7 @@ fn imports_keep_names_hints_ordinals_and_require_valid_terminated_tables() {
         text(&mut f, 0x1180, b"runtime.dll\0");
         rva(&mut f, 0x11a0, 9, 2);
         text(&mut f, 0x11a2, b"call\0");
-        let image = Image::parse(&f, None).unwrap();
+        let image = Image::parse(&f, None, LoadRole::Library).unwrap();
         assert_eq!(image.imports.len(), 2);
         assert_eq!(
             image.names.get(image.imports[0].name.unwrap()),
@@ -140,13 +143,13 @@ fn imports_keep_names_hints_ordinals_and_require_valid_terminated_tables() {
             (1u64 << (bits - 1)) | 0x10011,
             width,
         );
-        assert!(Image::parse(&f, None).is_err());
+        assert!(Image::parse(&f, None, LoadRole::Library).is_err());
         let mut f = fixture(bits);
         directory(&mut f, bits, 1, 0x1100, 20);
         rva(&mut f, 0x1100 + 12, 0x1180, 4);
         rva(&mut f, 0x1100 + 16, 0x1160, 4);
         text(&mut f, 0x1180, b"runtime.dll\0");
-        assert!(Image::parse(&f, None).is_err());
+        assert!(Image::parse(&f, None, LoadRole::Library).is_err());
     }
 }
 
@@ -162,7 +165,7 @@ fn native_split_word_relocations_and_tls_callback_addresses_are_preserved() {
     rva(&mut f, 0x1080, 0x1234, 2);
     rva(&mut f, 0x1082, 0x5678, 2);
     rva(&mut f, 0x1084, 0x9abc, 2);
-    let image = Image::parse(&f, Some(0x0ff00000)).unwrap();
+    let image = Image::parse(&f, Some(0x0ff00000), LoadRole::Library).unwrap();
     assert_eq!(
         &image.bytes[0x1080..0x1086],
         &[0x24, 0x12, 0x78, 0x56, 0xac, 0x9a]
@@ -179,7 +182,7 @@ fn native_split_word_relocations_and_tls_callback_addresses_are_preserved() {
         rva(&mut f, 0x1100 + width * 4, 16, 4);
         rva(&mut f, 0x1100 + width * 4 + 4, 3 << 20, 4);
         rva(&mut f, 0x10c0, preferred + 0x1080, width);
-        let image = Image::parse(&f, None).unwrap();
+        let image = Image::parse(&f, None, LoadRole::Library).unwrap();
         let tls = image.tls.unwrap();
         assert_eq!(tls.file_bytes, 4);
         assert_eq!(tls.zero_bytes, 16);
@@ -187,6 +190,95 @@ fn native_split_word_relocations_and_tls_callback_addresses_are_preserved() {
         assert_eq!(tls.index, Some(preferred + 0x10b0));
         assert_eq!(&*image.initializers, &[preferred + 0x1080]);
         rva(&mut f, 0x10c0, preferred + 0x400, width);
-        assert!(Image::parse(&f, None).is_err());
+        assert!(Image::parse(&f, None, LoadRole::Library).is_err());
+    }
+}
+
+fn elf_fixture(bits: usize, writable: bool) -> Vec<u8> {
+    let mut f = vec![0x77; 8192];
+    f[..256].fill(0);
+    f[..4].copy_from_slice(b"\x7fELF");
+    f[4] = if bits == 64 { 2 } else { 1 };
+    f[5] = 1;
+    f[6] = 1;
+    put(&mut f, 16, 3, 2);
+    put(&mut f, 18, if bits == 64 { 62 } else { 3 }, 2);
+    put(&mut f, 20, 1, 4);
+    let header = if bits == 64 { 64 } else { 52 };
+    let stride = if bits == 64 { 56 } else { 32 };
+    put(
+        &mut f,
+        if bits == 64 { 32 } else { 28 },
+        header as u64,
+        bits / 8,
+    );
+    put(&mut f, if bits == 64 { 52 } else { 40 }, header as u64, 2);
+    put(&mut f, if bits == 64 { 54 } else { 42 }, stride as u64, 2);
+    put(&mut f, if bits == 64 { 56 } else { 44 }, 2, 2);
+    for (i, offset, address, file_bytes, memory_bytes) in
+        [(0, 0, 0, 256, 256), (1, 0x1180, 0x3180, 8, 16)]
+    {
+        let at = header + i * stride;
+        put(&mut f, at, 1, 4);
+        put(
+            &mut f,
+            at + if bits == 64 { 4 } else { 24 },
+            if writable { 6 } else { 4 },
+            4,
+        );
+        for (field, value) in [
+            (if bits == 64 { 8 } else { 4 }, offset),
+            (if bits == 64 { 16 } else { 8 }, address),
+            (if bits == 64 { 32 } else { 16 }, file_bytes),
+            (if bits == 64 { 40 } else { 20 }, memory_bytes),
+            (if bits == 64 { 48 } else { 28 }, 4096),
+        ] {
+            put(&mut f, at + field, value, bits / 8);
+        }
+    }
+    f
+}
+#[test]
+fn elf_library_and_program_keep_their_distinct_native_file_page_tails() {
+    for bits in [32, 64] {
+        let f = elf_fixture(bits, false);
+        let library = Image::parse(&f, Some(0x200000), LoadRole::Library).unwrap();
+        let program = Image::parse(&f, Some(0x200000), LoadRole::Program).unwrap();
+        assert_eq!(library.bytes.len(), 0x4000);
+        assert_eq!(library.base, 0x200000);
+        assert_eq!(library.regions.len(), 2);
+        assert_eq!(&library.bytes[0x3180..0x3188], &[0x77; 8]);
+        assert_eq!(&library.bytes[0x3188..0x3190], &[0; 8]);
+        assert_eq!(library.bytes[0x3190], 0x77);
+        assert_eq!(&program.bytes[0x3188..0x3190], &[0x77; 8]);
+        assert_eq!(program.bytes[0x3190], 0x77);
+        assert!(library.bytes[0x1000..0x3000].iter().all(|&b| b == 0));
+        let f = elf_fixture(bits, true);
+        let program = Image::parse(&f, None, LoadRole::Program).unwrap();
+        assert!(program.bytes[0x3188..0x4000].iter().all(|&b| b == 0));
+    }
+}
+#[test]
+fn elf_checks_segment_congruence_address_domains_and_extended_counts() {
+    for bits in [32, 64] {
+        let original = elf_fixture(bits, false);
+        let header = if bits == 64 { 64 } else { 52 };
+        let stride = if bits == 64 { 56 } else { 32 };
+        let mut f = original.clone();
+        put(
+            &mut f,
+            header + stride + if bits == 64 { 16 } else { 8 },
+            0x3181,
+            bits / 8,
+        );
+        assert!(Image::parse(&f, None, LoadRole::Library).is_err());
+        let mut f = original.clone();
+        put(&mut f, if bits == 64 { 56 } else { 44 }, 65535, 2);
+        assert!(Image::parse(&f, None, LoadRole::Library).is_err());
+        let mut f = original.clone();
+        put(&mut f, 16, 2, 2);
+        assert!(Image::parse(&f, Some(0x200000), LoadRole::Library).is_err());
+        assert!(Image::parse(&original, Some(1), LoadRole::Library).is_err());
+        assert!(Image::parse(&original, Some(u64::MAX - 4095), LoadRole::Library).is_err());
     }
 }

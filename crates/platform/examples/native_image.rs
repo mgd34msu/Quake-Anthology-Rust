@@ -1,10 +1,17 @@
 //! Inert native-image inspection. Never binds imports or runs module code.
-use qa_formats::program::native::Image;
+use qa_formats::program::native::{Encoding, Image, LoadRole};
 use std::io::Write;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let first = args.next().ok_or("native_image [--dump] PATH [BASE]")?;
-    let dump = first == "--dump";
+    let first = args
+        .next()
+        .ok_or("native_image [--dump|--dump-program] PATH [BASE]")?;
+    let dump = first == "--dump" || first == "--dump-program";
+    let role = if first == "--dump-program" {
+        LoadRole::Program
+    } else {
+        LoadRole::Library
+    };
     let path = if dump {
         args.next().ok_or("path")?
     } else {
@@ -18,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected argument".into());
     }
     let file = std::fs::read(path)?;
-    let image = Image::parse(&file, base).map_err(|e| format!("{e:?}"))?;
+    let image = Image::parse(&file, base, role).map_err(|e| format!("{e:?}"))?;
     if dump {
         let mut output = std::io::stdout().lock();
         for value in [
@@ -30,6 +37,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             image.initializers.len() as u64,
         ] {
             output.write_all(&value.to_le_bytes())?;
+        }
+        if image.target.encoding == Encoding::Elf {
+            for value in [image.needed.len() as u64, image.dynamic.len() as u64] {
+                output.write_all(&value.to_le_bytes())?;
+            }
         }
         output.write_all(&image.bytes)?;
         return Ok(());

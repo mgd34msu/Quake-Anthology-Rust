@@ -550,5 +550,7 @@ pub(super) fn parse(file: &[u8], requested_base: Option<u64>) -> Result<Image, F
         needed: Box::new([]),
         tls,
         initializers: initializers.into_boxed_slice(),
+        dynamic: Box::new([]),
+        relro: Box::new([]),
     })
 }
