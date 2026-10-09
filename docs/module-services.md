@@ -86,3 +86,27 @@ table, `quake-2/game/game.h`'s `game_import_t`, and
 the app's actual services borrow across module namespaces, generation lifetimes,
 explicit relinks, shared converted cvars, one command buffer, byte strings and
 file-handle ownership. They do not qualify installed or native ABI gameplay.
+
+THE-2563/THE-796 add inert PE32/PE32+ parsing into the one native image record.
+Headers and sections become one owned byte image with numeric region permissions.
+Imports, exact interned symbol names, export aliases/ordinals, forwarder names,
+delay descriptors, TLS templates and callback addresses retain native widths.
+HIGHLOW, DIR64 and the i386 HIGH/LOW/HIGHADJ relocations modify those owned bytes;
+fixed-base images refuse a move. Checked mapped ranges reject image gaps and
+overlapping relocations. CLR images and malformed import/metadata ranges are
+rejected at load. Nothing binds an import, runs an initializer or executes code.
+
+`tools/check_native_image.py` copies the C port's unchanged PE reader source
+into a developer comparison helper. It compares headers, imports, exports, TLS
+counters and every mapped byte at the preferred base and two relocated bases.
+It does not run the C module host, source-inspection policy, runtime import
+binding or unwind/lifecycle execution. Retail Xatrix, Rogue, CTF, LMCTF and
+LMCTF Pentium-Pro i386 DLLs and rerelease baseq2's x64 DLL match all 18 cases.
+ELF parsing, forwarder-chain resolution, PE unwind/runtime services and the one
+native machine-code backend remain required. Native live collision-field
+binding and retail/installed module gameplay have not been proved.
+
+The owner-authorized development install at `a1d32b8c` uses only `qfiles/qa-rust`,
+with adjacent `qa-rust.txt`. It passed private Q1 start/Q2 base1/Q3 q3dm1 GL/CPU
+smoke runs and documents current gaps. This is rendering evidence, not module
+gameplay or timing qualification.

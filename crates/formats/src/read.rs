@@ -45,6 +45,13 @@ impl<'a> Reader<'a> {
     pub fn i32(&mut self) -> Result<i32, FormatError> {
         Ok(self.u32()? as i32)
     }
+    pub fn u64(&mut self) -> Result<u64, FormatError> {
+        Ok(u64::from_le_bytes(
+            self.take(8)?
+                .try_into()
+                .map_err(|_| FormatError::Truncated)?,
+        ))
+    }
     pub fn count(&mut self, min: usize, max: usize) -> Result<usize, FormatError> {
         let value = self.i32()?;
         if value < 0 || (value as usize) < min || value as usize > max {

@@ -2625,3 +2625,30 @@ This is no measured speedup claim; the extraction removes duplicate hook and
 numeric implementations. Checker, 597 workspace tests and Clippy pass. QC
 builtins, native entity binding, native execution and installed acceptance remain
 open.
+
+
+### THE-2563/THE-796/THE-863: inert PE image reader
+
+The portable tracked release probes built in 21.63 seconds. This slice is load
+work: it does not execute native instructions or bind runtime imports. The
+unchanged C port PE headers/relocation/import/export/TLS functions match all
+18 retail cases at preferred, +1 MiB and -1 MiB bases, including 17,019,744
+output bytes. Fixtures cover export aliases/ordinals, full-width pointers,
+malformed headers/mapped gaps, import hints/ordinal bits/termination, split-word
+relocations and inert TLS callback addresses. ELF and native runtime execution
+remain open; no native host or performance qualification is claimed.
+
+The existing typed-services workload was rerun on CPU23, 60 warm-up plus 600
+measured frames, 64 groups per frame. Median/p99 ns were 105220/140550,
+107670/125890 and 105870/120240. Each run had 42240 publications, checksum
+27941760, zero measured caller heap/requested bytes and allocator positive
+control one. No workers ran in this headless workload; the reader's load-time
+allocations are outside its measurement. These timings describe the existing
+services fixture, not native module execution or a loader speedup.
+
+Evidence: `~/.cache/qa-rust/THE-2563-pe-20261009/` contains the comparison reports,
+retail inspection, build/check logs and services allocation/timing rows. No
+full private renderer qualification was repeated for this unused cold reader.
+The separately accepted installed development build remains `a1d32b8c`;
+its six private map/backend smoke runs are in
+`~/.cache/qa-rust/THE-863-install-20261009/smoke-installed/`.
