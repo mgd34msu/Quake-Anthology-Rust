@@ -3233,3 +3233,37 @@ individual host legs, archived baseline source, copied before/after probes and
 submission still remain for the next integration slices. This checkpoint does
 not implement payload codecs, Q3 command ACK/XOR, native handshake, snapshot
 deltas or installed interoperability. The accepted installation is unchanged.
+
+### THE-860: shared native command delta field tables
+
+One scalar table walker now writes and reads the QW and Q2 mask records and
+Q3 keyed command deltas. Static tables select native field order, signed
+widths, float-angle equality and projection, mandatory duration/light bytes,
+aggregate change bits and time compression. The Q3 table preserves original
+MSG_ReadDeltaKey's kbitmask[bits] extra key bit; native char/byte projections
+still narrow at their boundary. No per-protocol delta algorithm was added.
+
+`tools/check_command_delta.py` compiles unchanged original QW/Q2 command
+functions, QW angle helpers and Q3 keyed command/MSG/Huffman functions with
+cold byte-buffer and struct bindings. **3,072 cases** match encoded bytes and
+all decoded record words exactly, including all field-mask combinations,
+signed zero, equal-quantized/different-float angles, signed width extremes,
+short/full/negative time differences and command keys. Three focused Rust
+fixtures also check mandatory trailing bytes and truncated message rejection.
+
+Portable release probe build **8.096 seconds**, source e8112142 plus the
+recorded command-codec slice, empty RUSTFLAGS, allocation tracking and no proof.
+CPU23, 60 warm-up / 600 measured iterations, 16 encode/decode records per
+iteration with original-C fidelity checks: **3,225 ns median / 6,750 ns p99**.
+Including warm-up: 10,560 checks and 101,618 encoded bytes. Calling-thread Rust
+allocations, reallocations and requested bytes are zero; positive control one.
+No workers, physical transport, full packet framing or gameplay are timed.
+The unchanged checker, 637 workspace tests and warning-denied Clippy pass.
+
+Evidence directory `THE-860-command-delta-20261009`: `final-original/` contains
+the extracted C, fixture, native/Rust output and comparison.json; `build.json`,
+`final-timing.json`, copied `command-delta`, focused/workspace/Clippy/checker logs and
+`source.patch`. These are command delta records. NQ and rerelease payloads,
+full native command packets, host local framing, Q3 XOR/command reliability,
+entity/player snapshot tables and installed interoperability remain required.
+The accepted installation is unchanged.

@@ -79,7 +79,7 @@ int main(int argc,char **argv) {
 
 
 def function(source, name):
-    start = re.search(r"(?:void|int)\s+" + name + r"\s*\(", source).start()
+    start = re.search(r"(?:void|int|float)\s+" + name + r"\s*\(", source).start()
     end = source.index("\n}\n", start) + 3
     return source[start:end]
 
