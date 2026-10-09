@@ -1281,3 +1281,88 @@ timeout 300 cargo build --release -p qa-platform --example entity_tables \
   --features allocation-tracking
 timeout 300 taskset -c "$CORE" target/release/examples/entity_tables 8192
 ```
+
+
+## THE-892 shared membership marks (2026-10-08)
+
+One core `StampSet` now supplies collision brush visits, per-view visibility,
+GL sky membership and surface-cache batch pins. The former four epoch-reset
+implementations were deleted. Forced rollover, independent sets, repeated
+visibility queries and cache metadata recycling have behavioral checks.
+
+Initial headless comparisons used parent `1da98fe0` and the staged StampSet
+slice. Both had the same pre-THE-2882 retail Q2 admission defect; these rows
+cover valid synthetic geometry and visibility, not Q2 app admission. Release
+builds used baseline CPU, core 23, no debugger, 60 warm-up batches and 600
+measured batches in ABBA order. Each trace batch contains 64 trace/point pairs.
+Each visibility batch contains 96 queries over e1m1, base1 and q3dm1.
+
+| Headless workload | Before medians (ns/batch) | After medians (ns/batch) | Before p99 (ns/batch) | After p99 (ns/batch) |
+| --- | --- | --- | --- | --- |
+| Q2 brush trace + point | 18,875 / 18,840.5 | 19,090 / 19,025 | 158,520 / 155,120 | 156,710 / 156,451 |
+| Q3 brush trace + point | 6,930 / 6,955 | 6,965 / 6,985 | 91,160 / 88,750 | 90,110 / 90,100 |
+| Three-map visibility | 11,333,463.5 / 11,321,159 | 11,173,108 / 11,103,038 | 12,125,539 / 12,087,738 | 11,923,739 / 11,867,779 |
+
+Each native rule matches all 15,045 original-C rows, with identical contacts
+and enclosed results across timing runs. Each run measures 38,400 trace/point
+pairs without Rust allocation/reallocation/requested bytes; the positive
+control reports one allocation. Visibility checks raw PVS data, point/leaf
+selection and face order through a separate Rust oracle over decoded native
+data. Each run covers 57,600 measured queries with zero calling-thread Rust
+allocations. It does not execute an extracted C visibility implementation.
+
+The first visibility measurement overlapped developer compilation and its p99
+is excluded. The displayed visibility rows repeat the complete ABBA workload
+after compilation and checks finished. Evidence: developer cache
+`THE-892-shared-stamps/headless-comparison.json`,
+`visibility-timings-final.json`, and corresponding raw reports. The checker
+sweep accepted 18 permitted fixtures and rejected 62 prohibited fixtures before
+Cargo, including renamed epoch implementations and duplicate primitive types;
+`rule-fixtures-final/result.json` records all 80 cases. These pattern checks
+do not prove arbitrary Rust name resolution.
+
+Private CPU/GL comparisons use a separate evidence root,
+`THE-892-shared-stamps-q2-fixed`, with the signed axial fix from `c23d0182` in
+both candidates. Results follow.
+No headless row qualifies gameplay, installation, native heap use or the
+renderer performance targets.
+
+
+Both private comparison candidates include `c23d0182`; the baseline was built
+from that commit in 40.89 s and the StampSet engine source from staged tree
+`7af1284b` in 39.07 s. Both use allocation tracking without proof input. Critical
+core/world/render sources were freshly compiled rather than reused from a
+different archive. Final documentation does not change those compiled sources.
+
+The fixed-camera CPU draw probe uses 640x400, one band, core 23, vsync off,
+60 warm-up and 600 measured frames. The four runs per map use ABBA order.
+
+| Static CPU draw | Before medians (ms) | After medians (ms) | Before p99 (ms) | After p99 (ms) |
+| --- | --- | --- | --- | --- |
+| e1m1 | 1.963 / 1.977 | 2.041 / 2.024 | 2.012 / 2.036 | 2.145 / 2.126 |
+| base1 | 4.535 / 4.517 | 4.585 / 4.555 | 5.467 / 5.186 | 5.402 / 5.166 |
+| q3dm1 | 16.365 / 16.116 | 16.176 / 16.335 | 17.915 / 17.325 | 18.830 / 18.627 |
+
+Compared by the mean of each pair of run medians, changes are +3.16%, +0.97%
+and +0.09%; corresponding p99 changes are +5.53%, -0.80% and +6.29%. Every
+run has byte-identical raw RGBA/depth, workload and cache statistics, with
+zero measured calling-thread Rust allocations/reallocations/requested bytes.
+This is a static draw probe, not the full frame or the native gameplay gate.
+Base1 and q3dm1 exceed the owner's 4 ms target even in this bounded workload;
+q3dm1 speed work remains paused.
+
+Six private GL host runs use 60 warm-up and 600 measured frames. Before/after
+initial fixed-time screenshots match exactly on e1m1/base1/q3dm1, as do scene
+metadata and driver identity. The all-instrumented Rust-thread allocation gate
+passes with zero measured heap work in every run. Native SDL/driver allocation
+is outside that counter. GL driver: llvmpipe (LLVM 22.1.8, 256 bits), OpenGL
+4.6 Core, Mesa 26.2.2-arch1.1: **software GL**. Later animation uses host time,
+so these runs do not supply a matched GL performance comparison.
+
+All 18 private runs preserve the original profile and copied candidate, quit
+normally and leave no owned PIDs. CPU probes locate their copied profile but
+do not prove the app's settings semantics; GL host runs consume copied saved
+settings. Exact output comparisons prove this refactor's bounded fidelity,
+not complete original-game visuals, gameplay, installation or performance.
+Evidence: `THE-892-shared-stamps-q2-fixed/private-comparison.json` and each
+run's `result.json`, `runtime.log`, pixel/depth files and window capture.

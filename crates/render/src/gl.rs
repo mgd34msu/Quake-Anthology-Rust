@@ -13,6 +13,7 @@ use crate::shader::{AlphaGen, BlendFactor, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyClip};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
 use qa_core::primitives::Vec3;
+use qa_core::stamps::StampSet;
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
@@ -288,8 +289,6 @@ struct Mesh {
 struct SkyBatch {
     clip: SkyClip,
     cloud: Option<CloudGrid>,
-    stamp: u64,
-    drawn: u64,
 }
 struct Uniforms {
     mvp: i32,
@@ -379,7 +378,8 @@ pub struct GlBackend {
     table_texture: u32,
     evaluator: StageEvaluator,
     sky_batches: Box<[SkyBatch]>,
-    sky_stamp: u64,
+    sky_touched: StampSet,
+    sky_drawn: StampSet,
     dynamic: Dynamic,
     state: State,
     _context_thread: PhantomData<*mut ()>,
@@ -464,7 +464,8 @@ impl GlBackend {
             table_texture: 0,
             evaluator: StageEvaluator::load(),
             sky_batches: Box::new([]),
-            sky_stamp: 0,
+            sky_touched: StampSet::new(assets.materials().len()),
+            sky_drawn: StampSet::new(assets.materials().len()),
             dynamic: Dynamic::default(),
             state: State::default(),
             _context_thread: PhantomData,
@@ -538,8 +539,6 @@ impl GlBackend {
                 Ok(SkyBatch {
                     clip: SkyClip::new(),
                     cloud,
-                    stamp: 0,
-                    drawn: 0,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?
@@ -928,14 +927,8 @@ impl GlBackend {
         origin: Vec3,
         stats: &mut BackendStats,
     ) {
-        self.sky_stamp = self.sky_stamp.wrapping_add(1);
-        if self.sky_stamp == 0 {
-            self.sky_stamp = 1;
-            for batch in &mut self.sky_batches {
-                batch.stamp = 0;
-                batch.drawn = 0;
-            }
-        }
+        self.sky_touched.begin();
+        self.sky_drawn.begin();
         // The frontend already selected visibility and owns these submissions.
         // All geometry contributes to one clip per material; no second PVS walk.
         for item in list.draws(draws) {
@@ -1027,9 +1020,8 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return None;
         };
-        if batch.stamp != self.sky_stamp {
+        if !self.sky_touched.test_and_set(material_id.0 as usize) {
             batch.clip.clear();
-            batch.stamp = self.sky_stamp;
         }
         Some(&mut batch.clip)
     }
@@ -1061,10 +1053,11 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        if batch.stamp != self.sky_stamp || batch.drawn == self.sky_stamp {
+        if !self.sky_touched.contains(material_id.0 as usize)
+            || self.sky_drawn.test_and_set(material_id.0 as usize)
+        {
             return;
         }
-        batch.drawn = self.sky_stamp;
         let mut bounds = *batch.clip.bounds();
         if !bounds.iter().any(|bound| bound.visible()) {
             return;

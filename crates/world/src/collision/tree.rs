@@ -3,6 +3,7 @@ use super::brushes::{
 };
 use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceQuery};
 use qa_core::primitives::{Axis, Bounds, ClipNode, Plane, Vec3};
+use qa_core::stamps::StampSet;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CollisionLeaf {
@@ -49,8 +50,7 @@ struct Frame {
 /// All mutable query state belongs to this caller, never to loaded geometry.
 pub struct BrushScratch {
     frames: Box<[Frame]>,
-    stamps: Box<[u32]>,
-    generation: u32,
+    stamps: StampSet,
     position_leaves: Box<[u32]>,
 }
 
@@ -58,17 +58,8 @@ impl BrushScratch {
     pub(super) fn load(map: &BrushMap, position_capacity: usize) -> Self {
         Self {
             frames: vec![Frame::default(); map.topology.max_depth].into_boxed_slice(),
-            stamps: vec![0; map.brushes.len()].into_boxed_slice(),
-            generation: 0,
+            stamps: StampSet::new(map.brushes.len()),
             position_leaves: vec![0; position_capacity].into_boxed_slice(),
-        }
-    }
-
-    fn begin(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        if self.generation == 0 {
-            self.stamps.fill(0);
-            self.generation = 1;
         }
     }
 }
@@ -250,7 +241,7 @@ impl Topology {
             return trace;
         }
         let work = BrushWork::new(query);
-        scratch.begin();
+        scratch.stamps.begin();
         if query.start == query.end {
             match root {
                 ModelRoot::Leaf(leaf) => {
@@ -308,10 +299,9 @@ impl Topology {
         }
         for &id in self.members(&self.leaves[leaf as usize]) {
             let index = id as usize;
-            if scratch.stamps[index] == scratch.generation {
+            if scratch.stamps.test_and_set(index) {
                 continue;
             }
-            scratch.stamps[index] = scratch.generation;
             let brush = map.brushes[index];
             if !brush.contents.intersects(work.query.mask) {
                 continue;
@@ -517,7 +507,7 @@ mod tests {
     use qa_core::primitives::SurfaceFlags;
 
     #[test]
-    fn stamp_rollover_cannot_skip_a_brush_with_a_stale_future_epoch() -> Result<(), GeometryError> {
+    fn successive_queries_keep_the_original_brush_contact() -> Result<(), GeometryError> {
         let map = BrushMap::load(
             vec![Plane {
                 normal: Vec3([1.0, 0.0, 0.0]),
@@ -531,18 +521,18 @@ mod tests {
             }],
         )?;
         let mut scratch = map.scratch();
-        scratch.generation = u32::MAX;
-        scratch.stamps.fill(1);
         let query = TraceQuery::point(
             Vec3([1.0, 0.0, 0.0]),
             Vec3([-1.0, 0.0, 0.0]),
             TraceRules::ARENA,
             EntityTraceRules::ARENA,
         );
-        let trace = map.trace_model(0, query, &mut scratch);
-        assert_eq!(trace.fraction, (1.0 - 0.125) / 2.0);
-        assert_eq!(trace.contents, Contents::SOLID);
-        assert_eq!(trace.surface, SurfaceFlags::default());
+        for _ in 0..3 {
+            let trace = map.trace_model(0, query, &mut scratch);
+            assert_eq!(trace.fraction, (1.0 - 0.125) / 2.0);
+            assert_eq!(trace.contents, Contents::SOLID);
+            assert_eq!(trace.surface, SurfaceFlags::default());
+        }
         Ok(())
     }
 }

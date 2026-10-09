@@ -8,6 +8,7 @@
 //! Fullbright colors are encoded by the supplied colormap rows; the cutoff
 //! metadata does not bypass that table. Only explicit fence cutouts skip it.
 
+use qa_core::stamps::StampSet;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -749,7 +750,6 @@ struct Block {
     next: Option<usize>,
     owner: Option<usize>,
     generation: u64,
-    pin_batch: u64,
 }
 
 pub struct SurfaceCache {
@@ -761,7 +761,7 @@ pub struct SurfaceCache {
     free_metadata: Option<usize>,
     rover: usize,
     light_scratch: Box<[i32]>,
-    batch: u64,
+    pins: StampSet,
     batch_active: bool,
     generation: u64,
     stats: CacheStats,
@@ -799,7 +799,7 @@ impl SurfaceCache {
             free_metadata: (block_count > 1).then_some(1),
             rover: 0,
             light_scratch,
-            batch: 0,
+            pins: StampSet::new(block_count),
             batch_active: false,
             generation: 0,
             stats: CacheStats::default(),
@@ -826,13 +826,7 @@ impl SurfaceCache {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
             return false;
         }
-        self.batch = self.batch.wrapping_add(1);
-        if self.batch == 0 {
-            for block in &mut self.blocks {
-                block.pin_batch = 0;
-            }
-            self.batch = 1;
-        }
+        self.pins.begin();
         self.batch_active = true;
         true
     }
@@ -1029,14 +1023,12 @@ impl SurfaceCache {
 
     fn pin(&mut self, block: usize) {
         if self.batch_active {
-            self.blocks[block].pin_batch = self.batch;
+            self.pins.mark(block);
         }
     }
 
     fn pinned(&self, block: usize) -> bool {
-        self.batch_active
-            && self.blocks[block].owner.is_some()
-            && self.blocks[block].pin_batch == self.batch
+        self.batch_active && self.blocks[block].owner.is_some() && self.pins.contains(block)
     }
 
     fn clear_owner(&mut self, block: usize) {
@@ -1044,7 +1036,6 @@ impl SurfaceCache {
             self.slots[key].block = None;
             self.stats.evictions = self.stats.evictions.saturating_add(1);
         }
-        self.blocks[block].pin_batch = 0;
     }
 
     fn allocate(&mut self, bytes: usize) -> Option<usize> {

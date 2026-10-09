@@ -80,7 +80,21 @@ spawning, mixed-play and installed-binary evidence they require.
 Completed R2 structural order:
 THE-613, THE-623, THE-630, THE-639, THE-859, THE-892, THE-884, THE-885,
 THE-887, THE-888, THE-889, THE-890, THE-886, THE-901, THE-891.
-Current order, authorised in the 2026-10-08 18:10 owner directive:
+The 2026-10-08 18:50 ruling prioritises THE-2882's retail Q2 plane-load
+regression and the requested qualified installation, then THE-2868. The
+approved collision design uses one flat model store with generation handles,
+caller-selected trace rules, entity-role pose/link rule tables and distinct
+load/link bounds expansion. Delete the format enum, model-0 path and duplicate
+model tables in the same slice; internal geometry handles never go on the wire.
+THE-2879's later format directive follows the current primitives slice:
+THE-1681/THE-2438 .lit lighting and THE-938 KPF/PKZ first, then
+THE-974/THE-1260/THE-979 fonts, THE-794/THE-1928 demos and THE-1218/THE-1950
+cinematics. Every format extends the one reader for its kind. AAS (THE-2026)
+and NAV2 (THE-2030/THE-1182) accompany R7 bots. MP3/FLAC/Opus music (THE-959)
+and IQM models (THE-1483) are required. Stock presentation remains original;
+new streaming readers use fixed load-sized state and zero frame allocation.
+
+The remaining 2026-10-08 18:10 core order remains required:
 THE-2875 removes unused FrameArena and duplicate liveness storage, then THE-2868
 puts inline collision models into the shared geometry store. One rule-set id
 type selects rules per role: movement, damage, link order, tick rate and trace;
@@ -123,7 +137,9 @@ copying recursive stacks, global mutable scratch or per-game capability code.
 
 Every primitive has exactly one implementation. When it replaces an old copy,
 delete that copy in the same slice and extend the duplicate checker. Collision,
-visibility and GL sky marking use the one core StampSet. Core forbids unsafe
+visibility, GL sky marking and surface-cache pins use the one core StampSet.
+The checker rejects duplicate public core types and renamed epoch-mark loops
+in production, examples and tests. Core forbids unsafe
 code; use safe typed owned storage allocated at load. Other unsafe code needs
 an explicit safety invariant and focused memory-safety proof, and belongs only
 at OS/SDL boundaries or in paths whose measured gain justifies it.

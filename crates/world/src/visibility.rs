@@ -1,6 +1,7 @@
 //! Shared BSP visibility; file readers normalize selectors and row encoding at load.
 
 use qa_core::primitives::{Bounds, Plane, Vec3};
+use qa_core::stamps::StampSet;
 
 mod load;
 mod query;
@@ -219,17 +220,16 @@ struct WalkStep {
 pub struct ViewVisibility {
     primary: Box<[u8]>,
     secondary: Box<[u8]>,
-    node_marks: Box<[u32]>,
-    leaf_marks: Box<[u32]>,
-    surface_marks: Box<[u32]>,
-    emitted_marks: Box<[u32]>,
-    walk_marks: Box<[u32]>,
+    node_marks: StampSet,
+    leaf_marks: StampSet,
+    surface_marks: StampSet,
+    emitted_marks: StampSet,
+    walk_marks: StampSet,
     ancestors: Box<[u32]>,
     walk: Box<[WalkStep]>,
     visible: Box<[u32]>,
     depth_keys: Box<[u32]>,
     visible_count: usize,
-    generation: u32,
     counters: VisibilityCounters,
 }
 
@@ -241,18 +241,17 @@ impl ViewVisibility {
         Self {
             primary: vec![0; world.pvs.row_bytes()].into_boxed_slice(),
             secondary: vec![0; world.pvs.row_bytes()].into_boxed_slice(),
-            node_marks: vec![0; nodes].into_boxed_slice(),
-            leaf_marks: vec![0; leaves].into_boxed_slice(),
-            surface_marks: vec![0; surfaces].into_boxed_slice(),
-            emitted_marks: vec![0; surfaces].into_boxed_slice(),
-            walk_marks: vec![0; nodes + leaves].into_boxed_slice(),
+            node_marks: StampSet::new(nodes),
+            leaf_marks: StampSet::new(leaves),
+            surface_marks: StampSet::new(surfaces),
+            emitted_marks: StampSet::new(surfaces),
+            walk_marks: StampSet::new(nodes + leaves),
             ancestors: vec![0; nodes].into_boxed_slice(),
             // Each descent adds a far child and an emit step; acyclic depth <= nodes.
             walk: vec![WalkStep::default(); nodes * 2 + 1].into_boxed_slice(),
             visible: vec![0; surfaces].into_boxed_slice(),
             depth_keys: vec![0; surfaces].into_boxed_slice(),
             visible_count: 0,
-            generation: 0,
             counters: VisibilityCounters::default(),
         }
     }
@@ -268,17 +267,5 @@ impl ViewVisibility {
 
     pub fn counters(&self) -> VisibilityCounters {
         self.counters
-    }
-
-    fn next_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        if self.generation == 0 {
-            self.node_marks.fill(0);
-            self.leaf_marks.fill(0);
-            self.surface_marks.fill(0);
-            self.emitted_marks.fill(0);
-            self.walk_marks.fill(0);
-            self.generation = 1;
-        }
     }
 }

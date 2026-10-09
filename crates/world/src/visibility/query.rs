@@ -72,7 +72,11 @@ impl ViewVisibility {
                 *primary |= secondary;
             }
         }
-        self.next_generation();
+        self.node_marks.begin();
+        self.leaf_marks.begin();
+        self.surface_marks.begin();
+        self.emitted_marks.begin();
+        self.walk_marks.begin();
         let result = self.query_loaded(world, origin, all_visible, hidden_areas, frustum);
         if result.is_err() {
             self.visible_count = 0;
@@ -92,7 +96,7 @@ impl ViewVisibility {
             while edge != u32::MAX {
                 let parent = world.parent_edges[edge as usize];
                 edge = parent.next;
-                if self.node_marks[parent.node as usize] == self.generation {
+                if self.node_marks.contains(parent.node as usize) {
                     continue;
                 }
                 let Some(slot) = self.ancestors.get_mut(count) else {
@@ -100,7 +104,7 @@ impl ViewVisibility {
                 };
                 *slot = parent.node;
                 count += 1;
-                self.node_marks[parent.node as usize] = self.generation;
+                self.node_marks.mark(parent.node as usize);
                 self.counters.nodes_marked += 1;
             }
             if count == 0 {
@@ -123,9 +127,7 @@ impl ViewVisibility {
 
     fn emit_surface(&mut self, surface: u32, key: u32) -> Result<(), VisibilityQueryError> {
         let index = surface as usize;
-        if self.surface_marks[index] != self.generation
-            || self.emitted_marks[index] == self.generation
-        {
+        if !self.surface_marks.contains(index) || self.emitted_marks.contains(index) {
             return Ok(());
         }
         let Some(slot) = self.visible.get_mut(self.visible_count) else {
@@ -134,7 +136,7 @@ impl ViewVisibility {
         *slot = surface;
         self.depth_keys[self.visible_count] = key;
         self.visible_count += 1;
-        self.emitted_marks[index] = self.generation;
+        self.emitted_marks.mark(index);
         self.counters.surfaces += 1;
         Ok(())
     }
@@ -161,10 +163,10 @@ impl ViewVisibility {
             {
                 continue;
             }
-            self.leaf_marks[index] = self.generation;
+            self.leaf_marks.mark(index);
             let first = leaf.surfaces.first as usize;
             for &surface in &world.leaf_surfaces[first..first + leaf.surfaces.count as usize] {
-                self.surface_marks[surface as usize] = self.generation;
+                self.surface_marks.mark(surface as usize);
             }
             self.mark_ancestors(world, index)?;
         }
@@ -194,9 +196,7 @@ impl ViewVisibility {
             }
             if step.child >= 0 {
                 let index = step.child as usize;
-                if self.node_marks[index] != self.generation
-                    || self.walk_marks[index] == self.generation
-                {
+                if !self.node_marks.contains(index) || self.walk_marks.contains(index) {
                     continue;
                 }
                 let node = &world.nodes[index];
@@ -204,7 +204,7 @@ impl ViewVisibility {
                     self.counters.bounds_rejected += 1;
                     continue;
                 };
-                self.walk_marks[index] = self.generation;
+                self.walk_marks.mark(index);
                 self.counters.nodes_visited += 1;
                 let plane = world.planes[node.plane as usize];
                 let front = usize::from(plane.normal.dot(origin) < plane.distance);
@@ -236,9 +236,7 @@ impl ViewVisibility {
             } else {
                 let index = (-1 - i64::from(step.child)) as usize;
                 let walk_index = world.nodes.len() + index;
-                if self.leaf_marks[index] != self.generation
-                    || self.walk_marks[walk_index] == self.generation
-                {
+                if !self.leaf_marks.contains(index) || self.walk_marks.contains(walk_index) {
                     continue;
                 }
                 let leaf = &world.leaves[index];
@@ -246,7 +244,7 @@ impl ViewVisibility {
                     self.counters.bounds_rejected += 1;
                     continue;
                 }
-                self.walk_marks[walk_index] = self.generation;
+                self.walk_marks.mark(walk_index);
                 self.counters.leaves_visited += 1;
                 let first = leaf.surfaces.first as usize;
                 for &surface in &world.leaf_surfaces[first..first + leaf.surfaces.count as usize] {
@@ -266,7 +264,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generation_rollover_clears_fixed_marks_before_reusing_one() -> Result<(), VisibilityError> {
+    fn successive_queries_preserve_leaf_surface_deduplication() -> Result<(), VisibilityError> {
         let world = VisibilityWorld::load(
             vec![],
             vec![],
@@ -275,26 +273,23 @@ mod tests {
                 area: None,
                 solid: false,
                 bounds: Bounds::default(),
-                surfaces: SurfaceSpan { first: 0, count: 1 },
+                surfaces: SurfaceSpan { first: 0, count: 2 },
             }],
-            vec![0],
+            vec![0, 0],
             1,
             -1,
             PvsRows::all_visible(0),
         )?;
         let mut view = ViewVisibility::new(&world);
-        assert_eq!(
-            view.query(&world, Vec3::default(), None, None, &[], &[]),
-            Ok(())
-        );
-        view.generation = u32::MAX;
-        assert_eq!(
-            view.query(&world, Vec3::default(), None, None, &[], &[]),
-            Ok(())
-        );
-        assert_eq!(view.generation, 1);
-        assert_eq!(view.visible_surfaces(), &[0]);
-        assert_eq!(view.counters().leaves_visited, 1);
+        for _ in 0..3 {
+            assert_eq!(
+                view.query(&world, Vec3::default(), None, None, &[], &[]),
+                Ok(())
+            );
+            assert_eq!(view.visible_surfaces(), &[0]);
+            assert_eq!(view.counters().leaves_visited, 1);
+            assert_eq!(view.counters().surfaces, 1);
+        }
         Ok(())
     }
 }

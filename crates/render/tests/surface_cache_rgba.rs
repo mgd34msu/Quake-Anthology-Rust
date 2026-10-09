@@ -333,6 +333,82 @@ fn batch_pins_protect_both_layouts_and_changed_stamp_refills() {
 }
 
 #[test]
+fn rejected_nested_batches_preserve_pins_after_block_metadata_reuse() {
+    let mut cache = SurfaceCache::load(
+        vec![
+            SurfaceSource::load_rgba([0; 2], [2, 1], 1).unwrap(),
+            SurfaceSource::load_rgba([0; 2], [2, 1], 1).unwrap(),
+            SurfaceSource::load_rgba([0; 2], [4, 1], 1).unwrap(),
+        ],
+        16,
+    )
+    .unwrap();
+    let rejected_fills = Cell::new(0);
+
+    assert!(cache.begin_batch());
+    let first = cache
+        .prepare_rgba(0, 0, state(), |out| out.fill(17))
+        .unwrap();
+    let second = cache
+        .prepare_rgba(1, 0, state(), |out| out.fill(29))
+        .unwrap();
+    assert!(!cache.begin_batch());
+    assert!(
+        cache
+            .prepare_rgba(2, 0, state(), |_| {
+                rejected_fills.set(rejected_fills.get() + 1)
+            })
+            .is_none()
+    );
+    assert_eq!(cache.pixels(first).unwrap(), &[17; 8]);
+    assert_eq!(cache.pixels(second).unwrap(), &[29; 8]);
+    cache.end_batch();
+
+    // A new batch permits both old owners to be coalesced. Their second
+    // metadata record returns to the free list, then is reused by a split.
+    assert!(cache.begin_batch());
+    let combined = cache
+        .prepare_rgba(2, 0, state(), |out| out.fill(41))
+        .unwrap();
+    assert!(cache.pixels(first).is_none());
+    assert!(cache.pixels(second).is_none());
+    assert_eq!(cache.pixels(combined).unwrap(), &[41; 16]);
+    cache.end_batch();
+
+    assert!(cache.begin_batch());
+    let reused_first = cache
+        .prepare_rgba(0, 0, state(), |out| out.fill(53))
+        .unwrap();
+    let reused_second = cache
+        .prepare_rgba(1, 0, state(), |out| out.fill(67))
+        .unwrap();
+    assert!(cache.pixels(combined).is_none());
+    assert!(!cache.begin_batch());
+    assert!(
+        cache
+            .prepare_rgba(2, 0, state(), |_| {
+                rejected_fills.set(rejected_fills.get() + 1)
+            })
+            .is_none()
+    );
+    assert_eq!(cache.pixels(reused_first).unwrap(), &[53; 8]);
+    assert_eq!(cache.pixels(reused_second).unwrap(), &[67; 8]);
+    assert_eq!(rejected_fills.get(), 0);
+    cache.end_batch();
+
+    assert!(cache.begin_batch());
+    let final_combined = cache
+        .prepare_rgba(2, 0, state(), |out| out.fill(79))
+        .unwrap();
+    assert!(cache.pixels(reused_first).is_none());
+    assert!(cache.pixels(reused_second).is_none());
+    assert_eq!(cache.pixels(final_combined).unwrap(), &[79; 16]);
+    assert_eq!(cache.stats().rejected, 4);
+    assert_eq!(cache.stats().fills, 6);
+    cache.end_batch();
+}
+
+#[test]
 fn mixed_payload_eviction_coalesces_and_invalidates_every_owner() {
     let (texture, palette) = indexed_resources();
     let mut cache = SurfaceCache::load(

@@ -106,6 +106,68 @@ def main():
             if not passed:
                 raise RuntimeError("rule was not enforced: " + rule)
         fixture.unlink()
+        # Every public core primitive has one owner, including examples and
+        # aliases. Epoch-mark copies are rejected even after renaming them.
+        for name, content, directory in [
+            ("stamp-struct", "struct StampSet { marks: Vec<u32> }", "world/src"),
+            ("stamp-type-alias", "type StampSet = Renamed;", "render/src"),
+            ("stamp-example", "struct StampSet {}", "world/examples"),
+            ("name-primitive", "struct NameTable {}", "console/src"),
+            ("text-primitive", "struct FixedText {}", "ui/tests"),
+            ("epoch-mark-array", "impl Marks { fn begin(&mut self) { self.generation = self.generation.wrapping_add(1); if self.generation == 0 { self.values.fill(0); self.generation = 1; } } }", "world/src"),
+            ("epoch-mark-batches", "impl Batches { fn begin(&mut self) { self.count = self.count.wrapping_add(1); if self.count == 0 { self.count = 1; for row in &mut self.rows { row.seen = 0; row.drawn = 0; } } } }", "render/src"),
+            ("epoch-mark-reference", "fn renew(rows: &mut [u64], epoch: &mut u64) { *epoch = epoch.wrapping_add(1); if *epoch == 0 { rows.fill(0); *epoch = 1; } }", "world/examples"),
+        ]:
+            violation = root / "crates" / directory / "primitive_violation.rs"
+            violation.parent.mkdir(parents=True, exist_ok=True)
+            violation.write_text(content)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            output = json.loads(result.stdout)
+            passed = result.returncode != 0 and any(v["rule"] == "duplicate-primitive" for v in output["findings"])
+            records.append({"rule": name, "rejected_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("duplicate primitive was admitted: " + name)
+            violation.unlink()
+        for name, content in [
+            ("owned-primitive-import", "use qa_core::stamps::StampSet; fn marks() -> StampSet { StampSet::new(16) }"),
+            ("lifetime-generation", "fn retire(value: &mut u32) { *value += 1; }"),
+            ("protocol-counter", "fn advance(value: &mut u32) { *value = value.wrapping_add(1); if *value == 0 { *value = 1; } }"),
+            ("primitive-associated-type", "impl Iterator for Live { type Item = EntityId; }"),
+        ]:
+            fixture.write_text(content)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            passed = result.returncode == 0
+            records.append({"rule": name, "allowed_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("permitted primitive use was rejected: " + name)
+        fixture.unlink()
+        core_violation = root / "crates/core/src/unsafe_violation.rs"
+        for name, content in [
+            ("unsafe-core-block", "fn bad() { unsafe { operation(); } }"),
+            ("unsafe-core-function", "unsafe fn bad() {}"),
+        ]:
+            core_violation.write_text(content)
+            result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+            output = json.loads(result.stdout)
+            passed = result.returncode != 0 and any(v["rule"] == "unsafe-core" for v in output["findings"])
+            records.append({"rule": name, "rejected_before_cargo": passed})
+            (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+            if not passed:
+                raise RuntimeError("unsafe core was admitted: " + name)
+        core_violation.unlink()
+        core_lib = root / "crates/core/src/lib.rs"
+        original_core = core_lib.read_text()
+        core_lib.write_text(original_core.replace("#![forbid(unsafe_code)]", ""))
+        result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+        output = json.loads(result.stdout)
+        passed = result.returncode != 0 and any(v["rule"] == "unsafe-core" for v in output["findings"])
+        records.append({"rule": "unsafe-core-forbid-removed", "rejected_before_cargo": passed})
+        (args.evidence / "unsafe-core-forbid-removed.log").write_text(result.stdout + result.stderr)
+        core_lib.write_text(original_core)
+        if not passed:
+            raise RuntimeError("core unsafe ban could be removed")
         # Reject every source independently, including developer examples and
         # imports/foreign declarations, while permitting the platform boundary.
         for name, text, directory in [

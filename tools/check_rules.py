@@ -87,6 +87,8 @@ def test_item_ranges(code):
 
 
 def type_definitions(code):
+    if not any(token in code for token in ("struct", "enum", "type")):
+        return
     blocks, boundary = [], 0
     for token in re.finditer(r"\b(struct|enum|type)\s+(\w+)|[{};]", code):
         value = token[0]
@@ -105,8 +107,12 @@ def type_definitions(code):
 
 def check(root):
     findings, definitions = [], {}
-    primitive_source = source_code((root / "crates/core/src/primitives.rs").read_text())
-    primitives = {match[2] for match in type_definitions(primitive_source)}
+    primitives = {}
+    for path in sorted((root / "crates/core/src").rglob("*.rs")):
+        code = source_code(path.read_text())
+        for match in type_definitions(code):
+            if path.name == "primitives.rs" or re.search(r"\bpub(?:\s*\([^)]*\))?\s*$", code[:match.start()]):
+                primitives.setdefault(match[2], path.relative_to(root).as_posix())
     allow_file = root / "tools/rules-allowlist.json"
     allowed = json.loads(allow_file.read_text()) if allow_file.exists() else []
     for row in allowed:
@@ -124,18 +130,46 @@ def check(root):
         raw = path.read_text()
         code = source_code(raw)
         relative = path.relative_to(root).as_posix()
+        if relative.startswith("crates/core/"):
+            for match in re.finditer(r"\bunsafe\b", code):
+                add(path, code, match.start(), "unsafe-core")
+        for match in type_definitions(code):
+            owner = primitives.get(match[2])
+            if owner is not None:
+                if relative != owner or match[2] in definitions:
+                    add(path, code, match.start(), "duplicate-primitive")
+                else:
+                    definitions[match[2]] = relative
+        # Renaming an epoch-mark implementation must not hide its duplication.
+        # Lifetime generations and protocol counters without bulk mark resets
+        # are different data and remain permitted.
+        if relative != "crates/core/src/stamps.rs" and "wrapping_add" in code:
+            for function in re.finditer(r"\bfn\s+\w+", code):
+                end, _ = annotated_item_end(code, function.start())
+                body = code[function.start():end]
+                renewal = re.search(r"\.\s*wrapping_add\s*\(\s*1\s*\)", body)
+                zero_branch = re.search(r"\bif\b[^;{}]*==\s*0\s*\{", body)
+                if renewal and zero_branch:
+                    opening = body.index("{", zero_branch.start())
+                    reset = body[opening:delimiter_end(body, opening)]
+                    if re.search(r"\.\s*fill\s*\(\s*0\s*\)|\bfor\b[^{}]*\{[^}]*\.\s*\w+\s*=\s*0\s*;", reset):
+                        add(path, code, function.start() + renewal.start(), "duplicate-primitive")
         if not relative.startswith("crates/core/"):
             payloads = {"SysEvent", "FrameEvent", "SoundEvent", "EffectEvent", "PrintEvent", "Packet"}
             for alias in re.finditer(r"\b(" + "|".join(sorted(payloads)) + r")\s+as\s+(\w+)", code):
                 payloads.add(alias[2])
             payload = r"(?:[\w]+\s*::\s*)*(?:" + "|".join(sorted(payloads)) + r")\b"
-            for match in re.finditer(r"\b(?:Vec|VecDeque|LinkedList)\s*<\s*(?:Option\s*<\s*)?" + payload
+            event_storage = any(token in code for token in (*payloads, "Ring", "Queue"))
+            pattern = r"\b(?:Vec|VecDeque|LinkedList)\s*<\s*(?:Option\s*<\s*)?" + payload \
                 + r"|\[\s*(?:Option\s*<\s*)?" + payload + r"[^;{}]*;[^\]]*\]"
-                + r"|\b(?:struct|enum|type)\s+\w*(?:Sound|Effect|Print|Packet|SysEvent|OutputEvent)\w*(?:Ring|Queue)\b"
-                + r"|\b(?:struct|enum|type)\s+\w*(?:Ring|Queue)\w*[^;]*\{[^}]*" + payload, code):
+            pattern += r"|\b(?:struct|enum|type)\s+\w*(?:Sound|Effect|Print|Packet|SysEvent|OutputEvent)\w*(?:Ring|Queue)\b"
+            pattern += r"|\b(?:struct|enum|type)\s+\w*(?:Ring|Queue)\w*[^;]*\{[^}]*" + payload
+            for match in (re.finditer(pattern, code) if event_storage else ()):
                 add(path, code, match.start(), "duplicate-event-storage")
         if not relative.startswith("crates/platform/"):
-            for match in re.finditer(r"\b(?:Instant|SystemTime|UNIX_EPOCH|clock_gettime|sdl[23]|SDL_\w+)\b|\bstdin\s*\(|\bstd\s*::\s*io\s*::\s*stdin\b|\b(?:std\s*::\s*)?thread\s*::\s*(?:spawn|sleep)\b|\buse\s+std\s*::\s*(?:io|thread)\s*::\s*\{[^;]*\b(?:stdin|spawn|sleep)\b", code):
+            os_source = any(token in code for token in ("Instant", "SystemTime", "UNIX_EPOCH", "clock_gettime", "sdl2", "sdl3", "SDL_", "stdin", "thread"))
+            pattern = r"\b(?:Instant|SystemTime|UNIX_EPOCH|clock_gettime|sdl[23]|SDL_\w+)\b|\bstdin\s*\(|\bstd\s*::\s*io\s*::\s*stdin\b|\b(?:std\s*::\s*)?thread\s*::\s*(?:spawn|sleep)\b|\buse\s+std\s*::\s*(?:io|thread)\s*::\s*\{[^;]*\b(?:stdin|spawn|sleep)\b"
+            for match in (re.finditer(pattern, code) if os_source else ()):
                 add(path, code, match.start(), "platform-event-source")
             # Renaming the thread module must not hide its OS operations.
             for alias in re.finditer(r"\buse\s+std\s*::\s*thread\s+as\s+(\w+)", code):
@@ -170,14 +204,23 @@ def check(root):
         if relative != "crates/core/src/checksum.rs":
             rules["duplicate-md4"] = r"(?i)\b(?:struct|enum|type)\s+Md4(?:Context|State|Hasher)?\b|\bfn\s+md4(?:_transform|_update|_finish|_final)?\b"
         for rule, pattern in rules.items():
+            hints = {
+                "shared-mutable-pool": ("Rc",),
+                "numeric-emulation": ("NumericOps", "fround", "SaveJson", "js_"),
+                "crypto-hash": ("sha256", "Sha256", "SHA256"),
+                "content-fingerprint": ("DefaultHasher",),
+                "retired-identifiers": ("donor", "mirror", "seam", "shim"),
+                "panic-or-unwrap": ("panic", "unwrap", "expect"),
+                "string-keyed-state": ("HashMap",),
+                "family-gate": ("BspKind", "GameFamily"),
+                "diagnostics-path": ("eprintln",),
+            }.get(rule)
+            if hints is not None and not any(token in code for token in hints):
+                continue
+            if rule == "duplicate-md4" and "md4" not in code.lower():
+                continue
             for match in re.finditer(pattern, code):
                 add(path, code, match.start(), rule)
-        for match in type_definitions(code):
-            if match[2] in primitives:
-                if match[2] in definitions:
-                    add(path, code, match.start(), "duplicate-primitive")
-                else:
-                    definitions[match[2]] = relative
         for match in re.finditer(r"\bTEMP(?:[-_][A-Z]+)?\b", raw):
             add(path, raw, match.start(), "temporary-diagnostics")
         tests = test_item_ranges(code)
@@ -188,6 +231,10 @@ def check(root):
         code = source_code(checksum.read_text())
         if len(re.findall(r"\bstruct\s+Md4\b", code)) != 1:
             add(checksum, code, 0, "duplicate-md4")
+    core_lib = root / "crates/core/src/lib.rs"
+    code = source_code(core_lib.read_text())
+    if not re.search(r"#!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]", code):
+        add(core_lib, code, 0, "unsafe-core")
     return findings
 
 
