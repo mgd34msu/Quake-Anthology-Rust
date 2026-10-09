@@ -2093,3 +2093,51 @@ Evidence: `THE-697-retirement/continuous-host/pinned.jsonl`, checker and workspa
 logs under the private evidence root. This is the complete headless host output
 path with modeled native delivery results, not a live native channel, gameplay
 qualification, an installation or game-audio evidence. No production path changed.
+
+THE-859/656 normal split-seat integration (2026-10-09): engine commit
+`299427a66ca899ff5f03e91a0806ebf4e721af62`, clean portable normal candidate,
+allocation tracking enabled and proof disabled. Build 27.5055 seconds at
+2026-10-09T08:53:08Z. Eight private 640x400 runs consume fresh copied owner
+settings, quit normally and count zero allocations/reallocations/bytes over
+600 measured frames after 60 warm-up frames, including seven CPU workers.
+Keyboard and aggregate pointer produce independent commands; holds use real
+X-server repeat (40 or 41 repeats per run). Screenshots show two distinct views.
+Trace policies stay explicit; additional authored spawn anchors are fixtures
+until native module selection/telefrag handling is loaded.
+
+| Map and movement pair | Backend | Draw median / p99 (ms) | Total median / p99 (ms) |
+| --- | --- | ---: | ---: |
+| e1m1 Q1 + Q3 | CPU edge/span | 1.297 / 1.631 | 7.956 / 8.345 |
+| e1m1 Q1 + Q3 | OpenGL (Mesa software) | 5.624 / 8.143 | 8.134 / 10.347 |
+| base1 Q2 + Q3 | CPU edge/span | 1.277 / 2.522 | 7.961 / 8.485 |
+| base1 Q2 + Q3 | OpenGL (Mesa software) | 2.188 / 17.214 | 8.048 / 18.334 |
+| q3dm1 Q3 + Q1 | CPU edge/span | 99.462 / 105.345 | 101.278 / 107.272 |
+| q3dm1 Q3 + Q1 | OpenGL (Mesa software) | 2.523 / 19.039 | 8.090 / 20.657 |
+| base1 Q1 + Q3 | CPU edge/span | 1.234 / 2.410 | 7.962 / 8.397 |
+| base1 Q1 + Q3 | OpenGL (Mesa software) | 2.065 / 18.231 | 7.989 / 20.196 |
+
+Affinity: physical CPUs 4,5,6,7,8,9,10,11; frame cap 120, so total rows include cap wait.
+Mesa software GL: llvmpipe LLVM22.1.8, 256-bit, Mesa26.2.2-arch1.1 GL4.6.
+These moving two-view workloads are not comparisons with prior single-view
+fixed-camera renderer timings, and do not qualify the R12 targets. q3dm1 speed
+work remains paused by the core-first order. CPU rejects: e1m1 initial27/max29
+(THE-3164 attribution pending); base1 initial0/max2. GL and q3dm1 CPU reject0.
+Render fidelity, complete native physics, game audio, native protocol/module
+integration and installed gameplay remain open. No installation occurred.
+
+The first reporter failed on the three-column sample format; it was corrected
+and re-read the completed exact-candidate run. The initial q3dm1 CPU action
+window failed independent-mouse evidence: press/release arrived within one
+long frame. Its raw run remains in `q3dm1-cpu-short-input-attempt`. The harness
+now keeps each control held until eight host frames observe the intended
+device phase. The corrected q3dm1 CPU run has17 keyboard-only,10 mouse-only
+and77 simultaneous command frames; input remains private XTest OS input,
+not a shipped input player. No engine receive/poll location changed.
+
+Evidence: `THE-859-local-seats/normal-candidate/build.json`,
+`normal-qualification/qualification.json`,
+`base1-q1-q3-qualification/qualification.json`, per-run logs/screenshots,
+`cleanup.json` (all30 owned PIDs absent, including development/failed attempts),
+`workspace-tests-final.log` (569 passes), retail loads (six passes), Clippy,
+unchanged checker and developer-tool logs under the private evidence root.
+No old single-seat startup or singular map spawn API remains.

@@ -127,6 +127,13 @@ class XClient:
                 self.x.XFlush(self.display)
                 try:
                     time.sleep(action.get("hold_seconds", 0.1))
+                    ready = action.get("wait_until")
+                    if ready is not None:
+                        deadline = time.monotonic() + 20
+                        while not ready():
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError("held private input did not reach the requested host frames")
+                            time.sleep(0.02)
                 finally:
                     if key is not None:
                         self.xt.XTestFakeKeyEvent(self.display, key, 0, 0)
