@@ -504,6 +504,7 @@ pub struct SurfaceCatalog {
     block_count: usize,
     scratch_cells: usize,
     max_reservation: [usize; 2],
+    working_set_bytes: usize,
 }
 
 impl SurfaceCatalog {
@@ -526,6 +527,7 @@ impl SurfaceCatalog {
         }
         let mut slots = Vec::with_capacity(slot_count);
         let mut max_reservation = [0usize; 2];
+        let mut working_set_bytes = 0usize;
         for (surface, source) in surfaces.iter().enumerate() {
             let layout = match source.layout {
                 CacheLayout::Indexed8 => 0,
@@ -538,6 +540,9 @@ impl SurfaceCatalog {
                 let reservation =
                     allocation_bytes(bytes).ok_or("surface reservation size overflow")?;
                 max_reservation[layout] = max_reservation[layout].max(reservation);
+                working_set_bytes = working_set_bytes
+                    .checked_add(reservation)
+                    .ok_or("surface working set overflow")?;
                 slots.push(SlotSource {
                     surface,
                     mip,
@@ -562,6 +567,7 @@ impl SurfaceCatalog {
             block_count,
             scratch_cells,
             max_reservation,
+            working_set_bytes,
         }))
     }
 
@@ -577,6 +583,12 @@ impl SurfaceCatalog {
     /// Surface/light sample storage and each rover's state are separate.
     pub fn mip_metadata_bytes(&self) -> usize {
         self.slots.len() * std::mem::size_of::<SlotSource>()
+    }
+
+    /// Conservative residency bound: every registered surface mip, aligned.
+    /// Includes optional recipes and layouts; it is not a visible-view estimate.
+    pub fn working_set_bytes(&self) -> usize {
+        self.working_set_bytes
     }
 
     /// Includes the rover's eight-byte payload alignment. RGBA sources may be
@@ -676,6 +688,15 @@ pub struct CacheStats {
     pub fills: u64,
     pub evictions: u64,
     pub rejected: u64,
+    /// Successful fills whose mip slot was absent, including prior evictions.
+    pub nonresident_fills: u64,
+    /// Successful refills of a resident slot after its native inputs changed.
+    pub state_fills: u64,
+    pub fill_bytes: u64,
+    pub evicted_bytes: u64,
+    /// Payload only, excluding padding and immutable source/slot metadata.
+    pub resident_bytes: u64,
+    pub peak_resident_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -987,6 +1008,7 @@ impl SurfaceCache {
             return None;
         };
         let block = if let Some(block) = block {
+            self.stats.state_fills = self.stats.state_fills.saturating_add(1);
             block
         } else {
             let Some(block) = self.allocate(bytes) else {
@@ -995,8 +1017,15 @@ impl SurfaceCache {
             };
             self.blocks[block].owner = Some(key);
             self.slots[key].block = Some(block);
+            self.stats.nonresident_fills = self.stats.nonresident_fills.saturating_add(1);
+            self.stats.resident_bytes = self.stats.resident_bytes.saturating_add(bytes as u64);
+            self.stats.peak_resident_bytes = self
+                .stats
+                .peak_resident_bytes
+                .max(self.stats.resident_bytes);
             block
         };
+        self.stats.fill_bytes = self.stats.fill_bytes.saturating_add(bytes as u64);
         self.generation = generation;
         self.blocks[block].generation = generation;
         self.slots[key].stamp = Some(stamp);
@@ -1035,6 +1064,9 @@ impl SurfaceCache {
         if let Some(key) = self.blocks[block].owner.take() {
             self.slots[key].block = None;
             self.stats.evictions = self.stats.evictions.saturating_add(1);
+            let bytes = self.catalog.slots[key].bytes as u64;
+            self.stats.evicted_bytes = self.stats.evicted_bytes.saturating_add(bytes);
+            self.stats.resident_bytes -= bytes;
         }
     }
 

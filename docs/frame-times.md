@@ -2923,3 +2923,51 @@ Workspace 607 tests, Clippy and the unchanged checker pass. Evidence:
 build.json,workspace.json,timing.json}` under the local QA evidence cache.
 The owner's 13:49 ruling returns priority to THE-862's live-cache blocker before
 further THE-860 work.
+
+### THE-862 / THE-3171: live cache attribution
+
+The normal-app q3dm1 case was sampled on the same copied 09243a9e candidate,
+640x400, automatic eight bands, mask16-23 and copied owner settings. Owned
+Xvfb/X11 and dummy audio isolate the run. `perf record` attached only to the
+recorded owned game PID after ten seconds of rendering: cycles:u, 997 Hz,
+15 seconds, DWARF call chains. It recorded 16,880 samples with no lost samples.
+Profiler-run timings are discarded. Nearest repeat sampling accounts for
+28.04% of self samples, bilinear clamp sampling 22.42%, and the span-group
+consumer (including inlined cache-fill code) 21.98%; roundf, fmodf and linear
+lightmap taps account for another 5.13%, 4.65% and 4.34%. Resolved call chains
+include Product fill and prepare_rgba. Some DWARF chains are truncated, so
+these self percentages are not exclusive nested wall-time attribution.
+
+Bounded counters in the one rover distinguish successful absent-slot fills
+from changed-input refills, count filled/evicted payload bytes, and report
+resident bytes. A normal-app diagnostic build (portable release, proof input
+disabled, 38.845 seconds) then ran 60 warm-up plus 120 measured frames with the
+same private matrix. All 9,461 cumulative fills were nonresident fills;
+changed-input refills were zero. 762,007,192 payload bytes were filled and
+744,939,536 evicted. The final frame again has 47 fills and 45 evictions.
+Resident payload is 17,067,656 bytes across eight independent 4 MiB arenas;
+fragmentation and uneven band usage mean this is not the total working-set
+requirement. Median draw is 103.919 ms. Thus this run demonstrates repeated
+residency loss rather than shader-time invalidation of static keys.
+
+The catalog's conservative aligned reservation sum over every registered mip
+is 264,146,144 bytes. This includes optional recipes and layouts and is not a
+visible-view estimate or a per-band residency guarantee. The diagnostic does
+not change the 32 MiB total budget or recipe eligibility. Native-state fixtures
+check both resident-refill classifications and indexed/RGBA payload counts.
+The unchanged checker, 607 workspace tests and Clippy pass. The private run
+exits zero, preserves the owner's profile and copied candidate, cleans every
+owned PID, and measures zero Rust heap activity across the caller and seven
+workers. SDL/driver heap and gameplay remain outside that allocation proof.
+
+C-port source inspection finds a separate fixed 32 MiB cache at
+`src/render/cpu/surface_cache.c:9`, with stamp-based resident reuse and rover
+allocation in `cpu_surface_cache_prepare`. This establishes a similar fixed
+capacity policy, not a measured C-port regression. No C runtime claim follows.
+
+Evidence directory: `THE-3171-live-cache-20261009`, including `perf.data`,
+`perf-record.log`, `perf-self.txt`, `perf-report.txt`, `profile-receipt.json`,
+`diagnostic-build.json`, `diagnostic-workspace.log`, `diagnostic-clippy.log`,
+`diagnostic-summary.json` and `diagnostic-q3dm1/{runtime.log,result.json,window.png}`.
+The owner's 13:49 ruling now permits load-time map-working-set sizing; the
+budget correction and matched live timing remain the next step.

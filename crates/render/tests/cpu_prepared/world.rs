@@ -288,6 +288,12 @@ fn windowed(
         cache.fills += current.fills;
         cache.evictions += current.evictions;
         cache.rejected += current.rejected;
+        cache.nonresident_fills += current.nonresident_fills;
+        cache.state_fills += current.state_fills;
+        cache.fill_bytes += current.fill_bytes;
+        cache.evicted_bytes += current.evicted_bytes;
+        cache.resident_bytes += current.resident_bytes;
+        cache.peak_resident_bytes += current.peak_resident_bytes;
     }
     counters.cache = cache;
     cpu.world = Some(world);

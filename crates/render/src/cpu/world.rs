@@ -63,6 +63,7 @@ pub struct RasterConfig {
     pub allocated_cache_bytes: usize,
     pub per_band_cache_bytes: usize,
     pub mandatory_cache_bytes: usize,
+    pub loaded_mip_working_set_bytes: usize,
     /// Load-owned ordered u32 index payload; separate from the rover budget.
     pub bin_index_capacity_bytes: usize,
     /// Shared mip-layout slot payload, counted once rather than per band.
@@ -771,6 +772,7 @@ impl WorldRaster {
                 allocated_cache_bytes: share * band_count,
                 per_band_cache_bytes: share,
                 mandatory_cache_bytes,
+                loaded_mip_working_set_bytes: catalog.surfaces_cache.working_set_bytes(),
                 bin_index_capacity_bytes,
                 mip_layout_metadata_bytes: catalog.surfaces_cache.mip_metadata_bytes(),
                 span_group_capacity_bytes,
@@ -790,6 +792,12 @@ impl WorldRaster {
             cache.fills = cache.fills.saturating_add(current.fills);
             cache.evictions = cache.evictions.saturating_add(current.evictions);
             cache.rejected = cache.rejected.saturating_add(current.rejected);
+            cache.nonresident_fills += current.nonresident_fills;
+            cache.state_fills += current.state_fills;
+            cache.fill_bytes += current.fill_bytes;
+            cache.evicted_bytes += current.evicted_bytes;
+            cache.resident_bytes += current.resident_bytes;
+            cache.peak_resident_bytes += current.peak_resident_bytes;
         }
         WorldStats { cache, ..total }
     }

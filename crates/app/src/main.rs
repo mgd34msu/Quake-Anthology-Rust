@@ -696,6 +696,18 @@ fn run() -> Result<(), String> {
             stats.cache.rejected
         ));
     }
+    if timings && let Some(stats) = renderer.cpu_world_stats() {
+        let cache = stats.cache;
+        qa_console::logger::console(format_args!(
+            "{{\"event\":\"cpu_cache_diagnostics\",\"includes_startup_and_warmup\":true,\"nonresident_fills\":{},\"changed_state_fills\":{},\"filled_payload_bytes\":{},\"evicted_payload_bytes\":{},\"resident_payload_bytes\":{},\"sum_band_peak_resident_payload_bytes\":{}}}\n",
+            cache.nonresident_fills,
+            cache.state_fills,
+            cache.fill_bytes,
+            cache.evicted_bytes,
+            cache.resident_bytes,
+            cache.peak_resident_bytes,
+        ));
+    }
     let worker_error = renderer.worker_error();
     #[cfg(feature = "allocation-tracking")]
     let worker_threads = renderer.worker_count();

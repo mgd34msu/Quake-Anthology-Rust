@@ -122,13 +122,14 @@ fn add_counts(total: &mut Counts, counts: Counts) {
 /// Cache sizes describe the backend's load-time reservation, across all bands.
 pub fn report_cpu_config(config: RasterConfig, workers: usize) {
     qa_console::logger::console(format_args!(
-        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"span_group_capacity_bytes\":{},\"preparation_capacity_bytes\":{},\"prepare_minimum_primitives_per_job\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
+        "{{\"event\":\"cpu_raster_config\",\"bands\":{},\"workers\":{},\"total_cache_budget_bytes\":{},\"allocated_cache_bytes\":{},\"per_band_cache_bytes\":{},\"mandatory_cache_bytes\":{},\"loaded_mip_working_set_bytes\":{},\"bin_index_capacity_bytes\":{},\"mip_layout_metadata_bytes\":{},\"span_group_capacity_bytes\":{},\"preparation_capacity_bytes\":{},\"prepare_minimum_primitives_per_job\":{},\"worker_affinity\":\"inherited_process_cpu_mask\",\"cpu_affinity_source\":\"private_harness_metadata\",\"individual_worker_pinning\":false}}\n",
         config.bands.count(),
         workers,
         config.total_cache_budget_bytes,
         config.allocated_cache_bytes,
         config.per_band_cache_bytes,
         config.mandatory_cache_bytes,
+        config.loaded_mip_working_set_bytes,
         config.bin_index_capacity_bytes,
         config.mip_layout_metadata_bytes,
         config.span_group_capacity_bytes,

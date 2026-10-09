@@ -28,6 +28,7 @@ fn native_sources_and_samples_are_shared_while_fills_and_stamps_are_private() {
     let source = lit_source();
     let samples = source.lightmap().unwrap().samples().as_ptr();
     let catalog = SurfaceCatalog::load(vec![source]).unwrap();
+    assert_eq!(catalog.working_set_bytes(), 256 + 64 + 16 + 8);
     let mut first = SurfaceCache::load_shared(Arc::clone(&catalog), 256).unwrap();
     let mut second = SurfaceCache::load_shared(Arc::clone(&catalog), 256).unwrap();
     assert!(Arc::ptr_eq(&first.catalog(), &second.catalog()));

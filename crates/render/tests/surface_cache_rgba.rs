@@ -102,6 +102,11 @@ fn explicit_stage_bytes_and_identity_light_invalidate_rgba_blocks() {
     assert!(cache.rgba_pixels(second).is_none());
     assert_eq!(cache.rgba_pixels(third).unwrap(), &[[3; 4]; 4]);
     assert_eq!(cache.stats().fills, 3);
+    assert_eq!(cache.stats().nonresident_fills, 1);
+    assert_eq!(cache.stats().state_fills, 2);
+    assert_eq!(cache.stats().fill_bytes, 3 * 16);
+    assert_eq!(cache.stats().resident_bytes, 16);
+    assert_eq!(cache.stats().peak_resident_bytes, 16);
 }
 
 #[test]
