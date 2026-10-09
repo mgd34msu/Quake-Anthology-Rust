@@ -1806,6 +1806,22 @@ Cheap work exposes wake/barrier overhead rather than a parallel speedup. The
 
 Release builds: baseline 37.55 s, candidate 38.05 s, proof disabled. Evidence:
 `THE-2872-2865/{dispatch-comparison,retail-comparison,pause-cleanup}.json`, raw
-rows and before/after source archives under the task cache. The normal-app
-three-map CPU/GL suite remains pending after the owner's account-switch pause;
-see [the resume note](handoff/2026-10-08-account-switch.md).
+rows and before/after source archives under the task cache.
+
+After the account switch, the saved normal release candidate completed all six
+private normal-app runs: e1m1/base1/q3dm1 on CPU automatic bands and GL at 640x400,
+60 warm-up and 600 measured frames, pinned to cores 4–11. Each CPU launch selected
+eight bands and seven background workers with one total 32 MiB surface cache.
+Every run consumed a fresh copied owner profile, presented its world without
+rejected views, quit normally and counted zero allocations, reallocations and
+requested bytes across all instrumented Rust threads. Original settings and the
+candidate stayed unchanged; all 18 recorded owned PIDs exited.
+
+GL identity was `llvmpipe (LLVM 22.1.8, 256 bits)`, OpenGL 4.6 Core Profile,
+Mesa 26.2.2-arch1.1: these are software GL rows. This suite proves normal-app
+rendering, automatic selection and the Rust allocation gate. It does not compare
+host performance, measure native SDL/driver heap, prove gameplay, or qualify an
+installation. `normal-qualification.json`, `normal-cleanup.json`, the six
+`normal-{cpu,gl}-{map}/` receipts, screenshots and runtime logs retain the
+evidence. The next core slice is THE-889; the historical account-switch state
+remains in [the resume note](handoff/2026-10-08-account-switch.md).
