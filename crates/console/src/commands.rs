@@ -163,6 +163,11 @@ impl<H: Host> Console<H> {
     pub fn append(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append(text, context)
     }
+    /// Borrow the existing table and buffer for a module call. No module owns
+    /// another console or queues commands outside this buffer.
+    pub fn module_parts(&mut self) -> (&mut Cvars, &mut CommandBuffer) {
+        (&mut self.cvars, &mut self.buffer)
+    }
     pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append_line(text, context)
     }

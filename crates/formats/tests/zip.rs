@@ -112,6 +112,45 @@ fn stored_deflate_descriptors_and_stub_prefix_read_into_bounded_buffers() {
 }
 
 #[test]
+fn reused_decoder_range_reads_preserve_large_members_and_check_unread_tail_crc() {
+    let payload: Vec<_> = (0..40000).map(|i| ((i * 73) ^ (i >> 5)) as u8).collect();
+    for deflate in [false, true] {
+        let bytes = zip(&payload, deflate, false, b"");
+        let (_fixture, archive) = Fixture::parse(&bytes);
+        let archive = archive.unwrap();
+        let mut reader = qa_formats::archive::ArchiveReader::default();
+        let mut out = [0; 4096];
+        for offset in [0, 8000, 18000, 39990, 40000] {
+            let n = archive
+                .read_range_reusing(0, offset, &mut out, &mut reader)
+                .unwrap();
+            assert_eq!(&out[..n], &payload[offset as usize..offset as usize + n]);
+        }
+        assert_eq!(
+            archive.read_range_reusing(0, 40001, &mut out, &mut reader),
+            Err(FormatError::InvalidRange)
+        );
+        if deflate {
+            let mut bad = bytes.clone();
+            // Corrupt the authoritative ZIP CRC, including its unread tail.
+            let at = bad
+                .windows(4)
+                .position(|w| w == 0x02014b50u32.to_le_bytes())
+                .unwrap();
+            bad[at + 16] ^= 1;
+            bad[14] ^= 1;
+            let (_fixture, archive) = Fixture::parse(&bad);
+            assert_eq!(
+                archive
+                    .unwrap()
+                    .read_range_reusing(0, 8000, &mut out, &mut reader),
+                Err(FormatError::Checksum)
+            );
+        }
+    }
+}
+
+#[test]
 fn corrupt_crc_truncation_and_local_name_disagreement_are_scoped_errors() {
     let mut crc = zip(b"123456789", false, false, b"");
     crc[30 + b"maps/fixture.bsp".len()] ^= 1;

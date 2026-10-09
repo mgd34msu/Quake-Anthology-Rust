@@ -18,6 +18,9 @@ impl<const N: usize> FixedText<N> {
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
     }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
     pub fn clear(&mut self) {
         self.len = 0;
     }
@@ -33,11 +36,15 @@ impl<const N: usize> FixedText<N> {
         Ok(())
     }
     pub fn set(&mut self, text: &str) -> fmt::Result {
+        self.set_bytes(text.as_bytes())
+    }
+    pub fn set_bytes(&mut self, text: &[u8]) -> fmt::Result {
         if text.len() > N {
             return Err(fmt::Error);
         }
-        self.clear();
-        self.write_str(text)
+        self.bytes[..text.len()].copy_from_slice(text);
+        self.len = text.len();
+        Ok(())
     }
 }
 impl<const N: usize> Write for FixedText<N> {

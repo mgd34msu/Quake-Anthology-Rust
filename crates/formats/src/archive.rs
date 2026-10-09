@@ -38,12 +38,14 @@ pub struct Archive {
 pub struct ArchiveReader {
     decoder: flate2::Decompress,
     input: [u8; 8192],
+    output: [u8; 8192],
 }
 impl Default for ArchiveReader {
     fn default() -> Self {
         Self {
             decoder: flate2::Decompress::new(false),
             input: [0; 8192],
+            output: [0; 8192],
         }
     }
 }
@@ -291,8 +293,38 @@ impl Archive {
         let out = destination
             .get_mut(..length)
             .ok_or(FormatError::InvalidRange)?;
+        self.read_range_reusing(index, 0, out, reader)
+    }
+
+    /// Module file handles can read part of a deflated member. The same decoder
+    /// traverses it into fixed discard storage and the requested destination;
+    /// no second reader, full-member allocation or unchecked ZIP CRC is needed.
+    pub fn read_range_reusing(
+        &self,
+        index: usize,
+        offset: u64,
+        destination: &mut [u8],
+        reader: &mut ArchiveReader,
+    ) -> Result<usize, FormatError> {
+        let entry = self.entries.get(index).ok_or(FormatError::InvalidRange)?;
+        let remaining = entry
+            .length
+            .checked_sub(offset)
+            .ok_or(FormatError::InvalidRange)?;
+        let count = destination
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let out = &mut destination[..count];
         match entry.compression {
-            Compression::Stored => exact(&self.file, entry.offset, out)?,
+            Compression::Stored => {
+                exact(&self.file, entry.offset + offset, out)?;
+                if offset == 0
+                    && count as u64 == entry.length
+                    && entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc)
+                {
+                    return Err(FormatError::Checksum);
+                }
+            }
             Compression::Deflate => {
                 let input = FileWindow {
                     file: &self.file,
@@ -303,6 +335,7 @@ impl Archive {
                 reader.decoder.reset(false);
                 let mut first = 0;
                 let mut last = 0;
+                let mut crc = crc32fast::Hasher::new();
                 loop {
                     if first == last {
                         last = input.read(&mut reader.input).map_err(io_error)?;
@@ -310,13 +343,15 @@ impl Archive {
                     }
                     let before_in = reader.decoder.total_in();
                     let before_out = reader.decoder.total_out();
-                    let written =
-                        usize::try_from(before_out).map_err(|_| FormatError::Compression)?;
-                    let mut extra = [0; 1];
-                    let destination = if written < out.len() {
-                        &mut out[written..]
+                    let end = offset + count as u64;
+                    let destination = if before_out < offset {
+                        let discard =
+                            (offset - before_out).min(reader.output.len() as u64) as usize;
+                        &mut reader.output[..discard]
+                    } else if before_out < end {
+                        &mut out[(before_out - offset) as usize..]
                     } else {
-                        &mut extra[..]
+                        &mut reader.output[..]
                     };
                     let status = reader
                         .decoder
@@ -328,6 +363,7 @@ impl Archive {
                         .map_err(|_| FormatError::Compression)?;
                     let consumed = reader.decoder.total_in() - before_in;
                     let produced = reader.decoder.total_out() - before_out;
+                    crc.update(&destination[..produced as usize]);
                     first += consumed as usize;
                     if reader.decoder.total_out() > entry.length {
                         return Err(FormatError::Compression);
@@ -338,6 +374,12 @@ impl Archive {
                         {
                             return Err(FormatError::Compression);
                         }
+                        if entry
+                            .crc32
+                            .is_some_and(|expected| crc.finalize() != expected)
+                        {
+                            return Err(FormatError::Checksum);
+                        }
                         break;
                     }
                     if consumed == 0 && produced == 0 {
@@ -346,10 +388,7 @@ impl Archive {
                 }
             }
         }
-        if entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc) {
-            return Err(FormatError::Checksum);
-        }
-        Ok(length)
+        Ok(count)
     }
 
     /// Stored members support range reads. Deflated assets load as whole members;

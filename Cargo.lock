@@ -149,6 +149,7 @@ dependencies = [
 name = "qa-app"
 version = "0.1.0"
 dependencies = [
+ "qa-compat",
  "qa-console",
  "qa-content",
  "qa-core",
@@ -184,7 +185,12 @@ dependencies = [
 name = "qa-compat"
 version = "0.1.0"
 dependencies = [
+ "qa-console",
+ "qa-content",
  "qa-core",
+ "qa-formats",
+ "qa-session",
+ "qa-world",
 ]
 
 [[package]]
@@ -269,6 +275,7 @@ name = "qa-platform"
 version = "0.1.0"
 dependencies = [
  "qa-app",
+ "qa-compat",
  "qa-console",
  "qa-content",
  "qa-core",

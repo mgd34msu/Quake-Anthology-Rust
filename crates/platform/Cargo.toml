@@ -12,6 +12,7 @@ allocation-tracking = ["qa-console/lookup-tracking"]
 qa-core = { path = "../core" }
 
 [dev-dependencies]
+qa-compat = { path = "../compat" }
 qa-input = { path = "../input" }
 qa-network = { path = "../network" }
 qa-app = { path = "../app" }

@@ -283,8 +283,25 @@ impl EventRing {
         kind: PrintKind,
         text: fmt::Arguments<'_>,
     ) -> Result<u64, EventStorageError> {
+        self.publish_print(client, kind, |texts| texts.insert_formatted(text))
+    }
+    /// Native module strings are byte strings, including palette-font glyphs.
+    pub fn print_bytes(
+        &mut self,
+        client: Option<ClientId>,
+        kind: PrintKind,
+        text: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        self.publish_print(client, kind, |texts| texts.insert(text))
+    }
+    fn publish_print(
+        &mut self,
+        client: Option<ClientId>,
+        kind: PrintKind,
+        write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
+    ) -> Result<u64, EventStorageError> {
         self.make_room();
-        let Some(lease) = self.texts.insert_formatted(text) else {
+        let Some(lease) = write(&mut self.texts) else {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };

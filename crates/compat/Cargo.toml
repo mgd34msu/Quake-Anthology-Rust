@@ -6,3 +6,8 @@ license.workspace = true
 
 [dependencies]
 qa-core = { path = "../core" }
+qa-world = { path = "../world" }
+qa-session = { path = "../session" }
+qa-console = { path = "../console" }
+qa-content = { path = "../content" }
+qa-formats = { path = "../formats" }

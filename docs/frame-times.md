@@ -2532,3 +2532,19 @@ Evidence: `~/.cache/qa-rust/THE-3165-math-adoption-20261009/` contains
 `patch-before-output.txt`, `patch-after-output.txt`, `math-reference/`,
 `patch-reference/`, `grid-reference/` and `client_state.log`. These are developer
 comparison/draw probes, not shipping candidates or installed gameplay proof.
+
+# THE-863 typed module services foundation
+
+Portable release probe built 2026-10-09T13:48:02Z in 13.726 seconds. CPU23,
+60 warm-up and 600 measured headless frames; 64 service groups per frame cover
+spawn, explicit link, free, cached cvar writes, two module configstring ranges,
+byte-exact print and best-effort presentation retirement. Three runs measured
+median/p99 105550/111960, 104380/110120 and 104490/111640 ns. Every run retained
+42240 publications and checksum 27941760, with zero measured calling-thread
+Rust allocations, reallocations or requested bytes; positive control counted one.
+
+This is a new services workload with no equivalent prior module-host baseline,
+not a speedup claim. It opens no display or worker, performs no native ABI/VM
+execution and does not qualify gameplay, installation, filesystem-call allocation
+or driver memory. Workspace, unchanged checker and tracked Clippy pass. Evidence:
+`~/.cache/qa-rust/THE-863-services-20261009/` (`checks.json`, logs and `probe-*.json`).

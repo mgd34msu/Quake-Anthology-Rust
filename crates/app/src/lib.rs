@@ -57,6 +57,28 @@ impl WorldCollision {
 }
 
 impl Runtime {
+    pub fn engine_services<'a>(
+        &'a mut self,
+        console: &'a mut qa_console::commands::Console<Self>,
+        storage: &'a mut qa_compat::services::ServiceStorage,
+        scratch: &'a mut qa_world::collision::TraceScratch,
+    ) -> qa_compat::services::EngineServices<'a> {
+        let (cvars, commands) = console.module_parts();
+        qa_compat::services::EngineServices {
+            server: &mut self.server,
+            cvars,
+            commands,
+            vfs: &self.vfs,
+            storage,
+            geometry: &self.geometry,
+            world: self
+                .collision
+                .as_ref()
+                .map(|world| (world.geometry, world.index)),
+            scratch,
+        }
+    }
+
     /// Common client capacity is chosen at load; native limits belong to each connection.
     pub fn load<'a>(
         max_clients: usize,

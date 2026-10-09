@@ -393,6 +393,22 @@ impl Vfs {
         Ok(written)
     }
 
+    /// Module reads reuse the same load-owned inflate state for partial ZIP
+    /// members as well as ordinary file ranges.
+    pub fn read_range_reusing(
+        &self,
+        reference: FileRef,
+        offset: u64,
+        destination: &mut [u8],
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<usize, VfsError> {
+        let entry = self.entry(reference)?;
+        if let EntrySource::Archive { archive, entry } = &entry.source {
+            return Ok(archive.read_range_reusing(*entry, offset, destination, reader)?);
+        }
+        self.read_at(reference, offset, destination)
+    }
+
     /// The product mount loader reuses loose archive handles already opened by
     /// mount_directory. This is a cold operation; it never reopens a package.
     pub fn source_file(&self, reference: FileRef) -> Option<Arc<File>> {
