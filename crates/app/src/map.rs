@@ -1,6 +1,9 @@
 //! Cold BSP and entity boundary conversion for the shared runtime.
 //! Spawn anchors describe the map; movement bounds are chosen by the player.
-use qa_content::vfs::{MountKind, Vfs, normalize};
+use qa_content::{
+    products::{self, Edition},
+    vfs::{MountKind, Vfs, normalize},
+};
 use qa_core::primitives::{Bounds, ClipNode, GeometryId, RuleSetId, SurfaceFlags, Vec3};
 use qa_formats::{
     archive::ArchiveReader,
@@ -34,7 +37,6 @@ pub struct LoadedMap {
     pub spawn: SpawnAnchor,
     pub native_source: RuleSetId,
     pub virtual_path: String,
-    pub profile_product: String,
     pub entity_count: usize,
     pub collision_brushes: usize,
     pub entity_source: NativeEntityText,
@@ -198,11 +200,18 @@ impl NativeEntityText {
 /// Owned cold input retains one VFS read while settings are imported. The
 /// validated lump directory selects its source; records are decoded at load.
 pub struct MapInput {
+    /// Stock startup metadata from the winning mount, never the BSP format.
+    pub client_rules: Option<RuleSetId>,
     bytes: Vec<u8>,
     pub native_source: RuleSetId,
     pub virtual_path: String,
-    pub profile_product: String,
+    profile_product: ProfileProduct,
     entity_source: NativeEntityText,
+}
+
+enum ProfileProduct {
+    Stock(String),
+    Unselected(String),
 }
 
 /// Read once and establish the settings source before asset preparation.
@@ -247,15 +256,21 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("invalid map product directory")?;
-    let profile_product = format!(
-        "{}/{product}",
-        match source {
-            RuleSetId::Quake | RuleSetId::QuakeWorld => "q1",
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => "q2",
-            RuleSetId::Quake3 => "q3a",
-        }
-    );
+    let product_metadata = products::root_metadata(directory);
+    let profile_product = if let Some(metadata) = product_metadata {
+        let profile_root =
+            std::str::from_utf8(metadata.root_hint).map_err(|_| "invalid product root hint")?;
+        let edition = if metadata.edition == Edition::Rerelease {
+            "rerelease/"
+        } else {
+            ""
+        };
+        ProfileProduct::Stock(format!("{profile_root}/{edition}{product}"))
+    } else {
+        ProfileProduct::Unselected(product.to_owned())
+    };
     Ok(MapInput {
+        client_rules: product_metadata.map(|metadata| metadata.client_rules),
         bytes,
         native_source: source,
         virtual_path: path,
@@ -265,6 +280,21 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
 }
 
 impl MapInput {
+    pub fn profile_product(&self, client: RuleSetId) -> Cow<'_, str> {
+        match &self.profile_product {
+            ProfileProduct::Stock(path) => Cow::Borrowed(path),
+            ProfileProduct::Unselected(directory) => {
+                let root = match client {
+                    RuleSetId::Quake | RuleSetId::QuakeWorld => "q1",
+                    RuleSetId::Quake2 => "q2",
+                    RuleSetId::Quake2Rerelease => "q2/rerelease",
+                    RuleSetId::Quake3 => "q3a",
+                };
+                Cow::Owned(format!("{root}/{directory}"))
+            }
+        }
+    }
+
     pub fn catalog_names(&self) -> Result<Vec<Cow<'_, [u8]>>, String> {
         self.entity_source.catalog_names()
     }
@@ -296,7 +326,6 @@ impl MapInput {
             spawn,
             native_source: self.native_source,
             virtual_path: self.virtual_path,
-            profile_product: self.profile_product,
             entity_count,
             collision_brushes,
             entity_source: self.entity_source,

@@ -1,12 +1,7 @@
 //! Saved settings are a cold JSON boundary, never an input history or player.
 //! Schema: C settings/codec.c and frontend/shared_storage.c/config_store.c.
 use crate::Runtime;
-use qa_console::{
-    catalog::Scope,
-    commands::Console,
-    cvars::Cvars,
-    views::Context,
-};
+use qa_console::{catalog::Scope, commands::Console, cvars::Cvars, views::Context};
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::{
     primitives::{CvarHandle, RuleSetId},
@@ -265,6 +260,7 @@ pub fn load(
     console: &mut Console<Runtime>,
     runtime: &mut Runtime,
     product: &str,
+    client: RuleSetId,
     movement: RuleSetId,
 ) -> Result<Import, String> {
     let mut report = Import::default();
@@ -283,7 +279,7 @@ pub fn load(
     let canonical = files
         .iter()
         .find(|(_, name)| name.as_slice() == b"cvars/shared/canonical.json");
-    let default_source = console.cvars.context().source;
+    let default_source = client;
     let movement_source = movement;
     let prefix = format!("{product}/").to_ascii_lowercase();
     if let Some((file, name)) = canonical {

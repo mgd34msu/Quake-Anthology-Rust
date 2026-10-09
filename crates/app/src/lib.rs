@@ -1,4 +1,5 @@
 pub mod catalog;
+pub mod client_policy;
 pub mod host;
 pub mod map;
 pub mod output;
@@ -10,9 +11,7 @@ use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::events::{EventRing, FrameEvent, TextStore};
 use qa_core::loopback::Loopback;
-use qa_core::primitives::{
-    ClientId, GeometryId, ModuleId, PlayerTail, PrintEvent, PrintKind, RuleSetId,
-};
+use qa_core::primitives::{ClientId, GeometryId, ModuleId, PlayerTail, PrintEvent, PrintKind};
 use qa_network::ingress::PacketReceiver;
 use qa_session::clients::{Connection, Server};
 
@@ -97,8 +96,7 @@ impl Runtime {
         &mut self,
         seat: qa_core::sys_events::SeatId,
         spawn: map::SpawnAnchor,
-        movement: RuleSetId,
-        trace: RuleSetId,
+        policy: client_policy::ClientPolicy,
     ) -> Result<ClientId, String> {
         let id = self
             .server
@@ -110,8 +108,10 @@ impl Runtime {
             )
             .ok_or("no local client slot")?;
         let client = &mut self.server.clients[id.0 as usize];
-        client.player.movement_rules = movement;
-        client.player.trace_rules = trace;
+        client.client_rules = policy.client;
+        client.link_order = policy.link_order();
+        client.player.movement_rules = policy.movement;
+        client.player.trace_rules = policy.trace;
         qa_movement::set_bounds(&mut client.player);
         client.player.body.position = spawn.position;
         client.player.view_angles = spawn.angles;

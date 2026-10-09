@@ -2,6 +2,7 @@ use qa_app::map;
 use qa_app::renderer::{Kind, Renderer, parse_cpu_bands};
 use qa_app::{
     Runtime,
+    client_policy::ClientPolicy,
     host::{FrameHost, LiveFrame},
 };
 use qa_console::{
@@ -42,6 +43,7 @@ fn run() -> Result<(), String> {
     let mut map_name = None;
     let mut movement_rules = None;
     let mut trace_rules = None;
+    let mut client_module = None;
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
     let mut startup_sets = Vec::new();
@@ -93,6 +95,16 @@ fn run() -> Result<(), String> {
                 movement_rules = Some(
                     RuleSetId::parse(&args.next().ok_or("--movement needs q1/qw/q2/q2rr/q3")?)
                         .ok_or("unknown movement rule set")?,
+                );
+            }
+            "--client-module" => {
+                client_module = Some(
+                    RuleSetId::parse(
+                        &args
+                            .next()
+                            .ok_or("--client-module needs q1/qw/q2/q2rr/q3")?,
+                    )
+                    .ok_or("unknown client module preset")?,
                 );
             }
             "--trace-rules" => {
@@ -198,21 +210,26 @@ fn run() -> Result<(), String> {
     if cpu_bands_explicit && matches!(renderer_kind, Kind::Gl) {
         return Err("--cpu-bands requires --renderer cpu".into());
     }
-    if (movement_rules.is_some() || trace_rules.is_some()) && map_name.is_none() {
+    if (movement_rules.is_some() || trace_rules.is_some() || client_module.is_some())
+        && map_name.is_none()
+    {
         return Err("movement and trace roles need a loaded --map".into());
     }
     let staged_map = if let Some(name) = map_name {
         let input = map::read(&vfs, &name)?;
-        let rules = movement_rules.unwrap_or_else(|| input.native_source);
-        // Native presets initialize both roles; an explicit trace choice stays
-        // independent for all later server/prediction probes.
-        Some((input, rules, trace_rules.unwrap_or(rules)))
+        let policy = ClientPolicy::select(
+            client_module,
+            input.client_rules,
+            movement_rules,
+            trace_rules,
+        )?;
+        Some((input, policy))
     } else {
         None
     };
     let names = staged_map
         .as_ref()
-        .map(|(input, _, _)| input.catalog_names())
+        .map(|(input, _)| input.catalog_names())
         .transpose()?
         .unwrap_or_default();
     let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref()))?;
@@ -229,15 +246,20 @@ fn run() -> Result<(), String> {
     let mut map_path = None;
     let mut selected_movement = None;
     let mut imported_profile = qa_app::profile::Import::default();
-    if let Some((input, rules, _)) = &staged_map {
+    if let Some((input, policy)) = &staged_map {
         if !console_source_explicit {
             console.cvars.select_context(Context {
-                source: input.native_source,
+                source: policy.client,
                 ..console.cvars.context()
             });
         }
-        imported_profile =
-            qa_app::profile::load(&mut console, &mut runtime, &input.profile_product, *rules)?;
+        imported_profile = qa_app::profile::load(
+            &mut console,
+            &mut runtime,
+            &input.profile_product(policy.client),
+            policy.client,
+            policy.movement,
+        )?;
         println!(
             "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":1,\"history_imported\":false,\"settings_only\":true}}",
             imported_profile.consumed(),
@@ -261,7 +283,9 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("startup cvar {name}: {e:?}"))?;
     }
     let mut assets = Assets::load();
-    if let Some((input, rules, traces)) = staged_map {
+    if let Some((input, policy)) = staged_map {
+        let rules = policy.movement;
+        let traces = policy.trace;
         let image_settings =
             qa_app::render_settings::image_settings(&console.cvars, input.native_source)?;
         let loaded = input.load(
@@ -273,20 +297,19 @@ fn run() -> Result<(), String> {
                 ..WorldLoadOptions::default()
             },
         )?;
-        // This world clock is the native gate-world default, independent of
-        // --movement. Loaded SERVER providers retain their own clocks later.
-        world_rate = match loaded.native_source {
-            RuleSetId::Quake | RuleSetId::QuakeWorld => TickRate::FrameDriven,
-            RuleSetId::Quake2 => TickRate::fixed(100).ok_or("invalid Q2 world period")?,
-            RuleSetId::Quake2Rerelease => {
-                TickRate::fixed(25).ok_or("invalid Q2 rerelease world period")?
-            }
-            RuleSetId::Quake3 => {
-                let fps = console.cvars.find("sv_fps").ok_or("missing sv_fps")?;
-                TickRate::fixed((1000 / console.cvars.integer(fps).max(1) as u32).max(1))
-                    .ok_or("invalid Q3 world period")?
-            }
+        world_rate = policy.tick_rate(&mut console.cvars)?;
+        let tick_ms = match world_rate {
+            TickRate::FrameDriven => None,
+            TickRate::FixedMilliseconds(period) => Some(period.get()),
         };
+        println!(
+            "{{\"event\":\"client_policy\",\"client_module\":\"{}\",\"module_loaded\":false,\"tick_rules\":\"{}\",\"tick_ms\":{},\"link_rules\":\"{}\",\"link_first\":{}}}",
+            policy.client.name(),
+            policy.client.name(),
+            serde_json::to_string(&tick_ms).map_err(|e| format!("client period report: {e}"))?,
+            policy.client.name(),
+            policy.link_order() == qa_world::area::LinkOrder::Head,
+        );
         runtime.entity_sources.push(loaded.entity_source);
         runtime.server.area = qa_world::area::AreaGrid::load(
             runtime.server.entities.capacity(),
@@ -298,22 +321,7 @@ fn run() -> Result<(), String> {
             loaded.collision,
             0,
         ));
-        let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules, traces)?;
-        // Entity insertion is native module/world rule data, not movement.
-        let entity = runtime.server.clients[client.0 as usize].entity;
-        let order = if loaded.native_source == RuleSetId::Quake3 {
-            qa_world::area::LinkOrder::Head
-        } else {
-            qa_world::area::LinkOrder::Tail
-        };
-        runtime.server.clients[client.0 as usize].link_order = order;
-        runtime.server.area.link(
-            &runtime.server.entities,
-            entity,
-            qa_world::area::LinkFlags::SOLID,
-            order,
-            qa_world::area::LinkIntent::Explicit,
-        );
+        let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, policy)?;
         let player = &runtime.server.clients[client.0 as usize].player;
         println!(
             "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"spawned_clients\":1,\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",

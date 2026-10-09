@@ -410,12 +410,20 @@ fn run() -> Result<(), String> {
     drop(names);
     runtime.vfs = vfs;
     let source = input.native_source;
-    let rules = source;
+    let policy = qa_app::client_policy::ClientPolicy::select(None, input.client_rules, None, None)?;
+    let rules = policy.movement;
     let mut console = Console::<Runtime>::new(Context {
         source,
         ..Context::default()
     });
-    let imported = profile::load(&mut console, &mut runtime, &input.profile_product, rules)?;
+    let profile_product = input.profile_product(policy.client).into_owned();
+    let imported = profile::load(
+        &mut console,
+        &mut runtime,
+        &profile_product,
+        policy.client,
+        rules,
+    )?;
     if !imported.consumed() {
         return Err("copied saved profile contained no applicable settings".into());
     }
@@ -437,7 +445,7 @@ fn run() -> Result<(), String> {
         ));
     }
     runtime.entity_sources.push(loaded.entity_source);
-    let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, rules, rules)?;
+    let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, policy)?;
     let player = &runtime.server.clients[client.0 as usize].player;
     let basis = angle_vectors(player.view_angles);
     let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
@@ -596,7 +604,7 @@ fn run() -> Result<(), String> {
     logger::console(format_args!(",\"map\":"));
     json_string(&loaded.virtual_path);
     logger::console(format_args!(",\"profile_product\":"));
-    json_string(&loaded.profile_product);
+    json_string(&profile_product);
     logger::console(format_args!(",\"native_source\":"));
     json_string(match source {
         RuleSetId::Quake => "q1",

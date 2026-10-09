@@ -167,6 +167,11 @@ def check(root):
             for alias in re.finditer(r"\bas\s+(MovementRules|ThinkTiming|Source)\b", imported[0]):
                 if alias[1] != "Source" or relative == "crates/console/src/views.rs":
                     add(path, code, imported.start() + alias.start(), "rule-identity")
+        if relative == "crates/app/src/main.rs":
+            for match in re.finditer(r"\b(?:world_rate|order|rules)\s*=\s*(?:match|if)[^;{]*\b(?:loaded|input)\s*\.\s*native_source", code):
+                add(path, code, match.start(), "client-policy-selection")
+            for match in re.finditer(r"\bmovement_rules\s*\.\s*unwrap_or_else\s*\([^;]*\binput\s*\.\s*native_source", code):
+                add(path, code, match.start(), "client-policy-selection")
         if relative == "crates/movement/src/physics.rs":
             for function in re.finditer(r"\bfn\s+load\b", code):
                 end, _ = annotated_item_end(code, function.start())

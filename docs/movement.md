@@ -12,11 +12,14 @@ function. Bots use the same SERVER usercmd builder and movement consumer in
 client-id order. Entity columns receive the authoritative body. Prediction
 copies hot movement fields and both rule ids, without cloning inventory or
 module arenas. The app runs these phases with loaded geometry; a window-only
-launch has no player movement. Native command-line presets currently initialize
-matching movement and trace ids. `--movement` and `--trace-rules` accept q1, qw,
+launch has no player movement. The client preset initializes
+matching movement and trace ids independently. Overriding movement retains
+the client's trace preset unless `--trace-rules` also changes it. `--movement` and `--trace-rules` accept q1, qw,
 q2, q2rr or q3; an explicit trace choice survives authoritative movement and
-prediction. Client-module selection of tick and link rules is a separate
-integration step.
+prediction. `--client-module` selects the built-in walk-through client policy; stock
+content defaults come from its actual product root. Unknown or ambiguous
+products require that explicit choice. Tick rate and first-link order follow
+the client policy. This does not load a guest module.
 
 The shared implementation contains acceleration, friction, fluid sampling,
 ground classification, bounded plane clipping, 18-unit steps, stance and wire

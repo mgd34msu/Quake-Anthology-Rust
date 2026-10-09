@@ -1,6 +1,6 @@
 //! Product metadata selects startup assets; it never restricts shared services.
 use crate::vfs::{FileRef, MountId, MountKind, Vfs};
-use qa_core::primitives::ProductId;
+use qa_core::primitives::{ProductId, RuleSetId};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +17,19 @@ pub struct ProductSpec {
     pub edition: Edition,
     pub start_map: &'static [u8],
     pub base: Option<ProductId>,
+}
+impl ProductSpec {
+    /// Startup client preset from product metadata, independent of map syntax.
+    pub fn client_rules(&self) -> Option<RuleSetId> {
+        match (self.root_hint, self.edition) {
+            (b"q1", Edition::QuakeWorld) => Some(RuleSetId::QuakeWorld),
+            (b"q1", _) => Some(RuleSetId::Quake),
+            (b"q2", Edition::Rerelease) => Some(RuleSetId::Quake2Rerelease),
+            (b"q2", _) => Some(RuleSetId::Quake2),
+            (b"q3a" | b"quakelive", _) => Some(RuleSetId::Quake3),
+            _ => None,
+        }
+    }
 }
 macro_rules! product {
     ($key:literal,$dir:literal,$root:literal,$edition:ident,$map:literal,$base:expr) => {
@@ -292,6 +305,37 @@ fn directory<'a>(path: &'a Path, spec: &ProductSpec) -> Option<&'a Path> {
         }
     }
     Some(dir)
+}
+/// Identify only the winning file's actual product root. No start-map witness,
+/// shared-assets alias or parent mod directory may select a different client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RootMetadata {
+    pub client_rules: RuleSetId,
+    pub root_hint: &'static [u8],
+    pub edition: Edition,
+}
+
+pub fn root_metadata(root: &Path) -> Option<RootMetadata> {
+    let mut selected = None;
+    for spec in STOCK {
+        if directory(root, spec) != Some(root) {
+            continue;
+        }
+        let metadata = RootMetadata {
+            client_rules: spec.client_rules()?,
+            root_hint: spec.root_hint,
+            edition: spec.edition,
+        };
+        if selected.is_some_and(|previous| previous != metadata) {
+            return None;
+        }
+        selected = Some(metadata);
+    }
+    selected
+}
+
+pub fn client_rules_for_root(root: &Path) -> Option<RuleSetId> {
+    root_metadata(root).map(|metadata| metadata.client_rules)
 }
 pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
     let mut products: Vec<InstalledProduct> = Vec::new();

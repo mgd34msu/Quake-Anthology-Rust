@@ -483,3 +483,16 @@ Estimates are not performance claims. Preserve vanilla saves, distinct custom
 slots and the owner's original profile. Prove features on the shipped binary.
 
 Full lessons: https://linear.app/the-artificery/document/lessons-from-the-c-port-apply-from-day-one-401c0853f3f8
+
+
+THE-884/THE-650 built-in walk-through policy: `--client-module q1/qw/q2/q2rr/q3`
+selects a client policy without claiming a guest module is loaded. Stock defaults
+use the winning content mount's product-root metadata, including edition;
+unknown or ambiguous roots require an explicit choice. Movement and trace ids
+default independently to that client. Tick rate and first-link insertion order
+come from the client policy, never BSP format or movement. The one timeline
+and area index consume the resolved rate/order; the app has no second link.
+Saved settings retain the recognized product's root and rerelease directory;
+unknown products use the explicit client's settings namespace. The cached Q3
+sv_fps view is read for its client id, independent of console dialect. Values
+below 1 receive the original sv_fps=10 write. Live module changes remain THE-1890.

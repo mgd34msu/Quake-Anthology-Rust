@@ -1636,3 +1636,102 @@ results and window captures. No installation replaces the existing preview.
 Native references: Q2 `qcommon/cmodel.c` DIST_EPSILON and `server/sv_world.c`
 SV_Trace/SV_PointContents; Q3 `qcommon/cm_local.h` SURFACE_CLIP_EPSILON and
 `server/sv_world.c` SV_Trace/SV_PointContents. No Muse code was used.
+
+## THE-884 / THE-650 / THE-2888 / THE-2889: explicit client policy
+
+The built-in walk-through client now selects tick rate and first-link order
+from its own `RuleSetId`, independently of BSP syntax, movement and trace ids.
+`--client-module` supplies that preset; stock defaults use the winning mount's
+existing product metadata. Unknown or ambiguous roots require an explicit
+choice. Movement and trace defaults each follow the client independently.
+The first link uses the resolved order; the old corrective second app link
+is deleted. This is policy for the built-in gate, not a loaded guest module.
+
+Q3 reads its cached sv_fps handle through the selected client view. Its original
+below-one write sets sv_fps to 10 and yields 100 ms, preserving the active console
+dialect. Native references: Q3 `server/sv_main.c:772-775` SV_Frame;
+Q1 `WinQuake/world.c` SV_LinkEdict; Q2 `server/sv_world.c` SV_LinkEdict;
+Q3 `server/sv_world.c` SV_LinkEntity. QW native clock clamps, loaded provider
+clocks and live rate changes remain integration work. The existing one-ms
+minimum above 1000 Hz is retained, not claimed as original Q3 behavior.
+
+Saved settings use actual product-root and edition metadata. Retail reader
+fixtures put Q1, Q2 and Q3 BSP syntax into foreign stock roots and retain the
+root's correct settings key, including q1/rerelease/id1 and
+q2/rerelease/baseq2. Nested custom roots require an explicit client and use
+its settings namespace. The redundant settings key on LoadedMap is deleted.
+
+Exact tested source tree: `5922fb3bf7ec1c8d014daae1763947521440b8ff`.
+Portable allocation-instrumented release builds took 38.007 s at `9f906b21`
+and 38.314 s after. Both use the shared target directory, fat LTO, one codegen
+unit and no proof input; session, content, gameplay and app were recompiled.
+Workspace all-target tests, the app allocation-feature check and the ignored
+retail settings fixture pass. All 103 checker fixtures pass: 85 forbidden
+cases rejected before Cargo, 18 allowed cases admitted. The new checks cover
+the retired app map-derived policy patterns, not every possible semantic
+bypass. Focused fixtures verify client/role choices, the first area-list order,
+prediction copies, Q3 rate repair and actual product-root selection.
+
+The first core-23 ABBA host comparison fails the 10% median guard: +30.50%.
+Its own baseline changes from 170.755 to 279.125 us (+63.47%). All failed rows
+are retained. Concurrent activity was observed, without proving its effect.
+Four complete additional ABBA cycles establish a stable comparison, with no
+other root build/check during measurement. Each run has 60 warm-up and 600
+measured frames, identical reported workload/fidelity and zero calling-thread
+Rust allocations/requested bytes, without a debugger:
+
+| Synthetic workload | Before mean median (us) | After mean median (us) | Median change | Before mean p99 (us) | After mean p99 (us) | p99 change |
+|---|---:|---:|---:|---:|---:|---:|
+| 64 mixed-rule clients, SERVER movement and prediction | 2531.412 | 2556.382 | +0.99% | 3432.490 | 3475.875 | +1.26% |
+| Host console/binds, bots, local commands and outputs | 160.946 | 161.291 | +0.21% | 251.303 | 253.008 | +0.68% |
+
+Each summary averages eight medians or eight p99 values; raw runs remain in
+the evidence. These are regression comparisons, not gameplay or renderer
+qualification. A separate 4,000,000-callback dispatch has identical counters
+and zero allocations after load. Q2/Q3 analytic movement outputs retain all
+1,152 state rows byte-for-byte before/after and match the earlier original-C
+comparison outputs; no new original-C compilation is claimed for this slice.
+
+Twelve private normal-candidate runs compare stock e1m1, base1 and q3dm1 on
+CPU and GL at 640x400, 600 measured plus 60 warm-up frames. Fixed initial
+pixels and scene/driver metadata match; copied saved settings are consumed;
+normal quit, original-profile/candidate preservation and owned-PID cleanup
+pass. Counted Rust allocations/reallocations/requested bytes are zero for
+one calling thread and no workers. GL is Mesa llvmpipe software rendering,
+LLVM 22.1.8, OpenGL 4.6 Core Profile, Mesa 26.2.2-arch1.1. Native SDL/driver
+heap and animated-frame performance are unmeasured.
+
+Eight additional private CPU cases finish 180+60 frames at the explicit
+85 fps cap. Q3 client policy on Q2 geometry, with a Q2 console dialect, yields
+50 ms at its default 20 Hz, 25 ms at 40 Hz, and 100 ms at zero/negative input.
+Foreign movement retains the client trace preset unless explicitly changed.
+Q2 rerelease policy on Q1 geometry yields 25 ms/tail order; Q1 policy on Q3
+geometry stays frame-driven/tail order. All 240 observed frame diagnostics
+per case report two intakes; world tick counts match the selected timeline.
+One case observes 24 actual X11 key repeats. Rust allocation counts are zero,
+normal quit and profile/candidate/PID containment pass. The Q3-on-Q2 cases
+have no matching saved input files, so do not prove imported preferences.
+
+A native Q2 rerelease base1 attempt imports the correct 39 cvars/46 bindings
+but fails before window readiness: `env/unit1_rt.pcx` is absent although its
+TGA exists. The current indexed sky resource requires PCX before its TGA
+alternate. THE-2890 records this existing material-path defect; the failed
+run is retained and not counted as a successful rerelease render. A separately
+labelled owned rerelease-root fixture with classic retail assets imports those
+settings and quits normally. Native Q1 rerelease e1m1 renders and quits, but
+there are no matching saved settings files, so its settings namespace is
+proved only by reader fixtures. Full native presentation/gameplay is pending.
+
+Evidence: developer cache `THE-884-client-policy`, source/build reports,
+`client-policy-frozen-tests.log`, `client-profile-retail.log`,
+`rule-fixtures/result.json`, `measurement-retry.json`, failed `headless-abba`
+rows, `headless-stable-abba/result.json`, `private-comparison.json`,
+`private-policy-cases.json` and per-run captures/logs/results. No installation
+replaces the existing preview or qualifies gameplay. Module phases/touch logs,
+damage rules, wire behavior, multi-seat settings and the full three-game gate
+remain open. No Muse code was used.
+
+The final CI sweep finds pre-existing workspace rustfmt differences in six
+untouched files and four Clippy errors in unchanged world functions. The
+changed Rust files pass formatting. THE-2891 tracks the separate CI repair;
+neither workspace formatting nor Clippy is reported as passing for this tree.

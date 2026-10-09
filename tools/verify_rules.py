@@ -135,6 +135,24 @@ def main():
                 raise RuntimeError("duplicate primitive was admitted: " + name)
             violation.unlink()
         for name, content in [
+            ("map-derived-world-rate", "fn run() { let world_rate = match loaded.native_source { Quake2 => TickRate::fixed(100), _ => TickRate::FrameDriven }; }"),
+            ("map-derived-link-order", "fn run() { let order = if loaded.native_source == Quake3 { LinkOrder::Head } else { LinkOrder::Tail }; }"),
+            ("map-derived-player-preset", "fn run() { let rules = movement_rules.unwrap_or_else(|| input.native_source); }"),
+        ]:
+            violation = root / "crates/app/src/main.rs"
+            original = violation.read_text()
+            violation.write_text(content)
+            try:
+                result = subprocess.run(["python3", str(root / "tools/build.py"), "--check-only"], capture_output=True, text=True)
+                output = json.loads(result.stdout)
+                passed = result.returncode != 0 and any(v["rule"] == "client-policy-selection" for v in output["findings"])
+                records.append({"rule": name, "rejected_before_cargo": passed})
+                (args.evidence / (name + ".log")).write_text(result.stdout + result.stderr)
+                if not passed:
+                    raise RuntimeError("map-derived client policy was admitted: " + name)
+            finally:
+                violation.write_text(original)
+        for name, content in [
             ("movement-derived-trace-role", "impl Parameters { fn load(rules: RuleSetId, player: &PlayerState) -> Self { let (trace_rules, entity_rules) = trace_policy(rules); Self { trace_rules, entity_rules } } }"),
             ("movement-field-trace-role", "impl Parameters { fn load(rules: RuleSetId, player: &PlayerState) -> Self { let (trace_rules, entity_rules) = trace_policy(player.movement_rules); Self { trace_rules, entity_rules } } }"),
             ("inline-movement-trace-selection", "impl Parameters { fn load(rules: RuleSetId, player: &PlayerState) -> Self { let trace_rules = if rules == RuleSetId::Quake3 { TraceRules::ARENA } else { TraceRules::LEGACY }; Self { trace_rules } } }"),

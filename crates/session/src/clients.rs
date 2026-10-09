@@ -1,6 +1,6 @@
 use qa_core::primitives::{
     Bounds, ClientId, CollisionShape, CommandIntent, EntityId, GeometryId, HudState, ModuleId,
-    NativeEntity, PlayerState, PlayerTail, UserCmd, Vec3,
+    NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
@@ -20,6 +20,8 @@ pub struct Client {
     pub connection: Option<Connection>,
     pub entity: EntityId,
     pub module: ModuleId,
+    /// Selected client policy; the built-in gate does not imply a guest load.
+    pub client_rules: RuleSetId,
     /// Native spatial insertion order is independent of movement rules.
     pub link_order: LinkOrder,
     pub player: PlayerState,
@@ -82,6 +84,7 @@ impl Server {
                     generation: 1,
                 },
                 module: ModuleId::default(),
+                client_rules: RuleSetId::default(),
                 link_order: LinkOrder::Tail,
                 player: PlayerState::with_capacity(items, powerups),
                 command: UserCmd::default(),
@@ -118,6 +121,7 @@ impl Server {
         client.command_pending = false;
         client.intent = CommandIntent::default();
         client.module = module;
+        client.client_rules = RuleSetId::default();
         client.link_order = LinkOrder::Tail;
         client.connection = Some(connection);
         let entity_slot = client.entity.slot as usize;
@@ -146,6 +150,7 @@ impl Server {
         client.command_pending = false;
         client.intent = CommandIntent::default();
         client.module = ModuleId::default();
+        client.client_rules = RuleSetId::default();
         client.link_order = LinkOrder::Tail;
         if let Some(entity) = self.entities.reset_client(client.entity) {
             client.entity = entity;
