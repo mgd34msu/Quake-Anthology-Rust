@@ -51,6 +51,19 @@ impl EventPump {
         self.timer = Stopwatch::start();
         self.clock.now()
     }
+    /// Submission never polls a receive source or the clock.
+    pub fn send_udp(&self, socket: u16, to: SocketAddr, bytes: &[u8]) -> io::Result<()> {
+        let socket = self
+            .sockets
+            .get(usize::from(socket))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let sent = socket.send_to(bytes, to)?;
+        if sent == bytes.len() {
+            Ok(())
+        } else {
+            Err(io::ErrorKind::WriteZero.into())
+        }
+    }
     pub fn poll_events(&mut self, window: &mut Window, queue: &mut SysEventQueue) {
         window.poll(queue, &self.clock);
         self.poll_console(queue);

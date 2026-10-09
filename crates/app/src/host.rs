@@ -39,20 +39,10 @@ pub trait FrameSource {
     fn effect(&mut self, _event: EffectEvent) -> bool {
         false
     }
-    /// Native adapters select submission/ACK rules from their protocol tables.
-    /// No channel currently loaded means no submission, rather than a fake ACK.
-    /// Completes a bounded native reset using already-drained channel state.
-    /// This callback must not poll SDL, sockets, stdin or physical time.
-    fn resync_output(&mut self, _client: ClientId) -> bool {
+    /// Native encoding, sequencing and ACKs belong to the shared Channel.
+    /// This primitive transport reports only datagram admission, never an ACK.
+    fn send_packet(&mut self, _socket: u16, _to: std::net::SocketAddr, _bytes: &[u8]) -> bool {
         false
-    }
-    fn output(
-        &mut self,
-        _client: ClientId,
-        _event: qa_core::events::FrameEvent,
-        _text: Option<&[u8]>,
-    ) -> qa_core::events::OutputSubmission {
-        qa_core::events::OutputSubmission::Unsent
     }
 }
 pub struct LiveFrame<'a> {
@@ -61,6 +51,9 @@ pub struct LiveFrame<'a> {
     pub renderer: &'a mut crate::renderer::Renderer,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
+        self.pump.send_udp(socket, to, bytes).is_ok()
+    }
     fn begin_frame(&mut self) -> EventTime {
         self.pump.begin_frame()
     }

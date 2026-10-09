@@ -15,6 +15,12 @@ pub struct OutputCounts {
     pub unhandled_sounds: u64,
     pub unhandled_effects: u64,
     pub stale_texts: u64,
+    pub native_unsupported: u64,
+    pub native_packets: u64,
+    pub native_blocked: u64,
+    pub native_disconnected: u64,
+    pub native_overflow: u64,
+    pub native_resync_retired: u64,
 }
 
 pub fn dispatch(
@@ -77,17 +83,27 @@ pub fn dispatch(
             );
         }
     }
-    for (slot, client) in server.clients.iter_mut().enumerate() {
+    for slot in 0..server.clients.len() {
+        let client = &mut server.clients[slot];
         let Some(mut id) = client.output else {
             continue;
         };
         let client_id = ClientId(slot as u32);
         let is_local = local.contains(&Some(client_id));
-        if server.events.needs_resync(id)
-            && (is_local
-                || (client.connection == Some(Connection::Remote)
-                    && source.resync_output(client_id)))
-        {
+        if server.events.needs_resync(id) && client.connection == Some(Connection::Remote) {
+            // A slow peer cannot hold publication or another peer's native ACK.
+            // Drop its connection rather than invent a successful native reset.
+            if let Some(counters) = server.events.counters(id) {
+                counts.native_overflow += counters.overflow;
+                counts.native_resync_retired += counters.retired_on_resync;
+            }
+            runtime.network.unbind(client_id);
+            runtime.loopback.clear_client(client_id);
+            server.disconnect(client_id);
+            counts.native_disconnected += 1;
+            continue;
+        }
+        if server.events.needs_resync(id) && is_local {
             let Some(resumed) = server.events.resume(id) else {
                 continue;
             };
@@ -120,7 +136,34 @@ pub fn dispatch(
                         FrameEvent::Print(p) => server.events.texts.get(p.text),
                         _ => None,
                     };
-                    source.output(client_id, record.event, text)
+                    if let FrameEvent::Print(print) = record.event
+                        && let Some(text) = text
+                        && let Some(connection) = runtime
+                            .network
+                            .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+                        && let Some(commands) = &connection.commands
+                    {
+                        let mut bytes = [0; 8192];
+                        match qa_network::outputs::print(
+                            commands.protocol,
+                            print.kind,
+                            print.level,
+                            text,
+                            &mut bytes,
+                        ) {
+                            Ok(n) => match connection.channel.queue_reliable(&bytes[..n]) {
+                                Ok(receipt) => OutputSubmission::Reliable(receipt),
+                                Err(_) => OutputSubmission::Unsent,
+                            },
+                            Err(_) => {
+                                counts.native_unsupported += 1;
+                                OutputSubmission::Unsent
+                            }
+                        }
+                    } else {
+                        counts.native_unsupported += 1;
+                        OutputSubmission::Unsent
+                    }
                 } else {
                     // A local client without a bound seat is not delivered yet.
                     OutputSubmission::Unsent
@@ -130,6 +173,49 @@ pub fn dispatch(
         }
         if is_local {
             qa_ui::hud::expire_messages(&mut client.hud, &mut server.events.texts, now);
+        }
+        if client.connection == Some(Connection::Remote)
+            && let Some(connection) = runtime
+                .network
+                .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+        {
+            // Controls/queued fragments are bounded at load. No physical intake
+            // occurs here; rejected bytes retain their prepared channel state.
+            for _ in 0..17 {
+                if !connection.channel.has_output() {
+                    break;
+                }
+                let packet = if let Some(packet) = connection.channel.pending_packet() {
+                    packet
+                } else {
+                    let Ok(Some(packet)) = connection.channel.prepare(None, time) else {
+                        break;
+                    };
+                    packet
+                };
+                let sent = match connection.route.peer {
+                    qa_core::sys_events::Peer::Loopback(client) => runtime
+                        .loopback
+                        .send(qa_core::loopback::Endpoint::Server, client, packet.bytes)
+                        .is_ok(),
+                    qa_core::sys_events::Peer::Socket(to) => {
+                        source.send_packet(connection.route.socket, to, packet.bytes)
+                    }
+                };
+                if !sent {
+                    counts.native_blocked += 1;
+                    break;
+                }
+                let Ok(()) = connection.channel.submitted(time) else {
+                    break;
+                };
+                counts.native_packets += 1;
+                // One ordinary channel send per CLIENT output pass. Additional
+                // sends here are only the already-queued native control records.
+                if connection.channel.pending_controls() == 0 {
+                    break;
+                }
+            }
         }
     }
     counts

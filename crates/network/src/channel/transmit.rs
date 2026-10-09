@@ -187,6 +187,12 @@ impl Transmit {
 }
 
 impl Channel {
+    pub fn has_output(&self) -> bool {
+        self.transmit.pending.is_some()
+            || !self.transmit.ring.is_empty()
+            || self.pending_controls() != 0
+            || self.transmit.fragment_pending
+    }
     /// A connection supplies its negotiated native qport; it is never ClientId.
     pub fn set_qport(&mut self, qport: u16) {
         self.transmit.qport = qport;

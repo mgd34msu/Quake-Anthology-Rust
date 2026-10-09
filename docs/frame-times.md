@@ -3321,3 +3321,53 @@ Evidence directory `THE-860-command-packets-20261009`: `final-original/`
 contains original C, fixture, original/Rust outputs and comparison JSON;
 `final-build.json`, `final-timing.json`, `checker.log`, `workspace.log`,
 `clippy.log` and `source.patch` retain the bounded build/check receipts.
+
+### THE-860: native print delivery and output retirement
+
+Remote print/center/layout payloads now encode their connection's NQ15/QW28/
+Q2 34 fields, queue in the shared Channel, and transmit through primitive byte
+transport. Only an actual native ACK arriving in ordinary Packet dispatch
+retires a reliable output receipt. The FrameSource output/resync adapters are
+deleted, including the old modeled timing probe. Native priority is an explicit
+byte in PrintEvent; QW/Q2 priority 0 and 1 are preserved independently of its
+HUD kind. Byte fixtures cover all 256 priorities, raw palette-font bytes, NUL
+termination, concatenated records and capacity/unsupported boundaries.
+The references are WinQuake host.c SV_ClientPrintf, QW server/sv_send.c
+SV_PrintToClient, and Q2 server/sv_send.c SV_ClientPrintf. These fixtures are
+source-derived; this slice has no new compiled original-C print comparator.
+
+CPU23, portable release, 60 warm-up / 600 measured frames, zero Rust calling-
+thread allocations, reallocations or requested bytes in all probes:
+
+| Ordinary headless workload | Median ns | p99 ns | Fidelity |
+| --- | ---: | ---: | --- |
+| Sixteen NQ/QW/Q2 peers, print decode and real ACK ingress | 11,370 | 109,530 | 9,600 measured sends, 600 SERVER ticks; 10,560 prints and 10,544 real receipts including warm-up |
+| Healthy QW peer plus peer withholding ACKs | 3,550 | 5,200 | 1,152 healthy prints/ACKed records; 600 continuing measured frames |
+| Healthy QW peer plus rejected transport | 2,325 | 2,760 | Same healthy prints/ACKs and SERVER progress |
+| Four local move protocols through native packets | 4,060 | 4,180 | 2,636 packets, 2,635 commands, 1,320 intake calls including warm-up |
+
+Both stalled cases disconnect the affected connection at frame 20, count one
+output overflow and retire 32 bounded records. Their 10/20/40-Hz module
+consumers receive 1,146/1,150/1,152 prints, and independent HUD text leases
+remain valid. A stale receipt cannot acknowledge the detached cursor. This
+is bounded disconnection, not a claim of native reconnect or sign-on resync.
+The native retirement probe is print-only; its former modeled sound-and-print
+workload is not a comparable speed baseline. The sixteen-peer tail is reported
+as measured and is not a renderer/gameplay performance result.
+
+The release example build took 14.88 seconds (Cargo-reported), proof disabled,
+allocation tracking enabled. The unchanged checker, workspace/all-target tests
+and warning-denied Clippy pass. Developer evidence is in
+`THE-860-native-output-20261009/`: build/check logs, channel.json,
+retirement.jsonl, command-host.json and the source patch.
+Q3 command-window output, sound/effect native mappings, entity/player/config
+snapshot fields, full sign-on, rerelease and live interoperability remain open.
+Local HUD output still consumes the common in-process event ring. This does
+not complete THE-860 or the deferred THE-3169 acceptance.
+
+The owner-requested installer option `--owner-smoke --smoke-movement` adds
+real XTest held-key input after initial config, checks key repeats, authoritative
+horizontal movement and two ordinary intake phases in each 300-frame map/
+backend run, and records the native local protocol explicitly. It uses a normal
+candidate without a proof input player. The six fresh runs and install are
+performed after this commit; this note does not claim they have passed yet.

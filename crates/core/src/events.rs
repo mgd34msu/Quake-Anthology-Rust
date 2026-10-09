@@ -283,7 +283,9 @@ impl EventRing {
         kind: PrintKind,
         text: fmt::Arguments<'_>,
     ) -> Result<u64, EventStorageError> {
-        self.publish_print(client, kind, |texts| texts.insert_formatted(text))
+        self.publish_print(client, kind, kind.default_level(), |texts| {
+            texts.insert_formatted(text)
+        })
     }
     /// Native module strings are byte strings, including palette-font glyphs.
     pub fn print_bytes(
@@ -292,12 +294,22 @@ impl EventRing {
         kind: PrintKind,
         text: &[u8],
     ) -> Result<u64, EventStorageError> {
-        self.publish_print(client, kind, |texts| texts.insert(text))
+        self.print_level_bytes(client, kind, kind.default_level(), text)
+    }
+    pub fn print_level_bytes(
+        &mut self,
+        client: Option<ClientId>,
+        kind: PrintKind,
+        level: u8,
+        text: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        self.publish_print(client, kind, level, |texts| texts.insert(text))
     }
     fn publish_print(
         &mut self,
         client: Option<ClientId>,
         kind: PrintKind,
+        level: u8,
         write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
     ) -> Result<u64, EventStorageError> {
         self.make_room();
@@ -308,6 +320,7 @@ impl EventRing {
         let result = self.push(FrameEvent::Print(PrintEvent {
             client,
             kind,
+            level,
             text: lease.id(),
         }));
         self.texts.release(lease);

@@ -36,6 +36,7 @@ fn main() -> Result<(), &'static str> {
                 PrintEvent {
                     client: Some(ClientId(index as u32)),
                     kind: PrintKind::Notify,
+                    level: 1,
                     text: leases[index].id(),
                 },
                 frame as f64,

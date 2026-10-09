@@ -60,6 +60,7 @@ fn messages_keep_handles_per_seat_and_expire_at_their_deadline() {
             PrintEvent {
                 client: Some(ClientId(0)),
                 kind: PrintKind::Notify,
+                level: 1,
                 text: lease.id(),
             },
             10.0,
@@ -75,6 +76,7 @@ fn messages_keep_handles_per_seat_and_expire_at_their_deadline() {
         PrintEvent {
             client: None,
             kind: PrintKind::Center,
+            level: 2,
             text: id,
         },
         10.0,
@@ -103,6 +105,7 @@ fn display_leases_release_on_replacement_expiry_and_reset_without_invalidating_o
             PrintEvent {
                 client: None,
                 kind: PrintKind::Center,
+                level: 2,
                 text: id
             },
             0.0,
@@ -120,6 +123,7 @@ fn display_leases_release_on_replacement_expiry_and_reset_without_invalidating_o
             PrintEvent {
                 client: None,
                 kind: PrintKind::Layout,
+                level: 2,
                 text: replacement
             },
             0.0,

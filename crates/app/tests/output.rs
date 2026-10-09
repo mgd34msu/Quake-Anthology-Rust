@@ -268,6 +268,9 @@ fn emit_print(runtime: &mut Runtime, tick: Tick) {
 }
 struct PeerSource {
     source: Source,
+    peers: [qa_network::channel::Channel; 2],
+    ack: [u8; 1400],
+    ack_length: usize,
     healthy: u64,
     reliable: u64,
     unsent: bool,
@@ -278,6 +281,18 @@ impl FrameSource for PeerSource {
     }
     fn poll_events(&mut self, q: &mut SysEventQueue) {
         self.source.poll_events(q);
+        if self.ack_length != 0 {
+            q.push(SysEvent {
+                time: EventTime(self.source.time * 1_000_000),
+                kind: EventKind::Packet {
+                    socket: 0,
+                    from: Peer::Socket("127.0.0.1:1001".parse().unwrap()),
+                    bytes: &self.ack[..self.ack_length],
+                },
+            })
+            .unwrap();
+            self.ack_length = 0;
+        }
     }
     fn wait_time(&mut self, d: Duration) -> EventTime {
         self.source.wait_time(d)
@@ -286,25 +301,37 @@ impl FrameSource for PeerSource {
         Duration::ZERO
     }
     fn present(&mut self) {}
-    fn output(
-        &mut self,
-        client: ClientId,
-        event: FrameEvent,
-        text: Option<&[u8]>,
-    ) -> qa_core::events::OutputSubmission {
-        assert!(matches!(event, FrameEvent::Print(_)));
-        assert!(text.is_some());
-        if client == ClientId(0) {
+    fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
+        assert_eq!(socket, 0);
+        let client = usize::from(to.port() - 1000);
+        if client == 0 && self.unsent {
             self.reliable += 1;
-            if self.unsent {
-                qa_core::events::OutputSubmission::Unsent
-            } else {
-                qa_core::events::OutputSubmission::Reliable(qa_core::events::NativeReceipt(7))
-            }
-        } else {
-            self.healthy += 1;
-            qa_core::events::OutputSubmission::BestEffort
+            return false;
         }
+        let time = EventTime(self.source.time * 1_000_000);
+        let received = self.peers[client].receive(bytes, time).unwrap();
+        if let qa_network::channel::Delivery::Payload(body) = received.delivery {
+            for print in qa_network::outputs::Prints::new(
+                qa_network::commands::packet::Protocol::QuakeWorld28,
+                body,
+            ) {
+                let print = print.unwrap();
+                assert_eq!(print.kind, PrintKind::Center);
+                assert!(!print.text.is_empty());
+                if client == 1 {
+                    self.healthy += 1;
+                } else {
+                    self.reliable += 1;
+                }
+            }
+        }
+        if client == 1 {
+            let packet = self.peers[client].prepare(None, time).unwrap().unwrap();
+            self.ack_length = packet.bytes.len();
+            self.ack[..self.ack_length].copy_from_slice(packet.bytes);
+            self.peers[client].submitted(time).unwrap();
+        }
+        true
     }
 }
 fn stalled_peer_progress(unsent: bool) {
@@ -330,6 +357,34 @@ fn stalled_peer_progress(unsent: bool) {
         .unwrap();
     let stalled_cursor = runtime.server.clients[stalled.0 as usize].output.unwrap();
     let healthy_cursor = runtime.server.clients[healthy.0 as usize].output.unwrap();
+    for client in [stalled, healthy] {
+        runtime
+            .network
+            .bind(
+                client,
+                qa_core::loopback::Endpoint::Server,
+                qa_network::ingress::Connection {
+                    route: qa_network::ingress::Route {
+                        socket: 0,
+                        peer: Peer::Socket(
+                            format!("127.0.0.1:{}", 1000 + client.0).parse().unwrap(),
+                        ),
+                    },
+                    channel: qa_network::channel::Channel::load(
+                        qa_network::channel::QUAKEWORLD,
+                        qa_core::loopback::Endpoint::Server,
+                        8192,
+                        16,
+                    )
+                    .unwrap(),
+                    output: runtime.server.clients[client.0 as usize].output,
+                    commands: Some(qa_network::commands::connection::Commands::load(
+                        qa_network::commands::packet::Protocol::QuakeWorld28,
+                    )),
+                },
+            )
+            .unwrap();
+    }
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -349,15 +404,32 @@ fn stalled_peer_progress(unsent: bool) {
     host.local_clients[0] = Some(local);
     let mut source = PeerSource {
         source: Source::default(),
+        peers: std::array::from_fn(|_| {
+            qa_network::channel::Channel::load(
+                qa_network::channel::QUAKEWORLD,
+                qa_core::loopback::Endpoint::Client,
+                8192,
+                16,
+            )
+            .unwrap()
+        }),
+        ack: [0; 1400],
+        ack_length: 0,
         healthy: 0,
         reliable: 0,
         unsent,
     };
+    let mut disconnected = 0;
+    let mut overflow = 0;
+    let mut resync_retired = 0;
     let mut ticks = 0;
     for frame in 0..=400 {
         source.source.time = frame * 25;
         let before = source.healthy;
         let result = host.frame(&mut source, true);
+        disconnected += result.output.native_disconnected;
+        overflow += result.output.native_overflow;
+        resync_retired += result.output.native_resync_retired;
         ticks += result.server_ticks;
         assert_eq!(host.runtime.server.world_frame, frame);
         assert_eq!(
@@ -372,19 +444,26 @@ fn stalled_peer_progress(unsent: bool) {
     assert_eq!(ticks, 1100);
     assert_eq!(host.runtime.server.world_frame, 400);
     assert_eq!(source.healthy, 700);
-    if unsent {
-        assert!(source.reliable > 0);
-    } else {
-        assert_eq!(source.reliable, 32);
-    }
-    let counters = host.runtime.server.events.counters(stalled_cursor).unwrap();
-    assert_eq!(
-        (
-            counters.acknowledgements,
-            counters.overflow,
-            counters.resyncs
-        ),
-        (0, 1, 1)
+    assert!(source.reliable > 0);
+    assert_eq!((disconnected, overflow), (1, 1));
+    assert!(resync_retired >= 32);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .counters(stalled_cursor)
+            .is_none()
+    );
+    assert!(
+        host.runtime.server.clients[stalled.0 as usize]
+            .connection
+            .is_none()
+    );
+    assert!(
+        host.runtime
+            .network
+            .get(stalled, qa_core::loopback::Endpoint::Server)
+            .is_none()
     );
     assert_eq!(
         host.runtime
@@ -395,7 +474,18 @@ fn stalled_peer_progress(unsent: bool) {
             .overflow,
         0
     );
-    assert!(host.runtime.server.events.needs_resync(stalled_cursor));
+    // The healthy peer's final real ACK enters at the normal quit-frame drain.
+    host.runtime.quit = true;
+    host.frame(&mut source, true);
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(healthy_cursor)
+            .unwrap()
+            .acknowledged_records,
+        700
+    );
     for slot in 11..14 {
         assert!(host.runtime.server.clients[slot].player.health > 600);
     }
@@ -420,7 +510,7 @@ fn stalled_peer_progress(unsent: bool) {
         0
     );
     assert!(host.runtime.server.disconnect(local)); // Explicitly retires display leases.
-    assert!(host.runtime.server.disconnect(stalled));
+    assert!(!host.runtime.server.disconnect(stalled));
     assert!(host.runtime.server.disconnect(healthy));
 }
 

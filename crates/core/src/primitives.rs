@@ -656,10 +656,22 @@ pub enum PrintKind {
     Chat,
     Layout,
 }
+impl PrintKind {
+    pub const fn default_level(self) -> u8 {
+        match self {
+            Self::Chat => 3,
+            Self::Notify => 1,
+            _ => 2,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct PrintEvent {
     pub client: Option<ClientId>,
     pub kind: PrintKind,
+    /// Native byte priority is independent of display kind. Protocols without
+    /// this field omit it at their boundary; 0 and 1 must remain distinct.
+    pub level: u8,
     pub text: TextId,
 }
 #[derive(Debug, PartialEq, Eq)]

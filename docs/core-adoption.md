@@ -75,11 +75,14 @@ The deferred native-path sites are concrete:
   receipts against the binding's original output-consumer generation.
   Move payload decoding and automatic local channel binding are now adopted.
   Full native command strings/history and negotiated Q3 keys, NQ666/999,
-  rerelease transport, handshake and automatic native output transmission
+  rerelease transport, handshake, Q3 command reliability and sound/effect native transmission
   remain unfinished. The native acceptance is retained on THE-860/THE-3169.
-* `app/src/output.rs:123` requests remote submission through FrameSource; the
-  output encoding/submission remains THE-860/THE-3169. Native channel ACK
-  receipts now enter through Packet dispatch, rather than that callback.
+* `app/src/output.rs` now encodes NQ/QW/Q2 remote print records, queues the
+  shared Channel's native receipt and transmits through `FrameSource::send_packet`.
+  The output/resync callback adapters are deleted. ACK receipts enter only
+  through Packet dispatch. Q3 command-window output and native sound/effect
+  mappings remain THE-860; local HUD consumers still use the in-process ring.
+  Bounded stalled-client disconnection is not native reconnect/sign-on proof.
 * `ui/src/hud.rs:46` implements projection, with stock layout drawing deferred.
 
 Engine review and native acceptance are separate. Linear remains the source of

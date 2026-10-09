@@ -17,7 +17,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_driver="disk", timeout=30):
+def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_driver="disk", timeout=30, actions=None):
     binary = build / "qa-rust"
     metadata = json.loads((build / "build.json").read_text())
     require(metadata.get("source_tree_dirty") is False, "build must come from a committed clean tree")
@@ -25,7 +25,8 @@ def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_dr
     compiled = json.loads(subprocess.check_output([str(binary), "--build-info"], text=True))
     require(all(compiled.get(k) == metadata.get(k) for k in ("commit", "source_tree_dirty", "target_cpu", "proof")),
             "build metadata differs from the compiled candidate")
-    result = run(binary, profile, evidence, arguments, audio_driver=audio_driver, timeout=timeout)
+    result = run(binary, profile, evidence, arguments, audio_driver=audio_driver, timeout=timeout,
+                 actions=actions, input_after_first_frame=bool(actions))
     require(result["result"] == "PASS" and result.get("normal_exit"), "copied-profile private launch failed")
     require(result["copied_owner_settings"], "owner profile must contain saved settings")
     require(result["owner_profile_unchanged"], "owner profile changed during qualification")
@@ -39,7 +40,7 @@ def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_dr
 SMOKE_MAPS = (("q1/id1", "start"), ("q2/baseq2", "base1"), ("q3a/baseq3", "q3dm1"))
 
 
-def qualify_smoke(build, profile, evidence, content):
+def qualify_smoke(build, profile, evidence, content, movement=False):
     require(not evidence.exists(), "use a fresh evidence directory")
     evidence.mkdir(parents=True)
     results = []
@@ -48,10 +49,17 @@ def qualify_smoke(build, profile, evidence, content):
     for product, name in SMOKE_MAPS:
         for renderer in ("gl", "cpu"):
             folder = evidence / (name + "-" + renderer)
-            current, result = qualify(build, profile, folder,
-                ["--content", str(content / product), "--map", name, "--renderer", renderer,
-                 "--frames", "300", "--width", "640", "--height", "400",
-                 "--startup-hold-ms", "1500", "--uncapped"], require_gameplay=False, audio_driver="dummy", timeout=60)
+            arguments = ["--content", str(content / product), "--map", name, "--renderer", renderer,
+                         "--frames", "300", "--width", "640", "--height", "400",
+                         "--startup-hold-ms", "1500"]
+            if movement:
+                arguments += ["+set", "developer", "1", "+set", "com_maxfps", "85",
+                              "+set", "r_swapInterval", "0", "+bind", "UpArrow", "+forward"]
+            else:
+                arguments += ["--uncapped"]
+            current, result = qualify(build, profile, folder, arguments,
+                require_gameplay=False, audio_driver="dummy", timeout=60,
+                actions=[{"key": "Up", "hold_seconds": 0.9}] if movement else None)
             frame = next((row for row in result["events"] if row.get("event") == "world_frame_presented"), {})
             normal = next((row for row in result["events"] if row.get("event") == "normal_exit"), {})
             require(frame.get("map") == "maps/" + name + ".bsp" and frame.get("renderer") == renderer,
@@ -66,11 +74,26 @@ def qualify_smoke(build, profile, evidence, content):
             require(not results or result["candidate_identity"] == results[0]["candidate_identity"],
                     "candidate changed between smoke runs")
             metadata = current
+            movement_result = None
+            if movement:
+                walks = [row for row in result["events"] if row.get("event") == "walk_frame" and row.get("seat") == 0]
+                active = [row for row in walks if any(row.get("command_movement", []))]
+                require(len(active) >= 10 and normal.get("key_downs", 0) > 0
+                        and normal.get("key_repeats", 0) > 0, "real repeated key input did not reach usercmds")
+                positions = [row["position"] for row in walks if row["frame"] >= active[0]["frame"]]
+                distance = max(sum((p[i] - positions[0][i]) ** 2 for i in (0, 1)) ** 0.5 for p in positions)
+                events = [row for row in result["events"] if row.get("event") == "system_event_frame"]
+                require(distance > 1 and events and all(row.get("drains") == 2 for row in events)
+                        and events[-1].get("network_packets", 0) > events[0].get("network_packets", 0),
+                        "authoritative movement through ordinary packet ingress was not proved")
+                movement_result = dict(authoritative_xy_distance=distance, active_frames=len(active),
+                                       key_repeats=normal["key_repeats"], local_protocol=28,
+                                       network_packets=events[-1]["network_packets"])
             results.append(result)
-        draws.append(dict(map=name, renderer=renderer, surfaces=frame["surfaces"],
-                          rejected=frame.get("rejected")))
+            draws.append(dict(map=name, renderer=renderer, surfaces=frame["surfaces"],
+                              rejected=frame.get("rejected"), movement=movement_result))
     summary = {"result": "PASS", "scope": "render_smoke", "gameplay_qualified": False,
-               "candidate_identity": results[0]["candidate_identity"], "draws": draws,
+               "candidate_identity": results[0]["candidate_identity"], "draws": draws, "movement_checked": movement,
                "runs": [str(evidence / (name + "-" + renderer) / "result.json")
                         for _, name in SMOKE_MAPS for renderer in ("gl", "cpu")]}
     (evidence / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -80,6 +103,9 @@ def qualify_smoke(build, profile, evidence, content):
 def smoke_text(metadata, qualification):
     draw_counts = "\n".join(f"{row['map']} {row['renderer']}: {row['surfaces']} surfaces presented, "
                             f"{row['rejected']} rejected" for row in qualification["draws"])
+    movement = ""
+    if qualification.get("movement_checked"):
+        movement = "Real held/repeated key input moved the authoritative player through local QW28 packets in all six runs.\n"
     return f"""Quake Anthology Rust: current development build
 Commit: {metadata['commit']}
 Built at UTC: {metadata['built_at_utc']}
@@ -89,12 +115,14 @@ CPU target: {metadata['target_cpu']}; normal build, proof input disabled.
 Verified: Q1 start, Q2 base1 and Q3 q3dm1 load and render on GL and CPU
 at 640x400, with copied saved settings, 300 frames and exit 0 for each.
 Runs use owned Xvfb, forced X11, dummy audio and private HOME.
+{movement}
 GL driver identity is in the per-run logs; these runs do not qualify GL speed.
 First presented-frame counters, including current rendering limits:
 {draw_counts}
 
-Known gaps: native hosts and live entity-memory integration, delta channel and
-legacy network interoperability, stock HUD drawing. Gameplay module lifecycle,
+Known gaps: native hosts and live entity-memory integration, entity/player
+snapshot delta tables, native sign-on and live legacy network interoperability,
+Q3 reliable command delivery and stock HUD drawing. Gameplay module lifecycle,
 monsters, weapons, game audio and save/load remain unfinished or unqualified.
 QuakeC/QVM reader/interpreter component checks do not prove retail gameplay.
 This owner-authorized smoke install is not gameplay or timing qualification.
@@ -143,17 +171,17 @@ def stage(source, target, expected):
         raise
 
 
-def install(build, destination, profile, evidence, arguments, timings=None, baseline=None, smoke_content=None, owner_smoke=False):
+def install(build, destination, profile, evidence, arguments, timings=None, baseline=None, smoke_content=None, owner_smoke=False, smoke_movement=False):
     require(destination.name == "qa-rust", "destination must name qa-rust")
     original_profile = {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}
     if owner_smoke:
         require(not arguments, "smoke qualification supplies all six map/backend launches")
         require(timings is None and baseline is None, "gameplay timing reports do not qualify a smoke install")
-        metadata, qualification = qualify_smoke(build, profile, evidence, smoke_content or destination.parent)
+        metadata, qualification = qualify_smoke(build, profile, evidence, smoke_content or destination.parent, smoke_movement)
         performance = {"result": "NOT_QUALIFIED", "scope": "render_smoke",
                        "reason": "owner-authorized smoke install; no comparable measured gameplay workload"}
     else:
-        require(smoke_content is None, "smoke content requires --owner-smoke")
+        require(smoke_content is None and not smoke_movement, "smoke options require --owner-smoke")
         metadata, qualification = qualify(build, profile, evidence, arguments)
         require(timings is not None and baseline is not None, "measured gameplay timings and a comparable baseline are required")
         performance = compare(json.loads(timings.read_text()), json.loads(baseline.read_text()),
@@ -198,6 +226,7 @@ def main():
     parser.add_argument("--owner-profile", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--owner-smoke", action="store_true", help="owner-authorized development install after six private map/backend smoke runs; no gameplay/timing qualification")
+    parser.add_argument("--smoke-movement", action="store_true", help="add real held-key movement checks to the six owner smoke runs")
     parser.add_argument("--smoke-content-root", type=Path, help="smoke retail root; defaults to destination directory")
     parser.add_argument("--timings", type=Path, help="measured gameplay timing report for this exact candidate")
     parser.add_argument("--baseline", type=Path, help="comparable measured gameplay report")
@@ -207,7 +236,7 @@ def main():
     try:
         receipt = install(args.build_dir.resolve(strict=True), args.destination.absolute(),
                           args.owner_profile.resolve(strict=True), args.evidence.resolve(), arguments,
-                          args.timings, args.baseline, args.smoke_content_root, args.owner_smoke)
+                          args.timings, args.baseline, args.smoke_content_root, args.owner_smoke, args.smoke_movement)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print("Install refused: " + str(error), file=os.sys.stderr)
         return 1

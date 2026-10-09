@@ -181,7 +181,8 @@ impl Connections {
             Ok(received) => {
                 if let Delivery::Payload(payload) = received.delivery {
                     self.delivered += 1;
-                    if endpoint == Endpoint::Server
+                    if !payload.is_empty()
+                        && endpoint == Endpoint::Server
                         && let Some(commands) = &mut connection.commands
                     {
                         match commands.decode(
