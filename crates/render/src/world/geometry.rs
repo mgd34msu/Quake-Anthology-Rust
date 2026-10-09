@@ -2,7 +2,10 @@
 //! Legacy extents follow WinQuake/model.c and Q2/ref_gl/gl_model.c;
 //! patch subdivision follows Q3/renderer/tr_curve.c.
 use crate::assets::Vertex;
-use qa_core::primitives::{Axis, Bounds, Plane, Vec3};
+use qa_core::{
+    math::length,
+    primitives::{Axis, Bounds, Plane, Vec3},
+};
 use qa_formats::bsp::{BspFormat, IndexRange, LightmapSource, Lump, Map, SurfaceKind};
 
 pub mod grid;
@@ -263,7 +266,7 @@ fn load_legacy(
         let plane = if face.flags == 0 {
             source_plane
         } else {
-            oriented_plane(scale(source_plane.normal, -1.0), -source_plane.distance)
+            oriented_plane(source_plane.normal * (-1.0), -source_plane.distance)
         };
         let edges = section(&map.surface_edges, face.edges, "surface edges", id)?;
         let vertex_start = out.vertices.len();
@@ -545,11 +548,8 @@ fn load_modern(
                         }
                     }
                 }
-                let origin = scale(
-                    add(source.lightmap_vectors[0], source.lightmap_vectors[1]),
-                    0.5,
-                );
-                let radius = length(sub(source.lightmap_vectors[0], origin));
+                let origin = (source.lightmap_vectors[0] + source.lightmap_vectors[1]) * 0.5;
+                let radius = length(source.lightmap_vectors[0] - origin);
                 if !radius.is_finite() {
                     return Err(GeometryError::NonFinite("patch LOD", id));
                 }
@@ -757,16 +757,4 @@ fn color_shift(color: [u8; 4], shift: i8) -> [u8; 4] {
         }
     }
     [rgb[0] as u8, rgb[1] as u8, rgb[2] as u8, color[3]]
-}
-fn add(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3(std::array::from_fn(|i| a.0[i] + b.0[i]))
-}
-fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3(std::array::from_fn(|i| a.0[i] - b.0[i]))
-}
-fn scale(v: Vec3, scale: f32) -> Vec3 {
-    Vec3(v.0.map(|v| v * scale))
-}
-fn length(v: Vec3) -> f32 {
-    v.dot(v).sqrt()
 }

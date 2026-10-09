@@ -17,3 +17,22 @@ fn vector_operations_normalization_and_angle_wrapping() {
     assert_eq!(axes.right, -y);
     assert_eq!(axes.up, Vec3([0.0, 0.0, 1.0]));
 }
+
+#[test]
+fn native_zero_normalization_distinguishes_in_place_and_output_results() {
+    let input = Vec3([-0.0, 0.0, -0.0]);
+    let mut in_place = input;
+    assert_eq!(normalize(&mut in_place), 0.0);
+    assert_eq!(in_place.0.map(f32::to_bits), input.0.map(f32::to_bits));
+    assert_eq!(normalized_or_zero(input).0.map(f32::to_bits), [0; 3]);
+    let underflow = Vec3([f32::from_bits(1), -f32::from_bits(1), 0.0]);
+    assert_eq!(normalized_or_zero(underflow).0.map(f32::to_bits), [0; 3]);
+    assert_eq!(
+        normalized_or_zero(Vec3([3.0, 4.0, 0.0])),
+        normalized(Vec3([3.0, 4.0, 0.0]))
+    );
+    assert_eq!(
+        normalized_fast(input).0.map(f32::to_bits),
+        input.0.map(f32::to_bits)
+    );
+}

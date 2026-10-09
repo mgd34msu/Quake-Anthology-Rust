@@ -1,10 +1,13 @@
 //! Native Q3 adaptive subdivision and mesh normals, tr_curve.c:46-61,112-214,
 //! 262-283,360-624; stitching/group propagation follows tr_bsp.c:534-1186.
 use super::{
-    GeometryError, GeometryOptions, PatchStats, WorldGeometry, WorldVertex, add, length,
-    push_triangle, scale, span, sub, vertex_bounds,
+    GeometryError, GeometryOptions, PatchStats, WorldGeometry, WorldVertex, push_triangle, span,
+    vertex_bounds,
 };
-use qa_core::primitives::Vec3;
+use qa_core::{
+    math::{cross, normalized_or_zero},
+    primitives::Vec3,
+};
 
 const MAX_CONTROL_SIZE: usize = 32;
 const MAX_GRID_SIZE: usize = 65;
@@ -53,9 +56,9 @@ pub(super) fn subdivide(
                 let midpoint = Vec3(std::array::from_fn(|i| {
                     (a.0[i] + b.0[i] * 2.0 + c.0[i]) * 0.25
                 }));
-                let offset = sub(midpoint, a);
-                let direction = normalize(sub(c, a));
-                let distance = sub(offset, scale(direction, offset.dot(direction)));
+                let offset = midpoint - a;
+                let direction = normalized_or_zero(c - a);
+                let distance = offset - (direction * offset.dot(direction));
                 maximum_squared = maximum_squared.max(distance.dot(distance));
             }
             let deviation = maximum_squared.sqrt();
@@ -160,7 +163,7 @@ pub(super) fn subdivide(
 
 fn lerp(a: WorldVertex, b: WorldVertex) -> WorldVertex {
     let mut out = a;
-    out.vertex.position = scale(add(a.vertex.position, b.vertex.position), 0.5);
+    out.vertex.position = (a.vertex.position + b.vertex.position) * 0.5;
     out.vertex.texcoord =
         std::array::from_fn(|i| 0.5 * (a.vertex.texcoord[i] + b.vertex.texcoord[i]));
     out.vertex.lightmap_coord =
@@ -175,22 +178,6 @@ fn transpose(rows: &[Vec<WorldVertex>], width: usize, height: usize) -> Vec<Vec<
         .map(|column| (0..height).map(|row| rows[row][column]).collect())
         .collect()
 }
-fn normalize(value: Vec3) -> Vec3 {
-    let magnitude = length(value);
-    if magnitude == 0.0 {
-        Vec3::default()
-    } else {
-        scale(value, 1.0 / magnitude)
-    }
-}
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3([
-        a.0[1] * b.0[2] - a.0[2] * b.0[1],
-        a.0[2] * b.0[0] - a.0[0] * b.0[2],
-        a.0[0] * b.0[1] - a.0[1] * b.0[0],
-    ])
-}
-
 fn mesh_normals(rows: &mut [Vec<WorldVertex>], width: usize, height: usize) {
     const NEIGHBORS: [[i32; 2]; 8] = [
         [0, 1],
@@ -203,14 +190,11 @@ fn mesh_normals(rows: &mut [Vec<WorldVertex>], width: usize, height: usize) {
         [-1, 1],
     ];
     let wrap_width = rows.iter().all(|row| {
-        let delta = sub(row[0].vertex.position, row[width - 1].vertex.position);
+        let delta = row[0].vertex.position - (row[width - 1].vertex.position);
         delta.dot(delta) <= 1.0
     });
     let wrap_height = (0..width).all(|column| {
-        let delta = sub(
-            rows[0][column].vertex.position,
-            rows[height - 1][column].vertex.position,
-        );
+        let delta = rows[0][column].vertex.position - (rows[height - 1][column].vertex.position);
         delta.dot(delta) <= 1.0
     });
     for column in 0..width {
@@ -240,7 +224,7 @@ fn mesh_normals(rows: &mut [Vec<WorldVertex>], width: usize, height: usize) {
                         break;
                     }
                     let direction =
-                        normalize(sub(rows[y as usize][x as usize].vertex.position, base));
+                        normalized_or_zero(rows[y as usize][x as usize].vertex.position - base);
                     if direction == Vec3::default() {
                         continue;
                     }
@@ -253,10 +237,10 @@ fn mesh_normals(rows: &mut [Vec<WorldVertex>], width: usize, height: usize) {
             for neighbor in 0..8 {
                 let next = (neighbor + 1) & 7;
                 if good[neighbor] && good[next] {
-                    sum = add(sum, normalize(cross(around[next], around[neighbor])));
+                    sum = sum + normalized_or_zero(cross(around[next], around[neighbor]));
                 }
             }
-            rows[row][column].normal = normalize(sum);
+            rows[row][column].normal = normalized_or_zero(sum);
             rows[row][column].vertex.normal = rows[row][column].normal;
         }
     }

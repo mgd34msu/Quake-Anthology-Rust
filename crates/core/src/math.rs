@@ -49,6 +49,22 @@ pub fn normalized(mut v: Vec3) -> Vec3 {
     normalize(&mut v);
     v
 }
+/// Output normalization clears zero components, as VectorNormalize2 does.
+pub fn normalized_or_zero(mut v: Vec3) -> Vec3 {
+    if normalize(&mut v) == 0.0 {
+        Vec3::default()
+    } else {
+        v
+    }
+}
+
+/// Native reciprocal-square-root estimate, shared by stage evaluation and guests.
+pub fn normalized_fast(v: Vec3) -> Vec3 {
+    let x = v.dot(v);
+    let y = f32::from_bits(0x5f3759df - (x.to_bits() >> 1));
+    v * (y * (1.5 - (x * 0.5 * y * y)))
+}
+
 pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
     Vec3([
         a.0[1] * b.0[2] - a.0[2] * b.0[1],

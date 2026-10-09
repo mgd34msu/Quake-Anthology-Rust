@@ -6,7 +6,10 @@ use crate::shader::{
     AlphaFunc, AlphaGen, BlendFactor, Deform, RgbGen, StageBlend, TexCoordGen, TexMod,
     WaveFunction, Waveform,
 };
-use qa_core::primitives::Vec3;
+use qa_core::{
+    math::{length, normalized_fast},
+    primitives::Vec3,
+};
 
 /// Native R_RotateForEntity uses a single axis-length compensation selected by
 /// the submitted entity; this is deliberately shared by both draw consumers.
@@ -589,15 +592,12 @@ impl StageEvaluator {
             }
             AlphaGen::OneMinusVertex => color[3] = 255 - vertex.color[3],
             AlphaGen::Portal(range) => {
-                color[3] = byte(length(subtract(vertex.position, inputs.view_origin)) / range)
+                color[3] = byte(length(vertex.position - inputs.view_origin) / range)
             }
             AlphaGen::LightingSpecular => {
-                let direction = normalize_fast(subtract(inputs.specular_origin, vertex.position));
-                let reflected = subtract(
-                    scale(vertex.normal, 2.0 * vertex.normal.dot(direction)),
-                    direction,
-                );
-                let viewer = normalize_fast(subtract(inputs.view_origin, vertex.position));
+                let direction = normalized_fast(inputs.specular_origin - vertex.position);
+                let reflected = (vertex.normal * (2.0 * vertex.normal.dot(direction))) - direction;
+                let viewer = normalized_fast(inputs.view_origin - vertex.position);
                 let incidence = reflected.dot(viewer).max(0.0);
                 color[3] = byte((incidence * incidence) * (incidence * incidence));
             }
@@ -611,11 +611,8 @@ impl StageEvaluator {
             TexCoordGen::Lightmap => vertex.lightmap_coord,
             TexCoordGen::Vector(vectors) => vectors.map(|v| Vec3(v).dot(vertex.position)),
             TexCoordGen::Environment => {
-                let viewer = normalize_fast(subtract(inputs.view_origin, vertex.position));
-                let reflected = subtract(
-                    scale(vertex.normal, 2.0 * vertex.normal.dot(viewer)),
-                    viewer,
-                );
+                let viewer = normalized_fast(inputs.view_origin - vertex.position);
+                let reflected = (vertex.normal * (2.0 * vertex.normal.dot(viewer))) - viewer;
                 [0.5 + reflected.0[1] * 0.5, 0.5 - reflected.0[2] * 0.5]
             }
             TexCoordGen::LayeredSky {
@@ -624,7 +621,7 @@ impl StageEvaluator {
                 texture_size,
                 scroll_speed,
             } => crate::sky::sphere_uv(
-                subtract(vertex.position, inputs.view_origin),
+                vertex.position - inputs.view_origin,
                 prepared.shader_time,
                 flatten_z,
                 projected_scale,
@@ -633,7 +630,7 @@ impl StageEvaluator {
             )
             .unwrap_or([0.0; 2]),
             TexCoordGen::CloudSky { radius, height } => crate::sky::cloud_uv(
-                subtract(vertex.position, inputs.view_origin),
+                vertex.position - inputs.view_origin,
                 crate::sky::CloudSphere { radius, height },
             )
             .unwrap_or([0.0; 2]),
@@ -667,7 +664,7 @@ impl StageEvaluator {
                     spread: if wave.frequency == 0.0 { 0.0 } else { spread },
                 },
                 Some(Deform::Move { vector, wave }) => {
-                    DeformOp::Move(scale(Vec3(vector), self.wave(wave, time)?))
+                    DeformOp::Move(Vec3(vector) * self.wave(wave, time)?)
                 }
                 Some(Deform::Bulge {
                     width,
@@ -715,17 +712,15 @@ impl StageEvaluator {
                             * spread;
                     let value = base
                         + self.tables[table + wave_index(phase + offset + time_phase)] * amplitude;
-                    vertex.position = add(vertex.position, scale(vertex.normal, value));
+                    vertex.position = vertex.position + (vertex.normal * value);
                 }
-                DeformOp::Move(vector) => vertex.position = add(vertex.position, vector),
+                DeformOp::Move(vector) => vertex.position = vertex.position + vector,
                 DeformOp::Bulge { width, height, now } => {
                     let index = ((1024.0 / std::f32::consts::TAU)
                         * (vertex.texcoord[0] * width + now))
                         as i32;
-                    vertex.position = add(
-                        vertex.position,
-                        scale(vertex.normal, self.tables[(index & 1023) as usize] * height),
-                    );
+                    vertex.position = vertex.position
+                        + (vertex.normal * (self.tables[(index & 1023) as usize] * height));
                 }
                 DeformOp::Normal { amplitude, time } => {
                     for i in 0..3 {
@@ -737,7 +732,7 @@ impl StageEvaluator {
                                 time,
                             ]);
                     }
-                    vertex.normal = normalize_fast(vertex.normal);
+                    vertex.normal = normalized_fast(vertex.normal);
                 }
             }
         }
@@ -919,23 +914,6 @@ fn byte(value: f32) -> u8 {
 }
 fn constant_byte(value: f32) -> u8 {
     (255.0 * value) as i32 as u8
-}
-fn add(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3(std::array::from_fn(|i| a.0[i] + b.0[i]))
-}
-fn subtract(a: Vec3, b: Vec3) -> Vec3 {
-    Vec3(std::array::from_fn(|i| a.0[i] - b.0[i]))
-}
-fn scale(v: Vec3, scale: f32) -> Vec3 {
-    Vec3(v.0.map(|v| v * scale))
-}
-fn length(v: Vec3) -> f32 {
-    v.dot(v).sqrt()
-}
-fn normalize_fast(v: Vec3) -> Vec3 {
-    let x = v.dot(v);
-    let y = f32::from_bits(0x5f3759df - (x.to_bits() >> 1));
-    scale(v, y * (1.5 - (x * 0.5 * y * y)))
 }
 fn lerp(a: f32, b: f32, weight: f32) -> f32 {
     a * (1.0 - weight) + b * weight

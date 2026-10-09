@@ -2487,3 +2487,48 @@ Evidence: `~/.cache/qa-rust/THE-617-conversion-names-20261009/` has `checks.json
 `adoption.json`, `abba.json`, raw logs, `client_state.log`, `hud_values.log` and
 `c-reference/comparison.json`. Original installed target/door/native module
 acceptance remains open; no install or gate waiver occurred.
+
+
+## THE-3165: renderer uses core vector math
+
+The adoption sweep found 11 copied vector helpers in renderer geometry, patch
+normals and stage evaluation. All their callers now use core Vec3 operators and
+math; all 11 local implementations are deleted. Core owns the native fast
+normalization estimate. Output normalization delegates to the existing core
+normalization and clears zero components as Q3 VectorNormalize2 requires;
+in-place normalization still retains signed zeros. No arithmetic reassociation,
+new unsafe code, checker rule or renderer algorithm is introduced.
+
+Unchanged checker, tracked Clippy and 582 workspace all-target tests pass.
+Original-C math: 3009 bit-exact cases across three profiles, zero post-load
+allocations. Original Q3 patch comparison: 58 fixtures / 119523 float components,
+zero differing bits and zero maximum error; the reference retains the previously
+approved reverse-endpoint bounds correction. The 1273938-byte Rust patch output
+is byte-identical before/after, as are its fixture inputs. Q1/Q2 original warp
+subdivision comparisons and stage fixtures also pass.
+
+Portable tracked CPU draw/client-state probes built 2026-10-09T12:46:04Z in
+32.431 s. The first retail build command omitted the app's allocation feature
+and failed before a run; the corrected baseline and candidate both enable
+`allocation-tracking,qa-app/allocation-tracking`. The private CPU draw ABBA uses
+CPU23, one band/no workers, q3dm1 at640x400, fixed camera/shader time, copied owner
+settings and copied binaries, 60 warm-up plus600 measured frames per process.
+
+| Build | Mean process median ns | Mean process p99 ns |
+| --- | ---: | ---: |
+| Before a696f10c | 14626553 | 15045811.0 |
+| After | 14608365.25 | 14873026.0 |
+
+Median change is -0.124%, within measurement variance; no optimization or R12
+qualification is claimed. All four runs have identical workload/stat fields,
+256000-pixel RGBA bytes and inverse-depth bytes. All measured Rust calling-thread
+allocation/reallocation calls and requested bytes are zero. Each run quits
+normally; its copied profile/candidate stays unchanged and owned PIDs stop.
+The app-loaded512-client reconnect allocation probe also retains zero heap.
+No GL or foreign-heap measurement is claimed, and q3dm1 speed work stays paused.
+
+Evidence: `~/.cache/qa-rust/THE-3165-math-adoption-20261009/` contains
+`checks.json`, `checker.json`, `adoption.json`, `abba.json`, `A1/B1/B2/A2/`,
+`patch-before-output.txt`, `patch-after-output.txt`, `math-reference/`,
+`patch-reference/`, `grid-reference/` and `client_state.log`. These are developer
+comparison/draw probes, not shipping candidates or installed gameplay proof.
