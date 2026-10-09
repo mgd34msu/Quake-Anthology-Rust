@@ -169,6 +169,15 @@ pub fn xor(data: &mut [u8], start: usize, mut key: u8, text: &[u8]) {
 }
 
 pub fn write(out: &mut [u8], movement: &Move, sequence: u32, key: Key<'_>) -> Result<usize, Error> {
+    write_with_commands(out, movement, sequence, key, |_| Ok(()))
+}
+pub fn write_with_commands(
+    out: &mut [u8],
+    movement: &Move,
+    sequence: u32,
+    key: Key<'_>,
+    reliable: impl FnOnce(&mut Writer<'_>) -> Result<(), Error>,
+) -> Result<usize, Error> {
     let mut w = Writer::new(out, movement.protocol().encoding());
     match movement {
         Move::NetQuake { timestamp, command } => {
@@ -221,6 +230,7 @@ pub fn write(out: &mut [u8], movement: &Move, sequence: u32, key: Key<'_>) -> Re
             ] {
                 w.write_bits(word as u32, 32)?;
             }
+            reliable(&mut w)?;
             w.write_bits(if *delta_snapshot { 2 } else { 3 }, 8)?;
             w.write_bits((*count).into(), 8)?;
             let command_key = key.checksum_feed
@@ -267,6 +277,15 @@ pub fn read(
     sequence: u32,
     key: Key<'_>,
 ) -> Result<Move, Error> {
+    read_with_commands(protocol, bytes, sequence, key, |_, _| Ok(()))?.ok_or(Error::Opcode)
+}
+pub fn read_with_commands(
+    protocol: Protocol,
+    bytes: &mut [u8],
+    sequence: u32,
+    key: Key<'_>,
+    mut consume: impl FnMut(u32, &[u8]) -> Result<(), Error>,
+) -> Result<Option<Move>, Error> {
     let acknowledgements = if protocol == Protocol::Quake3_68 {
         let ack = acknowledgements(bytes)?;
         if ack != key.acknowledgements {
@@ -348,7 +367,22 @@ pub fn read(
             for _ in 0..3 {
                 r.read_bits(32)?;
             }
-            let opcode = r.read_bits(8)?;
+            let mut text = [0; 1024];
+            let mut opcode = r.read_bits(8)?;
+            let mut command_count = 0;
+            while opcode == 4 {
+                if command_count >= 64 {
+                    return Err(Error::Count);
+                }
+                let seq = r.read_bits(32)?;
+                let text = crate::channel::commands::read_string(&mut r, &mut text)?;
+                consume(seq, text)?;
+                command_count += 1;
+                opcode = r.read_bits(8)?;
+            }
+            if opcode == 5 {
+                return Ok(None);
+            }
             if !matches!(opcode, 2 | 3) {
                 return Err(Error::Opcode);
             }
@@ -378,5 +412,5 @@ pub fn read(
     if protocol != Protocol::Quake3_68 && r.byte_position() != bytes.len() {
         return Err(Error::Trailing);
     }
-    Ok(movement)
+    Ok(Some(movement))
 }

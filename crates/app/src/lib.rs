@@ -220,8 +220,7 @@ impl Runtime {
             return false;
         };
         let mut bytes = [0; 1400];
-        let sequence = connection.channel.send_state().sequence;
-        let Ok(length) = commands.encode(command, sequence, &mut bytes) else {
+        let Ok(length) = commands.encode(command, &connection.channel, &mut bytes) else {
             return false;
         };
         // At most the load-sized control ring followed by this current move.
@@ -230,7 +229,7 @@ impl Runtime {
             let packet = if let Some(packet) = connection.channel.pending_packet() {
                 packet
             } else {
-                let Ok(Some(packet)) = connection.channel.prepare(Some(&bytes[..length]), time)
+                let Ok(Some(packet)) = connection.channel.prepare_move(&bytes[..length], time)
                 else {
                     return false;
                 };

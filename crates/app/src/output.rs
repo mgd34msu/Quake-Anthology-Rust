@@ -188,7 +188,7 @@ pub fn dispatch(
                 let packet = if let Some(packet) = connection.channel.pending_packet() {
                     packet
                 } else {
-                    let Ok(Some(packet)) = connection.channel.prepare(None, time) else {
+                    let Ok(Some(packet)) = connection.channel.prepare_output(time) else {
                         break;
                     };
                     packet

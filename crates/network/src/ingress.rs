@@ -30,6 +30,10 @@ pub enum BindError {
 /// Borrowed delivery callbacks never retain a packet or create another queue.
 pub enum Incoming<'a> {
     Payload(&'a [u8]),
+    ReliableCommand {
+        sequence: u32,
+        text: &'a [u8],
+    },
     Command {
         command: qa_core::primitives::UserCmd,
         output: Option<OutputConsumerId>,
@@ -185,12 +189,18 @@ impl Connections {
                         && endpoint == Endpoint::Server
                         && let Some(commands) = &mut connection.commands
                     {
-                        match commands.decode(
-                            payload,
-                            received.header.sequence,
-                            time.milliseconds() as i32,
-                            self.frame_ns,
-                        ) {
+                        let sequence = received.header.sequence;
+                        let length = commands.stage(payload);
+                        let decoded = length.and_then(|length| {
+                            commands.decode(
+                                length,
+                                sequence,
+                                time.milliseconds() as i32,
+                                self.frame_ns,
+                                &mut connection.channel,
+                            )
+                        });
+                        match decoded {
                             Ok(Some(command)) => {
                                 self.commands += 1;
                                 consume(
@@ -204,6 +214,32 @@ impl Connections {
                             }
                             Ok(None) => self.command_duplicates += 1,
                             Err(_) => self.command_errors += 1,
+                        }
+                    } else if !payload.is_empty()
+                        && endpoint == Endpoint::Client
+                        && let Some(commands) = &mut connection.commands
+                        && commands.protocol == crate::commands::packet::Protocol::Quake3_68
+                    {
+                        let sequence = received.header.sequence;
+                        let length = commands.stage(payload);
+                        if length
+                            .and_then(|length| {
+                                commands.decode_output(
+                                    length,
+                                    sequence,
+                                    &mut connection.channel,
+                                    |sequence, text| {
+                                        consume(
+                                            client,
+                                            endpoint,
+                                            Incoming::ReliableCommand { sequence, text },
+                                        )
+                                    },
+                                )
+                            })
+                            .is_err()
+                        {
+                            self.command_errors += 1;
                         }
                     } else {
                         consume(client, endpoint, Incoming::Payload(payload));

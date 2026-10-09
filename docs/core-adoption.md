@@ -127,3 +127,7 @@ per game. Q2 matches original C exactly; Q3 retains its previously measured
 timers remain exact. This slice does not claim to remove that existing gap.
 See [frame-times.md](frame-times.md) for the matched CPU23 timing and allocation
 scope; synthetic comparison results do not establish native gameplay parity.
+
+Supervisor review at 18:49 accepted `54708d5b`; it is pushed on main and its
+superseded adoption WIP branch is deleted. THE-3175 tracks the pre-existing
+Q3 float discrepancy for attribution after the current THE-860 step.

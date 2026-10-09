@@ -105,7 +105,7 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
             b"print",
             &mut bytes
         ),
-        Err(Error::Unsupported)
+        Ok(14)
     );
     assert_eq!(
         Prints::new(Protocol::Quake2_34, b"\x0funterminated").next(),

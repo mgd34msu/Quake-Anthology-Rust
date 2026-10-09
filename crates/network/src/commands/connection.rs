@@ -4,6 +4,7 @@ use super::{
     packet::{self, Key, Move, Protocol, ZERO_Q2, ZERO_Q3, ZERO_QW},
     to_q1_move, to_q2_usercmd, to_q3_usercmd, to_qw_usercmd,
 };
+use crate::channel::Channel;
 use qa_core::primitives::UserCmd;
 
 pub struct Commands {
@@ -24,7 +25,7 @@ impl Commands {
     pub fn encode(
         &self,
         command: &UserCmd,
-        sequence: u32,
+        channel: &Channel,
         out: &mut [u8],
     ) -> Result<usize, packet::Error> {
         let movement = match self.protocol {
@@ -52,24 +53,60 @@ impl Commands {
                 }
             }
         };
-        packet::write(out, &movement, sequence, Key::default())
+        let key = if self.protocol == Protocol::Quake3_68 {
+            channel.command_key(None)?
+        } else {
+            Key::default()
+        };
+        packet::write_with_commands(
+            out,
+            &movement,
+            channel.send_state().sequence,
+            key,
+            |writer| channel.write_command_records(writer),
+        )
     }
-    /// This development connection has no negotiated Q3 command history yet.
-    /// Its explicit zero handshake context cannot accept arbitrary remote keys.
     /// NQ duration is the native SERVER frame input, never its ping timestamp.
+    pub fn stage(&mut self, bytes: &[u8]) -> Result<usize, packet::Error> {
+        self.scratch
+            .get_mut(..bytes.len())
+            .ok_or(packet::Error::Count)?
+            .copy_from_slice(bytes);
+        Ok(bytes.len())
+    }
     pub fn decode(
         &mut self,
-        bytes: &[u8],
+        length: usize,
         sequence: u32,
         server_time: i32,
         frame_ns: u64,
+        channel: &mut Channel,
     ) -> Result<Option<UserCmd>, packet::Error> {
-        let scratch = self
-            .scratch
-            .get_mut(..bytes.len())
-            .ok_or(packet::Error::Count)?;
-        scratch.copy_from_slice(bytes);
-        let movement = packet::read(self.protocol, scratch, sequence, Key::default())?;
+        let scratch = &mut self.scratch[..length];
+        // Keys borrow retained native strings. Scratch keeps that key stable
+        // while optional incoming commands update the opposite direction.
+        let mut command_text = [0; 1024];
+        let key = if self.protocol == Protocol::Quake3_68 {
+            let ack = packet::acknowledgements(scratch)?;
+            let key = channel.command_key(Some(ack))?;
+            let n = key.server_command.len();
+            command_text[..n].copy_from_slice(key.server_command);
+            let key = Key {
+                server_command: &command_text[..n],
+                ..key
+            };
+            channel.acknowledge_commands(ack.reliable as u32, ack.message as u32)?;
+            key
+        } else {
+            Key::default()
+        };
+        let Some(movement) =
+            packet::read_with_commands(self.protocol, scratch, sequence, key, |sequence, text| {
+                channel.receive_command(sequence, text).map(|_| ())
+            })?
+        else {
+            return Ok(None);
+        };
         let command = match movement {
             Move::NetQuake { command, .. } => {
                 let mut command = from_q1_move(
@@ -104,5 +141,15 @@ impl Commands {
         };
         self.previous_time = command.server_time_ms;
         Ok(Some(command))
+    }
+    pub fn decode_output(
+        &mut self,
+        length: usize,
+        sequence: u32,
+        channel: &mut Channel,
+        consume: impl FnMut(u32, &[u8]),
+    ) -> Result<(), packet::Error> {
+        let scratch = &mut self.scratch[..length];
+        channel.decode_command_output(scratch, sequence, consume)
     }
 }

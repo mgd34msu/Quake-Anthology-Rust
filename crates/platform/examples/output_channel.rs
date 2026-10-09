@@ -6,7 +6,7 @@ use qa_app::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, ModuleId, PlayerTail, PrintKind},
+    primitives::{ClientId, ModuleId, PlayerTail, PrintKind, UserCmd},
     sys_events::{EventKind, EventTime, Peer, SysEvent, SysEventQueue},
 };
 use qa_network::{
@@ -22,15 +22,18 @@ use std::time::Duration;
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
-fn protocol(slot: usize) -> Protocol {
-    [
+fn protocol(slot: usize, q3: bool) -> Protocol {
+    let protocols = [
         Protocol::NetQuake15,
         Protocol::QuakeWorld28,
         Protocol::Quake2_34,
-    ][slot % 3]
+        Protocol::Quake3_68,
+    ];
+    protocols[slot % if q3 { 4 } else { 3 }]
 }
 struct Source {
     peers: Box<[Channel]>,
+    commands: Box<[Commands]>,
     pending: Box<[[u8; 1400]]>,
     lengths: [usize; 16],
     frame: u64,
@@ -84,23 +87,60 @@ impl FrameSource for Source {
             return false;
         };
         if let Delivery::Payload(body) = received.delivery {
-            for print in Prints::new(protocol(slot), body) {
-                let Ok(print) = print else {
+            if self.commands[slot].protocol == Protocol::Quake3_68 {
+                let codec = &mut self.commands[slot];
+                let Ok(n) = codec.stage(body) else {
                     self.bad = true;
                     return false;
                 };
-                let decoded = std::str::from_utf8(print.text)
-                    .ok()
-                    .and_then(|s| s.strip_prefix("native "))
-                    .and_then(|s| s.split_once(':'))
-                    .and_then(|(client, frame)| {
-                        Some((client.parse::<usize>().ok()?, frame.parse::<u64>().ok()?))
-                    });
-                self.bad |= print.kind != PrintKind::Center || decoded != Some((slot, self.frame));
-                self.prints += 1;
+                let decoded = codec.decode_output(
+                    n,
+                    received.header.sequence,
+                    &mut self.peers[slot],
+                    |_, text| {
+                        self.bad |= text
+                            .strip_prefix(b"cp \"")
+                            .and_then(|t| t.strip_suffix(b"\""))
+                            .and_then(native_position)
+                            != Some((slot, self.frame));
+                        self.prints += 1;
+                    },
+                );
+                if decoded.is_err() {
+                    self.bad = true;
+                    return false;
+                }
+            } else {
+                for print in Prints::new(self.commands[slot].protocol, body) {
+                    let Ok(print) = print else {
+                        self.bad = true;
+                        return false;
+                    };
+                    let decoded = native_position(print.text);
+                    self.bad |=
+                        print.kind != PrintKind::Center || decoded != Some((slot, self.frame));
+                    self.prints += 1;
+                }
             }
+        } else {
+            return true; // Complete fragments before sending the native message ACK.
         }
-        let Ok(Some(packet)) = self.peers[slot].prepare(None, time) else {
+        let mut bytes = [0; 8192];
+        let prepared = if self.commands[slot].protocol == Protocol::Quake3_68 {
+            let command = UserCmd {
+                server_time_ms: ((self.frame + 1) * 16) as i32,
+                duration_ms: 16,
+                ..UserCmd::default()
+            };
+            let Ok(n) = self.commands[slot].encode(&command, &self.peers[slot], &mut bytes) else {
+                self.bad = true;
+                return false;
+            };
+            self.peers[slot].prepare_move(&bytes[..n], time)
+        } else {
+            self.peers[slot].prepare(None, time)
+        };
+        let Ok(Some(packet)) = prepared else {
             self.bad = true;
             return false;
         };
@@ -111,7 +151,15 @@ impl FrameSource for Source {
         true
     }
 }
+fn native_position(text: &[u8]) -> Option<(usize, u64)> {
+    let (client, frame) = std::str::from_utf8(text)
+        .ok()?
+        .strip_prefix("native ")?
+        .split_once(':')?;
+    Some((client.parse().ok()?, frame.parse().ok()?))
+}
 fn main() -> Result<(), String> {
+    let q3 = std::env::args().any(|arg| arg == "--q3");
     let mut runtime = Runtime::load(16, [])?;
     let mut consumers = [None; 16];
     for (slot, consumer) in consumers.iter_mut().enumerate() {
@@ -133,10 +181,15 @@ fn main() -> Result<(), String> {
                             2000 + slot as u16,
                         ))),
                     },
-                    channel: Channel::load(protocol(slot).channel(), Endpoint::Server, 8192, 16)
-                        .map_err(|e| e.to_string())?,
+                    channel: Channel::load(
+                        protocol(slot, q3).channel(),
+                        Endpoint::Server,
+                        8192,
+                        16,
+                    )
+                    .map_err(|e| e.to_string())?,
                     output: *consumer,
-                    commands: Some(Commands::load(protocol(slot))),
+                    commands: Some(Commands::load(protocol(slot, q3))),
                 },
             )
             .map_err(|e| format!("bind {e:?}"))?;
@@ -149,9 +202,12 @@ fn main() -> Result<(), String> {
     )?;
     let mut source = Source {
         peers: (0..16)
-            .map(|slot| Channel::load(protocol(slot).channel(), Endpoint::Client, 8192, 16))
+            .map(|slot| Channel::load(protocol(slot, q3).channel(), Endpoint::Client, 8192, 16))
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?,
+        commands: (0..16)
+            .map(|slot| Commands::load(protocol(slot, q3)))
+            .collect(),
         pending: vec![[0; 1400]; 16].into_boxed_slice(),
         lengths: [0; 16],
         frame: 0,
@@ -221,7 +277,7 @@ fn main() -> Result<(), String> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"ordinary host output ring through sixteen NQ/QW/Q2 native channels, peer print decode and real native ACK ingress; no game or socket syscall\",\"warmup\":60,\"frames\":600,\"measured_server_ticks\":{ticks},\"measured_output_packets\":{packets},\"prints\":{},\"native_receipts\":{},\"intake_calls\":{},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+        "{{\"scope\":\"ordinary host output ring through sixteen native channels, peer print decode and real native ACK ingress; no game or socket syscall\",\"q3\":{q3},\"warmup\":60,\"frames\":600,\"measured_server_ticks\":{ticks},\"measured_output_packets\":{packets},\"prints\":{},\"native_receipts\":{},\"intake_calls\":{},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
         source.prints,
         host.runtime.network.acknowledged,
         source.polls,

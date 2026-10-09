@@ -7,6 +7,7 @@ use qa_core::{
     sys_events::EventTime,
 };
 
+pub mod commands;
 mod transmit;
 pub use transmit::{Prepared, SendState, TransmitError, Unreliable};
 
@@ -19,6 +20,7 @@ pub struct Policy {
     reliable_bias: u32,
     fragment_payload: usize,
     fragment_inclusive: bool,
+    command_ack: bool,
 }
 pub const NETQUAKE: Policy = Policy {
     format: headers::NETQUAKE,
@@ -28,6 +30,7 @@ pub const NETQUAKE: Policy = Policy {
     reliable_bias: 0,
     fragment_payload: 0,
     fragment_inclusive: false,
+    command_ack: false,
 };
 pub const QUAKEWORLD: Policy = Policy {
     reliable_bias: 1,
@@ -42,6 +45,7 @@ pub const QUAKE3: Policy = Policy {
     reliable_bias: 0,
     fragment_payload: 1300,
     fragment_inclusive: true,
+    command_ack: true,
 };
 pub const fn q2_old(qport: QPort) -> Policy {
     Policy {
@@ -52,6 +56,7 @@ pub const fn q2_old(qport: QPort) -> Policy {
         reliable_bias: 0,
         fragment_payload: 0,
         fragment_inclusive: false,
+        command_ack: false,
     }
 }
 pub const fn q2_new(qport_present: bool) -> Policy {
@@ -63,6 +68,7 @@ pub const fn q2_new(qport_present: bool) -> Policy {
         reliable_bias: 0,
         fragment_payload: 1300,
         fragment_inclusive: false,
+        command_ack: false,
     }
 }
 
@@ -127,6 +133,7 @@ pub struct Channel {
     assembly: Box<[u8]>,
     controls: PayloadQueue<Header>,
     transmit: transmit::Transmit,
+    commands: Option<commands::CommandMessages>,
 }
 
 impl Channel {
@@ -155,6 +162,7 @@ impl Channel {
             assembly: vec![0; maximum_message].into_boxed_slice(),
             controls: PayloadQueue::load(controls, 1).map_err(|_| Error::Capacity)?,
             transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
+            commands: policy.command_ack.then(commands::CommandMessages::load),
         })
     }
 

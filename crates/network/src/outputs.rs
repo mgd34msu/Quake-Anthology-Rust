@@ -25,8 +25,15 @@ struct PrintFormat {
     level: bool,
     chat_prefix: bool,
 }
-fn format(protocol: Protocol) -> Result<PrintFormat, Error> {
-    Ok(match protocol {
+enum Format {
+    Bytes(PrintFormat),
+    Commands,
+}
+fn format(protocol: Protocol) -> Result<Format, Error> {
+    if protocol == Protocol::Quake3_68 {
+        return Ok(Format::Commands);
+    }
+    Ok(Format::Bytes(match protocol {
         Protocol::NetQuake15 => PrintFormat {
             print: 8,
             center: 26,
@@ -49,7 +56,7 @@ fn format(protocol: Protocol) -> Result<PrintFormat, Error> {
             chat_prefix: false,
         },
         _ => return Err(Error::Unsupported),
-    })
+    }))
 }
 pub fn print(
     protocol: Protocol,
@@ -58,7 +65,26 @@ pub fn print(
     text: &[u8],
     output: &mut [u8],
 ) -> Result<usize, Error> {
-    let format = format(protocol)?;
+    let Format::Bytes(format) = format(protocol)? else {
+        let verb = match kind {
+            PrintKind::Center => &b"cp \""[..],
+            PrintKind::Chat => &b"chat \""[..],
+            PrintKind::Layout => return Err(Error::Unsupported),
+            _ => &b"print \""[..],
+        };
+        let n = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+        let need = verb.len() + n + 2;
+        let capacity = output.len();
+        let out = output.get_mut(..need).ok_or(Error::Message(MessageError {
+            byte: capacity,
+            kind: crate::message::ErrorKind::Capacity,
+        }))?;
+        out[..verb.len()].copy_from_slice(verb);
+        out[verb.len()..verb.len() + n].copy_from_slice(&text[..n]);
+        out[need - 2] = b'"';
+        out[need - 1] = 0;
+        return Ok(need);
+    };
     let (opcode, has_level) = match kind {
         PrintKind::Center => (format.center, false),
         PrintKind::Layout => (format.layout.ok_or(Error::Unsupported)?, false),
@@ -107,7 +133,11 @@ impl<'a> Iterator for Prints<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let (&opcode, rest) = self.rest.split_first()?;
         let format = match format(self.protocol) {
-            Ok(format) => format,
+            Ok(Format::Bytes(format)) => format,
+            Ok(Format::Commands) => {
+                self.rest = &[];
+                return Some(Err(Error::Unsupported));
+            }
             Err(error) => {
                 self.rest = &[];
                 return Some(Err(error));

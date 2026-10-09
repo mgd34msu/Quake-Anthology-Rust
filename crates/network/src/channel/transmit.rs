@@ -72,6 +72,7 @@ struct Pending {
     length: usize,
     unreliable: Unreliable,
     commit: Commit,
+    commands: Option<u32>,
 }
 pub(super) struct Transmit {
     direction: Direction,
@@ -89,6 +90,7 @@ pub(super) struct Transmit {
     send_next: bool,
     message: Box<[u8]>,
     fragment_pending: bool,
+    command_flight: Option<u32>,
     packet: [u8; PACKET_BYTES],
     pending: Option<Pending>,
 }
@@ -106,8 +108,16 @@ impl Transmit {
                 ..SendState::default()
             },
             ring: PayloadQueue::load(
-                RELIABLE_RECORDS,
-                maximum.saturating_mul(2).min(64 * 1024 * 1024),
+                if policy.command_ack {
+                    1
+                } else {
+                    RELIABLE_RECORDS
+                },
+                if policy.command_ack {
+                    1
+                } else {
+                    maximum.saturating_mul(2).min(64 * 1024 * 1024)
+                },
             )
             .map_err(|_| Error::Capacity)?,
             receipt: 0,
@@ -121,6 +131,7 @@ impl Transmit {
             send_next: false,
             message: vec![0; maximum].into_boxed_slice(),
             fragment_pending: false,
+            command_flight: None,
             packet: [0; PACKET_BYTES],
             pending: None,
         })
@@ -192,6 +203,10 @@ impl Channel {
             || !self.transmit.ring.is_empty()
             || self.pending_controls() != 0
             || self.transmit.fragment_pending
+            || self
+                .commands
+                .as_ref()
+                .is_some_and(super::commands::CommandMessages::pending)
     }
     /// A connection supplies its negotiated native qport; it is never ClientId.
     pub fn set_qport(&mut self, qport: u16) {
@@ -205,6 +220,12 @@ impl Channel {
         &self.transmit.receipts[..self.transmit.receipt_count]
     }
     pub fn queue_reliable(&mut self, bytes: &[u8]) -> Result<NativeReceipt, TransmitError> {
+        if let Some(commands) = &mut self.commands {
+            let receipt = NativeReceipt(self.transmit.receipt.wrapping_add(1));
+            commands.queue(bytes, receipt)?;
+            self.transmit.receipt = receipt.0;
+            return Ok(receipt);
+        }
         if !self.policy.datagram && !self.policy.toggle_ack {
             return Err(TransmitError::PayloadReliability);
         }
@@ -245,6 +266,14 @@ impl Channel {
         &mut self,
         unreliable: Option<&[u8]>,
         time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        self.prepare_inner(unreliable, time, None)
+    }
+    fn prepare_inner(
+        &mut self,
+        unreliable: Option<&[u8]>,
+        time: EventTime,
+        commands: Option<u32>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         if self.transmit.pending.is_some() {
             return Err(TransmitError::PendingPacket);
@@ -404,6 +433,7 @@ impl Channel {
             length: size,
             unreliable: disposition,
             commit,
+            commands,
         });
         Ok(self.pending_packet())
     }
@@ -461,6 +491,46 @@ impl Channel {
         }
         tx.state.last_sent = time;
         tx.state.packets = tx.state.packets.saturating_add(1);
+        tx.command_flight = pending.commands.or(tx.command_flight);
+        if !tx.fragment_pending
+            && let Some(sequence) = tx.command_flight.take()
+            && let Some(commands) = &mut self.commands
+        {
+            commands.submitted(sequence, tx.state.sequence.wrapping_sub(1));
+        }
         Ok(())
+    }
+    #[inline(never)]
+    fn prepare_command_output(
+        &mut self,
+        time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        let mut bytes = [0; 32768];
+        let length = self
+            .encode_command_output(&mut bytes)
+            .map_err(|_| TransmitError::MessageTooLarge)?;
+        let queued = self.command_state().map(|state| state.queued);
+        self.prepare_inner(Some(&bytes[..length]), time, queued)
+    }
+    pub fn prepare_output(
+        &mut self,
+        time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        if self.transmit.pending.is_some() {
+            return Err(TransmitError::PendingPacket);
+        }
+        if self.commands.is_some() && !self.transmit.fragment_pending {
+            self.prepare_command_output(time)
+        } else {
+            self.prepare(None, time)
+        }
+    }
+    pub fn prepare_move(
+        &mut self,
+        bytes: &[u8],
+        time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        let queued = self.command_state().map(|state| state.queued);
+        self.prepare_inner(Some(bytes), time, queued)
     }
 }

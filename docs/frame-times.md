@@ -3372,7 +3372,7 @@ backend run, and records the native local protocol explicitly. It uses a normal
 candidate without a proof input player. The six fresh runs and install are
 performed after this commit; this note does not claim they have passed yet.
 
-### THE-3174: twelve audited primitive adoptions, timing acceptance open
+### THE-3174: twelve audited primitive adoptions, accepted at 18:49
 
 All twelve audited sites are recorded in [core-adoption.md](core-adoption.md).
 The release candidate preserves the compared movement, collision, sky endpoint,
@@ -3405,11 +3405,11 @@ RGBA and float-depth files match byte for byte in all four legs.
 | base1 CPU draw | 4433988.00 | 4349735.50 | -1.900% | 4554408.50 | 4489748.50 |
 | q3dm1 CPU draw | 13767227.50 | 13910185.25 | +1.038% | 15189646.00 | 15358701.00 |
 
-**Timing acceptance remains open.** Positive median shifts remain in names,
-Q1/Q2/Q3 model traces and q3dm1 CPU draw. This evidence does not establish the
-requested no-regression gate. The slice is retained on its pushed adoption WIP
-branch while those costs are investigated; main stays at the preceding verified
-commit. Repeated older trials are retained and are not substituted for this
+The supervisor accepted `54708d5b` at 18:49 with all twelve audited sites
+applied and recorded, and directed main push followed by THE-860. That commit
+is now on main and its superseded WIP branch is deleted. Positive median shifts
+remain in names, Q1/Q2/Q3 model traces and q3dm1 CPU draw; these measurements
+do not establish a strict zero-increase timing gate. Repeated older trials are retained and are not substituted for this
 final candidate matrix. Earlier diagnostic runners also have failed logs,
 including a twelve-versus-twenty row-count assertion and a failed continuation.
 Those incomplete series are not acceptance evidence.
@@ -3419,10 +3419,67 @@ Original-C checks retain 30,000 retail hull rows, 40,632 transformed-model rows,
 16,384 sky rows match the replaced Rust arithmetic. Q2/Q3 movement stays
 byte-identical to the pre-adoption Rust baseline over 1,152 rows each. Original
 Q2 is exact; Q3 keeps its pre-existing 544 float-component differences with
-maximum error 0.0000112 and exact flags/timers. No new native gameplay, module,
+maximum error 0.0000112 and exact flags/timers. THE-3175 tracks attribution
+after the current THE-860 step. No new native gameplay, module,
 foreign-heap, GL speed, multiplayer or installation acceptance is claimed.
 
 The final example build took 36.67 seconds, Cargo-reported. Evidence is under
 `THE-3174-adoption-20261009/`: query-layout-headless/summary.json,
 retail-query-layout-summary.json, sky-final-candidate/result.json, the original-C
 comparison directories, final checker/workspace/Clippy logs and build logs.
+
+### THE-860: native Q3 reliable command windows through the ordinary host
+
+The one Channel owns a 64-entry native command window in each direction.
+Acknowledged strings remain in their native `sequence & 63` slots until reuse,
+serving Q3's MSG/Huffman, XOR and usercmd keys. Client packets carry the native
+serverId, message ACK and reliable-command ACK; server payloads carry the native
+client-command ACK. Commands retire only after native submission and ACK,
+including complete fragment flights. No event watermark becomes a wire ACK.
+
+The ordinary app output path now emits Q3 `svc_serverCommand` records for
+cp/print/chat through that Channel; Packet ingress dispatches native client
+commands and receipts. Snapshot/gamestate payload readers and native client
+module execution are still deferred. This step does not claim visible stock
+HUDs, native signon, live reference connections or complete THE-860 acceptance.
+
+The extracted original Q3 SV_AddServerCommand, SV_UpdateServerCommandsToClient,
+MSG string/Huffman and SV/CL Netchan XOR functions match 512 seeded cases and
+1,081,803 output bytes, including high bytes, percent filtering and string
+boundary/cursor behavior. Focused tests cover both ACK directions, retained
+keys, duplicates/gaps, future/unsent ACKs, 64-command capacity and fragments.
+The unchanged checker, 651 workspace tests and warning-denied Clippy pass.
+The four release examples built in 24.04 seconds, Cargo-reported.
+
+CPU23, portable release, 60 warm-up plus 600 measured frames per invocation;
+five ABBA blocks for each pre-existing host workload. Baseline binaries were
+saved before this command-window work at a7ec14a2; the candidate also includes
+the accepted THE-3174 primitive adoption. Counters match in every leg, and
+allocations, reallocations and requested bytes are zero. These are headless
+host/peer-codec timings, including fixture decode/ACK construction; no socket
+syscalls, map rendering, native signon or gameplay are measured.
+
+| Workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Four native local command seats | 3966 | 4028 | +1.56% | 4367 | 4628 |
+| Sixteen NQ/QW/Q2 output peers | 11618.5 | 12197.5 | +4.98% | 40774 | 39927 |
+
+The new sixteen-peer NQ/QW/Q2/Q3 matrix averages 19,690 ns median and 53,552.5 ns
+p99 over four runs. Each receives 10,560 prints, consumes 10,544 real native
+receipts (including warm-up), makes exactly 1,320 physical intake calls and
+sends 9,600 output packets in the measured frames. This is a different workload
+from the classic-protocol row and has no comparable pre-change Q3 output path.
+
+Sixteen additional QW/Q3 ordinary-host runs cover reliable-without-ACK and
+unsent peers. Every run keeps a healthy peer and SERVER advancing on all 600
+measured frames; 10/20/40 Hz modules receive [1146,1150,1152] events. The stalled
+peer alone disconnects at frame 20 after its 32-slot output capacity is reached;
+all 1,152 healthy prints retire on real ACKs, with no healthy overflow, stale
+texts or measured heap activity. HUD display leases remain independent of
+module delivery. This proves bounded host progress and native receipt
+retirement in the connected fixture, not reconnect or installed multiplayer.
+
+Evidence is retained in `THE-860-q3-host-20261009/`: original/comparison.json,
+abba-summary.json and twenty raw legs per existing workload, q3-output rows,
+retirement-summary.json, and checker/workspace/Clippy/build logs. No checker
+rule, input history, journal or replay is introduced.

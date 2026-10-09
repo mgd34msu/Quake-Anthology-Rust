@@ -223,10 +223,7 @@ fn q3_fragmentation_has_no_header_receipt_and_an_empty_final_packet() {
     let mut sender = Channel::load(channel::QUAKE3, Endpoint::Client, 16384, 8).expect("load");
     let mut receiver = Channel::load(channel::QUAKE3, Endpoint::Server, 16384, 8).expect("load");
     sender.set_qport(37);
-    assert_eq!(
-        sender.queue_reliable(b"command"),
-        Err(TransmitError::PayloadReliability)
-    );
+    assert_eq!(sender.command_state().expect("command state").queued, 0);
     for part in 0..3 {
         let data = send(
             &mut sender,

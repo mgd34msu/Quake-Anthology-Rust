@@ -28,6 +28,7 @@ struct Source {
     healthy: u64,
     stalled: u64,
     peers: [Channel; 2],
+    commands: [Commands; 2],
     ack: [u8; 1400],
     ack_length: usize,
     unsent: bool,
@@ -74,22 +75,68 @@ impl FrameSource for Source {
             return false;
         };
         if let Delivery::Payload(body) = received.delivery {
-            for print in Prints::new(Protocol::QuakeWorld28, body) {
-                let Ok(print) = print else {
+            if self.commands[slot].protocol == Protocol::Quake3_68 {
+                let codec = &mut self.commands[slot];
+                let Ok(n) = codec.stage(body) else {
                     return false;
                 };
-                if print.kind != PrintKind::Center || print.text.is_empty() {
+                let mut valid = true;
+                if codec
+                    .decode_output(
+                        n,
+                        received.header.sequence,
+                        &mut self.peers[slot],
+                        |_, text| {
+                            valid &= text.starts_with(b"cp \"")
+                                && text.ends_with(b"\"")
+                                && text.len() > 5;
+                            if slot == 1 {
+                                self.healthy += 1;
+                            } else {
+                                self.stalled += 1;
+                            }
+                        },
+                    )
+                    .is_err()
+                    || !valid
+                {
                     return false;
                 }
-                if slot == 1 {
-                    self.healthy += 1;
-                } else {
-                    self.stalled += 1;
+            } else {
+                for print in Prints::new(self.commands[slot].protocol, body) {
+                    let Ok(print) = print else {
+                        return false;
+                    };
+                    if print.kind != PrintKind::Center || print.text.is_empty() {
+                        return false;
+                    }
+                    if slot == 1 {
+                        self.healthy += 1;
+                    } else {
+                        self.stalled += 1;
+                    }
                 }
             }
+        } else {
+            return true;
         }
         if slot == 1 {
-            let Ok(Some(packet)) = self.peers[slot].prepare(None, time) else {
+            let mut bytes = [0; 8192];
+            let prepared = if self.commands[slot].protocol == Protocol::Quake3_68 {
+                let command = UserCmd {
+                    server_time_ms: ((self.frame + 1) * 25) as i32,
+                    duration_ms: 25,
+                    ..UserCmd::default()
+                };
+                let Ok(n) = self.commands[slot].encode(&command, &self.peers[slot], &mut bytes)
+                else {
+                    return false;
+                };
+                self.peers[slot].prepare_move(&bytes[..n], time)
+            } else {
+                self.peers[slot].prepare(None, time)
+            };
+            let Ok(Some(packet)) = prepared else {
                 return false;
             };
             self.ack_length = packet.bytes.len();
@@ -118,7 +165,7 @@ fn consume(runtime: &mut Runtime, tick: Tick, record: OutputRecord) -> OutputSub
     player.health += 1;
     OutputSubmission::BestEffort
 }
-fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = Runtime::load(64, std::iter::empty())?;
     runtime.server.events = EventRing::load(32, 8, 64, 256).map_err(|_| "events")?;
     runtime.server.presentation = runtime
@@ -145,15 +192,10 @@ fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
                         socket: 0,
                         peer: Peer::Socket(SocketAddr::from(([127, 0, 0, 1], 1000 + slot as u16))),
                     },
-                    channel: Channel::load(
-                        qa_network::channel::QUAKEWORLD,
-                        Endpoint::Server,
-                        8192,
-                        16,
-                    )
-                    .map_err(|_| "channel")?,
+                    channel: Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
+                        .map_err(|_| "channel")?,
                     output: runtime.server.clients[slot as usize].output,
-                    commands: Some(Commands::load(Protocol::QuakeWorld28)),
+                    commands: Some(Commands::load(protocol)),
                 },
             )
             .map_err(|_| "binding")?;
@@ -179,9 +221,9 @@ fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
         healthy: 0,
         stalled: 0,
         peers: std::array::from_fn(|_| {
-            Channel::load(qa_network::channel::QUAKEWORLD, Endpoint::Client, 8192, 16)
-                .expect("channel load")
+            Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).expect("channel load")
         }),
+        commands: std::array::from_fn(|_| Commands::load(protocol)),
         ack: [0; 1400],
         ack_length: 0,
         unsent,
@@ -307,7 +349,7 @@ fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
         leased_id.is_some_and(|id| host.runtime.server.events.texts.get(id).is_some());
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"headless Com_Frame native QW print ACK retirement; no sign-on or gameplay\",\"stalled_delivery\":\"{}\",\"warmup\":60,\"frames\":600,\"continuous_healthy_and_server_frames\":{continuing_frames},\"disconnect_frame\":{},\"server_ticks\":{ticks},\"world_frame\":659,\"module_hz\":[10,20,40],\"module_deliveries\":{modules:?},\"healthy_prints\":{},\"healthy_native_acked_records\":{},\"stalled_attempts\":{},\"retired_on_resync\":{retired},\"stalled_overflow\":{overflow},\"disconnected\":{disconnected},\"healthy_overflow\":0,\"stale_texts\":0,\"payload_retained_for_slower_module_after_hud_disconnect\":{display_after_disconnect},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame native print ACK retirement; no sign-on or gameplay\",\"protocol\":\"{protocol:?}\",\"stalled_delivery\":\"{}\",\"warmup\":60,\"frames\":600,\"continuous_healthy_and_server_frames\":{continuing_frames},\"disconnect_frame\":{},\"server_ticks\":{ticks},\"world_frame\":659,\"module_hz\":[10,20,40],\"module_deliveries\":{modules:?},\"healthy_prints\":{},\"healthy_native_acked_records\":{},\"stalled_attempts\":{},\"retired_on_resync\":{retired},\"stalled_overflow\":{overflow},\"disconnected\":{disconnected},\"healthy_overflow\":0,\"stale_texts\":0,\"payload_retained_for_slower_module_after_hud_disconnect\":{display_after_disconnect},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{bytes},\"median_ns\":{},\"p99_ns\":{}}}",
         if unsent {
             "unsent"
         } else {
@@ -324,8 +366,13 @@ fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let protocol = if std::env::args().any(|arg| arg == "--q3") {
+        Protocol::Quake3_68
+    } else {
+        Protocol::QuakeWorld28
+    };
     for unsent in [false, true] {
-        run(unsent)?;
+        run(unsent, protocol)?;
     }
     Ok(())
 }
