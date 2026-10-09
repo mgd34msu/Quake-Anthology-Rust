@@ -17,7 +17,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_driver="disk"):
+def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_driver="disk", timeout=30):
     binary = build / "qa-rust"
     metadata = json.loads((build / "build.json").read_text())
     require(metadata.get("source_tree_dirty") is False, "build must come from a committed clean tree")
@@ -25,7 +25,7 @@ def qualify(build, profile, evidence, arguments, require_gameplay=True, audio_dr
     compiled = json.loads(subprocess.check_output([str(binary), "--build-info"], text=True))
     require(all(compiled.get(k) == metadata.get(k) for k in ("commit", "source_tree_dirty", "target_cpu", "proof")),
             "build metadata differs from the compiled candidate")
-    result = run(binary, profile, evidence, arguments, audio_driver=audio_driver)
+    result = run(binary, profile, evidence, arguments, audio_driver=audio_driver, timeout=timeout)
     require(result["result"] == "PASS" and result.get("normal_exit"), "copied-profile private launch failed")
     require(result["copied_owner_settings"], "owner profile must contain saved settings")
     require(result["owner_profile_unchanged"], "owner profile changed during qualification")
@@ -51,7 +51,7 @@ def qualify_smoke(build, profile, evidence, content):
             current, result = qualify(build, profile, folder,
                 ["--content", str(content / product), "--map", name, "--renderer", renderer,
                  "--frames", "300", "--width", "640", "--height", "400",
-                 "--startup-hold-ms", "1500", "--uncapped"], require_gameplay=False, audio_driver="dummy")
+                 "--startup-hold-ms", "1500", "--uncapped"], require_gameplay=False, audio_driver="dummy", timeout=60)
             frame = next((row for row in result["events"] if row.get("event") == "world_frame_presented"), {})
             normal = next((row for row in result["events"] if row.get("event") == "normal_exit"), {})
             require(frame.get("map") == "maps/" + name + ".bsp" and frame.get("renderer") == renderer,

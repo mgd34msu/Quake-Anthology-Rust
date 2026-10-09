@@ -46,8 +46,9 @@ class InstallDestinations(unittest.TestCase):
     def save_metadata(self):
         (self.build / "build.json").write_text(json.dumps(self.metadata))
 
-    def private_result(self, binary, profile, evidence, arguments, audio_driver="disk"):
+    def private_result(self, binary, profile, evidence, arguments, audio_driver="disk", timeout=30):
         self.assertEqual(audio_driver, "dummy" if self.smoke else "disk")
+        self.assertEqual(timeout, 60 if self.smoke else 30)
         self.calls.append(arguments)
         name = arguments[arguments.index("--map") + 1]
         renderer = arguments[arguments.index("--renderer") + 1]
