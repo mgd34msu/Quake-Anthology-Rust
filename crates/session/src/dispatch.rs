@@ -15,7 +15,7 @@ pub struct FunctionTable<C> {
 
 struct ModuleFunctions<C> {
     functions: Box<[FunctionBinding<C>]>,
-    timing: RuleSetId,
+    timing: ThinkRules,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,61 +24,75 @@ pub enum ThinkFrame {
     Milliseconds { now: i64 },
 }
 
-fn evaluate_timing(
-    rules: RuleSetId,
-    due: ThinkTime,
-    frame: ThinkFrame,
-) -> Result<Option<ThinkTime>, CallError> {
-    match (rules, due, frame) {
-        (
-            RuleSetId::Quake | RuleSetId::QuakeWorld,
-            ThinkTime::Seconds(due),
-            ThinkFrame::Seconds { now, step },
-        ) => {
-            // Q1/QW sv_phys.c SV_RunThink stores thinktime in float, but
-            // sv.time + host_frametime and the past-time test are double.
-            let mut due = due as f32;
-            if due <= 0.0 || f64::from(due) > now + step {
-                return Ok(None);
-            }
-            if f64::from(due) < now {
-                due = now as f32;
-            }
-            Ok(Some(ThinkTime::Seconds(f64::from(due))))
+struct ThinkRules {
+    seconds: bool,
+    frame_end: bool,
+    integer_float: bool,
+    repeat: bool,
+    tolerance: f64,
+}
+
+impl ThinkRules {
+    fn load(rules: RuleSetId) -> Self {
+        Self {
+            seconds: matches!(
+                rules,
+                RuleSetId::Quake | RuleSetId::QuakeWorld | RuleSetId::Quake2
+            ),
+            frame_end: matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld),
+            integer_float: rules == RuleSetId::Quake3,
+            repeat: rules == RuleSetId::QuakeWorld,
+            tolerance: if rules == RuleSetId::Quake2 {
+                0.001
+            } else {
+                0.0
+            },
         }
-        (RuleSetId::Quake2, ThinkTime::Seconds(due), ThinkFrame::Seconds { now, .. }) => {
-            // Q2 g_phys.c SV_RunThink: both stored times are float; the
-            // unsuffixed 0.001 promotes level.time before the addition.
-            let due = due as f32;
-            let now = now as f32;
-            if due <= 0.0 || f64::from(due) > f64::from(now) + 0.001 {
-                return Ok(None);
+    }
+
+    #[inline]
+    fn evaluate(&self, due: ThinkTime, frame: ThinkFrame) -> Result<Option<ThinkTime>, CallError> {
+        match (due, frame) {
+            (ThinkTime::Seconds(due), ThinkFrame::Seconds { now, step }) if self.seconds => {
+                let mut due = due as f32;
+                if self.frame_end {
+                    // Q1/QW compare float nextthink against double frame time.
+                    if due <= 0.0 || f64::from(due) > now + step {
+                        return Ok(None);
+                    }
+                    if f64::from(due) < now {
+                        due = now as f32;
+                    }
+                    Ok(Some(ThinkTime::Seconds(f64::from(due))))
+                } else {
+                    // Q2 stores the clock in float, then promotes for 0.001.
+                    let now = now as f32;
+                    if due <= 0.0 || f64::from(due) > f64::from(now) + self.tolerance {
+                        return Ok(None);
+                    }
+                    Ok(Some(ThinkTime::Seconds(f64::from(now))))
+                }
             }
-            Ok(Some(ThinkTime::Seconds(f64::from(now))))
-        }
-        (
-            RuleSetId::Quake2Rerelease,
-            ThinkTime::Milliseconds(due),
-            ThinkFrame::Milliseconds { now },
-        ) => {
-            // Rerelease gtime_t retains int64_t milliseconds throughout.
-            if due <= 0 || due > now {
-                return Ok(None);
+            (ThinkTime::Milliseconds(due), ThinkFrame::Milliseconds { now }) if !self.seconds => {
+                if self.integer_float {
+                    // Q3 compares native int32 times as float, while the
+                    // callback keeps the integer clock above float precision.
+                    let due = (due as i32) as f32;
+                    let now = now as i32;
+                    if due <= 0.0 || due > now as f32 {
+                        return Ok(None);
+                    }
+                    Ok(Some(ThinkTime::Milliseconds(i64::from(now))))
+                } else {
+                    // Rerelease gtime_t keeps signed int64 milliseconds.
+                    if due <= 0 || due > now {
+                        return Ok(None);
+                    }
+                    Ok(Some(ThinkTime::Milliseconds(now)))
+                }
             }
-            Ok(Some(ThinkTime::Milliseconds(now)))
+            _ => Err(CallError::TimeKind),
         }
-        (RuleSetId::Quake3, ThinkTime::Milliseconds(due), ThinkFrame::Milliseconds { now }) => {
-            // Q3 G_RunThink narrows native int nextthink to float, then
-            // promotes int level.time to float for comparison. The callback
-            // still sees integer level.time, not that rounded float.
-            let due = (due as i32) as f32;
-            let now = now as i32;
-            if due <= 0.0 || due > now as f32 {
-                return Ok(None);
-            }
-            Ok(Some(ThinkTime::Milliseconds(i64::from(now))))
-        }
-        _ => Err(CallError::TimeKind),
     }
 }
 
@@ -115,7 +129,7 @@ impl<C: ThinkWorld> FunctionTable<C> {
             }
             tables[slot] = Some(ModuleFunctions {
                 functions: functions.into_boxed_slice(),
-                timing,
+                timing: ThinkRules::load(timing),
             });
         }
         Ok(Self {
@@ -206,7 +220,7 @@ pub fn run_think<C: ThinkWorld>(
             result.rejected = result.rejected.saturating_add(1);
             return result;
         };
-        let time = match evaluate_timing(functions.timing, due, frame) {
+        let time = match functions.timing.evaluate(due, frame) {
             Ok(Some(time)) => time,
             Ok(None) => return result,
             Err(_) => {
@@ -227,7 +241,7 @@ pub fn run_think<C: ThinkWorld>(
             return result;
         }
         result.called = result.called.saturating_add(1);
-        if !result.current_lifetime || functions.timing != RuleSetId::QuakeWorld {
+        if !result.current_lifetime || !functions.timing.repeat {
             return result;
         }
     }

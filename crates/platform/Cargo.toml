@@ -34,3 +34,7 @@ required-features = ["allocation-tracking"]
 [[example]]
 name = "body_attachments"
 required-features = ["allocation-tracking"]
+
+[[example]]
+name = "think_dispatch"
+required-features = ["allocation-tracking"]

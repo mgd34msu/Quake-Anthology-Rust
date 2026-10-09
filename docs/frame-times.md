@@ -2264,3 +2264,61 @@ Evidence under `THE-650-attachments/prediction`: `normal-candidate/build.json`,
 `normal-qualification/qualification.json`,
 `base1-q1-q3-qualification/qualification.json`, per-case logs/captures and
 `normal-cleanup.json`. The gameplay/timing installation gates remain unchanged.
+
+## THE-709 load-resolved think policy (2026-10-09)
+
+Module registration now resolves seconds/milliseconds, frame-end comparison,
+Q2 tolerance, Q3 integer-to-float comparison and QW repetition into private
+timing data. Callback function pointers remain resolved at load. The shared
+per-entity entry evaluates this data without selecting a game identity on each
+call. The old selector is deleted. The slot scan continues to use only
+`EntityTable::next_active`, which reads the authoritative liveness bitset and
+re-resolves lifetimes after callback mutations. Native physics providers still
+own the phase at which they call this entry.
+
+Release `think_dispatch` compares the production dispatcher against parent
+`41d294e5` using the same probe source and mixed five-rule workload. Each run
+uses CPU 23, 60 warm-up and 600 measured frames. A/B/B/A averages follow:
+
+| Capacity / live actors | Before / after median µs | Median change | Before / after p99 µs |
+| --- | ---: | ---: | ---: |
+| 64 / 63 | 0.605 / 0.645 | +6.612% | 0.765 / 0.990 |
+| 8,192 / 64 | 0.655 / 0.695 | +6.107% | 0.700 / 0.740 |
+| 8,192 / 8,191 | 76.920 / 82.475 | +7.222% | 81.885 / 88.040 |
+
+Per-rule callback counts and final timestamps match in every run; measured
+allocations, reallocations and requested bytes are zero, with allocation
+positive control 1. This measures a headless calling thread, without workers,
+native modules or rendering. It is not a gameplay performance qualification.
+The separate four-million-callback and 30,000 HUD-snapshot probes also report
+zero allocation/reallocation calls after load. Their older counter does not
+measure requested bytes.
+
+The unchanged native-function comparator matches all 13,390 rows: Q1 2,965,
+QW 2,965, Q2 2,690, rerelease 2,290 and Q3 2,480. Native float narrowing,
+signed integer time, callback preservation, QW repetition and scoped rejection
+retain the comparator's existing bounds. It does not execute guest modules or
+native monster physics phases. Workspace tests pass 578 cases; all-target
+allocation-feature Clippy and the unchanged rule checker pass. Final release
+probe build took 7.066 seconds. Two measured indirect timing-call designs were
+rejected for median regressions between 61% and 86%; their receipts are retained alongside
+the accepted policy-data measurements.
+
+THE-656/702 source audit finds one production PlayerState definition, one
+HudState definition and one load-sized client array. The existing CLIENT loop
+projects every connected client's PlayerState through the same HudBindings,
+preserving its text leases and layout. No alternate per-game player/HUD state
+or stock HUD drawing implementation is present. The existing Q1+Q3 seat runs
+on e1m1/base1 and the three-map normal-candidate receipts above remain evidence
+for candidate render/input integration, not installed gameplay. No new private
+game run or install was needed for this headless dispatch change.
+
+Evidence is in `THE-709-load-rules-20261009` under the local QA evidence cache:
+`checks.json`, `comparison/report.json`, `abba-runs.json`, `abba-summary.json`,
+`source-audit.json`, `dispatch_allocations.log`, `hud_allocations.log` and the
+workspace/Clippy/checker/release logs. Run the probe with
+`cargo run --release -p qa-platform --example think_dispatch --features
+allocation-tracking -- --capacity 8192 --live 64` under the chosen CPU affinity.
+Native HUD drawing, module-phase think callers, installed five-scene think
+acceptance, native protocol connections and qualified qa-rust installation
+remain open on THE-656/702/709/859.
