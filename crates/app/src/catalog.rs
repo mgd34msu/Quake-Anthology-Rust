@@ -20,7 +20,7 @@ impl GameplayCatalog {
         )
         .map_err(|e| format!("gameplay names: {e:?}"))?;
         let registry = Registry::load(&names).map_err(|e| format!("item registry: {e:?}"))?;
-        let hud = HudBindings::load(&registry);
+        let hud = HudBindings::load(&registry, &[]).ok_or("HUD value layout capacity")?;
         Ok(Self {
             names,
             registry,

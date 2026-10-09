@@ -178,7 +178,7 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
 #[test]
 fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() {
     let mut runtime = Runtime::load(std::iter::empty()).unwrap();
-    runtime.server = Server::load(512, 1024, 1, 0, 0).unwrap();
+    runtime.server = Server::load(512, 1024, 1, 0, 0, 0).unwrap();
     for _ in 0..512 {
         runtime
             .server

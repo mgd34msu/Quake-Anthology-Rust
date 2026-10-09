@@ -61,6 +61,22 @@ ideal pitch is copied through prediction; native guest population remains open.
 The full private button/combined-seat walks and qualified installed acceptance
 remain open.
 
+THE-2852 supplies one core ValueBank for arbitrary player/HUD numeric fields.
+It stores raw 32-bit payloads behind internal ValueIds. Cold ValueBindings select
+native signed-short, signed-int or negotiated float projection; these handles
+never replace native ordinals on the wire. The stock schema binds NQ/QW32,
+Q232, Q2RR64 and Q3 stats/persistent16 each into one bank. Extra load-time fields
+use the same storage and interned names. Each module may supply an independent
+binding range, regardless of the selected presentation or protocol.
+
+The app allocates matching player and HUD bank sizes at load; its existing HUD
+update copies the bank into the snapshot and counts clipped values without
+growing storage. Layout and text state are preserved. A module life reset touches
+only its bound life fields; persistent/session values survive. Session reset
+clears all values while retaining the allocation. Native module imports,
+extension negotiation, live layouts and legacy packet integration remain open.
+This does not resolve the output TextId display leases in THE-697/890.
+
 RuleSetId is per player, independent of map, module and client protocol.
 At the movement boundary, Q1 duration clamps to 1..100 ms, QW/Q2 replace values
 above 250 ms with 100 ms, and Q3 clamps to 1..200 ms. Q2 rerelease is bounded by

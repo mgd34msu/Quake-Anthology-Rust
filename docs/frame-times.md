@@ -1868,3 +1868,37 @@ A fresh host ABBA check with no concurrent owned compilation retained identical
 fidelity counters and zero allocation counts; mean medians changed -1.67%.
 Rows and cleanup are in `centerview-timings/result.json`, with the original
 view-function extracts and raw comparison rows in `native-view/`.
+
+The clean normal allocation-tracked candidate at `a82e70a4` built in 28.75 seconds.
+At slice completion it rendered e1m1/base1/q3dm1 on CPU automatic eight bands
+and GL, at 640x400, with fresh copied owner settings. All six private X11 runs
+quit normally and counted zero calling/worker Rust heap over 600 measured frames
+after 60 warm-up frames. Each recorded 17 real key repeats; all 18 owned PIDs
+were absent afterward. GL was Mesa 26.2.2 llvmpipe LLVM 22.1.8 software GL.
+Input evidence is partial: CPU Q3 lookup did not reach a material angle change,
+so that row does not prove centerview. Full-button, combined-seat and qualified
+installed gameplay acceptance remain open. No install or game-audio proof.
+
+## THE-2852 common numeric HUD values
+
+One load-sized bank supplies arbitrary native fields to the existing player/HUD
+snapshot path. The initial native-declaration fixture matched 1,344 field/width
+records, including highest slots and signed extremes for NQ/QW32, Q232, Q2RR64
+and Q3 stats/persistent16. Additional semantic checks retain raw float bits,
+separate module reset ranges, session/persistent values, layout text and bounded
+capacity failure. Native guest/layout drawing and packet interoperability are
+not established by this component evidence.
+
+A portable release developer build took 8.34 seconds. Core23, no debugger,
+60 warm-up and 600 measured frames: 64 HUD snapshots with 192 numeric fields each
+measured 8.450 microseconds median and 8.590 microseconds p99, with zero measured
+calling-thread allocations/bytes and a positive allocation control. The unchanged
+headless human host ABBA workload kept matching counters and zero heap; mean
+medians increased 0.044%. Its zero-connected-client workload does not measure
+the numeric snapshot work; the separate 64-client row does. Evidence is in
+`~/.cache/qa-rust/THE-2852-numeric/`, including native declarations/raw rows,
+`result.json`, `host-abba.json`, release examples and cleanup metadata.
+After moving the generic width/binding operations into core, the final release
+example build took 23.77 seconds. All 1,344 native rows stayed identical; the
+same 64-client workload measured 8.390/8.730 microseconds median/p99, zero heap
+and the same checksum. This final row is `result-core-binding.json`.

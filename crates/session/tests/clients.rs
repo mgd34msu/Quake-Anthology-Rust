@@ -3,7 +3,7 @@ use qa_session::clients::{Connection, Server};
 
 #[test]
 fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
-    let mut server = Server::load(2, 512, 256, 16, 8).unwrap();
+    let mut server = Server::load(2, 512, 256, 16, 8, 0).unwrap();
     let first = server
         .connect(Connection::Local, ModuleId(1), PlayerTail::default(), None)
         .unwrap();
@@ -55,7 +55,7 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
 #[test]
 fn native_q2_capacity_and_larger_common_namespaces_do_not_truncate_client_ids() {
     for count in [256, 512] {
-        let mut server = Server::load(count, count + 1, 2, 2, 2).unwrap();
+        let mut server = Server::load(count, count + 1, 2, 2, 2, 0).unwrap();
         assert_eq!(server.clients.len(), count);
         for slot in 0..count {
             let id = server
@@ -81,7 +81,7 @@ fn native_q2_capacity_and_larger_common_namespaces_do_not_truncate_client_ids() 
 
 #[test]
 fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
-    let mut server = Server::load(2, 16, 2, 2, 2).unwrap();
+    let mut server = Server::load(2, 16, 2, 2, 2, 0).unwrap();
     let arena = NativeEntity {
         module: ModuleId(20),
         slot: 0,
@@ -134,7 +134,7 @@ fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
 
 #[test]
 fn untrusted_command_client_ids_are_scoped_and_disconnected_slots_stay_idle() {
-    let mut server = Server::load(2, 8, 1, 0, 0).unwrap();
+    let mut server = Server::load(2, 8, 1, 0, 0, 0).unwrap();
     let command = qa_core::primitives::UserCmd {
         duration_ms: 123,
         ..Default::default()

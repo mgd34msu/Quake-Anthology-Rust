@@ -7,9 +7,10 @@ use qa_ui::hud::{HudBindings, expire_messages, print};
 fn main() -> Result<(), &'static str> {
     let names = NameTable::load(Registry::names_needed()).map_err(|_| "names")?;
     let registry = Registry::load(&names).map_err(|_| "registry")?;
-    let bindings = HudBindings::load(&registry);
-    let mut players: [PlayerState; 3] =
-        std::array::from_fn(|_| PlayerState::with_capacity(registry.items.len() + 1, 16));
+    let bindings = HudBindings::load(&registry, &[]).ok_or("HUD layout")?;
+    let mut players: [PlayerState; 3] = std::array::from_fn(|_| {
+        PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity())
+    });
     let mut states = std::array::from_fn::<_, 3, _>(|_| bindings.state(16, NameId(1)));
     for (index, player) in players.iter_mut().enumerate() {
         let weapon = registry

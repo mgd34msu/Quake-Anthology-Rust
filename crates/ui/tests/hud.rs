@@ -6,8 +6,9 @@ use qa_ui::hud::{HudBindings, expire_messages, print};
 fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding() {
     let names = NameTable::load(Registry::names_needed()).unwrap();
     let registry = Registry::load(&names).unwrap();
-    let bindings = HudBindings::load(&registry);
-    let mut player = PlayerState::with_capacity(registry.items.len() + 1, 16);
+    let bindings = HudBindings::load(&registry, &[]).unwrap();
+    let mut player =
+        PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity());
     let mut state = bindings.state(16, NameId(10));
     player.health = 75;
     player.armor = 30;

@@ -297,6 +297,7 @@ pub enum PlayerTail {
 
 #[derive(Debug, Default)]
 pub struct PlayerState {
+    pub values: ValueBank,
     pub movement_rules: RuleSetId,
     /// Caller clipping/filtering policy, independent of movement and geometry.
     pub trace_rules: RuleSetId,
@@ -512,8 +513,9 @@ impl CommandIntent {
 }
 
 impl PlayerState {
-    pub fn with_capacity(items: usize, powerups: usize) -> Self {
+    pub fn with_capacity(items: usize, powerups: usize, values: usize) -> Self {
         Self {
+            values: ValueBank::load(values),
             inventory: vec![0; items].into_boxed_slice(),
             item_acquired_at: vec![0.0; items].into_boxed_slice(),
             powerup_until: vec![0.0; powerups].into_boxed_slice(),
@@ -522,6 +524,7 @@ impl PlayerState {
     }
 
     pub fn reset(&mut self) {
+        self.values.clear();
         self.inventory.fill(0);
         self.item_acquired_at.fill(0.0);
         self.powerup_until.fill(0.0);
@@ -529,6 +532,7 @@ impl PlayerState {
         let item_acquired_at = std::mem::take(&mut self.item_acquired_at);
         let powerup_until = std::mem::take(&mut self.powerup_until);
         *self = Self {
+            values: std::mem::take(&mut self.values),
             inventory,
             item_acquired_at,
             powerup_until,
@@ -653,6 +657,8 @@ pub struct HudLine {
 }
 #[derive(Debug, Default)]
 pub struct HudState {
+    pub values: ValueBank,
+    pub clipped_values: u64,
     pub health: i32,
     pub armor: i32,
     pub ammo: i32,
@@ -673,8 +679,9 @@ pub struct HudState {
 }
 
 impl HudState {
-    pub fn with_capacity(items: usize, powerups: usize, weapons: usize) -> Self {
+    pub fn with_capacity(items: usize, powerups: usize, weapons: usize, values: usize) -> Self {
         Self {
+            values: ValueBank::load(values),
             item_counts: vec![0; items].into_boxed_slice(),
             item_acquired_at: vec![0.0; items].into_boxed_slice(),
             owned_items: vec![0; items.div_ceil(64)].into_boxed_slice(),
@@ -685,12 +692,14 @@ impl HudState {
     }
 
     pub fn reset(&mut self) {
+        self.values.clear();
         self.item_counts.fill(0);
         self.item_acquired_at.fill(0.0);
         self.owned_items.fill(0);
         self.owned_weapons.fill(0);
         self.powerup_until.fill(0.0);
         *self = Self {
+            values: std::mem::take(&mut self.values),
             item_counts: std::mem::take(&mut self.item_counts),
             item_acquired_at: std::mem::take(&mut self.item_acquired_at),
             owned_items: std::mem::take(&mut self.owned_items),
@@ -699,4 +708,33 @@ impl HudState {
             ..Self::default()
         };
     }
+}
+
+/// Internal numeric handles never replace native stat ordinals on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValueId(pub u32);
+/// Preserve integer and negotiated float payloads without arithmetic or tagging.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NumericValue(pub u32);
+#[derive(Debug, Default)]
+pub struct ValueBank {
+    pub(crate) bits: Box<[u32]>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueWidth {
+    Signed16,
+    Signed32,
+    Float32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueReset {
+    Life,
+    Session,
+}
+/// Shared numeric boundary data for module, HUD and protocol consumers.
+#[derive(Clone, Copy, Debug)]
+pub struct ValueBinding {
+    pub id: ValueId,
+    pub width: ValueWidth,
+    pub reset: ValueReset,
 }

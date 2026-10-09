@@ -42,7 +42,7 @@ fn floor() -> (CollisionStore, GeometryId) {
 }
 #[test]
 fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
-    let mut server = Server::load(15, 64, 1, 0, 0).unwrap();
+    let mut server = Server::load(15, 64, 1, 0, 0, 0).unwrap();
     let (store, geometry) = floor();
     let mut scratch = store.scratch();
     let rules = [
@@ -140,7 +140,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
 
 #[test]
 fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects() {
-    let mut server = Server::load(2, 16, 1, 0, 0).unwrap();
+    let mut server = Server::load(2, 16, 1, 0, 0, 0).unwrap();
     let (store, geometry) = floor();
     let mut scratch = store.scratch();
     let moving = server
@@ -295,7 +295,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         .unwrap();
     assert_ne!(geometry, first_geometry);
     let mut scratch = store.scratch();
-    let mut server = Server::load(1, 8, 1, 0, 0).unwrap();
+    let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
     let id = server
         .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
         .unwrap();
@@ -386,7 +386,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
     for (trace_rules, expected_height) in
         [(RuleSetId::Quake3, 24.125), (RuleSetId::Quake2, 24.03125)]
     {
-        let mut server = Server::load(1, 8, 1, 0, 0).map_err(|_| "server capacity")?;
+        let mut server = Server::load(1, 8, 1, 0, 0, 0).map_err(|_| "server capacity")?;
         let id = server
             .connect(
                 Connection::Local,

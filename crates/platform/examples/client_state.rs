@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if positive.allocations != 1 {
         return Err("allocation positive control".into());
     }
-    let mut server = Server::load(512, 1024, 2, 2, 2).map_err(|e| format!("{e:?}"))?;
+    let mut server = Server::load(512, 1024, 2, 2, 2, 0).map_err(|e| format!("{e:?}"))?;
     let rules = [
         RuleSetId::Quake,
         RuleSetId::QuakeWorld,

@@ -67,8 +67,15 @@ impl Runtime {
         // Inventory, acquisition times and powerup timers all use common ItemId.
         // Zero is unused; instant and non-powerup items retain zero timer rows.
         // Native powerup ordinals are converted at module/protocol boundaries.
-        let server = Server::load(64, 8192, item_slots, item_slots, weapon_slots)
-            .map_err(|e| format!("server: {e:?}"))?;
+        let server = Server::load(
+            64,
+            8192,
+            item_slots,
+            item_slots,
+            weapon_slots,
+            catalog.hud.values.capacity(),
+        )
+        .map_err(|e| format!("server: {e:?}"))?;
         let targets = qa_world::targets::TargetIndex::new(&server.entities);
         Ok(Self {
             catalog,

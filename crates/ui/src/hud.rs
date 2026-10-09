@@ -8,13 +8,15 @@ struct WeaponBinding {
 }
 
 pub struct HudBindings {
+    pub values: crate::values::ValueLayout,
     weapons: Box<[Option<WeaponBinding>]>,
     items: usize,
 }
 
 impl HudBindings {
     /// Resolved once from the common registry, including mixed character arsenals.
-    pub fn load(registry: &Registry) -> Self {
+    pub fn load(registry: &Registry, extensions: &[crate::values::ExtensionValue]) -> Option<Self> {
+        let values = crate::values::ValueLayout::load(extensions)?;
         let mut weapons = vec![None; registry.weapons.len() + 1].into_boxed_slice();
         for weapon in &registry.weapons {
             weapons[weapon.id.0 as usize] = Some(WeaponBinding {
@@ -22,19 +24,28 @@ impl HudBindings {
                 ammo: weapon.ammo,
             });
         }
-        Self {
+        Some(Self {
+            values,
             weapons,
             items: registry.items.len() + 1,
-        }
+        })
     }
 
     pub fn state(&self, powerups: usize, layout: NameId) -> HudState {
-        let mut state = HudState::with_capacity(self.items, powerups, self.weapons.len());
+        let mut state = HudState::with_capacity(
+            self.items,
+            powerups,
+            self.weapons.len(),
+            self.values.capacity(),
+        );
         state.layout = layout;
         state
     }
 
     pub fn update(&self, player: &PlayerState, state: &mut HudState) {
+        state.clipped_values = state
+            .clipped_values
+            .saturating_add(state.values.copy_from(&player.values) as u64);
         state.health = player.health;
         state.armor = player.armor;
         state.armor_type = player.armor_type;

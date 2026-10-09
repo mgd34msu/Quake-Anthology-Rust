@@ -97,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Stopwatch,
         allocations::{begin_frame, end_frame},
     };
-    let mut server = Server::load(64, 128, 1, 0, 0).map_err(|e| format!("{e:?}"))?;
+    let mut server = Server::load(64, 128, 1, 0, 0, 0).map_err(|e| format!("{e:?}"))?;
     server.area = AreaGrid::load(
         128,
         Bounds {

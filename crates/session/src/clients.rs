@@ -43,24 +43,29 @@ pub struct Server {
 pub enum ServerError {
     ClientCapacity,
     InventoryCapacity,
+    ValueCapacity,
     EntityCapacity,
 }
 
 impl Server {
-    /// Arena sizes are slot counts, including any unused zero handle. The app's
-    /// gameplay catalogue sizes acquisition and timer rows by common ItemId.
+    /// Sizes are load-time slot counts. Item zero is unused; numeric value zero
+    /// is valid. The app's catalog supplies the common numeric schema capacity.
     pub fn load(
         max_clients: usize,
         entity_capacity: usize,
         items: usize,
         powerups: usize,
         weapons: usize,
+        values: usize,
     ) -> Result<Self, ServerError> {
         if max_clients == 0 || max_clients > u32::MAX as usize {
             return Err(ServerError::ClientCapacity);
         }
         if items == 0 || items > 65536 || powerups > 65536 || weapons > 65536 {
             return Err(ServerError::InventoryCapacity);
+        }
+        if u32::try_from(values.saturating_sub(1)).is_err() {
+            return Err(ServerError::ValueCapacity);
         }
         let reserved = max_clients
             .checked_add(1)
@@ -86,11 +91,11 @@ impl Server {
                 module: ModuleId::default(),
                 client_rules: RuleSetId::default(),
                 link_order: LinkOrder::Tail,
-                player: PlayerState::with_capacity(items, powerups),
+                player: PlayerState::with_capacity(items, powerups, values),
                 command: UserCmd::default(),
                 intent: CommandIntent::default(),
                 command_pending: false,
-                hud: HudState::with_capacity(items, powerups, weapons),
+                hud: HudState::with_capacity(items, powerups, weapons, values),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
