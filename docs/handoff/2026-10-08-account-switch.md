@@ -80,10 +80,12 @@ wire boundaries. Source inspection found the current table has `duck` but no
 configured-hold overclaims remain withdrawn. No THE-889 implementation was
 started in this slice.
 
-Installed artifacts are unchanged: qa-rust still has its gameplay-qualified
-installation gate; the separate qa-rust-preview remains the earlier `08ad0eb4`
-render preview, with its adjacent limitations/run notes. There is no new install
-or gameplay/GL-performance claim here. Native Q2 rerelease TGA sky loading
+Installation correction, 2026-10-09: the owner reports that only the 10-05
+qa-rust binary was installed. The earlier claim of a separate installed render
+build was incorrect and is withdrawn. The current owner directive replaces
+qa-rust through the installer after private Q1 start/Q2 base1/Q3 q3dm1 smoke
+runs, with qa-rust.txt documenting the commit and known gaps. That smoke install
+does not establish gameplay or timing qualification. Native Q2 rerelease TGA sky loading
 (THE-2890), clean-CI SDL3 provisioning (THE-2893), native guest modules and legacy
 network interoperability, installed independent-seat/combined movement and
 inline movers, output-page retirement (THE-859/697/890), THE-893 input-player

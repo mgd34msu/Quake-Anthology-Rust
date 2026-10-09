@@ -160,9 +160,11 @@ def audio_summary(path, cues):
                 rms=(sum(v * v for v in data) / max(1, len(data))) ** 0.5)
 
 
-def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False):
+def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False, audio_driver="disk"):
     if backend not in ("x11", "sway", "weston"):
         raise ValueError("unknown private backend")
+    if audio_driver not in ("disk", "dummy"):
+        raise ValueError("private audio must use disk or dummy")
     binary, profile, evidence = binary.resolve(strict=True), profile.resolve(strict=True), evidence.resolve()
     if evidence.exists():
         raise ValueError("use a fresh evidence directory")
@@ -205,9 +207,9 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
                "XDG_RUNTIME_DIR": str(evidence / "runtime"),
                "XDG_CONFIG_HOME": str(evidence / "config"), "XDG_CACHE_HOME": str(evidence / "cache"),
                "XDG_DATA_HOME": str(evidence / "home/.local/share"),
-               "SDL_VIDEODRIVER": "x11", "SDL_AUDIODRIVER": "disk",
+               "SDL_VIDEODRIVER": "x11", "SDL_AUDIODRIVER": audio_driver,
                "SDL_DISKAUDIOFILE": str(evidence / "audio.raw"),
-               "SDL_VIDEO_DRIVER": "x11", "SDL_AUDIO_DRIVER": "disk",
+               "SDL_VIDEO_DRIVER": "x11", "SDL_AUDIO_DRIVER": audio_driver,
                "SDL_AUDIO_DISK_OUTPUT_FILE": str(evidence / "audio.raw"),
                "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(evidence / "runtime/no-owner-bus"),
                "LP_NUM_THREADS": "2"}
@@ -228,7 +230,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
             if wm.poll() is not None:
                 raise RuntimeError("private window manager failed")
             client = XClient(display)
-            argv = ["env", "-u", "WAYLAND_DISPLAY", "SDL_VIDEODRIVER=x11", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
+            argv = ["env", "-u", "WAYLAND_DISPLAY", "SDL_VIDEODRIVER=x11", "SDL_AUDIODRIVER=" + audio_driver, str(candidate), *arguments]
         else:
             # Unix socket names have a short ABI limit. Keep the owned runtime
             # independent of potentially long evidence paths, and remove it
@@ -257,7 +259,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
                 raise RuntimeError("owned compositor socket missing")
             if backend == "sway":
                 env["SWAYSOCK"] = str(next(p for p in Path(env["XDG_RUNTIME_DIR"]).glob("sway-ipc*") if p.is_socket()))
-            argv = ["env", "-u", "DISPLAY", "SDL_VIDEODRIVER=wayland", "SDL_AUDIODRIVER=disk", str(candidate), *arguments]
+            argv = ["env", "-u", "DISPLAY", "SDL_VIDEODRIVER=wayland", "SDL_AUDIODRIVER=" + audio_driver, str(candidate), *arguments]
         if cores:
             argv = ["taskset", "-c", cores, *argv]
         if stdin_tty:
@@ -339,7 +341,7 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
         result["gameplay_reached"] = any(v.get("event") == "gameplay_ready" for v in events)
         result["events"] = events
         result["private_containment"] = {"display": display, "video": "owned Xvfb with Openbox",
-                                         "audio": "SDL disk", "home": env["HOME"],
+                                         "audio": "SDL " + audio_driver, "home": env["HOME"],
                                          "wayland_display_unset": "WAYLAND_DISPLAY" not in env,
                                          "sdl_video_driver": env["SDL_VIDEODRIVER"]}
         if backend != "x11":

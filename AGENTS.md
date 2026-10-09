@@ -28,13 +28,14 @@ Private displays and captured private audio only. Stop recorded owned PIDs only.
 Install into qfiles/qa-rust only through the qualified installer after an exact
 candidate run using a fresh copy of the owner's saved profile reaches gameplay
 and quits normally. Preserve the original profile. R0 windows are not gameplay.
-Owner decision THE-2882 (2026-10-08 19:1x): the exact qa-rust-preview destination
-may receive a clean normal render preview after copied-profile private GL/CPU
-runs of e1m1, base1 and q3dm1 quit normally. The installer writes the adjacent
-qa-rust-preview.txt with commit, build time, supported maps/backends, limits and
-run examples. Preview receipts explicitly have no gameplay/timing qualification;
-later previews replace only that destination and notes. qa-rust keeps both its
-gameplay and comparable measured gameplay timing gates.
+Owner correction 2026-10-09: install the current build as qfiles/qa-rust and
+write qa-rust.txt with commit, build time and known gaps. The explicit installer
+--owner-smoke mode first runs Q1 start, Q2 base1 and Q3 q3dm1 on private Xvfb,
+forced X11, dummy audio and private HOME, with copied saved settings and exit 0.
+This owner-authorized development install replaces the old binary and does not
+claim gameplay or timing qualification. Only qa-rust is an installation name.
+The normal installer path retains gameplay and comparable gameplay timing gates.
+
 
 ## Workspace
 
@@ -96,7 +97,7 @@ generators; that tooling is not part of the shipped platform.
 The 2026-10-08 22:30 budget ruling makes THE-2872/THE-2865 (one job dispatcher
 and automatic CPU bands) the next slice, followed by THE-889. Between commits,
 run the checker, workspace tests and allocation gate. Run the full private
-three-map CPU/GL qualification only when a slice is finished or a preview
+three-map CPU/GL qualification only when a slice is finished or an
 installation is due, rather than for each commit.
 
 `cargo build --release` uses opt-level 3, fat LTO, one codegen unit and abort
@@ -459,7 +460,7 @@ These are Mike's standing rules. They apply to every commit.
 
 ## Installs
 
-* Every install into `qfiles/qa-rust` goes through a qualified installer (port the C tool `quake-anthology/tools/install_qualified_build.py`): a private launch with a fresh copy of the owner's saved profile reaches gameplay and quits normally; the owner's original profile stays unchanged.
+* Every install into `qfiles/qa-rust` goes through the qualified installer. The owner-authorized `--owner-smoke` exception above permits current development builds after private three-map smoke runs. Otherwise gameplay and timing qualification are required. Preserve the original profile.
 
 ## Private runs
 
