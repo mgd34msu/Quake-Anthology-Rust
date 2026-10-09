@@ -365,9 +365,23 @@ impl FrameHost {
                         from,
                         bytes,
                     } => {
-                        self.runtime
-                            .network
-                            .receive(socket, from, bytes, event.time);
+                        let server = &mut self.runtime.server;
+                        self.runtime.network.receive(
+                            socket,
+                            from,
+                            bytes,
+                            event.time,
+                            |_, endpoint, incoming| {
+                                if endpoint == qa_core::loopback::Endpoint::Server
+                                    && let qa_network::ingress::Incoming::Acknowledged {
+                                        receipt,
+                                        output: Some(output),
+                                    } = incoming
+                                {
+                                    server.events.acknowledge(output, receipt);
+                                }
+                            },
+                        );
                     }
                     _ => self.runtime.input.dispatch(
                         event,

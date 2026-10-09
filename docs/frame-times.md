@@ -3190,3 +3190,46 @@ Evidence directory `THE-949-transmit-20261009`: `final-native/comparison.json`,
 Q3 command ACK/XOR, native rate/handshake policy, field-table deltas, snapshot
 rings and host/loopback adoption remain open. No install, loss-simulation live
 run, original-client connection or full network acceptance is claimed.
+
+### THE-860 / THE-949: queued native ingress and output ACK adoption
+
+The host replaces its counting-only PacketReceiver with one load-sized
+connection table. Each client can bind independent client/server Channel
+endpoints; loopback and socket Packet events use the same router. The admitted
+native NQ/QW/Q2 receipts retire the binding's original output-consumer generation
+inside ordinary host dispatch. A delayed ACK cannot target a replacement client
+consumer. Unknown routes do not mutate channels. Q2's early native ACK survives
+rejection of its fragment body. No physical intake point was added.
+
+Six focused tests cover native ACKs through the actual host queue, one peer
+stalled while another retires, unsent and duplicate ACKs, consumer generation
+reuse, socket/loopback route isolation, invalid bindings and Q2 early ACKs.
+The unchanged checker, 634 workspace tests and warning-denied Clippy pass.
+
+Portable release example build: **16.691 seconds**, e486a2ab plus the recorded
+slice, empty RUSTFLAGS, allocation tracking enabled and proof disabled.
+`network_ingress`, CPU23, 60 warm-up / 600 measured iterations, 16 mixed peers
+and two queued-memory drains per iteration: **3,610 ns median / 3,700 ns p99**.
+Including warm-up: 19,140 packets, 10,560 nonempty payloads and 8,580 output
+records retired by native ACK. Rust caller allocations, reallocations and
+requested bytes are zero; positive control one. The probe includes publication,
+prepare/accepted loopback submission, SysEventQueue dispatch and output-ring
+retirement. Q3 tests framing only, with no fabricated header ACK. No workers,
+OS intake, module decoding or gameplay are measured.
+
+The existing host workload was rebuilt from exact archived e486a2ab source
+using the same release settings, **23.829 seconds**. CPU23 60+600 ABBA average
+median/p99: **6,732.5 / 12,885 ns before**, **7,010 / 14,705 ns after**.
+Median increased **4.12%**; this is channel-routing adoption, not a speedup.
+The four legs retain identical packet, repeat, native-tick and drain counts and
+zero measured caller heap. Their 16-ms pacing is outside the measured region.
+The earlier single host sample and ingress sample remain separate evidence.
+
+Evidence directory `THE-860-ingress-20261009`: `focused.log`,
+`routing-tests.log`, `final-workspace.log`, `final-clippy.log`, `checker.log`,
+`build.json`, `baseline-build.json`, `final-timing.json`, `host-abba.json`,
+individual host legs, archived baseline source, copied before/after probes and
+`source.patch`. Host direct local command submit and FrameSource remote output
+submission still remain for the next integration slices. This checkpoint does
+not implement payload codecs, Q3 command ACK/XOR, native handshake, snapshot
+deltas or installed interoperability. The accepted installation is unchanged.

@@ -158,6 +158,12 @@ impl Channel {
     pub fn state(&self) -> State {
         self.state
     }
+    pub fn endpoint(&self) -> Endpoint {
+        match self.direction {
+            Direction::ToClient => Endpoint::Client,
+            Direction::ToServer => Endpoint::Server,
+        }
+    }
     pub fn counts(&self) -> Counts {
         self.counts
     }

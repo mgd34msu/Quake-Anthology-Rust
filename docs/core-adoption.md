@@ -65,10 +65,15 @@ The deferred native-path sites are concrete:
 * `app/src/main.rs:401` constructs the host with no native providers.
 * `app/src/host.rs:447` directly submits local usercmds until the original
   per-client protocol/channel exists; no invented local wire format was added.
-* `network/src/ingress.rs:14` PacketReceiver currently counts ingress,
-  without native handshake, channel or snapshot decoding.
+* THE-860 replaces the counting-only PacketReceiver with load-sized endpoint
+  bindings in `network/src/ingress.rs`. `app/src/host.rs:369` dispatches queued
+  packets through the bound native Channel and `:381` retires actual channel
+  receipts against the binding's original output-consumer generation.
+  Handshake, payload decoding, local command framing and automatic native
+  output transmission remain unfinished; a loaded router is not signon.
 * `app/src/output.rs:123` requests remote submission through FrameSource; the
-  actual protocol ACK/submission adapter remains THE-860/THE-3169.
+  output encoding/submission remains THE-860/THE-3169. Native channel ACK
+  receipts now enter through Packet dispatch, rather than that callback.
 * `ui/src/hud.rs:46` implements projection, with stock layout drawing deferred.
 
 Engine review and native acceptance are separate. Linear remains the source of

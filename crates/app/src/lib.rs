@@ -11,7 +11,7 @@ use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::loopback::Loopback;
 use qa_core::primitives::{ClientId, GeometryId, ModuleId, PlayerTail, PrintKind};
-use qa_network::ingress::PacketReceiver;
+use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
 
 pub struct Runtime {
@@ -20,7 +20,7 @@ pub struct Runtime {
     /// Exact map entity sources in load order, retained for native module import.
     pub entity_sources: Vec<map::NativeEntityText>,
     pub quit: bool,
-    pub network: PacketReceiver,
+    pub network: Connections,
     pub server: Server,
     /// One preallocated index over the server's generation-checked entities.
     pub targets: qa_world::targets::TargetIndex,
@@ -116,7 +116,7 @@ impl Runtime {
             vfs: Vfs::default(),
             entity_sources: Vec::new(),
             quit: false,
-            network: PacketReceiver::default(),
+            network: Connections::load(max_clients),
             server,
             targets,
             geometry: qa_world::collision::CollisionStore::new(),

@@ -1,6 +1,6 @@
 use qa_core::sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEventQueue};
 use qa_input::{Input, Target};
-use qa_network::ingress::PacketReceiver;
+use qa_network::ingress::Connections;
 use qa_platform::{EventPump, Stopwatch};
 use std::{hint::black_box, net::UdpSocket};
 
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sender = UdpSocket::bind("127.0.0.1:0")?;
     let mut queue = SysEventQueue::load(1024, 256 * 1024).map_err(|e| format!("{e:?}"))?;
     let mut sink = Sink::default();
-    let mut network = PacketReceiver::default();
+    let mut network = Connections::load(1);
     let mut samples = [0u128; 600];
     let mut maximum = 0;
     let mut maximum_bytes = 0;
@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     socket,
                     from,
                     bytes,
-                } => network.receive(socket, from, bytes, event.time),
+                } => network.receive(socket, from, bytes, event.time, |_, _, _| {}),
                 _ => input.dispatch(event, &mut sink),
             }
         }
