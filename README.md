@@ -15,3 +15,7 @@ descendant commits.
 Rust's baseline CPU. Machine-specific timing builds may use
 `RUSTFLAGS="-C target-cpu=native"`; record that choice with the measurements.
 Debug symbols are split from the installation candidate by the build tool in R0.
+
+
+`--max-clients N` sizes the shared client array at startup (default 64), including
+humans, remote clients and bots. Native protocols retain their own client limits.

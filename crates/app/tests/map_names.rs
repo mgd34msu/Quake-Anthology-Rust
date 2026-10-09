@@ -77,7 +77,7 @@ fn level_strings_follow_native_escape_consumption_before_ids_bind() {
         assert_eq!(names[2].as_ref(), b"linked\\door");
         assert_eq!(names[3].as_ref(), b"models\\door");
         assert_eq!(names.last().unwrap().as_ref(), b"trailing\\");
-        let runtime = Runtime::load(names.iter().map(|name| name.as_ref())).unwrap();
+        let runtime = Runtime::load(64, names.iter().map(|name| name.as_ref())).unwrap();
         assert!(runtime.catalog.names.find(b"door\nrear").is_some());
         assert!(runtime.catalog.names.find(b"door\\nrear").is_none());
         assert!(
@@ -130,7 +130,7 @@ fn q2_folded_keys_collect_alternate_targets_and_temporary_identity_fields() {
             b"custom_q2_exit",
         ]
     );
-    let runtime = Runtime::load(names.iter().map(|name| name.as_ref())).unwrap();
+    let runtime = Runtime::load(64, names.iter().map(|name| name.as_ref())).unwrap();
     assert!(runtime.catalog.names.find(b"custom_q2_exit").is_some());
 }
 
@@ -153,7 +153,7 @@ fn q3_noise_is_raw_and_spawn_generated_suffixes_are_not_invented() {
     assert_eq!(names[5].as_ref(), b"world\\nwind");
     assert!(matches!(&names[5], Cow::Borrowed(_)));
     assert_eq!(names[6].as_ref(), b"wind");
-    let runtime = Runtime::load(names.iter().map(|name| name.as_ref())).unwrap();
+    let runtime = Runtime::load(64, names.iter().map(|name| name.as_ref())).unwrap();
     assert!(runtime.catalog.names.find(b"wind").is_some());
     assert!(runtime.catalog.names.find(b"wind.wav").is_none());
 }
@@ -172,7 +172,7 @@ fn runtime_retains_exact_guest_source_after_cold_names_are_released() {
     original.extend_from_slice(b"\0not tokenized \xff\x80");
     let source = source(&original, EntitySyntax::Quake);
     let names = source.catalog_names().unwrap();
-    let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref())).unwrap();
+    let mut runtime = Runtime::load(64, names.iter().map(|name| name.as_ref())).unwrap();
     drop(names);
     runtime.entity_sources.push(source);
     assert_eq!(runtime.entity_sources[0].bytes.as_ref(), original);

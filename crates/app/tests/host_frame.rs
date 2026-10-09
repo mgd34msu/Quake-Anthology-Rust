@@ -139,7 +139,7 @@ fn host() -> FrameHost {
     console.register("after_server", after);
     FrameHost::load(
         console,
-        Runtime::load(std::iter::empty()).unwrap(),
+        Runtime::load(64, std::iter::empty()).unwrap(),
         TickRate::fixed(50).unwrap(),
         vec![Provider {
             module: ModuleId(2),
@@ -159,7 +159,7 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
         Contents,
         brushes::{Brush, BrushTree},
     };
-    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    let mut runtime = Runtime::load(64, std::iter::empty()).unwrap();
     let geometry = runtime
         .geometry
         .load_brushes(
@@ -418,7 +418,7 @@ fn cap_uses_native_millisecond_timestamps_and_zero_startup_baseline() {
 fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
-        Runtime::load(std::iter::empty()).unwrap(),
+        Runtime::load(64, std::iter::empty()).unwrap(),
         TickRate::fixed(20).unwrap(),
         vec![],
     )

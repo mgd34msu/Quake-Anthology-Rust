@@ -182,7 +182,7 @@ fn non_q3_clients_do_not_repair_q3_sv_fps() -> Result<(), String> {
 
 #[test]
 fn the_first_local_link_uses_client_order_and_snapshot_keeps_role_ids() -> Result<(), String> {
-    let mut runtime = Runtime::load(std::iter::empty())?;
+    let mut runtime = Runtime::load(64, std::iter::empty())?;
     let spawn = SpawnAnchor {
         position: Vec3([0.0, 0.0, 24.0]),
         angles: Vec3([5.0, 90.0, 0.0]),

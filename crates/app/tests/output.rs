@@ -69,7 +69,7 @@ fn emit(runtime: &mut Runtime, tick: Tick) {
 }
 #[test]
 fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
-    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    let mut runtime = Runtime::load(64, std::iter::empty()).unwrap();
     let first = runtime
         .server
         .connect(Connection::Local, ModuleId(1), PlayerTail::default(), None)
@@ -180,7 +180,7 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
 
 #[test]
 fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() {
-    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    let mut runtime = Runtime::load(64, std::iter::empty()).unwrap();
     runtime.server = Server::load(512, 1024, 1, 0, 0, 0).unwrap();
     for _ in 0..512 {
         runtime
@@ -230,7 +230,7 @@ fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() 
 fn quit_flushes_console_output_once() {
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
-        Runtime::load(std::iter::empty()).unwrap(),
+        Runtime::load(64, std::iter::empty()).unwrap(),
         TickRate::FrameDriven,
         vec![],
     )
@@ -309,7 +309,7 @@ impl FrameSource for PeerSource {
 }
 fn stalled_peer_progress(unsent: bool) {
     use qa_core::events::{EventRing, NativeReceipt, OutputTarget};
-    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    let mut runtime = Runtime::load(64, std::iter::empty()).unwrap();
     runtime.server.events = EventRing::load(32, 8, 64, 256).unwrap();
     runtime.server.presentation = runtime
         .server

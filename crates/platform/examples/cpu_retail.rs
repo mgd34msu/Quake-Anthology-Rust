@@ -406,7 +406,7 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("content mount: {e:?}"))?;
     let input = map::read(&vfs, &options.map)?;
     let names = input.catalog_names()?;
-    let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref()))?;
+    let mut runtime = Runtime::load(64, names.iter().map(|name| name.as_ref()))?;
     drop(names);
     runtime.vfs = vfs;
     let source = input.native_source;

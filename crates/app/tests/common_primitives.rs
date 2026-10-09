@@ -4,7 +4,7 @@ use qa_app::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::{HudLine, ItemId, ModuleId, PlayerTail, RuleSetId, WeaponId},
+    primitives::{ClientId, HudLine, ItemId, ModuleId, PlayerTail, RuleSetId, WeaponId},
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
 use qa_gameplay::registry::ItemKind;
@@ -36,7 +36,8 @@ impl FrameSource for Source {
 #[test]
 fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
     let mut name = b"mixed_door".to_vec();
-    let mut runtime = Runtime::load([name.as_slice(), b"models/custom.mdl".as_slice()]).unwrap();
+    let mut runtime =
+        Runtime::load(64, [name.as_slice(), b"models/custom.mdl".as_slice()]).unwrap();
     let target = runtime.catalog.names.find_folded(b"MIXED_DOOR").unwrap();
     name.fill(b'x');
     assert_eq!(
@@ -119,7 +120,9 @@ struct Loadout {
 
 #[test]
 fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages() {
-    let mut runtime = Runtime::load(std::iter::empty()).unwrap();
+    let capacity = 257;
+    let mut runtime = Runtime::load(capacity, std::iter::empty()).unwrap();
+    assert_eq!(runtime.server.clients.len(), capacity);
     let registry = &runtime.catalog.registry;
     let highest_item = registry.items.last().unwrap().id;
     let highest_weapon = registry.weapons.last().unwrap().id;
@@ -146,7 +149,7 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
     assert_ne!(loadouts[0].timer, loadouts[1].timer);
     assert_ne!(loadouts[1].timer, loadouts[2].timer);
     assert!(loadouts[2].timer.0 > 16);
-    for slot in 0..64 {
+    for slot in 0..capacity {
         let id = runtime
             .server
             .connect(
@@ -156,6 +159,7 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
                 None,
             )
             .unwrap();
+        assert_eq!(id.0 as usize, slot);
         let player = &mut runtime.server.clients[id.0 as usize].player;
         let loadout = loadouts[slot % 3];
         player.movement_rules = RuleSetId::Quake3;
@@ -170,8 +174,31 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
         player.item_acquired_at[highest_item.0 as usize] = slot as f64 + 0.25;
         player.powerup_until[loadout.timer.0 as usize] = slot as f64 + 100.0;
     }
+    assert!(
+        runtime
+            .server
+            .connect(Connection::Bot, ModuleId(3), PlayerTail::None, None)
+            .is_none()
+    );
+    let highest_client = ClientId((capacity - 1) as u32);
+    runtime
+        .loopback
+        .send(
+            qa_core::loopback::Endpoint::Client,
+            highest_client,
+            b"highest client",
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.loopback.send(
+            qa_core::loopback::Endpoint::Client,
+            ClientId(capacity as u32),
+            b"outside"
+        ),
+        Err(qa_core::loopback::SendError::Client)
+    );
     // The last registry weapon and item are reachable, including the zero slot.
-    runtime.server.clients[63].player.weapon = highest_weapon;
+    runtime.server.clients[capacity - 1].player.weapon = highest_weapon;
     let lease = runtime.server.events.texts.insert(b"keep\nthis").unwrap();
     let line = lease.id();
     let center = runtime.server.events.texts.lease(line).unwrap();
@@ -198,6 +225,15 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
     )
     .unwrap();
     host.frame(&mut Source, true);
+    assert_eq!(host.runtime.network.packets, 1);
+    assert_eq!(
+        host.runtime.network.last_from,
+        Some(qa_core::sys_events::Peer::Loopback(highest_client))
+    );
+    assert_eq!(
+        host.runtime.network.last_socket,
+        Some(qa_core::loopback::Endpoint::Server.socket())
+    );
     for (slot, client) in host.runtime.server.clients.iter().enumerate() {
         let hud = &client.hud;
         let player = &client.player;

@@ -94,7 +94,7 @@ fn consume(runtime: &mut Runtime, tick: Tick, record: OutputRecord) -> OutputSub
     OutputSubmission::BestEffort
 }
 fn run(unsent: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut runtime = Runtime::load(std::iter::empty())?;
+    let mut runtime = Runtime::load(64, std::iter::empty())?;
     runtime.server.events = EventRing::load(32, 8, 64, 256).map_err(|_| "events")?;
     runtime.server.presentation = runtime
         .server

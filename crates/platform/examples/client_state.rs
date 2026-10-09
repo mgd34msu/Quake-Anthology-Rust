@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sys_events::EventTime,
     };
     use qa_platform::allocations::{begin_frame, end_frame};
-    use qa_session::clients::{Connection, Server};
+    use qa_session::clients::Connection;
     use std::hint::black_box;
 
     begin_frame();
@@ -23,7 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if positive.allocations != 1 {
         return Err("allocation positive control".into());
     }
-    let mut server = Server::load(512, 1024, 2, 2, 2, 0).map_err(|e| format!("{e:?}"))?;
+    let mut runtime = qa_app::Runtime::load(512, std::iter::empty())?;
+    let server = &mut runtime.server;
     let rules = [
         RuleSetId::Quake,
         RuleSetId::QuakeWorld,
@@ -100,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("client allocation/state qualification".into());
     }
     println!(
-        "{{\"scope\":\"headless common client state; no gameplay or native protocol\",\"clients\":512,\"highest_client_id\":511,\"warmup_frames\":60,\"measured_frames\":600,\"highest_id_reconnects\":{reconnects},\"rust_calling_thread_alloc_or_realloc\":{measured_calls},\"requested_bytes\":{measured_bytes},\"allocation_positive_control\":{}}}",
+        "{{\"scope\":\"headless app-loaded common client state; no gameplay or native protocol\",\"clients\":512,\"highest_client_id\":511,\"warmup_frames\":60,\"measured_frames\":600,\"highest_id_reconnects\":{reconnects},\"rust_calling_thread_alloc_or_realloc\":{measured_calls},\"requested_bytes\":{measured_bytes},\"allocation_positive_control\":{}}}",
         positive.allocations
     );
     Ok(())

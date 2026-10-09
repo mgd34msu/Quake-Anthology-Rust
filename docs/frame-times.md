@@ -2403,3 +2403,55 @@ zero allocations/reallocations/requested bytes and positive control one.
 metadata. This supports the headless comparison under those stated conditions;
 it does not establish the cause of the unconditioned variance or qualify live
 gameplay. No engine changes were made during this verification.
+
+
+## THE-656/THE-702: app-selected client capacity
+
+`Runtime::load` now receives the common client capacity explicitly. The app's
+`--max-clients N` selects it at load (default 64), independently of the native
+limits negotiated by each connection. It must cover the local seats and fit
+the current entity reservation. The one server array, output consumer capacity
+and per-client loopback storage use that value. All 21 existing app/example
+callers migrated; the client-state probe now also uses the app loader rather
+than constructing a smaller server directly. No implicit-64 loader remains.
+Native client limits, entity namespaces and wire widths are unchanged.
+
+The host fixture fills 257 clients with mixed Q1/Q2/Q3 inventories, projects
+all their PlayerStates into the one HudState primitive, and retains the existing
+text leases. Client 256's local packet enters SysEventQueue and reaches the
+packet ingress consumer; the next out-of-range client is rejected. This is a
+host fixture, not native packet framing. The app-loaded client-state allocation
+probe uses 512 clients, highest ID 511, and 600 reconnects after 60 warm-up
+iterations: zero measured calling-thread allocation/reallocation calls and
+requested bytes, with allocation positive control 1. The existing 64-client
+numeric HUD probe also retains checksum 892087680 and zero measured heap work.
+
+The release probe build took 16.541 s, starting 2026-10-09T12:24:41Z, portable
+CPU and allocation tracking enabled. Workspace all-target tests (580), tracked
+Clippy, unchanged rules and `git diff --check` pass. Evidence is in
+`~/.cache/qa-rust/THE-656-app-capacity-20261009/`: `checks.json`,
+`caller-inventory.json`, `checker.json`, `client_state.log`, `hud_values.log`
+and the raw `abba-*.log` files.
+
+The matched headless host workload uses the unchanged 64-client fixture,
+console/binds/bots/output plus local packet admission, CPU 23, 60 warm-up and
+600 measured frames per process. Every A/B process receives the same 0.25 s
+CPU preconditioning before its warm-up. Baseline is main 17277890; the candidate
+only changes load-time capacity selection and callers. Mean of the two process
+medians in ABBA order:
+
+| Build | Median ns | Mean process p99 ns | Max Rust heap calls/bytes |
+| --- | ---: | ---: | ---: |
+| Before | 174505.25 | 266995 | 0 / 0 |
+| After | 173172.5 | 263370 | 0 / 0 |
+
+The median change is -0.764%; this cold-load adoption is not a claimed hot-path
+optimization. All non-timing receipt fields match, including 12288 measured
+bot commands, 1396 packets, 659 repeats, provider counters [210,105,421,210],
+1980 sounds/effects and one output drain per frame. No workers or foreign heaps
+are measured by these headless probes.
+
+Stock HUD drawing and native module/transport integration are still absent.
+Existing private render/input walks are candidate evidence, not installed
+qa-rust gameplay. The gameplay/timing installer gates remain intact, and these
+issues remain In Progress for their original installed/native acceptance.

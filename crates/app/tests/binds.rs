@@ -42,7 +42,7 @@ fn host(source: CommandSource) -> FrameHost {
             ..Context::default()
         })
         .unwrap(),
-        Runtime::load(std::iter::empty()).unwrap(),
+        Runtime::load(64, std::iter::empty()).unwrap(),
         TickRate::FrameDriven,
         vec![],
     )

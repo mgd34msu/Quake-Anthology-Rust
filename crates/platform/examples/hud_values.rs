@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(1).as_deref() == Some("bench") {
         return bench();
     }
-    let mut runtime = qa_app::Runtime::load(std::iter::empty())?;
+    let mut runtime = qa_app::Runtime::load(64, std::iter::empty())?;
     for rules in RuleSetId::ALL {
         let table = runtime.catalog.hud.values.native(rules);
         for (bank, fields) in [&table.stats, &table.persistent].iter().enumerate() {
@@ -44,7 +44,7 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
         Stopwatch,
         allocations::{begin_frame, end_frame},
     };
-    let mut runtime = qa_app::Runtime::load(std::iter::empty())?;
+    let mut runtime = qa_app::Runtime::load(64, std::iter::empty())?;
     for client in &mut runtime.server.clients {
         client.player.health = 100;
         for rules in RuleSetId::ALL {

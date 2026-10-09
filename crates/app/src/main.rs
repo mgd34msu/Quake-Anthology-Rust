@@ -45,6 +45,7 @@ fn run() -> Result<(), String> {
     let mut client_module = None;
     let mut seat_policies = [None; SeatId::COUNT];
     let mut seat_count = 1;
+    let mut max_clients = 64usize;
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
     let mut startup_sets = Vec::new();
@@ -198,6 +199,13 @@ fn run() -> Result<(), String> {
                 println!("qa-rust {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
+            "--max-clients" => {
+                max_clients = args
+                    .next()
+                    .ok_or("--max-clients needs a number")?
+                    .parse()
+                    .map_err(|_| "invalid client capacity")?;
+            }
             "--frames" => {
                 frames = args
                     .next()
@@ -236,6 +244,9 @@ fn run() -> Result<(), String> {
     {
         return Err("movement and trace roles need a loaded --map".into());
     }
+    if max_clients < seat_count {
+        return Err("client capacity must cover the local seats".into());
+    }
     let staged_map = if let Some(name) = map_name {
         let input = map::read(&vfs, &name)?;
         let policy = if let Some(policy) = seat_policies[0] {
@@ -257,7 +268,7 @@ fn run() -> Result<(), String> {
         .map(|(input, _)| input.catalog_names())
         .transpose()?
         .unwrap_or_default();
-    let mut runtime = Runtime::load(names.iter().map(|name| name.as_ref()))?;
+    let mut runtime = Runtime::load(max_clients, names.iter().map(|name| name.as_ref()))?;
     drop(names);
     runtime.vfs = vfs;
     for (device, seat) in device_assignments {

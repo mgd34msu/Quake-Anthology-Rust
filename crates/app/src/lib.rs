@@ -57,7 +57,11 @@ impl WorldCollision {
 }
 
 impl Runtime {
-    pub fn load<'a>(extra_names: impl IntoIterator<Item = &'a [u8]>) -> Result<Self, String> {
+    /// Common client capacity is chosen at load; native limits belong to each connection.
+    pub fn load<'a>(
+        max_clients: usize,
+        extra_names: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<Self, String> {
         let catalog = catalog::GameplayCatalog::load(extra_names)?;
         let item_slots = catalog.registry.items.len() + 1;
         let weapon_slots = catalog.registry.weapons.len() + 1;
@@ -65,7 +69,7 @@ impl Runtime {
         // Zero is unused; instant and non-powerup items retain zero timer rows.
         // Native powerup ordinals are converted at module/protocol boundaries.
         let server = Server::load(
-            64,
+            max_clients,
             8192,
             item_slots,
             item_slots,

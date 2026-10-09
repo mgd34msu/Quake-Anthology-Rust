@@ -205,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, &str>>()?;
     let mut host = FrameHost::load(
         Console::new(Context::default()).map_err(|e| e.to_string())?,
-        Runtime::load(std::iter::empty())?,
+        Runtime::load(64, std::iter::empty())?,
         TickRate::fixed(50).ok_or("world rate")?,
         providers,
     )?;
