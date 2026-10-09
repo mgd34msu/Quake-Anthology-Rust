@@ -19,11 +19,25 @@ module-owned numeric handles over the existing VFS; partial deflated reads use
 the existing archive decoder with fixed discard storage and validate the entire
 deflated member's CRC. Closing another module's file is rejected for that call.
 
-This is the services foundation, not a completed module host. Numbered ABI
-tables, module execution, native live entity backing, asset registration,
-filesystem writes, dynamic module cvar registration and remaining imports must
-follow before retail modules or installed gameplay can be claimed. There is no
-second runner or native execution backend in this slice.
+The QVM reader checks instructions, branch targets and segment/frame bounds at
+load. Its one interpreter preserves native instruction ordinals and saved byte
+PCs. A call selects the ordinary or instrumented specialization once; the
+ordinary loop does not maintain hook counters or dirty words. Instrumented
+writes mark a bitmap allocated at load. Nested system calls use a separate
+operand stack and restore the interrupted module stack on success or failure.
+Module bytes have one owned backing that engine views can borrow.
+
+`tools/check_qvm.py` compiles the unchanged original interpreted execution
+functions and compares return values and memory against the Rust interpreter.
+That includes the original interpreter's previous-operand BCOM behavior and
+reverse-word overlapping block copies. It does not establish the compiled
+QVM ABI, retail gameplay or a native library backend. The retail baseq3 and
+Team Arena qagame/cgame/ui images pass structural loading only.
+
+Numbered ABI tables, native live entity binding, asset registration, filesystem
+writes, dynamic module cvar registration and remaining imports must follow
+before retail modules or installed gameplay can be claimed. There is no native
+execution backend yet.
 
 The native behavior references are qsrc `quake/WinQuake/pr_cmds.c`'s builtin
 table, `quake-2/game/game.h`'s `game_import_t`, and

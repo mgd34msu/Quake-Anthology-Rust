@@ -2548,3 +2548,25 @@ not a speedup claim. It opens no display or worker, performs no native ABI/VM
 execution and does not qualify gameplay, installation, filesystem-call allocation
 or driver memory. Workspace, unchanged checker and tracked Clippy pass. Evidence:
 `~/.cache/qa-rust/THE-863-services-20261009/` (`checks.json`, logs and `probe-*.json`).
+
+## THE-801 / THE-863 QVM interpreter foundation (2026-10-09)
+
+Portable release probe built at 14:10:03 UTC in 8.795 seconds. CPU 23, 60
+warm-up and 600 measured frames, 1,000 calls per frame to the same eight-opcode
+integer fixture. Three runs measured median/p99 frame times of 28.520/31.770,
+26.510/30.031 and 26.610/30.430 microseconds. Each returned checksum
+2,610,685,110,000, zero calling-thread allocations/reallocations/requested
+bytes, and zero hook instructions; the allocator positive control counted one.
+This new VM workload has no earlier comparable Rust module-host baseline and
+is not a gameplay or speedup claim. No worker, driver or filesystem allocation
+qualification is implied.
+
+Evidence: `$XDG_CACHE_HOME/qa-rust/THE-801-qvm-20261009/` (or the user's
+default `.cache/qa-rust`), `checks.json`, `timing-{1,2,3}.json`,
+`reference/comparison.json`, original/Rust binary comparison rows and
+`retail.json`. The unmodified original interpreter matched all 8,151 defined
+seeded cases byte for byte, including return values and 192 memory bytes per
+case. Baseq3 pak8 and Team Arena pak0 qagame/cgame/ui images all passed the
+reader; no retail module entry point or gameplay was executed. Checker,
+workspace tests and Clippy passed. Native channels, native libraries, services
+ABI integration and installed acceptance remain open.

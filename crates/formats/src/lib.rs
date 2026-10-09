@@ -3,6 +3,7 @@ pub mod bsp;
 pub mod entities;
 pub mod image;
 pub mod model;
+pub mod program;
 mod read;
 pub mod sound;
 mod text;
