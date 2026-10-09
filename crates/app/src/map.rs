@@ -26,7 +26,7 @@ pub struct SpawnAnchor {
     pub position: Vec3,
     pub angles: Vec3,
     pub entity: usize,
-    /// Q3's random/telefrag-aware module fallback is not loaded at this gate.
+    /// An extra authored anchor is a fixture until native module selection runs.
     pub fixture_fallback: bool,
 }
 
@@ -34,7 +34,7 @@ pub struct LoadedMap {
     pub collision: GeometryId,
     pub collision_bounds: Bounds,
     pub render: LoadedWorld,
-    pub spawn: SpawnAnchor,
+    pub spawns: Box<[SpawnAnchor]>,
     pub native_source: RuleSetId,
     pub virtual_path: String,
     pub entity_count: usize,
@@ -309,7 +309,7 @@ impl MapInput {
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
-        let (spawn, entity_count, sky_environment) = spawn(&map)?;
+        let (spawns, entity_count, sky_environment) = spawns(&map)?;
         let (collision, collision_brushes) = collision(&map, geometry)?;
         options.sky_environment = sky_environment;
         let render = match load_world(vfs, &map, assets, options) {
@@ -323,7 +323,7 @@ impl MapInput {
             collision,
             collision_bounds: map.models.first().ok_or("missing world model")?.bounds,
             render,
-            spawn,
+            spawns,
             native_source: self.native_source,
             virtual_path: self.virtual_path,
             entity_count,
@@ -371,7 +371,7 @@ fn vector(bytes: &[u8]) -> Result<Vec3, String> {
     Ok(Vec3(result))
 }
 
-fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> {
+fn spawns(map: &Map<'_>) -> Result<(Box<[SpawnAnchor]>, usize, SkyEnvironment), String> {
     let family = map.bsp.format.family();
     let syntax = match family {
         1 => EntitySyntax::Quake,
@@ -382,6 +382,7 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
         EntityLump::parse(map.entity_text(), syntax).map_err(|e| format!("entity lump: {e:?}"))?;
     let mut preferred = None;
     let mut fallback = None;
+    let mut candidates = Vec::new();
     let mut sky_environment = SkyEnvironment::default();
     for (index, range) in entities.records.iter().enumerate() {
         let fields = &entities.fields[range.clone()];
@@ -421,7 +422,10 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
         } else {
             b"info_player_start"
         };
-        if classname != desired {
+        if classname != desired
+            && classname != b"info_player_deathmatch"
+            && classname != b"info_player_coop"
+        {
             continue;
         }
         let mut position = vector(field(b"origin").unwrap_or(b"0 0 0"))?;
@@ -452,6 +456,13 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
             entity: index,
             fixture_fallback: family == 3,
         };
+        candidates.push(SpawnAnchor {
+            fixture_fallback: true,
+            ..anchor
+        });
+        if classname != desired {
+            continue;
+        }
         fallback.get_or_insert(anchor);
         let initial = if family == 2 {
             field(b"targetname").is_none_or(|v| v.is_empty())
@@ -470,10 +481,24 @@ fn spawn(map: &Map<'_>) -> Result<(SpawnAnchor, usize, SkyEnvironment), String> 
             });
         }
     }
-    preferred
+    let primary = preferred
         .or(fallback)
-        .map(|spawn| (spawn, entities.records.len(), sky_environment))
-        .ok_or_else(|| "no supported player spawn in the map".into())
+        .or_else(|| candidates.first().copied())
+        .ok_or("no supported player spawn in the map")?;
+    let mut anchors = vec![primary];
+    for anchor in candidates {
+        if !anchors
+            .iter()
+            .any(|other| other.position == anchor.position)
+        {
+            anchors.push(anchor);
+        }
+    }
+    Ok((
+        anchors.into_boxed_slice(),
+        entities.records.len(),
+        sky_environment,
+    ))
 }
 
 fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, usize), String> {

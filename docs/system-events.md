@@ -13,8 +13,8 @@ padding. Failed admission changes no existing event or payload. Ordinary
 events reserve the last slot for the frame's time marker.
 
 Platform owns the monotonic clock, SDL and nonblocking UDP sockets. It polls
-before server work, afterwards, and during the cap wait, stamping each input
-event and appending Time after each poll.
+only before SERVER and before CLIENT, stamping each input event and appending
+Time after each poll. The frame-cap wait reads platform time without collecting input.
 SDL polling retains input in SDL when the ring cannot fit a complete text
 event plus Time. UDP polling reads at most 64 datagrams per socket per poll;
 full event/payload storage drops datagrams and increments a counter. There is
@@ -75,7 +75,8 @@ growing storage. Layout and text state are preserved. A module life reset touche
 only its bound life fields; persistent/session values survive. Session reset
 clears all values while retaining the allocation. Native module imports,
 extension negotiation, live layouts and legacy packet integration remain open.
-This does not resolve the output TextId display leases in THE-697/890.
+THE-697/890 now supplies independent display leases; native module/channel
+acceptance remains open.
 
 RuleSetId is per player, independent of map, module and client protocol.
 At the movement boundary, Q1 duration clamps to 1..100 ms, QW/Q2 replace values
@@ -95,7 +96,18 @@ python3 tools/check_sys_events.py --binary "$QA_CANDIDATE" --owner-profile "$QA_
 ```
 
 `--udp-listen 127.0.0.1:0` opens a host socket and reports its actual address.
-`--controller-seat INSTANCE:SEAT` supplies device ownership, with seats 0..3.
+`--controller-seat INSTANCE:SEAT` and `--mouse-seat INSTANCE:SEAT` supply
+explicit device ownership, with seats 0..3. Mouse instance 0 is SDL's aggregate
+pointer for non-relative events. `--seat-policy SEAT:CLIENT:MOVEMENT:TRACE`
+connects that seat and all preceding seats; unset seats inherit the first
+client's explicit preset. Each role can select q1/qw/q2/q2rr/q3 independently.
+No native entity namespace is inferred before a module is loaded. The existing
+client array, prediction states, queue, builder, collision store and scene API
+serve every seat. Distinct authored spawn anchors are selected at load; extra
+anchors are labeled fixtures until native module spawn/telefrag selection runs.
+The first seat retains the previous native initial anchor. A map without enough
+distinct anchors rejects the startup request before play. Only seat zero's
+saved profile is imported; additional saved-seat settings remain pending.
 SDL2 identifies controllers individually but combines physical keyboards.
 Real multi-controller walkthroughs and owner profile application remain for
 integration; headless two-device commands do not prove those runs.
@@ -171,3 +183,20 @@ THE-861 will connect shared scene building to both renderer back ends using
 two fixed command lists, initially on one thread. THE-860 will add one delta
 codec driven by protocol field tables and fixed snapshot/reliable rings.
 Neither later capability polls input, sockets or the OS clock.
+
+Normal split-seat private qualification (THE-859/656):
+
+```sh
+python3 tools/build.py --allocation-tracking
+python3 tools/qualify_local_seats.py --binary target/candidate/qa-rust \
+  --owner-profile "$PROFILE" --content "$RETAIL_ROOT" --evidence "$EVIDENCE"
+```
+
+The harness copies the candidate and owner settings for each of six GL/CPU
+runs. Owned XTest keyboard and pointer events drive one seat each, separately
+and together; key holds use actual X-server repeat. e1m1 combines Q1 and Q3
+movement, base1 Q2 and Q3, q3dm1 Q3 and Q1. Trace rules remain explicit and
+independent. It checks two rendered views, per-seat authoritative movement,
+queue drains, real repeats, release and all instrumented Rust-thread allocation
+counts. The run is a renderer/walk integration with no gameplay modules, not
+the installed Done-when. It preserves the qualified installer's gameplay gate.

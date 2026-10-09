@@ -19,7 +19,10 @@ q2, q2rr or q3; an explicit trace choice survives authoritative movement and
 prediction. `--client-module` selects the built-in walk-through client policy; stock
 content defaults come from its actual product root. Unknown or ambiguous
 products require that explicit choice. Tick rate and first-link order follow
-the client policy. This does not load a guest module.
+the client policy. `--seat-policy 1:q1:q3:q1` connects a second Q1-client
+seat with Q3 movement and Q1 trace rules, using the same server command consumer
+and prediction entry. `--mouse-seat 0:1` separates its aggregate pointer from
+seat zero's keyboard. No option loads a guest module.
 
 The shared implementation contains acceleration, friction, fluid sampling,
 ground classification, bounded plane clipping, 18-unit steps, stance and wire

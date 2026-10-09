@@ -446,7 +446,7 @@ fn run() -> Result<(), String> {
         ));
     }
     runtime.entity_sources.push(loaded.entity_source);
-    let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, policy)?;
+    let client = runtime.connect_local(SeatId::FIRST, loaded.spawns[0], policy)?;
     let player = &runtime.server.clients[client.0 as usize].player;
     let basis = angle_vectors(player.view_angles);
     let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
@@ -632,8 +632,8 @@ fn run() -> Result<(), String> {
         refdef.fov,
         refdef.near,
         refdef.far,
-        loaded.spawn.entity,
-        loaded.spawn.fixture_fallback,
+        loaded.spawns[0].entity,
+        loaded.spawns[0].fixture_fallback,
         imported.cvars,
         imported.bindings,
         imported.unsupported

@@ -60,8 +60,8 @@ fn run() -> Result<(), String> {
         },
         loaded.entity_count,
         loaded.collision_brushes,
-        loaded.spawn.position,
-        loaded.spawn.fixture_fallback,
+        loaded.spawns[0].position,
+        loaded.spawns[0].fixture_fallback,
         loaded.render.diagnostics.len()
     ));
     for diagnostic in &loaded.render.diagnostics {

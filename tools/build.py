@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--cpu", choices=("baseline", "native"), default="baseline")
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument("--proof", action="store_true", help="separate development candidate with scripted SDL input")
+    parser.add_argument("--allocation-tracking", action="store_true", help="instrument the normal candidate and platform workers")
     args = parser.parse_args()
     subprocess.run(["python3", str(ROOT / "tools/check_rules.py"), "--root", str(ROOT)], check=True)
     subprocess.run(["python3", str(ROOT / "tools/gen_cvars.py"), "--root", str(ROOT), "--check"], check=True)
@@ -32,6 +33,8 @@ def main():
     command = ["cargo", "build", "--release", "--workspace"]
     if args.proof:
         command += ["--features", "qa-app/proof"]
+    elif args.allocation_tracking:
+        command += ["--features", "qa-app/allocation-tracking"]
     subprocess.run(command, cwd=ROOT, env=env, check=True)
     candidate = ROOT / ("target/proof-candidate" if args.proof else "target/candidate")
     candidate.mkdir(exist_ok=True)
@@ -43,6 +46,7 @@ def main():
     subprocess.run(["strip", "--strip-debug", str(binary)], check=True)
     subprocess.run(["objcopy", "--add-gnu-debuglink=" + symbols.name, binary.name], cwd=candidate, check=True)
     record = {"commit": commit, "source_tree_dirty": dirty, "proof": args.proof,
+              "allocation_tracking": args.allocation_tracking or args.proof,
               "build_time_seconds": time.monotonic() - started, "target_cpu": args.cpu,
               "built_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "candidate": str(binary), "debug_symbols": str(symbols)}

@@ -69,6 +69,7 @@ class XClient:
             "XCloseDisplay": ([C.c_void_p], C.c_int),
             "XFlush": ([C.c_void_p], C.c_int),
             "XSetInputFocus": ([C.c_void_p, C.c_ulong, C.c_int, C.c_ulong], C.c_int),
+            "XWarpPointer": ([C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int, C.c_uint, C.c_uint, C.c_int, C.c_int], C.c_int),
             "XStringToKeysym": ([C.c_char_p], C.c_ulong),
             "XKeysymToKeycode": ([C.c_void_p, C.c_ulong], C.c_ubyte),
         }
@@ -76,6 +77,7 @@ class XClient:
             function = getattr(self.x, name)
             function.argtypes, function.restype = args, result
         self.xt.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+        self.xt.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
         self.xt.XTestFakeRelativeMotionEvent.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_ulong]
         self.display = self.x.XOpenDisplay(display.encode())
         if not self.display:
@@ -105,19 +107,31 @@ class XClient:
         if not actions:
             return
         self.x.XSetInputFocus(self.display, window, 2, 0)
+        if any("button" in action for action in actions):
+            self.x.XWarpPointer(self.display, 0, window, 0, 0, 0, 0, 100, 100)
         for action in actions:
+            button = action.get("button")
+            if button is not None and (not isinstance(button, int) or not 1 <= button <= 8):
+                raise ValueError("input button must be 1..8")
             if "mouse" in action:
                 self.xt.XTestFakeRelativeMotionEvent(self.display, *action["mouse"], 0)
+            key = None
             if "key" in action:
                 key = self.x.XKeysymToKeycode(self.display, self.x.XStringToKeysym(action["key"].encode()))
                 if not key:
                     raise ValueError("unknown input key: " + action["key"])
                 self.xt.XTestFakeKeyEvent(self.display, key, 1, 0)
+            if button is not None:
+                self.xt.XTestFakeButtonEvent(self.display, button, 1, 0)
+            if key is not None or button is not None:
                 self.x.XFlush(self.display)
                 try:
                     time.sleep(action.get("hold_seconds", 0.1))
                 finally:
-                    self.xt.XTestFakeKeyEvent(self.display, key, 0, 0)
+                    if key is not None:
+                        self.xt.XTestFakeKeyEvent(self.display, key, 0, 0)
+                    if button is not None:
+                        self.xt.XTestFakeButtonEvent(self.display, button, 0, 0)
             self.x.XFlush(self.display)
             time.sleep(action.get("wait_seconds", 0))
 

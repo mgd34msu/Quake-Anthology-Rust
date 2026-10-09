@@ -43,6 +43,8 @@ fn run() -> Result<(), String> {
     let mut movement_rules = None;
     let mut trace_rules = None;
     let mut client_module = None;
+    let mut seat_policies = [None; SeatId::COUNT];
+    let mut seat_count = 1;
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
     let mut startup_sets = Vec::new();
@@ -112,6 +114,17 @@ fn run() -> Result<(), String> {
                         .ok_or("unknown trace rule set")?,
                 );
             }
+            "--seat-policy" => {
+                let (seat, policy) = ClientPolicy::parse_seat(
+                    &args
+                        .next()
+                        .ok_or("--seat-policy needs seat:client:movement:trace")?,
+                )?;
+                if seat_policies[seat.index()].replace(policy).is_some() {
+                    return Err("seat-policy was supplied more than once for a seat".into());
+                }
+                seat_count = seat_count.max(seat.index() + 1);
+            }
             #[cfg(feature = "proof")]
             "--proof-script" => {
                 script = Some(proof::Script::load(
@@ -129,15 +142,20 @@ fn run() -> Result<(), String> {
                     "{{\"event\":\"udp_listen\",\"socket\":{socket},\"address\":\"{address}\"}}"
                 );
             }
-            "--controller-seat" => {
-                let value = args.next().ok_or("--controller-seat needs instance:seat")?;
+            "--controller-seat" | "--mouse-seat" => {
+                let value = args.next().ok_or("device assignment needs instance:seat")?;
                 let (device, seat) = value
                     .split_once(':')
-                    .ok_or("--controller-seat needs instance:seat")?;
-                let id = device.parse().map_err(|_| "invalid controller instance")?;
+                    .ok_or("device assignment needs instance:seat")?;
+                let id = if arg == "--mouse-seat" {
+                    DeviceId::Mouse(device.parse().map_err(|_| "invalid mouse instance")?)
+                } else {
+                    DeviceId::Controller(device.parse().map_err(|_| "invalid controller instance")?)
+                };
                 let seat = SeatId::new(seat.parse().map_err(|_| "invalid seat")?)
                     .ok_or("seat outside 0..4")?;
-                device_assignments.push((DeviceId::Controller(id), seat));
+                device_assignments.push((id, seat));
+                seat_count = seat_count.max(seat.index() + 1);
             }
             "--frame-timings" => timings = true,
             "--renderer" => {
@@ -210,19 +228,26 @@ fn run() -> Result<(), String> {
     if cpu_bands.is_some() && matches!(renderer_kind, Kind::Gl) {
         return Err("--cpu-bands requires --renderer cpu".into());
     }
-    if (movement_rules.is_some() || trace_rules.is_some() || client_module.is_some())
+    if (movement_rules.is_some()
+        || trace_rules.is_some()
+        || client_module.is_some()
+        || seat_policies.iter().any(Option::is_some))
         && map_name.is_none()
     {
         return Err("movement and trace roles need a loaded --map".into());
     }
     let staged_map = if let Some(name) = map_name {
         let input = map::read(&vfs, &name)?;
-        let policy = ClientPolicy::select(
-            client_module,
-            input.client_rules,
-            movement_rules,
-            trace_rules,
-        )?;
+        let policy = if let Some(policy) = seat_policies[0] {
+            policy
+        } else {
+            ClientPolicy::select(
+                client_module,
+                input.client_rules,
+                movement_rules,
+                trace_rules,
+            )?
+        };
         Some((input, policy))
     } else {
         None
@@ -239,12 +264,16 @@ fn run() -> Result<(), String> {
         if !runtime.input.assign(device, seat) {
             return Err("device table full".into());
         }
+        println!(
+            "{{\"event\":\"device_assignment\",\"device\":{},\"seat\":{}}}",
+            json_string(&format!("{device:?}")),
+            seat.index()
+        );
     }
     let mut loaded_world = None;
-    let mut local_client = None;
+    let mut local_clients = [None; SeatId::COUNT];
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
-    let mut selected_movement = None;
     let mut imported_profile = qa_app::profile::Import::default();
     if let Some((input, policy)) = &staged_map {
         if !console_source_explicit {
@@ -261,7 +290,7 @@ fn run() -> Result<(), String> {
             policy.movement,
         )?;
         println!(
-            "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":1,\"history_imported\":false,\"settings_only\":true}}",
+            "{{\"event\":\"profile_import\",\"consumed\":{},\"files\":{},\"applied_cvars\":{},\"applied_bindings\":{},\"unsupported_settings\":{},\"active_saved_seats\":1,\"connected_seats\":{seat_count},\"history_imported\":false,\"settings_only\":true}}",
             imported_profile.consumed(),
             serde_json::to_string(&imported_profile.files)
                 .map_err(|e| format!("profile report: {e}"))?,
@@ -284,8 +313,6 @@ fn run() -> Result<(), String> {
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
     if let Some((input, policy)) = staged_map {
-        let rules = policy.movement;
-        let traces = policy.trace;
         let image_settings =
             qa_app::render_settings::image_settings(&console.cvars, input.native_source)?;
         let loaded = input.load(
@@ -321,36 +348,50 @@ fn run() -> Result<(), String> {
             loaded.collision,
             0,
         ));
-        let client = runtime.connect_local(SeatId::FIRST, loaded.spawn, policy)?;
-        let player = &runtime.server.clients[client.0 as usize].player;
-        println!(
-            "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"spawned_clients\":1,\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
-            json_string(&loaded.virtual_path),
-            rules.name(),
-            traces.name(),
-            loaded.render.world.0,
-            client.0,
-            loaded.entity_count,
-            loaded.collision_brushes,
-            loaded.spawn.entity,
-            loaded.spawn.fixture_fallback,
-            player.body.position.0,
-            player.view_angles.0,
-            player.body.mins.0,
-            player.body.maxs.0,
-            loaded.native_source == RuleSetId::Quake
-                && rules != qa_core::primitives::RuleSetId::Quake,
-            imported_profile.consumed()
-        );
-        local_client = Some(client);
+        if loaded.spawns.len() < seat_count {
+            return Err(format!(
+                "map has {} distinct spawn anchors for {seat_count} local seats",
+                loaded.spawns.len()
+            ));
+        }
+        for (index, slot) in local_clients.iter_mut().enumerate().take(seat_count) {
+            let seat = SeatId::new(index as u8).ok_or("invalid local seat")?;
+            let policy = seat_policies[index].unwrap_or(policy);
+            let rules = policy.movement;
+            let traces = policy.trace;
+            let spawn = loaded.spawns[index];
+            let client = runtime.connect_local(seat, spawn, policy)?;
+            let player = &runtime.server.clients[client.0 as usize].player;
+            println!(
+                "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"seat\":{index},\"spawned_clients\":{seat_count},\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
+                json_string(&loaded.virtual_path),
+                rules.name(),
+                traces.name(),
+                loaded.render.world.0,
+                client.0,
+                loaded.entity_count,
+                loaded.collision_brushes,
+                spawn.entity,
+                spawn.fixture_fallback,
+                player.body.position.0,
+                player.view_angles.0,
+                player.body.mins.0,
+                player.body.maxs.0,
+                loaded.native_source == RuleSetId::Quake
+                    && rules != qa_core::primitives::RuleSetId::Quake,
+                imported_profile.consumed()
+            );
+            *slot = Some(client);
+        }
         map_path = Some(loaded.virtual_path);
-        selected_movement = Some(rules);
         loaded_world = Some(loaded.render);
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
     let mut host = FrameHost::load(console, runtime, world_rate, Vec::new())?;
-    host.local_clients[SeatId::FIRST.index()] = local_client;
-    host.local_worlds[SeatId::FIRST.index()] = render_world;
+    host.local_clients = local_clients;
+    for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {
+        *world = client.and(render_world);
+    }
     let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
         cpu_band_setting(&host.console.cvars, cpu_bands)?
     } else {
@@ -387,7 +428,7 @@ fn run() -> Result<(), String> {
             "{{\"event\":\"world_frame_presented\",\"gameplay\":false,\"map\":{},\"renderer\":\"{}\",\"client_connected\":{},\"views\":{},\"visible_surfaces\":{},\"surfaces\":{},\"triangles\":{},\"rejected\":{},\"profile_consumed\":{},\"native_input_policy\":{}}}",
             json_string(path),
             renderer_kind.name(),
-            local_client.is_some(),
+            local_clients[0].is_some(),
             renderer.sample.stats.views,
             renderer.sample.visible_surfaces,
             renderer.sample.stats.surfaces,
@@ -485,16 +526,20 @@ fn run() -> Result<(), String> {
                 result.commands[0].server_time_ms
             ),
         );
-        if let (Some(id), Some(rules)) = (local_client, selected_movement) {
+        for (index, id) in local_clients.iter().enumerate() {
+            let Some(id) = *id else { continue };
             let authoritative = &host.runtime.server.clients[id.0 as usize].player;
-            let predicted = &host.runtime.prediction[SeatId::FIRST.index()].player;
+            let predicted = &host.runtime.prediction[index].player;
             qa_console::logger::dev_print(
                 &host.console.cvars,
                 host.developer,
                 1,
                 format_args!(
-                    "{{\"event\":\"walk_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"movement\":\"{}\",\"position\":{:?},\"velocity\":{:?},\"predicted_position\":{:?},\"view_angles\":{:?},\"grounded\":{},\"ground_normal\":{:?},\"ducked\":{},\"water_level\":{},\"simulation_ns\":{},\"client_ns\":{}}}",
-                    rules.name(),
+                    "{{\"event\":\"walk_frame\",\"scope\":\"{scope}\",\"frame\":{frame},\"seat\":{index},\"client\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"command_movement\":{:?},\"position\":{:?},\"velocity\":{:?},\"predicted_position\":{:?},\"view_angles\":{:?},\"grounded\":{},\"ground_normal\":{:?},\"ducked\":{},\"water_level\":{},\"simulation_ns\":{},\"client_ns\":{}}}",
+                    id.0,
+                    authoritative.movement_rules.name(),
+                    authoritative.trace_rules.name(),
+                    result.commands[index].movement,
                     authoritative.body.position.0,
                     authoritative.body.velocity.0,
                     predicted.body.position.0,

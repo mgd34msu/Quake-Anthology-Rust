@@ -12,6 +12,24 @@ fn fixed(milliseconds: u32) -> Result<TickRate, String> {
 }
 
 #[test]
+fn startup_seat_policy_preserves_independent_roles_and_rejects_invalid_fields() {
+    let (seat, policy) = ClientPolicy::parse_seat("1:q2:q3:q1").unwrap();
+    assert_eq!(seat.index(), 1);
+    assert_eq!(policy.client, RuleSetId::Quake2);
+    assert_eq!(policy.movement, RuleSetId::Quake3);
+    assert_eq!(policy.trace, RuleSetId::Quake);
+    for value in [
+        "4:q1:q1:q1",
+        "-1:q1:q1:q1",
+        "1:q1:q1",
+        "1:q1:q1:q1:extra",
+        "1:q1:q1:bad",
+    ] {
+        assert!(ClientPolicy::parse_seat(value).is_err(), "{value}");
+    }
+}
+
+#[test]
 fn client_selection_requires_identity_and_defaults_each_role_independently() -> Result<(), String> {
     for (movement, trace) in [
         (None, None),
