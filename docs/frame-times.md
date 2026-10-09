@@ -1761,3 +1761,51 @@ comparison from `THE-884-client-policy/catalog-cells`. Prior failed Clippy logs
 are retained. THE-2893 records that the GitHub workflow still declares SDL2
 while platform links SDL3. No clean Ubuntu runner was tested here; local checks
 do not qualify remote CI dependency provisioning. Core work keeps its priority.
+
+THE-2872/THE-2865 measured the caller-participating dispatcher and automatic
+bands on engine commit `5862373d`, baseline CPU, with process affinity to eight
+physical cores (4–11), no debugger, 60 warm-up and 600 measured frames. Fixed
+retail CPU draw rows at 640x400 were:
+
+| Map | Bands | Draw median ms | Draw p99 ms |
+| --- | ---: | ---: | ---: |
+| e1m1 | 1 | 1.987 | 2.057 |
+| e1m1 | 2 | 1.198 | 1.512 |
+| e1m1 | 4 | 0.874 | 0.963 |
+| e1m1 | 8 | 0.796 | 1.300 |
+| base1 | 1 | 4.455 | 4.642 |
+| base1 | 2 | 2.498 | 2.725 |
+| base1 | 4 | 1.541 | 1.717 |
+| base1 | 8 | 1.180 | 1.805 |
+| q3dm1 | 1 | 14.583 | 16.246 |
+| q3dm1 | 2 | 12.076 | 13.401 |
+| q3dm1 | 4 | 9.132 | 9.788 |
+| q3dm1 | 8 | 6.733 | 8.535 |
+| q3dm1 | auto (8) | 6.250 | 7.250 |
+
+The second q3dm1 fixed-eight row measured 6.559/7.819 ms. Baseline `39aaea41`
+fixed-eight rows measured 7.036/9.038 and 7.221/9.406 ms. Mean matched medians
+fell 6.77%; auto is within 10% of the best fixed row. The matched-eight sequence
+was A/B/A/B with intervening workloads, not ABBA. Baseline one band measured
+15.399/17.840 ms. These data preserve the band gain but still exceed the CPU
+under-4-ms target; speed work remains paused under the core order.
+
+All three maps have bit-identical RGBA and inverse depth across 1/2/4/8 bands.
+q3dm1 auto and baseline rows match those buffers. All 17 private benchmark runs
+recorded zero calling-thread/worker Rust allocations, normal quit, preserved
+copied candidates/original settings, and no remaining owned PIDs. The scope is
+fixed-scene CPU preparation/raster/dispatch/barriers, excluding host simulation,
+presentation and native heap; no GL/gameplay/installation claim follows.
+
+The pinned dispatcher probe, 32 jobs with no arithmetic, measured medians/p99
+of 0.130/0.140, 6.710/8.240, 8.820/10.970 and 28.060/43.040 microseconds at
+1/2/4/8 execution lanes. Caller plus lanes-minus-one background workers use the
+same API; all job outputs agree and every measured frame counts zero Rust heap.
+Cheap work exposes wake/barrier overhead rather than a parallel speedup. The
+1024-iteration rows and raw results are retained separately.
+
+Release builds: baseline 37.55 s, candidate 38.05 s, proof disabled. Evidence:
+`THE-2872-2865/{dispatch-comparison,retail-comparison,pause-cleanup}.json`, raw
+rows and before/after source archives under the task cache. The normal-app
+three-map CPU/GL suite remains pending after the owner's account-switch pause;
+see [the resume note](handoff/2026-10-08-account-switch.md).
