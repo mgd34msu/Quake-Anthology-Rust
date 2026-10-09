@@ -15,7 +15,7 @@ struct Slot<T> {
     reserved: usize,
 }
 
-pub(crate) struct PayloadQueue<T> {
+pub struct PayloadQueue<T> {
     slots: Box<[Option<Slot<T>>]>,
     bytes: Box<[u8]>,
     head: usize,
@@ -25,7 +25,7 @@ pub(crate) struct PayloadQueue<T> {
 }
 
 impl<T: Copy> PayloadQueue<T> {
-    pub(crate) fn load(slots: usize, bytes: usize) -> Result<Self, QueueError> {
+    pub fn load(slots: usize, bytes: usize) -> Result<Self, QueueError> {
         if !(1..=65536).contains(&slots) || !(1..=64 * 1024 * 1024).contains(&bytes) {
             return Err(QueueError::Capacity);
         }
@@ -39,15 +39,19 @@ impl<T: Copy> PayloadQueue<T> {
         })
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.length
     }
 
-    pub(crate) fn capacity(&self) -> usize {
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    pub fn capacity(&self) -> usize {
         self.slots.len()
     }
 
-    pub(crate) fn push(
+    pub fn push(
         &mut self,
         header: T,
         payload: &[u8],
@@ -83,7 +87,7 @@ impl<T: Copy> PayloadQueue<T> {
         Ok(())
     }
 
-    pub(crate) fn front(&self) -> Option<(T, &[u8])> {
+    pub fn front(&self) -> Option<(T, &[u8])> {
         let slot = self.slots[self.head].as_ref()?;
         Some((
             slot.header,
@@ -92,7 +96,7 @@ impl<T: Copy> PayloadQueue<T> {
     }
 
     /// The mutable borrow prevents storage reuse while the payload is read.
-    pub(crate) fn pop(&mut self) -> Option<(T, &[u8])> {
+    pub fn pop(&mut self) -> Option<(T, &[u8])> {
         let slot = self.slots[self.head].take()?;
         self.head = (self.head + 1) % self.slots.len();
         self.length -= 1;
@@ -106,7 +110,7 @@ impl<T: Copy> PayloadQueue<T> {
         ))
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.slots.fill(None);
         self.head = 0;
         self.length = 0;

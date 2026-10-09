@@ -3093,3 +3093,48 @@ Evidence directory `THE-949-headers-20261009`: `comparison.json`, extracted
 not the final gate. Shared channel state, native reliable receipts, fragment
 assembly, field-table deltas and migration of host direct submit/output ACK
 adapters remain the next THE-860 work; no network issue is closed by this slice.
+
+### THE-860 / THE-949 connected receive checkpoint
+
+One load-sized `Channel` selects native receive policy independently of game
+roles. It borrows complete packet payloads and uses one owned assembly buffer
+for ordered fragments. NetQuake's reliable and unreliable sequence spaces stay
+separate; reliable DATA packets generate native ACK replies even when duplicate
+or out of order. The replies use the existing core typed payload FIFO, now
+public for capability consumers. QW/Q2 toggle state changes only on new packets.
+Q2pro observes reliable ACK bits before fragment completion or offset rejection,
+as its original does. Q3 has no header ACK and a 1300-byte fragment still needs
+a shorter final fragment, including a zero-length terminator for exact multiples.
+Oversize input and full control storage fail only the affected receive operation.
+
+`tools/check_network_receive.py` compiles the unchanged original receive
+functions from WinQuake, QW client/server, Q2, q2repro old/new and Q3. Cold
+structs, byte reading, already-matched peer addresses, clocks and transport are
+harness bindings; no C is shipped. Across 2,048 seeded transcripts in 16
+policy/direction modes, **22,528 packet rows** match delivered payload bytes,
+incoming sequence/reliability and fragment state, drop counts and native ACK
+reply bytes. The transcripts include stale, duplicate, lost/out-of-order,
+fragment-prefix reuse and empty-final packets. Six focused Rust tests cover
+the bounded error paths as well as native delivery cases.
+
+The initial portable release example build reported 15.36 seconds; its final
+cached rebuild measured 0.083 seconds. Source4ffe786a plus the recorded receive
+slice, allocation tracking enabled, proof input disabled. CPU23, 60 warm-up and
+600 measured frames, 16 mixed peers: header construction, sequence processing
+and ordered receive assembly measured **1,040 ns median / 1,100 ns p99**.
+The workload checks 14,520 packets, 10,560 deliveries and 7,340,520 delivered
+bytes including warm-up. Inputs pass optimisation barriers. Calling-thread
+Rust allocations/reallocations/requested bytes are zero; the allocation positive
+control counts one. There are no workers, physical transport or game modules
+in this probe. The unchanged checker, 617 workspace tests and Clippy pass.
+
+This checkpoint exposes native controls without validating them against any
+outgoing flight. It cannot retire a reliable output record. Transmit/resend
+state, reliable command storage, Q3 payload ACK/XOR, delta tables, handshakes,
+host/loopback caller migration and original-client live connections remain open
+on THE-860/THE-949. No installation or gameplay proof is claimed.
+
+Evidence directory `THE-949-receive-20261009`: `comparison.json`, extracted
+`original-*.c`/executables, grouped `*-fixture.bin`, `*-original.bin` and
+`*-rust.bin`, `network-receive`, `build.json`, `final-build.log`, `timing.json`,
+`workspace.log`, `clippy.log`, `checker.log` and `committed-source.patch`.
