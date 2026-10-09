@@ -12,7 +12,7 @@
 //! from the normal benchmark; the residual estimates serial/other wall cost.
 use qa_app::{
     Runtime, map, profile, render_settings,
-    renderer::{CpuDispatch, parse_cpu_bands, report_cpu_config},
+    renderer::{CpuDispatch, cpu_band_setting, parse_cpu_bands, report_cpu_config},
 };
 use qa_console::{
     commands::Console,
@@ -50,7 +50,7 @@ struct Options {
     output: PathBuf,
     depth_output: Option<PathBuf>,
     hold_ms: u64,
-    bands: RasterBands,
+    bands: Option<RasterBands>,
     stage_timings: bool,
 }
 impl Options {
@@ -118,7 +118,7 @@ impl Options {
             output,
             depth_output,
             hold_ms,
-            bands: bands.unwrap_or(RasterBands::One),
+            bands,
             stage_timings,
         })
     }
@@ -497,13 +497,16 @@ fn run() -> Result<(), String> {
     if window.video_driver() != "x11" {
         return Err("private benchmark did not select X11".into());
     }
+    let (_, selected_bands) = cpu_band_setting(&console.cvars, options.bands)?;
     let mut cpu = CpuBackend::load_with_limits(
         WIDTH,
         HEIGHT,
         &assets,
         CpuLimits {
             scene: limits,
-            bands: options.bands,
+            bands: selected_bands
+                .unwrap_or_else(|| RasterBands::at_most(qa_platform::physical_core_count())),
+            auto_bands: selected_bands.is_none(),
             ..CpuLimits::default()
         },
     )?;

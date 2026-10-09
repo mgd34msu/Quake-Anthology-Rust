@@ -130,6 +130,8 @@ struct Value {
     integers: [i32; 5],
     revision: u64,
     command_flags: [Option<u32>; 5],
+    /// A loaded capability can hold LATCH writes independently of a server.
+    latch_active: bool,
 }
 struct Detail {
     text: FixedText<MAX_TEXT>,
@@ -218,6 +220,7 @@ impl Cvars {
                     integers: [0; 5],
                     revision: 0,
                     command_flags: [None; 5],
+                    latch_active: false,
                 });
             }
         }
@@ -560,7 +563,7 @@ impl Cvars {
             changes: std::array::from_fn(|_| None),
             detail: None,
         };
-        let mut pending = enforce && self.flags(view) & 32 != 0 && self.server_active;
+        let mut pending = enforce && self.latch_pending(view);
         if DEFINITIONS[binding.row as usize].stored {
             let mut value = FixedText::default();
             if let Some(prefix) = out.prefix {
@@ -586,7 +589,7 @@ impl Cvars {
                 if enforce {
                     self.check_write(target_view, change.text.as_str())?;
                 }
-                pending |= enforce && self.flags(target_view) & 32 != 0 && self.server_active;
+                pending |= enforce && self.latch_pending(target_view);
                 let mut text = FixedText::default();
                 text.set(change.text.as_str())
                     .map_err(|_| conversion::Error::TextTooLong)?;
@@ -725,6 +728,15 @@ impl Cvars {
         value.explicit = false;
         self.mark_change(handle);
         self.refresh_changes();
+    }
+    /// Set at a capability's load/unload boundary. Native server-wide latches
+    /// retain their existing behavior; this also serves client-only renderers.
+    pub fn set_latch_active(&mut self, handle: CvarHandle, active: bool) {
+        self.values[handle.0 as usize].latch_active = active;
+    }
+    fn latch_pending(&self, view: View) -> bool {
+        self.flags(view) & 32 != 0
+            && (self.server_active || self.values[view.handle.0 as usize].latch_active)
     }
     pub fn apply_latches(&mut self) -> Result<(), WriteError> {
         while !self.pending.is_empty() {

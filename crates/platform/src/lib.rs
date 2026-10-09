@@ -1,5 +1,6 @@
 mod audio;
 mod clock;
+mod cpu;
 mod events;
 mod profile;
 mod sdl;
@@ -11,6 +12,7 @@ pub mod allocations;
 
 pub use audio::AudioStream;
 pub use clock::{Stopwatch, pause};
+pub use cpu::physical_core_count;
 pub use events::EventPump;
 pub use profile::saved_profile_root;
 pub use sdl::Window;

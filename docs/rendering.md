@@ -82,3 +82,37 @@ still has no loaded map. Shader parsing retains animation, texture modifiers,
 waves and deformations, but parsing alone does not implement those effects.
 Native images, complete material conversion and the walk-through gate remain
 unqualified.
+
+CPU raster bands are automatic at renderer load. Platform counts physical cores
+inside the process affinity, and the CPU renderer selects 1/2/4/8 bands while
+respecting framebuffer rows and the mandatory surface-cache reservation. The
+32 MiB cache budget is shared across bands. `r_cpuBands` defaults to `0` (auto)
+in every native cvar view; `1`, `2`, `4` and `8` are archived, latched overrides.
+A running CPU renderer holds writes until a renderer load boundary. The
+`--cpu-bands` option takes precedence for benchmark runs.
+
+All bands use `Workers::dispatch_scoped`: the caller and background workers
+claim exclusive job indices, and consumers merge completed slots in index
+order. One band has zero background workers and uses the same implementation.
+Allocation qualification combines the calling thread with every worker after
+each dispatch, including rejected batches, and consumes the aggregate once per
+ordinary or quit frame. Native SDL/driver allocations are outside this counter.
+
+For fixed-scene CPU timing, build the developer example and use the private tool:
+
+```sh
+cargo build --release -p qa-platform --example cpu_retail --example job_dispatch \
+  -p qa-app --bin qa-rust --features qa-platform/allocation-tracking,qa-app/allocation-tracking
+python3 tools/frame_timings.py --binary target/release/qa-rust \
+  --cpu-retail-binary target/release/examples/cpu_retail \
+  --owner-profile "$PROFILE" --content "$CONTENT" --map q3dm1 \
+  --cpu-bands auto --cores "$CORES" --evidence "$EVIDENCE"
+```
+
+Use a fresh evidence directory and the same multicore affinity for auto and
+fixed `1`/`2`/`4`/`8` rows. Each row records 600 draws after 60 warm-up frames,
+raw RGBA/depth files, allocation counts and median/p99. The fixed scene excludes
+host simulation, presentation and native heap work; these rows cannot qualify
+an installation. Omitting `--cpu-retail-binary` measures host frames; supplying
+`--content` and `--map` loads retail geometry. OpenGL rows retain driver identity
+and explicitly label Mesa llvmpipe/softpipe software rendering.

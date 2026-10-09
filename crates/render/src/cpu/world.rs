@@ -33,6 +33,18 @@ pub enum RasterBands {
     Eight,
 }
 impl RasterBands {
+    /// Largest supported fixed partition no greater than the available lanes.
+    pub const fn at_most(lanes: usize) -> Self {
+        if lanes >= 8 {
+            Self::Eight
+        } else if lanes >= 4 {
+            Self::Four
+        } else if lanes >= 2 {
+            Self::Two
+        } else {
+            Self::One
+        }
+    }
     pub const fn count(self) -> usize {
         match self {
             Self::One => 1,
@@ -62,6 +74,8 @@ pub struct CpuLimits {
     pub max_spans: usize,
     pub scene: crate::scene::Limits,
     pub bands: RasterBands,
+    /// Automatic selection may reduce bands to fit rows and mandatory surfaces.
+    pub auto_bands: bool,
 }
 impl Default for CpuLimits {
     fn default() -> Self {
@@ -70,6 +84,7 @@ impl Default for CpuLimits {
             max_spans: 4096,
             scene: crate::scene::Limits::default(),
             bands: RasterBands::One,
+            auto_bands: false,
         }
     }
 }
@@ -415,11 +430,16 @@ impl WorldRaster {
         limits: CpuLimits,
         evaluator: &StageEvaluator,
     ) -> Result<Self, &'static str> {
-        let band_count = limits.bands.count();
+        let mut selected_bands = if limits.auto_bands {
+            RasterBands::at_most(limits.bands.count().min(height as usize))
+        } else {
+            limits.bands
+        };
+        let mut band_count = selected_bands.count();
         if band_count > height as usize {
             return Err("CPU band count exceeds framebuffer rows");
         }
-        let share = (limits.cache_bytes / 8 / band_count) * 8;
+        let mut share = (limits.cache_bytes / 8 / band_count) * 8;
         let mut offsets = Vec::with_capacity(assets.worlds().len());
         let mut sources = Vec::new();
         let mut surfaces = Vec::new();
@@ -619,6 +639,11 @@ impl WorldRaster {
                 );
             }
         }
+        while limits.auto_bands && mandatory_cache_bytes > share && band_count > 1 {
+            selected_bands = RasterBands::at_most(band_count / 2);
+            band_count = selected_bands.count();
+            share = (limits.cache_bytes / 8 / band_count) * 8;
+        }
         if mandatory_cache_bytes > share {
             return Err("CPU cache cannot hold a mandatory surface");
         }
@@ -684,7 +709,7 @@ impl WorldRaster {
             },
             bands,
             config: RasterConfig {
-                bands: limits.bands,
+                bands: selected_bands,
                 total_cache_budget_bytes: limits.cache_bytes,
                 allocated_cache_bytes: share * band_count,
                 per_band_cache_bytes: share,

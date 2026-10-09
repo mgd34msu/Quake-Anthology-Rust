@@ -1729,6 +1729,28 @@ fn selected_band_load_keeps_total_budget_and_rejects_insufficient_native_share()
     let base = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let required = base.raster_config().mandatory_cache_bytes;
     assert!(required > 0);
+    for (rows, budget, expected) in [
+        (19, required * 4, RasterBands::Four),
+        (3, required * 8, RasterBands::Two),
+        (1, required * 8, RasterBands::One),
+    ] {
+        let cpu = CpuBackend::load_with_limits(
+            29,
+            rows,
+            &assets,
+            CpuLimits {
+                bands: RasterBands::Eight,
+                auto_bands: true,
+                cache_bytes: budget,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cpu.raster_config().bands, expected);
+        assert!(
+            cpu.raster_config().mandatory_cache_bytes <= cpu.raster_config().per_band_cache_bytes
+        );
+    }
     for bands in [
         RasterBands::One,
         RasterBands::Two,

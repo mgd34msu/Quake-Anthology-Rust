@@ -79,6 +79,12 @@ The engine and everything shipped must be Rust. Python is allowed for developer
 tooling such as builds, checks, private harnesses, installation, timing and
 generators; that tooling is not part of the shipped platform.
 
+The 2026-10-08 22:30 budget ruling makes THE-2872/THE-2865 (one job dispatcher
+and automatic CPU bands) the next slice, followed by THE-889. Between commits,
+run the checker, workspace tests and allocation gate. Run the full private
+three-map CPU/GL qualification only when a slice is finished or a preview
+installation is due, rather than for each commit.
+
 `cargo build --release` uses opt-level 3, fat LTO, one codegen unit and abort
 panics. `python3 tools/build.py` splits debug symbols into qa-rust.debug and
 produces the installation candidate. Baseline CPU is the portable default;
@@ -229,7 +235,16 @@ with matched workload and fidelity, without a debugger.
 THE-892 checks platform ownership and duplicate event/output storage, including
 examples and imported aliases. Developer timers also use platform. CPU raster
 selects 1/2/4/8 bands at load, dividing one total 32 MiB cache budget across them.
-Platform owns the persistent worker pool. Runtime allocation qualification sums
+Platform owns the persistent worker pool. The one scoped dispatcher uses
+bounded atomic index claims shared by the caller and background workers, with
+one wake condition per worker. Results stay in their original job slots and
+merge in index order after the completion barrier. Zero background workers use
+the same dispatcher. CPU bands are selected at load from affinity-allowed
+physical cores (maximum eight), framebuffer rows and mandatory cache size.
+`r_cpuBands` is an archived, latched engine cvar: zero selects auto; 1/2/4/8
+selects fixed bands. The renderer activates its latch independently of server
+state. `--cpu-bands` is a benchmark override.
+Runtime allocation qualification sums
 the instrumented calling thread and every worker after every completed or
 rejected dispatch, then consumes those counts once in ordinary and quit frames.
 Discard startup counts; do not report only the final batch. SDL/driver heap work

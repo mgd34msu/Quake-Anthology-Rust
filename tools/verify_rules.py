@@ -70,7 +70,7 @@ def main():
     records = []
     with tempfile.TemporaryDirectory(prefix="qa-rust-rule-fixture-") as temp:
         root = Path(temp)
-        for source in [*ROOT.glob("crates/*/**/*.rs"), ROOT / "tools/build.py", ROOT / "tools/check_rules.py", ROOT / "tools/rules-allowlist.json", ROOT / "tools/gen_cvars.py", ROOT / "tools/cvar_catalog.py", *ROOT.glob("data/unified-cvars.*"), ROOT / "data/unified-cvars-policy-issues.json"]:
+        for source in [*ROOT.glob("crates/*/**/*.rs"), ROOT / "tools/build.py", ROOT / "tools/check_rules.py", ROOT / "tools/rules-allowlist.json", ROOT / "tools/gen_cvars.py", ROOT / "tools/cvar_catalog.py", *ROOT.glob("data/unified-cvars.*"), ROOT / "data/engine-cvars.csv", ROOT / "data/unified-cvars-policy-issues.json"]:
             target = root / source.relative_to(ROOT)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)

@@ -1,5 +1,5 @@
 use qa_app::map;
-use qa_app::renderer::{Kind, Renderer, parse_cpu_bands};
+use qa_app::renderer::{Kind, Renderer, cpu_band_setting, parse_cpu_bands};
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
@@ -11,7 +11,7 @@ use qa_console::{
 };
 use qa_core::sys_events::{DeviceId, SeatId};
 use qa_platform::EventPump;
-use qa_render::{Assets, cpu::RasterBands, material::world_load::WorldLoadOptions};
+use qa_render::{Assets, material::world_load::WorldLoadOptions};
 use qa_session::timing::TickRate;
 use std::time::Duration;
 
@@ -38,8 +38,7 @@ fn run() -> Result<(), String> {
     let mut uncapped = false;
     let mut startup_hold = 0u64;
     let mut renderer_kind = Kind::Cpu;
-    let mut cpu_bands = RasterBands::One;
-    let mut cpu_bands_explicit = false;
+    let mut cpu_bands = None;
     let mut map_name = None;
     let mut movement_rules = None;
     let mut trace_rules = None;
@@ -145,11 +144,12 @@ fn run() -> Result<(), String> {
                 renderer_kind = Kind::parse(&args.next().ok_or("--renderer needs cpu or gl")?)?
             }
             "--cpu-bands" => {
-                if cpu_bands_explicit {
+                if cpu_bands.is_some() {
                     return Err("--cpu-bands was supplied more than once".into());
                 }
-                cpu_bands_explicit = true;
-                cpu_bands = parse_cpu_bands(&args.next().ok_or("--cpu-bands needs 1, 2, 4 or 8")?)?;
+                cpu_bands = Some(parse_cpu_bands(
+                    &args.next().ok_or("--cpu-bands needs 1, 2, 4 or 8")?,
+                )?);
             }
             "--uncapped" => uncapped = true,
             "--warmup" => {
@@ -207,7 +207,7 @@ fn run() -> Result<(), String> {
     if frames == 0 || width <= 0 || height <= 0 {
         return Err("frames and dimensions must be positive".into());
     }
-    if cpu_bands_explicit && matches!(renderer_kind, Kind::Gl) {
+    if cpu_bands.is_some() && matches!(renderer_kind, Kind::Gl) {
         return Err("--cpu-bands requires --renderer cpu".into());
     }
     if (movement_rules.is_some() || trace_rules.is_some() || client_module.is_some())
@@ -351,6 +351,17 @@ fn run() -> Result<(), String> {
     let mut host = FrameHost::load(console, runtime, world_rate, Vec::new())?;
     host.local_clients[SeatId::FIRST.index()] = local_client;
     host.local_worlds[SeatId::FIRST.index()] = render_world;
+    let (band_cvar, cpu_bands) = if matches!(renderer_kind, Kind::Cpu) {
+        cpu_band_setting(&host.console.cvars, cpu_bands)?
+    } else {
+        (
+            host.console
+                .cvars
+                .find("r_cpuBands")
+                .ok_or("missing CPU band setting")?,
+            None,
+        )
+    };
     let mut window = renderer_kind.open(width, height)?;
     let mut renderer = Renderer::load(
         renderer_kind,
@@ -361,6 +372,9 @@ fn run() -> Result<(), String> {
         loaded_world.into_iter().collect(),
         cpu_bands,
     )?;
+    if matches!(renderer_kind, Kind::Cpu) {
+        host.console.cvars.set_latch_active(band_cvar, true);
+    }
     renderer.frame(&host.client_views());
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     let _ = renderer.merge_worker_counts(qa_platform::allocations::Counts::default());

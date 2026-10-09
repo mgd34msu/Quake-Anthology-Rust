@@ -25,10 +25,32 @@ pub fn parse_cpu_bands(value: &str) -> Result<RasterBands, &'static str> {
     }
 }
 
+/// Resolve once at renderer load. A benchmark override takes precedence over
+/// the shared cvar; None requests affinity-aware automatic selection.
+pub fn cpu_band_setting(
+    cvars: &qa_console::cvars::Cvars,
+    benchmark: Option<RasterBands>,
+) -> Result<(qa_core::primitives::CvarHandle, Option<RasterBands>), &'static str> {
+    let handle = cvars.find("r_cpuBands").ok_or("missing CPU band setting")?;
+    let selected = if benchmark.is_some() {
+        benchmark
+    } else {
+        match cvars.integer(handle) {
+            0 => None,
+            1 => Some(RasterBands::One),
+            2 => Some(RasterBands::Two),
+            4 => Some(RasterBands::Four),
+            8 => Some(RasterBands::Eight),
+            _ => return Err("r_cpuBands must be 0, 1, 2, 4 or 8"),
+        }
+    };
+    Ok((handle, selected))
+}
+
 /// The app owns worker scheduling; render only lends disjoint raster jobs.
 /// Developer retail draws use this same dispatcher and allocation accounting.
 pub struct CpuDispatch {
-    workers: Option<Workers>,
+    workers: Workers,
     failure: Option<WorkerError>,
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     scratch: [Counts; MAX_BANDS],
@@ -37,11 +59,7 @@ pub struct CpuDispatch {
 }
 impl CpuDispatch {
     pub fn load(bands: RasterBands) -> Result<Self, WorkerError> {
-        let workers = if bands == RasterBands::One {
-            None
-        } else {
-            Some(Workers::load(bands.count())?)
-        };
+        let workers = Workers::load(bands.count() - 1)?;
         Ok(Self {
             workers,
             failure: None,
@@ -53,7 +71,7 @@ impl CpuDispatch {
     }
 
     pub fn worker_count(&self) -> usize {
-        self.workers.as_ref().map_or(0, Workers::count)
+        self.workers.count()
     }
 
     pub fn failure(&self) -> Option<WorkerError> {
@@ -65,27 +83,19 @@ impl CpuDispatch {
         jobs: &mut [J],
         work: fn(&mut J),
     ) -> Result<(), WorkerError> {
-        let result = if let Some(workers) = &mut self.workers {
-            let result = workers.dispatch_scoped(jobs, work);
-            #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
-            let result = {
-                // Counts belong to this completed or rejected dispatch, even
-                // when the worker operation failed. Read before another batch.
-                let counts = &mut self.scratch[..workers.count()];
-                let count_result = workers.allocation_counts(counts);
-                if count_result.is_ok() {
-                    for count in counts {
-                        add_counts(&mut self.pending, *count);
-                    }
+        let result = self.workers.dispatch_scoped(jobs, work);
+        #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+        let result = {
+            // Capture each completed or rejected batch before another dispatch.
+            // The caller's participating jobs remain in its outer frame count.
+            let counts = &mut self.scratch[..self.workers.count()];
+            let count_result = self.workers.allocation_counts(counts);
+            if count_result.is_ok() {
+                for count in counts {
+                    add_counts(&mut self.pending, *count);
                 }
-                result.and(count_result)
-            };
-            result
-        } else {
-            for job in jobs {
-                work(job);
             }
-            Ok(())
+            result.and(count_result)
         };
         if let Err(error) = result {
             self.failure.get_or_insert(error);
@@ -196,7 +206,7 @@ impl Renderer {
         height: u32,
         assets: Assets,
         worlds: Vec<LoadedWorld>,
-        bands: RasterBands,
+        bands: Option<RasterBands>,
     ) -> Result<Self, String> {
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
@@ -231,19 +241,27 @@ impl Renderer {
         let frontend = FrontEnd::load(limits)?;
         let backend = match kind {
             Kind::Cpu => {
+                let physical_cores = qa_platform::physical_core_count();
                 let backend = CpuBackend::load_with_limits(
                     width,
                     height,
                     &assets,
                     CpuLimits {
                         scene: limits,
-                        bands,
+                        bands: bands.unwrap_or_else(|| RasterBands::at_most(physical_cores)),
+                        auto_bands: bands.is_none(),
                         ..CpuLimits::default()
                     },
                 )?;
                 let dispatch = CpuDispatch::load(backend.raster_config().bands)
                     .map_err(|error| format!("CPU workers: {error}"))?;
                 report_cpu_config(backend.raster_config(), dispatch.worker_count());
+                qa_console::logger::console(format_args!(
+                    "{{\"event\":\"cpu_band_selection\",\"automatic\":{},\"physical_cores\":{},\"bands\":{}}}\n",
+                    bands.is_none(),
+                    physical_cores,
+                    backend.raster_config().bands.count()
+                ));
                 Backend::Cpu { backend, dispatch }
             }
             Kind::Gl => Backend::Gl(unsafe {

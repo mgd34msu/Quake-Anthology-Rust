@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Compare Rust console numbers and pure conversions with extracted C helpers."""
 import argparse
-import csv
 import json
 import os
 import importlib.util
@@ -9,7 +8,7 @@ from pathlib import Path
 import struct
 import subprocess
 from check_hull_trace import function
-from cvar_catalog import Catalog
+from gen_cvars import load_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = r'''
@@ -80,9 +79,7 @@ def main():
     source = args.evidence/'reference.c'
     source.write_text(WRAPPER.replace('static char strings', helpers+'\nstatic char strings'))
     binary = args.evidence/'reference'
-    with (ROOT/'data/unified-cvars.csv').open(newline='') as data:
-        rows = list(csv.DictReader(data))
-    catalog = Catalog(rows, (ROOT/'data/unified-cvars.md').read_text());catalog.build();catalog.verify()
+    catalog, rows, engine_rows = load_catalog(ROOT)
     spec = importlib.util.spec_from_file_location('c_catalog_reference',args.c_port/'tools/generate_unified_cvars.py')
     compiler = importlib.util.module_from_spec(spec);spec.loader.exec_module(compiler)
     original = compiler.Catalog(rows,(ROOT/'data/unified-cvars.md').read_text());original.build();original.verify()
@@ -164,7 +161,8 @@ def main():
                         break
             raise RuntimeError(f'{mode} output differs at byte {mismatch}; C={len(expected)} Rust={len(p.stdout)}')
         reports.append(dict(mode=mode,records=len(records) if mode=='numbers' else len(vectors),identical=True))
-    report = dict(result='PASS',checks=reports,scope='headless numeric/pure conversion helpers, not game sessions')
+    report = dict(result='PASS',checks=reports,owner_rows=len(rows),engine_rows=len(engine_rows),
+        scope='headless numeric/pure conversion helpers, not game sessions')
     (args.evidence/'comparison.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))
 
 

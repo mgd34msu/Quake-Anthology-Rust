@@ -35,10 +35,7 @@ fn work(job: &mut Job<'_>) {
 fn each_frame_merges_all_batches_once_and_terminal_frame_keeps_last_batch() {
     for bands in [RasterBands::One, RasterBands::Two] {
         let mut dispatch = CpuDispatch::load(bands).unwrap();
-        assert_eq!(
-            dispatch.worker_count(),
-            if bands == RasterBands::One { 0 } else { 2 }
-        );
+        assert_eq!(dispatch.worker_count(), bands.count() - 1);
         let mut output = [0u32; 2];
         let mut jobs = output.each_mut().map(|output| Job {
             output,
@@ -129,6 +126,7 @@ fn failed_batch_counts_are_captured_before_error_and_empty_batch_adds_nothing() 
     for job in &mut jobs {
         job.bytes = 64;
     }
+    begin_frame();
     dispatch.dispatch(&mut jobs, work).unwrap();
     jobs[0].panic = true;
     assert_eq!(
@@ -138,7 +136,7 @@ fn failed_batch_counts_are_captured_before_error_and_empty_batch_adds_nothing() 
     dispatch
         .dispatch::<u8>(&mut [], |value| *value += 1)
         .unwrap();
-    let total = dispatch.merge_counts(Counts::default());
+    let total = dispatch.merge_counts(end_frame());
     // Both batches allocate twice; panic reporting may add further allocations.
     assert!(total.allocations >= 4);
     assert!(total.requested_bytes >= 256);

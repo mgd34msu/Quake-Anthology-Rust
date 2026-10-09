@@ -1,8 +1,8 @@
-//! Load-owned workers with deterministic partitions of borrowed job slices.
+//! Load-owned workers with bounded exclusive claims over borrowed job slices.
 //!
 //! Jobs and the erased batch descriptor remain on the dispatcher's stack. The
 //! completion barrier finishes every worker before that stack can be released,
-//! including during unwinding. Each job belongs exclusively to one partition.
+//! including during unwinding. The caller and workers claim each job once.
 //! No jobs are boxed or queued, and dispatch never creates a thread.
 //!
 //! Job panics are scoped errors in unwind builds. The workspace's release
@@ -12,7 +12,10 @@ use std::{
     any::Any,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Condvar, Mutex, MutexGuard},
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -36,7 +39,7 @@ impl fmt::Display for WorkerError {
         formatter.write_str(match self {
             Self::InvalidCount => "invalid worker count",
             Self::LoadFailed => "worker startup failed",
-            Self::JobPanicked => "a worker job panicked",
+            Self::JobPanicked => "a dispatched job panicked",
             Self::WorkerStopped => "a worker stopped unexpectedly",
             Self::CountBuffer => "worker allocation count buffer has the wrong length",
         })
@@ -48,13 +51,13 @@ impl std::error::Error for WorkerError {}
 #[derive(Clone, Copy)]
 struct Dispatch {
     context: *const (),
-    run: unsafe fn(*const (), usize, usize) -> bool,
+    run: unsafe fn(*const ()) -> bool,
 }
 
 // SAFETY: dispatch_scoped installs this descriptor only while its stack Batch
 // and borrowed jobs are alive. The function accepts only Send jobs and grants
-// each worker disjoint indices. InFlight drains all workers before the borrow
-// returns, and clears the descriptor under the same publication mutex.
+// each participant an exclusive atomic job claim. InFlight drains all workers
+// before the borrow returns, then clears the descriptor under the same mutex.
 unsafe impl Send for Dispatch {}
 
 struct State {
@@ -70,7 +73,7 @@ struct State {
 
 struct Shared {
     state: Mutex<State>,
-    ready: Condvar,
+    ready: Box<[Condvar]>,
     complete: Condvar,
 }
 
@@ -95,13 +98,21 @@ pub struct Workers {
 
 impl Workers {
     pub fn load(count: usize) -> Result<Self, WorkerError> {
-        if count == 0 || count > MAX_WORKERS {
+        if count > MAX_WORKERS {
             return Err(WorkerError::InvalidCount);
         }
         let mut threads = Vec::new();
         threads
             .try_reserve_exact(count)
             .map_err(|_| WorkerError::LoadFailed)?;
+        let ready = {
+            let mut ready = Vec::new();
+            ready
+                .try_reserve_exact(count)
+                .map_err(|_| WorkerError::LoadFailed)?;
+            ready.resize_with(count, Condvar::new);
+            ready.into_boxed_slice()
+        };
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
         let counts = {
             let mut counts = Vec::new();
@@ -122,7 +133,7 @@ impl Workers {
                 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
                 counts,
             }),
-            ready: Condvar::new(),
+            ready,
             complete: Condvar::new(),
         });
         let mut workers = Self { shared, threads };
@@ -130,7 +141,7 @@ impl Workers {
             let shared = Arc::clone(&workers.shared);
             let thread = thread::Builder::new()
                 .name(format!("qa-worker-{index}"))
-                .spawn(move || worker_main(shared, index, count))
+                .spawn(move || worker_main(shared, index))
                 .map_err(|_| WorkerError::LoadFailed)?;
             workers.threads.push(thread);
         }
@@ -141,9 +152,9 @@ impl Workers {
         self.threads.len()
     }
 
-    /// Partition jobs into contiguous ranges by worker index. Remainder jobs
-    /// belong to the first workers; completion order never changes assignment.
-    /// Every job is attempted even when another job unwinds.
+    /// The caller and persistent workers claim exclusive job indices until the
+    /// borrowed batch is exhausted. Every job is attempted even when another
+    /// job unwinds. With zero background workers the caller runs the whole batch.
     pub fn dispatch_scoped<J: Send>(
         &mut self,
         jobs: &mut [J],
@@ -153,6 +164,7 @@ impl Workers {
             jobs: jobs.as_mut_ptr(),
             len: jobs.len(),
             work,
+            next: AtomicUsize::new(0),
         };
         // Declaration order matters: the guard drains workers before Batch is
         // dropped. Any state mutex guard is newer and unlocks before draining.
@@ -178,8 +190,14 @@ impl Workers {
             state.panicked = false;
             state.epoch = state.epoch.wrapping_add(1);
             scope.active = true;
-            self.shared.ready.notify_all();
+            for ready in &self.shared.ready {
+                ready.notify_one();
+            }
         }
+        // SAFETY: the caller holds the same scoped Batch alive as the workers.
+        // Its atomic claims grant exclusive job access through run_batch too.
+        let panicked = unsafe { run_batch::<J>((&batch as *const Batch<J>).cast()) };
+        self.shared.lock().panicked |= panicked;
         scope.finish()
     }
 
@@ -203,7 +221,9 @@ impl Drop for Workers {
         {
             let mut state = self.shared.lock();
             state.stopping = true;
-            self.shared.ready.notify_all();
+            for ready in &self.shared.ready {
+                ready.notify_one();
+            }
         }
         for thread in self.threads.drain(..) {
             if let Err(payload) = thread.join() {
@@ -217,21 +237,31 @@ struct Batch<J> {
     jobs: *mut J,
     len: usize,
     work: fn(&mut J),
+    next: AtomicUsize,
 }
 
-unsafe fn run_batch<J: Send>(context: *const (), index: usize, count: usize) -> bool {
+unsafe fn run_batch<J: Send>(context: *const ()) -> bool {
     // SAFETY: publication is protected by the state mutex. The dispatcher's
     // InFlight guard keeps this immutable Batch and all J values alive until
-    // every worker has completed; only individual job values are mutated.
+    // every worker has completed; the jobs pointer/length/function are immutable,
+    // and next is atomic. Only exclusively claimed individual jobs are mutated.
     let batch = unsafe { &*context.cast::<Batch<J>>() };
-    let quotient = batch.len / count;
-    let remainder = batch.len % count;
-    let start = quotient * index + index.min(remainder);
-    let end = start + quotient + usize::from(index < remainder);
     let mut panicked = false;
-    for job in start..end {
+    // Relaxed ordering grants unique indices. The publication/completion mutex
+    // orders initial job state and completed writes across the scoped borrow.
+    while let Ok(job) = batch
+        .next
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            if next < batch.len {
+                Some(next + 1)
+            } else {
+                None
+            }
+        })
+    {
         let result = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: these ranges are disjoint, within len, and visited once.
+            // SAFETY: the bounded atomic claim grants this index once and never
+            // advances past len, including at usize::MAX for zero-sized jobs.
             // J: Send permits exclusive access on another thread. No J reference
             // is stored after work returns or unwinds.
             (batch.work)(unsafe { &mut *batch.jobs.add(job) });
@@ -307,7 +337,7 @@ impl Drop for Completion<'_> {
     }
 }
 
-fn worker_main(shared: Arc<Shared>, index: usize, count: usize) {
+fn worker_main(shared: Arc<Shared>, index: usize) {
     let mut seen_epoch = 0;
     loop {
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -315,7 +345,7 @@ fn worker_main(shared: Arc<Shared>, index: usize, count: usize) {
         let dispatch = {
             let mut state = shared.lock();
             while !state.stopping && state.epoch == seen_epoch {
-                state = shared.wait(&shared.ready, state);
+                state = shared.wait(&shared.ready[index], state);
             }
             if state.stopping {
                 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -335,7 +365,7 @@ fn worker_main(shared: Arc<Shared>, index: usize, count: usize) {
             // SAFETY: this worker has observed a newly published epoch. Its
             // Completion guard signals that it will never access this batch
             // again before InFlight lets the originating borrow return.
-            completion.panicked = unsafe { (dispatch.run)(dispatch.context, index, count) };
+            completion.panicked = unsafe { (dispatch.run)(dispatch.context) };
         }
     }
 }

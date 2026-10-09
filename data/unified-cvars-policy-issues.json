@@ -1,14 +1,17 @@
 {
   "counts": {
-    "rows": 1260,
+    "rows": 1261,
+    "owner_rows": 1260,
+    "engine_rows": 1,
+    "owner_cells": 26460,
     "aliases": 237,
-    "bindings": 1530,
-    "defaults": 6363,
-    "flag_clauses": 2327,
-    "conversions": 236,
+    "bindings": 1531,
+    "defaults": 6368,
+    "flag_clauses": 2332,
+    "conversions": 237,
     "operands": 43,
     "maps": 67,
-    "issues": 1397
+    "issues": 1398
   },
   "policy_issues": [
     {
@@ -9768,6 +9771,13 @@
       "field": "owner",
       "reason": "no native canonical home dialect; Anthology/guest owner decides",
       "bits": 16
+    },
+    {
+      "row": 1260,
+      "name": "r_cpuBands",
+      "field": "type/range_units",
+      "reason": "single-name inferred hints; not runtime validators",
+      "bits": 1
     },
     {
       "row": 104,
