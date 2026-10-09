@@ -2895,3 +2895,31 @@ not establish live cache reuse. This gap remains open under THE-862.
 Evidence: `grain-normal-summary.json`, `grain-normal-matrix.json`, and
 `grain-normal-{cpu,gl}-{e1m1,base1,q3dm1}/{runtime.log,result.json,window.png}`
 under the same THE-2866 evidence root.
+
+
+### THE-860 / THE-923 message-codec checkpoint, 2026-10-09
+
+One borrowed bounded reader/writer now supports native little-endian byte/OOB
+messages, raw LSB-first bit streams and Q3's fixed MSG Huffman stream.
+The numeric Q3 table, including its reserved NYT symbol, comes from unchanged
+qsrc `huffman.c` and `msg.c` `msg_hData`. No C code is linked into the engine.
+`tools/check_message.py` compiles the original functions only for comparison.
+768 seeded message cases containing 49,152 fields match original C output bytes
+and decoded values exactly. The original OOB WriteLong's unused bit counter
+advances eight rather than 32; comparison reports its actual byte cursor, without
+changing the original function. Native scalar/float bit patterns, signed widths,
+OOB signature, guarded capacity failure and malformed-message offsets have
+focused checks. This is a codec checkpoint; adaptive connect compression,
+channel/reliable retirement, delta fields, captures and live clients remain open.
+
+The portable release probe built in 7.938 s. On CPU23, 16 fixed mixed-encoding
+peers encode/decode 64 fields each over 60 warm-up and 600 measured frames.
+Median/p99 is 15.765/19.720 microseconds, 2,274 packet bytes/frame and 675,840
+checked decoded fields including warm-up. The allocation positive control
+counts one; measured allocations/reallocations/requested bytes are all zero.
+This measures Rust codec work only, with no channel, workers or native heap.
+Workspace 607 tests, Clippy and the unchanged checker pass. Evidence:
+`THE-860-message-20261009/{comparison.json,fixture.bin,original.bin,rust.bin,
+build.json,workspace.json,timing.json}` under the local QA evidence cache.
+The owner's 13:49 ruling returns priority to THE-862's live-cache blocker before
+further THE-860 work.
