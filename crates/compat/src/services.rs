@@ -158,6 +158,7 @@ pub struct EngineCallTable {
     pub free: fn(&mut EngineServices<'_>, CallContext, EntityId) -> Result<(), CallError>,
     pub cvar_register: CvarRegisterCall,
     pub cvar_set: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
+    pub cvar_force: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub file_open: FileOpenCall,
@@ -178,6 +179,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     free: |s, c, e| s.free(c, e),
     cvar_register: |s, c, n, d, f| s.cvar_register(c, n, d, f),
     cvar_set: |s, v, t| s.cvar_set(v, t),
+    cvar_force: |s, v, t| s.cvar_force(v, t),
     command: |s, c, t| s.command(c, t),
     configstring: |s, m, i, t| s.configstring(m, i, t),
     file_open: |s, m, p| s.file_open(m, p),
@@ -301,6 +303,11 @@ impl EngineServices<'_> {
     }
     pub fn cvar_set(&mut self, view: View, text: &str) -> Result<(), CallError> {
         self.cvars.write(view, text).map_err(|_| CallError::Cvar)
+    }
+    pub fn cvar_force(&mut self, view: View, text: &str) -> Result<(), CallError> {
+        self.cvars
+            .force_write(view, text)
+            .map_err(|_| CallError::Cvar)
     }
     pub fn command(&mut self, context: Context, text: &str) -> Result<(), CallError> {
         self.commands

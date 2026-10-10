@@ -1,6 +1,7 @@
 //! Q2 native API layouts over the one child backend and returned table binder.
 use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::ImportTrap};
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
+use crate::cvars::NativeCvars;
 use crate::memory::ModuleMemory;
 use qa_core::{
     names::NameTable,
@@ -288,8 +289,13 @@ impl Game {
             .div_ceil(PAGE_BYTES)
             .checked_mul(PAGE_BYTES)
             .ok_or(Error::Export)?;
+        let cvar_capacity = 1024;
+        let cvar_bytes = NativeCvars::byte_length(cvar_capacity)
+            .ok_or(Error::Export)?
+            .div_ceil(PAGE_BYTES)
+            * PAGE_BYTES;
         let end = offset
-            .checked_add(PAGE_BYTES)
+            .checked_add(PAGE_BYTES + cvar_bytes)
             .filter(|&n| n <= 512 * 1024 * 1024)
             .ok_or(Error::Export)?;
         let address = image.base.checked_add(offset as u64).ok_or(Error::Export)?;
@@ -309,7 +315,7 @@ impl Game {
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(Region {
             offset,
-            length: PAGE_BYTES,
+            length: PAGE_BYTES + cvar_bytes,
             read: true,
             write: true,
             execute: false,
@@ -324,17 +330,28 @@ impl Game {
             .iter()
             .enumerate()
             .map(|(ordinal, _)| {
-                let implemented = layout.version == 2023 && matches!(ordinal, 1 | 9);
+                let cvar = if layout.version == 2023 { 39 } else { 36 };
+                let signature = if ordinal == cvar {
+                    Some((
+                        &[NativeScalar::Word, NativeScalar::Word, NativeScalar::U32][..],
+                        NativeScalar::Word,
+                    ))
+                } else if ordinal == cvar + 1 || ordinal == cvar + 2 {
+                    Some((
+                        &[NativeScalar::Word, NativeScalar::Word][..],
+                        NativeScalar::Word,
+                    ))
+                } else if layout.version == 2023 && matches!(ordinal, 1 | 9) {
+                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
+                } else {
+                    None
+                };
                 NativeImport {
-                    trap: !implemented,
+                    trap: signature.is_none(),
                     number: ordinal as u32,
                     abi,
-                    parameters: if implemented {
-                        &[NativeScalar::Word]
-                    } else {
-                        &[]
-                    },
-                    result: NativeScalar::Void,
+                    parameters: signature.map_or(&[], |s| s.0),
+                    result: signature.map_or(NativeScalar::Void, |s| s.1),
                 }
             })
             .collect::<Vec<_>>();
@@ -349,6 +366,11 @@ impl Game {
             &imports,
             timeout,
         )?;
+        vm.cvars = Some(NativeCvars::load(
+            address + PAGE_BYTES as u64,
+            cvar_capacity,
+            layout.version == 2023,
+        ));
         let pointers = (0..imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))
             .collect::<Result<Vec<_>, _>>()?;

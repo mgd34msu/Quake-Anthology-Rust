@@ -87,6 +87,7 @@ pub struct Vm {
     finalize: Box<[LifecycleCall]>,
     names: NameTable,
     traps: Box<[runtime::ImportTrap]>,
+    cvars: Option<crate::cvars::NativeCvars>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -293,6 +294,7 @@ impl Vm {
             finalize: finalize.into_boxed_slice(),
             names: image.names,
             traps: runtime.traps.into_boxed_slice(),
+            cvars: None,
         })
     }
     pub fn unresolved_imports(&self) -> impl Iterator<Item = ImportTrapInfo<'_>> {
@@ -341,6 +343,16 @@ impl Vm {
         }
         words[first..first + arguments.len()].copy_from_slice(arguments);
         let mut rejected = None;
+        if let Some(cvars) = &mut self.cvars {
+            let base = self.process.base();
+            let mut memory =
+                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
+                    .map_err(|_| Error::Service(CallError::Memory))?;
+            cvars
+                .refresh(calls.services.cvars, &mut memory)
+                .map_err(Error::Service)?;
+        }
+        let cvars = &mut self.cvars;
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -352,6 +364,7 @@ impl Vm {
                 let mut invocation = Invocation {
                     services: calls.services,
                     memory: &mut memory,
+                    native_cvars: cvars.as_mut(),
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,

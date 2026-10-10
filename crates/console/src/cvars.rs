@@ -33,6 +33,10 @@ impl View {
     pub fn canonical(self) -> CvarHandle {
         self.handle
     }
+    /// Cached spelling/conversion identity within the one registry.
+    pub fn binding_id(self) -> u16 {
+        self.binding
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteError {
@@ -57,6 +61,7 @@ struct Value {
     integers: [i32; 5],
     name_id: NameId,
     revision: u64,
+    pending_revision: u64,
     command_flags: [Option<u32>; 5],
     /// A loaded capability can hold LATCH writes independently of a server.
     latch_active: bool,
@@ -93,6 +98,7 @@ impl PendingWrite {
             .iter()
             .map(|(h, _)| *h)
             .chain(self.changes.iter().flatten().map(|(h, _)| *h))
+            .chain(self.detail.iter().map(|detail| detail.view.handle))
     }
 }
 type Projections = [[Result<f32, conversion::Error>; 3]; 5];
@@ -206,6 +212,7 @@ impl Cvars {
                     numbers: [0.0; 5],
                     integers: [0; 5],
                     revision: 0,
+                    pending_revision: 0,
                     command_flags: [None; 5],
                     latch_active: false,
                 });
@@ -425,6 +432,7 @@ impl Cvars {
             numbers: [0.0; 5],
             integers: [0; 5],
             revision: 0,
+            pending_revision: 0,
             command_flags: [Some(flags); 5],
             latch_active: false,
         });
@@ -477,12 +485,34 @@ impl Cvars {
     pub fn generation(&self, handle: CvarHandle) -> u64 {
         self.values[handle.0 as usize].revision
     }
+    pub fn revision(&self) -> u64 {
+        self.revision_clock
+    }
+    pub fn name(&self, view: View) -> &str {
+        BINDINGS.get(view.binding as usize).map_or_else(
+            || self.name_text(self.values[view.handle.0 as usize].name_id),
+            |binding| binding.name,
+        )
+    }
     /// Converted state can also depend on other canonical rows (colour, dmflags).
     pub fn view_generation(&self, view: View) -> u64 {
         OPERANDS[self.conversion(view).operands.clone()]
             .iter()
             .fold(self.generation(view.handle), |generation, operand| {
                 generation.max(self.generation(self.slot(operand.row as usize, 0)))
+            })
+    }
+    /// Native cvar layouts also expose a pending latch, without marking the
+    /// current native value modified until that latch is applied.
+    pub fn view_update_generation(&self, view: View) -> u64 {
+        let generation = |handle: CvarHandle| {
+            let value = &self.values[handle.0 as usize];
+            value.revision.max(value.pending_revision)
+        };
+        OPERANDS[self.conversion(view).operands.clone()]
+            .iter()
+            .fold(generation(view.handle), |revision, operand| {
+                revision.max(generation(self.slot(operand.row as usize, 0)))
             })
     }
     #[cfg(any(debug_assertions, feature = "lookup-tracking"))]
@@ -527,19 +557,24 @@ impl Cvars {
                 })
     }
     pub fn read(&self, view: View) -> Result<Text<'_>, conversion::Error> {
-        if view.binding as usize >= BINDINGS.len() {
-            return Ok(Text::Borrowed(
-                self.effective(view.handle, view.context.source),
-            ));
-        }
-        let b = &BINDINGS[view.binding as usize];
-        let definition = &DEFINITIONS[b.row as usize];
         let text = self.effective(view.handle, view.context.source);
-        if b.canonical && view.context.role == Role::Engine && definition.stored {
-            return Ok(Text::Borrowed(text));
-        }
         let detail = self.detail(view);
         let operands = |row| self.effective(self.slot(row as usize, 0), view.context.source);
+        self.project(view, text, detail, &operands)
+    }
+    fn project<'a>(
+        &'a self,
+        view: View,
+        text: &'a str,
+        detail: Option<&'a str>,
+        operands: &dyn Fn(u16) -> &'a str,
+    ) -> Result<Text<'a>, conversion::Error> {
+        let binding = BINDINGS.get(view.binding as usize);
+        if binding.is_none_or(|b| {
+            b.canonical && view.context.role == Role::Engine && DEFINITIONS[b.row as usize].stored
+        }) {
+            return Ok(Text::Borrowed(text));
+        }
         conversion::read(Input {
             context: view.context,
             conversion: self.conversion(view),
@@ -548,8 +583,53 @@ impl Cvars {
             value: text,
             current: text,
             detail,
-            operand: &operands,
+            operand: operands,
         })
+    }
+    pub fn latched(&self, view: View) -> Result<Option<Text<'_>>, conversion::Error> {
+        let dependencies = &OPERANDS[self.conversion(view).operands.clone()];
+        if !self.pending.iter().any(|pending| {
+            pending.handles().any(|handle| {
+                handle == view.handle
+                    || dependencies
+                        .iter()
+                        .any(|o| self.slot(o.row as usize, 0) == handle)
+            })
+        }) {
+            return Ok(None);
+        }
+        let text_for = |handle| {
+            self.pending
+                .iter()
+                .flat_map(|pending| {
+                    pending
+                        .first
+                        .iter()
+                        .map(|(h, text)| (*h, text.as_str()))
+                        .chain(
+                            pending
+                                .changes
+                                .iter()
+                                .flatten()
+                                .map(|(h, text)| (*h, text.as_str())),
+                        )
+                })
+                .find_map(|(h, text)| (h == handle).then_some(text))
+                .unwrap_or_else(|| self.effective(handle, view.context.source))
+        };
+        let detail = self
+            .pending
+            .iter()
+            .filter_map(|pending| pending.detail.as_ref())
+            .find(|d| {
+                d.view.binding == view.binding && d.view.context.source == view.context.source
+            })
+            .map(|d| d.text.as_str())
+            .or_else(|| self.detail(view));
+        self.project(view, text_for(view.handle), detail, &|row| {
+            text_for(self.slot(row as usize, 0))
+        })
+        .map(Some)
     }
     pub fn numeric(&self, view: View) -> Result<f32, conversion::Error> {
         if view.binding as usize >= BINDINGS.len() {
@@ -644,6 +724,11 @@ impl Cvars {
         self.refresh_changes();
         Ok(())
     }
+    /// Native force-set preserves flags and still uses the same conversion and
+    /// publication path as console writes.
+    pub fn force_write(&mut self, view: View, text: &str) -> Result<(), WriteError> {
+        self.write_inner(view, text, false)
+    }
     fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
         if enforce {
             self.check_write(view, text)?;
@@ -718,14 +803,14 @@ impl Cvars {
                 changes.changes[i] = Some((handle, text));
             }
         }
-        self.pending
-            .retain(|old| !old.handles().any(|h| changes.handles().any(|new| h == new)));
         changes.detail = detail.map(|text| PendingDetail {
             view,
             text,
             modified: detail_modified,
         });
+        self.remove_pending(|old| old.handles().any(|h| changes.handles().any(|new| h == new)));
         if pending {
+            self.mark_pending(&changes);
             self.pending.push(changes);
             return Ok(());
         }
@@ -790,7 +875,24 @@ impl Cvars {
         }
     }
     fn cancel_pending(&mut self, handle: CvarHandle) {
-        self.pending.retain(|p| !p.handles().any(|h| h == handle));
+        self.remove_pending(|pending| pending.handles().any(|h| h == handle));
+    }
+    fn remove_pending(&mut self, matches: impl Fn(&PendingWrite) -> bool) {
+        let mut index = 0;
+        while index < self.pending.len() {
+            if matches(&self.pending[index]) {
+                let old = self.pending.remove(index);
+                self.mark_pending(&old);
+            } else {
+                index += 1;
+            }
+        }
+    }
+    fn mark_pending(&mut self, pending: &PendingWrite) {
+        for handle in pending.handles() {
+            self.revision_clock = self.revision_clock.wrapping_add(1);
+            self.values[handle.0 as usize].pending_revision = self.revision_clock;
+        }
     }
     fn publish(&mut self, handle: CvarHandle, text: FixedText<MAX_TEXT>) {
         let value = &mut self.values[handle.0 as usize];
@@ -862,6 +964,7 @@ impl Cvars {
     pub fn apply_latches(&mut self) -> Result<(), WriteError> {
         while !self.pending.is_empty() {
             let pending = self.pending.remove(0);
+            self.mark_pending(&pending);
             self.publish_group(pending)?;
         }
         self.refresh_changes();

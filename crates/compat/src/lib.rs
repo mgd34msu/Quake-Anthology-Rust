@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abi;
+pub mod cvars;
 mod hooks;
 pub mod memory;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

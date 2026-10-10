@@ -39,6 +39,7 @@ fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
     let mut call = Invocation {
         services: &mut services,
         memory: &mut memory,
+        native_cvars: None,
         context: context(),
         platform_time: EventTime(0),
         command: &[],
@@ -68,6 +69,7 @@ fn original_float_syscalls_keep_their_declared_bits() {
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
+            native_cvars: None,
             context: context(),
             platform_time: EventTime(0),
             command: &[],
@@ -141,6 +143,7 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
+            native_cvars: None,
             context: context(),
             platform_time: EventTime((u64::from(u32::MAX) + 8) * 1_000_000),
             command: &[b"native", b"arg"],
@@ -256,6 +259,7 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
+            native_cvars: None,
             context: context(),
             platform_time: EventTime(0),
             command: &[],

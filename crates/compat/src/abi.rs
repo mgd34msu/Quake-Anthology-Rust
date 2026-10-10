@@ -19,6 +19,7 @@ pub enum Addresses {
 pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
     pub memory: &'a mut ModuleMemory<'memory>,
+    pub native_cvars: Option<&'a mut crate::cvars::NativeCvars>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -182,13 +183,24 @@ pub const Q3_UI: CallTable = ui();
 
 // Q2 function-pointer slots map into this same service table. Unimplemented
 // native slots bind named traps before reaching this numbered dispatcher.
-pub const Q2_CLASSIC: CallTable = CallTable {
-    entries: [None; 256],
+pub const Q2_CLASSIC: CallTable = {
+    let mut table = CallTable {
+        entries: [None; 256],
+    };
+    table.entries[36] = Some(q2_cvar);
+    table.entries[37] = Some(q2_cvar_set::<false>);
+    table.entries[38] = Some(q2_cvar_set::<true>);
+    table
 };
 pub const Q2_RERELEASE: CallTable = {
-    let mut table = Q2_CLASSIC;
+    let mut table = CallTable {
+        entries: [None; 256],
+    };
     table.entries[1] = Some(print);
     table.entries[9] = Some(abort);
+    table.entries[39] = Some(q2_cvar);
+    table.entries[40] = Some(q2_cvar_set::<false>);
+    table.entries[41] = Some(q2_cvar_set::<true>);
     table
 };
 
@@ -253,6 +265,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         let mut invocation = Invocation {
             services: self.services,
             memory: &mut vm.strings,
+            native_cvars: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -311,6 +324,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
         let mut call = Invocation {
             services: self.services,
             memory: &mut vm.memory,
+            native_cvars: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
@@ -347,6 +361,84 @@ fn cvar_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
     (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
     Ok(0)
+}
+fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name_address = c.pointer(0)?;
+    let default_address = c.pointer(1)?;
+    let flags = c.arg(2)? as u32;
+    let name = std::str::from_utf8(c.memory.cstring(name_address)?).map_err(|_| CallError::Text)?;
+    let existing = c.services.cvars.bind(name, c.context.console);
+    if default_address == 0 && existing.is_none() {
+        return Ok(0);
+    }
+    let default = if existing.is_some() || default_address == 0 {
+        ""
+    } else {
+        std::str::from_utf8(c.memory.cstring(default_address)?).map_err(|_| CallError::Text)?
+    };
+    let view = match (ENGINE_CALLS.cvar_register)(
+        c.services,
+        c.context.console,
+        name,
+        default,
+        crate::cvars::common_flags(flags),
+    ) {
+        Ok(view) => view,
+        Err(CallError::Cvar | CallError::Capacity) => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    publish_cvar(c, view, flags)
+}
+fn q2_cvar_set<const FORCE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name_address = c.pointer(0)?;
+    let value_address = c.pointer(1)?;
+    let name = std::str::from_utf8(c.memory.cstring(name_address)?).map_err(|_| CallError::Text)?;
+    let value =
+        std::str::from_utf8(c.memory.cstring(value_address)?).map_err(|_| CallError::Text)?;
+    let view = (ENGINE_CALLS.cvar_register)(c.services, c.context.console, name, value, 0)?;
+    let flags = c.services.cvars.flags(view);
+    // Q2 NOSET applies even before the console's command-line INIT boundary.
+    let result = if FORCE {
+        (ENGINE_CALLS.cvar_force)(c.services, view, value)
+    } else if flags & 16 != 0 {
+        Err(CallError::Cvar)
+    } else {
+        (ENGINE_CALLS.cvar_set)(c.services, view, value)
+    };
+    if result == Err(CallError::Cvar) {
+        let _ = (ENGINE_CALLS.print)(
+            c.services,
+            None,
+            PrintKind::Console,
+            b"cvar write rejected\n",
+        );
+    } else {
+        result?;
+    }
+    publish_cvar(c, view, 0)
+}
+fn publish_cvar(
+    c: &mut Invocation<'_, '_, '_>,
+    view: qa_console::cvars::View,
+    flags: u32,
+) -> Result<u64, CallError> {
+    match c.native_cvars.as_mut().ok_or(CallError::Cvar)?.publish(
+        c.services.cvars,
+        c.memory,
+        view,
+        flags,
+    ) {
+        Err(CallError::Capacity) => {
+            let _ = (ENGINE_CALLS.print)(
+                c.services,
+                None,
+                PrintKind::Console,
+                b"native cvar capacity exceeded\n",
+            );
+            Ok(0)
+        }
+        result => result,
+    }
 }
 fn cvar_integer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {

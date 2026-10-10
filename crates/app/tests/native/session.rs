@@ -1673,7 +1673,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let context = CallContext {
             module: ModuleId(1),
             clock: ThinkTime::Milliseconds(0),
-            console: Context::default(),
+            console: Context {
+                source: rules,
+                role: qa_console::views::Role::Game,
+                ..Context::default()
+            },
             allocation: AllocationPolicy::EDICT,
             link_order: qa_gameplay::rules::link_order(rules),
         };
@@ -1727,7 +1731,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // Force the real loaded API frame to reach a named engine trap. No
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
-        let pointer = pointers[if rr { 39 } else { 36 }]; // cvar, same service in each ABI
+        let pointer = pointers[if rr { 21 } else { 18 }]; // linkentity
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -1766,7 +1770,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let import = game
             .vm
             .unresolved_imports()
-            .find(|i| i.name == Some(b"cvar".as_slice()))
+            .find(|i| i.name == Some(b"linkentity".as_slice()))
             .unwrap();
         assert_eq!(import.calls, 3);
         let mut batch = runtime.server.events.batch(observer).unwrap();
@@ -1779,8 +1783,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     prints += 1;
                 } else {
                     assert!(
-                        text.windows(b"native import cvar at".len())
-                            .any(|s| s == b"native import cvar at")
+                        text.windows(b"native import linkentity at".len())
+                            .any(|s| s == b"native import linkentity at")
                     );
                     logs += 1;
                 }
@@ -1788,6 +1792,75 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         assert_eq!(logs, 1);
         assert_eq!(prints, if rr { 3 } else { 0 });
+        // Reach the actual declared cvar import through the owned child.
+        let name = b"_qa_child_cvar\0";
+        let default = b"3\0";
+        game.vm.process.memory_mut().unwrap()[0x1720..0x1720 + name.len()].copy_from_slice(name);
+        game.vm.process.memory_mut().unwrap()[0x1760..0x1760 + default.len()]
+            .copy_from_slice(default);
+        let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
+        code.extend((base + 0x1720).to_le_bytes());
+        code.extend([0x48, 0xba]);
+        code.extend((base + 0x1760).to_le_bytes());
+        code.extend([0x41, 0xb8]);
+        code.extend(20u32.to_le_bytes());
+        code.extend([0x48, 0xb8]);
+        code.extend(pointers[if rr { 39 } else { 36 }].to_le_bytes());
+        code.extend([0xff, 0xd0, 0x48, 0xb9]);
+        code.extend((base + 0x1c00).to_le_bytes());
+        code.extend([0x48, 0x89, 1, 0x48, 0x83, 0xc4, 0x28, 0xc3]);
+        game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()].copy_from_slice(&code);
+        let mut saved_pointer = None;
+        for text in ["3", "7"] {
+            if text == "7" {
+                let view = console
+                    .cvars
+                    .bind("_qa_child_cvar", context.console)
+                    .unwrap();
+                console.cvars.force_write(view, text).unwrap();
+            }
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            game.vm
+                .call(
+                    &mut NativeCalls {
+                        services: &mut services,
+                        table: game.imports,
+                        context,
+                        platform_time: EventTime(0),
+                        command: &[],
+                        unknown: &mut unknown,
+                    },
+                    run,
+                    &[1],
+                )
+                .unwrap();
+            let memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            let address =
+                u64::from_le_bytes(memory.read(base + 0x1c00, 8).unwrap().try_into().unwrap());
+            assert_eq!(*saved_pointer.get_or_insert(address), address);
+            let string =
+                u64::from_le_bytes(memory.read(address + 8, 8).unwrap().try_into().unwrap());
+            assert_eq!(memory.cstring(string).unwrap(), text.as_bytes());
+            assert_eq!(memory.read_word(address + 24).unwrap(), 20);
+            assert_eq!(
+                memory.read_word(address + 28).unwrap(),
+                if rr && text == "7" { 2 } else { 1 }
+            );
+            assert_eq!(
+                memory.read_word(address + 32).unwrap() as u32,
+                text.parse::<f32>().unwrap().to_bits()
+            );
+            if rr {
+                assert_eq!(
+                    memory.read_word(address + 48).unwrap(),
+                    text.parse::<i32>().unwrap()
+                );
+            }
+        }
         let frame_code = if rr {
             &[0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b, 0xc3][..]
         } else {
