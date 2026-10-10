@@ -218,6 +218,7 @@ impl Mixer {
                 }
             }
         }
+        let volume = (self.volume * 256.0) as i64;
         for frame in output.as_chunks_mut::<2>().0 {
             let mut sum = [0i64; 2];
             for slot in &mut self.voices {
@@ -246,7 +247,6 @@ impl Mixer {
                     }
                 }
             }
-            let volume = (self.volume * 256.0) as i64;
             for side in 0..2 {
                 frame[side] = ((sum[side] * volume) >> 8)
                     .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
@@ -267,8 +267,8 @@ fn gains(event: SoundEvent, listener: &Listener, policy: &SpatialPolicy) -> [i32
         return [master; 2];
     }
     let delta = event.position - listener.origin;
-    let distance = math::length(delta);
-    let direction = math::normalized(delta);
+    let mut direction = delta;
+    let distance = math::normalize(&mut direction);
     let dot = listener.right.dot(direction);
     let distance =
         (distance - policy.distance_offset).max(0.0) * event.attenuation * policy.distance_scale;
