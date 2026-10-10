@@ -1,7 +1,7 @@
 //! Cold library/name/version binding to the shared C function entries.
 use super::elf::{self, Bindings, Definition, Pass};
 use crate::memory::ModuleMemory;
-use qa_core::{names::compare_folded, primitives::NameId};
+use qa_core::primitives::NameId;
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
     NativeAbi, NativeImport, NativeProcess,
@@ -17,29 +17,14 @@ fn library(image: &Image, id: NameId, function: Option<&Function>) -> bool {
             || [b"libc.so.6".as_slice(), b"libm.so.6"].contains(&name),
             |function| name == function.provider,
         ),
-        Encoding::Pe => {
-            if function.is_some_and(|function| function.provider.ends_with(b".dll")) {
-                return function
-                    .is_some_and(|function| compare_folded(name, function.provider).is_eq());
-            }
-            [b"msvcrt.dll".as_slice(), b"ucrtbase.dll"]
-                .iter()
-                .any(|expected| compare_folded(name, expected).is_eq())
-                || [
-                    (
-                        b"api-ms-win-crt-string-l1-1-0.dll".as_slice(),
-                        b"libc.so.6".as_slice(),
-                    ),
-                    (b"api-ms-win-crt-memory-l1-1-0.dll", b"libc.so.6"),
-                    (b"api-ms-win-crt-heap-l1-1-0.dll", b"libc.so.6"),
-                    (b"api-ms-win-crt-math-l1-1-0.dll", b"libm.so.6"),
-                ]
-                .iter()
-                .any(|(expected, provider)| {
-                    compare_folded(name, expected).is_eq()
-                        && function.is_none_or(|function| function.provider == *provider)
-                })
-        }
+        Encoding::Pe => function.map_or_else(
+            || {
+                FUNCTIONS
+                    .iter()
+                    .any(|function| function.windows_provider(name))
+            },
+            |function| function.windows_provider(name),
+        ),
     }
 }
 fn import_error(
@@ -113,6 +98,9 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         };
         let mut storage = std::mem::take(&mut image.bytes).into_vec();
         storage.resize(end, 0);
+        config
+            .prepare_crt(&mut storage[offset..offset + page])
+            .map_err(|_| "native CRT storage")?;
         image.bytes = storage.into_boxed_slice();
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(qa_formats::program::native::Region {

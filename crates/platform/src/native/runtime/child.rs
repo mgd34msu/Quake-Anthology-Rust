@@ -4,6 +4,8 @@ use super::{ImportResult, NativeEntry, NativeError, NativeRegion};
 use crate::native::runtime::{Function, Operation, RuntimeConfig};
 use qa_core::heap::{Heap, MemoryError};
 use std::sync::{Mutex, OnceLock};
+#[path = "crt.rs"]
+mod crt;
 #[path = "msvc.rs"]
 mod msvc;
 
@@ -155,6 +157,19 @@ impl Memory {
         unsafe { std::ptr::write_bytes(to as *mut u8, byte, bytes) };
         Ok(())
     }
+    fn swap(&self, left: u64, right: u64, bytes: usize) -> Result<(), NativeError> {
+        self.range(left, bytes, 3)?;
+        self.range(right, bytes, 3)?;
+        if left != right {
+            if left.abs_diff(right) < bytes as u64 {
+                return Err(NativeError::Extent);
+            }
+            // SAFETY: both ranges are checked readable/writable and disjoint.
+            // No Rust views into them exist during the child-local byte swap.
+            unsafe { std::ptr::swap_nonoverlapping(left as *mut u8, right as *mut u8, bytes) };
+        }
+        Ok(())
+    }
     fn length(&self, address: u64) -> Result<usize, NativeError> {
         self.cursor(address, 1)?.length()
     }
@@ -215,7 +230,7 @@ pub(super) fn invoke(
         return Ok(None);
     };
     let arguments = entry.unpack(words, floats);
-    let value = runtime.call(function.operation, arguments)?;
+    let value = runtime.call(function.operation, arguments, entry.abi)?;
     Ok(Some(ImportResult {
         value: entry.result(value),
         kind: entry.control & 3,
@@ -270,13 +285,18 @@ impl Runtime {
             super::x64::call(address, abi as u64, &words, top, &floats, entry.control)
         }))
     }
-    fn call(&self, operation: Operation, a: [u64; 13]) -> Result<u64, NativeError> {
+    fn call(
+        &self,
+        operation: Operation,
+        a: [u64; 13],
+        abi: crate::native::NativeAbi,
+    ) -> Result<u64, NativeError> {
         let size = |value| usize::try_from(value).map_err(|_| NativeError::Extent);
         let m = &self.memory;
-        let x = f64::from_bits(a[0]);
-        let y = f64::from_bits(a[1]);
         Ok(match operation {
             Operation::Msvc(operation) => return self.msvc(operation, a),
+            Operation::Crt(operation) => return self.crt(operation, a, abi),
+            Operation::Math(operation, precision) => return self.math(operation, precision, a),
             Operation::Data(_) => return Err(NativeError::Unsupported),
             Operation::Copy => {
                 m.copy(a[0], a[1], size(a[2])?)?;
@@ -330,14 +350,6 @@ impl Runtime {
                 }
                 difference as i64 as u64
             }
-            Operation::Sin => x.sin().to_bits(),
-            Operation::Cos => x.cos().to_bits(),
-            Operation::Atan2 => x.atan2(y).to_bits(),
-            Operation::Sqrt => x.sqrt().to_bits(),
-            Operation::Floor => x.floor().to_bits(),
-            Operation::Ceil => x.ceil().to_bits(),
-            Operation::Acos => x.acos().to_bits(),
-            Operation::Absolute => x.abs().to_bits(),
             Operation::Malloc | Operation::Calloc | Operation::Realloc | Operation::Free => {
                 let mut guard = self.heap.lock().map_err(|_| NativeError::Protocol)?;
                 let heap = guard.as_mut().ok_or(NativeError::Extent)?;

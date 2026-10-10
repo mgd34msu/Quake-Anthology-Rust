@@ -95,7 +95,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Sin,
+        operation: Operation::Math(Math::Sin, Double),
     },
     Function {
         name: b"cos",
@@ -105,7 +105,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Cos,
+        operation: Operation::Math(Math::Cos, Double),
     },
     Function {
         name: b"atan2",
@@ -115,7 +115,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double, Double],
         result: Double,
-        operation: Operation::Atan2,
+        operation: Operation::Math(Math::Atan2, Double),
     },
     Function {
         name: b"sqrt",
@@ -125,7 +125,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Sqrt,
+        operation: Operation::Math(Math::Sqrt, Double),
     },
     Function {
         name: b"floor",
@@ -135,7 +135,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Floor,
+        operation: Operation::Math(Math::Floor, Double),
     },
     Function {
         name: b"ceil",
@@ -145,7 +145,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Ceil,
+        operation: Operation::Math(Math::Ceil, Double),
     },
     Function {
         name: b"acos",
@@ -155,7 +155,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Acos,
+        operation: Operation::Math(Math::Acos, Double),
     },
     Function {
         name: b"fabs",
@@ -165,7 +165,7 @@ pub const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        operation: Operation::Absolute,
+        operation: Operation::Math(Math::Absolute, Double),
     },
     Function {
         name: b"malloc",
@@ -267,6 +267,37 @@ pub const FUNCTIONS: &[Function] = &[
     windows(FIRST + 157, b"msvcp140.dll", b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z", Operation::Msvc(Msvc::InsertBuffer), &[Word, Word], NativeScalar::Word),
     windows(FIRST + 200, b"msvcp140.dll", b"?_Id_cnt@id@locale@std@@0HA", Operation::Data(16), &[], Word),
     windows(FIRST + 201, b"msvcp140.dll", b"?id@?$numpunct@D@std@@2V0locale@2@A", Operation::Data(24), &[], Word),
+    windows(FIRST + 300, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_configure_narrow_argv", Operation::Crt(Crt::Argv), &[I32], I32),
+    windows(FIRST + 301, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_initialize_narrow_environment", Operation::Crt(Crt::Zero), &[], I32),
+    windows(FIRST + 302, b"api-ms-win-crt-heap-l1-1-0.dll", b"_callnewh", Operation::Crt(Crt::Zero), &[Word], I32),
+    windows(FIRST + 303, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_initialize_onexit_table", Operation::Crt(Crt::OnexitInit), &[Word], I32),
+    windows(FIRST + 304, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_register_onexit_function", Operation::Crt(Crt::OnexitRegister), &[Word, Word], I32),
+    windows(FIRST + 305, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_crt_atexit", Operation::Crt(Crt::Atexit), &[Word], I32),
+    windows(FIRST + 306, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_execute_onexit_table", Operation::Crt(Crt::OnexitExecute), &[Word], I32),
+    windows(FIRST + 307, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_cexit", Operation::Crt(Crt::Cexit), &[], Void),
+    windows(FIRST + 308, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_initterm", Operation::Crt(Crt::InitTerm), &[Word, Word], Void),
+    windows(FIRST + 309, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_initterm_e", Operation::Crt(Crt::InitTermError), &[Word, Word], I32),
+    windows(FIRST + 310, b"vcruntime140.dll", b"__std_type_info_destroy_list", Operation::Crt(Crt::TypeInfo), &[Word], Void),
+    windows(FIRST + 311, b"api-ms-win-crt-utility-l1-1-0.dll", b"qsort", Operation::Crt(Crt::Sort), &[Word, Word, Word, Word], Void),
+    windows(FIRST + 312, b"api-ms-win-crt-math-l1-1-0.dll", b"acosf", Operation::Math(Math::Acos, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 313, b"api-ms-win-crt-math-l1-1-0.dll", b"sinf", Operation::Math(Math::Sin, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 314, b"api-ms-win-crt-math-l1-1-0.dll", b"ceilf", Operation::Math(Math::Ceil, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 315, b"api-ms-win-crt-math-l1-1-0.dll", b"cosf", Operation::Math(Math::Cos, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 316, b"api-ms-win-crt-math-l1-1-0.dll", b"truncf", Operation::Math(Math::Trunc, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 317, b"api-ms-win-crt-math-l1-1-0.dll", b"log2f", Operation::Math(Math::Log2, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 318, b"api-ms-win-crt-math-l1-1-0.dll", b"floorf", Operation::Math(Math::Floor, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 319, b"api-ms-win-crt-math-l1-1-0.dll", b"sqrtf", Operation::Math(Math::Sqrt, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 320, b"api-ms-win-crt-math-l1-1-0.dll", b"tanf", Operation::Math(Math::Tan, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 321, b"api-ms-win-crt-math-l1-1-0.dll", b"atan2f", Operation::Math(Math::Atan2, NativeScalar::Float), &[NativeScalar::Float, NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 322, b"api-ms-win-crt-math-l1-1-0.dll", b"fmodf", Operation::Math(Math::Fmod, NativeScalar::Float), &[NativeScalar::Float, NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 323, b"api-ms-win-crt-math-l1-1-0.dll", b"pow", Operation::Math(Math::Pow, Double), &[Double, Double], Double),
+    windows(FIRST + 324, b"api-ms-win-crt-math-l1-1-0.dll", b"nextafterf", Operation::Math(Math::Nextafter, NativeScalar::Float), &[NativeScalar::Float, NativeScalar::Float], NativeScalar::Float),
+    windows(FIRST + 325, b"api-ms-win-crt-math-l1-1-0.dll", b"modf", Operation::Math(Math::Modf, Double), &[Double, Word], Double),
+    windows(FIRST + 326, b"api-ms-win-crt-math-l1-1-0.dll", b"_dclass", Operation::Math(Math::Class, Double), &[Double], NativeScalar::I16),
+    windows(FIRST + 327, b"api-ms-win-crt-math-l1-1-0.dll", b"_fdclass", Operation::Math(Math::Class, NativeScalar::Float), &[NativeScalar::Float], NativeScalar::I16),
+    windows(FIRST + 328, b"api-ms-win-crt-math-l1-1-0.dll", b"_dsign", Operation::Math(Math::Sign, Double), &[Double], NativeScalar::I16),
+    windows(FIRST + 329, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_errno", Operation::Crt(Crt::Errno), &[], Word),
+    windows(FIRST + 330, b"api-ms-win-crt-locale-l1-1-0.dll", b"localeconv", Operation::Crt(Crt::Locale), &[], Word),
 ];
 
 #[derive(Clone, Copy)]
@@ -277,14 +308,8 @@ pub(crate) enum Operation {
     Length,
     CompareString,
     CompareMemory,
-    Sin,
-    Cos,
-    Atan2,
-    Sqrt,
-    Floor,
-    Ceil,
-    Acos,
-    Absolute,
+    Math(Math, NativeScalar),
+    Crt(Crt),
     Malloc,
     Calloc,
     Realloc,
@@ -293,10 +318,74 @@ pub(crate) enum Operation {
     Data(usize),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Math {
+    Sin,
+    Cos,
+    Atan2,
+    Sqrt,
+    Floor,
+    Ceil,
+    Acos,
+    Absolute,
+    Trunc,
+    Log2,
+    Tan,
+    Fmod,
+    Pow,
+    Nextafter,
+    Modf,
+    Class,
+    Sign,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Crt {
+    Argv,
+    Zero,
+    OnexitInit,
+    OnexitRegister,
+    Atexit,
+    OnexitExecute,
+    Cexit,
+    InitTerm,
+    InitTermError,
+    TypeInfo,
+    Sort,
+    Errno,
+    Locale,
+}
+
 pub fn function(number: u32) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.number == number)
 }
 impl Function {
+    pub fn windows_provider(&self, name: &[u8]) -> bool {
+        use qa_core::names::compare_folded;
+        let equal = |expected| compare_folded(name, expected).is_eq();
+        if equal(b"msvcrt.dll") || equal(b"ucrtbase.dll") {
+            return self.provider != b"msvcp140.dll";
+        }
+        if self.provider.ends_with(b".dll") {
+            return equal(self.provider);
+        }
+        let library = match self.operation {
+            Operation::Copy | Operation::Fill | Operation::CompareMemory => {
+                if equal(b"vcruntime140.dll") || equal(b"api-ms-win-crt-memory-l1-1-0.dll") {
+                    return true;
+                }
+                b"api-ms-win-crt-string-l1-1-0.dll".as_slice()
+            }
+            Operation::Strncpy | Operation::Length | Operation::CompareString => {
+                b"api-ms-win-crt-string-l1-1-0.dll"
+            }
+            Operation::Malloc | Operation::Calloc | Operation::Free | Operation::Realloc => {
+                b"api-ms-win-crt-heap-l1-1-0.dll"
+            }
+            Operation::Math(_, _) => b"api-ms-win-crt-math-l1-1-0.dll",
+            _ => return false,
+        };
+        equal(library)
+    }
     pub fn data_offset(&self) -> Option<usize> {
         if let Operation::Data(offset) = self.operation {
             Some(offset)
@@ -314,6 +403,18 @@ pub struct RuntimeConfig {
     pub heap_bytes: usize,
 }
 impl RuntimeConfig {
+    pub fn prepare_crt(self, page: &mut [u8]) -> Result<(), super::NativeError> {
+        let page = page.get_mut(..608).ok_or(super::NativeError::Extent)?;
+        // C lconv strings and fields, owned once at load. The remainder of the
+        // initially zeroed page holds the onexit table and errno.
+        for index in 0..10 {
+            let value = self.base + if index == 0 { 604 } else { 600 };
+            page[416 + index * 8..424 + index * 8].copy_from_slice(&value.to_le_bytes());
+        }
+        page[496..512].fill(127);
+        page[604..606].copy_from_slice(b".\0");
+        Ok(())
+    }
     /// Exact x64 MSVC object/vtable layout from the C runtime. The one page is
     /// owned writable module storage; callable slots refer to child gateways.
     pub fn prepare_msvc(
@@ -361,14 +462,8 @@ impl RuntimeConfig {
         put(388, &16u32.to_le_bytes())?;
         put(396, &32u32.to_le_bytes())?;
         put(404, &16u32.to_le_bytes())?;
-        // Classic C lconv, all strings empty except decimal_point.
-        for index in 0..10 {
-            put(416 + index * 8, &(self.base + 600).to_le_bytes())?;
-        }
-        put(416, &(self.base + 604).to_le_bytes())?;
-        put(496, &[127; 16])?;
-        put(604, b".\0")?;
-        Ok(())
+        drop(put);
+        self.prepare_crt(page)
     }
 }
 
