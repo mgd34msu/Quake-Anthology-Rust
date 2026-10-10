@@ -2,7 +2,14 @@
 use crate::{FormatError, read::Reader};
 use qa_core::{names::NameTable, primitives::NameId};
 
+mod elf;
 mod pe;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadRole {
+    Library,
+    Program,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -75,14 +82,18 @@ pub struct Image {
     pub needed: Box<[NameId]>,
     pub tls: Option<Tls>,
     pub initializers: Box<[u64]>,
+    pub dynamic: Box<[(u64, u64)]>,
+    pub relro: Box<[(u64, usize)]>,
 }
 impl Image {
-    pub fn parse(bytes: &[u8], base: Option<u64>) -> Result<Self, FormatError> {
+    pub fn parse(bytes: &[u8], base: Option<u64>, role: LoadRole) -> Result<Self, FormatError> {
         if bytes.len() > 512 * 1024 * 1024 {
             return Err(FormatError::InvalidRange);
         }
         if bytes.starts_with(b"MZ") {
             pe::parse(bytes, base)
+        } else if bytes.starts_with(b"\x7fELF") {
+            elf::parse(bytes, base, role)
         } else {
             Err(FormatError::Unsupported)
         }
