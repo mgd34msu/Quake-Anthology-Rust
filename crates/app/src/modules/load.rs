@@ -238,6 +238,7 @@ pub fn load_qvm(
             },
             entries: (0..=10).collect(),
             frame: CallbackId(frame),
+            prepare: None,
             initialize: Some(Export {
                 callback: CallbackId(init),
                 arguments: initialize,
@@ -321,6 +322,7 @@ pub fn load_quakec(
             program: Program::quakec(vm),
             entries,
             frame: CallbackId(frame),
+            prepare: None,
             initialize: None,
             api: None,
             shutdown: None,

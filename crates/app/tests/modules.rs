@@ -130,6 +130,7 @@ fn lifecycle_host_in(
             },
             entries: (0..=10).collect(),
             frame: CallbackId(frame),
+            prepare: None,
             initialize: Some(Export {
                 callback: CallbackId(initialize),
                 arguments: [
@@ -473,6 +474,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             },
             entries: vec![8],
             frame: CallbackId(0),
+            prepare: None,
             initialize: None,
             shutdown: None,
             instruction_budget: qvm_budget,
@@ -498,6 +500,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             program: Program::quakec(qc),
             entries: vec![1, 5],
             frame: CallbackId(0),
+            prepare: None,
             initialize: None,
             shutdown: None,
             instruction_budget: 1000,

@@ -1,7 +1,7 @@
 use qa_app::{
     Runtime,
     host::{FrameHost, FrameSource},
-    modules::{ModuleRequest, ModuleResult, Phase, Program, State},
+    modules::{Argument, Export, ModuleRequest, ModuleResult, Phase, Program, State},
 };
 use qa_compat::{
     abi::Q3_SERVER,
@@ -31,12 +31,25 @@ fn function_image(encoding: Encoding, code: &[u8]) -> Image {
             let (mut file, tags) = elf_symbol_fixture(64);
             put(&mut file, 64 + 56 + 4, 7, 4);
             file[0x13c0..0x13c0 + code.len()].copy_from_slice(code);
+            // Export dllEntry, storing its System V syscall pointer in the
+            // shared slot used by vmMain. Its return is void in the native ABI.
+            put(&mut file, 0x1400 + 48, elf_name(b"dllEntry"), 4);
+            put(&mut file, 0x1400 + 48 + 4, 0x12, 1);
+            file[0x1ac0..0x1ac8].fill(0);
+            file[0x1300..0x1308].copy_from_slice(&[0x48, 0x89, 0x3d, 0xb9, 0x07, 0, 0, 0xc3]);
             elf_dynamic(&mut file, 64, &tags);
             Image::parse(&file, Some(0x2000_0000), LoadRole::Library).unwrap()
         }
         Encoding::Pe => {
             let mut file = pe_export_fixture(64);
             file[640..640 + code.len()].copy_from_slice(code);
+            pe_rva(&mut file, 0x1100 + 20, 2, 4);
+            pe_rva(&mut file, 0x1100 + 24, 3, 4);
+            pe_rva(&mut file, 0x1144, 0x10c0, 4);
+            pe_rva(&mut file, 0x1158, 0x11b0, 4);
+            pe_rva(&mut file, 0x1164, 1, 2);
+            pe_text(&mut file, 0x11b0, b"dllEntry\0");
+            file[704..712].copy_from_slice(&[0x48, 0x89, 0x0d, 0xb9, 0x06, 0, 0, 0xc3]);
             Image::parse(&file, None, LoadRole::Library).unwrap()
         }
     }
@@ -71,18 +84,40 @@ fn module(
     let at = (image.symbol(name).unwrap().address - image.base) as usize + 0x700;
     let mut vm = Vm::map_image(
         image,
-        &[NamedExport {
-            name,
-            command: None,
-        }],
+        &[
+            NamedExport {
+                name,
+                command: None,
+            },
+            NamedExport {
+                name: b"dllEntry",
+                command: None,
+            },
+        ],
         Duration::from_secs(3),
     )
     .unwrap();
     let pointer = vm.process.callback(abi);
     let memory = vm.process.memory_mut().expect("parked native backing");
-    memory[at..at + 8].copy_from_slice(&pointer.to_le_bytes());
+    assert_eq!(&memory[at..at + 8], &[0; 8]);
     memory[at + 16..at + 16 + text.len()].copy_from_slice(text);
-    request(runtime, id, rules, rate, vm)
+    let mut request = request(runtime, id, rules, rate, vm);
+    request.prepare = Some(Export {
+        callback: CallbackId(1),
+        arguments: [
+            Argument::Word(pointer),
+            Argument::Word(0),
+            Argument::Word(0),
+            Argument::Word(0),
+            Argument::Word(0),
+            Argument::Word(0),
+            Argument::Word(0),
+            Argument::Word(0),
+            Argument::Word(0),
+        ],
+    });
+    request.entries.push(1);
+    request
 }
 
 fn request(
@@ -119,6 +154,7 @@ fn request(
         },
         entries: vec![0],
         frame: CallbackId(0),
+        prepare: None,
         initialize: None,
         api: None,
         shutdown: None,
@@ -304,7 +340,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
     for (id, count) in [(ModuleId(1), 3), (ModuleId(2), 1)] {
         assert_eq!(host.module_state(id), Some(State::Running));
         let counters = host.module_counts(id).unwrap();
-        assert_eq!((counters.calls, counters.traps), (count, 0));
+        assert_eq!((counters.calls, counters.traps), (count + 1, 0));
         assert_eq!(counters.last_result, Some(ModuleResult::Native(0)));
     }
     let mut batch = host.runtime.server.events.batch(observer).unwrap();

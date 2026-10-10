@@ -110,7 +110,7 @@ pub(super) fn elf_dynamic_fixture(bits: usize) -> Vec<u8> {
 }
 
 pub(super) const ELF_SYMBOL_NAMES: &[u8] =
-    b"\0vmMain\0helper\0external\0COUNT\0tls\0VER_1\0libc.so.6\0";
+    b"\0vmMain\0helper\0external\0COUNT\0tls\0VER_1\0libc.so.6\0dllEntry\0";
 
 pub(super) fn elf_name(label: &[u8]) -> u64 {
     ELF_SYMBOL_NAMES

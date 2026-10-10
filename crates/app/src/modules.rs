@@ -64,6 +64,8 @@ pub struct ModuleRequest {
     pub program: Program,
     pub entries: Vec<u32>,
     pub frame: CallbackId,
+    /// Load-selected binding export, before version checks and initialization.
+    pub prepare: Option<Export>,
     pub initialize: Option<Export>,
     pub api: Option<VersionCheck>,
     pub shutdown: Option<Export>,
@@ -180,6 +182,7 @@ impl FrameHost {
             if host.runtime.server.entities.columns.owner[entity] != request.context.module
                 || request.frame.0 as usize >= request.entries.len()
                 || [
+                    request.prepare,
                     request.initialize,
                     request.shutdown,
                     request.api.as_ref().map(|api| api.export),
@@ -220,7 +223,10 @@ impl FrameHost {
                 request.files,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
-            let state = if request.initialize.is_some() || request.api.is_some() {
+            let state = if request.prepare.is_some()
+                || request.initialize.is_some()
+                || request.api.is_some()
+            {
                 State::Pending
             } else {
                 State::Running
@@ -325,6 +331,7 @@ impl FrameHost {
                 .then_some(row.request.api.as_ref())
                 .flatten()
                 .map(|api| (api.export, api.accepted));
+            let prepare = (!shutdown).then_some(row.request.prepare).flatten();
             let export = if shutdown {
                 row.request.shutdown
             } else {
@@ -332,18 +339,23 @@ impl FrameHost {
             };
             let time = module_time(row.request.context.clock, self.time);
             let module = ModuleId(index as u16);
-            let result = api
-                .map_or(Ok(()), |(export, accepted)| {
-                    self.call_module_export(module, export, time)?;
-                    let value = match self.module_counts(module).and_then(|c| c.last_result) {
-                        Some(ModuleResult::Qvm(value)) => Some(value),
-                        Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
-                        _ => None,
-                    };
-                    value
-                        .filter(|v| accepted.contains(v))
-                        .map(|_| ())
-                        .ok_or(CallError::Rejected)
+            let result = prepare
+                .map_or(Ok(()), |export| {
+                    self.call_module_export(module, export, time)
+                })
+                .and_then(|()| {
+                    api.map_or(Ok(()), |(export, accepted)| {
+                        self.call_module_export(module, export, time)?;
+                        let value = match self.module_counts(module).and_then(|c| c.last_result) {
+                            Some(ModuleResult::Qvm(value)) => Some(value),
+                            Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
+                            _ => None,
+                        };
+                        value
+                            .filter(|v| accepted.contains(v))
+                            .map(|_| ())
+                            .ok_or(CallError::Rejected)
+                    })
                 })
                 .and_then(|()| {
                     export.map_or(Ok(()), |export| {
