@@ -1,5 +1,13 @@
 //! Bounded native C allocations within one load-reserved module byte range.
-use super::{MemoryError, ModuleMemory};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryError;
+
+pub fn extent(base: u64, length: usize) -> Result<(), MemoryError> {
+    if length > 512 * 1024 * 1024 || base.checked_add(length as u64).is_none() {
+        return Err(MemoryError);
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Default)]
 struct Block {
@@ -14,7 +22,7 @@ pub struct Heap {
 }
 impl Heap {
     pub fn load(base: u64, bytes: usize, capacity: usize) -> Result<Self, MemoryError> {
-        super::extent(base, bytes)?;
+        extent(base, bytes)?;
         if base == 0
             || base % 16 != 0
             || bytes == 0
@@ -85,7 +93,7 @@ impl Heap {
     }
     pub fn reallocate(
         &mut self,
-        memory: &mut ModuleMemory<'_>,
+        mut copy: impl FnMut(u64, u64, usize) -> Result<(), MemoryError>,
         address: u64,
         bytes: usize,
     ) -> Result<u64, MemoryError> {
@@ -105,7 +113,7 @@ impl Heap {
         let Some(next) = self.allocate(bytes) else {
             return Ok(0);
         };
-        if let Err(error) = memory.copy(next, address, count) {
+        if let Err(error) = copy(next, address, count) {
             self.free(next)?;
             return Err(error);
         }

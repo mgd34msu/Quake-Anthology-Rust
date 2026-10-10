@@ -1,9 +1,8 @@
-//! C library prototypes share the numbered CallTable and module memory.
-use super::{CallError, Entry, Invocation};
-use qa_platform::native::NativeScalar;
+//! Native runtime imports resolved at load and executed only in the owned child.
+use super::NativeScalar;
 
-pub const FIRST: u32 = 256;
-pub(crate) struct Function {
+pub const FIRST: u32 = 0x8000_0000;
+pub struct Function {
     pub name: &'static [u8],
     pub number: u32,
     pub heap: bool,
@@ -11,13 +10,13 @@ pub(crate) struct Function {
     pub versions: &'static [&'static [u8]],
     pub parameters: &'static [NativeScalar],
     pub result: NativeScalar,
-    pub(super) entry: Entry,
+    pub(crate) operation: Operation,
 }
 use NativeScalar::{Double, I32, Void, Word};
 const LIBC: &[u8] = b"libc.so.6";
 const LIBM: &[u8] = b"libm.so.6";
 const BASE_VERSION: &[&[u8]] = &[b"GLIBC_2.2.5"];
-pub(crate) const FUNCTIONS: &[Function] = &[
+pub const FUNCTIONS: &[Function] = &[
     Function {
         name: b"memcpy",
         heap: false,
@@ -26,7 +25,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST,
         parameters: &[Word, Word, Word],
         result: Word,
-        entry: super::memcpy,
+        operation: Operation::Copy,
     },
     Function {
         name: b"memmove",
@@ -36,7 +35,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST,
         parameters: &[Word, Word, Word],
         result: Word,
-        entry: super::memcpy,
+        operation: Operation::Copy,
     },
     Function {
         name: b"memset",
@@ -46,7 +45,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST + 1,
         parameters: &[Word, I32, Word],
         result: Word,
-        entry: super::memset,
+        operation: Operation::Fill,
     },
     Function {
         name: b"strncpy",
@@ -56,7 +55,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST + 2,
         parameters: &[Word, Word, Word],
         result: Word,
-        entry: super::strncpy,
+        operation: Operation::Strncpy,
     },
     Function {
         name: b"strlen",
@@ -66,7 +65,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST + 3,
         parameters: &[Word],
         result: Word,
-        entry: length,
+        operation: Operation::Length,
     },
     Function {
         name: b"strcmp",
@@ -76,7 +75,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST + 4,
         parameters: &[Word, Word],
         result: I32,
-        entry: compare_string,
+        operation: Operation::CompareString,
     },
     Function {
         name: b"memcmp",
@@ -86,7 +85,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         number: FIRST + 5,
         parameters: &[Word, Word, Word],
         result: I32,
-        entry: compare_memory,
+        operation: Operation::CompareMemory,
     },
     Function {
         name: b"sin",
@@ -96,7 +95,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::sin::<true>,
+        operation: Operation::Sin,
     },
     Function {
         name: b"cos",
@@ -106,7 +105,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::cos::<true>,
+        operation: Operation::Cos,
     },
     Function {
         name: b"atan2",
@@ -116,7 +115,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double, Double],
         result: Double,
-        entry: super::atan2::<true>,
+        operation: Operation::Atan2,
     },
     Function {
         name: b"sqrt",
@@ -126,7 +125,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::sqrt::<true>,
+        operation: Operation::Sqrt,
     },
     Function {
         name: b"floor",
@@ -136,7 +135,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::floor::<true>,
+        operation: Operation::Floor,
     },
     Function {
         name: b"ceil",
@@ -146,7 +145,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::ceil::<true>,
+        operation: Operation::Ceil,
     },
     Function {
         name: b"acos",
@@ -156,7 +155,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::acos::<true>,
+        operation: Operation::Acos,
     },
     Function {
         name: b"fabs",
@@ -166,7 +165,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Double],
         result: Double,
-        entry: super::absolute::<true>,
+        operation: Operation::Absolute,
     },
     Function {
         name: b"malloc",
@@ -176,7 +175,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Word],
         result: Word,
-        entry: malloc,
+        operation: Operation::Malloc,
     },
     Function {
         name: b"calloc",
@@ -186,7 +185,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Word, Word],
         result: Word,
-        entry: calloc,
+        operation: Operation::Calloc,
     },
     Function {
         name: b"realloc",
@@ -196,7 +195,7 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Word, Word],
         result: Word,
-        entry: realloc,
+        operation: Operation::Realloc,
     },
     Function {
         name: b"free",
@@ -206,71 +205,37 @@ pub(crate) const FUNCTIONS: &[Function] = &[
         versions: BASE_VERSION,
         parameters: &[Word],
         result: Void,
-        entry: free,
+        operation: Operation::Free,
     },
 ];
-fn length(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(call.string(0)?.len() as u64)
-}
-fn difference(left: &[u8], right: &[u8]) -> u64 {
-    let difference = left
-        .iter()
-        .copied()
-        .chain([0])
-        .zip(right.iter().copied().chain([0]))
-        .find_map(|(a, b)| (a != b).then_some(i32::from(a) - i32::from(b)))
-        .unwrap_or(0);
-    difference as i64 as u64
-}
-fn compare_string(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(difference(call.string(0)?, call.string(1)?))
-}
-fn compare_memory(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let length = call.length(2)?;
-    Ok(difference(
-        call.memory.read(call.pointer(0)?, length)?,
-        call.memory.read(call.pointer(1)?, length)?,
-    ))
+
+#[derive(Clone, Copy)]
+pub(crate) enum Operation {
+    Copy,
+    Fill,
+    Strncpy,
+    Length,
+    CompareString,
+    CompareMemory,
+    Sin,
+    Cos,
+    Atan2,
+    Sqrt,
+    Floor,
+    Ceil,
+    Acos,
+    Absolute,
+    Malloc,
+    Calloc,
+    Realloc,
+    Free,
 }
 
-fn malloc(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let bytes = call.length(0)?;
-    Ok(call
-        .heap
-        .as_mut()
-        .ok_or(CallError::Memory)?
-        .allocate(bytes)
-        .unwrap_or(0))
+pub fn function(number: u32) -> Option<&'static Function> {
+    FUNCTIONS.iter().find(|f| f.number == number)
 }
-fn calloc(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let count = call.length(0)?;
-    let bytes = call.length(1)?;
-    let heap = call.heap.as_mut().ok_or(CallError::Memory)?;
-    let Some(bytes) = count.checked_mul(bytes) else {
-        return Ok(0);
-    };
-    let Some(address) = heap.allocate(bytes) else {
-        return Ok(0);
-    };
-    if let Ok(storage) = call.memory.read_mut(address, bytes) {
-        storage.fill(0);
-        Ok(address)
-    } else {
-        heap.free(address)?;
-        Err(CallError::Memory)
-    }
-}
-fn realloc(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let address = call.pointer(0)?;
-    let bytes = call.length(1)?;
-    Ok(call
-        .heap
-        .as_mut()
-        .ok_or(CallError::Memory)?
-        .reallocate(call.memory, address, bytes)?)
-}
-fn free(call: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let address = call.pointer(0)?;
-    call.heap.as_mut().ok_or(CallError::Memory)?.free(address)?;
-    Ok(0)
+#[derive(Clone, Copy, Debug)]
+pub struct RuntimeConfig {
+    pub base: u64,
+    pub heap_bytes: usize,
 }

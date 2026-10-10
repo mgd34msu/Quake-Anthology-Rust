@@ -11,6 +11,7 @@ pub enum NativeAbi {
 }
 
 mod call;
+pub mod runtime;
 pub use call::{NativeEntry, NativeScalar};
 
 #[derive(Clone, Copy)]
@@ -37,6 +38,7 @@ pub struct NativeImage<'a> {
     pub regions: &'a [NativeRegion],
     pub imports: &'a [NativeImport<'a>],
     pub timeout: Duration,
+    pub runtime: Option<runtime::RuntimeConfig>,
 }
 
 #[derive(Clone, Copy, Debug)]

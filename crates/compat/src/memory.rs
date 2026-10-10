@@ -1,8 +1,6 @@
 //! One module byte view over owned VM storage or stopped native backing.
-mod heap;
-pub use heap::Heap;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MemoryError;
+use qa_core::heap::extent;
+pub use qa_core::heap::{Heap, MemoryError};
 
 enum Bytes<'a> {
     Owned(Box<[u8]>),
@@ -27,12 +25,6 @@ impl AsMut<[u8]> for Bytes<'_> {
 pub struct ModuleMemory<'a> {
     base: u64,
     bytes: Bytes<'a>,
-}
-fn extent(base: u64, length: usize) -> Result<(), MemoryError> {
-    if length > 512 * 1024 * 1024 || base.checked_add(length as u64).is_none() {
-        return Err(MemoryError);
-    }
-    Ok(())
 }
 impl ModuleMemory<'static> {
     pub fn load(base: u64, length: usize, initialized: &[u8]) -> Result<Self, MemoryError> {

@@ -1,12 +1,12 @@
 //! Cold library/name/version binding to the shared C function entries.
 use super::elf::{self, Bindings, Definition, Pass};
-use crate::{
-    abi::runtime::{FUNCTIONS, Function},
-    memory::{Heap, ModuleMemory},
-};
+use crate::memory::ModuleMemory;
 use qa_core::{names::compare_folded, primitives::NameId};
 use qa_formats::program::native::{Encoding, Image};
-use qa_platform::native::{NativeAbi, NativeImport, NativeProcess};
+use qa_platform::native::{
+    NativeAbi, NativeImport, NativeProcess,
+    runtime::{FUNCTIONS, Function, RuntimeConfig},
+};
 
 fn library(image: &Image, id: NameId, function: Option<&Function>) -> bool {
     let Some(name) = image.names.get(id) else {
@@ -64,7 +64,7 @@ fn function(image: &Image, name: Option<NameId>) -> Option<&'static Function> {
 }
 pub(super) struct BoundRuntime {
     pub imports: Vec<NativeImport<'static>>,
-    pub heap: Option<Heap>,
+    pub config: Option<RuntimeConfig>,
     pub startup: Option<u64>,
 }
 pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, String> {
@@ -88,7 +88,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
             .dynamic
             .iter()
             .any(|&(tag, value)| value != 0 && matches!(tag, 12 | 13 | 25 | 26));
-    let (heap, startup) = if needs_heap || lifecycle {
+    let (config, startup) = if needs_heap || lifecycle {
         const BYTES: usize = 32 * 1024 * 1024;
         let page = qa_platform::native::PAGE_BYTES;
         let offset = image.bytes.len().div_ceil(page) * page;
@@ -103,13 +103,9 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
             .ok_or("native runtime address")?;
         base.checked_add(bytes as u64)
             .ok_or("native runtime extent")?;
-        let heap = if needs_heap {
-            Some(
-                Heap::load(base + page as u64, BYTES, 65536)
-                    .map_err(|_| "native heap reservation")?,
-            )
-        } else {
-            None
+        let config = RuntimeConfig {
+            base,
+            heap_bytes: if needs_heap { BYTES } else { 0 },
         };
         let mut storage = std::mem::take(&mut image.bytes).into_vec();
         storage.resize(end, 0);
@@ -124,7 +120,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         });
         image.regions = regions.into_boxed_slice();
         // argc is zero; argv and envp point to separate owned null terminators.
-        (heap, lifecycle.then_some(base))
+        (Some(config), lifecycle.then_some(base))
     } else {
         (None, None)
     };
@@ -234,7 +230,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
     }
     Ok(BoundRuntime {
         imports,
-        heap,
+        config,
         startup,
     })
 }

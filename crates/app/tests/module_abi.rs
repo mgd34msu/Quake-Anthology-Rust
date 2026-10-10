@@ -28,8 +28,7 @@ fn context() -> CallContext {
 }
 
 #[test]
-fn native_c_memory_calls_share_operations_and_keep_full_size_t_width() {
-    use qa_compat::abi::runtime::FIRST;
+fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
     let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
@@ -42,116 +41,24 @@ fn native_c_memory_calls_share_operations_and_keep_full_size_t_width() {
     let mut call = Invocation {
         services: &mut services,
         memory: &mut memory,
-        heap: None,
         context: context(),
         platform_time: EventTime(0),
         command: &[],
-        addresses: Addresses::NativeFunction,
-        arguments: &[],
+        addresses: Addresses::Native,
+        arguments: &[base + 32, base + 16, (1u64 << 32) + 1],
     };
-    let args = [base + 32, base + 16, 3];
-    call.arguments = &args;
-    assert_eq!(
-        Q3_SERVER.invoke(FIRST, &mut call, &mut unknown),
-        Ok(base + 32)
-    );
-    assert_eq!(call.memory.read(base + 32, 3).unwrap(), b"\xffa\0");
-    let args = [base + 33, base + 32, 3];
-    call.arguments = &args;
-    assert_eq!(
-        Q3_SERVER.invoke(FIRST, &mut call, &mut unknown),
-        Ok(base + 33)
-    );
-    assert_eq!(call.memory.read(base + 32, 4).unwrap(), b"\xff\xffa\0");
-    let args = [base + 48, 0x1aa, 8];
-    call.arguments = &args;
-    assert_eq!(
-        Q3_SERVER.invoke(FIRST + 1, &mut call, &mut unknown),
-        Ok(base + 48)
-    );
-    assert_eq!(call.memory.read(base + 48, 8).unwrap(), &[0xaa; 8]);
-    let args = [base + 64, base + 16, 6];
-    call.arguments = &args;
-    assert_eq!(
-        Q3_SERVER.invoke(FIRST + 2, &mut call, &mut unknown),
-        Ok(base + 64)
-    );
-    assert_eq!(call.memory.read(base + 64, 6).unwrap(), b"\xffa\0\0\0\0");
-    let args = [base + 64];
-    call.arguments = &args;
-    assert_eq!(Q3_SERVER.invoke(FIRST + 3, &mut call, &mut unknown), Ok(2));
-    let args = [base + 16, base + 64];
-    call.arguments = &args;
-    assert_eq!(Q3_SERVER.invoke(FIRST + 4, &mut call, &mut unknown), Ok(0));
-    let args = [base + 48, base + 64, 2];
-    call.arguments = &args;
-    assert_eq!(
-        Q3_SERVER.invoke(FIRST + 5, &mut call, &mut unknown),
-        Ok((-85i64) as u64)
-    );
-    let args = [base + 48, base + 64, (1u64 << 32) + 1];
-    call.arguments = &args;
-    assert_eq!(
-        Q3_SERVER.invoke(FIRST, &mut call, &mut unknown),
-        Err(CallError::Memory)
-    );
-    assert_eq!(call.memory.read(base + 48, 8).unwrap(), &[0xaa; 8]);
-    // The original Q3 syscall boundary still narrows signed int lengths and
-    // returns zero for memcpy. Reserved C-runtime entries are not Q3 syscalls.
-    call.addresses = Addresses::Native;
     assert_eq!(Q3_SERVER.invoke(101, &mut call, &mut unknown), Ok(0));
-    assert_eq!(call.memory.read(base + 48, 1).unwrap(), &[0xff]);
-    assert_eq!(Q3_SERVER.invoke(FIRST, &mut call, &mut unknown), Ok(0));
+    assert_eq!(call.memory.read(base + 32, 1).unwrap(), b"\xff");
+    assert_eq!(
+        Q3_SERVER.invoke(qa_platform::native::runtime::FIRST, &mut call, &mut unknown),
+        Ok(0)
+    );
     assert_eq!(unknown.calls, 1);
 }
 
 #[test]
-fn native_heap_calls_preserve_data_zero_calloc_and_keep_failed_realloc_live() {
-    use qa_compat::{abi::runtime::FIRST, memory::Heap};
-    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
-    let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
-    let mut scratch = runtime.geometry.scratch();
-    let mut unknown = UnknownCalls::load(1).unwrap();
-    let base = 1 << 40;
-    let mut memory = ModuleMemory::load(base, 256, &[0xff; 256]).unwrap();
-    let mut heap = Heap::load(base, 256, 32).unwrap();
-    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-    let mut invoke = |number, arguments: &[u64]| {
-        let mut call = Invocation {
-            services: &mut services,
-            memory: &mut memory,
-            heap: Some(&mut heap),
-            context: context(),
-            platform_time: EventTime(0),
-            command: &[],
-            addresses: Addresses::NativeFunction,
-            arguments,
-        };
-        Q3_SERVER.invoke(number, &mut call, &mut unknown)
-    };
-    let first = invoke(FIRST + 14, &[17]).unwrap();
-    assert_eq!(first, base);
-    let zero = invoke(FIRST + 15, &[3, 16]).unwrap();
-    assert_eq!(zero, base + 32);
-    assert_eq!(invoke(FIRST + 1, &[first, 0xab, 17]), Ok(first));
-    assert_eq!(invoke(FIRST + 15, &[u64::MAX, 2]), Ok(0));
-    assert_eq!(invoke(FIRST + 16, &[first, 300]), Ok(0));
-    assert_eq!(invoke(FIRST + 17, &[first + 1]), Err(CallError::Memory));
-    assert_eq!(invoke(FIRST + 17, &[0]), Ok(0));
-    let moved = invoke(FIRST + 16, &[first, 96]).unwrap();
-    assert_ne!(moved, first);
-    assert_eq!(invoke(FIRST + 17, &[zero]), Ok(0));
-    assert_eq!(invoke(FIRST + 17, &[moved]), Ok(0));
-    assert_eq!(invoke(FIRST + 14, &[256]), Ok(base));
-    assert_eq!(memory.read(zero, 48).unwrap(), &[0; 48]);
-    assert_eq!(memory.read(moved, 17).unwrap(), &[0xab; 17]);
-    assert_eq!(unknown.calls, 0);
-}
-
-#[test]
-fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
-    use qa_compat::abi::{QUAKEC, runtime::FIRST};
+fn original_float_syscalls_keep_their_declared_bits() {
+    use qa_compat::abi::QUAKEC;
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
     let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
@@ -163,7 +70,6 @@ fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
-            heap: None,
             context: context(),
             platform_time: EventTime(0),
             command: &[],
@@ -192,22 +98,7 @@ fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
         f64::INFINITY,
         f64::NAN,
     ] {
-        for &(offset, table, original, operation) in &functions {
-            let args = [x.to_bits(), (-2.25f64).to_bits()];
-
-            let actual = f64::from_bits(
-                invoke(table, FIRST + offset, Addresses::NativeFunction, &args).unwrap(),
-            );
-            let expected = operation(x, -2.25);
-            if expected.is_nan() {
-                assert!(actual.is_nan());
-            } else {
-                assert_eq!(
-                    actual.to_bits(),
-                    expected.to_bits(),
-                    "native math {offset}({x})"
-                );
-            }
+        for &(_, table, original, operation) in &functions {
             let x = x as f32;
             let args = [
                 0xaabbccdd00000000 | u64::from(x.to_bits()),
@@ -223,16 +114,6 @@ fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
                 assert_eq!(actual, expected.to_bits(), "original math {original}({x})");
             }
         }
-    }
-    // fabs does not widen a float NaN and lose its payload. Both widths just
-    // clear the sign; QuakeC's original builtin retains its raw float result.
-    for bits in [0x8000000000000000, 0xbfe0000000000000, 0xfff8000012345678] {
-        let args = [bits];
-
-        assert_eq!(
-            invoke(&Q3_SERVER, FIRST + 13, Addresses::NativeFunction, &args),
-            Ok(bits & 0x7fffffffffffffff)
-        );
     }
     for bits in [0x80000000u32, 0xbf000000, 0xffc12345] {
         let args = [u64::from(bits)];
@@ -262,7 +143,6 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
-            heap: None,
             context: context(),
             platform_time: EventTime((u64::from(u32::MAX) + 8) * 1_000_000),
             command: &[b"native", b"arg"],
@@ -378,7 +258,6 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
-            heap: None,
             context: context(),
             platform_time: EventTime(0),
             command: &[],

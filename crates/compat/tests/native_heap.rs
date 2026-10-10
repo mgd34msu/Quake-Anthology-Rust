@@ -67,13 +67,27 @@ fn metadata_limit_uses_existing_extent_and_reallocation_preserves_old_on_failure
     let first = heap.allocate(17).unwrap();
     let second = heap.allocate(16).unwrap();
     memory.write(first, b"original").unwrap();
-    assert_eq!(heap.reallocate(&mut memory, first, 64).unwrap(), 0);
+    assert_eq!(
+        heap.reallocate(|to, from, bytes| memory.copy(to, from, bytes), first, 64)
+            .unwrap(),
+        0
+    );
     assert_eq!(memory.read(first, 8).unwrap(), b"original");
     heap.free(second).unwrap();
-    let moved = heap.reallocate(&mut memory, first, 64).unwrap();
+    let moved = heap
+        .reallocate(|to, from, bytes| memory.copy(to, from, bytes), first, 64)
+        .unwrap();
     assert_ne!(moved, first);
     assert_eq!(memory.read(moved, 8).unwrap(), b"original");
-    assert_eq!(heap.reallocate(&mut memory, moved, 4).unwrap(), moved);
-    assert_eq!(heap.reallocate(&mut memory, moved, 0).unwrap(), 0);
+    assert_eq!(
+        heap.reallocate(|to, from, bytes| memory.copy(to, from, bytes), moved, 4)
+            .unwrap(),
+        moved
+    );
+    assert_eq!(
+        heap.reallocate(|to, from, bytes| memory.copy(to, from, bytes), moved, 0)
+            .unwrap(),
+        0
+    );
     assert_eq!(heap.allocate(128), Some(base));
 }

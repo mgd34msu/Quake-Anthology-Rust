@@ -1,7 +1,7 @@
 //! Native module exports and imports over the one owned-child backend.
 use crate::{
     abi::{Addresses, CallTable, Invocation, UnknownCalls},
-    memory::{Heap, ModuleMemory},
+    memory::ModuleMemory,
     services::{CallContext, CallError, EngineServices},
 };
 use qa_core::sys_events::EventTime;
@@ -67,7 +67,6 @@ pub struct Vm {
     abi: NativeAbi,
     exports: Box<[Option<Export>]>,
     table: Option<table::Table>,
-    heap: Option<Heap>,
     initialize: Box<[LifecycleCall]>,
     finalize: Box<[LifecycleCall]>,
 }
@@ -224,6 +223,7 @@ impl Vm {
             bytes: &image.bytes,
             regions: &regions,
             timeout,
+            runtime: runtime.config,
         })
         .map_err(Error::Process)?;
         let exports = bindings
@@ -237,7 +237,6 @@ impl Vm {
             abi,
             exports,
             table: None,
-            heap: runtime.heap,
             initialize: initialize.into_boxed_slice(),
             finalize: finalize.into_boxed_slice(),
         })
@@ -287,7 +286,6 @@ impl Vm {
                 let mut invocation = Invocation {
                     services: calls.services,
                     memory: &mut memory,
-                    heap: self.heap.as_mut(),
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,

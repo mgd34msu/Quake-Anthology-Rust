@@ -2,6 +2,7 @@
 
 pub mod checksum;
 pub mod events;
+pub mod heap;
 pub mod loopback;
 pub mod math;
 pub mod names;

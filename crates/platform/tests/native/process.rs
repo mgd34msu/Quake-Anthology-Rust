@@ -80,6 +80,15 @@ fn image_child(
     imports: &[NativeImport<'_>],
     timeout: Duration,
 ) -> Result<NativeProcess, NativeError> {
+    configured_child(bytes, regions, imports, timeout, None)
+}
+fn configured_child(
+    bytes: &[u8],
+    regions: &[NativeRegion],
+    imports: &[NativeImport<'_>],
+    timeout: Duration,
+    runtime: Option<super::runtime::RuntimeConfig>,
+) -> Result<NativeProcess, NativeError> {
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args(["--exact", "native::tests::child_entry", "--nocapture"])
@@ -93,8 +102,154 @@ fn image_child(
             bytes,
             regions,
             timeout,
+            runtime,
         },
     )
+}
+
+#[test]
+fn c_runtime_imports_execute_in_the_child_without_an_engine_round_trip() {
+    use super::runtime::{FUNCTIONS, RuntimeConfig};
+    for abi in [NativeAbi::Microsoft, NativeAbi::SystemV] {
+        let imports: Vec<_> = FUNCTIONS
+            .iter()
+            .map(|f| NativeImport {
+                number: f.number,
+                abi,
+                parameters: f.parameters,
+                result: f.result,
+            })
+            .collect();
+        let mut bytes = vec![0xff; 12288];
+        bytes[4096..8192].fill(0);
+        bytes[4112..4115].copy_from_slice(b"\xffa\0");
+        let regions = [
+            REGIONS[0],
+            NativeRegion {
+                length: 8192,
+                ..REGIONS[1]
+            },
+        ];
+        let mut process = configured_child(
+            &bytes,
+            &regions,
+            &imports,
+            Duration::from_secs(3),
+            Some(RuntimeConfig {
+                base: BASE + 4096,
+                heap_bytes: 256,
+            }),
+        )
+        .unwrap();
+        let mut callbacks = 0;
+        let mut invoke = |ordinal: usize, arguments: &[u64]| {
+            let f = &FUNCTIONS[ordinal];
+            let entry = process
+                .bind(
+                    process.import_pointer(ordinal).unwrap(),
+                    abi,
+                    f.parameters,
+                    f.result,
+                )
+                .unwrap();
+            let mut words = [0; 13];
+            words[..arguments.len()].copy_from_slice(arguments);
+            process.invoke(entry, words, |_, _, _| {
+                callbacks += 1;
+                Err(NativeError::Callback)
+            })
+        };
+        assert_eq!(
+            invoke(0, &[BASE + 4128, BASE + 4112, 3]).unwrap(),
+            BASE + 4128
+        );
+        assert_eq!(
+            invoke(1, &[BASE + 4129, BASE + 4128, 3]).unwrap(),
+            BASE + 4129
+        );
+        assert_eq!(invoke(2, &[BASE + 4144, 0x1aa, 8]).unwrap(), BASE + 4144);
+        assert_eq!(
+            invoke(3, &[BASE + 4160, BASE + 4112, 6]).unwrap(),
+            BASE + 4160
+        );
+        assert_eq!(invoke(4, &[BASE + 4160]).unwrap(), 2);
+        assert_eq!(invoke(5, &[BASE + 4112, BASE + 4160]).unwrap(), 0);
+        assert_eq!(
+            invoke(6, &[BASE + 4144, BASE + 4160, 2]).unwrap(),
+            (-85i64) as u64
+        );
+        for (ordinal, operation) in [
+            (7, f64::sin as fn(f64) -> f64),
+            (8, f64::cos),
+            (10, f64::sqrt),
+            (11, f64::floor),
+            (12, f64::ceil),
+            (13, f64::acos),
+            (14, f64::abs),
+        ] {
+            for x in [
+                -0.0f64,
+                0.0,
+                -0.5,
+                0.5,
+                1.0,
+                -12345.6789,
+                1e30,
+                f64::INFINITY,
+                f64::NAN,
+            ] {
+                let actual = f64::from_bits(invoke(ordinal, &[x.to_bits()]).unwrap());
+                let expected = operation(x);
+                if expected.is_nan() {
+                    assert!(actual.is_nan());
+                } else {
+                    assert_eq!(actual.to_bits(), expected.to_bits());
+                }
+            }
+        }
+        assert_eq!(
+            invoke(9, &[(-0.5f64).to_bits(), (-2.25f64).to_bits()]).unwrap(),
+            (-0.5f64).atan2(-2.25).to_bits()
+        );
+        let first = invoke(15, &[17]).unwrap();
+        assert_eq!(first, BASE + 8192);
+        let zero = invoke(16, &[3, 16]).unwrap();
+        assert_eq!(zero, first + 32);
+        assert_eq!(invoke(2, &[first, 0xab, 17]).unwrap(), first);
+        assert_eq!(invoke(16, &[u64::MAX, 2]).unwrap(), 0);
+        assert_eq!(invoke(17, &[first, 300]).unwrap(), 0);
+        let moved = invoke(17, &[first, 96]).unwrap();
+        assert_ne!(moved, first);
+        assert_eq!(invoke(18, &[zero]).unwrap(), 0);
+        assert_eq!(invoke(18, &[moved]).unwrap(), 0);
+        assert_eq!(invoke(15, &[256]).unwrap(), first);
+        assert_eq!(callbacks, 0);
+        assert_eq!(&process.memory().unwrap()[4128..4132], b"\xff\xffa\0");
+        assert_eq!(&process.memory().unwrap()[4160..4166], b"\xffa\0\0\0\0");
+        assert_eq!(
+            &process.memory().unwrap()[(zero - BASE) as usize..(zero - BASE) as usize + 48],
+            &[0; 48]
+        );
+        assert_eq!(
+            &process.memory().unwrap()[(moved - BASE) as usize..(moved - BASE) as usize + 17],
+            &[0xab; 17]
+        );
+        let entry = process
+            .bind(
+                process.import_pointer(0).unwrap(),
+                abi,
+                &[NativeScalar::Word; 3],
+                NativeScalar::Word,
+            )
+            .unwrap();
+        let mut words = [0; 13];
+        words[..3].copy_from_slice(&[BASE + 4144, BASE + 4160, (1u64 << 32) + 1]);
+        assert!(
+            process
+                .invoke(entry, words, |_, _, _| Err(NativeError::Callback))
+                .is_err()
+        );
+    }
 }
 
 #[test]
@@ -1115,7 +1270,8 @@ fn nonexecutable_entry_and_callback_rejection_are_local() {
             pointer_bytes: 4,
             bytes: &[],
             regions: &[],
-            timeout: Duration::from_secs(1)
+            timeout: Duration::from_secs(1),
+            runtime: None,
         }),
         Err(NativeError::Unsupported)
     ));

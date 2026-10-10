@@ -27,6 +27,9 @@ const IMPORT: u8 = 4;
 const RETURN: u8 = 5;
 const REPLY: u8 = 6;
 const MAP: u8 = 7;
+const BIND: u8 = 8;
+#[path = "runtime/child.rs"]
+mod runtime;
 const PACKET_BYTES: usize = 200;
 const SIGSTOP: i32 = 19;
 const SIGCONT: i32 = 18;
@@ -439,7 +442,7 @@ impl NativeProcess {
             reaped: None,
             timeout: image.timeout,
         };
-        if let Err(error) = owner.start(&mapped) {
+        if let Err(error) = owner.start(&mapped, image.runtime) {
             return Err(owner.failure(error));
         }
         // Patch each numeric import gateway only at the enforced load stop.
@@ -455,17 +458,32 @@ impl NativeProcess {
         }
         Ok(owner)
     }
-    fn start(&mut self, mapped: &[NativeRegion]) -> Result<(), NativeError> {
+    fn start(
+        &mut self,
+        mapped: &[NativeRegion],
+        runtime: Option<super::runtime::RuntimeConfig>,
+    ) -> Result<(), NativeError> {
         let mut packet = Packet::new(START, 0);
         packet.address = self.base;
         packet.arguments[0] = self.memory.length as u64;
         packet.arguments[1] = mapped.len() as u64;
+        packet.arguments[2] = self.imports.len() as u64;
+        if let Some(config) = runtime {
+            packet.arguments[3] = config.base;
+            packet.arguments[4] = config.heap_bytes as u64;
+        }
         packet.send(&mut self.stream)?;
         for region in mapped {
             let mut packet = Packet::new(MAP, 0);
             packet.address = region.offset as u64;
             packet.arguments[0] = region.length as u64;
             packet.arguments[1] = region.permissions as u64;
+            packet.send(&mut self.stream)?;
+        }
+        for &(number, entry) in &self.imports {
+            let mut packet = Packet::new(BIND, 0);
+            packet.address = u64::from(number);
+            packet.abi = entry.abi as u8;
             packet.send(&mut self.stream)?;
         }
         let ready = Packet::receive(&mut self.stream)?;
@@ -712,6 +730,17 @@ extern "C" fn import(words: &[u64; 14], floats: &[[u64; 2]; 8], typed: u64) -> I
     // reference into the shared guest stack is retained while the parent borrows.
     let number = words[0];
     let arguments = std::array::from_fn(|i| words[i + 1]);
+    if typed == 1 {
+        match runtime::invoke(
+            number as usize,
+            arguments,
+            std::array::from_fn(|i| floats[i][0]),
+        ) {
+            Ok(Some(result)) => return result,
+            Ok(None) => {}
+            Err(_) => std::process::exit(125),
+        }
+    }
     let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);
     // SAFETY: borrowed wrapper for inherited fd 0, never closed here. This
     // single-thread child alone uses the channel; clone/fork are not admitted.
@@ -751,12 +780,14 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     let packet = Packet::receive(&mut stream)?;
     let length = usize::try_from(packet.arguments[0]).map_err(|_| NativeError::Extent)?;
     let count = usize::try_from(packet.arguments[1]).map_err(|_| NativeError::Extent)?;
+    let imports = usize::try_from(packet.arguments[2]).map_err(|_| NativeError::Extent)?;
     if packet.operation != START
         || packet.sequence != 0
         || length <= PAGE + STACK
         || length > LIMIT
         || length % PAGE != 0
         || count > 65536
+        || imports > 4096
         || packet.address < PAGE as u64
         || packet.address % PAGE as u64 != 0
         || packet.address.checked_add(length as u64).is_none()
@@ -821,6 +852,45 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     {
         return Err(io::Error::last_os_error().into());
     }
+    let mut bindings = Vec::with_capacity(imports);
+    for _ in 0..imports {
+        let binding = Packet::receive(&mut stream)?;
+        if binding.operation != BIND || binding.sequence != 0 || binding.abi > 1 {
+            return Err(NativeError::Protocol);
+        }
+        let number = u32::try_from(binding.address).map_err(|_| NativeError::Protocol)?;
+        let abi = if binding.abi == 0 {
+            NativeAbi::SystemV
+        } else {
+            NativeAbi::Microsoft
+        };
+        let entry = super::runtime::function(number)
+            .map(|function| {
+                NativeEntry::bind(0, abi, function.parameters, function.result)
+                    .map(|entry| (function, entry))
+            })
+            .transpose()?;
+        if number >= super::runtime::FIRST && entry.is_none() {
+            return Err(NativeError::Unsupported);
+        }
+        bindings.push(entry);
+    }
+    let stack = NativeRegion {
+        offset: image_length + PAGE,
+        length: STACK,
+        permissions: 3,
+    };
+    regions.push(stack);
+    runtime::initialize(
+        packet.address,
+        length,
+        regions.clone().into_boxed_slice(),
+        bindings.into_boxed_slice(),
+        (packet.arguments[3] != 0).then_some(super::runtime::RuntimeConfig {
+            base: packet.arguments[3],
+            heap_bytes: packet.arguments[4] as usize,
+        }),
+    )?;
     // SAFETY: native identity and guard are child-local, before foreign code.
     let pid = unsafe { getpid() };
     for number in [4, 5, 7, 8, 11] {

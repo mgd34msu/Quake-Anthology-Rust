@@ -1,13 +1,11 @@
 //! Numbered boundary entries. QVM and native pointers share these handlers.
 use crate::{
-    memory::{Heap, ModuleMemory},
+    memory::ModuleMemory,
     quakec, qvm,
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
 use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
 use std::fmt::Write;
-
-pub mod runtime;
 
 #[derive(Clone, Copy)]
 pub enum Addresses {
@@ -21,7 +19,6 @@ pub enum Addresses {
 pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
     pub memory: &'a mut ModuleMemory<'memory>,
-    pub heap: Option<&'a mut Heap>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -56,7 +53,7 @@ impl Invocation<'_, '_, '_> {
 
 type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<u64, CallError>;
 pub struct CallTable {
-    entries: [Option<Entry>; 320],
+    entries: [Option<Entry>; 256],
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -83,9 +80,7 @@ impl CallTable {
         call: &mut Invocation<'_, '_, '_>,
         unknown: &mut UnknownCalls,
     ) -> Result<u64, CallError> {
-        if let Some(Some(entry)) = self.entries.get(number as usize).filter(|_| {
-            number < runtime::FIRST || matches!(call.addresses, Addresses::NativeFunction)
-        }) {
+        if let Some(Some(entry)) = self.entries.get(number as usize) {
             return entry(call);
         }
         unknown.calls = unknown.calls.saturating_add(1);
@@ -113,14 +108,8 @@ impl CallTable {
 
 const fn common() -> CallTable {
     let mut table = CallTable {
-        entries: [None; 320],
+        entries: [None; 256],
     };
-    let mut i = 0;
-    while i < runtime::FUNCTIONS.len() {
-        let function = &runtime::FUNCTIONS[i];
-        table.entries[function.number as usize] = Some(function.entry);
-        i += 1;
-    }
     table.entries[100] = Some(memset);
     table.entries[101] = Some(memcpy);
     table.entries[102] = Some(strncpy);
@@ -193,7 +182,7 @@ pub const Q3_UI: CallTable = ui();
 
 const fn quakec() -> CallTable {
     let mut t = CallTable {
-        entries: [None; 320],
+        entries: [None; 256],
     };
     t.entries[25] = Some(qc_print);
     t.entries[37] = Some(floor::<false>);
@@ -252,7 +241,6 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         let mut invocation = Invocation {
             services: self.services,
             memory: &mut vm.strings,
-            heap: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -311,7 +299,6 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
         let mut call = Invocation {
             services: self.services,
             memory: &mut vm.memory,
-            heap: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
