@@ -148,10 +148,14 @@ fn module(
         image,
         &[
             NamedExport {
+                parameters: &[qa_platform::native::NativeScalar::Word; 13],
+                result: qa_platform::native::NativeScalar::Word,
                 name,
                 command: None,
             },
             NamedExport {
+                parameters: &[qa_platform::native::NativeScalar::Word; 1],
+                result: qa_platform::native::NativeScalar::Void,
                 name: b"dllEntry",
                 command: None,
             },
@@ -240,6 +244,8 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
         ),
     ] {
         let named = [NamedExport {
+            parameters: &[qa_platform::native::NativeScalar::Word; 2],
+            result: qa_platform::native::NativeScalar::Word,
             name,
             command: Some(7),
         }];
@@ -276,6 +282,8 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
             Some(ModuleResult::Native(57))
         );
         let missing = [NamedExport {
+            parameters: &[qa_platform::native::NativeScalar::Word; 2],
+            result: qa_platform::native::NativeScalar::Word,
             name: b"missing",
             command: None,
         }];
@@ -292,6 +300,8 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
             Vm::map_image(
                 function_image(encoding, &code),
                 &[NamedExport {
+                    parameters: &[qa_platform::native::NativeScalar::Word; 2],
+                    result: qa_platform::native::NativeScalar::Word,
                     name: &folded,
                     command: None
                 }],
@@ -306,6 +316,8 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
         Vm::map_image(
             image,
             &[NamedExport {
+                parameters: &[qa_platform::native::NativeScalar::Word; 2],
+                result: qa_platform::native::NativeScalar::Word,
                 name: b"vmMain",
                 command: None
             }],
@@ -326,6 +338,8 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
         Vm::map_image(
             image,
             &[NamedExport {
+                parameters: &[qa_platform::native::NativeScalar::Word; 2],
+                result: qa_platform::native::NativeScalar::Word,
                 name: b"vmMain",
                 command: None
             }],
@@ -346,29 +360,38 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
     let mut vm = Vm::map_image(
         image,
         &[NamedExport {
+            parameters: &[qa_platform::native::NativeScalar::Word; 2],
+            result: qa_platform::native::NativeScalar::Word,
             name: b"vmMain",
             command: None,
         }],
         Duration::from_secs(3),
     )
     .unwrap();
+    let entry = vm
+        .process
+        .bind(
+            entry,
+            NativeAbi::SystemV,
+            &[qa_platform::native::NativeScalar::Word; 2],
+            qa_platform::native::NativeScalar::Word,
+        )
+        .unwrap();
     let mut words = [0; 13];
     words[0] = base + 0x3f00;
     words[1] = 123;
     assert_eq!(
         vm.process
-            .invoke(entry, NativeAbi::SystemV, words, |_, _, _| Err(
+            .invoke(entry, words, |_, _, _| Err(
                 qa_platform::native::NativeError::Callback
             ))
             .unwrap(),
         123
     );
     words[0] = base + 0x4100;
-    let result = vm
-        .process
-        .invoke(entry, NativeAbi::SystemV, words, |_, _, _| {
-            Err(qa_platform::native::NativeError::Callback)
-        });
+    let result = vm.process.invoke(entry, words, |_, _, _| {
+        Err(qa_platform::native::NativeError::Callback)
+    });
     assert!(
         matches!(result, Err(qa_platform::native::NativeError::Exited(status)) if status.signal() == Some(11)),
         "{result:?}"
@@ -379,6 +402,8 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
         Vm::map_image(
             image,
             &[NamedExport {
+                parameters: &[qa_platform::native::NativeScalar::Word; 2],
+                result: qa_platform::native::NativeScalar::Word,
                 name: b"vmMain",
                 command: None
             }],
@@ -489,6 +514,71 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         [b"ELF cold\n".as_slice(), b"PE cold\n".as_slice()].repeat(3)
     );
 }
+
+fn scalar_native_export_results_survive_session_dispatch() {
+    use qa_platform::native::NativeScalar;
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        // double entry(word clock, double a, float b, ...word padding):
+        // convert b and clock to double, add to a and return through XMM0.
+        let mut code = [
+            0xf3, 0x0f, 0x5a, 0xd9, 0xf2, 0x0f, 0x58, 0xc3, 0xf2, 0x48, 0x0f, 0x2a, 0xe7, 0xf2,
+            0x0f, 0x58, 0xc4, 0x66, 0x0f, 0x28, 0xc0, 0xc3,
+        ];
+        if encoding == Encoding::Pe {
+            code[3] = 0xda;
+            code[7] = 0xcb;
+            code[12] = 0xe1;
+            code[16] = 0xcc;
+            code[20] = 0xc1;
+        }
+        let mut kinds = [NativeScalar::Word; 13];
+        kinds[1] = NativeScalar::Double;
+        kinds[2] = NativeScalar::Float;
+        let vm = Vm::map_image(
+            function_image(encoding, &code),
+            &[NamedExport {
+                name: if encoding == Encoding::Elf {
+                    b"vmMain"
+                } else {
+                    b"GetGameAPI"
+                },
+                command: None,
+                parameters: &kinds,
+                result: NativeScalar::Double,
+            }],
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let request = request(
+            &mut runtime,
+            ModuleId(1),
+            RuleSetId::Quake3,
+            TickRate::fixed(50).unwrap(),
+            vm,
+        );
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![request],
+        )
+        .unwrap();
+        let mut source = Source {
+            time: EventTime(0),
+            polls: 0,
+        };
+        host.frame(&mut source, true);
+        source.time = EventTime(50_000_000);
+        host.frame(&mut source, true);
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!(counts.traps, 0);
+        assert_eq!(
+            counts.last_result,
+            Some(ModuleResult::Native(50f64.to_bits()))
+        );
+    }
+}
 struct Source {
     time: EventTime,
     polls: u32,
@@ -591,5 +681,6 @@ pub fn run() {
     checked_exports_preserve_names_and_native_command_arguments();
     elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
     native_files_use_the_qvm_role_policy_and_vfs_loader();
+    scalar_native_export_results_survive_session_dispatch();
     println!("native session dispatch checks passed");
 }

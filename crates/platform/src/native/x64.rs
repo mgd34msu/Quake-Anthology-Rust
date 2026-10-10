@@ -4,7 +4,14 @@ use super::import;
 
 unsafe extern "sysv64" {
     #[link_name = "qa_native_x64_call"]
-    pub(super) fn call(entry: u64, abi: u64, arguments: *const [u64; 13], top: u64) -> u64;
+    pub(super) fn call(
+        entry: u64,
+        abi: u64,
+        arguments: *const [u64; 13],
+        top: u64,
+        floats: *const [u64; 8],
+        control: u64,
+    ) -> u64;
     #[link_name = "qa_native_x64_system_v_import"]
     pub(super) fn system_v_import();
     #[link_name = "qa_native_x64_microsoft_import"]
@@ -41,6 +48,8 @@ std::arch::global_asm!(
     push r15
     sub rsp, 536
     fxsave64 [rsp]
+    mov [rsp + 512], r9
+    mov r12, r8
     mov [rip + .Lcontroller_stack], rsp
     mov [rip + .Lguest_top], rcx
     mov rax, rcx
@@ -48,6 +57,14 @@ std::arch::global_asm!(
     mov [rip + .Lguest_bottom], rax
     mov r11, rdi
     mov r10, rdx
+    movq xmm0, [r12]
+    movq xmm1, [r12 + 8]
+    movq xmm2, [r12 + 16]
+    movq xmm3, [r12 + 24]
+    movq xmm4, [r12 + 32]
+    movq xmm5, [r12 + 40]
+    movq xmm6, [r12 + 48]
+    movq xmm7, [r12 + 56]
     mov rsp, rcx
     test rsi, rsi
     jne .Lmicrosoft_call
@@ -64,7 +81,6 @@ std::arch::global_asm!(
     mov rcx, [r10 + 24]
     mov r8, [r10 + 32]
     mov r9, [r10 + 40]
-    xor eax, eax
     jmp .Linvoke
 .Lmicrosoft_call:
     // 32-byte shadow area followed by nine stack words.
@@ -79,9 +95,25 @@ std::arch::global_asm!(
     mov r8, [r10 + 16]
     mov r9, [r10 + 24]
 .Linvoke:
+    mov rax, [rip + .Lcontroller_stack]
+    movzx eax, byte ptr [rax + 513]
     call r11
     cld
     mov rsp, [rip + .Lcontroller_stack]
+    cmp byte ptr [rsp + 512], 0
+    je .Lresult
+    cmp byte ptr [rsp + 512], 1
+    je .Lfloat_result
+    cmp byte ptr [rsp + 512], 2
+    jne .Lvoid_result
+    movq rax, xmm0
+    jmp .Lresult
+.Lfloat_result:
+    movd eax, xmm0
+    jmp .Lresult
+.Lvoid_result:
+    xor eax, eax
+.Lresult:
     fxrstor64 [rsp]
     add rsp, 536
     pop r15

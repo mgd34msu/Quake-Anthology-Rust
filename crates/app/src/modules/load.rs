@@ -257,11 +257,15 @@ pub fn load_q3(
                     }
                     let mut named: Vec<_> = (0..=10)
                         .map(|command| NamedExport {
+                            parameters: &[qa_platform::native::NativeScalar::Word; 13],
+                            result: qa_platform::native::NativeScalar::Word,
                             name: b"vmMain",
                             command: Some(command),
                         })
                         .collect();
                     named.push(NamedExport {
+                        parameters: &[qa_platform::native::NativeScalar::Word; 1],
+                        result: qa_platform::native::NativeScalar::Void,
                         name: b"dllEntry",
                         command: None,
                     });

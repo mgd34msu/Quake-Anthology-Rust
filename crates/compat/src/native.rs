@@ -6,21 +6,25 @@ use crate::{
 };
 use qa_core::sys_events::EventTime;
 use qa_formats::program::native::{Encoding, Image};
-use qa_platform::native::{NativeAbi, NativeError, NativeImage, NativeProcess, NativeRegion};
+use qa_platform::native::{
+    NativeAbi, NativeEntry, NativeError, NativeImage, NativeProcess, NativeRegion, NativeScalar,
+};
 use std::time::Duration;
 
 pub mod elf;
 
 #[derive(Clone, Copy)]
-pub struct Export {
-    pub address: u64,
+struct Export {
+    entry: NativeEntry,
     /// vmMain command selectors are declared at binding; ordinary exports
     /// receive only their native arguments.
-    pub command: Option<u32>,
+    command: Option<u32>,
 }
 pub struct NamedExport<'a> {
     pub name: &'a [u8],
     pub command: Option<u32>,
+    pub parameters: &'a [NativeScalar],
+    pub result: NativeScalar,
 }
 #[derive(Debug)]
 pub enum Error {
@@ -51,17 +55,18 @@ impl Vm {
         named: &[NamedExport<'_>],
         timeout: Duration,
     ) -> Result<Self, Error> {
-        let exports = named
+        let targets = named
             .iter()
             .map(|entry| {
                 let symbol = image.symbol(entry.name).ok_or(Error::Export)?;
                 if symbol.forward.is_some() || symbol.kind == 10 {
                     return Err(Error::Export);
                 }
-                Ok(Export {
-                    address: symbol.address,
-                    command: entry.command,
-                })
+                if entry.command.is_some() && entry.parameters.first() != Some(&NativeScalar::Word)
+                {
+                    return Err(Error::Export);
+                }
+                Ok(symbol.address)
             })
             .collect::<Result<Box<[_]>, _>>()?;
         // Native ELF RELRO protects complete pages, rounding both ends down.
@@ -142,9 +147,21 @@ impl Vm {
             timeout,
         })
         .map_err(Error::Process)?;
-        if exports.iter().any(|e| !process.executable(e.address)) {
+        if targets.iter().any(|&address| !process.executable(address)) {
             return Err(Error::Export);
         }
+        let exports = named
+            .iter()
+            .zip(targets.iter())
+            .map(|(named, &address)| {
+                Ok(Export {
+                    entry: process
+                        .bind(address, abi, named.parameters, named.result)
+                        .map_err(Error::Process)?,
+                    command: named.command,
+                })
+            })
+            .collect::<Result<Box<[_]>, Error>>()?;
         Ok(Self {
             process,
             abi,
@@ -165,6 +182,9 @@ impl Vm {
     ) -> Result<u64, Error> {
         let export = *self.exports.get(ordinal as usize).ok_or(Error::Export)?;
         let first = usize::from(export.command.is_some());
+        // Session dispatch supplies a fixed-capacity common payload. The
+        // load-selected native entry admits only its declared argument slots;
+        // unrelated payload words are dropped at this ABI boundary.
         if arguments.len() > 13 - first {
             return Err(Error::Export);
         }
@@ -176,7 +196,7 @@ impl Vm {
         let mut rejected = None;
         let result = self
             .process
-            .invoke(export.address, self.abi, words, |call, base, bytes| {
+            .invoke(export.entry, words, |call, base, bytes| {
                 let mut memory =
                     ModuleMemory::borrow(base, bytes).map_err(|_| NativeError::Callback)?;
                 let mut invocation = Invocation {

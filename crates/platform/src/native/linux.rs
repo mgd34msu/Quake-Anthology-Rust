@@ -1,4 +1,6 @@
-use super::{NativeAbi, NativeCall, NativeError, NativeImage, NativeRegion};
+use super::{
+    NativeAbi, NativeCall, NativeEntry, NativeError, NativeImage, NativeRegion, NativeScalar,
+};
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -25,6 +27,7 @@ const IMPORT: u8 = 4;
 const RETURN: u8 = 5;
 const REPLY: u8 = 6;
 const MAP: u8 = 7;
+const PACKET_BYTES: usize = 200;
 const SIGSTOP: i32 = 19;
 const SIGCONT: i32 = 18;
 
@@ -122,6 +125,7 @@ struct Packet {
     sequence: u64,
     address: u64,
     arguments: [u64; 13],
+    floats: [u64; 8],
     value: u64,
 }
 // One packet transfer path handles short IO and EINTR. Native invocation uses
@@ -173,6 +177,7 @@ impl Packet {
             sequence,
             address: 0,
             arguments: [0; 13],
+            floats: [0; 8],
             value: 0,
         }
     }
@@ -184,9 +189,9 @@ impl Packet {
         stream: &mut UnixStream,
         deadline: Option<Instant>,
     ) -> Result<(), NativeError> {
-        let mut bytes = [0u8; 136];
+        let mut bytes = [0u8; PACKET_BYTES];
         bytes[..4].copy_from_slice(b"QARN");
-        bytes[4] = 1;
+        bytes[4] = 2;
         bytes[5] = self.operation;
         bytes[6] = self.abi;
         bytes[8..16].copy_from_slice(&self.sequence.to_le_bytes());
@@ -194,7 +199,10 @@ impl Packet {
         for (i, word) in self.arguments.iter().enumerate() {
             bytes[24 + i * 8..32 + i * 8].copy_from_slice(&word.to_le_bytes());
         }
-        bytes[128..136].copy_from_slice(&self.value.to_le_bytes());
+        for (i, word) in self.floats.iter().enumerate() {
+            bytes[128 + i * 8..136 + i * 8].copy_from_slice(&word.to_le_bytes());
+        }
+        bytes[192..200].copy_from_slice(&self.value.to_le_bytes());
         compiler_fence(Ordering::Release);
         transfer(stream, &mut bytes, true, deadline)
     }
@@ -205,9 +213,9 @@ impl Packet {
         stream: &mut UnixStream,
         deadline: Option<Instant>,
     ) -> Result<Self, NativeError> {
-        let mut bytes = [0u8; 136];
+        let mut bytes = [0u8; PACKET_BYTES];
         transfer(stream, &mut bytes, false, deadline)?;
-        if &bytes[..4] != b"QARN" || bytes[4] != 1 || bytes[7] != 0 {
+        if &bytes[..4] != b"QARN" || bytes[4] != 2 || bytes[7] != 0 {
             return Err(NativeError::Protocol);
         }
         let word = |offset| {
@@ -222,7 +230,8 @@ impl Packet {
             sequence: word(8),
             address: word(16),
             arguments: std::array::from_fn(|i| word(24 + i * 8)),
-            value: word(128),
+            floats: std::array::from_fn(|i| word(128 + i * 8)),
+            value: word(192),
         })
     }
 }
@@ -450,17 +459,28 @@ impl NativeProcess {
             }
         }
     }
-    pub fn invoke(
-        &mut self,
+    pub fn bind(
+        &self,
         address: u64,
         abi: NativeAbi,
+        parameters: &[NativeScalar],
+        result: NativeScalar,
+    ) -> Result<NativeEntry, NativeError> {
+        if !self.parked || !self.executable(address) {
+            return Err(NativeError::Extent);
+        }
+        NativeEntry::bind(address, abi, parameters, result)
+    }
+    pub fn invoke(
+        &mut self,
+        entry: NativeEntry,
         arguments: [u64; 13],
         mut callback: impl FnMut(NativeCall, u64, &mut [u8]) -> Result<u64, NativeError>,
     ) -> Result<u64, NativeError> {
         if !self.parked || self.child.is_none() {
             return Err(NativeError::Protocol);
         }
-        if !self.executable(address) {
+        if !self.executable(entry.address) {
             return Err(NativeError::Extent);
         }
         let deadline = Instant::now()
@@ -469,9 +489,10 @@ impl NativeProcess {
         let run = (|| {
             self.sequence = self.sequence.checked_add(1).ok_or(NativeError::Protocol)?;
             let mut packet = Packet::new(INVOKE, self.sequence);
-            packet.address = address;
-            packet.abi = abi as u8;
-            packet.arguments = arguments;
+            packet.address = entry.address;
+            packet.abi = entry.abi as u8;
+            (packet.arguments, packet.floats) = entry.pack(arguments);
+            packet.value = entry.control;
             packet.send_before(&mut self.stream, Some(deadline))?;
             self.resume()?;
             loop {
@@ -682,6 +703,8 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         if packet.operation != INVOKE
             || packet.sequence == 0
             || packet.abi > 1
+            || packet.value & !0xff03 != 0
+            || packet.value >> 8 > 8
             || !executable_offset(&regions, offset)
         {
             return Err(NativeError::Protocol);
@@ -697,6 +720,8 @@ pub(super) fn child_main() -> Result<(), NativeError> {
                 u64::from(packet.abi),
                 &packet.arguments,
                 ready.address + length as u64,
+                &packet.floats,
+                packet.value,
             )
         };
         let mut reply = Packet::new(RETURN, packet.sequence);

@@ -1,5 +1,5 @@
 use super::{
-    NativeAbi, NativeError, NativeImage, NativeRegion,
+    NativeAbi, NativeError, NativeImage, NativeRegion, NativeScalar,
     implementation::{NativeProcess, child_main, executable_offset},
 };
 use std::{os::unix::process::ExitStatusExt, process::Command, time::Duration};
@@ -95,9 +95,18 @@ fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
     words[1] = 0xabcdef;
     assert_eq!(
         process
-            .invoke(BASE + 512, NativeAbi::SystemV, words, |_, _, _| {
-                Err(NativeError::Callback)
-            })
+            .invoke(
+                process
+                    .bind(
+                        BASE + 512,
+                        NativeAbi::SystemV,
+                        &[NativeScalar::Word; 13],
+                        NativeScalar::Word
+                    )
+                    .unwrap(),
+                words,
+                |_, _, _| { Err(NativeError::Callback) }
+            )
             .unwrap(),
         words[1]
     );
@@ -106,9 +115,12 @@ fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
         &words[1].to_le_bytes()
     );
     assert!(matches!(
-        process.invoke(BASE + 519, NativeAbi::SystemV, words, |_, _, _| {
-            Err(NativeError::Callback)
-        }),
+        process.bind(
+            BASE + 519,
+            NativeAbi::SystemV,
+            &[NativeScalar::Word; 13],
+            NativeScalar::Word
+        ),
         Err(NativeError::Extent)
     ));
 
@@ -153,9 +165,18 @@ fn native_system_v_and_microsoft_calls_publish_the_same_owned_memory() {
     for wanted in [18u64, 25, 32] {
         assert_eq!(
             system_v
-                .invoke(BASE, NativeAbi::SystemV, arguments, |_, _, _| Err(
-                    NativeError::Callback
-                ))
+                .invoke(
+                    system_v
+                        .bind(
+                            BASE,
+                            NativeAbi::SystemV,
+                            &[NativeScalar::Word; 13],
+                            NativeScalar::Word
+                        )
+                        .unwrap(),
+                    arguments,
+                    |_, _, _| Err(NativeError::Callback)
+                )
                 .expect("native return"),
             wanted
         );
@@ -168,9 +189,18 @@ fn native_system_v_and_microsoft_calls_publish_the_same_owned_memory() {
     let mut microsoft = standard(&[0x48, 0x8b, 0x01, 0x48, 0x01, 0xd0, 0x48, 0x89, 0x01, 0xc3]);
     assert_eq!(
         microsoft
-            .invoke(BASE, NativeAbi::Microsoft, arguments, |_, _, _| Err(
-                NativeError::Callback
-            ))
+            .invoke(
+                microsoft
+                    .bind(
+                        BASE,
+                        NativeAbi::Microsoft,
+                        &[NativeScalar::Word; 13],
+                        NativeScalar::Word
+                    )
+                    .unwrap(),
+                arguments,
+                |_, _, _| Err(NativeError::Callback)
+            )
             .expect("native return"),
         7
     );
@@ -192,13 +222,24 @@ fn native_import_stops_before_engine_access_and_resumes_with_the_reply() {
     arguments[2] = BASE + 4096;
     let mut calls = 0;
     let result = process
-        .invoke(BASE, NativeAbi::SystemV, arguments, |call, base, memory| {
-            calls += 1;
-            assert_eq!(call.number, 37);
-            assert_eq!(call.arguments[0], base + 4096);
-            memory[4096..4104].copy_from_slice(&123u64.to_le_bytes());
-            Ok(91)
-        })
+        .invoke(
+            process
+                .bind(
+                    BASE,
+                    NativeAbi::SystemV,
+                    &[NativeScalar::Word; 13],
+                    NativeScalar::Word,
+                )
+                .unwrap(),
+            arguments,
+            |call, base, memory| {
+                calls += 1;
+                assert_eq!(call.number, 37);
+                assert_eq!(call.arguments[0], base + 4096);
+                memory[4096..4104].copy_from_slice(&123u64.to_le_bytes());
+                Ok(91)
+            },
+        )
         .expect("import return");
     assert_eq!(result, 91);
     assert_eq!(calls, 1);
@@ -247,7 +288,13 @@ fn all_thirteen_export_words_use_the_native_register_and_stack_locations() {
             process.memory_mut().unwrap()[..code.len()].copy_from_slice(&code);
             assert_eq!(
                 process
-                    .invoke(BASE, abi, words, |_, _, _| Err(NativeError::Callback))
+                    .invoke(
+                        process
+                            .bind(BASE, abi, &[NativeScalar::Word; 13], NativeScalar::Word)
+                            .unwrap(),
+                        words,
+                        |_, _, _| Err(NativeError::Callback)
+                    )
                     .unwrap(),
                 wanted,
                 "{abi:?} argument {i}"
@@ -255,7 +302,13 @@ fn all_thirteen_export_words_use_the_native_register_and_stack_locations() {
         }
         process.memory_mut().unwrap()[..4].copy_from_slice(&[0x48, 0x89, 0xe0, 0xc3]);
         let stack = process
-            .invoke(BASE, abi, words, |_, _, _| Err(NativeError::Callback))
+            .invoke(
+                process
+                    .bind(BASE, abi, &[NativeScalar::Word; 13], NativeScalar::Word)
+                    .unwrap(),
+                words,
+                |_, _, _| Err(NativeError::Callback),
+            )
             .unwrap();
         assert!(stack >= BASE + 8192 + 4096);
         assert!(stack < BASE + process.memory().unwrap().len() as u64);
@@ -324,12 +377,18 @@ fn raw_variadic_import_words_are_captured_without_a_rust_foreign_stack_frame() {
         let mut calls = 0;
         assert_eq!(
             process
-                .invoke(BASE, abi, words, |call, _, _| {
-                    calls += 1;
-                    assert_eq!(call.number, wanted[0] as u32);
-                    assert_eq!(call.arguments, wanted[1..]);
-                    Ok(0xabcde)
-                })
+                .invoke(
+                    process
+                        .bind(BASE, abi, &[NativeScalar::Word; 13], NativeScalar::Word)
+                        .unwrap(),
+                    words,
+                    |call, _, _| {
+                        calls += 1;
+                        assert_eq!(call.number, wanted[0] as u32);
+                        assert_eq!(call.arguments, wanted[1..]);
+                        Ok(0xabcde)
+                    }
+                )
                 .unwrap(),
             0xabcde
         );
@@ -358,16 +417,22 @@ fn native_local_buffers_are_shared_and_live_across_the_import_reply() {
         let mut words = [0; 13];
         words[0] = process.callback(abi);
         let result = process
-            .invoke(BASE, abi, words, |call, base, memory| {
-                assert_eq!(call.number, 37);
-                let at = (call.arguments[0] - base) as usize;
-                assert!(at >= 8192 + 4096);
-                assert_eq!(&memory[at..at + 8], b"stack\0\0\0");
-                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-                assert!(status.lines().any(|line| line.starts_with("State:\tT")));
-                memory[at..at + 8].copy_from_slice(&123u64.to_le_bytes());
-                Ok(91)
-            })
+            .invoke(
+                process
+                    .bind(BASE, abi, &[NativeScalar::Word; 13], NativeScalar::Word)
+                    .unwrap(),
+                words,
+                |call, base, memory| {
+                    assert_eq!(call.number, 37);
+                    let at = (call.arguments[0] - base) as usize;
+                    assert!(at >= 8192 + 4096);
+                    assert_eq!(&memory[at..at + 8], b"stack\0\0\0");
+                    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+                    assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+                    memory[at..at + 8].copy_from_slice(&123u64.to_le_bytes());
+                    Ok(91)
+                },
+            )
             .unwrap();
         assert_eq!(result, 123);
     }
@@ -379,9 +444,18 @@ fn shared_native_stack_guard_fault_is_local() {
     let mut process = standard(&[0x48, 0x89, 0xfc, 0x50, 0xc3]);
     let mut words = [0; 13];
     words[0] = BASE + 8192 + 4096;
-    let result = process.invoke(BASE, NativeAbi::SystemV, words, |_, _, _| {
-        Err(NativeError::Callback)
-    });
+    let result = process.invoke(
+        process
+            .bind(
+                BASE,
+                NativeAbi::SystemV,
+                &[NativeScalar::Word; 13],
+                NativeScalar::Word,
+            )
+            .unwrap(),
+        words,
+        |_, _, _| Err(NativeError::Callback),
+    );
     assert!(
         matches!(result, Err(NativeError::Exited(status)) if status.signal() == Some(11)),
         "{result:?}"
@@ -414,10 +488,16 @@ fn native_import_restores_integer_simd_and_x87_state() {
         words[0] = process.callback(abi);
         assert_eq!(
             process
-                .invoke(BASE, abi, words, |call, _, _| {
-                    assert_eq!(call.number, 37);
-                    Ok(0)
-                })
+                .invoke(
+                    process
+                        .bind(BASE, abi, &[NativeScalar::Word; 13], NativeScalar::Word)
+                        .unwrap(),
+                    words,
+                    |call, _, _| {
+                        assert_eq!(call.number, 37);
+                        Ok(0)
+                    }
+                )
                 .unwrap(),
             0x1122_3344_5566_7788 + 0x89ab_cdef_0123_4567 + 123
         );
@@ -446,19 +526,19 @@ fn region_lookup_handles_the_full_sorted_table_and_gaps() {
 fn a_publication_without_self_stop_is_parked_before_engine_access() {
     // Send an IMPORT packet directly, then loop without entering the trusted
     // child callback. The controller must impose the stop before borrowing.
-    // mov rsi,rdi; mov eax,1; xor edi,edi; mov edx,136; syscall; jmp $
+    // mov rsi,rdi; mov eax,1; xor edi,edi; mov edx,200; syscall; jmp $
     let mut process = child(
         &[
-            0x48, 0x89, 0xfe, 0xb8, 1, 0, 0, 0, 0x31, 0xff, 0xba, 136, 0, 0, 0, 0x0f, 0x05, 0xeb,
+            0x48, 0x89, 0xfe, 0xb8, 1, 0, 0, 0, 0x31, 0xff, 0xba, 200, 0, 0, 0, 0x0f, 0x05, 0xeb,
             0xfe,
         ],
         Duration::from_millis(200),
     )
     .unwrap();
     let memory = process.memory_mut().unwrap();
-    let packet = &mut memory[4096..4096 + 136];
+    let packet = &mut memory[4096..4096 + 200];
     packet[..4].copy_from_slice(b"QARN");
-    packet[4] = 1;
+    packet[4] = 2;
     packet[5] = 4;
     packet[8..16].copy_from_slice(&1u64.to_le_bytes());
     packet[16..24].copy_from_slice(&37u64.to_le_bytes());
@@ -466,14 +546,25 @@ fn a_publication_without_self_stop_is_parked_before_engine_access() {
     arguments[0] = BASE + 4096;
     let pid = process.pid();
     let mut calls = 0;
-    let result = process.invoke(BASE, NativeAbi::SystemV, arguments, |call, _, memory| {
-        calls += 1;
-        assert_eq!(call.number, 37);
-        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-        assert!(status.lines().any(|line| line.starts_with("State:\tT")));
-        memory[5000] = 9;
-        Ok(0)
-    });
+    let result = process.invoke(
+        process
+            .bind(
+                BASE,
+                NativeAbi::SystemV,
+                &[NativeScalar::Word; 13],
+                NativeScalar::Word,
+            )
+            .unwrap(),
+        arguments,
+        |call, _, memory| {
+            calls += 1;
+            assert_eq!(call.number, 37);
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+            assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+            memory[5000] = 9;
+            Ok(0)
+        },
+    );
     assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
     assert_eq!(calls, 1);
     assert_eq!(process.pid(), 0);
@@ -483,9 +574,18 @@ fn a_publication_without_self_stop_is_parked_before_engine_access() {
 fn child_fault_and_timeout_leave_other_native_owners_running() {
     let mut healthy = standard(&[0x48, 0x89, 0xf8, 0xc3]); // mov rax,rdi; ret
     let mut fault = standard(&[0x48, 0x31, 0xc0, 0x48, 0x8b, 0x00, 0xc3]); // null read
-    let result = fault.invoke(BASE, NativeAbi::SystemV, [0; 13], |_, _, _| {
-        Err(NativeError::Callback)
-    });
+    let result = fault.invoke(
+        fault
+            .bind(
+                BASE,
+                NativeAbi::SystemV,
+                &[NativeScalar::Word; 13],
+                NativeScalar::Word,
+            )
+            .unwrap(),
+        [0; 13],
+        |_, _, _| Err(NativeError::Callback),
+    );
     assert!(
         matches!(result, Err(NativeError::Exited(status)) if status.signal() == Some(11)),
         "{result:?}"
@@ -493,9 +593,18 @@ fn child_fault_and_timeout_leave_other_native_owners_running() {
     assert_eq!(fault.pid(), 0);
     let mut timeout = child(&[0xeb, 0xfe], Duration::from_millis(200)).expect("timeout child");
     assert!(matches!(
-        timeout.invoke(BASE, NativeAbi::SystemV, [0; 13], |_, _, _| Err(
-            NativeError::Callback
-        )),
+        timeout.invoke(
+            timeout
+                .bind(
+                    BASE,
+                    NativeAbi::SystemV,
+                    &[NativeScalar::Word; 13],
+                    NativeScalar::Word
+                )
+                .unwrap(),
+            [0; 13],
+            |_, _, _| Err(NativeError::Callback)
+        ),
         Err(NativeError::Timeout)
     ));
     assert_eq!(timeout.pid(), 0);
@@ -503,9 +612,18 @@ fn child_fault_and_timeout_leave_other_native_owners_running() {
     arguments[0] = 54;
     assert_eq!(
         healthy
-            .invoke(BASE, NativeAbi::SystemV, arguments, |_, _, _| Err(
-                NativeError::Callback
-            ))
+            .invoke(
+                healthy
+                    .bind(
+                        BASE,
+                        NativeAbi::SystemV,
+                        &[NativeScalar::Word; 13],
+                        NativeScalar::Word
+                    )
+                    .unwrap(),
+                arguments,
+                |_, _, _| Err(NativeError::Callback)
+            )
             .expect("healthy still runs"),
         54
     );
@@ -525,29 +643,189 @@ fn repeated_imports_cannot_restart_the_export_deadline() {
     let mut words = [0; 13];
     words[0] = looping.callback(NativeAbi::SystemV);
     let mut calls = 0;
-    let result = looping.invoke(BASE, NativeAbi::SystemV, words, |call, _, _| {
-        assert_eq!(call.number, 37);
-        calls += 1;
-        // Bound this fixture even if a regression lets the native export renew
-        // its budget indefinitely; the expected result is Timeout, not Callback.
-        if calls > 20 {
-            return Err(NativeError::Callback);
-        }
-        std::thread::sleep(Duration::from_millis(40));
-        Ok(0)
-    });
+    let result = looping.invoke(
+        looping
+            .bind(
+                BASE,
+                NativeAbi::SystemV,
+                &[NativeScalar::Word; 13],
+                NativeScalar::Word,
+            )
+            .unwrap(),
+        words,
+        |call, _, _| {
+            assert_eq!(call.number, 37);
+            calls += 1;
+            // Bound this fixture even if a regression lets the native export renew
+            // its budget indefinitely; the expected result is Timeout, not Callback.
+            if calls > 20 {
+                return Err(NativeError::Callback);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+            Ok(0)
+        },
+    );
     assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
     assert!(calls > 1 && calls <= 20, "imports: {calls}");
     assert_eq!(looping.pid(), 0);
     words[0] = 54;
     assert_eq!(
         healthy
-            .invoke(BASE, NativeAbi::SystemV, words, |_, _, _| {
-                Err(NativeError::Callback)
-            })
+            .invoke(
+                healthy
+                    .bind(
+                        BASE,
+                        NativeAbi::SystemV,
+                        &[NativeScalar::Word; 13],
+                        NativeScalar::Word
+                    )
+                    .unwrap(),
+                words,
+                |_, _, _| { Err(NativeError::Callback) }
+            )
             .unwrap(),
         54
     );
+}
+
+#[test]
+fn scalar_bindings_keep_mixed_integer_float_and_double_positions() {
+    let kinds = [
+        NativeScalar::Word,
+        NativeScalar::Float,
+        NativeScalar::Word,
+        NativeScalar::Double,
+        NativeScalar::Float,
+        NativeScalar::Word,
+    ];
+    let values = [
+        0x1234_5678_90ab_cdef,
+        0xffff_ffff_8000_0000,
+        0xfedc_ba98_7654_3210,
+        0x7ff8_1234_5678_abcd,
+        0xdead_beef_3f80_0000,
+        0x0102_0304_0506_0708,
+    ];
+    let codes = [
+        [
+            vec![0x48, 0x89, 0xf8],
+            vec![0x66, 0x48, 0x0f, 0x7e, 0xc0],
+            vec![0x48, 0x89, 0xf0],
+            vec![0x66, 0x48, 0x0f, 0x7e, 0xc8],
+            vec![0x66, 0x48, 0x0f, 0x7e, 0xd0],
+            vec![0x48, 0x89, 0xd0],
+        ],
+        [
+            vec![0x48, 0x89, 0xc8],
+            vec![0x66, 0x48, 0x0f, 0x7e, 0xc8],
+            vec![0x4c, 0x89, 0xc0],
+            vec![0x66, 0x48, 0x0f, 0x7e, 0xd8],
+            vec![0x48, 0x8b, 0x44, 0x24, 40],
+            vec![0x48, 0x8b, 0x44, 0x24, 48],
+        ],
+    ];
+    for (abi, codes) in [NativeAbi::SystemV, NativeAbi::Microsoft]
+        .into_iter()
+        .zip(codes)
+    {
+        let mut process = standard(&[0xc3]);
+        let entry = process.bind(BASE, abi, &kinds, NativeScalar::Word).unwrap();
+        let mut words = [0; 13];
+        words[..values.len()].copy_from_slice(&values);
+        for (i, mut code) in codes.into_iter().enumerate() {
+            code.push(0xc3);
+            process.memory_mut().unwrap()[..code.len()].copy_from_slice(&code);
+            let result = process
+                .invoke(entry, words, |_, _, _| Err(NativeError::Callback))
+                .unwrap();
+            let wanted = if kinds[i] == NativeScalar::Float {
+                values[i] & u32::MAX as u64
+            } else {
+                values[i]
+            };
+            assert_eq!(result, wanted, "{abi:?} mixed argument {i}");
+        }
+    }
+}
+
+#[test]
+fn scalar_bindings_spill_after_each_native_float_register_limit() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        for kind in [NativeScalar::Float, NativeScalar::Double] {
+            let mut process = standard(&[0xc3]);
+            let entry = process
+                .bind(BASE, abi, &[kind; 13], NativeScalar::Word)
+                .unwrap();
+            let words: [u64; 13] = std::array::from_fn(|i| 0x7ff8_0000_7fc0_0000 + i as u64);
+            let registers = if abi == NativeAbi::SystemV { 8 } else { 4 };
+            for (i, &value) in words.iter().enumerate() {
+                // Read the selected XMM register or spilled stack word into RAX.
+                let mut code = if i < registers {
+                    vec![0x66, 0x48, 0x0f, 0x7e, 0xc0 | (i as u8 * 8)]
+                } else {
+                    let first = if abi == NativeAbi::SystemV { 8 } else { 40 };
+                    vec![0x48, 0x8b, 0x44, 0x24, first + (i - registers) as u8 * 8]
+                };
+                code.push(0xc3);
+                process.memory_mut().unwrap()[..code.len()].copy_from_slice(&code);
+                let result = process
+                    .invoke(entry, words, |_, _, _| Err(NativeError::Callback))
+                    .unwrap();
+                let wanted = if kind == NativeScalar::Float {
+                    value & u32::MAX as u64
+                } else {
+                    value
+                };
+                assert_eq!(result, wanted, "{abi:?} {kind:?} argument {i}");
+            }
+        }
+    }
+}
+
+#[test]
+fn scalar_results_preserve_float_bits_and_void_discards_register_garbage() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        let mut process = standard(&[0xc3]); // leaves XMM0 as supplied
+        for kind in [NativeScalar::Float, NativeScalar::Double] {
+            let entry = process.bind(BASE, abi, &[kind], kind).unwrap();
+            for value in [
+                0,
+                0x8000_0000,
+                0x7fc0_1234,
+                0x8000_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                0x7ff8_1234_5678_abcd,
+            ] {
+                let mut words = [0; 13];
+                words[0] = value;
+                let result = process
+                    .invoke(entry, words, |_, _, _| Err(NativeError::Callback))
+                    .unwrap();
+                assert_eq!(
+                    result,
+                    if kind == NativeScalar::Float {
+                        value & u32::MAX as u64
+                    } else {
+                        value
+                    }
+                );
+            }
+        }
+        process.memory_mut().unwrap()[..6].copy_from_slice(&[0xb8, 99, 0, 0, 0, 0xc3]);
+        let entry = process.bind(BASE, abi, &[], NativeScalar::Void).unwrap();
+        assert_eq!(
+            process
+                .invoke(entry, [0; 13], |_, _, _| Err(NativeError::Callback))
+                .unwrap(),
+            0
+        );
+        for parameters in [&[NativeScalar::Void][..], &[NativeScalar::Word; 14][..]] {
+            assert!(matches!(
+                process.bind(BASE, abi, parameters, NativeScalar::Word),
+                Err(NativeError::Unsupported)
+            ));
+        }
+    }
 }
 
 #[test]
@@ -558,9 +836,18 @@ fn native_code_cannot_spawn_an_uncontrolled_writer_or_change_page_rights() {
     ]);
     assert_eq!(
         process
-            .invoke(BASE, NativeAbi::SystemV, [0; 13], |_, _, _| Err(
-                NativeError::Callback
-            ))
+            .invoke(
+                process
+                    .bind(
+                        BASE,
+                        NativeAbi::SystemV,
+                        &[NativeScalar::Word; 13],
+                        NativeScalar::Word
+                    )
+                    .unwrap(),
+                [0; 13],
+                |_, _, _| Err(NativeError::Callback)
+            )
             .expect("denied clone"),
         u64::MAX
     );
@@ -573,9 +860,18 @@ fn native_code_cannot_spawn_an_uncontrolled_writer_or_change_page_rights() {
     arguments[2] = 7;
     assert_eq!(
         process
-            .invoke(BASE, NativeAbi::SystemV, arguments, |_, _, _| Err(
-                NativeError::Callback
-            ))
+            .invoke(
+                process
+                    .bind(
+                        BASE,
+                        NativeAbi::SystemV,
+                        &[NativeScalar::Word; 13],
+                        NativeScalar::Word
+                    )
+                    .unwrap(),
+                arguments,
+                |_, _, _| Err(NativeError::Callback)
+            )
             .expect("denied rights change"),
         u64::MAX
     );
@@ -585,9 +881,12 @@ fn native_code_cannot_spawn_an_uncontrolled_writer_or_change_page_rights() {
 fn nonexecutable_entry_and_callback_rejection_are_local() {
     let mut process = standard(&[0xc3]);
     assert!(matches!(
-        process.invoke(BASE + 4096, NativeAbi::SystemV, [0; 13], |_, _, _| Err(
-            NativeError::Callback
-        )),
+        process.bind(
+            BASE + 4096,
+            NativeAbi::SystemV,
+            &[NativeScalar::Word; 13],
+            NativeScalar::Word
+        ),
         Err(NativeError::Extent)
     ));
     assert_ne!(process.pid(), 0);

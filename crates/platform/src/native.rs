@@ -8,6 +8,9 @@ pub enum NativeAbi {
     Microsoft = 1,
 }
 
+mod call;
+pub use call::{NativeEntry, NativeScalar};
+
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRegion {
     pub offset: usize,
