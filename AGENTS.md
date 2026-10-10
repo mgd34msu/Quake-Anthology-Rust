@@ -1,5 +1,12 @@
 # Quake-Rust instructions
 
+Owner ruling, 2026-10-10 (THE-2531): native modules execute only in owned child
+processes through one backend. Use a 64-bit child for x86-64 and a 32-bit child
+for i386 where supported; no x86 interpreter and no foreign code in the Rust
+engine process. Engine services and entity views use the shared owned memory
+and existing CallTable. Borrow shared bytes only at enforced stopped-child
+boundaries. This supersedes earlier in-process/interpreter proposals.
+
 Owner correction, 2026-10-08 23:4x: finish common primitives and the event system
 before format parity or features. Migrate every caller and delete old copies
 and bypasses in the same slice. Do not add primitive-use, bypass or duplicate

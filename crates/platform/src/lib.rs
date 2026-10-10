@@ -2,6 +2,7 @@ mod audio;
 mod clock;
 mod cpu;
 mod events;
+pub mod native;
 mod profile;
 mod sdl;
 mod stdin;

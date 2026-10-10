@@ -867,6 +867,9 @@ fn json_string(value: &str) -> String {
 }
 
 fn main() {
+    if let Some(status) = qa_platform::native::native_child_bootstrap() {
+        std::process::exit(status);
+    }
     if let Err(message) = run() {
         qa_console::logger::error(&message);
         std::process::exit(1);
