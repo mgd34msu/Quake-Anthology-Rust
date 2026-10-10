@@ -46,7 +46,7 @@ impl TraceServices for CheckedQueries {
 #[test]
 fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
     // Explicit native caller table: Q1/QW use SV_Move filtering, Q2/RR use
-    // SV_Trace filtering and legacy clipping, Q3 uses SV_Trace/CM_BoxTrace.
+    // SV_Trace filtering with classic/revised clipping, Q3 uses SV_Trace/CM_BoxTrace.
     // The production selector resolver is deliberately not this oracle.
     let trace_policies = [
         (
@@ -66,8 +66,8 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
         ),
         (
             RuleSetId::Quake2Rerelease,
-            TraceRules::LEGACY,
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+            TraceRules::RERELEASE,
+            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2Rerelease).1,
         ),
         (
             RuleSetId::Quake3,

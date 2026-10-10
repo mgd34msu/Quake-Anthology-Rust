@@ -104,15 +104,7 @@ impl Hull<'_> {
                     continue;
                 }
                 let side = usize::from(t1 < 0.0);
-                // world.c's unsuffixed DIST_EPSILON promotes only this expression.
-                // Stored distances, midpoint arithmetic and results remain f32.
-                let numerator = f64::from(t1)
-                    + if side == 1 {
-                        rules.contact_epsilon
-                    } else {
-                        -rules.contact_epsilon
-                    };
-                let fraction = (numerator / f64::from(t1 - t2)) as f32;
+                let fraction = rules.contact_fraction(t1, t2, side == 0);
                 frame.fraction = fraction.clamp(0.0, 1.0);
                 frame.midf = frame.p1f + (frame.p2f - frame.p1f) * frame.fraction;
                 frame.mid = frame.p1.lerp(frame.p2, frame.fraction);

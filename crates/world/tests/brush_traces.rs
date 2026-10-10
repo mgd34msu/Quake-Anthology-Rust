@@ -168,6 +168,7 @@ fn embedded_motion_keeps_original_brush_trace_semantics() {
     let world = box_map();
     for (rules, fraction, contents) in [
         (TraceRules::LEGACY, 1.0, Contents::EMPTY),
+        (TraceRules::RERELEASE, 0.0, Contents::SOLID),
         (TraceRules::ARENA, 0.0, Contents::SOLID),
     ] {
         let query = TraceQuery {
@@ -218,6 +219,169 @@ fn half_spaces(normals: &[Vec3]) -> Case {
 
 fn point(start: Vec3, end: Vec3, rules: TraceRules) -> TraceQuery<'static> {
     TraceQuery::point(start, end, rules, entity_rules(rules))
+}
+
+#[test]
+fn rerelease_keeps_native_secondary_selection_and_primary_surface() {
+    use qa_core::primitives::RuleSetId;
+    let x = Vec3([1.0, 0.0, 0.0]);
+    let y = Vec3([0.0, 1.0, 0.0]);
+    let z = Vec3([0.0, 0.0, 1.0]);
+    let (rules, entities) = qa_world::collision::trace_policy(RuleSetId::Quake2Rerelease);
+    assert_eq!(rules, TraceRules::RERELEASE);
+    for (normals, secondary, primary_index) in [([x, y, z], z, 1), ([y, x, z], x, 0)] {
+        let world = half_spaces(&normals);
+        let query = TraceQuery::point(
+            Vec3([4.0, 6.0, 2.0]),
+            Vec3([-4.0, -2.0, -2.0]),
+            rules,
+            entities,
+        );
+        let hit = trace_world(&world, query);
+        assert_eq!(hit.fraction.to_bits(), ((6.0f32 - 0.03125) / 8.0).to_bits());
+        assert_eq!(hit.plane.normal, y);
+        assert_eq!(hit.secondary_plane.unwrap().normal, secondary);
+        assert_eq!(hit.secondary_surface_id, hit.surface_id);
+        assert_eq!(hit.surface_id.unwrap().index, primary_index);
+        let classic = trace_world(
+            &world,
+            TraceQuery {
+                rules: TraceRules::LEGACY,
+                ..query
+            },
+        );
+        assert_eq!(classic.fraction.to_bits(), hit.fraction.to_bits());
+        assert!(classic.secondary_plane.is_none());
+        assert!(classic.secondary_surface_id.is_none());
+    }
+}
+
+#[test]
+fn nearer_brush_without_secondary_preserves_previous_native_second_slot() {
+    let normals = [
+        Vec3([0.0, 1.0, 0.0]),
+        Vec3([1.0, 0.0, 0.0]),
+        Vec3([0.0, 0.0, 1.0]),
+    ];
+    let world = load(
+        normals
+            .into_iter()
+            .map(|normal| Plane::oriented(normal, 0.0))
+            .collect(),
+        vec![
+            Brush {
+                first_plane: 0,
+                plane_count: 2,
+                contents: Contents::SOLID,
+            },
+            Brush {
+                first_plane: 2,
+                plane_count: 1,
+                contents: Contents::SOLID,
+            },
+        ],
+    )
+    .unwrap();
+    let hit = trace_world(
+        &world,
+        point(
+            Vec3([4.0, 6.0, 2.0]),
+            Vec3([-4.0, -2.0, -2.0]),
+            TraceRules::RERELEASE,
+        ),
+    );
+    assert_eq!(hit.plane.normal, normals[2]);
+    assert_eq!(hit.secondary_plane.unwrap().normal, normals[1]);
+    assert_eq!(hit.surface_id.unwrap().index, 2);
+    assert_eq!(hit.secondary_surface_id.unwrap().index, 0);
+}
+
+#[test]
+fn rerelease_uses_brush_contents_instead_of_stale_native_leaf_contents() {
+    use qa_world::collision::brushes::{CollisionLeaf, ModelRoot};
+    let mut store = CollisionStore::new();
+    let geometry = store
+        .load_brushes(
+            vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)],
+            vec![Brush {
+                first_plane: 0,
+                plane_count: 1,
+                contents: Contents::SOLID,
+            }],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
+            BrushTree {
+                planes: vec![],
+                nodes: vec![],
+                leaves: vec![CollisionLeaf {
+                    stored_contents: Some(Contents::EMPTY),
+                    first_brush: 0,
+                    brush_count: 1,
+                }],
+                leaf_brushes: vec![0],
+                models: vec![ModelRoot::Leaf(0)],
+            },
+            vec![Bounds {
+                mins: Vec3([-10.0; 3]),
+                maxs: Vec3([10.0; 3]),
+            }],
+        )
+        .unwrap();
+    let world = Case { store, geometry };
+    let end = Vec3([-1.0, 0.0, 0.0]);
+    for (id, expected) in [
+        (qa_core::primitives::RuleSetId::Quake2, Contents::EMPTY),
+        (
+            qa_core::primitives::RuleSetId::Quake2Rerelease,
+            Contents::SOLID,
+        ),
+    ] {
+        let (rules, entities) = qa_world::collision::trace_policy(id);
+        let hit = trace_world(
+            &world,
+            TraceQuery::point(Vec3([1.0, 0.0, 0.0]), end, rules, entities),
+        );
+        assert_eq!(hit.contents, expected);
+        assert_eq!(point_contents(&world, end, entities), expected);
+    }
+}
+
+#[test]
+fn rerelease_clamps_each_plane_and_rejects_endpoint_at_its_own_epsilon() {
+    let world = half_spaces(&[Vec3([1.0, 0.0, 0.0]), Vec3([0.0, 1.0, 0.0])]);
+    let hit = trace_world(
+        &world,
+        point(
+            Vec3([0.015625, 0.0234375, 0.0]),
+            Vec3([-0.015625, -0.0078125, 0.0]),
+            TraceRules::RERELEASE,
+        ),
+    );
+    assert_eq!(hit.fraction, 0.0);
+    assert_eq!(hit.plane.normal, Vec3([1.0, 0.0, 0.0]));
+    let world = half_spaces(&[Vec3([1.0, 0.0, 0.0])]);
+    assert_eq!(
+        trace_world(
+            &world,
+            point(
+                Vec3([0.0625, 0.0, 0.0]),
+                Vec3([0.03125, 0.0, 0.0]),
+                TraceRules::RERELEASE
+            )
+        )
+        .fraction,
+        1.0
+    );
+}
+
+#[test]
+fn rerelease_fraction_uses_native_binary32_bias_rounding() {
+    let world = half_spaces(&[Vec3([1.0, 0.0, 0.0])]);
+    let start = Vec3([f32::from_bits(0x4ad94803), 0.0, 0.0]);
+    let end = Vec3([f32::from_bits(0xcac6b7f8), 0.0, 0.0]);
+    let native = trace_world(&world, point(start, end, TraceRules::RERELEASE));
+    let classic = trace_world(&world, point(start, end, TraceRules::LEGACY));
+    assert_eq!(native.fraction.to_bits(), 0x3f05b62b);
+    assert_eq!(classic.fraction.to_bits(), 0x3f05b62a);
 }
 
 #[test]

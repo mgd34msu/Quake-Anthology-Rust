@@ -129,6 +129,7 @@ pub enum AllSolid {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NonAxialOffset {
     ProjectedExtents,
+    ProjectedExtentsBinary32,
     Fixed(f32),
 }
 
@@ -154,9 +155,10 @@ pub enum PositionEndpoint {
 /// These are engine query values, not fields of any legacy wire protocol.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TraceRules {
-    /// Native epsilon macros are unsuffixed doubles. Only the biased fraction
-    /// expression is promoted; plane distances and stored fractions stay f32.
+    /// Plane distances and stored fractions stay f32; the native epsilon
+    /// expression's precision is selected independently below.
     pub contact_epsilon: f64,
+    pub fraction_binary32: bool,
     pub outside_brush: OutsideBrush,
     pub fraction_clamp: FractionClamp,
     pub bounds_origin: BoundsOrigin,
@@ -168,6 +170,8 @@ pub struct TraceRules {
     pub position_endpoint: PositionEndpoint,
     /// Original stationary collection truncation is caller compatibility data.
     pub position_leaf_limit: u32,
+    /// Rerelease keeps the native second entering plane, in source space.
+    pub secondary_contact: bool,
 }
 
 impl TraceRules {
@@ -175,6 +179,7 @@ impl TraceRules {
     /// Convex brushes are a shared extension for Q1 callers, not Q1 topology.
     pub const LEGACY: Self = Self {
         contact_epsilon: 0.03125,
+        fraction_binary32: false,
         outside_brush: OutsideBrush::MovingAway,
         fraction_clamp: FractionClamp::AfterSelection,
         bounds_origin: BoundsOrigin::Supplied,
@@ -185,9 +190,11 @@ impl TraceRules {
         position: PositionRules::AllSides,
         position_endpoint: PositionEndpoint::Start,
         position_leaf_limit: 1024,
+        secondary_contact: false,
     };
     pub const ARENA: Self = Self {
         contact_epsilon: 0.125,
+        fraction_binary32: false,
         outside_brush: OutsideBrush::EndBeyondEpsilon,
         fraction_clamp: FractionClamp::PerPlane,
         bounds_origin: BoundsOrigin::Centered,
@@ -198,7 +205,64 @@ impl TraceRules {
         position: PositionRules::AxialPrefix,
         position_endpoint: PositionEndpoint::ByFraction,
         position_leaf_limit: 1024,
+        secondary_contact: false,
     };
+    pub const RERELEASE: Self = Self {
+        fraction_binary32: true,
+        outside_brush: OutsideBrush::EndBeyondEpsilon,
+        fraction_clamp: FractionClamp::PerPlane,
+        all_solid: AllSolid::BlockAtStart,
+        nonaxial_offset: NonAxialOffset::ProjectedExtentsBinary32,
+        leaf_gate: LeafGate::Brushes,
+        secondary_contact: true,
+        ..Self::LEGACY
+    };
+
+    pub(crate) fn contact_fraction(self, first: f32, last: f32, entering: bool) -> f32 {
+        if self.fraction_binary32 {
+            let epsilon = self.contact_epsilon as f32;
+            let numerator = if entering {
+                first - epsilon
+            } else {
+                first + epsilon
+            };
+            numerator / (first - last)
+        } else {
+            let numerator = if entering {
+                f64::from(first) - self.contact_epsilon
+            } else {
+                f64::from(first) + self.contact_epsilon
+            };
+            (numerator / f64::from(first - last)) as f32
+        }
+    }
+
+    pub(crate) fn split_fraction(self, distance: f32, inverse: f32, add: bool) -> f32 {
+        if self.fraction_binary32 {
+            let epsilon = self.contact_epsilon as f32;
+            let biased = if add {
+                distance + epsilon
+            } else {
+                distance - epsilon
+            };
+            biased * inverse
+        } else {
+            let biased = if add {
+                f64::from(distance) + self.contact_epsilon
+            } else {
+                f64::from(distance) - self.contact_epsilon
+            };
+            (biased * f64::from(inverse)) as f32
+        }
+    }
+
+    pub(crate) fn inverse_span(self, span: f32) -> f32 {
+        if self.fraction_binary32 {
+            1.0f32 / span
+        } else {
+            (1.0f64 / f64::from(span)) as f32
+        }
+    }
 }
 
 /// Resolve the caller's explicit role into the shared query values. Native
@@ -219,14 +283,23 @@ pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTracePolicy) {
             },
         ),
         RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (
-            TraceRules::LEGACY,
+            if matches!(rules, RuleSetId::Quake2Rerelease) {
+                TraceRules::RERELEASE
+            } else {
+                TraceRules::LEGACY
+            },
             EntityTracePolicy {
                 world_entity: WorldEntityRule::Always,
                 link_role: LinkFlags::SOLID,
                 filtering: EntityTraceFlags(
                     EntityTraceFlags::DEAD_MONSTER_MASK
                         | EntityTraceFlags::LINKED_CONTENTS
-                        | EntityTraceFlags::STOP_AT_ZERO,
+                        | EntityTraceFlags::STOP_AT_ZERO
+                        | if matches!(rules, RuleSetId::Quake2Rerelease) {
+                            EntityTraceFlags::BRUSH_CONTENTS
+                        } else {
+                            0
+                        },
                 ),
             },
         ),
@@ -302,6 +375,8 @@ pub struct Trace {
     pub entity: Option<EntityId>,
     pub surface: SurfaceFlags,
     pub surface_id: Option<SurfaceId>,
+    pub secondary_plane: Option<Plane>,
+    pub secondary_surface_id: Option<SurfaceId>,
     /// Brush-solid contacts preserve NetQuake's SOLID_BSP grounding rule.
     pub brush_solid: bool,
 }
@@ -345,6 +420,8 @@ impl Trace {
             entity: None,
             surface: SurfaceFlags::default(),
             surface_id: None,
+            secondary_plane: None,
+            secondary_surface_id: None,
             brush_solid: true,
         }
     }

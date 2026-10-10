@@ -408,13 +408,19 @@ impl Topology {
             } else {
                 match work.query.rules.nonaxial_offset {
                     NonAxialOffset::Fixed(offset) => offset,
-                    NonAxialOffset::ProjectedExtents => {
-                        // Native fabs promotes each f32 product to double;
-                        // the sum rounds once when assigned to float offset.
-                        (f64::from(work.extents.0[0] * plane.normal.0[0]).abs()
-                            + f64::from(work.extents.0[1] * plane.normal.0[1]).abs()
-                            + f64::from(work.extents.0[2] * plane.normal.0[2]).abs())
-                            as f32
+                    mode @ (NonAxialOffset::ProjectedExtents
+                    | NonAxialOffset::ProjectedExtentsBinary32) => {
+                        let products = std::array::from_fn::<_, 3, _>(|axis| {
+                            (work.extents.0[axis] * plane.normal.0[axis]).abs()
+                        });
+                        if mode == NonAxialOffset::ProjectedExtentsBinary32 {
+                            products[0] + products[1] + products[2]
+                        } else {
+                            // Classic fabs sums promoted products in double.
+                            (f64::from(products[0])
+                                + f64::from(products[1])
+                                + f64::from(products[2])) as f32
+                        }
                     }
                 }
             };
@@ -434,20 +440,20 @@ impl Topology {
                 top += 1;
                 continue;
             }
-            let epsilon = work.query.rules.contact_epsilon;
+            let rules = work.query.rules;
             let (side, near, far) = if t1 < t2 {
-                let inverse = (1.0f64 / f64::from(t1 - t2)) as f32;
+                let inverse = rules.inverse_span(t1 - t2);
                 (
                     1,
-                    ((f64::from(t1 - offset) + epsilon) * f64::from(inverse)) as f32,
-                    ((f64::from(t1 + offset) + epsilon) * f64::from(inverse)) as f32,
+                    rules.split_fraction(t1 - offset, inverse, true),
+                    rules.split_fraction(t1 + offset, inverse, true),
                 )
             } else if t1 > t2 {
-                let inverse = (1.0f64 / f64::from(t1 - t2)) as f32;
+                let inverse = rules.inverse_span(t1 - t2);
                 (
                     0,
-                    ((f64::from(t1 + offset) + epsilon) * f64::from(inverse)) as f32,
-                    ((f64::from(t1 - offset) - epsilon) * f64::from(inverse)) as f32,
+                    rules.split_fraction(t1 + offset, inverse, true),
+                    rules.split_fraction(t1 - offset, inverse, false),
                 )
             } else {
                 (0, 1.0, 0.0)

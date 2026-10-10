@@ -298,6 +298,8 @@ pub(super) fn clip_brush(
         [brush.first_plane as usize..brush.first_plane as usize + brush.plane_count as usize];
     let rules = work.query.rules;
     let mut enter = -1.0f32;
+    let mut second_enter = -1.0f32;
+    let mut second_contact = None;
     let mut leave = 1.0f32;
     let mut contact = Plane::default();
     let mut surface = SurfaceFlags::default();
@@ -321,8 +323,7 @@ pub(super) fn clip_brush(
             continue;
         }
         if d1 > d2 {
-            let mut fraction =
-                ((f64::from(d1) - rules.contact_epsilon) / f64::from(d1 - d2)) as f32;
+            let mut fraction = rules.contact_fraction(d1, d2, true);
             if rules.fraction_clamp == FractionClamp::PerPlane && fraction < 0.0 {
                 fraction = 0.0;
             }
@@ -330,10 +331,14 @@ pub(super) fn clip_brush(
                 enter = fraction;
                 contact = plane;
                 (surface, surface_id) = surfaces.contact(brush.first_plane as usize + index);
+            } else if rules.secondary_contact && fraction > second_enter {
+                // Native KEX only records this else branch; it does not move
+                // the previous primary plane into the secondary slot.
+                second_enter = fraction;
+                second_contact = Some(plane);
             }
         } else {
-            let mut fraction =
-                ((f64::from(d1) + rules.contact_epsilon) / f64::from(d1 - d2)) as f32;
+            let mut fraction = rules.contact_fraction(d1, d2, false);
             if rules.fraction_clamp == FractionClamp::PerPlane && fraction > 1.0 {
                 fraction = 1.0;
             }
@@ -356,6 +361,11 @@ pub(super) fn clip_brush(
         trace.plane = contact;
         trace.surface = surface;
         trace.surface_id = surface_id;
+        if let Some(plane) = second_contact {
+            trace.secondary_plane = Some(plane);
+            // qsrc stores the primary side's surface in both native slots.
+            trace.secondary_surface_id = surface_id;
+        }
         trace.contents = brush.contents;
     }
 }

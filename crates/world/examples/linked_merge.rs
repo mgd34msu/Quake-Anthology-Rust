@@ -70,6 +70,8 @@ fn input_trace(data: &mut &[u8]) -> Result<Trace, &'static str> {
         entity: (slot != u32::MAX).then_some(EntityId { slot, generation }),
         surface,
         surface_id: None,
+        secondary_plane: None,
+        secondary_surface_id: None,
         brush_solid: flags & 16 != 0,
     })
 }
