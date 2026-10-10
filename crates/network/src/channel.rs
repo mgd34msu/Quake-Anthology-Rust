@@ -134,7 +134,7 @@ pub struct Channel {
     controls: PayloadQueue<Header>,
     transmit: transmit::Transmit,
     commands: Option<commands::CommandMessages>,
-    snapshots: Option<Box<crate::snapshots::Q3Ring>>,
+    snapshots: Option<crate::snapshots::Storage>,
 }
 
 impl Channel {
@@ -165,10 +165,8 @@ impl Channel {
             transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
             commands: policy.command_ack.then(commands::CommandMessages::load),
             snapshots: if policy.command_ack && endpoint == Endpoint::Client {
-                Some(Box::new(
-                    crate::snapshots::Q3Ring::load(1023, 1024, 32, Some(2048 - 128))
-                        .map_err(|_| Error::Capacity)?,
-                ))
+                crate::snapshots::Storage::load(crate::commands::packet::Protocol::Quake3_68)
+                    .map_err(|_| Error::Capacity)?
             } else {
                 None
             },
@@ -178,11 +176,35 @@ impl Channel {
     pub fn state(&self) -> State {
         self.state
     }
-    pub fn snapshot(&self, sequence: u32) -> Option<crate::snapshots::Q3Frame<'_>> {
+    pub fn snapshot(&self, sequence: u32) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.frame(sequence)
     }
-    pub fn snapshots_mut(&mut self) -> Option<&mut crate::snapshots::Q3Ring> {
-        self.snapshots.as_deref_mut()
+    /// Called at connection binding, never while decoding an ordinary frame.
+    /// Classic QW and Q2 have the same channel header, so the native payload
+    /// protocol is supplied explicitly rather than inferred from that header.
+    pub fn configure_client_snapshots(
+        &mut self,
+        protocol: crate::commands::packet::Protocol,
+    ) -> Result<(), crate::commands::packet::Error> {
+        use crate::commands::packet::Error;
+        if self.endpoint() != Endpoint::Client || protocol.channel() != self.policy {
+            return Err(Error::Context);
+        }
+        if let Some(storage) = &self.snapshots {
+            return if storage.protocol() == protocol {
+                Ok(())
+            } else {
+                Err(Error::Context)
+            };
+        }
+        self.snapshots = crate::snapshots::Storage::load(protocol)?;
+        Ok(())
+    }
+    pub(crate) fn q2_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::Q2Ring> {
+        match self.snapshots.as_mut()? {
+            crate::snapshots::Storage::Quake2(ring) => Some(ring),
+            _ => None,
+        }
     }
     pub fn endpoint(&self) -> Endpoint {
         match self.direction {

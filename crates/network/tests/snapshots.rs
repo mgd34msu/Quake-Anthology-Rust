@@ -283,7 +283,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
         packet.bytes,
         EventTime(2),
         |id, endpoint, incoming| {
-            if let Incoming::Snapshot(frame) = incoming {
+            if let Incoming::Snapshot(snapshots::ReceivedFrame::Quake3(frame)) = incoming {
                 assert_eq!(id, ClientId(0));
                 assert_eq!(endpoint, Endpoint::Client);
                 assert_eq!(frame.entities, [entity(1, 7.5)]);
@@ -330,7 +330,9 @@ fn deliver_server_message(
         return Err(Error::Context);
     };
     let n = client_commands.stage(payload)?;
-    client_commands.decode_output(n, sequence, client, |_, _| {})
+    client_commands
+        .decode_output(n, sequence, client, |_| {})
+        .map(|_| ())
 }
 
 fn deliver_client_move(
@@ -584,5 +586,209 @@ fn q2_frame_overflow_and_area_limits_do_not_publish_partial_data() -> Result<(),
         Err(Error::Count)
     );
     assert!(client.frame(3).is_none());
+    Ok(())
+}
+
+fn q2_deliver_frame(
+    server: &mut Channel,
+    connections: &mut Connections,
+    ring: &snapshots::Q2Ring,
+    frame: u32,
+    delta: Option<u32>,
+    deliver: bool,
+    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+) -> Result<(), Error> {
+    let mut payload = [0; 1400];
+    let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+    writer.write_bits(10, 8)?;
+    writer.write_bits(3, 8)?;
+    writer.write_data(b"before\0")?;
+    snapshots::write_q2(&mut writer, ring, frame, delta, 16)?;
+    writer.write_bits(6, 8)?;
+    writer.write_bits(4, 8)?;
+    writer.write_data(b"after\0")?;
+    let mut bytes = [0; 1400];
+    let packet = server
+        .prepare_move(writer.bytes(), EventTime(1))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let n = packet.bytes.len();
+    bytes[..n].copy_from_slice(packet.bytes);
+    server.submitted(EventTime(1)).map_err(|_| Error::Context)?;
+    if deliver {
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(ClientId(0)),
+            &bytes[..n],
+            EventTime(2),
+            consume,
+        );
+    }
+    Ok(())
+}
+
+fn q2_request(
+    connections: &Connections,
+    receiver: &mut Commands,
+    server: &mut Channel,
+) -> Result<Option<u32>, Error> {
+    let client = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let codec = client.commands.as_ref().ok_or(Error::Context)?;
+    let command = qa_core::primitives::UserCmd {
+        duration_ms: 20,
+        ..Default::default()
+    };
+    let mut bytes = [0; 1400];
+    let n = codec.encode(&command, &client.channel, &mut bytes)?;
+    let staged = receiver.stage(&bytes[..n])?;
+    let movement = qa_network::commands::packet::read(
+        Protocol::Quake2_34,
+        &mut bytes[..n],
+        client.channel.send_state().sequence,
+        qa_network::commands::packet::Key::default(),
+    )?;
+    let qa_network::commands::packet::Move::Quake2 { last_frame, .. } = movement else {
+        return Err(Error::Context);
+    };
+    receiver.decode(staged, client.channel.send_state().sequence, 0, 0, server)?;
+    let expected = (last_frame >= 0).then_some(last_frame as u32);
+    assert_eq!(receiver.delta_request(), expected);
+    Ok(expected)
+}
+
+#[test]
+fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> Result<(), Error> {
+    let policy = Protocol::Quake2_34.channel();
+    let mut server =
+        Channel::load(policy, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
+    let mut commands = Commands::load(Protocol::Quake2_34);
+    let mut connections = Connections::load(1);
+    connections
+        .bind(
+            ClientId(0),
+            Endpoint::Client,
+            Connection {
+                route: Route {
+                    socket: Endpoint::Client.socket(),
+                    peer: Peer::Loopback(ClientId(0)),
+                },
+                channel: Channel::load(policy, Endpoint::Client, 8192, 16)
+                    .map_err(|_| Error::Context)?,
+                commands: Some(Commands::load(Protocol::Quake2_34)),
+                output: None,
+            },
+        )
+        .map_err(|_| Error::Context)?;
+    let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+    let mut frames = 0;
+    let mut prints = 0;
+    assert_eq!(q2_request(&connections, &mut commands, &mut server)?, None);
+    for (frame, delta, deliver, valid) in [
+        (41, None, true, true),
+        (42, Some(41), true, true),
+        (43, Some(42), false, false),
+        (44, Some(43), true, false),
+        (45, None, true, true),
+    ] {
+        q2_store(&mut ring, frame, &[q2_entity(30, frame as f32, 0)])?;
+        q2_deliver_frame(
+            &mut server,
+            &mut connections,
+            &ring,
+            frame,
+            delta,
+            deliver,
+            |id, endpoint, incoming| {
+                assert_eq!(id, ClientId(0));
+                assert_eq!(endpoint, Endpoint::Client);
+                match incoming {
+                    Incoming::Snapshot(snapshots::ReceivedFrame::Quake2(snapshot)) => {
+                        assert!(valid);
+                        assert_eq!(snapshot.sequence, frame);
+                        assert_eq!(snapshot.time, frame as i32 * 100);
+                        let mut expected = q2_entity(30, frame as f32, 0);
+                        if let Some(previous) = delta {
+                            expected.words[14] = (previous as f32).to_bits();
+                        }
+                        assert_eq!(snapshot.entities, [expected]);
+                        frames += 1;
+                    }
+                    Incoming::Print(print) => {
+                        if prints % 2 == 0 {
+                            assert_eq!(print.text, b"before");
+                            assert_eq!(print.level, Some(3));
+                            assert_eq!(print.kind, qa_core::primitives::PrintKind::Chat);
+                        } else {
+                            assert_eq!(print.text, b"after");
+                            assert_eq!(print.kind, qa_core::primitives::PrintKind::Layout);
+                        }
+                        prints += 1;
+                    }
+                    _ => unreachable!(),
+                }
+            },
+        )?;
+        if deliver {
+            assert_eq!(
+                q2_request(&connections, &mut commands, &mut server)?,
+                valid.then_some(frame)
+            );
+        }
+    }
+    assert_eq!((frames, prints), (3, 8));
+    assert_eq!(connections.command_errors, 0);
+    // Frame 41 arrived in channel packet 1, so using its channel sequence as
+    // clc_move's lastframe would have failed the native requests above.
+    Ok(())
+}
+
+#[test]
+fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Result<(), Error> {
+    let policy = Protocol::Quake2_34.channel();
+    let mut client =
+        Channel::load(policy, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
+    client.configure_client_snapshots(Protocol::Quake2_34)?;
+    let mut commands = Commands::load(Protocol::Quake2_34);
+    let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+    q2_store(&mut ring, 41, &[q2_entity(30, 7., 0)])?;
+    let mut payload = [0; 1400];
+    let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+    snapshots::write_q2(&mut writer, &ring, 41, None, 16)?;
+    let n = commands.stage(writer.bytes())?;
+    assert_eq!(commands.decode_output(n, 1, &mut client, |_| {})?, Some(41));
+    q2_store(&mut ring, 42, &[q2_entity(30, 8., 0)])?;
+    let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+    snapshots::write_q2(&mut writer, &ring, 42, Some(41), 16)?;
+    let length = writer.size();
+    for cut in 1..length {
+        let n = commands.stage(&payload[..cut])?;
+        assert!(commands.decode_output(n, 2, &mut client, |_| {}).is_err());
+        assert!(client.snapshot(42).is_none());
+        assert!(client.snapshot(41).is_some());
+        assert_eq!(commands.delta_request(), None);
+    }
+    for bytes in [
+        &[17][..],
+        &[18][..],
+        &[19][..],
+        &[9][..],
+        &[10, 2, b'x'][..],
+    ] {
+        let n = commands.stage(bytes)?;
+        assert!(commands.decode_output(n, 3, &mut client, |_| {}).is_err());
+    }
+    let n = commands.stage(&payload[..length])?;
+    assert_eq!(commands.decode_output(n, 4, &mut client, |_| {})?, Some(42));
+    // Idempotent binding preserves received frames; a different native payload
+    // cannot reuse their storage just because its channel header is identical.
+    client.configure_client_snapshots(Protocol::Quake2_34)?;
+    assert!(
+        client
+            .configure_client_snapshots(Protocol::QuakeWorld28)
+            .is_err()
+    );
+    assert!(client.snapshot(42).is_some());
     Ok(())
 }

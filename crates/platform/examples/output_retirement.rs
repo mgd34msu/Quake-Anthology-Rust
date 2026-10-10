@@ -86,7 +86,13 @@ impl FrameSource for Source {
                         n,
                         received.header.sequence,
                         &mut self.peers[slot],
-                        |_, text| {
+                        |incoming| {
+                            let qa_network::ingress::Incoming::ReliableCommand { text, .. } =
+                                incoming
+                            else {
+                                valid = false;
+                                return;
+                            };
                             valid &= text.starts_with(b"cp \"")
                                 && text.ends_with(b"\"")
                                 && text.len() > 5;

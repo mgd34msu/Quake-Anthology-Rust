@@ -5,6 +5,11 @@ use super::{
     to_q1_move, to_q2_usercmd, to_q3_usercmd, to_qw_usercmd,
 };
 use crate::channel::Channel;
+use crate::{
+    ingress::Incoming,
+    message::{Encoding, Reader},
+    outputs::Prints,
+};
 use qa_core::primitives::UserCmd;
 
 pub struct Commands {
@@ -22,7 +27,8 @@ impl Commands {
             delta_request: None,
         }
     }
-    /// SV_UserMove's deltaMessage, supplied by native message ACK and opcode.
+    /// Native payload delta request. SERVER retains clc_move's request; Q2
+    /// CLIENT clears it whenever the current svc_frame is invalid.
     pub fn delta_request(&self) -> Option<u32> {
         self.delta_request
     }
@@ -44,7 +50,10 @@ impl Commands {
                 commands: [ZERO_QW, ZERO_QW, to_qw_usercmd(command)],
             },
             Protocol::Quake2_34 => Move::Quake2 {
-                last_frame: -1,
+                last_frame: self
+                    .delta_request
+                    .filter(|&sequence| channel.snapshot(sequence).is_some())
+                    .map_or(-1, |sequence| sequence as i32),
                 commands: [ZERO_Q2, ZERO_Q2, to_q2_usercmd(command)],
             },
             Protocol::Quake3_68 => {
@@ -131,10 +140,16 @@ impl Commands {
                 commands[2],
                 self.previous_time.wrapping_add(i32::from(commands[2].msec)),
             ),
-            Move::Quake2 { commands, .. } => from_q2_usercmd(
-                commands[2],
-                self.previous_time.wrapping_add(i32::from(commands[2].msec)),
-            ),
+            Move::Quake2 {
+                last_frame,
+                commands,
+            } => {
+                self.delta_request = (last_frame >= 0).then_some(last_frame as u32);
+                from_q2_usercmd(
+                    commands[2],
+                    self.previous_time.wrapping_add(i32::from(commands[2].msec)),
+                )
+            }
             Move::Quake3 {
                 commands,
                 count,
@@ -161,9 +176,60 @@ impl Commands {
         length: usize,
         sequence: u32,
         channel: &mut Channel,
-        consume: impl FnMut(u32, &[u8]),
-    ) -> Result<(), packet::Error> {
+        mut consume: impl FnMut(Incoming<'_>),
+    ) -> Result<Option<u32>, packet::Error> {
         let scratch = &mut self.scratch[..length];
-        channel.decode_server_output(scratch, sequence, consume)
+        if self.protocol == Protocol::Quake3_68 {
+            channel.decode_server_output(scratch, sequence, |sequence, text| {
+                consume(Incoming::ReliableCommand { sequence, text });
+            })?;
+            return Ok(channel.snapshot(sequence).map(|frame| frame.sequence()));
+        }
+        if self.protocol != Protocol::Quake2_34
+            || channel.endpoint() != qa_core::loopback::Endpoint::Client
+        {
+            return Err(packet::Error::Context);
+        }
+        let result = (|| {
+            let mut at = 0;
+            let mut snapshot = None;
+            // Native CL_ParseServerMessage ends at the byte boundary, with no EOF
+            // opcode. Each accepted service consumes bytes from fixed scratch.
+            while at < scratch.len() {
+                match scratch[at] {
+                    6 => at += 1, // svc_nop
+                    20 => {
+                        self.delta_request = None;
+                        let ring = channel.q2_snapshots_mut().ok_or(packet::Error::Context)?;
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let accepted = crate::snapshots::read_q2(&mut reader, ring)?;
+                        at += 1 + reader.byte_position();
+                        snapshot = if accepted {
+                            ring.current().map(|frame| frame.sequence)
+                        } else {
+                            None
+                        };
+                        self.delta_request = snapshot;
+                    }
+                    4 | 10 | 15 => {
+                        let mut prints = Prints::new(self.protocol, &scratch[at..]);
+                        let print = prints
+                            .next()
+                            .ok_or(packet::Error::Opcode)?
+                            .map_err(|_| packet::Error::Opcode)?;
+                        at = scratch.len() - prints.remaining().len();
+                        consume(Incoming::Print(print));
+                    }
+                    // Signon/configstrings, native sounds/effects, inventory and
+                    // stuffed commands require their own service bindings later.
+                    _ => return Err(packet::Error::Opcode),
+                }
+            }
+            Ok(snapshot)
+        })();
+        if result.is_err() {
+            self.delta_request = None;
+        }
+        result
     }
 }

@@ -299,6 +299,9 @@ fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
 }
 fn main() -> Result<(), String> {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|a| a == "--connected-heap") {
+        return connected_heap();
+    }
     if args.get(1).is_some_and(|a| a == "--timing") {
         return timing(
             args.get(2).ok_or("fixture path")?,
@@ -348,5 +351,151 @@ fn check_heap_counter() -> Result<(), String> {
     if allocations::end_frame().allocations != 1 {
         return Err("heap positive control".into());
     }
+    Ok(())
+}
+
+fn connected_heap() -> Result<(), String> {
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{ClientId, UserCmd},
+        sys_events::{EventTime, Peer},
+    };
+    use qa_network::{
+        channel::Channel,
+        commands::{connection::Commands, packet::Protocol},
+        ingress::{Connection, Connections, Incoming, Route},
+        states,
+    };
+    let protocol = Protocol::Quake2_34;
+    let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut server_commands = Commands::load(protocol);
+    let mut connections = Connections::load(1);
+    connections
+        .bind(
+            ClientId(0),
+            Endpoint::Client,
+            Connection {
+                route: Route {
+                    socket: Endpoint::Client.socket(),
+                    peer: Peer::Loopback(ClientId(0)),
+                },
+                channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
+                    .map_err(|e| format!("{e:?}"))?,
+                commands: Some(Commands::load(protocol)),
+                output: None,
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None).map_err(|e| e.to_string())?;
+    check_heap_counter()?;
+    let mut measured = allocations::Counts::default();
+    let mut checks = 0;
+    for iteration in 0..660u32 {
+        let frame = 100 + iteration;
+        let delta = server_commands.delta_request();
+        let mut player = [0; states::Q2_PLAYER_WORDS];
+        player[1] = frame;
+        let mut entity = Entity {
+            number: 30,
+            words: [0; states::Q2_ENTITY_WORDS],
+        };
+        entity.words[8] = (frame as f32).to_bits();
+        entity.words[14] = 999.0f32.to_bits();
+        allocations::begin_frame();
+        let result = (|| -> Result<(), qa_network::commands::packet::Error> {
+            ring.store(Frame {
+                sequence: frame,
+                time: 0,
+                command: 0,
+                flags: 0,
+                areas: &[0x81],
+                player: &player,
+                entities: &[entity],
+            })?;
+            let mut payload = [0; 1400];
+            let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+            snapshots::write_q2(&mut writer, &ring, frame, delta, 16)?;
+            writer.write_data(&[10, 2, b'x', 0])?;
+            let packet = server
+                .prepare_move(writer.bytes(), EventTime(1))
+                .map_err(|_| qa_network::commands::packet::Error::Context)?
+                .ok_or(qa_network::commands::packet::Error::Context)?;
+            let mut packet_bytes = [0; 1400];
+            let length = packet.bytes.len();
+            packet_bytes[..length].copy_from_slice(packet.bytes);
+            server
+                .submitted(EventTime(1))
+                .map_err(|_| qa_network::commands::packet::Error::Context)?;
+            let mut frames = 0;
+            let mut prints = 0;
+            let mut valid = true;
+            connections.receive(
+                Endpoint::Client.socket(),
+                Peer::Loopback(ClientId(0)),
+                &packet_bytes[..length],
+                EventTime(2),
+                |_, _, incoming| match incoming {
+                    Incoming::Snapshot(snapshots::ReceivedFrame::Quake2(received)) => {
+                        frames += 1;
+                        valid &= received.sequence == frame
+                            && received.player[1] == frame
+                            && received.entities.len() == 1
+                            && received.entities[0].words[8] == entity.words[8];
+                    }
+                    Incoming::Print(print) => {
+                        prints += 1;
+                        valid &= print.text == b"x";
+                    }
+                    _ => valid = false,
+                },
+            );
+            if !valid || frames != 1 || prints != 1 {
+                return Err(qa_network::commands::packet::Error::Context);
+            }
+            let client = connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(qa_network::commands::packet::Error::Context)?;
+            let codec = client
+                .commands
+                .as_ref()
+                .ok_or(qa_network::commands::packet::Error::Context)?;
+            let mut movement = [0; 1400];
+            let length = codec.encode(
+                &UserCmd {
+                    duration_ms: 20,
+                    ..Default::default()
+                },
+                &client.channel,
+                &mut movement,
+            )?;
+            let staged = server_commands.stage(&movement[..length])?;
+            server_commands.decode(
+                staged,
+                client.channel.send_state().sequence,
+                0,
+                0,
+                &mut server,
+            )?;
+            if server_commands.delta_request() != Some(frame) {
+                return Err(qa_network::commands::packet::Error::Context);
+            }
+            Ok(())
+        })();
+        let heap = allocations::end_frame();
+        result.map_err(|e| e.to_string())?;
+        checks += 1;
+        if iteration >= 60 {
+            measured.allocations += heap.allocations;
+            measured.reallocations += heap.reallocations;
+            measured.requested_bytes += heap.requested_bytes;
+        }
+    }
+    if measured != allocations::Counts::default() || connections.command_errors != 0 {
+        return Err(format!("connected snapshot heap/count gate {measured:?}"));
+    }
+    println!(
+        "{{\"scope\":\"Q2 frame store/write, Channel, CLIENT ingress, print dispatch and native move feedback; caller Rust heap, no workers/OS/app/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
+    );
     Ok(())
 }

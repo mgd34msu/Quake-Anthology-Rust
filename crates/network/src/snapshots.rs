@@ -154,6 +154,11 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             entities: &self.entities[index * self.capacity..index * self.capacity + slot.count],
         })
     }
+    /// An invalid Q2 current frame requests a full update, even when an older
+    /// accepted frame remains available as a future native delta base.
+    pub fn current(&self) -> Option<Frame<'_, P, E>> {
+        self.frame(self.latest?)
+    }
     /// The provider supplies native numbers and reduced words. Unrepresentable
     /// capabilities are mapped/dropped before this connection boundary.
     pub fn store(&mut self, frame: Frame<'_, P, E>) -> Result<(), packet::Error> {
@@ -244,6 +249,58 @@ pub type Q3Ring = Ring<{ states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
 pub type Q3Frame<'a> = Frame<'a, { states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
 pub type Q2Ring = Ring<{ states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
 pub type Q2Frame<'a> = Frame<'a, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
+
+/// Native record widths are protocol data; both variants borrow the same Ring
+/// implementation and never contain another engine player/entity store.
+#[derive(Clone, Copy, Debug)]
+pub enum ReceivedFrame<'a> {
+    Quake2(Q2Frame<'a>),
+    Quake3(Q3Frame<'a>),
+}
+impl ReceivedFrame<'_> {
+    pub fn sequence(self) -> u32 {
+        match self {
+            Self::Quake2(frame) => frame.sequence,
+            Self::Quake3(frame) => frame.sequence,
+        }
+    }
+}
+
+pub(crate) enum Storage {
+    Quake2(Box<Q2Ring>),
+    Quake3(Box<Q3Ring>),
+}
+impl Storage {
+    pub(crate) fn load(protocol: packet::Protocol) -> Result<Option<Self>, packet::Error> {
+        Ok(match protocol {
+            packet::Protocol::Quake2_34 => Some(Self::Quake2(Box::new(Q2Ring::load(
+                1023,
+                1024,
+                32,
+                Some(1024 - 128),
+            )?))),
+            packet::Protocol::Quake3_68 => Some(Self::Quake3(Box::new(Q3Ring::load(
+                1023,
+                1024,
+                32,
+                Some(2048 - 128),
+            )?))),
+            _ => None,
+        })
+    }
+    pub(crate) fn protocol(&self) -> packet::Protocol {
+        match self {
+            Self::Quake2(_) => packet::Protocol::Quake2_34,
+            Self::Quake3(_) => packet::Protocol::Quake3_68,
+        }
+    }
+    pub(crate) fn frame(&self, sequence: u32) -> Option<ReceivedFrame<'_>> {
+        match self {
+            Self::Quake2(ring) => ring.frame(sequence).map(ReceivedFrame::Quake2),
+            Self::Quake3(ring) => ring.frame(sequence).map(ReceivedFrame::Quake3),
+        }
+    }
+}
 
 /// Original svc_snapshot body after its opcode. Missing deltas are consumed
 /// without publishing, so following server commands remain in the same stream.

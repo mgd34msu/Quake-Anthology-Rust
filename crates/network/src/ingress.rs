@@ -26,6 +26,7 @@ pub enum BindError {
     Client,
     Occupied,
     Route,
+    Capacity,
 }
 /// Borrowed delivery callbacks never retain a packet or create another queue.
 pub enum Incoming<'a> {
@@ -34,7 +35,8 @@ pub enum Incoming<'a> {
         sequence: u32,
         text: &'a [u8],
     },
-    Snapshot(crate::snapshots::Q3Frame<'a>),
+    Snapshot(crate::snapshots::ReceivedFrame<'a>),
+    Print(crate::outputs::Print<'a>),
     Command {
         command: qa_core::primitives::UserCmd,
         output: Option<OutputConsumerId>,
@@ -92,7 +94,7 @@ impl Connections {
         &mut self,
         client: ClientId,
         endpoint: Endpoint,
-        connection: Connection,
+        mut connection: Connection,
     ) -> Result<(), BindError> {
         let slot = client.0 as usize;
         let current = self.clients.get(slot).ok_or(BindError::Client)?;
@@ -122,6 +124,14 @@ impl Connections {
             .any(|c| c.route == connection.route)
         {
             return Err(BindError::Route);
+        }
+        if endpoint == Endpoint::Client
+            && let Some(commands) = &connection.commands
+        {
+            connection
+                .channel
+                .configure_client_snapshots(commands.protocol)
+                .map_err(|_| BindError::Capacity)?;
         }
         self.clients[slot][index(endpoint)] = Some(connection);
         Ok(())
@@ -219,30 +229,29 @@ impl Connections {
                     } else if !payload.is_empty()
                         && endpoint == Endpoint::Client
                         && let Some(commands) = &mut connection.commands
-                        && commands.protocol == crate::commands::packet::Protocol::Quake3_68
+                        && matches!(
+                            commands.protocol,
+                            crate::commands::packet::Protocol::Quake3_68
+                                | crate::commands::packet::Protocol::Quake2_34
+                        )
                     {
                         let sequence = received.header.sequence;
                         let length = commands.stage(payload);
-                        if length
-                            .and_then(|length| {
-                                commands.decode_output(
-                                    length,
-                                    sequence,
-                                    &mut connection.channel,
-                                    |sequence, text| {
-                                        consume(
-                                            client,
-                                            endpoint,
-                                            Incoming::ReliableCommand { sequence, text },
-                                        )
-                                    },
-                                )
-                            })
-                            .is_err()
-                        {
-                            self.command_errors += 1;
-                        } else if let Some(frame) = connection.channel.snapshot(sequence) {
-                            consume(client, endpoint, Incoming::Snapshot(frame));
+                        match length.and_then(|length| {
+                            commands.decode_output(
+                                length,
+                                sequence,
+                                &mut connection.channel,
+                                |incoming| consume(client, endpoint, incoming),
+                            )
+                        }) {
+                            Err(_) => self.command_errors += 1,
+                            Ok(Some(sequence)) => {
+                                if let Some(frame) = connection.channel.snapshot(sequence) {
+                                    consume(client, endpoint, Incoming::Snapshot(frame));
+                                }
+                            }
+                            Ok(None) => {}
                         }
                     } else {
                         consume(client, endpoint, Incoming::Payload(payload));

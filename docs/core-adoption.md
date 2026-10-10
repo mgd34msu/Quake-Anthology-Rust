@@ -441,3 +441,58 @@ All 685 workspace tests and six existing retail collision/inline-model load
 checks pass, alongside the unchanged checker and warning-denied Clippy. The
 normal release app and developer visibility example built in 38.22 s. Format
 and diff checks pass. No timing, game/window or installation runs were made.
+
+
+## THE-860: Q2 connected snapshot delivery
+
+`network/src/snapshots.rs` now supplies one load-selected native storage
+variant per CLIENT channel. Q2's 68/20-word records and Q3's 112/51-word
+records use the existing generic Ring implementation, not separate engine
+player/entity stores. Both remain 32-slot, with native parse-row retention
+limits and a zero baseline. Channel's previous Q3-only mutable-ring API is
+removed; its public borrowed snapshot view now carries the native record shape.
+
+`network/src/ingress.rs` configures native payload storage at connection bind,
+because QW and Q2 share channel header rules. Ordinary connected CLIENT Packet
+delivery now drains Q2 svc_frame and native prints through the same callback as
+Q3 commands/frames. The Q2 adapter borrows the existing Prints parser for layout,
+print priority/text and centerprint; no second print reader is introduced.
+Nop and byte-end termination follow CL_ParseServerMessage. Signon/configstrings,
+sounds/effects, inventory and stuffed commands still return explicit unsupported
+service errors; this is not a complete native server-message implementation.
+
+`network/src/commands/connection.rs` preserves Q2's payload frame number as
+clc_move lastframe, independently of channel sequence. The same per-connection
+delta-request value serves CLIENT's accepted current frame or SERVER's received
+native request. Missing, truncated or otherwise rejected current frame streams
+clear it so the next command requests a full frame; older ring bases remain
+available for native recovery. Q3 still selects clc_move/clc_moveNoDelta from
+its native acknowledged server-message snapshot. Existing production Packet
+routing and both output developer probes use the shared Incoming callback;
+there is no additional physical intake or packet queue.
+
+Two connected fixtures cover full/delta frames whose numbers differ from
+channel sequences, native old-origin advancement, prints before/after a frame,
+dropped packet/missing base/full recovery, truncated frames, bounded unsupported
+services, idempotent binding and same-header payload mismatch. Existing Q3
+connected fixtures remain. The developer snapshot example's --connected-heap
+mode brackets Q2 store/write, Channel delivery, CLIENT frame/print dispatch and
+native move feedback after load, without collecting timing samples.
+
+Current app bypasses remain `app/src/host.rs:480` and `app/src/lib.rs:201`
+(direct SERVER-to-prediction copies); app's CLIENT callback still does not
+apply decoded native snapshots. Common projection/inverse application,
+QW/NQ framing, rerelease/666/999, signon, captures/live legacy peers and
+THE-3169 native/combined/installed acceptance remain required. No app
+snapshot adoption, game run or installation is claimed for this component.
+Evidence: `$HOME/.cache/qa-rust/THE-860-q2-connected-20261009/`.
+
+All 687 workspace tests, the unchanged checker, warning-denied Clippy and
+format/diff checks pass. The normal release app and developer codec examples
+built in 33.20 s. Original-C comparison remains exact for 512 Q2 whole-frame
+cases (913,057 bytes), 512 Q3 cases (2,035,577 bytes) and 16,384 scalar-state
+cases (8,039,745 bytes and decoded words). The connected heap probe passes
+660 iterations, including 60 warm-up and 600 measured iterations: positive
+allocation control 1, zero caller allocations/reallocations/requested bytes
+and zero command errors. This counter covers the connected native codec path,
+not app frames, workers, OS/driver allocations or gameplay. No timing run.

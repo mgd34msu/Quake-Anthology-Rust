@@ -349,7 +349,11 @@ impl Channel {
                 }
                 1 => {} // svc_nop
                 7 => {
-                    let snapshots = self.snapshots.as_mut().ok_or(packet::Error::Context)?;
+                    let Some(crate::snapshots::Storage::Quake3(snapshots)) =
+                        self.snapshots.as_mut()
+                    else {
+                        return Err(packet::Error::Context);
+                    };
                     crate::snapshots::read_q3(
                         &mut reader,
                         snapshots,

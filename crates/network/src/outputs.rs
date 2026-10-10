@@ -127,6 +127,10 @@ impl<'a> Prints<'a> {
             rest: bytes,
         }
     }
+    /// Allows a service stream to continue after the same native print parser.
+    pub fn remaining(&self) -> &'a [u8] {
+        self.rest
+    }
 }
 impl<'a> Iterator for Prints<'a> {
     type Item = Result<Print<'a>, Error>;
