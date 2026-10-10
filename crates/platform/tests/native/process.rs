@@ -22,7 +22,7 @@ const REGIONS: [NativeRegion; 2] = [
 
 #[test]
 fn a_partial_packet_cannot_restart_its_absolute_deadline() {
-    use std::{io::Write, os::unix::net::UnixStream, time::Instant};
+    use std::{io::Write, os::unix::net::UnixStream};
     let (mut reader, mut writer) = UnixStream::pair().unwrap();
     let writer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(60));
@@ -33,11 +33,12 @@ fn a_partial_packet_cannot_restart_its_absolute_deadline() {
         let _ = writer.write_all(&[2; 199]);
     });
     let mut bytes = [0; 200];
+    let started = crate::Stopwatch::start();
     let result = transfer(
         &mut reader,
         &mut bytes,
         false,
-        Some(Instant::now() + Duration::from_millis(100)),
+        Some((&started, Duration::from_millis(100))),
     );
     assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
     assert_eq!(bytes[0], 1);
@@ -45,22 +46,51 @@ fn a_partial_packet_cannot_restart_its_absolute_deadline() {
     writer.join().unwrap();
     let (mut writer, mut reader) = UnixStream::pair().unwrap();
     let mut bytes = [3; 200];
+    let started = crate::Stopwatch::start();
     transfer(
         &mut writer,
         &mut bytes,
         true,
-        Some(Instant::now() + Duration::from_secs(1)),
+        Some((&started, Duration::from_secs(1))),
     )
     .unwrap();
     let mut actual = [0; 200];
+    let started = crate::Stopwatch::start();
     transfer(
         &mut reader,
         &mut actual,
         false,
-        Some(Instant::now() + Duration::from_secs(1)),
+        Some((&started, Duration::from_secs(1))),
     )
     .unwrap();
     assert_eq!(actual, bytes);
+}
+
+#[test]
+fn a_zero_budget_cannot_transfer_even_a_ready_packet() {
+    use std::{io::Write, os::unix::net::UnixStream};
+    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    writer.write_all(&[1]).unwrap();
+    let started = crate::Stopwatch::start();
+    let mut bytes = [0];
+    let result = transfer(
+        &mut reader,
+        &mut bytes,
+        false,
+        Some((&started, Duration::ZERO)),
+    );
+    assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
+    assert_eq!(bytes, [0]);
+    writer.write_all(&[2]).unwrap();
+    let result = transfer(
+        &mut writer,
+        &mut [3],
+        true,
+        Some((&started, Duration::ZERO)),
+    );
+    assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
+    transfer(&mut reader, &mut bytes, false, None).unwrap();
+    assert_eq!(bytes, [1]);
 }
 
 #[test]

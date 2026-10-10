@@ -2,6 +2,7 @@ use super::{
     NativeAbi, NativeCall, NativeEntry, NativeError, NativeImage, NativeRegion, NativeScalar,
     PAGE_BYTES as PAGE,
 };
+use crate::Stopwatch;
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -13,7 +14,7 @@ use std::{
     process::{Child, Command, Stdio},
     ptr::NonNull,
     sync::atomic::{Ordering, compiler_fence},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const LIMIT: usize = 512 * 1024 * 1024;
@@ -158,12 +159,12 @@ pub(super) fn transfer(
     stream: &mut UnixStream,
     mut bytes: &mut [u8],
     writing: bool,
-    deadline: Option<Instant>,
+    deadline: Option<(&Stopwatch, Duration)>,
 ) -> Result<(), NativeError> {
     while !bytes.is_empty() {
-        let io = if let Some(deadline) = deadline {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
+        let io = if let Some((started, timeout)) = deadline {
+            let remaining = timeout
+                .checked_sub(started.elapsed())
                 .filter(|d| !d.is_zero())
                 .ok_or(NativeError::Timeout)?;
             let mut fd = PollFd {
@@ -253,7 +254,7 @@ impl Packet {
     fn send_before(
         &self,
         stream: &mut UnixStream,
-        deadline: Option<Instant>,
+        deadline: Option<(&Stopwatch, Duration)>,
     ) -> Result<(), NativeError> {
         let mut bytes = [0u8; PACKET_BYTES];
         bytes[..4].copy_from_slice(b"QARN");
@@ -277,7 +278,7 @@ impl Packet {
     }
     fn receive_before(
         stream: &mut UnixStream,
-        deadline: Option<Instant>,
+        deadline: Option<(&Stopwatch, Duration)>,
     ) -> Result<Self, NativeError> {
         let mut bytes = [0u8; PACKET_BYTES];
         transfer(stream, &mut bytes, false, deadline)?;
@@ -655,9 +656,8 @@ impl NativeProcess {
         if !self.executable(entry.address) {
             return Err(NativeError::Extent);
         }
-        let deadline = Instant::now()
-            .checked_add(self.timeout)
-            .ok_or(NativeError::Extent)?;
+        let started = Stopwatch::start();
+        let deadline = Some((&started, self.timeout));
         let run = (|| {
             self.sequence = self.sequence.checked_add(1).ok_or(NativeError::Protocol)?;
             let mut packet = Packet::new(INVOKE, self.sequence);
@@ -665,10 +665,10 @@ impl NativeProcess {
             packet.abi = entry.abi as u8;
             (packet.arguments, packet.floats) = entry.pack(arguments);
             packet.value = entry.control;
-            packet.send_before(&mut self.stream, Some(deadline))?;
+            packet.send_before(&mut self.stream, deadline)?;
             self.resume()?;
             loop {
-                let packet = Packet::receive_before(&mut self.stream, Some(deadline))?;
+                let packet = Packet::receive_before(&mut self.stream, deadline)?;
                 if packet.sequence != self.sequence {
                     return Err(NativeError::Protocol);
                 }
@@ -718,7 +718,7 @@ impl NativeProcess {
                         let mut reply = Packet::new(REPLY, self.sequence);
                         reply.value = result_entry.map_or(result, |entry| entry.result(result));
                         reply.address = result_entry.map_or(0, |entry| entry.control & 3);
-                        reply.send_before(&mut self.stream, Some(deadline))?;
+                        reply.send_before(&mut self.stream, deadline)?;
                         self.resume()?;
                     }
                     _ => return Err(NativeError::Protocol),
