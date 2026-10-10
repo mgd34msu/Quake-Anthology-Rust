@@ -77,7 +77,7 @@ fn nullable(row: &mut Row<'_>, wide: bool) -> Result<i64, FormatError> {
 
 pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     let format = bsp.format;
-    let family = format.family();
+    let rules = format.rule_set();
     let wide = format.wide();
     let planes = records(&bsp, Planes, |r| {
         let normal = r.vector()?;
@@ -87,7 +87,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         } else {
             3
         };
-        let axis = if family != 3 && (0..3).contains(&plane_type) {
+        let axis = if !matches!(rules, RuleSetId::Quake3) && (0..3).contains(&plane_type) {
             Some([Axis::X, Axis::Y, Axis::Z][plane_type as usize])
         } else {
             (0..3)
@@ -102,7 +102,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     })?;
     let vertices = records(&bsp, Vertices, |r| {
         let position = r.vector()?;
-        let (texcoord, lightmap_coord, normal, color) = if family == 3 {
+        let (texcoord, lightmap_coord, normal, color) = if matches!(rules, RuleSetId::Quake3) {
             (
                 [r.float()?, r.float()?],
                 [r.raw_float()?, r.raw_float()?],
@@ -128,14 +128,14 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         } else {
             [r.i32()?, r.i32()?]
         };
-        let bounds = r.bounds(if family == 3 {
+        let bounds = r.bounds(if matches!(rules, RuleSetId::Quake3) {
             1
         } else if matches!(format, BspFormat::Bsp2 | BspFormat::Qbsp) {
             2
         } else {
             0
         })?;
-        let faces = if family == 3 {
+        let faces = if matches!(rules, RuleSetId::Quake3) {
             IndexRange::default()
         } else {
             r.range(wide)?
@@ -158,13 +158,13 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             brushes: IndexRange::default(),
             ambient: [0; 4],
         };
-        if family == 1 {
+        if matches!(rules, RuleSetId::Quake) {
             value.contents = r.i32()?;
             value.visibility_offset = r.i32()?;
             value.bounds = r.bounds(if format == BspFormat::Bsp2 { 2 } else { 0 })?;
             value.faces = r.range(wide)?;
             value.ambient = r.four_bytes()?;
-        } else if family == 2 {
+        } else if matches!(rules, RuleSetId::Quake2) {
             value.contents = r.i32()?;
             value.cluster = nullable(r, wide)?;
             value.area = i64::from(r.index(wide)?);
@@ -182,12 +182,16 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     })?;
     let edges = records(&bsp, Edges, |r| Ok([r.index(wide)?, r.index(wide)?]))?;
     let surface_edges = records(&bsp, SurfEdges, Row::i32)?;
-    let leaf_faces = records(&bsp, LeafFaces, |r| r.index(wide || family == 3))?;
-    let leaf_brushes = records(&bsp, LeafBrushes, |r| r.index(wide || family == 3))?;
+    let leaf_faces = records(&bsp, LeafFaces, |r| {
+        r.index(wide || matches!(rules, RuleSetId::Quake3))
+    })?;
+    let leaf_brushes = records(&bsp, LeafBrushes, |r| {
+        r.index(wide || matches!(rules, RuleSetId::Quake3))
+    })?;
     let faces = records(&bsp, Faces, |r| {
         let plane = r.index(wide)?;
         let flags = r.index(wide)?;
-        if family == 1 && flags > 1 {
+        if matches!(rules, RuleSetId::Quake) && flags > 1 {
             return Err(FormatError::InvalidValue);
         }
         let edges = IndexRange {
@@ -230,7 +234,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
                 *v = r.float()?;
             }
         }
-        let (texture, flags, value, name, next) = if family == 1 {
+        let (texture, flags, value, name, next) = if matches!(rules, RuleSetId::Quake) {
             (r.i32()?, r.i32()?, 0, &[][..], -1)
         } else {
             (-1, r.i32()?, r.i32()?, r.name(32)?, r.i32()?)
@@ -261,7 +265,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         } else {
             model.origin = r.vector()?;
             model.headnodes[0] = r.i32()?;
-            if family == 1 {
+            if matches!(rules, RuleSetId::Quake) {
                 for root in &mut model.headnodes[1..] {
                     *root = r.i32()?;
                 }
@@ -285,8 +289,12 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         })
     })?;
     let brush_sides = records(&bsp, BrushSides, |r| {
-        let plane = r.index(if family == 2 { wide } else { true })?;
-        let (texture_info, shader, flags) = if family == 2 {
+        let plane = r.index(if matches!(rules, RuleSetId::Quake2) {
+            wide
+        } else {
+            true
+        })?;
+        let (texture_info, shader, flags) = if matches!(rules, RuleSetId::Quake2) {
             let info = nullable(r, wide)?;
             ((info != -1).then_some(info as u32), None, 0)
         } else if format == BspFormat::Quake3Test {
@@ -450,11 +458,11 @@ fn textures<'a>(bsp: &Bsp<'a>) -> Result<Vec<Option<MipTexture<'a>>>, FormatErro
 }
 
 fn extensions<'a>(bsp: &Bsp<'a>) -> Result<Vec<Extension<'a>>, FormatError> {
-    if bsp.format.family() == 3 {
+    if matches!(bsp.format.rule_set(), RuleSetId::Quake3) {
         return Ok(Vec::new());
     }
     let normal = (bsp.end + 3) & !3;
-    let legacy = bsp.format.family() == 1
+    let legacy = matches!(bsp.format.rule_set(), RuleSetId::Quake)
         && !bsp.lumps.iter().any(|bytes| {
             !bytes.is_empty() && (bytes.as_ptr() as usize - bsp.source.as_ptr() as usize) < 132
         });

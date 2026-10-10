@@ -3,7 +3,7 @@ use crate::{
     assets::{ImageId, MaterialId, ModelId},
     scene::{Refdef, Span},
 };
-use qa_core::primitives::Plane;
+use qa_core::primitives::{Plane, RuleSetId};
 use qa_formats::bsp::{Lump, Map};
 use qa_world::visibility::{
     PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityError, VisibilityWorld,
@@ -180,9 +180,9 @@ impl From<VisibilityError> for WorldLoadError {
 /// one RLE table at load. There is no format dispatch in the visibility query.
 pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError> {
     let model = map.models.first().ok_or(WorldLoadError::MissingWorld)?;
-    let family = map.bsp.format.family();
+    let rules = map.bsp.format.rule_set();
     let bytes = map.bsp.bytes(Lump::Visibility);
-    let count = if family == 1 {
+    let count = if matches!(rules, RuleSetId::Quake) {
         usize::try_from(model.visible_leaves).map_err(|_| WorldLoadError::VisibilityHeader)?
     } else if bytes.is_empty() {
         map.leaves
@@ -193,12 +193,12 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
     } else {
         word(bytes, 0)? as usize
     };
-    if count > map.leaves.len() && family == 1 {
+    if count > map.leaves.len() && matches!(rules, RuleSetId::Quake) {
         return Err(WorldLoadError::VisibilityHeader);
     }
     let pvs = if bytes.is_empty() {
         PvsRows::all_visible(count)
-    } else if family == 1 {
+    } else if matches!(rules, RuleSetId::Quake) {
         let offsets = (1..=count)
             .map(|index| {
                 map.leaves
@@ -208,7 +208,7 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
             })
             .collect::<Result<Vec<_>, _>>()?;
         PvsRows::load(offsets, bytes.to_vec())?
-    } else if family == 2 {
+    } else if matches!(rules, RuleSetId::Quake2) {
         let offsets = (0..count)
             .map(|cluster| {
                 let offset = word(bytes, 4 + cluster * 8)? as i32;
@@ -257,19 +257,19 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
         .iter()
         .enumerate()
         .map(|(index, leaf)| VisLeaf {
-            selector: if family == 1 {
+            selector: if matches!(rules, RuleSetId::Quake) {
                 (index > 0 && index <= count).then_some(index.saturating_sub(1) as u32)
             } else {
                 u32::try_from(leaf.cluster).ok()
             },
-            area: if family == 1 {
+            area: if matches!(rules, RuleSetId::Quake) {
                 None
             } else {
                 u32::try_from(leaf.area).ok()
             },
-            solid: if family == 1 {
+            solid: if matches!(rules, RuleSetId::Quake) {
                 leaf.contents == -2
-            } else if family == 2 {
+            } else if matches!(rules, RuleSetId::Quake2) {
                 leaf.contents & 1 != 0
             } else {
                 false
@@ -286,7 +286,7 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
         nodes,
         leaves,
         map.leaf_faces.clone(),
-        if family == 3 {
+        if matches!(rules, RuleSetId::Quake3) {
             map.surfaces.len()
         } else {
             map.faces.len()

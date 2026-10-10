@@ -1,6 +1,6 @@
 //! THE-862 retail load/query verification. No window, input or gameplay host.
 use qa_content::vfs::Vfs;
-use qa_core::primitives::Vec3;
+use qa_core::primitives::{RuleSetId, Vec3};
 use qa_formats::{
     archive::Archive,
     bsp::{Lump, Map},
@@ -45,8 +45,8 @@ fn word(bytes: &[u8], at: usize) -> Result<u32, &'static str> {
 }
 fn native_rows(map: &Map<'_>) -> Result<NativeRows, &'static str> {
     let bytes = map.bsp.bytes(Lump::Visibility);
-    let family = map.bsp.format.family();
-    let count = if family == 1 {
+    let rules = map.bsp.format.rule_set();
+    let count = if matches!(rules, RuleSetId::Quake) {
         usize::try_from(map.models[0].visible_leaves).map_err(|_| "native leaf count")?
     } else if bytes.is_empty() {
         map.leaves
@@ -58,7 +58,7 @@ fn native_rows(map: &Map<'_>) -> Result<NativeRows, &'static str> {
         word(bytes, 0)? as usize
     };
     let length = count.div_ceil(8);
-    let source_stride = if family == 3 && !bytes.is_empty() {
+    let source_stride = if matches!(rules, RuleSetId::Quake3) && !bytes.is_empty() {
         word(bytes, 4)? as usize
     } else {
         length
@@ -68,16 +68,16 @@ fn native_rows(map: &Map<'_>) -> Result<NativeRows, &'static str> {
     for selector in 0..count {
         let offset = if bytes.is_empty() {
             None
-        } else if family == 1 {
+        } else if matches!(rules, RuleSetId::Quake) {
             usize::try_from(map.leaves[selector + 1].visibility_offset).ok()
-        } else if family == 2 {
+        } else if matches!(rules, RuleSetId::Quake2) {
             usize::try_from(word(bytes, 4 + selector * 8)? as i32).ok()
         } else {
             Some(8 + selector * source_stride)
         };
         let mut row = vec![255; length];
         if let Some(mut at) = offset {
-            if family == 3 {
+            if matches!(rules, RuleSetId::Quake3) {
                 row.copy_from_slice(bytes.get(at..at + length).ok_or("native dense PVS row")?);
             } else {
                 // qsrc Q1/Q2 Mod_DecompressVis: literal, or 0 followed by zero count.
@@ -125,7 +125,7 @@ fn native_leaf(map: &Map<'_>, point: Vec3) -> u32 {
     (-1 - i64::from(child)) as u32
 }
 fn selector(map: &Map<'_>, leaf: u32, count: usize) -> Option<u32> {
-    if map.bsp.format.family() == 1 {
+    if matches!(map.bsp.format.rule_set(), RuleSetId::Quake) {
         (leaf > 0 && leaf as usize <= count).then_some(leaf.saturating_sub(1))
     } else {
         u32::try_from(map.leaves[leaf as usize].cluster).ok()
@@ -158,9 +158,9 @@ fn native_faces(
     let secondary_row = secondary.map(|id| rows.read(Some(id)));
     let all = rows.missing(primary) || secondary.is_some_and(|id| rows.missing(Some(id)));
     for (index, leaf) in map.leaves.iter().enumerate() {
-        let solid = match map.bsp.format.family() {
-            1 => leaf.contents == -2,
-            2 => leaf.contents & 1 != 0,
+        let solid = match map.bsp.format.rule_set() {
+            RuleSetId::Quake => leaf.contents == -2,
+            RuleSetId::Quake2 => leaf.contents & 1 != 0,
             _ => false,
         };
         if !reachable[index] || solid {
@@ -181,9 +181,9 @@ fn native_faces(
     }
 }
 fn spawn_origins(map: &Map<'_>) -> Result<Vec<Vec3>, &'static str> {
-    let syntax = match map.bsp.format.family() {
-        1 => EntitySyntax::Quake,
-        2 => EntitySyntax::Quake2,
+    let syntax = match map.bsp.format.rule_set() {
+        RuleSetId::Quake => EntitySyntax::Quake,
+        RuleSetId::Quake2 => EntitySyntax::Quake2,
         _ => EntitySyntax::Quake3,
     };
     let entities = EntityLump::parse(map.entity_text(), syntax).map_err(|_| "entity lump parse")?;
@@ -236,7 +236,7 @@ struct Case {
 }
 struct Loaded {
     spec: Spec,
-    family: u8,
+    rules: RuleSetId,
     world: VisibilityWorld,
     view: ViewVisibility,
     cases: Vec<Case>,
@@ -389,7 +389,7 @@ fn load(spec: Spec) -> Result<Loaded, Box<dyn std::error::Error>> {
     let membership_queries = points.len() * 2;
     let membership_surface_checks = membership_queries as u64 * world.surface_count() as u64;
     Ok(Loaded {
-        family: map.bsp.format.family(),
+        rules: map.bsp.format.rule_set(),
         spec,
         world,
         view,
@@ -452,9 +452,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("provide three archive/map pairs for Q1, Q2 and Q3".into());
     }
     let mut maps: Vec<_> = specs.into_iter().map(load).collect::<Result<_, _>>()?;
-    let mut families: Vec<_> = maps.iter().map(|map| map.family).collect();
-    families.sort_unstable();
-    if families != [1, 2, 3] {
+    if [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3]
+        .into_iter()
+        .any(|rules| !maps.iter().any(|map| map.rules == rules))
+    {
         return Err("visibility workload requires one map from each BSP family".into());
     }
     let mut ns = [0u64; FRAMES];
@@ -536,7 +537,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         write!(
             report,
             ",\"family\":{},\"nodes\":{},\"leaves\":{},\"surfaces\":{},\"pvs_rows\":{},\"row_bytes\":{},\"source_stride\":{},\"missing_rows\":{},\"pvs_bits_compared\":{},\"pvs_rows_matched\":true,\"missing_pvs_all_visible\":true,\"leaf_selectors_matched\":true,\"seeded_points\":{SEEDED_POINTS},\"spawn_origins\":{},\"point_cases\":{},\"point_leaves_matched\":true,\"secondary_row_cases\":{},\"union_expansion_cases\":{},\"membership_queries\":{},\"membership_surface_checks\":{},\"face_membership_matched\":true,\"verified_surface_count\":{},\"verified_surface_id_sum\":{},\"measured_queries\":{},\"measured_surface_count\":{},\"measured_surface_id_sum\":{},\"last_leaf\":{}}}",
-            map.family,
+            match map.rules {
+                RuleSetId::Quake => 1,
+                RuleSetId::Quake2 => 2,
+                _ => 3,
+            },
             map.world.node_count(),
             map.world.leaf_count(),
             map.world.surface_count(),

@@ -2,7 +2,7 @@
 //! Layouts: original qfiles.h/bspfile.h; v44 directly follows the C port reader.
 pub use crate::image::MipTexture;
 use crate::{FormatError, span, word};
-use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, Plane, RuleSetId, Vec3};
 
 mod decode;
 mod validate;
@@ -21,18 +21,21 @@ pub enum BspFormat {
     QuakeLive,
 }
 impl BspFormat {
-    pub fn family(self) -> u8 {
+    /// Natural file semantics; capability roles remain independently selected.
+    pub fn rule_set(self) -> RuleSetId {
         match self {
-            Self::Quake | Self::HalfLife | Self::Bsp2 | Self::Psb2 | Self::Quake64 => 1,
-            Self::Quake2 | Self::Qbsp => 2,
-            _ => 3,
+            Self::Quake | Self::HalfLife | Self::Bsp2 | Self::Psb2 | Self::Quake64 => {
+                RuleSetId::Quake
+            }
+            Self::Quake2 | Self::Qbsp => RuleSetId::Quake2,
+            _ => RuleSetId::Quake3,
         }
     }
     fn wide(self) -> bool {
         matches!(self, Self::Bsp2 | Self::Psb2 | Self::Qbsp)
     }
     fn narrow_q1(self) -> bool {
-        self.family() == 1 && !self.wide()
+        matches!(self.rule_set(), RuleSetId::Quake) && !self.wide()
     }
     fn modern_q3(self) -> bool {
         matches!(self, Self::Quake3 | Self::QuakeLive)
@@ -194,7 +197,7 @@ impl<'a> Bsp<'a> {
         for (index, &(kind, original_stride)) in layout.iter().enumerate() {
             let offset = word(bytes, base + index * 8)?;
             let mut length = word(bytes, base + index * 8 + 4)?;
-            if format.family() == 2
+            if matches!(format.rule_set(), RuleSetId::Quake2)
                 && matches!(kind, Entities | Pop)
                 && (offset as usize) < bytes.len()
                 && length as usize > bytes.len() - offset as usize

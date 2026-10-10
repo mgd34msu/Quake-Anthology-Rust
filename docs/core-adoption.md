@@ -239,7 +239,7 @@ added. Operation order and native signed narrowing remain unchanged.
 | Mip lengths | `render/src/cpu/world.rs:2806` uses `math::length`, preserving component sum order and the following average/thresholds. |
 | Bounds | `core/src/primitives.rs:289-306` owns `Bounds::empty/add_point/add_bounds`. All MDL/MD2/MD3/MD5/sprite readers use it; `formats/src/model/read.rs` no longer defines bounds helpers. `render/src/world/geometry.rs:712` retains its first-point initialization and finite-input rejection, then calls `add_point`. |
 | Entity syntax | `app/src/map.rs:312,379` passes the load-stored `native_source` to the existing `entity_syntax`; the second spawn-syntax family match is deleted. |
-| Image defaults | `render/src/material/resources.rs:56` takes `RuleSetId`. `app/src/render_settings.rs:6`, resource tests and the name-consumer example pass it directly. `material/world_load.rs:175` converts BSP provenance at the fallback boundary. Explicit presentation settings still win. |
+| Image defaults | `render/src/material/resources.rs:56` takes `RuleSetId`. `app/src/render_settings.rs:6`, resource tests and the name-consumer example pass it directly. `material/world_load.rs:175` receives the BSP natural `RuleSetId` directly at the fallback boundary. Explicit presentation settings still win. |
 | Local points | `core/src/math.rs:97` owns `transform_point`: origin, then axis 0, 1, 2 in that order. CPU entity rendering at `cpu.rs:595`, CPU sky collection at `cpu/world.rs:1046`, and GL sky collection at `gl.rs:984` all use it. |
 | Path bytes | `core/src/names.rs:15` exposes the existing `path_byte`; `content/src/vfs.rs:113` now uses it. VFS component rejection, parent traversal and fixed output capacity are unchanged. |
 
@@ -411,3 +411,33 @@ yet. Direct prediction copies remain `app/src/host.rs:480` and
 frames. QW/NQ frame streams, negotiated protocols/rerelease, native signon,
 common-state provider/client adoption and combined/installed proofs remain.
 No game/window run or installation is claimed.
+
+
+## THE-3176: BSP rule identity follow-up
+
+`formats/src/bsp.rs:25` replaces `BspFormat::family() -> u8` with
+`rule_set() -> core RuleSetId`: Quake, HalfLife, Bsp2, Psb2 and Quake64 select
+Quake; Quake2 and Qbsp select Quake2; Quake3Test, Quake3 and QuakeLive select
+Quake3. This is file provenance, independently of movement, trace, module,
+client and presentation roles. No numeric family identity remains in the API.
+
+Every former caller is migrated in the same slice:
+
+| Caller | Adoption |
+| --- | --- |
+| `formats/src/bsp.rs`, `bsp/decode.rs`, `bsp/validate.rs` | Directory clamping, record decoding, extension discovery and visibility validation match the natural RuleSetId. Native layout widths, finite/reference checks and compressed visibility rules are unchanged. |
+| `render/src/material/world_load.rs:174,514,882` | ImageSettings::native receives the id directly; lightmap preparation and legacy materials take RuleSetId. Palette, colormap, texture flags, RGB lightmap arithmetic and native sky/liquid rules keep their original selection. |
+| `render/src/world.rs:183`, `world/geometry.rs` | Visibility and geometry conversion use RuleSetId matches, preserving source leaf/cluster membership, flags, extents and light encodings. |
+| `app/src/map.rs:237,374,503` | Map source initialization, spawn data and collision loading receive the natural id without a second numeric conversion. Stored entity syntax and caller movement/trace rules remain independent. |
+| `app/tests/retail_collision.rs`, `platform/examples/visibility.rs` | Existing load probes use RuleSetId. The example stores the id and checks the three required sources without a second numeric identity; its pre-existing JSON `family` numbers are formatted only at the report boundary to preserve its output schema. |
+
+Repository search finds no `family()` call or method in crates. The existing
+synthetic layout/material/geometry tests and the retail load checks validate
+source-specific results; this slice adds no rendering, gameplay or timing
+qualification claim. The checker is unchanged. Evidence is in
+`$HOME/.cache/qa-rust/THE-3176-bsp-rules-20261009/`.
+
+All 685 workspace tests and six existing retail collision/inline-model load
+checks pass, alongside the unchanged checker and warning-denied Clippy. The
+normal release app and developer visibility example built in 38.22 s. Format
+and diff checks pass. No timing, game/window or installation runs were made.

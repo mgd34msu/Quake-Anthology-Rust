@@ -65,14 +65,14 @@ fn trees(count: usize, children: impl Fn(usize) -> [i32; 2]) -> Result<(), Forma
 
 pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
     let format = map.bsp.format;
-    let family = format.family();
+    let rules = format.rule_set();
     if map.models.is_empty() {
         return Err(FormatError::InvalidReference("world model", 0));
     }
-    if family >= 2 && map.nodes.is_empty() {
+    if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake3) && map.nodes.is_empty() {
         return Err(FormatError::InvalidReference("world root", 0));
     }
-    let faces = if family == 3 {
+    let faces = if matches!(rules, RuleSetId::Quake3) {
         map.surfaces.len()
     } else {
         map.faces.len()
@@ -92,7 +92,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
         index(i64::from(brush), map.brushes.len(), "leaf brush", i)?;
     }
     for (i, texture) in map.texture_info.iter().enumerate() {
-        if family == 1 && !map.textures.is_empty() {
+        if matches!(rules, RuleSetId::Quake) && !map.textures.is_empty() {
             index(
                 i64::from(texture.texture),
                 map.textures.len(),
@@ -100,7 +100,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
                 i,
             )?;
         }
-        if family == 2 && texture.next > 0 {
+        if matches!(rules, RuleSetId::Quake2) && texture.next > 0 {
             index(
                 i64::from(texture.next),
                 map.texture_info.len(),
@@ -132,7 +132,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
         }
     }
     let visibility = map.bsp.bytes(Visibility);
-    let clusters = visibility_header(visibility, family)?;
+    let clusters = visibility_header(visibility, rules)?;
     let pvs_bytes = map
         .models
         .first()
@@ -143,7 +143,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
     for (i, leaf) in map.leaves.iter().enumerate() {
         range(leaf.faces, map.leaf_faces.len(), "leaf faces", i)?;
         range(leaf.brushes, map.leaf_brushes.len(), "leaf brushes", i)?;
-        if family == 1 {
+        if matches!(rules, RuleSetId::Quake) {
             if leaf.visibility_offset < -1 {
                 return Err(FormatError::InvalidReference("leaf visibility", i));
             }
@@ -159,7 +159,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
             {
                 index(leaf.cluster, clusters, "leaf cluster", i)?;
             }
-            if family == 2 {
+            if matches!(rules, RuleSetId::Quake2) {
                 index(leaf.area, map.areas.len(), "leaf area", i)?;
                 if i == 0 && leaf.contents != 1 {
                     return Err(FormatError::InvalidValue);
@@ -215,7 +215,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
         } else {
             child(model.headnodes[0], map, i)?;
         }
-        if family == 1 {
+        if matches!(rules, RuleSetId::Quake) {
             if model.visible_leaves < 0
                 || model.visible_leaves as usize > map.leaves.len().saturating_sub(1)
             {
@@ -320,12 +320,12 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
     Ok(())
 }
 
-fn visibility_header(bytes: &[u8], family: u8) -> Result<Option<usize>, FormatError> {
-    if family == 1 || bytes.is_empty() {
+fn visibility_header(bytes: &[u8], rules: RuleSetId) -> Result<Option<usize>, FormatError> {
+    if matches!(rules, RuleSetId::Quake) || bytes.is_empty() {
         return Ok(None);
     }
     let count = word(bytes, 0)? as usize;
-    if family == 2 {
+    if matches!(rules, RuleSetId::Quake2) {
         if count > bytes.len().saturating_sub(4) / 8 {
             return Err(FormatError::InvalidRange);
         }

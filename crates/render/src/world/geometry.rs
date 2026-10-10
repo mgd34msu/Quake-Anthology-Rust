@@ -4,7 +4,7 @@
 use crate::assets::Vertex;
 use qa_core::{
     math::length,
-    primitives::{Axis, Bounds, Plane, Vec3},
+    primitives::{Axis, Bounds, Plane, RuleSetId, Vec3},
 };
 use qa_formats::bsp::{BspFormat, IndexRange, LightmapSource, Lump, Map, SurfaceKind};
 
@@ -179,7 +179,7 @@ pub fn load_geometry(
         return Err(GeometryError::InvalidOptions);
     }
     let mut geometry = WorldGeometry {
-        partition: if map.bsp.format.family() == 3 {
+        partition: if matches!(map.bsp.format.rule_set(), RuleSetId::Quake3) {
             GeometryPartition::Unpartitioned
         } else {
             GeometryPartition::SplitBsp
@@ -201,7 +201,7 @@ pub fn load_geometry(
             .collect(),
         patch_stats: PatchStats::default(),
     };
-    if map.bsp.format.family() == 3 {
+    if matches!(map.bsp.format.rule_set(), RuleSetId::Quake3) {
         load_modern(map, options, &mut geometry)?;
     } else {
         load_legacy(map, options, &mut geometry)?;
@@ -240,7 +240,7 @@ fn load_legacy(
     options: GeometryOptions,
     out: &mut WorldGeometry,
 ) -> Result<(), GeometryError> {
-    let family = map.bsp.format.family();
+    let rules = map.bsp.format.rule_set();
     for (id, face) in map.faces.iter().enumerate() {
         let id = u32::try_from(id).map_err(|_| GeometryError::SizeLimit)?;
         let count = face.edges.count as usize;
@@ -339,7 +339,7 @@ fn load_legacy(
         let light_encoding = match map.bsp.format {
             BspFormat::Quake64 => LightEncoding::PackedRgb,
             BspFormat::HalfLife => LightEncoding::Rgb,
-            _ if family == 2 => LightEncoding::Rgb,
+            _ if matches!(rules, RuleSetId::Quake2) => LightEncoding::Rgb,
             _ => LightEncoding::Luminance,
         };
         let samples = legacy_samples(
@@ -373,7 +373,7 @@ fn load_legacy(
             },
             light_encoding,
             light_samples: samples,
-            source_texture: if family == 1 {
+            source_texture: if matches!(rules, RuleSetId::Quake) {
                 u32::try_from(info.texture).ok()
             } else {
                 None
@@ -382,7 +382,7 @@ fn load_legacy(
             source_shader: None,
             source_flags: info.flags as u32,
             source_contents: 0,
-            no_draw: family == 2 && info.flags & 0x80 != 0,
+            no_draw: matches!(rules, RuleSetId::Quake2) && info.flags & 0x80 != 0,
             source_fog: -1,
             source_brush_side: -1,
             source_lightmap: face.lighting_offset,

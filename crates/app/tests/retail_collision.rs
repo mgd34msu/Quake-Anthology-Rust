@@ -1,12 +1,13 @@
 //! THE-2882: retail plane lumps must reach the actual app collision loader.
 //! Run with QA_RETAIL_ROOT set to a retail-content root and --ignored.
 use qa_content::vfs::Vfs;
+use qa_core::primitives::RuleSetId;
 use qa_formats::{archive::ArchiveReader, bsp::Map};
 use qa_render::{Assets, material::world_load::WorldLoadOptions};
 use qa_world::collision::CollisionStore;
 use std::path::PathBuf;
 
-fn load_retail(product: &str, name: &str, family: u8) {
+fn load_retail(product: &str, name: &str, rules: RuleSetId) {
     let root = PathBuf::from(std::env::var_os("QA_RETAIL_ROOT").expect("QA_RETAIL_ROOT"));
     let mut vfs = Vfs::default();
     vfs.mount_product(&root.join(product), 0)
@@ -20,7 +21,7 @@ fn load_retail(product: &str, name: &str, family: u8) {
         .expect("retail bytes");
     assert_eq!(read, bytes.len());
     let map = Map::parse(&bytes).expect("retail BSP");
-    assert_eq!(map.bsp.format.family(), family);
+    assert_eq!(map.bsp.format.rule_set(), rules);
     let mut positive = 0;
     let mut negative = 0;
     let mut negative_tagged_axial = 0;
@@ -47,7 +48,7 @@ fn load_retail(product: &str, name: &str, family: u8) {
         }
     }
     assert!(positive > 0 && negative > 0);
-    if family == 2 {
+    if matches!(rules, RuleSetId::Quake2) {
         assert_eq!(negative_tagged_axial, negative);
         if name == "base1" {
             assert_eq!((positive, negative), (1928, 1928));
@@ -95,31 +96,31 @@ fn load_retail(product: &str, name: &str, family: u8) {
 #[test]
 #[ignore = "requires QA_RETAIL_ROOT retail content"]
 fn q2_base1_plane_lump_loads() {
-    load_retail("q2/baseq2", "base1", 2);
+    load_retail("q2/baseq2", "base1", RuleSetId::Quake2);
 }
 
 #[test]
 #[ignore = "requires QA_RETAIL_ROOT retail content"]
 fn q2_base2_plane_lump_loads() {
-    load_retail("q2/baseq2", "base2", 2);
+    load_retail("q2/baseq2", "base2", RuleSetId::Quake2);
 }
 
 #[test]
 #[ignore = "requires QA_RETAIL_ROOT retail content"]
 fn q2_q2dm1_plane_lump_loads() {
-    load_retail("q2/baseq2", "q2dm1", 2);
+    load_retail("q2/baseq2", "q2dm1", RuleSetId::Quake2);
 }
 
 #[test]
 #[ignore = "requires QA_RETAIL_ROOT retail content"]
 fn q3_q3dm1_plane_lump_keeps_native_axis_tags() {
-    load_retail("q3a/baseq3", "q3dm1", 3);
+    load_retail("q3a/baseq3", "q3dm1", RuleSetId::Quake3);
 }
 
 #[test]
 #[ignore = "requires QA_RETAIL_ROOT retail content"]
 fn q3_q3dm7_plane_lump_keeps_native_axis_tags() {
-    load_retail("q3a/baseq3", "q3dm7", 3);
+    load_retail("q3a/baseq3", "q3dm7", RuleSetId::Quake3);
 }
 
 #[test]

@@ -234,11 +234,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         return Err("incomplete map read".into());
     }
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
-    let source = match bsp.format.family() {
-        1 => RuleSetId::Quake,
-        2 => RuleSetId::Quake2,
-        _ => RuleSetId::Quake3,
-    };
+    let source = bsp.format.rule_set();
     let entity_source = NativeEntityText {
         syntax: entity_syntax(source),
         bytes: bsp.bytes(Lump::Entities).into(),
@@ -375,7 +371,7 @@ fn spawns(
     map: &Map<'_>,
     source: RuleSetId,
 ) -> Result<(Box<[SpawnAnchor]>, usize, SkyEnvironment), String> {
-    let family = map.bsp.format.family();
+    let rules = map.bsp.format.rule_set();
     let syntax = entity_syntax(source);
     let entities =
         EntityLump::parse(map.entity_text(), syntax).map_err(|e| format!("entity lump: {e:?}"))?;
@@ -396,7 +392,7 @@ fn spawns(
         let Some(classname) = field(b"classname") else {
             continue;
         };
-        if family == 2 && classname == b"worldspawn" {
+        if matches!(rules, RuleSetId::Quake2) && classname == b"worldspawn" {
             let name = field(b"sky")
                 .filter(|name| !name.is_empty())
                 .unwrap_or(b"unit1_");
@@ -416,7 +412,7 @@ fn spawns(
                 .unwrap_or_default();
             sky_environment = SkyEnvironment::new(name, rate, axis)?;
         }
-        let desired: &[u8] = if family == 3 {
+        let desired: &[u8] = if matches!(rules, RuleSetId::Quake3) {
             b"info_player_deathmatch"
         } else {
             b"info_player_start"
@@ -444,16 +440,20 @@ fn spawns(
         };
         // Q1 client.qc PutClientInServer; Q2 p_client.c SelectSpawnPoint
         // (the pmove origin, not its temporary entity +1); Q3 g_client.c.
-        position.0[2] += if family == 1 { 1.0 } else { 9.0 };
+        position.0[2] += if matches!(rules, RuleSetId::Quake) {
+            1.0
+        } else {
+            9.0
+        };
         let anchor = SpawnAnchor {
             position,
-            angles: if family == 2 {
+            angles: if matches!(rules, RuleSetId::Quake2) {
                 Vec3([0.0, angles.0[1], 0.0])
             } else {
                 angles
             },
             entity: index,
-            fixture_fallback: family == 3,
+            fixture_fallback: matches!(rules, RuleSetId::Quake3),
         };
         candidates.push(SpawnAnchor {
             fixture_fallback: true,
@@ -463,9 +463,9 @@ fn spawns(
             continue;
         }
         fallback.get_or_insert(anchor);
-        let initial = if family == 2 {
+        let initial = if matches!(rules, RuleSetId::Quake2) {
             field(b"targetname").is_none_or(|v| v.is_empty())
-        } else if family == 3 {
+        } else if matches!(rules, RuleSetId::Quake3) {
             field(b"spawnflags")
                 .and_then(|v| std::str::from_utf8(v).ok())
                 .and_then(|v| v.parse::<u32>().ok())
@@ -512,7 +512,7 @@ fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, u
             maxs: model.bounds.maxs + Vec3([1.0; 3]),
         })
         .collect();
-    if map.bsp.format.family() == 1 {
+    if matches!(map.bsp.format.rule_set(), RuleSetId::Quake) {
         let drawing_child = |child: i32| {
             if child >= 0 {
                 child
@@ -560,7 +560,7 @@ fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, u
         let first_plane = u32::try_from(planes.len()).map_err(|_| "collision plane count")?;
         for side in &map.brush_sides[source.sides.indices()] {
             planes.push(map.planes[side.plane as usize]);
-            surfaces.push(if map.bsp.format.family() == 2 {
+            surfaces.push(if matches!(map.bsp.format.rule_set(), RuleSetId::Quake2) {
                 SurfaceFlags::from_q2(
                     side.texture_info
                         .map_or(0, |id| map.texture_info[id as usize].flags as u32),
@@ -578,7 +578,7 @@ fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, u
         brushes.push(Brush {
             first_plane,
             plane_count: source.sides.count,
-            contents: if map.bsp.format.family() == 2 {
+            contents: if matches!(map.bsp.format.rule_set(), RuleSetId::Quake2) {
                 Contents::from_q2(source.contents as u32)
             } else {
                 Contents::from_q3(source.contents as u32)
@@ -589,7 +589,7 @@ fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, u
         .leaves
         .iter()
         .map(|leaf| CollisionLeaf {
-            stored_contents: (map.bsp.format.family() == 2)
+            stored_contents: matches!(map.bsp.format.rule_set(), RuleSetId::Quake2)
                 .then(|| Contents::from_q2(leaf.contents as u32)),
             first_brush: leaf.brushes.first,
             brush_count: leaf.brushes.count,
