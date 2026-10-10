@@ -561,3 +561,52 @@ The connected caller-heap probe includes reduction and decoded application:
 60 warm-up plus 600 measured iterations, positive allocation control 1,
 zero allocations/reallocations/requested bytes and command errors. No worker,
 OS/driver or app-frame claim. No timing, game/window or installation run.
+
+## THE-860: QuakeWorld packet entities
+
+`network/src/snapshots.rs` now frames QW packet entities with the same generic
+Ring and ordered read/write merge used by Q2/Q3. QW playerinfo remains an
+independent native service, so these retained packet frames have no invented
+player payload. The existing QW scalar reader is split into one prefix and
+one body helper; both its public record entry and the packet merge call that
+body. The previous inline reader body is deleted.
+
+Native svc_packetentities/deltapacketentities, baseline/unchanged/remove ordering,
+zero terminator, 64-entity limit and 9-bit ordinals remain. Packet parsing keeps
+qsrc's unsigned-short header before CL_ParseDelta; the standalone scalar entry
+still retains its native signed-short input. The actual caller request selects
+the delta base, even when the advisory low-byte wire prefix differs. Request
+age uses outgoing sequence and the native 63-frame rejection boundary.
+
+The one engine ring retains 32 snapshots, compared with stock QW's 64 backups.
+An unavailable SERVER base selects QW's original full-response encoding. CLIENT
+consumes and rejects an unavailable or over-age base so its next request can
+resynchronize. This changes retention capacity, not wire fields; it does not
+claim live legacy interoperability. Tests cover baseline/unchanged/removal
+merges, advisory mismatch, age, missing bases, truncation, wrap/full recovery,
+capacity rejection and malformed full removal.
+
+The developer oracle adds unchanged SV_EmitPacketEntities, FlushEntityPacket
+and CL_ParsePacketEntities from qsrc/quake/QW. Its private bindings select the
+same full response when a request leaves the unified 32-slot retained window;
+QW's native parser still has 64 backups. This comparison covers packet entities,
+not playerinfo, a complete server message, signon, app or gameplay. Existing
+Q2/Q3/scalar regressions remain required.
+
+QW connected ingress/playerinfo and native request association are the next
+component, followed by all-protocol app submission/CLIENT application and
+deletion of `app/src/host.rs:480`/`app/src/lib.rs:201` direct copies. Other
+protocol streams, rerelease/666/999 and THE-3169 native/live/installed acceptance
+remain open. Evidence: `$HOME/.cache/qa-rust/THE-860-qw-packets-20261010/`.
+
+All 691 workspace tests, unchanged checker, warning-denied Clippy and
+format/diff checks pass. The normal release app and codec examples built in
+32.76 s. Whole original-C QW packet comparison: 512 cases, 593,264 bytes,
+decoded records and cursor positions exact, with the above retention policy.
+Its caller-heap probe has positive control 1 and zero allocations/reallocations
+or requested bytes across those 512 encode/decode cases. Original Q2/Q3
+comparisons remain exact at 913,057/2,035,577 bytes; all 16,384 scalar-state
+cases remain exact at 8,039,745 bytes and decoded words. Existing Q2 connected
+common reduce/apply probe still passes 60+600 iterations with zero caller heap
+activity and command errors. No app/worker/OS/gameplay allocation claim, timing,
+game/window run or install.

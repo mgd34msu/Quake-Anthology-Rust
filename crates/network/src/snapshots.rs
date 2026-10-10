@@ -249,6 +249,9 @@ pub type Q3Ring = Ring<{ states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
 pub type Q3Frame<'a> = Frame<'a, { states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
 pub type Q2Ring = Ring<{ states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
 pub type Q2Frame<'a> = Frame<'a, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
+/// QW playerinfo is an independent native service, not part of packetentities.
+pub type QwRing = Ring<0, { states::QW_ENTITY_WORDS }>;
+pub type QwFrame<'a> = Frame<'a, 0, { states::QW_ENTITY_WORDS }>;
 
 /// Native record widths are protocol data; both variants borrow the same Ring
 /// implementation and never contain another engine player/entity store.
@@ -418,6 +421,63 @@ pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packe
     ))
 }
 
+/// Body after svc_packetentities (delta=false) or svc_deltapacketentities.
+/// qsrc selects the base from the request associated with this incoming frame;
+/// its low-byte wire prefix merely warns on mismatch and never selects a base.
+pub fn read_qw(
+    reader: &mut Reader<'_>,
+    ring: &mut QwRing,
+    sequence: u32,
+    delta: bool,
+    requested_base: Option<u32>,
+    outgoing_sequence: u32,
+) -> Result<bool, packet::Error> {
+    if delta {
+        reader.read_bits(8)?;
+    }
+    let request = if delta { requested_base } else { None };
+    let full = request.is_none();
+    let base_valid = full
+        || request
+            .is_some_and(|n| outgoing_sequence.wrapping_sub(n) < 63 && ring.frame(n).is_some());
+    let index = request.map_or(0, |n| n as usize & (SLOTS - 1));
+    let count = if full { 0 } else { ring.slots[index].count };
+    let mut invalid_full = false;
+    let (count, overflow) = read_entities(
+        reader,
+        &ring.entities[index * ring.capacity..index * ring.capacity + count],
+        &ring.baselines,
+        &mut ring.scratch,
+        0,
+        |reader| {
+            let mut header = states::read_qw_entity_header(reader)?;
+            // CL_ParsePacketEntities casts MSG_ReadShort to unsigned short
+            // before CL_ParseDelta, unlike the standalone native scalar reader.
+            header.flags &= 0xffff;
+            if header.number == 0 && header.flags != 0 {
+                return Err(packet::Error::Count);
+            }
+            invalid_full |= full && header.flags & (1 << 14) != 0;
+            Ok(header)
+        },
+        |reader, header, from| Ok(states::read_qw_entity_body(reader, header, from)?.words),
+        |from| *from,
+    )?;
+    if invalid_full {
+        return Err(packet::Error::Opcode);
+    }
+    Ok(ring.publish_received(
+        Slot {
+            sequence: Some(sequence),
+            count,
+            ..Slot::ZERO
+        },
+        base_valid,
+        overflow || count > 64,
+        true,
+    ))
+}
+
 // The prefix and unchanged-row policy are native format data. The ordered
 // entity/baseline/removal merge is shared by every packet-frame decoder.
 #[expect(
@@ -430,7 +490,7 @@ fn read_entities<const E: usize>(
     baselines: &[[u32; E]],
     scratch: &mut [Entity<E>],
     terminator: u16,
-    header: impl Fn(&mut Reader<'_>) -> Result<states::EntityHeader, packet::Error>,
+    mut header: impl FnMut(&mut Reader<'_>) -> Result<states::EntityHeader, packet::Error>,
     body: impl Fn(
         &mut Reader<'_>,
         states::EntityHeader,
@@ -610,6 +670,35 @@ pub fn write_q2(
                 force || number <= native_clients,
             )
         },
+    )?;
+    writer.write_bits(0, 16)?;
+    Ok(())
+}
+
+/// Native protocol-28 packetentities. An unavailable retained request receives
+/// a native full update; this does not add an extension to the wire.
+pub fn write_qw(
+    writer: &mut Writer<'_>,
+    ring: &QwRing,
+    sequence: u32,
+    delta_request: Option<u32>,
+) -> Result<(), packet::Error> {
+    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let from = delta_request.and_then(|n| ring.frame(n));
+    writer.write_bits(if from.is_some() { 48 } else { 47 }, 8)?;
+    if let Some(from) = from {
+        writer.write_bits(from.sequence, 8)?;
+    }
+    let entities = native_entities(to.entities, 1, 512);
+    let entities = &entities[..entities.len().min(64)];
+    let old = from.map_or(&[][..], |f| native_entities(f.entities, 1, 512));
+    let old = &old[..old.len().min(64)];
+    write_entities(
+        writer,
+        old,
+        entities,
+        &ring.baselines,
+        states::write_qw_entity,
     )?;
     writer.write_bits(0, 16)?;
     Ok(())

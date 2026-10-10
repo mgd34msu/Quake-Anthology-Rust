@@ -512,24 +512,35 @@ pub fn read_qw_entity(
     reader: &mut Reader<'_>,
     from: &[u32; QW_ENTITY_WORDS],
 ) -> Result<QwEntityDelta, Error> {
+    let header = read_qw_entity_header(reader)?;
+    read_qw_entity_body(reader, header, from)
+}
+pub(crate) fn read_qw_entity_header(reader: &mut Reader<'_>) -> Result<EntityHeader, Error> {
     // MSG_ReadShort sign-extends before CL_ParseDelta stores its native flags.
     let header = reader.read_bits(16)? as i16 as i32 as u32;
     let number = (header & 511) as u16;
-    if header & (1 << 14) != 0 {
+    let mut flags = header & !511;
+    if flags & (1 << 14) == 0 && flags & (1 << 15) != 0 {
+        flags |= reader.read_bits(8)?;
+    }
+    Ok(EntityHeader { number, flags })
+}
+pub(crate) fn read_qw_entity_body(
+    reader: &mut Reader<'_>,
+    header: EntityHeader,
+    from: &[u32; QW_ENTITY_WORDS],
+) -> Result<QwEntityDelta, Error> {
+    if header.flags & (1 << 14) != 0 {
         return Ok(QwEntityDelta {
-            number,
+            number: header.number,
             words: None,
         });
     }
-    let mut flags = header & !511;
-    if flags & (1 << 15) != 0 {
-        flags |= reader.read_bits(8)?;
-    }
     let mut words = *from;
-    words[11] = flags;
-    delta::read(&QW_ENTITY_GROUP, &mut words, flags, reader)?;
+    words[11] = header.flags;
+    delta::read(&QW_ENTITY_GROUP, &mut words, header.flags, reader)?;
     Ok(QwEntityDelta {
-        number,
+        number: header.number,
         words: Some(words),
     })
 }

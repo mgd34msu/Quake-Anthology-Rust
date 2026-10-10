@@ -836,3 +836,131 @@ fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Re
     assert!(client.snapshot(42).is_some());
     Ok(())
 }
+
+fn qw_entity(number: u32, x: f32) -> Entity<{ states::QW_ENTITY_WORDS }> {
+    let mut words = [0; states::QW_ENTITY_WORDS];
+    words[0] = 1;
+    words[5] = x.to_bits();
+    Entity { number, words }
+}
+fn qw_store(
+    ring: &mut snapshots::QwRing,
+    sequence: u32,
+    entities: &[Entity<{ states::QW_ENTITY_WORDS }>],
+) -> Result<(), Error> {
+    ring.store(Frame {
+        sequence,
+        time: 0,
+        command: 0,
+        flags: 0,
+        areas: &[],
+        player: &[],
+        entities,
+    })
+}
+fn qw_encode(
+    ring: &snapshots::QwRing,
+    sequence: u32,
+    request: Option<u32>,
+    bytes: &mut [u8],
+) -> Result<usize, Error> {
+    let mut writer = Writer::new(bytes, Encoding::Bytes);
+    snapshots::write_qw(&mut writer, ring, sequence, request)?;
+    writer.write_bits(6, 8)?;
+    Ok(writer.size())
+}
+fn qw_decode(
+    ring: &mut snapshots::QwRing,
+    sequence: u32,
+    request: Option<u32>,
+    outgoing: u32,
+    bytes: &[u8],
+) -> Result<bool, Error> {
+    let mut reader = Reader::new(bytes, Encoding::Bytes);
+    let opcode = reader.read_bits(8)?;
+    assert!(matches!(opcode, 47 | 48));
+    let accepted =
+        snapshots::read_qw(&mut reader, ring, sequence, opcode == 48, request, outgoing)?;
+    assert_eq!(reader.read_bits(8)?, 6);
+    assert_eq!(reader.byte_position(), bytes.len());
+    Ok(accepted)
+}
+
+#[test]
+fn qw_packet_frames_merge_baselines_removals_and_ignore_advisory_from() -> Result<(), Error> {
+    let mut server = snapshots::QwRing::load(64, 512, 0, None)?;
+    let mut client = snapshots::QwRing::load(64, 512, 0, None)?;
+    let baseline = qw_entity(7, 40.);
+    assert!(server.set_baseline(7, &baseline.words));
+    assert!(client.set_baseline(7, &baseline.words));
+    let old = [qw_entity(1, 1.), qw_entity(3, 3.), qw_entity(5, 5.)];
+    qw_store(&mut server, 256, &old)?;
+    let mut bytes = [0; 1400];
+    let n = qw_encode(&server, 256, None, &mut bytes)?;
+    assert!(qw_decode(&mut client, 256, None, 257, &bytes[..n])?);
+    let new = [old[0], qw_entity(3, 9.125), baseline];
+    qw_store(&mut server, 257, &new)?;
+    let n = qw_encode(&server, 257, Some(256), &mut bytes)?;
+    assert_eq!(&bytes[..2], &[48, 0]);
+    bytes[1] = 255; // qsrc only warns; the caller's actual request still selects 256
+    assert!(qw_decode(&mut client, 257, Some(256), 258, &bytes[..n])?);
+    let frame = client.frame(257).ok_or(Error::Context)?;
+    assert_eq!(
+        frame.entities.iter().map(|e| e.number).collect::<Vec<_>>(),
+        [1, 3, 7]
+    );
+    for (actual, expected) in frame.entities.iter().zip(&new) {
+        assert_eq!(actual.words[..11], expected.words[..11]);
+        assert_eq!(actual.words[11] & 0xffff0000, 0); // packet header is unsigned in qsrc
+    }
+    // Native QW's request-age check uses outgoing sequence, not incoming time.
+    assert!(!qw_decode(&mut client, 258, Some(256), 319, &bytes[..n])?);
+    assert!(client.current().is_none());
+    assert!(client.frame(256).is_some());
+    assert_eq!(client.counts().missing_base, 1);
+    qw_store(&mut server, 259, &new)?;
+    let n = qw_encode(&server, 259, None, &mut bytes)?;
+    assert!(qw_decode(&mut client, 259, None, 320, &bytes[..n])?);
+    Ok(())
+}
+
+#[test]
+fn qw_packet_frames_bound_missing_truncated_and_native_capacity() -> Result<(), Error> {
+    let mut server = snapshots::QwRing::load(128, 1024, 0, None)?;
+    let mut client = snapshots::QwRing::load(64, 512, 0, None)?;
+    let old = [qw_entity(1, 1.)];
+    qw_store(&mut server, 1, &old)?;
+    let mut bytes = [0; 8192];
+    let n = qw_encode(&server, 1, None, &mut bytes)?;
+    assert!(qw_decode(&mut client, 1, None, 2, &bytes[..n])?);
+    qw_store(&mut server, 2, &[qw_entity(1, 2.), qw_entity(3, 3.)])?;
+    let n = qw_encode(&server, 2, Some(1), &mut bytes)?;
+    for cut in 1..n - 1 {
+        assert!(qw_decode(&mut client, 2, Some(1), 3, &bytes[..cut]).is_err());
+        assert!(client.frame(2).is_none());
+        assert!(client.frame(1).is_some());
+    }
+    let mut missing = snapshots::QwRing::load(64, 512, 0, None)?;
+    assert!(!qw_decode(&mut missing, 2, Some(1), 3, &bytes[..n])?);
+    assert!(missing.current().is_none());
+    assert_eq!(missing.counts().missing_base, 1);
+    // The engine's retained 32 slots choose a native full update after wrap.
+    qw_store(&mut server, 33, &old)?;
+    let n = qw_encode(&server, 33, Some(1), &mut bytes)?;
+    assert_eq!(bytes[0], 47);
+    assert!(qw_decode(&mut client, 33, Some(1), 34, &bytes[..n])?);
+    let rows = (1..=65).map(|n| qw_entity(n, n as f32)).collect::<Vec<_>>();
+    qw_store(&mut server, 34, &rows)?;
+    let n = qw_encode(&server, 34, None, &mut bytes)?;
+    assert!(qw_decode(&mut client, 34, None, 35, &bytes[..n])?);
+    assert_eq!(client.frame(34).ok_or(Error::Context)?.entities.len(), 64);
+    let mut bounded = snapshots::QwRing::load(4, 512, 0, None)?;
+    assert!(!qw_decode(&mut bounded, 34, None, 35, &bytes[..n])?);
+    assert_eq!(bounded.counts().overflow, 1);
+    // Native REMOVE is not valid in a full packet; do not publish it.
+    let mut reader = Reader::new(&[1, 64, 0, 0], Encoding::Bytes);
+    assert!(snapshots::read_qw(&mut reader, &mut client, 35, false, None, 36).is_err());
+    assert!(client.frame(35).is_none());
+    assert!(client.frame(34).is_some());
+    Ok(())
+}

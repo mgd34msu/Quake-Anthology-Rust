@@ -36,29 +36,38 @@ type ReadFrame<const P: usize, const E: usize> =
         &mut Ring<P, E>,
         u32,
         u32,
+        u32,
+        Option<u32>,
     ) -> Result<bool, qa_network::commands::packet::Error>;
 struct Codec<const P: usize, const E: usize> {
     encoding: Encoding,
-    opcode: u32,
+    opcodes: [u32; 2],
     end: u32,
     write: WriteFrame<P, E>,
     read: ReadFrame<P, E>,
 }
 const Q3: Codec<PLAYER_WORDS, ENTITY_WORDS> = Codec {
     encoding: Encoding::Q3,
-    opcode: 7,
+    opcodes: [7, 7],
     end: 8,
     write: snapshots::write_q3,
-    read: snapshots::read_q3,
+    read: |r, s, n, c, _, _| snapshots::read_q3(r, s, n, c),
 };
 const Q2: Codec<{ qa_network::states::Q2_PLAYER_WORDS }, { qa_network::states::Q2_ENTITY_WORDS }> =
     Codec {
         encoding: Encoding::Bytes,
-        opcode: 20,
+        opcodes: [20, 20],
         end: 6,
         write: |w, r, n, d| snapshots::write_q2(w, r, n, d, 16),
-        read: |r, s, _, _| snapshots::read_q2(r, s),
+        read: |r, s, _, _, _, _| snapshots::read_q2(r, s),
     };
+const QW: Codec<0, { qa_network::states::QW_ENTITY_WORDS }> = Codec {
+    encoding: Encoding::Bytes,
+    opcodes: [47, 48],
+    end: 6,
+    write: snapshots::write_qw,
+    read: |r, s, n, _, opcode, request| snapshots::read_qw(r, s, n, opcode == 48, request, n + 1),
+};
 fn words<const N: usize>(reader: &mut Reader<'_>) -> Result<[u32; N], String> {
     let mut words = [0; N];
     for word in &mut words {
@@ -81,7 +90,7 @@ fn entities<const E: usize>(
 }
 fn load<const P: usize, const E: usize>(
     input: &[u8],
-    retained: u64,
+    retained: Option<u64>,
 ) -> Result<Vec<Case<P, E>>, String> {
     let mut reader = Reader::new(input, Encoding::Bytes);
     let count = reader.read_bits(32).map_err(|e| e.to_string())?;
@@ -101,7 +110,7 @@ fn load<const P: usize, const E: usize>(
         let old = entities(&mut reader, a)?;
         let entities = entities(&mut reader, b)?;
         let mut server = Ring::load(64, 1024, 32, None).map_err(|e| format!("{e:?}"))?;
-        let mut client = Ring::load(64, 1024, 32, Some(retained)).map_err(|e| format!("{e:?}"))?;
+        let mut client = Ring::load(64, 1024, 32, retained).map_err(|e| format!("{e:?}"))?;
         for baseline in baselines {
             if !server.set_baseline(baseline.number, &baseline.words)
                 || !client.set_baseline(baseline.number, &baseline.words)
@@ -152,8 +161,10 @@ fn run<const P: usize, const E: usize>(
         (codec.write)(&mut writer, &case.server, base, None).map_err(|e| format!("{e:?}"))?;
         writer.write_bits(codec.end, 8).map_err(|e| e.to_string())?;
         let mut reader = Reader::new(writer.bytes(), codec.encoding);
-        reader.read_bits(8).map_err(|e| e.to_string())?;
-        if !(codec.read)(&mut reader, &mut case.client, base, 12).map_err(|e| format!("{e:?}"))? {
+        let opcode = reader.read_bits(8).map_err(|e| e.to_string())?;
+        if !(codec.read)(&mut reader, &mut case.client, base, 12, opcode, None)
+            .map_err(|e| format!("{e:?}"))?
+        {
             return Err("initial full snapshot".into());
         }
         if reader.read_bits(8).map_err(|e| e.to_string())? != codec.end {
@@ -184,11 +195,19 @@ fn run<const P: usize, const E: usize>(
     let bits = writer.bit_position() as u32;
     let n = writer.size();
     let mut reader = Reader::new(writer.bytes(), codec.encoding);
-    if reader.read_bits(8).map_err(|e| e.to_string())? != codec.opcode {
+    let opcode = reader.read_bits(8).map_err(|e| e.to_string())?;
+    if !codec.opcodes.contains(&opcode) {
         return Err("snapshot opcode".into());
     }
-    let accepted =
-        (codec.read)(&mut reader, &mut case.client, sequence, 12).map_err(|e| format!("{e:?}"))?;
+    let accepted = (codec.read)(
+        &mut reader,
+        &mut case.client,
+        sequence,
+        12,
+        opcode,
+        (case.distance != 0).then_some(base),
+    )
+    .map_err(|e| format!("{e:?}"))?;
     if reader.read_bits(8).map_err(|e| e.to_string())? != codec.end {
         return Err("snapshot EOF".into());
     }
@@ -234,7 +253,7 @@ fn run<const P: usize, const E: usize>(
 fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
     let input = std::fs::read(fixture).map_err(|e| e.to_string())?;
     let oracle = std::fs::read(oracle).map_err(|e| e.to_string())?;
-    let mut cases = load(&input, 1920)?;
+    let mut cases = load(&input, Some(1920))?;
     let mut output = [0; 32768];
     let mut offset = 0;
     for case in &mut cases {
@@ -313,15 +332,18 @@ fn main() -> Result<(), String> {
         .read_to_end(&mut input)
         .map_err(|e| e.to_string())?;
     if args.get(1).is_some_and(|a| a == "--q2") {
-        return compare(&input, &Q2, 896);
+        return compare(&input, &Q2, Some(896));
     }
-    compare(&input, &Q3, 1920)
+    if args.get(1).is_some_and(|a| a == "--qw") {
+        return compare(&input, &QW, None);
+    }
+    compare(&input, &Q3, Some(1920))
 }
 
 fn compare<const P: usize, const E: usize>(
     input: &[u8],
     codec: &Codec<P, E>,
-    retained: u64,
+    retained: Option<u64>,
 ) -> Result<(), String> {
     let mut cases = load(input, retained)?;
     check_heap_counter()?;

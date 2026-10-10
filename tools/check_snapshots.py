@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""THE-860 original Q3 snapshot stream oracle; extracted C stays developer-only."""
+"""THE-860 original native snapshot/packet oracle; C stays developer-only."""
 import argparse
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ import struct
 import subprocess
 from check_message import PREAMBLE, function
 from check_state_delta import (reference_source, q2_reference, q2_entity_reference,
-                               q2_layout, q2_entity_layout)
+                               q2_layout, q2_entity_layout, qw_reference)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -292,24 +292,144 @@ def fixture(tables, q2=False):
     return bytes(output)
 
 
+def compile_qw_reference(qsrc, evidence):
+    """Original QW packet merge bodies with private native bindings."""
+    source = PREAMBLE + '\ntypedef float vec3_t[3];\n#define true 1\n#define false 0\n'
+    source += '#define cl q2_player_client\n#define frame_t q2_frame_t\n#define client_frame_t q2_client_frame_t\n'
+    source += q2_reference(qsrc)
+    source += '#undef cl\n#undef frame_t\n#undef client_frame_t\n'
+    source += qw_reference(qsrc)
+    source += r'''
+typedef qw_entity_state_t entity_state_t;
+#define UPDATE_BACKUP 64
+#define UPDATE_MASK 63
+#define MAX_PACKET_ENTITIES 64
+#define svc_packetentities 47
+#define svc_deltapacketentities 48
+#define MSG_WriteByte(m,v) q2_write(m,v,8)
+#define MSG_WriteShort(m,v) q2_write(m,v,16)
+#define MSG_ReadByte() q2_read(&net_message,8,0)
+#define MSG_ReadShort() q2_read(&net_message,16,1)
+typedef struct {int num_entities;entity_state_t entities[64];} packet_entities_t;
+typedef struct {packet_entities_t entities;} client_frame_t;
+typedef struct {client_frame_t frames[64];int delta_sequence;} client_t;
+typedef struct {packet_entities_t packet_entities;int delta_sequence,invalid;} frame_t;
+typedef struct {entity_state_t baseline;} edict_t;
+static edict_t server_baselines[512];static entity_state_t cl_baselines[512];
+#define EDICT_NUM(n) (&server_baselines[n])
+static struct {int validsequence;frame_t frames[64];} cl;
+static struct {struct {int incoming_sequence,outgoing_sequence;} netchan;} cls;
+static int msg_badread;
+static void Con_DPrintf(char *fmt,...) {(void)fmt;}
+static void Con_Printf(char *fmt,...) {(void)fmt;}
+static void Host_EndGame(char *fmt,...) {(void)fmt;abort();}
+'''
+    server = (qsrc/'quake/QW/server/sv_ents.c').read_text()
+    client = (qsrc/'quake/QW/client/cl_ents.c').read_text()
+    source += function(server, 'SV_EmitPacketEntities')
+    source += function(client, 'FlushEntityPacket') + function(client, 'CL_ParsePacketEntities')
+    source += r'''
+static int entity_input(entity_state_t *e) {
+ uint16_t n;uint32_t words[12];if(fread(&n,2,1,stdin)!=1||fread(words,4,12,stdin)!=12)return 0;
+ memset(e,0,sizeof(*e));e->number=n;qw_put(e,words);return 1;
+}
+static void parse(msg_t *m,int sequence) {
+ net_message=*m;net_message.readcount=net_message.bit=0;
+ cls.netchan.incoming_sequence=sequence;cls.netchan.outgoing_sequence=sequence+1;
+ int opcode=MSG_ReadByte();if(opcode!=47&&opcode!=48)abort();
+ cl.frames[sequence&63].delta_sequence=opcode==48?1:-1;
+ CL_ParsePacketEntities(opcode==48);if(MSG_ReadByte()!=6)abort();
+}
+int main(void) {
+ uint32_t cases;if(fread(&cases,4,1,stdin)!=1)return 2;
+ for(uint32_t k=0;k<cases;k++) {
+  byte h[4];uint16_t counts[3];
+  if(fread(h,1,4,stdin)!=4||fread(counts,2,3,stdin)!=3||h[3]||counts[0]>64||counts[1]>64)return 3;
+  memset(&cl,0,sizeof(cl));memset(server_baselines,0,sizeof(server_baselines));memset(cl_baselines,0,sizeof(cl_baselines));
+  client_t client={0};packet_entities_t to={0};
+  for(int i=0;i<counts[2];i++) {entity_state_t e;if(!entity_input(&e))return 4;
+   server_baselines[e.number].baseline=e;cl_baselines[e.number]=e;}
+  packet_entities_t *old=&client.frames[1].entities;old->num_entities=counts[0];to.num_entities=counts[1];
+  for(int i=0;i<counts[0];i++)if(!entity_input(&old->entities[i]))return 5;
+  for(int i=0;i<counts[1];i++)if(!entity_input(&to.entities[i]))return 6;
+  if(h[1]) {byte wire[8192]={0};msg_t m={.data=wire,.maxsize=sizeof(wire)};
+   client.delta_sequence=-1;SV_EmitPacketEntities(&client,old,&m);MSG_WriteByte(&m,6);parse(&m,1);}
+  /* The unified engine retains 32 snapshots, selecting a native full response
+     when that actual requested frame is no longer resident. */
+  client.delta_sequence=h[0]&&h[0]<32?1:-1;
+  int sequence=1+(h[0]?h[0]:1);byte wire[8192]={0};msg_t m={.data=wire,.maxsize=sizeof(wire)};
+  SV_EmitPacketEntities(&client,&to,&m);MSG_WriteByte(&m,6);parse(&m,sequence);
+  uint32_t accepted=cl.validsequence==sequence;
+  uint32_t header[4]={m.bit,m.cursize,accepted,net_message.bit};fwrite(header,4,4,stdout);fwrite(wire,1,m.cursize,stdout);
+  if(accepted) {packet_entities_t *p=&cl.frames[sequence&63].packet_entities;
+   uint32_t meta[5]={0,0,0,0,p->num_entities};fwrite(meta,4,5,stdout);
+   for(int i=0;i<p->num_entities;i++) {uint32_t n=p->entities[i].number,words[12];qw_get(&p->entities[i],words);
+    fwrite(&n,4,1,stdout);fwrite(words,4,12,stdout);}
+  }
+ }
+ return 0;
+}
+'''
+    code = evidence/'original-qw-packets.c'
+    code.write_text(source)
+    binary = evidence/'original-qw-packets'
+    subprocess.run(['cc','-O2','-std=c11','-fno-strict-aliasing','-ffp-contract=off',str(code),'-o',str(binary)],check=True)
+    return binary
+
+
+def qw_fixture():
+    rng = random.Random(86028)
+    def words():
+        values = [rng.randrange(256) for _ in range(5)]
+        values += [struct.unpack('<I',struct.pack('<f',rng.randrange(-16000,16000)*.125))[0] for _ in range(3)]
+        values += [struct.unpack('<I',struct.pack('<f',rng.randrange(-256,256)*1.25))[0] for _ in range(3)]
+        return values + [rng.choice([0,64])]
+    output = bytearray(struct.pack('<I',512))
+    for case in range(512):
+        distance = [0,1,2,28,29,31,32][case%7]
+        pool = range(1,512)
+        old_numbers = sorted(rng.sample(pool,case%40))
+        new_numbers = sorted(set(n for n in old_numbers if rng.randrange(4)) | set(rng.sample(pool,case%9)))
+        old = {n:words() for n in old_numbers}
+        new = {n:old[n].copy() if n in old else words() for n in new_numbers}
+        for n in new_numbers:
+            if n in old and rng.randrange(3)==0:
+                new[n][5] = struct.unpack('<I',struct.pack('<f',case*.125))[0]
+        baselines = {n:words() for n in rng.sample(pool,4)}
+        output += struct.pack('<4B3H',distance,1,0,0,len(old),len(new),len(baselines))
+        for records in [baselines,old,new]:
+            for number,record in records.items():
+                output += struct.pack('<H12I',number,*record)
+    return bytes(output)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--qsrc', type=Path, default=ROOT.parent/'qsrc')
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--rust', type=Path, required=True)
-    parser.add_argument('--protocol', choices=['q3','q2'], default='q3')
+    parser.add_argument('--protocol', choices=['q3','q2','qw'], default='q3')
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
     q2 = args.protocol == 'q2'
-    binary, tables = (compile_q2_reference if q2 else compile_reference)(args.qsrc, args.evidence)
-    data = fixture(tables, q2)
+    if args.protocol == 'qw':
+        binary = compile_qw_reference(args.qsrc, args.evidence)
+        data = qw_fixture()
+    else:
+        binary, tables = (compile_q2_reference if q2 else compile_reference)(args.qsrc, args.evidence)
+        data = fixture(tables, q2)
     (args.evidence/'fixtures.bin').write_bytes(data)
     native = subprocess.check_output([binary], input=data)
-    rust = subprocess.check_output([args.rust] + (['--q2'] if q2 else []), input=data)
+    rust = subprocess.check_output([args.rust] + (['--'+args.protocol] if args.protocol != 'q3' else []), input=data)
     (args.evidence/'original.bin').write_bytes(native)
     (args.evidence/'rust.bin').write_bytes(rust)
     result = {'protocol': args.protocol, 'cases': 512, 'bytes': len(native), 'exact': native == rust,
               'scope': 'original snapshot writer/parser bodies with private native bindings; no signon/host/gameplay'}
+    if args.protocol == 'qw':
+        result['scope'] = 'original QW packet-entity writer/parser bodies; no playerinfo/signon/host/gameplay'
+        result['retained_snapshot_slots'] = 32
+        result['native_qw_backup'] = 64
+        result['retention_policy'] = 'original full-response selection when the unified 32-slot window loses the requested base'
     if native != rust:
         result['first_difference'] = next((i for i,(a,b) in enumerate(zip(native,rust)) if a != b), min(len(native),len(rust)))
     (args.evidence/'comparison.json').write_text(json.dumps(result, indent=2)+'\n')
