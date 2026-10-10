@@ -717,6 +717,105 @@ static void kex_stats_encode(msg_t *m,uint32_t *from,uint32_t *to) {
     return source + ''.join(f'\n#undef {name}\n' for name in names)
 
 
+def kex_player_reference(qsrc):
+    """Use the real native structs/helpers in an isolated cold translation unit."""
+    original = (qsrc / 'q2repro/q2proto/src/q2proto_proto_kex.c').read_text()
+    source = r'''
+#define Q2PROTO_BUILD
+#include "q2proto_internal.h"
+#include <assert.h>
+#include <string.h>
+#include <stdlib.h>
+typedef struct {uint8_t *bytes;uint32_t size,pos;} kex_io_t;
+uint8_t q2protoio_read_u8(uintptr_t arg) {
+ kex_io_t *io=(void*)arg;assert(io->pos<io->size);return io->bytes[io->pos++];
+}
+uint16_t q2protoio_read_u16(uintptr_t arg) {
+ uint16_t v=q2protoio_read_u8(arg);return v|((uint16_t)q2protoio_read_u8(arg)<<8);
+}
+uint32_t q2protoio_read_u32(uintptr_t arg) {
+ uint32_t v=q2protoio_read_u16(arg);return v|((uint32_t)q2protoio_read_u16(arg)<<16);
+}
+void q2protoio_write_u8(uintptr_t arg,uint8_t v) {
+ kex_io_t *io=(void*)arg;assert(io->size<1400);io->bytes[io->size++]=v;
+}
+void q2protoio_write_u16(uintptr_t arg,uint16_t v) {
+ q2protoio_write_u8(arg,v);q2protoio_write_u8(arg,v>>8);
+}
+void q2protoio_write_u32(uintptr_t arg,uint32_t v) {
+ q2protoio_write_u16(arg,v);q2protoio_write_u16(arg,v>>16);
+}
+q2proto_error_t q2protoio_get_error(uintptr_t arg) {(void)arg;return Q2P_ERR_SUCCESS;}
+'''
+    source += '\n'.join(re.findall(r'^#define GUNBIT_.*$', original, re.M)) + '\n'
+    start = original.index('#define READ_CHECKED_GUNOFFSET_COMP_FLOAT')
+    end = original.index('static q2proto_error_t kex_client_read_playerstate', start)
+    source += original[start:end]
+    source += function(original, 'kex_server_write_playerstate')
+    source += function(original, 'kex_client_read_playerstate')
+    # The fixture binds already projected words, not a module/game ABI.
+    source += 'static float kex_float(uint32_t word) {float v;memcpy(&v,&word,4);return v;}\n'
+    source += 'static void kex_put(q2proto_svc_playerstate_t *p,uint32_t *w,bool reading) {\n'
+    scalars = {0:'pm_type',7:'pm_time',8:'pm_flags',9:'pm_gravity',23:'gunframe',34:'fov',35:'rdflags',40:'gunrate',41:'pm_viewheight'}
+    for i, name in scalars.items():
+        source += f' p->{name}=w[{i}];\n'
+    source += ' p->gunindex=w[22]&Q2PRO_GUNINDEX_MASK;p->gunskin=w[22]>>Q2PRO_GUNINDEX_BITS;\n'
+    vectors = [(1,'pm_origin','coords',True),(4,'pm_velocity','coords',True),
+               (10,'pm_delta_angles','angles',False),(16,'viewangles.values','angles',False),
+               (24,'gunoffset.values','small_offsets',False),(27,'gunangles.values','small_angles',False)]
+    for start, name, kind, coords in vectors:
+        target = f'(reading?&p->{name}.read.value.values:&p->{name}.write.current)' if coords else f'&p->{name}'
+        source += f' for(int i=0;i<3;i++)q2proto_var_{kind}_set_float_comp({target},i,kex_float(w[{start}+i]));\n'
+    for start,name,kind,scale in [(13,'viewoffset','small_offsets',16),(19,'kick_angles','small_angles',1024)]:
+        source += f' for(int i=0;i<3;i++)q2proto_var_{kind}_set_float_comp(&p->{name},i,(int32_t)w[{start}+i]/{scale}.f);\n'
+    for start,name in [(30,'blend.values'),(36,'damage_blend.values')]:
+        source += f' for(int i=0;i<4;i++)q2proto_var_color_set_byte_comp(&p->{name},i,w[{start}+i]);\n'
+    source += ' for(int i=0;i<64;i++)p->stats[i]=w[42+i];\n}\n'
+    source += 'static void kex_get(q2proto_svc_playerstate_t *p,uint32_t *w) {\n'
+    for i,name in scalars.items():
+        source += f' w[{i}]=(int)p->{name};\n'
+    source += ' w[22]=p->gunindex|(p->gunskin<<Q2PRO_GUNINDEX_BITS);\n'
+    for start,name,kind,coords in vectors:
+        target = f'&p->{name}.read.value.values' if coords else f'&p->{name}'
+        source += f' for(int i=0;i<3;i++){{float v=q2proto_var_{kind}_get_float_comp({target},i);memcpy(w+{start}+i,&v,4);}}\n'
+    for start,name,kind in [(13,'viewoffset','small_offsets'),(19,'kick_angles','small_angles')]:
+        suffix = 'viewoffset' if start==13 else 'kick_angles'
+        source += f' for(int i=0;i<3;i++)w[{start}+i]=(int)q2proto_var_{kind}_get_q2repro_{suffix}_comp(&p->{name},i);\n'
+    for start,name in [(30,'blend.values'),(36,'damage_blend.values')]:
+        source += f' for(int i=0;i<4;i++)w[{start}+i]=q2proto_var_color_get_byte_comp(&p->{name},i);\n'
+    source += ' for(int i=0;i<64;i++)w[42+i]=(int)p->stats[i];\n}\n'
+    source += r'''
+uint32_t kex_player_encode(uint8_t *bytes,uint32_t *from,uint32_t *to) {
+ kex_io_t io={.bytes=bytes};q2proto_svc_playerstate_t p={0};kex_put(&p,to,false);
+ for(int i=0;i<3;i++) {
+  q2proto_var_coords_set_float_comp(&p.pm_origin.write.prev,i,kex_float(from[1+i]));
+  q2proto_var_coords_set_float_comp(&p.pm_velocity.write.prev,i,kex_float(from[4+i]));
+ }
+'''
+    flags = {0:'PM_TYPE',7:'PM_TIME',8:'PM_FLAGS',9:'PM_GRAVITY',22:'GUNINDEX',23:'GUNFRAME',34:'FOV',35:'RDFLAGS',40:'GUNRATE',41:'PM_VIEWHEIGHT'}
+    for i,name in flags.items():
+        source += f' if(from[{i}]!=to[{i}])p.delta_bits|=Q2P_PSD_{name};\n'
+    for start,name,count,floating in [(10,'PM_DELTA_ANGLES',3,True),(13,'VIEWOFFSET',3,False),(19,'KICKANGLES',3,False)]:
+        compare = f'kex_float(from[{start}+i])!=kex_float(to[{start}+i])' if floating else f'from[{start}+i]!=to[{start}+i]'
+        source += f' for(int i=0;i<{count};i++)if({compare})p.delta_bits|=Q2P_PSD_{name};\n'
+    for start,name,count,floating in [(16,'viewangles',3,True),(24,'gunoffset',3,True),(27,'gunangles',3,True),(30,'blend',4,False),(36,'damage_blend',4,False)]:
+        compare = f'kex_float(from[{start}+i])!=kex_float(to[{start}+i])' if floating else f'from[{start}+i]!=to[{start}+i]'
+        source += f' for(int i=0;i<{count};i++)if({compare})p.{name}.delta_bits|=1u<<i;\n'
+    source += r'''
+ for(int i=0;i<64;i++)if(from[42+i]!=to[42+i])p.statbits|=UINT64_C(1)<<i;
+ assert(kex_server_write_playerstate(NULL,(uintptr_t)&io,&p)==Q2P_ERR_SUCCESS);
+ return io.size;
+}
+void kex_player_decode(uint8_t *bytes,uint32_t size,uint32_t *from,uint32_t *out) {
+ kex_io_t io={.bytes=bytes,.size=size};q2proto_svc_playerstate_t p={0};kex_put(&p,from,true);
+ assert(q2protoio_read_u8((uintptr_t)&io)==svc_playerinfo);
+ assert(kex_client_read_playerstate(NULL,(uintptr_t)&io,&p)==Q2P_ERR_SUCCESS);
+ assert(io.pos==size);kex_get(&p,out);
+}
+'''
+    return source
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -796,7 +895,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>10||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>11||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -814,7 +913,8 @@ int main(void) {
   } else if(mode==7) {qw_player_encode(&m,to,number);
   } else if(mode==8) {rr_stats_encode(&m,from,to);
   } else if(mode==9) {rr_player_encode(&m,from,to);
-  } else {kex_stats_encode(&m,from,to);
+  } else if(mode==10) {kex_stats_encode(&m,from,to);
+  } else {m.cursize=kex_player_encode(data,from,to);m.bit=m.cursize*8;
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
   uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
@@ -831,22 +931,34 @@ int main(void) {
   else if(mode==7) {qw_player_decode(&m,from,decoded,&wire_number);}
   else if(mode==8) {rr_stats_decode(&m,from,decoded);}
   else if(mode==9) {rr_player_decode(&m,from,decoded);}
-  else {kex_stats_decode(&m,from,decoded);}
+  else if(mode==10) {kex_stats_decode(&m,from,decoded);}
+  else {kex_player_decode(data,m.cursize,from,decoded);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
 }
 '''
     stat_layout = [(f'stats[{i}]',16) for i in range(64)]
-    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8),('clientnum',-16)]+stat_layout, stat_layout]
+    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8),('clientnum',-16)]+stat_layout, stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8)]+stat_layout]
 
 
 def compile_reference(qsrc, evidence):
     source, tables = reference_source(qsrc)
+    declarations = 'extern uint32_t kex_player_encode(uint8_t*,uint32_t*,uint32_t*);\nextern void kex_player_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*);\n'
+    source = source.replace('int main(void)',declarations+'int main(void)',1)
     code = evidence / 'original-state-delta.c'
     code.write_text(source)
     binary = evidence / 'original-state-delta'
-    subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
+    kex_code = evidence / 'original-kex-player.c'
+    kex_code.write_text(kex_player_reference(qsrc))
+    base = qsrc / 'q2repro/q2proto'
+    command = ['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off',
+               '-ffunction-sections','-fdata-sections','-DQ2PROTO_CONFIG_PROVIDED=1',
+               '-DQ2PROTO_PLAYER_STATE_FEATURES=Q2PROTO_FEATURES_RERELEASE',
+               '-I',str(base/'inc'),'-I',str(base/'src'),str(code),str(kex_code),str(base/'src/q2proto_coords.c'),
+               '-Wl,--gc-sections','-lm','-o',str(binary)]
+    (evidence/'compile-command.json').write_text(json.dumps(command,indent=2)+'\n')
+    subprocess.run(command, check=True)
     return binary, tables
 
 
@@ -856,16 +968,19 @@ def fixture(tables):
     floats = [-0.0, 0.0, -4096.0, -4097.0, 4095.0, 4096.0, 0.125, -0.125, 123456.75]
     for mode, table in enumerate(tables):
         for case in range(2048):
-            if mode == 9:
+            if mode in (9,11):
                 old,new=[0]*112,[0]*112
-                for i in range(107):
-                    if 1<=i<=6 or 10<=i<=12:
+                count = 107 if mode==9 else 106
+                for i in range(count):
+                    if 1<=i<=6 or 10<=i<=12 or mode==11 and (16<=i<=18 or 24<=i<=29):
                         a,b=rng.uniform(-32768,32768),rng.uniform(-32768,32768)
                         if case<32:a,b=(-0.0,0.0) if i%2 else (0.0,-0.0)
                         old[i]=struct.unpack('<I',struct.pack('<f',a))[0]
                         new[i]=struct.unpack('<I',struct.pack('<f',b))[0]
                     elif i in (7,8,22):
                         old[i],new[i]=rng.randrange(65536),rng.randrange(65536)
+                    elif i==23 and mode==11:
+                        old[i],new[i]=rng.randrange(512),rng.randrange(512)
                     elif i in (0,23,30,31,32,33,34,35,36,37,38,39,40):
                         old[i],new[i]=rng.randrange(256),rng.randrange(256)
                     elif i==41:
@@ -873,13 +988,13 @@ def fixture(tables):
                     else:
                         old[i],new[i]=rng.randrange(-32768,32768)&0xffffffff,rng.randrange(-32768,32768)&0xffffffff
                     if (case+i)%3:new[i]=old[i]
-                if case<107:
+                if case<count:
                     field=new[case]
                     new=old.copy();new[case]=field
-                if case==107:new=old.copy()
-                if 108<=case<116:
+                if case==count:new=old.copy()
+                if count+1<=case<count+9:
                     old=[0]*112;new=old.copy()
-                    new[1]=[0,0x80000000,0x7f800000,0xff800000,0x7fc00001,0x7f800001,1,0x80000001][case-108]
+                    new[1]=[0,0x80000000,0x7f800000,0xff800000,0x7fc00001,0x7f800001,1,0x80000001][case-count-1]
                 output+=struct.pack('<BBH224I',mode,0,0,*old,*new)
                 continue
             if mode in (8,10):
@@ -1030,9 +1145,9 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, q2_repro_player_words=107, kex_stats=64, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro stats/enhanced-player/coordinate/angle/blend functions unchanged; q2proto clientnum statements and KEX stat writer/parser blocks unchanged; original removal statements, offsetof and private packed-word/struct bindings',
-                  limits='Seeded native delta records; Q2repro comparison uses packed view/weapon/color words and original MSG packed gunframe range 0..255; no snapshot framing, common-state/module ABI packing, retail KEX, sign-on, captures, live or installed acceptance')
+    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, q2_repro_player_words=107, kex_stats=64, kex_player_words=106, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro stats/enhanced-player/coordinate/angle/blend functions unchanged; q2proto clientnum statements, KEX stat blocks and full KEX player writer/parser unchanged; KEX uses original q2proto headers, coordinate code and IO helpers; original removal statements, offsetof and private packed-word/struct bindings',
+                  limits='Seeded native delta records; Q2repro comparison uses packed view/weapon/color words and original MSG packed gunframe range 0..255; KEX binds already projected scalar words and native delta metadata; no snapshot/channel framing, common-state/module ABI packing, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))
 

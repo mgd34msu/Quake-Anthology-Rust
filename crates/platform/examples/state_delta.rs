@@ -277,6 +277,24 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             bytes[0] = extra;
             return Ok(result);
         }
+        11 => {
+            let from = states::Q2KexPlayer {
+                words: std::array::from_fn(|i| case.from[i]),
+                stats: std::array::from_fn(|i| case.from[42 + i]),
+            };
+            let to = states::Q2KexPlayer {
+                words: std::array::from_fn(|i| case.to[i]),
+                stats: std::array::from_fn(|i| case.to[42 + i]),
+            };
+            states::write_q2_kex_player(&mut writer, &from, &to).map_err(|e| e.to_string())?;
+            let decoded = states::read_q2_kex_player(
+                &mut Reader::new(writer.bytes(), Encoding::Bytes),
+                &from,
+            )
+            .map_err(|e| e.to_string())?;
+            result.decoded[..42].copy_from_slice(&decoded.words);
+            result.decoded[42..106].copy_from_slice(&decoded.stats);
+        }
         _ => return Err("state dialect".into()),
     }
     result.bits = writer.bit_position() as u32;
@@ -350,7 +368,7 @@ fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> 
     let mut counts = allocations::Counts::default();
     let mut checks = 0;
     let mut wire_bytes = 0;
-    let mut mode_checks = [0u64; 11];
+    let mut mode_checks = [0u64; 12];
     for frame in 0..660 {
         allocations::begin_frame();
         let watch = (!heap_only).then(Stopwatch::start);

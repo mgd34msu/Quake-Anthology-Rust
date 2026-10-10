@@ -197,6 +197,11 @@ impl Field {
 pub(crate) enum Presence {
     Fixed,
     Mask(u8),
+    PackedMask {
+        bits: u8,
+        shift: u8,
+        word: usize,
+    },
     OptionalMask(u8),
     MaskPreset {
         bits: u8,
@@ -299,7 +304,10 @@ pub(crate) fn write<
     for group in groups {
         let masked = matches!(
             group.presence,
-            Presence::Mask(_) | Presence::OptionalMask(_) | Presence::MaskPreset { .. }
+            Presence::Mask(_)
+                | Presence::PackedMask { .. }
+                | Presence::OptionalMask(_)
+                | Presence::MaskPreset { .. }
         ) || PREFIX;
         let compare = matches!(group.presence, Presence::Changed { .. })
             || STATE && matches!(group.presence, Presence::LastChanged(_));
@@ -311,7 +319,9 @@ pub(crate) fn write<
         let mut mask = if PREFIX { key } else { 0 };
         let mut count = group.fields.len();
         let mask_config = match group.presence {
-            Presence::Mask(bits) | Presence::OptionalMask(bits) => Some((bits, 0, 0, 0)),
+            Presence::Mask(bits)
+            | Presence::OptionalMask(bits)
+            | Presence::PackedMask { bits, .. } => Some((bits, 0, 0, 0)),
             Presence::MaskPreset {
                 bits,
                 always,
@@ -335,7 +345,13 @@ pub(crate) fn write<
                     continue;
                 }
             }
-            write_mask(writer, mask, bits)?;
+            let prefix = match group.presence {
+                Presence::PackedMask { shift, word, .. } => {
+                    (mask << shift) | u64::from(to[word] & (u32::MAX >> (32 - shift)))
+                }
+                _ => mask,
+            };
+            write_mask(writer, prefix, bits)?;
         } else {
             match group.presence {
                 Presence::LastChanged(bits) if STATE => {
@@ -423,7 +439,10 @@ pub(crate) fn read<
     for group in groups {
         let masked = matches!(
             group.presence,
-            Presence::Mask(_) | Presence::OptionalMask(_) | Presence::MaskPreset { .. }
+            Presence::Mask(_)
+                | Presence::PackedMask { .. }
+                | Presence::OptionalMask(_)
+                | Presence::MaskPreset { .. }
         ) || PREFIX;
         let compare = matches!(group.presence, Presence::Changed { .. })
             || STATE && matches!(group.presence, Presence::LastChanged(_));
@@ -439,6 +458,11 @@ pub(crate) fn read<
         } else {
             match group.presence {
                 Presence::Mask(bits) => read_mask(reader, bits)?,
+                Presence::PackedMask { bits, shift, word } => {
+                    let prefix = read_mask(reader, bits)?;
+                    words[word] = prefix as u32 & (u32::MAX >> (32 - shift));
+                    prefix >> shift
+                }
                 Presence::MaskPreset { bits, .. } if STATE => read_mask(reader, bits)?,
                 Presence::OptionalMask(bits) => {
                     if reader.read_bits(1)? == 0 {

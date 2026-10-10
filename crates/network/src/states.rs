@@ -431,23 +431,28 @@ pub fn read_q2_rr_stats(
     Ok(words)
 }
 
-/// Q2repro's enhanced record, before native module/game-ABI conversion.
-/// Coordinates and delta angles contain native float bits. Small view/weapon
-/// offsets, view angles and blends are already packed at the native boundary.
+/// Fixed native rerelease words, before module/game-ABI conversion. A protocol
+/// table chooses each word's interpretation; this is not common player storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Q2ReproPlayer {
-    /// Classic field order, then damage blend, gunrate, viewheight and clientnum.
-    pub words: [u32; 43],
+pub struct Q2RereleasePlayer<const WORDS: usize> {
+    pub words: [u32; WORDS],
     pub stats: [u32; Q2_RR_STATS],
 }
-impl Default for Q2ReproPlayer {
+impl<const WORDS: usize> Default for Q2RereleasePlayer<WORDS> {
     fn default() -> Self {
         Self {
-            words: [0; 43],
+            words: [0; WORDS],
             stats: [0; Q2_RR_STATS],
         }
     }
 }
+/// Q2repro: classic order, damage blend, gunrate, viewheight and clientnum.
+/// Coordinates/delta angles are float bits; view/weapon/color words are packed.
+pub type Q2ReproPlayer = Q2RereleasePlayer<43>;
+/// Retail KEX: same order through viewheight, without clientnum. Coordinates,
+/// delta/view/weapon angles and weapon offsets are native float bits. Viewoffset,
+/// kickangles and blends are packed words. Gunframe has nine native bits.
+pub type Q2KexPlayer = Q2RereleasePlayer<42>;
 const fn q2_repro_fields() -> [Field; 43] {
     let mut fields = [Field::new(0, 8, 0, Value::Unsigned); 43];
     let mut i = 0;
@@ -554,6 +559,130 @@ pub fn read_q2_repro_player(
         to.stats = read_q2_rr_stats(reader, &from.stats)?;
     }
     delta::read(&Q2_REPRO_SUFFIX, &mut to.words, flags, reader)?;
+    Ok(to)
+}
+const fn q2_kex_fields() -> [Field; 42] {
+    let source = q2_repro_fields();
+    let mut fields = [source[0]; 42];
+    let mut i = 0;
+    while i < fields.len() {
+        fields[i] = match i {
+            1..=3 => Field::new(i, 32, 1 << 1, Value::RawFloat),
+            4..=6 => Field::new(i, 32, 1 << 2, Value::RawFloat),
+            10..=12 => Field::new(i, 32, 1 << 6, Value::RawFloat),
+            16..=18 => Field::new(i, 32, 1 << 8, Value::RawFloat),
+            23 => Field::new(i, 9, 1 << 13, Value::Unsigned),
+            24..=29 => Field::new(i, 32, 1 << 13, Value::RawFloat),
+            36..=39 => Field::new(i, 8, 1 << 16, Value::Unsigned),
+            40 => Field::new(i, 8, 1 << 13, Value::Unsigned),
+            41 => Field::new(i, 8, 1 << 7, Value::Signed),
+            _ => source[i],
+        };
+        i += 1;
+    }
+    fields
+}
+static Q2_KEX_FIELDS: [Field; 42] = q2_kex_fields();
+const fn q2_kex_prefix_fields() -> [Field; 24] {
+    let source = q2_kex_fields();
+    let mut fields = [source[0]; 24];
+    let mut i = 0;
+    while i < fields.len() {
+        fields[i] = source[if i < 16 {
+            i
+        } else if i == 16 {
+            41
+        } else {
+            i - 1
+        }];
+        i += 1;
+    }
+    fields
+}
+static Q2_KEX_PREFIX_FIELDS: [Field; 24] = q2_kex_prefix_fields();
+static Q2_KEX_PREFIX: [Group<true, true>; 1] = [Group {
+    fields: &Q2_KEX_PREFIX_FIELDS,
+    presence: Presence::Fixed,
+}];
+const fn q2_kex_gun_fields() -> [Field; 7] {
+    let source = q2_kex_fields();
+    let mut fields = [source[24]; 7];
+    let mut i = 0;
+    while i < fields.len() {
+        fields[i] = source[if i < 6 { 24 + i } else { 40 }];
+        fields[i].flag = 1 << i;
+        i += 1;
+    }
+    fields
+}
+static Q2_KEX_GUN_FIELDS: [Field; 7] = q2_kex_gun_fields();
+static Q2_KEX_GUN: [Group<true>; 1] = [Group {
+    fields: &Q2_KEX_GUN_FIELDS,
+    presence: Presence::PackedMask {
+        bits: 16,
+        shift: 9,
+        word: 23,
+    },
+}];
+static Q2_KEX_VIEW: [Group<true, true>; 1] = [Group {
+    fields: Q2_KEX_FIELDS.split_at(30).1.split_at(6).0,
+    presence: Presence::Fixed,
+}];
+static Q2_KEX_DAMAGE: [Group<true, true>; 1] = [Group {
+    fields: Q2_KEX_FIELDS.split_at(36).1.split_at(4).0,
+    presence: Presence::Fixed,
+}];
+
+/// Retail KEX's svc_playerinfo body and opcode; no frame/channel header.
+pub fn write_q2_kex_player(
+    writer: &mut Writer<'_>,
+    from: &Q2KexPlayer,
+    to: &Q2KexPlayer,
+) -> Result<(), Error> {
+    let mut flags =
+        delta::mask::<true, true, false, false>(&Q2_KEX_FIELDS, &from.words, &to.words, 0, 0, 0);
+    if flags >> 16 != 0 {
+        flags |= 1 << 15;
+    }
+    writer.write_bits(17, 8)?;
+    writer.write_bits(flags as u32, 16)?;
+    if flags & (1 << 15) != 0 {
+        writer.write_bits((flags >> 16) as u32, 16)?;
+    }
+    delta::write(&Q2_KEX_PREFIX, &from.words, &to.words, flags, writer)?;
+    if flags & (1 << 13) != 0 {
+        delta::write(&Q2_KEX_GUN, &from.words, &to.words, 0, writer)?;
+    }
+    delta::write(&Q2_KEX_VIEW, &from.words, &to.words, flags, writer)?;
+    write_q2_kex_stats(writer, &from.stats, &to.stats)?;
+    delta::write(&Q2_KEX_DAMAGE, &from.words, &to.words, flags, writer)
+}
+pub fn read_q2_kex_player(
+    reader: &mut Reader<'_>,
+    from: &Q2KexPlayer,
+) -> Result<Q2KexPlayer, Error> {
+    if reader.read_bits(8)? != 17 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Width,
+        });
+    }
+    let mut flags = u64::from(reader.read_bits(16)?);
+    if flags & (1 << 15) != 0 {
+        flags |= u64::from(reader.read_bits(16)?) << 16;
+    }
+    let mut to = *from;
+    delta::read(&Q2_KEX_PREFIX, &mut to.words, flags, reader)?;
+    if flags & (1 << 13) != 0 {
+        delta::read(&Q2_KEX_GUN, &mut to.words, 0, reader)?;
+    }
+    delta::read(&Q2_KEX_VIEW, &mut to.words, flags, reader)?;
+    to.stats = read_q2_kex_stats(reader, &from.stats)?;
+    delta::read(&Q2_KEX_DAMAGE, &mut to.words, flags, reader)?;
+    // The reference parser consumes this native capability without exposing it.
+    if flags & (1 << 17) != 0 {
+        reader.read_bits(8)?;
+    }
     Ok(to)
 }
 static Q2_PLAYER_GROUPS: [Group<true>; 2] = [
