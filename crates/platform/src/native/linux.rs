@@ -10,6 +10,7 @@ use std::{
     process::{Child, Command, Stdio},
     ptr::NonNull,
     sync::atomic::{Ordering, compiler_fence},
+    time::{Duration, Instant},
 };
 
 const PAGE: usize = 4096;
@@ -123,6 +124,47 @@ struct Packet {
     arguments: [u64; 13],
     value: u64,
 }
+// One packet transfer path handles short IO and EINTR. Native invocation uses
+// one deadline across every packet; partial traffic cannot restart its budget.
+fn transfer(
+    stream: &mut UnixStream,
+    mut bytes: &mut [u8],
+    writing: bool,
+    deadline: Option<Instant>,
+) -> Result<(), NativeError> {
+    while !bytes.is_empty() {
+        if let Some(deadline) = deadline {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero())
+                .ok_or(NativeError::Timeout)?;
+            if writing {
+                stream.set_write_timeout(Some(remaining))?;
+            } else {
+                stream.set_read_timeout(Some(remaining))?;
+            }
+        }
+        let count = match if writing {
+            stream.write(bytes)
+        } else {
+            stream.read(bytes)
+        } {
+            Ok(0) => {
+                return Err(io::Error::from(if writing {
+                    io::ErrorKind::WriteZero
+                } else {
+                    io::ErrorKind::UnexpectedEof
+                })
+                .into());
+            }
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        bytes = &mut bytes[count..];
+    }
+    Ok(())
+}
 impl Packet {
     fn new(operation: u8, sequence: u64) -> Self {
         Self {
@@ -135,6 +177,13 @@ impl Packet {
         }
     }
     fn send(&self, stream: &mut UnixStream) -> Result<(), NativeError> {
+        self.send_before(stream, None)
+    }
+    fn send_before(
+        &self,
+        stream: &mut UnixStream,
+        deadline: Option<Instant>,
+    ) -> Result<(), NativeError> {
         let mut bytes = [0u8; 136];
         bytes[..4].copy_from_slice(b"QARN");
         bytes[4] = 1;
@@ -147,12 +196,17 @@ impl Packet {
         }
         bytes[128..136].copy_from_slice(&self.value.to_le_bytes());
         compiler_fence(Ordering::Release);
-        stream.write_all(&bytes)?;
-        Ok(())
+        transfer(stream, &mut bytes, true, deadline)
     }
     fn receive(stream: &mut UnixStream) -> Result<Self, NativeError> {
+        Self::receive_before(stream, None)
+    }
+    fn receive_before(
+        stream: &mut UnixStream,
+        deadline: Option<Instant>,
+    ) -> Result<Self, NativeError> {
         let mut bytes = [0u8; 136];
-        stream.read_exact(&mut bytes)?;
+        transfer(stream, &mut bytes, false, deadline)?;
         if &bytes[..4] != b"QARN" || bytes[4] != 1 || bytes[7] != 0 {
             return Err(NativeError::Protocol);
         }
@@ -185,6 +239,7 @@ pub struct NativeProcess {
     sequence: u64,
     callbacks: [u64; 2],
     reaped: Option<std::process::ExitStatus>,
+    timeout: Duration,
 }
 impl NativeProcess {
     pub fn load(image: NativeImage<'_>) -> Result<Self, NativeError> {
@@ -282,6 +337,7 @@ impl NativeProcess {
             sequence: 0,
             callbacks: [0; 2],
             reaped: None,
+            timeout: image.timeout,
         };
         if let Err(error) = owner.start(&mapped) {
             return Err(owner.failure(error));
@@ -407,16 +463,19 @@ impl NativeProcess {
         if !self.executable(address) {
             return Err(NativeError::Extent);
         }
+        let deadline = Instant::now()
+            .checked_add(self.timeout)
+            .ok_or(NativeError::Extent)?;
         let run = (|| {
             self.sequence = self.sequence.checked_add(1).ok_or(NativeError::Protocol)?;
             let mut packet = Packet::new(INVOKE, self.sequence);
             packet.address = address;
             packet.abi = abi as u8;
             packet.arguments = arguments;
-            packet.send(&mut self.stream)?;
+            packet.send_before(&mut self.stream, Some(deadline))?;
             self.resume()?;
             loop {
-                let packet = Packet::receive(&mut self.stream)?;
+                let packet = Packet::receive_before(&mut self.stream, Some(deadline))?;
                 if packet.sequence != self.sequence {
                     return Err(NativeError::Protocol);
                 }
@@ -436,7 +495,7 @@ impl NativeProcess {
                         )?;
                         let mut reply = Packet::new(REPLY, self.sequence);
                         reply.value = result;
-                        reply.send(&mut self.stream)?;
+                        reply.send_before(&mut self.stream, Some(deadline))?;
                         self.resume()?;
                     }
                     _ => return Err(NativeError::Protocol),

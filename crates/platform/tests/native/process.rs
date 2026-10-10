@@ -512,6 +512,45 @@ fn child_fault_and_timeout_leave_other_native_owners_running() {
 }
 
 #[test]
+fn repeated_imports_cannot_restart_the_export_deadline() {
+    let mut healthy = standard(&[0x48, 0x89, 0xf8, 0xc3]);
+    // push rbx; mov rbx,rdi; repeatedly call syscall 37 through rbx.
+    let mut looping = child(
+        &[
+            0x53, 0x48, 0x89, 0xfb, 0xbf, 37, 0, 0, 0, 0xff, 0xd3, 0xeb, 0xf7,
+        ],
+        Duration::from_millis(400),
+    )
+    .unwrap();
+    let mut words = [0; 13];
+    words[0] = looping.callback(NativeAbi::SystemV);
+    let mut calls = 0;
+    let result = looping.invoke(BASE, NativeAbi::SystemV, words, |call, _, _| {
+        assert_eq!(call.number, 37);
+        calls += 1;
+        // Bound this fixture even if a regression lets the native export renew
+        // its budget indefinitely; the expected result is Timeout, not Callback.
+        if calls > 20 {
+            return Err(NativeError::Callback);
+        }
+        std::thread::sleep(Duration::from_millis(40));
+        Ok(0)
+    });
+    assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
+    assert!(calls > 1 && calls <= 20, "imports: {calls}");
+    assert_eq!(looping.pid(), 0);
+    words[0] = 54;
+    assert_eq!(
+        healthy
+            .invoke(BASE, NativeAbi::SystemV, words, |_, _, _| {
+                Err(NativeError::Callback)
+            })
+            .unwrap(),
+        54
+    );
+}
+
+#[test]
 fn native_code_cannot_spawn_an_uncontrolled_writer_or_change_page_rights() {
     // syscall clone with all-zero arguments: must fail with EPERM before a child exists.
     let mut process = standard(&[
