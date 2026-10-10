@@ -35,6 +35,7 @@ fn runtime_child() -> NativeProcess {
     let config = RuntimeConfig {
         base: BASE + 4096,
         heap_bytes: 4096,
+        teb: None,
     };
     config.prepare_crt(&mut bytes[4096..8192]).unwrap();
     configured_child(
@@ -77,6 +78,102 @@ fn call(process: &mut NativeProcess, trace: &mut Vec<i32>, number: u32, args: &[
             Ok(if tag == 7 { 7 } else { 0 })
         })
         .unwrap()
+}
+
+#[test]
+fn windows_thread_storage_has_real_stack_bounds_and_child_local_gs() {
+    use crate::native::runtime::{STATIC_TLS_OFFSET, THREAD_BYTES, TLS_DATA_OFFSET};
+    let teb = BASE + 12288;
+    let mut bytes = vec![0; 12288 + THREAD_BYTES];
+    // mov rax,gs:[rcx]; ret, and mov rax,rsp; ret. These run only in the child.
+    bytes[..5].copy_from_slice(&[0x65, 0x48, 0x8b, 0x01, 0xc3]);
+    bytes[32..36].copy_from_slice(&[0x48, 0x89, 0xe0, 0xc3]);
+    let tls = teb + TLS_DATA_OFFSET as u64;
+    let vector = 12288 + STATIC_TLS_OFFSET;
+    bytes[vector..vector + 8].copy_from_slice(&tls.to_le_bytes());
+    let template = 12288 + TLS_DATA_OFFSET;
+    bytes[template..template + 8].copy_from_slice(b"TLS one\0");
+    let config = RuntimeConfig {
+        base: BASE + 4096,
+        heap_bytes: 4096,
+        teb: Some(teb),
+    };
+    config.prepare_crt(&mut bytes[4096..8192]).unwrap();
+    let regions = [
+        REGIONS[0],
+        NativeRegion {
+            length: bytes.len() - 4096,
+            ..REGIONS[1]
+        },
+    ];
+    let imports: Vec<_> = FUNCTIONS
+        .iter()
+        .map(|f| NativeImport {
+            number: f.number,
+            abi: NativeAbi::Microsoft,
+            parameters: f.parameters,
+            result: f.result,
+        })
+        .collect();
+    let launch = |bytes: &[u8]| {
+        configured_child(
+            bytes,
+            &regions,
+            &imports,
+            Duration::from_secs(3),
+            Some(config),
+        )
+        .unwrap()
+    };
+    let mut first = launch(&bytes);
+    bytes[template..template + 8].copy_from_slice(b"TLS two\0");
+    let second = launch(&bytes);
+    let entry = first
+        .bind(
+            BASE,
+            NativeAbi::Microsoft,
+            &[NativeScalar::Word],
+            NativeScalar::Word,
+        )
+        .unwrap();
+    let mut read_gs = |offset| {
+        let mut args = [0; 13];
+        args[0] = offset;
+        first
+            .invoke(entry, args, |_, _, _| panic!("no engine import"))
+            .unwrap()
+    };
+    assert_eq!(read_gs(0), u64::MAX);
+    assert_eq!(read_gs(0x30), teb);
+    assert_eq!(read_gs(0x40), 1);
+    assert_eq!(read_gs(0x48), 1);
+    assert_eq!(read_gs(0x58), teb + STATIC_TLS_OFFSET as u64);
+    assert_eq!(read_gs(0x60), teb + 0x2000);
+    assert_eq!(read_gs(0x1780), teb + 0x5000);
+    let top = read_gs(8);
+    let bottom = read_gs(16);
+    let stack = first
+        .bind(BASE + 32, NativeAbi::Microsoft, &[], NativeScalar::Word)
+        .unwrap();
+    let rsp = first
+        .invoke(stack, [0; 13], |_, _, _| panic!("no engine import"))
+        .unwrap();
+    assert!(bottom < rsp && rsp < top);
+    assert_eq!(top - bottom, 8 * 1024 * 1024);
+    assert_eq!(
+        &first.memory().unwrap()[template..template + 8],
+        b"TLS one\0"
+    );
+    assert_eq!(
+        &second.memory().unwrap()[template..template + 8],
+        b"TLS two\0"
+    );
+    assert_eq!(call(&mut first, &mut Vec::new(), 14, &[4096]), BASE + 8192);
+    assert_eq!(call(&mut first, &mut Vec::new(), 14, &[1]), 0);
+    assert_eq!(
+        &first.memory().unwrap()[12288 + 0x68..12288 + 0x6c],
+        &[0; 4]
+    );
 }
 
 #[test]

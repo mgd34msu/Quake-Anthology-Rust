@@ -202,6 +202,23 @@ pub(super) fn initialize(
         length,
         regions,
     };
+    if let Some(teb) = config.and_then(|c| c.teb) {
+        memory.range(teb, crate::native::runtime::THREAD_BYTES, 3)?;
+        let stack = memory.regions.last().ok_or(NativeError::Extent)?;
+        for (offset, value) in [
+            (0, u64::MAX),
+            (8, base + (stack.offset + stack.length) as u64),
+            (16, base + stack.offset as u64),
+            (0x30, teb),
+            (0x40, 1),
+            (0x48, 1),
+            (0x58, teb + crate::native::runtime::STATIC_TLS_OFFSET as u64),
+            (0x60, teb + 0x2000),
+            (0x1780, teb + 0x5000),
+        ] {
+            memory.put(teb + offset, 8, value)?;
+        }
+    }
     let heap = config
         .filter(|c| c.heap_bytes != 0)
         .map(|c| {

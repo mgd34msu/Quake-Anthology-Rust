@@ -419,7 +419,13 @@ impl Function {
 pub struct RuntimeConfig {
     pub base: u64,
     pub heap_bytes: usize,
+    pub teb: Option<u64>,
 }
+// TEB, PEB, static TLS vector and expansion slots are distinct owned storage,
+// following the C runtime's x64 layout. The module TLS template follows them.
+pub const THREAD_BYTES: usize = 0x8000;
+pub const STATIC_TLS_OFFSET: usize = 0x3000;
+pub const TLS_DATA_OFFSET: usize = 0x7000;
 impl RuntimeConfig {
     pub fn prepare_crt(self, page: &mut [u8]) -> Result<(), super::NativeError> {
         let page = page.get_mut(..608).ok_or(super::NativeError::Extent)?;

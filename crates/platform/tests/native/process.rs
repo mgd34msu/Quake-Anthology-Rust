@@ -140,6 +140,7 @@ fn c_runtime_imports_execute_in_the_child_without_an_engine_round_trip() {
             Some(RuntimeConfig {
                 base: BASE + 4096,
                 heap_bytes: 256,
+                teb: None,
             }),
         )
         .unwrap();
@@ -371,6 +372,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
     let config = RuntimeConfig {
         base: BASE + 4096,
         heap_bytes: 4096,
+        teb: None,
     };
     config
         .prepare_msvc(&mut bytes[4096..8192], |number| {

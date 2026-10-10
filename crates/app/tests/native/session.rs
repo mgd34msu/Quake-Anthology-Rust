@@ -1524,7 +1524,69 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
     );
 }
 
+fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
+    use qa_formats::program::native::Tls;
+    let code = [
+        0x65, 0x48, 0x8b, 0x04, 0x25, 0x58, 0, 0, 0, 0x48, 0x8b, 0, 0x48, 0x8b, 0, 0xc3,
+    ];
+    for (file_bytes, zero_bytes, alignment) in [(8, 16, 4), (8, 32, 16384), (0, 0, 1)] {
+        let mut image = function_image(Encoding::Pe, &code);
+        let base = image.base;
+        image.bytes[0x1700..0x1708].copy_from_slice(b"TLS data");
+        image.bytes[0x1740..0x1744].copy_from_slice(&99u32.to_le_bytes());
+        image.tls = Some(Tls {
+            address: if file_bytes == 0 { 0 } else { base + 0x1700 },
+            file_bytes,
+            zero_bytes,
+            index: Some(base + 0x1740),
+            alignment,
+        });
+        let mut vm = Vm::map_image(
+            image,
+            &[NamedExport {
+                name: b"GetGameAPI",
+                parameters: &[],
+                result: NativeScalar::Word,
+                command: None,
+            }],
+            &[],
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        let memory = vm.process.memory().unwrap();
+        assert_eq!(&memory[0x1740..0x1744], &[0; 4]);
+        // The CRT page precedes the TEB; static TLS slot zero points at the
+        // aligned copy, not at the original module's template.
+        let teb = base + 0x3000;
+        let vector = (teb - base) as usize + qa_platform::native::runtime::STATIC_TLS_OFFSET;
+        let tls = u64::from_le_bytes(memory[vector..vector + 8].try_into().unwrap());
+        assert_eq!(tls as usize % alignment.max(16), 0);
+        let at = (tls - base) as usize;
+        assert_eq!(&memory[at..at + file_bytes], &b"TLS data"[..file_bytes]);
+        assert!(
+            memory[at + file_bytes..at + file_bytes + zero_bytes]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        let entry = vm
+            .process
+            .bind(base + 0x1080, NativeAbi::Microsoft, &[], NativeScalar::Word)
+            .unwrap();
+        assert_eq!(
+            vm.process
+                .invoke(entry, [0; 13], |_, _, _| panic!("no engine import"))
+                .unwrap(),
+            if file_bytes == 0 {
+                0
+            } else {
+                u64::from_le_bytes(*b"TLS data")
+            }
+        );
+    }
+}
+
 pub fn run() {
+    pe_static_tls_template_is_owned_and_aligned_before_child_start();
     for functions in [false, true] {
         two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions);
     }

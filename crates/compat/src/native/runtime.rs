@@ -77,11 +77,37 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
             .dynamic
             .iter()
             .any(|&(tag, value)| value != 0 && matches!(tag, 12 | 13 | 25 | 26));
-    let (config, startup) = if needs_heap || lifecycle {
+    let windows_thread = image.target.encoding == Encoding::Pe;
+    let (config, startup) = if needs_heap || lifecycle || windows_thread {
         const BYTES: usize = 32 * 1024 * 1024;
         let page = qa_platform::native::PAGE_BYTES;
         let offset = image.bytes.len().div_ceil(page) * page;
-        let bytes = page + if needs_heap { BYTES } else { 0 };
+        let heap_bytes = if needs_heap { BYTES } else { 0 };
+        let tls_bytes = image
+            .tls
+            .map_or(Some(0), |tls| tls.file_bytes.checked_add(tls.zero_bytes))
+            .ok_or("native TLS extent")?;
+        let tls_alignment = image.tls.map_or(16, |tls| tls.alignment.max(16));
+        if !tls_alignment.is_power_of_two() {
+            return Err("native TLS alignment".into());
+        }
+        let thread_bytes = if windows_thread {
+            qa_platform::native::runtime::TLS_DATA_OFFSET
+                .checked_add(tls_bytes)
+                .and_then(|bytes| bytes.checked_add(tls_alignment - 1))
+                .ok_or("native TLS extent")?
+                .max(qa_platform::native::runtime::THREAD_BYTES)
+                .checked_add(page - 1)
+                .ok_or("native TLS extent")?
+                / page
+                * page
+        } else {
+            0
+        };
+        let bytes = page
+            .checked_add(heap_bytes)
+            .and_then(|n| n.checked_add(thread_bytes))
+            .ok_or("native runtime extent")?;
         let end = offset
             .checked_add(bytes)
             .filter(|&n| n <= 512 * 1024 * 1024)
@@ -94,13 +120,74 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
             .ok_or("native runtime extent")?;
         let config = RuntimeConfig {
             base,
-            heap_bytes: if needs_heap { BYTES } else { 0 },
+            heap_bytes,
+            teb: windows_thread.then_some(base + page as u64 + heap_bytes as u64),
+        };
+        let template = if windows_thread {
+            image
+                .tls
+                .map(|tls| {
+                    if tls.file_bytes == 0 {
+                        return Ok(Vec::new());
+                    }
+                    let at = usize::try_from(
+                        tls.address
+                            .checked_sub(image.base)
+                            .ok_or("native TLS template")?,
+                    )
+                    .map_err(|_| "native TLS template")?;
+                    let end = at
+                        .checked_add(tls.file_bytes)
+                        .ok_or("native TLS template")?;
+                    Ok::<_, &str>(
+                        image
+                            .bytes
+                            .get(at..end)
+                            .ok_or("native TLS template")?
+                            .to_vec(),
+                    )
+                })
+                .transpose()?
+        } else {
+            None
         };
         let mut storage = std::mem::take(&mut image.bytes).into_vec();
         storage.resize(end, 0);
         config
             .prepare_crt(&mut storage[offset..offset + page])
             .map_err(|_| "native CRT storage")?;
+        if let Some(teb) = config.teb {
+            let thread = usize::try_from(teb - image.base).map_err(|_| "native thread storage")?;
+            let tls_data = teb
+                .checked_add(qa_platform::native::runtime::TLS_DATA_OFFSET as u64)
+                .and_then(|address| address.checked_add(tls_alignment as u64 - 1))
+                .map(|address| address & !(tls_alignment as u64 - 1))
+                .ok_or("native TLS alignment")?;
+            if let Some(template) = template {
+                let at =
+                    usize::try_from(tls_data - image.base).map_err(|_| "native TLS template")?;
+                storage[at..at + template.len()].copy_from_slice(&template);
+                if let Some(index) = image.tls.and_then(|tls| tls.index) {
+                    let at =
+                        usize::try_from(index.checked_sub(image.base).ok_or("native TLS index")?)
+                            .map_err(|_| "native TLS index")?;
+                    if !image.regions.iter().any(|r| {
+                        r.write
+                            && at >= r.offset
+                            && at - r.offset <= r.length.saturating_sub(4)
+                            && r.length >= 4
+                    }) {
+                        return Err("native TLS index is not writable".into());
+                    }
+                    storage
+                        .get_mut(at..at.checked_add(4).ok_or("native TLS index")?)
+                        .ok_or("native TLS index")?
+                        .fill(0);
+                }
+                let at = thread + qa_platform::native::runtime::STATIC_TLS_OFFSET;
+                storage[at..at + 8].copy_from_slice(&tls_data.to_le_bytes());
+            }
+        }
         image.bytes = storage.into_boxed_slice();
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(qa_formats::program::native::Region {

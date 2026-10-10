@@ -472,6 +472,7 @@ impl NativeProcess {
         if let Some(config) = runtime {
             packet.arguments[3] = config.base;
             packet.arguments[4] = config.heap_bytes as u64;
+            packet.arguments[5] = config.teb.unwrap_or(0);
         }
         packet.send(&mut self.stream)?;
         for region in mapped {
@@ -923,8 +924,17 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         (packet.arguments[3] != 0).then_some(super::runtime::RuntimeConfig {
             base: packet.arguments[3],
             heap_bytes: packet.arguments[4] as usize,
+            teb: (packet.arguments[5] != 0).then_some(packet.arguments[5]),
         }),
     )?;
+    if packet.arguments[5] != 0 {
+        // SAFETY: runtime::initialize validated and populated this child-owned
+        // TEB. Linux x64 Rust TLS uses FS, so setting GS exposes the Windows
+        // ABI only inside this child and never changes the parent's segments.
+        if unsafe { syscall(158, 0x1001u64, packet.arguments[5]) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+    }
     // SAFETY: native identity and guard are child-local, before foreign code.
     let pid = unsafe { getpid() };
     for number in [4, 5, 7, 8, 11] {
