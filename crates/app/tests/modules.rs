@@ -23,6 +23,17 @@ use qa_world::{
 };
 use std::time::Duration;
 
+#[test]
+fn quakec_presets_are_explicit_and_do_not_inherit_map_or_player_rules() {
+    use qa_app::modules::QuakeCSpec;
+    let spec = QuakeCSpec::parse("qw:qwprogs.dat").unwrap();
+    assert_eq!(spec.rules, RuleSetId::QuakeWorld);
+    assert_eq!(spec.path, "qwprogs.dat");
+    for input in ["progs.dat", "q3:progs.dat", "q1:", "other:progs.dat"] {
+        assert!(QuakeCSpec::parse(input).is_err());
+    }
+}
+
 pub struct Source {
     pub time: EventTime,
     pub polls: u64,

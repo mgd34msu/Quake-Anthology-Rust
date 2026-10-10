@@ -16,6 +16,9 @@ use qa_session::{
 use qa_world::entities::EntityTime;
 use std::sync::Arc;
 
+mod load;
+pub use load::{QuakeCSpec, load_quakec};
+
 pub enum Program {
     Qvm {
         vm: Box<qvm::Vm>,

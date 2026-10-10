@@ -54,12 +54,20 @@ fn run() -> Result<(), String> {
     let mut content_priority = 0i32;
     let mut startup_sets = Vec::new();
     let mut precache_sounds = Vec::new();
+    let mut quakec_modules = Vec::new();
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--quakec-module" => {
+                quakec_modules.push(qa_app::modules::QuakeCSpec::parse(
+                    &args
+                        .next()
+                        .ok_or("--quakec-module needs q1|qw:virtual-file")?,
+                )?);
+            }
             "--precache-sound" => {
                 precache_sounds.push(args.next().ok_or("--precache-sound needs a virtual path")?);
             }
@@ -439,7 +447,16 @@ fn run() -> Result<(), String> {
         loaded_world = Some(loaded.render);
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
-    let mut host = FrameHost::load(console, runtime, world_rate, Vec::new())?;
+    let module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
+    let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
+    for (index, spec) in quakec_modules.iter().enumerate() {
+        println!(
+            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"entry\":\"StartFrame\",\"scope\":\"frame_entries_only\",\"gameplay\":false}}",
+            index + 1,
+            json_string(&spec.path),
+            spec.rules.name()
+        );
+    }
     let bank = qa_app::audio::load_bank(
         &host.runtime.vfs,
         &precache_sounds,
@@ -706,6 +723,18 @@ fn run() -> Result<(), String> {
                     "{{\"event\":\"frame_allocations\",\"scope\":\"{scope}_all_instrumented_rust_threads\",\"frame\":{frame},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
                     counts.allocations, counts.reallocations, counts.requested_bytes
                 ),
+            );
+        }
+    }
+    for index in 0..quakec_modules.len() {
+        if let Some(counts) = host.module_counts(qa_core::primitives::ModuleId((index + 1) as u16))
+        {
+            println!(
+                "{{\"event\":\"module_calls\",\"module\":{},\"calls\":{},\"traps\":{},\"rejected\":{},\"scope\":\"frame_entries_only\",\"gameplay\":false}}",
+                index + 1,
+                counts.calls,
+                counts.traps,
+                counts.rejected
             );
         }
     }
