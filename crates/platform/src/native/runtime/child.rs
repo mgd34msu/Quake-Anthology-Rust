@@ -146,6 +146,11 @@ impl Memory {
         Ok(())
     }
     fn copy(&self, to: u64, from: u64, bytes: usize) -> Result<(), NativeError> {
+        // Native CRT calls admit null pointers for an empty copy. No bytes
+        // are accessed, and Rust's pointer-copy preconditions need not apply.
+        if bytes == 0 {
+            return Ok(());
+        }
         self.range(from, bytes, 1)?;
         self.range(to, bytes, 2)?;
         // SAFETY: both mapped ranges were checked, overlap is admitted, and no

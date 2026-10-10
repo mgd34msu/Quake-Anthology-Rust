@@ -100,6 +100,38 @@ fn call(process: &mut NativeProcess, trace: &mut Vec<i32>, number: u32, args: &[
 }
 
 #[test]
+fn native_empty_copy_accepts_null_without_accessing_memory() {
+    let mut process = runtime_child();
+    let mut trace = Vec::new();
+    for (to, from) in [(BASE + 6400, 0), (0, BASE + 6400), (0, 0), (u64::MAX, 0)] {
+        assert_eq!(call(&mut process, &mut trace, 0, &[to, from, 0]), to);
+    }
+    process.memory_mut().unwrap()[6400..6408].copy_from_slice(b"abcdefgh");
+    assert_eq!(
+        call(&mut process, &mut trace, 0, &[BASE + 6402, BASE + 6400, 6]),
+        BASE + 6402
+    );
+    assert_eq!(&process.memory().unwrap()[6400..6408], b"ababcdef");
+    // Empty copies do not relax permission/extent checks for real accesses.
+    let ordinal = FUNCTIONS.iter().position(|f| f.number == FIRST).unwrap();
+    let function = &FUNCTIONS[ordinal];
+    let entry = process
+        .bind(
+            process.import_pointer(ordinal).unwrap(),
+            NativeAbi::Microsoft,
+            function.parameters,
+            function.result,
+        )
+        .unwrap();
+    let mut words = [0; 13];
+    words[..3].copy_from_slice(&[BASE + 6400, 0, 1]);
+    assert!(matches!(
+        process.invoke(entry, words, |_, _, _| panic!("child-local copy")),
+        Err(NativeError::RuntimeImport("memcpy"))
+    ));
+}
+
+#[test]
 fn windows_thread_storage_has_real_stack_bounds_and_child_local_gs() {
     use crate::native::runtime::{STATIC_TLS_OFFSET, THREAD_BYTES, TLS_DATA_OFFSET};
     let teb = BASE + 12288;
