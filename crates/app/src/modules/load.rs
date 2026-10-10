@@ -207,31 +207,11 @@ pub fn load_q3(
             if bytes.starts_with(b"MZ") || bytes.starts_with(b"\x7fELF") {
                 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 {
-                    use qa_compat::native::{
-                        NamedExport, Vm,
-                        elf::{Bindings, Pass, bind},
-                    };
+                    use qa_compat::native::{NamedExport, Vm};
                     use qa_formats::program::native::{Encoding, Image, LoadRole};
                     let base = bytes.starts_with(b"\x7fELF").then_some(0x2000_0000);
-                    let mut image = Image::parse(&bytes, base, LoadRole::Library)
+                    let image = Image::parse(&bytes, base, LoadRole::Library)
                         .map_err(|e| format!("native module: {e:?}"))?;
-                    if let Some(library) = image.needed.first() {
-                        return Err(format!(
-                            "native provider not bound: {}",
-                            String::from_utf8_lossy(image.names.get(*library).unwrap_or_default())
-                        ));
-                    }
-                    if let Some(import) = image.imports.first() {
-                        return Err(format!(
-                            "native import not bound: {}",
-                            String::from_utf8_lossy(
-                                import
-                                    .name
-                                    .and_then(|name| image.names.get(name))
-                                    .unwrap_or(b"<ordinal>")
-                            )
-                        ));
-                    }
                     if image.tls.is_some() {
                         return Err("native TLS provider is not bound".into());
                     }
@@ -242,18 +222,6 @@ pub fn load_q3(
                         })
                     {
                         return Err("native initializer provider is not bound".into());
-                    }
-                    if image.target.encoding == Encoding::Elf {
-                        let symbols = vec![None; image.symbols.len()];
-                        let indirect = vec![None; image.relocations.len()];
-                        let bindings = Bindings {
-                            symbols: &symbols,
-                            local_tls: None,
-                            indirect: &indirect,
-                        };
-                        bind(&mut image, &bindings, Pass::Regular)
-                            .and_then(|()| bind(&mut image, &bindings, Pass::Indirect))
-                            .map_err(|e| format!("native binding: {e:?}"))?;
                     }
                     let mut named: Vec<_> = (0..=10)
                         .map(|command| NamedExport {

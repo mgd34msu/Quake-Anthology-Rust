@@ -1,6 +1,8 @@
 //! Owned native children and memory published at stopped call boundaries.
 use std::{io, time::Duration};
 
+pub const PAGE_BYTES: usize = 4096;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum NativeAbi {
@@ -11,6 +13,7 @@ pub enum NativeAbi {
 mod call;
 pub use call::{NativeEntry, NativeScalar};
 
+#[derive(Clone, Copy)]
 pub struct NativeImport<'a> {
     pub number: u32,
     pub abi: NativeAbi,
@@ -40,6 +43,7 @@ pub struct NativeImage<'a> {
 pub struct NativeCall {
     pub number: u32,
     pub arguments: [u64; 13],
+    pub function: bool,
 }
 
 #[derive(Debug)]

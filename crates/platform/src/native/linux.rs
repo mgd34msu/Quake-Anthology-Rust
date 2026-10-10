@@ -1,5 +1,6 @@
 use super::{
     NativeAbi, NativeCall, NativeEntry, NativeError, NativeImage, NativeRegion, NativeScalar,
+    PAGE_BYTES as PAGE,
 };
 use std::{
     fs::File,
@@ -15,7 +16,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const PAGE: usize = 4096;
 const LIMIT: usize = 512 * 1024 * 1024;
 const STACK: usize = 8 * 1024 * 1024;
 #[path = "x64.rs"]
@@ -40,6 +40,14 @@ pub(super) fn executable_offset(regions: &[NativeRegion], offset: usize) -> bool
 }
 
 unsafe extern "C" {
+    fn ppoll(
+        fds: *mut PollFd,
+        count: usize,
+        timeout: *const Timespec,
+        mask: *const std::ffi::c_void,
+    ) -> i32;
+    fn recv(fd: i32, bytes: *mut u8, length: usize, flags: i32) -> isize;
+    fn send(fd: i32, bytes: *const u8, length: usize, flags: i32) -> isize;
     fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
     fn mmap(
         address: *mut std::ffi::c_void,
@@ -58,6 +66,18 @@ unsafe extern "C" {
     fn waitpid(pid: i32, status: *mut i32, flags: i32) -> i32;
     fn prctl(operation: i32, ...) -> i32;
     fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
+}
+
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    returned: i16,
+}
+#[repr(C)]
+struct Timespec {
+    seconds: i64,
+    nanos: i64,
 }
 
 struct Mapping {
@@ -130,29 +150,66 @@ struct Packet {
 }
 // One packet transfer path handles short IO and EINTR. Native invocation uses
 // one deadline across every packet; partial traffic cannot restart its budget.
-fn transfer(
+pub(super) fn transfer(
     stream: &mut UnixStream,
     mut bytes: &mut [u8],
     writing: bool,
     deadline: Option<Instant>,
 ) -> Result<(), NativeError> {
     while !bytes.is_empty() {
-        if let Some(deadline) = deadline {
+        let io = if let Some(deadline) = deadline {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero())
                 .ok_or(NativeError::Timeout)?;
-            if writing {
-                stream.set_write_timeout(Some(remaining))?;
-            } else {
-                stream.set_read_timeout(Some(remaining))?;
+            let mut fd = PollFd {
+                fd: stream.as_raw_fd(),
+                events: if writing { 4 } else { 1 },
+                returned: 0,
+            };
+            let timeout = Timespec {
+                seconds: remaining
+                    .as_secs()
+                    .try_into()
+                    .map_err(|_| NativeError::Extent)?,
+                nanos: remaining.subsec_nanos().into(),
+            };
+            // SAFETY: one live owned socket and initialized stack records.
+            // ppoll uses the remaining absolute budget without changing socket
+            // options. Readiness is followed by nonblocking IO, so a short
+            // fragment or EINTR cannot start another full blocking timeout.
+            let ready = unsafe { ppoll(&mut fd, 1, &timeout, std::ptr::null()) };
+            if ready == 0 {
+                return Err(NativeError::Timeout);
             }
-        }
-        let count = match if writing {
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            // SAFETY: the slice remains live and exclusive for recv; send only
+            // reads it. MSG_DONTWAIT never changes the descriptor's flags.
+            // MSG_NOSIGNAL preserves UnixStream::write's broken-pipe behavior.
+            let count = unsafe {
+                if writing {
+                    send(fd.fd, bytes.as_ptr(), bytes.len(), 0x40 | 0x4000)
+                } else {
+                    recv(fd.fd, bytes.as_mut_ptr(), bytes.len(), 0x40)
+                }
+            };
+            if count < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(count as usize)
+            }
+        } else if writing {
             stream.write(bytes)
         } else {
             stream.read(bytes)
-        } {
+        };
+        let count = match io {
             Ok(0) => {
                 return Err(io::Error::from(if writing {
                     io::ErrorKind::WriteZero
@@ -162,7 +219,12 @@ fn transfer(
                 .into());
             }
             Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if error.kind() == io::ErrorKind::Interrupted
+                    || (deadline.is_some() && error.kind() == io::ErrorKind::WouldBlock) =>
+            {
+                continue;
+            }
             Err(error) => return Err(error.into()),
         };
         bytes = &mut bytes[count..];
@@ -274,7 +336,8 @@ impl NativeProcess {
         {
             return Err(NativeError::Extent);
         }
-        let thunk_offset = image.bytes.len().div_ceil(PAGE) * PAGE;
+        let thunk_offset =
+            (Self::import_address(image.base, image.bytes.len(), 0)? - image.base) as usize;
         let thunk_bytes = image.imports.len() * 32;
         let image_length = thunk_offset + thunk_bytes.div_ceil(PAGE) * PAGE;
         let length = image_length
@@ -292,7 +355,7 @@ impl NativeProcess {
                 Ok((
                     entry.number,
                     NativeEntry::bind(
-                        image.base + (thunk_offset + index * 32) as u64,
+                        Self::import_address(image.base, image.bytes.len(), index)?,
                         entry.abi,
                         entry.parameters,
                         entry.result,
@@ -431,6 +494,19 @@ impl NativeProcess {
     pub fn import_pointer(&self, ordinal: usize) -> Option<u64> {
         self.imports.get(ordinal).map(|(_, entry)| entry.address)
     }
+    /// Address reserved by load for a function import, used when binding an
+    /// inert image's relocations before any child executes its code.
+    pub fn import_address(
+        base: u64,
+        image_bytes: usize,
+        ordinal: usize,
+    ) -> Result<u64, NativeError> {
+        if image_bytes == 0 || image_bytes > LIMIT || ordinal >= 4096 {
+            return Err(NativeError::Extent);
+        }
+        base.checked_add((image_bytes.div_ceil(PAGE) * PAGE + ordinal * 32) as u64)
+            .ok_or(NativeError::Extent)
+    }
     pub fn executable(&self, address: u64) -> bool {
         address
             .checked_sub(self.base)
@@ -566,7 +642,11 @@ impl NativeProcess {
                             _ => return Err(NativeError::Protocol),
                         };
                         let result = callback(
-                            NativeCall { number, arguments },
+                            NativeCall {
+                                number,
+                                arguments,
+                                function: packet.abi == 1,
+                            },
                             self.base,
                             self.memory.bytes_mut(),
                         )?;

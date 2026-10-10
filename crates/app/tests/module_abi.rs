@@ -28,6 +28,83 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn native_c_memory_calls_share_operations_and_keep_full_size_t_width() {
+    use qa_compat::abi::runtime::FIRST;
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let base = 1u64 << 40;
+    let mut memory = ModuleMemory::load(base, 128, &[]).unwrap();
+    memory.write(base + 16, b"\xffa\0").unwrap();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let mut call = Invocation {
+        services: &mut services,
+        memory: &mut memory,
+        context: context(),
+        platform_time: EventTime(0),
+        command: &[],
+        addresses: Addresses::NativeFunction,
+        arguments: &[],
+    };
+    let args = [base + 32, base + 16, 3];
+    call.arguments = &args;
+    assert_eq!(
+        Q3_SERVER.invoke(FIRST, &mut call, &mut unknown),
+        Ok(base + 32)
+    );
+    assert_eq!(call.memory.read(base + 32, 3).unwrap(), b"\xffa\0");
+    let args = [base + 33, base + 32, 3];
+    call.arguments = &args;
+    assert_eq!(
+        Q3_SERVER.invoke(FIRST, &mut call, &mut unknown),
+        Ok(base + 33)
+    );
+    assert_eq!(call.memory.read(base + 32, 4).unwrap(), b"\xff\xffa\0");
+    let args = [base + 48, 0x1aa, 8];
+    call.arguments = &args;
+    assert_eq!(
+        Q3_SERVER.invoke(FIRST + 1, &mut call, &mut unknown),
+        Ok(base + 48)
+    );
+    assert_eq!(call.memory.read(base + 48, 8).unwrap(), &[0xaa; 8]);
+    let args = [base + 64, base + 16, 6];
+    call.arguments = &args;
+    assert_eq!(
+        Q3_SERVER.invoke(FIRST + 2, &mut call, &mut unknown),
+        Ok(base + 64)
+    );
+    assert_eq!(call.memory.read(base + 64, 6).unwrap(), b"\xffa\0\0\0\0");
+    let args = [base + 64];
+    call.arguments = &args;
+    assert_eq!(Q3_SERVER.invoke(FIRST + 3, &mut call, &mut unknown), Ok(2));
+    let args = [base + 16, base + 64];
+    call.arguments = &args;
+    assert_eq!(Q3_SERVER.invoke(FIRST + 4, &mut call, &mut unknown), Ok(0));
+    let args = [base + 48, base + 64, 2];
+    call.arguments = &args;
+    assert_eq!(
+        Q3_SERVER.invoke(FIRST + 5, &mut call, &mut unknown),
+        Ok((-85i64) as u64)
+    );
+    let args = [base + 48, base + 64, (1u64 << 32) + 1];
+    call.arguments = &args;
+    assert_eq!(
+        Q3_SERVER.invoke(FIRST, &mut call, &mut unknown),
+        Err(CallError::Memory)
+    );
+    assert_eq!(call.memory.read(base + 48, 8).unwrap(), &[0xaa; 8]);
+    // The original Q3 syscall boundary still narrows signed int lengths and
+    // returns zero for memcpy. Reserved C-runtime entries are not Q3 syscalls.
+    call.addresses = Addresses::Native;
+    assert_eq!(Q3_SERVER.invoke(101, &mut call, &mut unknown), Ok(0));
+    assert_eq!(call.memory.read(base + 48, 1).unwrap(), &[0xff]);
+    assert_eq!(Q3_SERVER.invoke(FIRST, &mut call, &mut unknown), Ok(0));
+    assert_eq!(unknown.calls, 1);
+}
+
+#[test]
 fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_services() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();

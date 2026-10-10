@@ -7,10 +7,16 @@ use crate::{
 use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
 use std::fmt::Write;
 
+pub mod runtime;
+
 #[derive(Clone, Copy)]
 pub enum Addresses {
-    Qvm { mask: u32 },
+    Qvm {
+        mask: u32,
+    },
     Native,
+    /// Declared C function parameters, including full-width native size_t.
+    NativeFunction,
 }
 pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
@@ -28,12 +34,16 @@ impl Invocation<'_, '_, '_> {
     fn pointer(&self, index: usize) -> Result<u64, CallError> {
         Ok(match self.addresses {
             Addresses::Qvm { mask } => u64::from(self.arg(index)? as u32 & mask),
-            Addresses::Native => self.arg(index)?,
+            Addresses::Native | Addresses::NativeFunction => self.arg(index)?,
         })
     }
     fn length(&self, index: usize) -> Result<usize, CallError> {
-        let value = self.arg(index)? as u32 as i32;
-        usize::try_from(value).map_err(|_| CallError::Memory)
+        match self.addresses {
+            Addresses::NativeFunction => {
+                usize::try_from(self.arg(index)?).map_err(|_| CallError::Memory)
+            }
+            _ => usize::try_from(self.arg(index)? as u32 as i32).map_err(|_| CallError::Memory),
+        }
     }
     fn string(&self, index: usize) -> Result<&[u8], CallError> {
         Ok(self.memory.cstring(self.pointer(index)?)?)
@@ -45,7 +55,7 @@ impl Invocation<'_, '_, '_> {
 
 type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<u64, CallError>;
 pub struct CallTable {
-    entries: [Option<Entry>; 256],
+    entries: [Option<Entry>; 320],
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -72,7 +82,9 @@ impl CallTable {
         call: &mut Invocation<'_, '_, '_>,
         unknown: &mut UnknownCalls,
     ) -> Result<u64, CallError> {
-        if let Some(Some(entry)) = self.entries.get(number as usize) {
+        if let Some(Some(entry)) = self.entries.get(number as usize).filter(|_| {
+            number < runtime::FIRST || matches!(call.addresses, Addresses::NativeFunction)
+        }) {
             return entry(call);
         }
         unknown.calls = unknown.calls.saturating_add(1);
@@ -100,8 +112,14 @@ impl CallTable {
 
 const fn common() -> CallTable {
     let mut table = CallTable {
-        entries: [None; 256],
+        entries: [None; 320],
     };
+    let mut i = 0;
+    while i < runtime::FUNCTIONS.len() {
+        let function = &runtime::FUNCTIONS[i];
+        table.entries[function.number as usize] = Some(function.entry);
+        i += 1;
+    }
     table.entries[100] = Some(memset);
     table.entries[101] = Some(memcpy);
     table.entries[102] = Some(strncpy);
@@ -174,7 +192,7 @@ pub const Q3_UI: CallTable = ui();
 
 const fn quakec() -> CallTable {
     let mut t = CallTable {
-        entries: [None; 256],
+        entries: [None; 320],
     };
     t.entries[25] = Some(qc_print);
     t.entries[37] = Some(floor);
@@ -468,11 +486,19 @@ fn memset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let value = c.arg(1)? as u8;
     let length = c.length(2)?;
     c.memory.read_mut(target, length)?.fill(value);
-    Ok(0)
+    Ok(if matches!(c.addresses, Addresses::NativeFunction) {
+        target
+    } else {
+        0
+    })
 }
 fn memcpy(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     c.memory.copy(c.pointer(0)?, c.pointer(1)?, c.length(2)?)?;
-    Ok(0)
+    Ok(if matches!(c.addresses, Addresses::NativeFunction) {
+        c.pointer(0)?
+    } else {
+        0
+    })
 }
 fn strncpy(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let from = c.pointer(1)?;

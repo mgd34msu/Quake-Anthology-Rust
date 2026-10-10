@@ -1,6 +1,6 @@
 use super::{
     NativeAbi, NativeError, NativeImage, NativeImport, NativeRegion, NativeScalar,
-    implementation::{NativeProcess, child_main, executable_offset},
+    implementation::{NativeProcess, child_main, executable_offset, transfer},
 };
 use std::{os::unix::process::ExitStatusExt, process::Command, time::Duration};
 
@@ -17,6 +17,49 @@ const REGIONS: [NativeRegion; 2] = [
         permissions: 3,
     },
 ];
+
+#[test]
+fn a_partial_packet_cannot_restart_its_absolute_deadline() {
+    use std::{io::Write, os::unix::net::UnixStream, time::Instant};
+    let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(60));
+        if writer.write_all(&[1]).is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = writer.write_all(&[2; 199]);
+    });
+    let mut bytes = [0; 200];
+    let result = transfer(
+        &mut reader,
+        &mut bytes,
+        false,
+        Some(Instant::now() + Duration::from_millis(100)),
+    );
+    assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
+    assert_eq!(bytes[0], 1);
+    drop(reader);
+    writer.join().unwrap();
+    let (mut writer, mut reader) = UnixStream::pair().unwrap();
+    let mut bytes = [3; 200];
+    transfer(
+        &mut writer,
+        &mut bytes,
+        true,
+        Some(Instant::now() + Duration::from_secs(1)),
+    )
+    .unwrap();
+    let mut actual = [0; 200];
+    transfer(
+        &mut reader,
+        &mut actual,
+        false,
+        Some(Instant::now() + Duration::from_secs(1)),
+    )
+    .unwrap();
+    assert_eq!(actual, bytes);
+}
 
 #[test]
 fn child_entry() {

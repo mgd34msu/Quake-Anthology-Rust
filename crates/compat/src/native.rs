@@ -8,11 +8,12 @@ use qa_core::sys_events::EventTime;
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
     NativeAbi, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion,
-    NativeScalar,
+    NativeScalar, PAGE_BYTES,
 };
 use std::time::Duration;
 
 pub mod elf;
+mod runtime;
 
 #[derive(Clone, Copy)]
 struct Export {
@@ -32,6 +33,7 @@ pub enum Error {
     Export,
     Service(CallError),
     Process(NativeError),
+    Binding(String),
 }
 pub struct Vm {
     pub process: NativeProcess,
@@ -57,6 +59,11 @@ impl Vm {
         imports: &[NativeImport<'_>],
         timeout: Duration,
     ) -> Result<Self, Error> {
+        if image.target.bits != 64 {
+            return Err(Error::Process(NativeError::Unsupported));
+        }
+        let runtime_imports = runtime::bind(&mut image, imports.len()).map_err(Error::Binding)?;
+        let imports: Vec<_> = imports.iter().copied().chain(runtime_imports).collect();
         let targets = named
             .iter()
             .map(|entry| {
@@ -76,11 +83,12 @@ impl Vm {
         // Split the one region table at those boundaries before mapping; the
         // same final table supplies OS rights and callable-entry checks.
         for &(address, bytes) in &image.relro {
-            let begin = address & !4095;
+            let mask = !(PAGE_BYTES as u64 - 1);
+            let begin = address & mask;
             let end = address
                 .checked_add(bytes as u64)
                 .ok_or(Error::Process(NativeError::Extent))?
-                & !4095;
+                & mask;
             if end <= begin {
                 continue;
             }
@@ -143,7 +151,7 @@ impl Vm {
             Encoding::Elf => NativeAbi::SystemV,
         };
         let process = NativeProcess::load(NativeImage {
-            imports,
+            imports: &imports,
             base: image.base,
             pointer_bytes: (image.target.bits / 8) as u8,
             bytes: &image.bytes,
@@ -209,7 +217,11 @@ impl Vm {
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,
-                    addresses: Addresses::Native,
+                    addresses: if call.function {
+                        Addresses::NativeFunction
+                    } else {
+                        Addresses::Native
+                    },
                     arguments: &call.arguments,
                 };
                 calls

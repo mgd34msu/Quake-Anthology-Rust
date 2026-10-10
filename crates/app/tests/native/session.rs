@@ -65,6 +65,43 @@ fn function_image(encoding: Encoding, code: &[u8]) -> Image {
     .unwrap()
 }
 
+fn runtime_file(encoding: Encoding, import: &[u8]) -> Vec<u8> {
+    // Tail-call strlen through a native ELF PLT slot or PE IAT. The address
+    // must come from the file binding, not a test-injected callback pointer.
+    let mut code = [0x48, 0x8d, 0x3d, 9, 7, 0, 0, 0xff, 0x25, 0xf3, 6, 0, 0];
+    if encoding == Encoding::Pe {
+        code[2] = 0x0d;
+    }
+    let mut file = function_file(encoding, &code);
+    match encoding {
+        Encoding::Elf => {
+            file[0x1300] = 0xc3; // dllEntry has no syscall state to initialize
+            let at = 0x1280 + elf_name(b"external") as usize;
+            file[at..at + 9].fill(0);
+            file[at..at + import.len()].copy_from_slice(import);
+            put(&mut file, 0x1400 + 3 * 24 + 4, 0x12, 1); // required undefined function
+            elf_relocation(&mut file, 64, 0x1b40, 0x3ac0, 7, 3, Some(0));
+            let (_, mut tags) = elf_symbol_fixture(64);
+            tags.extend([(1, elf_name(b"libc.so.6")), (7, 0x3b40), (8, 24), (9, 24)]);
+            elf_dynamic(&mut file, 64, &tags);
+        }
+        Encoding::Pe => {
+            file[704] = 0xc3;
+            put(&mut file, 392 + 16, 4096, 4);
+            file.resize(4608, 0);
+            pe_directory(&mut file, 64, 1, 0x1200, 40);
+            pe_rva(&mut file, 0x1200, 0x1250, 4);
+            pe_rva(&mut file, 0x120c, 0x1280, 4);
+            pe_rva(&mut file, 0x1210, 0x1780, 4);
+            pe_rva(&mut file, 0x1250, 0x12a0, 8);
+            pe_rva(&mut file, 0x1780, 0x12a0, 8);
+            pe_text(&mut file, 0x1280, b"MSVCRT.dll\0");
+            pe_text(&mut file, 0x12a2, import);
+        }
+    }
+    file
+}
+
 fn print_code(encoding: Encoding, numbered: bool) -> Vec<u8> {
     // Copy the shared message to a native local buffer, then call Print with
     // its stack pointer. This exercises the same lifetime as qsrc G_Printf.
@@ -451,12 +488,33 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         Files(std::env::temp_dir().join(format!("qa-native-modules-{}", std::process::id())));
     std::fs::create_dir(&files.0).unwrap();
     let mut specs = Vec::new();
-    for (encoding, file_name, message) in [
-        (Encoding::Elf, "qagame.so", b"ELF cold\n\0".as_slice()),
-        (Encoding::Pe, "qagame.dll", b"PE cold\n\0".as_slice()),
+    for (encoding, file_name, message, library) in [
+        (
+            Encoding::Elf,
+            "qagame.so",
+            b"ELF cold\n\0".as_slice(),
+            false,
+        ),
+        (Encoding::Pe, "qagame.dll", b"PE cold\n\0".as_slice(), false),
+        (
+            Encoding::Elf,
+            "runtime.so",
+            b"ELF runtime\0".as_slice(),
+            true,
+        ),
+        (
+            Encoding::Pe,
+            "runtime.dll",
+            b"PE runtime\0".as_slice(),
+            true,
+        ),
     ] {
         let code = print_code(encoding, true);
-        let mut file = function_file(encoding, &code);
+        let mut file = if library {
+            runtime_file(encoding, b"strlen\0")
+        } else {
+            function_file(encoding, &code)
+        };
         match encoding {
             Encoding::Elf => {
                 put(&mut file, 64 + 3 * 56, 0, 4); // no native TLS dependency
@@ -488,7 +546,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         TickRate::fixed(50).unwrap(),
     )
     .unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 4);
     for request in &requests {
         assert!(matches!(request.program, Program::Native { .. }));
         assert_eq!(request.timing_rules, RuleSetId::Quake3);
@@ -510,7 +568,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
     source.time = EventTime(50_000_000);
     host.frame(&mut source, true);
     host.shutdown_modules();
-    for id in [ModuleId(1), ModuleId(2)] {
+    for id in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
         assert_eq!(host.module_state(id), Some(State::Stopped));
         assert_eq!(
             (
@@ -519,6 +577,16 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
             ),
             (4, 0)
         );
+        if id.0 >= 3 {
+            assert_eq!(
+                host.module_counts(id).unwrap().last_result,
+                Some(ModuleResult::Native(if id == ModuleId(3) {
+                    11
+                } else {
+                    10
+                }))
+            );
+        }
     }
     let mut batch = host.runtime.server.events.batch(observer).unwrap();
     let mut messages = Vec::new();
@@ -539,6 +607,76 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         messages.iter().map(Vec::as_slice).collect::<Vec<_>>(),
         [b"ELF cold\n".as_slice(), b"PE cold\n".as_slice()].repeat(3)
     );
+}
+
+fn runtime_binding_rejections_report_native_library_names_and_versions() {
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        for versioned in [false, true] {
+            let file = runtime_file(encoding, if versioned { b"strlen\0" } else { b"missing\0" });
+            let mut image = Image::parse(
+                &file,
+                (encoding == Encoding::Elf).then_some(0x2000_0000),
+                LoadRole::Library,
+            )
+            .unwrap();
+            if versioned {
+                if encoding == Encoding::Elf {
+                    image.names = qa_core::names::NameTable::load_reserved(
+                        (0..image.names.len()).map(|i| {
+                            image
+                                .names
+                                .get(qa_core::primitives::NameId(i as u32))
+                                .unwrap()
+                        }),
+                        1,
+                        5,
+                    )
+                    .unwrap();
+                    let version = image.names.intern(b"VER_1").unwrap();
+                    image.symbols[3].version = Some(qa_formats::program::native::Version {
+                        name: version,
+                        library: image.names.find(b"libc.so.6"),
+                        weak: false,
+                    });
+                } else {
+                    // A named provider is required, even for a supported function.
+                    image.imports[0].library = image.names.find(b"Alias");
+                }
+            }
+            let error = Vm::map_image(
+                image,
+                &[NamedExport {
+                    name: if encoding == Encoding::Elf {
+                        b"vmMain"
+                    } else {
+                        b"GetGameAPI"
+                    },
+                    command: None,
+                    parameters: &[],
+                    result: NativeScalar::Word,
+                }],
+                &[],
+                Duration::from_secs(3),
+            )
+            .err()
+            .expect("unsupported runtime binding");
+            let qa_compat::native::Error::Binding(message) = error else {
+                panic!("unexpected binding error {error:?}");
+            };
+            assert!(
+                message.contains(if versioned {
+                    if encoding == Encoding::Elf {
+                        "strlen@VER_1"
+                    } else {
+                        "Alias:strlen"
+                    }
+                } else {
+                    "missing"
+                }),
+                "{message}"
+            );
+        }
+    }
 }
 
 fn scalar_native_export_results_survive_session_dispatch() {
@@ -724,6 +862,7 @@ pub fn run() {
     checked_exports_preserve_names_and_native_command_arguments();
     elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
     native_files_use_the_qvm_role_policy_and_vfs_loader();
+    runtime_binding_rejections_report_native_library_names_and_versions();
     scalar_native_export_results_survive_session_dispatch();
     println!("native session dispatch checks passed");
 }
