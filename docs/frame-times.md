@@ -3545,3 +3545,69 @@ final/result.json, native disassembly and QVM scale assembly, baseline and
 intermediate row files, movement-abba.json, twelve final raw timing legs and
 verification/build logs. Remaining native/QVM gameplay acceptance stays on
 THE-891/THE-3169.
+
+### THE-860: Q3 entity/player fields on the existing delta walker
+
+The common scalar walker now handles last-changed field counts, native float
+shortcuts, entity zero shortcuts and optional array masks. Q3 supplies its 51
+entity fields, 48 player scalar fields and four 16-word player arrays as table
+data. Fixed temporary wire projections follow that native field order; they do
+not introduce another engine entity or PlayerState store. Native entity numbers
+are supplied explicitly, and unrepresentable numbers are omitted at the boundary.
+Removal and forced unchanged records retain their original control bits.
+
+The unchanged original MSG_WriteDeltaEntity, MSG_ReadDeltaEntity,
+MSG_WriteDeltaPlayerstate and MSG_ReadDeltaPlayerstate functions match 4,096
+seeded/boundary cases and 2,127,492 comparison bytes, including decoded words.
+The helper uses the original field tables, struct layouts and Huffman functions;
+offsetof only replaces the original null-pointer offset macro. The production
+table names/order/widths are independently checked against qsrc. Existing
+QW/Q2/Q3 usercmd comparisons remain exact over all 3,072 cases and all 256 native
+QW/Q2 masks. Four focused tests cover control bits, signed arrays, float limits,
+IEEE payload preservation, invalid counts and every truncated entity prefix.
+Nonfinite payload tests are Rust boundary tests, not a claim about C's undefined
+float-to-integer conversion. The unchanged checker, 656 workspace tests and
+warning-denied Clippy pass.
+
+CPU23, portable release, five ABBA blocks, 60 warm-up plus 600 measured frames
+per leg; sixteen encode/decode records with original-C fidelity checks per frame.
+The pre-slice command binary is retained with the evidence. Table metadata
+eliminates extended state-value branches from command code, and group decisions
+are resolved before field iteration. Selective reader inlining recovers the
+initial command slowdown; the earlier rejected measurements remain available.
+The same source implements every table walk. These are codec timings, excluding
+host, workers, transport syscalls, snapshots, rendering and gameplay.
+
+| Usercmd workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed QW/Q2/Q3 | 3164.5 | 3146 | -0.585% | 6225 | 6244 |
+| QW | 2027.5 | 1772 | -12.602% | 2765 | 2404 |
+| Q2 | 2229 | 2099.5 | -5.810% | 2871 | 2873 |
+| Q3 | 5178.5 | 5117.5 | -1.178% | 6260 | 6275 |
+
+All medians improve; the mixed/Q2/Q3 p99 changes are small increases of
+0.305%, 0.070% and 0.240%, respectively. Fixture checks and wire-byte totals
+match in every leg. Allocations, reallocations and requested bytes are zero,
+with a one-allocation positive control. The new entity/player workload has no
+matched prior engine path: four runs average 25,778.75 ns median and 49,262.5 ns
+p99 per sixteen records, each with 10,560 checks and 584,495 wire bytes including
+warm-up; measured heap activity is zero.
+
+Evidence is in `THE-860-state-delta-20261009/`: final-original/comparison.json,
+final-commands/comparison.json, final-command-abba-summary.json and its
+group-policy-write-hint raw legs, final-state-timing-summary.json and four raw
+state runs, plus checker/workspace/Clippy logs. Reproduce the native records
+with tools/check_state_delta.py and the platform state_delta example. This
+checkpoint supplies record codecs; common-state ABI projections, snapshot
+framing/rings, other protocol state tables, signon, captures, live connections
+and installed multiplayer acceptance remain on THE-860/THE-3169.
+
+The preceding normal candidate at 9e01e940 also passed the owner's six private
+300-frame smoke cases: Q1 start, Q2 base1 and Q3 q3dm1 on CPU and GL, with real
+key-repeat movement and normal exit. Rust heap activity was zero in all measured
+frames across the calling thread and seven CPU workers. GL used llvmpipe LLVM
+22.1.8, Mesa 26.2.2 (software GL); these runs do not measure hardware GL speed
+or foreign heaps. Saved settings and the candidate stayed unchanged, and all
+owned helper PIDs were cleaned up. Evidence is retained under
+`THE-3175-q3-arithmetic-20261009/private-smoke-final/`. This is smoke evidence
+for that earlier candidate, not a new installation or full gameplay acceptance.
