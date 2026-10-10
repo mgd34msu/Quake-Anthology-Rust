@@ -1,7 +1,7 @@
 //! Child-local C services. References into native bytes end before any foreign
 //! callback; the engine still borrows only after its kernel stop boundary.
 use super::{ImportResult, NativeEntry, NativeError, NativeRegion};
-use crate::native::runtime::{Function, Operation, RuntimeConfig};
+use crate::native::runtime::{Comparison, Function, Operation, RuntimeConfig};
 use qa_core::heap::{Heap, MemoryError};
 use std::sync::{Mutex, OnceLock};
 #[path = "crt.rs"]
@@ -173,6 +173,14 @@ impl Memory {
     fn length(&self, address: u64) -> Result<usize, NativeError> {
         self.cursor(address, 1)?.length()
     }
+    // Caller must perform only pure byte inspection until this slice expires:
+    // no mapped-byte writes, native callbacks, or publication to the parent.
+    unsafe fn string_bytes(&self, address: u64) -> Result<&[u8], NativeError> {
+        let length = self.length(address)?;
+        // SAFETY: length scanned the entire readable span including its NUL.
+        // The caller's invariant excludes all writers during this byte borrow.
+        Ok(unsafe { std::slice::from_raw_parts(address as *const u8, length) })
+    }
 }
 struct Runtime {
     memory: Memory,
@@ -324,12 +332,18 @@ impl Runtime {
                 a[0]
             }
             Operation::Length => m.length(a[0])? as u64,
-            Operation::CompareString | Operation::CompareMemory => {
-                let string = matches!(operation, Operation::CompareString);
+            Operation::Compare(comparison) => {
+                let string = matches!(comparison, Comparison::String);
+                let prefix = matches!(comparison, Comparison::Prefix);
+                if prefix && (a[0] == 0 || a[1] == 0 || a[2] > 0x10000000) {
+                    return Err(NativeError::Extent);
+                }
                 let mut difference = 0;
                 if !string && a[2] == 0 {
-                    m.range(a[0], 0, 1)?;
-                    m.range(a[1], 0, 1)?;
+                    if !prefix {
+                        m.range(a[0], 0, 1)?;
+                        m.range(a[1], 0, 1)?;
+                    }
                 } else {
                     let mut left = m.cursor(a[0], 1)?;
                     let left_length = if string { left.length()? } else { 0 };
@@ -339,16 +353,42 @@ impl Runtime {
                     } else {
                         size(a[2])?
                     };
-                    left.validate(count)?;
-                    right.validate(count)?;
+                    if !prefix {
+                        left.validate(count)?;
+                        right.validate(count)?;
+                    }
                     for _ in 0..count {
-                        difference = i32::from(left.read()?) - i32::from(right.read()?);
-                        if difference != 0 {
+                        let l = left.read()?;
+                        difference = i32::from(l) - i32::from(right.read()?);
+                        if difference != 0 || (prefix && l == 0) {
                             break;
                         }
                     }
                 }
                 difference as i64 as u64
+            }
+            Operation::Find(string) => {
+                if !string && a[2] > 0x10000000 {
+                    return Err(NativeError::Extent);
+                }
+                if !string && a[2] == 0 {
+                    return Ok(0);
+                }
+                let mut cursor = m.cursor(a[0], 1)?;
+                let count = if string {
+                    cursor.length()? + 1
+                } else {
+                    size(a[2])?
+                };
+                cursor.validate(count)?;
+                let mut result = 0;
+                for index in 0..count {
+                    if cursor.read()? == a[1] as u8 {
+                        result = a[0] + index as u64;
+                        break;
+                    }
+                }
+                result
             }
             Operation::Malloc | Operation::Calloc | Operation::Realloc | Operation::Free => {
                 let mut guard = self.heap.lock().map_err(|_| NativeError::Protocol)?;

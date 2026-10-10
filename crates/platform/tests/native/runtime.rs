@@ -126,6 +126,152 @@ fn crt_math_matches_the_original_c_switch() {
 }
 
 #[test]
+fn crt_conversions_match_original_c_values_and_end_pointers() {
+    let mut process = runtime_child();
+    let mut trace = Vec::new();
+    let mut count = 0;
+    for row in include_str!("crt-convert.csv")
+        .lines()
+        .filter(|row| !row.starts_with('#'))
+    {
+        let fields: Vec<_> = row.split(',').collect();
+        let number = u32::from_str_radix(fields[0], 16).unwrap();
+        let radix = fields[1].parse::<i32>().unwrap();
+        let text: Vec<_> = fields[2]
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|bytes| u8::from_str_radix(std::str::from_utf8(bytes).unwrap(), 16).unwrap())
+            .collect();
+        let expected = u64::from_str_radix(fields[3], 16).unwrap();
+        let stop = u64::from_str_radix(fields[4], 16).unwrap();
+        let error = u32::from_str_radix(fields[5], 16).unwrap();
+        let memory = process.memory_mut().unwrap();
+        memory[6400..6401 + text.len()].fill(0);
+        memory[6400..6400 + text.len()].copy_from_slice(&text);
+        memory[4728..4732].fill(0);
+        let args = if number == 335 {
+            vec![BASE + 6400, BASE + 6300, radix as i64 as u64]
+        } else {
+            vec![BASE + 6400]
+        };
+        assert_eq!(
+            call(&mut process, &mut trace, number, &args),
+            expected,
+            "{row}"
+        );
+        if number == 335 {
+            assert_eq!(
+                u64::from_le_bytes(process.memory().unwrap()[6300..6308].try_into().unwrap()),
+                BASE + 6400 + stop,
+                "{row}"
+            );
+        }
+        assert_eq!(
+            u32::from_le_bytes(process.memory().unwrap()[4728..4732].try_into().unwrap()),
+            error,
+            "{row}"
+        );
+        count += 1;
+    }
+    assert_eq!(count, 163);
+    // Outputs may alias the original string. Parsing must release its native
+    // byte borrow before writing the end pointer, exactly as the C copy does.
+    process.memory_mut().unwrap()[6400..6407].copy_from_slice(b"123456\0");
+    assert_eq!(
+        call(
+            &mut process,
+            &mut trace,
+            335,
+            &[BASE + 6400, BASE + 6400, 10]
+        ),
+        123456
+    );
+    assert_eq!(
+        u64::from_le_bytes(process.memory().unwrap()[6400..6408].try_into().unwrap()),
+        BASE + 6406
+    );
+    assert!(trace.is_empty());
+}
+
+#[test]
+fn crt_search_and_bounded_compare_keep_native_terminator_rules() {
+    let mut process = runtime_child();
+    let mut trace = Vec::new();
+    process.memory_mut().unwrap()[6400..6406].copy_from_slice(b"ababa\0");
+    process.memory_mut().unwrap()[6500..6504].copy_from_slice(b"aba\0");
+    process.memory_mut().unwrap()[6510..6514].copy_from_slice(b"ba\xff\0");
+    assert_eq!(
+        call(&mut process, &mut trace, 334, &[BASE + 6400, BASE + 6500]),
+        BASE + 6400
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 334, &[BASE + 6400, BASE + 6501]),
+        BASE + 6401
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 334, &[BASE + 6400, BASE + 6510]),
+        0
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 334, &[BASE + 6400, BASE + 6503]),
+        BASE + 6400
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 334, &[BASE + 6503, BASE + 6400]),
+        0
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 333, &[BASE + 6400, b'b' as u64]),
+        BASE + 6401
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 333, &[BASE + 6400, 0]),
+        BASE + 6405
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 333, &[BASE + 6400, b'x' as u64]),
+        0
+    );
+    assert_eq!(
+        call(&mut process, &mut trace, 331, &[BASE + 6510, 0x1ff, 3]),
+        BASE + 6512
+    );
+    assert_eq!(call(&mut process, &mut trace, 331, &[u64::MAX, 0, 0]), 0);
+    assert_eq!(
+        call(&mut process, &mut trace, 332, &[u64::MAX, u64::MAX, 0]),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut process,
+            &mut trace,
+            332,
+            &[BASE + 6400, BASE + 6500, 3]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut process,
+            &mut trace,
+            332,
+            &[BASE + 6400, BASE + 6500, 4]
+        ),
+        b'b' as u64
+    );
+    assert_eq!(
+        call(
+            &mut process,
+            &mut trace,
+            332,
+            &[BASE + 6503, BASE + 6513, 100000]
+        ),
+        0
+    );
+    assert!(trace.is_empty());
+}
+
+#[test]
 fn crt_startup_teardown_and_sort_use_native_callbacks() {
     let mut process = runtime_child();
     let mut trace = Vec::new();

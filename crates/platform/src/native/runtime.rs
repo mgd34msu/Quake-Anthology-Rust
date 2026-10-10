@@ -75,7 +75,7 @@ pub const FUNCTIONS: &[Function] = &[
         number: FIRST + 4,
         parameters: &[Word, Word],
         result: I32,
-        operation: Operation::CompareString,
+        operation: Operation::Compare(Comparison::String),
     },
     Function {
         name: b"memcmp",
@@ -85,7 +85,7 @@ pub const FUNCTIONS: &[Function] = &[
         number: FIRST + 5,
         parameters: &[Word, Word, Word],
         result: I32,
-        operation: Operation::CompareMemory,
+        operation: Operation::Compare(Comparison::Memory),
     },
     Function {
         name: b"sin",
@@ -298,6 +298,14 @@ pub const FUNCTIONS: &[Function] = &[
     windows(FIRST + 328, b"api-ms-win-crt-math-l1-1-0.dll", b"_dsign", Operation::Math(Math::Sign, Double), &[Double], NativeScalar::I16),
     windows(FIRST + 329, b"api-ms-win-crt-runtime-l1-1-0.dll", b"_errno", Operation::Crt(Crt::Errno), &[], Word),
     windows(FIRST + 330, b"api-ms-win-crt-locale-l1-1-0.dll", b"localeconv", Operation::Crt(Crt::Locale), &[], Word),
+    windows(FIRST + 331, b"vcruntime140.dll", b"memchr", Operation::Find(false), &[Word, I32, Word], Word),
+    windows(FIRST + 332, b"api-ms-win-crt-string-l1-1-0.dll", b"strncmp", Operation::Compare(Comparison::Prefix), &[Word, Word, Word], I32),
+    windows(FIRST + 333, b"vcruntime140.dll", b"strchr", Operation::Find(true), &[Word, I32], Word),
+    windows(FIRST + 334, b"vcruntime140.dll", b"strstr", Operation::Crt(Crt::Substring), &[Word, Word], Word),
+    windows(FIRST + 335, b"api-ms-win-crt-convert-l1-1-0.dll", b"strtoul", Operation::Crt(Crt::Unsigned), &[Word, Word, I32], U32),
+    windows(FIRST + 336, b"api-ms-win-crt-convert-l1-1-0.dll", b"atoi", Operation::Crt(Crt::Integer), &[Word], I32),
+    windows(FIRST + 337, b"api-ms-win-crt-convert-l1-1-0.dll", b"atoll", Operation::Crt(Crt::Integer), &[Word], Word),
+    windows(FIRST + 338, b"api-ms-win-crt-convert-l1-1-0.dll", b"atof", Operation::Crt(Crt::Float), &[Word], Double),
 ];
 
 #[derive(Clone, Copy)]
@@ -306,8 +314,8 @@ pub(crate) enum Operation {
     Fill,
     Strncpy,
     Length,
-    CompareString,
-    CompareMemory,
+    Compare(Comparison),
+    Find(bool),
     Math(Math, NativeScalar),
     Crt(Crt),
     Malloc,
@@ -353,6 +361,16 @@ pub(crate) enum Crt {
     Sort,
     Errno,
     Locale,
+    Substring,
+    Unsigned,
+    Integer,
+    Float,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Comparison {
+    String,
+    Memory,
+    Prefix,
 }
 
 pub fn function(number: u32) -> Option<&'static Function> {
@@ -369,13 +387,13 @@ impl Function {
             return equal(self.provider);
         }
         let library = match self.operation {
-            Operation::Copy | Operation::Fill | Operation::CompareMemory => {
+            Operation::Copy | Operation::Fill | Operation::Compare(Comparison::Memory) => {
                 if equal(b"vcruntime140.dll") || equal(b"api-ms-win-crt-memory-l1-1-0.dll") {
                     return true;
                 }
                 b"api-ms-win-crt-string-l1-1-0.dll".as_slice()
             }
-            Operation::Strncpy | Operation::Length | Operation::CompareString => {
+            Operation::Strncpy | Operation::Length | Operation::Compare(Comparison::String) => {
                 b"api-ms-win-crt-string-l1-1-0.dll"
             }
             Operation::Malloc | Operation::Calloc | Operation::Free | Operation::Realloc => {

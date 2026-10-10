@@ -6,6 +6,134 @@ use crate::native::{
     runtime::{Crt, Math},
 };
 
+fn whitespace(source: &[u8], unicode: bool) -> usize {
+    source
+        .iter()
+        .position(|&byte| !matches!(byte, 9..=13 | 32) && !(unicode && byte == 160))
+        .unwrap_or(source.len())
+}
+fn digit(byte: u8) -> u32 {
+    match byte {
+        b'0'..=b'9' => u32::from(byte - b'0'),
+        b'A'..=b'Z' => u32::from(byte - b'A') + 10,
+        b'a'..=b'z' => u32::from(byte - b'a') + 10,
+        _ => 99,
+    }
+}
+fn unsigned(source: &[u8], mut base: i32) -> (u32, usize, u32) {
+    if base != 0 && !(2..=36).contains(&base) {
+        return (0, 0, 22);
+    }
+    let mut at = whitespace(source, false);
+    let negative = source.get(at) == Some(&b'-');
+    if matches!(source.get(at), Some(b'-' | b'+')) {
+        at += 1;
+    }
+    if (base == 0 || base == 16)
+        && source.get(at) == Some(&b'0')
+        && matches!(source.get(at + 1), Some(b'x' | b'X'))
+        && source.get(at + 2).is_some_and(|&byte| digit(byte) < 16)
+    {
+        base = 16;
+        at += 2;
+    }
+    if base == 0 {
+        base = if source.get(at) == Some(&b'0') { 8 } else { 10 };
+    }
+    let first = at;
+    let (mut value, mut overflow) = (0u32, false);
+    while let Some(&byte) = source.get(at) {
+        let digit = digit(byte);
+        if digit >= base as u32 {
+            break;
+        }
+        if value > (u32::MAX - digit) / base as u32 {
+            value = u32::MAX;
+            overflow = true;
+        } else {
+            value = value * base as u32 + digit;
+        }
+        at += 1;
+    }
+    if at == first {
+        return (0, 0, 0);
+    }
+    (
+        if negative && !overflow {
+            value.wrapping_neg()
+        } else {
+            value
+        },
+        at,
+        if overflow { 34 } else { 0 },
+    )
+}
+fn integer(source: &[u8]) -> u64 {
+    let mut at = whitespace(source, true);
+    let negative = source.get(at) == Some(&b'-');
+    if matches!(source.get(at), Some(b'-' | b'+')) {
+        at += 1;
+    }
+    let mut value = 0u64;
+    while let Some(&byte) = source.get(at).filter(|b| b.is_ascii_digit()) {
+        value = value.wrapping_mul(10).wrapping_add(u64::from(byte - b'0'));
+        at += 1;
+    }
+    if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    }
+}
+fn float(source: &[u8]) -> Result<f64, NativeError> {
+    let start = whitespace(source, true);
+    let mut at = start;
+    let negative = source.get(at) == Some(&b'-');
+    if matches!(source.get(at), Some(b'-' | b'+')) {
+        at += 1;
+    }
+    if source[at..].starts_with(b"Infinity") {
+        return Ok(if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        });
+    }
+    let mut digits = 0;
+    while source.get(at).is_some_and(u8::is_ascii_digit) {
+        at += 1;
+        digits += 1;
+    }
+    if source.get(at) == Some(&b'.') {
+        at += 1;
+        while source.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return Ok(0.0);
+    }
+    if matches!(source.get(at), Some(b'e' | b'E')) {
+        let exponent = at;
+        at += 1;
+        if matches!(source.get(at), Some(b'-' | b'+')) {
+            at += 1;
+        }
+        let first = at;
+        while source.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        if at == first {
+            at = exponent;
+        }
+    }
+    std::str::from_utf8(&source[start..at])
+        .map_err(|_| NativeError::Extent)?
+        .parse()
+        .map_err(|_| NativeError::Extent)
+}
+
 impl Runtime {
     fn onexit_register(&self, table: u64, callback: u64) -> Result<u64, NativeError> {
         let m = &self.memory;
@@ -189,6 +317,42 @@ impl Runtime {
             }
             Crt::Errno => self.state()? + 632,
             Crt::Locale => self.state()? + 416,
+            Crt::Substring => {
+                // SAFETY: this block only inspects byte slices. No callback,
+                // write or publication can run while either borrow exists.
+                let source = unsafe { m.string_bytes(a[0])? };
+                let search = unsafe { m.string_bytes(a[1])? };
+                if search.is_empty() {
+                    a[0]
+                } else {
+                    source
+                        .windows(search.len())
+                        .position(|s| s == search)
+                        .map_or(0, |at| a[0] + at as u64)
+                }
+            }
+            Crt::Unsigned => {
+                let (value, stop, error) = {
+                    // SAFETY: pure parsing only. Both possible output writes
+                    // occur after the mapped byte slice has expired.
+                    unsigned(unsafe { m.string_bytes(a[0])? }, a[2] as i32)
+                };
+                if error != 0 {
+                    m.put(self.state()? + 632, 4, u64::from(error))?;
+                }
+                if a[1] != 0 {
+                    m.put(a[1], 8, a[0] + stop as u64)?;
+                }
+                u64::from(value)
+            }
+            Crt::Integer => {
+                // SAFETY: no writes, callbacks or retained native references.
+                integer(unsafe { m.string_bytes(a[0])? })
+            }
+            Crt::Float => {
+                // SAFETY: no writes, callbacks or retained native references.
+                float(unsafe { m.string_bytes(a[0])? })?.to_bits()
+            }
         })
     }
     pub(super) fn math(
