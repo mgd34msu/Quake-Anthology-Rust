@@ -154,14 +154,16 @@ impl FrameSource for Source {
         true
     }
 }
-fn emit(runtime: &mut Runtime, tick: Tick) {
+fn emit(host: &mut FrameHost, tick: Tick) {
+    let runtime = &mut host.runtime;
     runtime.print_event(
         None,
         PrintKind::Center,
         format_args!("{}:{}", tick.source_slot, tick.index),
     );
 }
-fn consume(runtime: &mut Runtime, tick: Tick, record: OutputRecord) -> OutputSubmission {
+fn consume(host: &mut FrameHost, tick: Tick, record: OutputRecord) -> OutputSubmission {
+    let runtime = &mut host.runtime;
     let player = &mut runtime.server.clients[10 + tick.source_slot].player;
     if let FrameEvent::Print(p) = record.event
         && runtime.server.events.texts.get(p.text).is_none()

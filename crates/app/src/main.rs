@@ -443,7 +443,13 @@ fn run() -> Result<(), String> {
     let bank = qa_app::audio::load_bank(
         &host.runtime.vfs,
         &precache_sounds,
-        client_module.unwrap_or(host.console.cvars.context().source),
+        local_clients
+            .iter()
+            .flatten()
+            .next()
+            .map_or(client_module.unwrap_or(RuleSetId::Quake3), |id| {
+                host.runtime.server.clients[id.0 as usize].client_rules
+            }),
     )?;
     host.runtime.sound_bank = Some(std::sync::Arc::clone(&bank));
     let mut audio = qa_app::audio::Output::open(bank)?;

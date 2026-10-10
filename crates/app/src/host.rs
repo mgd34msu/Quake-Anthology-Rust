@@ -91,12 +91,17 @@ impl FrameSource for LiveFrame<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Provider {
     pub module: ModuleId,
     pub rate: TickRate,
-    pub frame: fn(&mut Runtime, Tick),
+    pub frame: fn(&mut FrameHost, Tick),
     pub output: Option<
-        fn(&mut Runtime, Tick, qa_core::events::OutputRecord) -> qa_core::events::OutputSubmission,
+        fn(
+            &mut FrameHost,
+            Tick,
+            qa_core::events::OutputRecord,
+        ) -> qa_core::events::OutputSubmission,
     >,
 }
 pub struct FrameHost {
@@ -235,25 +240,20 @@ impl FrameHost {
         let server_time = self.time;
         self.previous = Some(server_time);
         let simulation = Stopwatch::start();
-        let runtime = &mut self.runtime;
-        let providers = &self.providers;
-        let module_outputs = &mut self.module_outputs;
-        let input_handles = &self.input_handles;
-        let vars = &self.console.cvars;
-        result.server_ticks = self
-            .timeline
-            .advance(server_time, |tick| match tick.target {
+        while let Some(tick) = self.timeline.next_tick(server_time) {
+            result.server_ticks += 1;
+            match tick.target {
                 TickTarget::World => {
-                    runtime.server.world_time = tick.end;
-                    runtime.server.world_frame = tick.index;
-                    runtime
+                    self.runtime.server.world_time = tick.end;
+                    self.runtime.server.world_frame = tick.index;
+                    self.runtime
                         .server
                         .build_bot_commands(tick.start, tick.end, |rules| {
-                            input_handles.policy(vars, rules)
+                            self.input_handles.policy(&self.console.cvars, rules)
                         });
-                    if let Some(world) = &mut runtime.collision {
-                        runtime.server.move_pending_clients(
-                            &runtime.geometry,
+                    if let Some(world) = &mut self.runtime.collision {
+                        self.runtime.server.move_pending_clients(
+                            &self.runtime.geometry,
                             world.geometry,
                             world.index,
                             &mut world.scratch,
@@ -262,23 +262,23 @@ impl FrameHost {
                 }
                 TickTarget::Provider(_) => {
                     let slot = tick.source_slot - 1;
-                    let provider = &providers[slot];
-                    (provider.frame)(runtime, tick);
-                    if let (Some(consume), Some(id)) = (provider.output, module_outputs[slot]) {
-                        // Local module delivery resumes at its next native tick.
-                        let id = if runtime.server.events.needs_resync(id) {
-                            let Some(id) = runtime.server.events.resume(id) else {
-                                return;
+                    let provider = self.providers[slot];
+                    (provider.frame)(self, tick);
+                    if let (Some(consume), Some(id)) = (provider.output, self.module_outputs[slot])
+                    {
+                        let id = if self.runtime.server.events.needs_resync(id) {
+                            let Some(id) = self.runtime.server.events.resume(id) else {
+                                continue;
                             };
-                            module_outputs[slot] = Some(id);
+                            self.module_outputs[slot] = Some(id);
                             id
                         } else {
                             id
                         };
-                        if let Some(mut batch) = runtime.server.events.batch(id) {
-                            while let Some(record) = runtime.server.events.next(&mut batch) {
-                                let submission = consume(runtime, tick, record);
-                                runtime
+                        if let Some(mut batch) = self.runtime.server.events.batch(id) {
+                            while let Some(record) = self.runtime.server.events.next(&mut batch) {
+                                let submission = consume(self, tick, record);
+                                self.runtime
                                     .server
                                     .events
                                     .submit(id, record.sequence, submission);
@@ -286,10 +286,11 @@ impl FrameHost {
                         }
                     }
                 }
-            });
-        if let Some(world) = &mut runtime.collision {
-            runtime.server.move_pending_clients(
-                &runtime.geometry,
+            }
+        }
+        if let Some(world) = &mut self.runtime.collision {
+            self.runtime.server.move_pending_clients(
+                &self.runtime.geometry,
                 world.geometry,
                 world.index,
                 &mut world.scratch,

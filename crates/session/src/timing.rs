@@ -95,12 +95,21 @@ impl Timeline {
     /// Catch up in timestamp order, then target order. The callback observes
     /// native tick durations; client cadence never changes provider rates.
     pub fn advance(&mut self, time: EventTime, mut tick: impl FnMut(Tick)) -> u64 {
+        let mut count = 0;
+        while let Some(next) = self.next_tick(time) {
+            tick(next);
+            count += 1;
+        }
+        count
+    }
+
+    /// Release the timeline borrow before module services mutate the host.
+    pub fn next_tick(&mut self, time: EventTime) -> Option<Tick> {
         if !self.seeded {
             self.seed(time);
-            return 0;
+            return None;
         }
-        let mut count = 0;
-        while let Some(slot) = self
+        let slot = self
             .clocks
             .iter()
             .enumerate()
@@ -114,23 +123,20 @@ impl Timeline {
                     clock.target.order(),
                 )
             })
-            .map(|(slot, _)| slot)
-        {
-            let clock = &mut self.clocks[slot];
-            let end = clock.rate.period().map_or(time, |_| clock.next);
-            clock.index += 1;
-            tick(Tick {
-                target: clock.target,
-                source_slot: slot,
-                start: clock.last,
-                end,
-                index: clock.index,
-            });
-            clock.last = end;
-            clock.next = EventTime(end.0.saturating_add(clock.rate.period().unwrap_or(0)));
-            count += 1;
-        }
-        count
+            .map(|(slot, _)| slot)?;
+        let clock = &mut self.clocks[slot];
+        let end = clock.rate.period().map_or(time, |_| clock.next);
+        clock.index += 1;
+        let tick = Tick {
+            target: clock.target,
+            source_slot: slot,
+            start: clock.last,
+            end,
+            index: clock.index,
+        };
+        clock.last = end;
+        clock.next = EventTime(end.0.saturating_add(clock.rate.period().unwrap_or(0)));
+        Some(tick)
     }
 }
 

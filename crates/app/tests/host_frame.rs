@@ -18,6 +18,7 @@ use qa_session::{
 };
 use std::time::Duration;
 
+#[derive(Default)]
 struct Source {
     time: u64,
     waits: u64,
@@ -109,7 +110,8 @@ fn before(
     runtime.server.clients[0].player.health = 10;
     Ok(())
 }
-fn provider(runtime: &mut Runtime, tick: Tick) {
+fn provider(host: &mut FrameHost, tick: Tick) {
+    let runtime = &mut host.runtime;
     assert!(runtime.server.clients[0].player.health >= 10);
     runtime.server.clients[0].player.health = 20;
     runtime.server.clients[tick.index as usize].player.score += 1;
@@ -121,6 +123,33 @@ fn provider(runtime: &mut Runtime, tick: Tick) {
             b"same-frame snapshot",
         )
         .unwrap();
+}
+
+#[test]
+fn provider_commands_use_the_host_console_before_client_phase() {
+    fn frame(host: &mut FrameHost, _: Tick) {
+        host.console
+            .append_line("sensitivity 5 extra", Context::default())
+            .unwrap();
+    }
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        Runtime::load(64, std::iter::empty()).unwrap(),
+        TickRate::FrameDriven,
+        vec![Provider {
+            module: ModuleId(1),
+            rate: TickRate::FrameDriven,
+            frame,
+            output: None,
+        }],
+    )
+    .unwrap();
+    let mut source = Source::default();
+    host.frame(&mut source, true);
+    source.time = 20;
+    host.frame(&mut source, true);
+    let handle = host.console.cvars.find("sensitivity").unwrap();
+    assert_eq!(host.console.cvars.value(handle), 5.0);
 }
 fn after(
     _: &mut Console<Runtime>,
