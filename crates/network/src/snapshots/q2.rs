@@ -29,10 +29,7 @@ impl Q2KexContext {
             entities: ring
                 .baselines
                 .iter()
-                .map(|words| states::Q2KexWire {
-                    nonzero_solid: words[19] != 0,
-                    baseline_solid: words[19] != 0,
-                })
+                .map(|words| states::Q2KexWire::from_baseline(words[19]))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         })
@@ -49,10 +46,7 @@ impl Q2KexContext {
         if !ring.set_baseline(number, words) {
             return false;
         }
-        *wire = states::Q2KexWire {
-            nonzero_solid: words[19] != 0,
-            baseline_solid: words[19] != 0,
-        };
+        *wire = states::Q2KexWire::from_baseline(words[19]);
         true
     }
 }

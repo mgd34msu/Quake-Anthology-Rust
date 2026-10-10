@@ -1154,6 +1154,15 @@ pub struct Q2KexWire {
     pub nonzero_solid: bool,
     pub baseline_solid: bool,
 }
+impl Q2KexWire {
+    pub const fn from_baseline(solid: u32) -> Self {
+        let nonzero_solid = solid != 0;
+        Self {
+            nonzero_solid,
+            baseline_solid: nonzero_solid,
+        }
+    }
+}
 const fn q2_enhanced_entity_fields<const KEX: bool>() -> [Field; Q2_RERELEASE_ENTITY_WORDS] {
     let mut fields = [Field::new(0, 8, 0, Value::Unsigned); Q2_RERELEASE_ENTITY_WORDS];
     let mut i = 0;
