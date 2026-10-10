@@ -1,6 +1,6 @@
 //! Connected native move payloads, independent of movement and map rules.
 //! A packet is decoded into temporary native records before any SERVER action.
-use super::{Q1Move, Q2Cmd, Q3Cmd, QwCmd, delta};
+use super::{Q1Move, Q2Cmd, Q2RrCmd, Q3Cmd, QwCmd, delta};
 use crate::{
     channel,
     message::{Encoding, Error as MessageError, Reader, Writer},
@@ -140,6 +140,66 @@ pub const ZERO_Q3: Q3Cmd = Q3Cmd {
     buttons: 0,
     weapon: 0,
 };
+pub const ZERO_Q2_RR: Q2RrCmd = Q2RrCmd {
+    msec: 0,
+    buttons: 0,
+    angles: Vec3([0.; 3]),
+    movement: [0.; 2],
+    server_frame: 0,
+};
+
+fn write_series<C: Copy>(
+    writer: &mut Writer<'_>,
+    commands: &[C],
+    mut old: C,
+    mut encode: impl FnMut(&mut Writer<'_>, C, C) -> Result<(), MessageError>,
+) -> Result<(), MessageError> {
+    for &command in commands {
+        encode(writer, old, command)?;
+        old = command;
+    }
+    Ok(())
+}
+fn read_series<C: Copy>(
+    reader: &mut Reader<'_>,
+    commands: &mut [C],
+    mut old: C,
+    mut decode: impl FnMut(&mut Reader<'_>, C) -> Result<C, MessageError>,
+) -> Result<(), MessageError> {
+    for command in commands {
+        *command = decode(reader, old)?;
+        old = *command;
+    }
+    Ok(())
+}
+
+/// Q2repro 1038 nonbatched clc_move payload. Its last-frame prefix has no CRC;
+/// per-command server_frame is supplied later by the native module boundary.
+/// Connection selection remains separate from this native payload entry.
+pub fn write_q2_repro_move(
+    out: &mut [u8],
+    last_frame: i32,
+    commands: &[Q2RrCmd; 3],
+) -> Result<usize, Error> {
+    let mut writer = Writer::new(out, Encoding::Bytes);
+    writer.write_bits(2, 8)?;
+    writer.write_bits(last_frame as u32, 32)?;
+    write_series(&mut writer, commands, ZERO_Q2_RR, delta::write_q2_repro)?;
+    Ok(writer.size())
+}
+pub fn read_q2_repro_move(bytes: &[u8]) -> Result<(i32, [Q2RrCmd; 3]), Error> {
+    let mut reader = Reader::new(bytes, Encoding::Bytes);
+    if reader.read_bits(8)? != 2 {
+        return Err(Error::Opcode);
+    }
+    let last_frame = reader.read_bits(32)? as i32;
+    let mut commands = [ZERO_Q2_RR; 3];
+    read_series(&mut reader, &mut commands, ZERO_Q2_RR, delta::read_q2_repro)?;
+    if reader.byte_position() != bytes.len() {
+        return Err(Error::Trailing);
+    }
+    Ok((last_frame, commands))
+}
 
 /// Com_HashKey uses signed native char arithmetic, including arithmetic shifts.
 /// This is the original protocol key, never an engine content identity.
@@ -202,11 +262,7 @@ pub fn write_with_commands(
             w.write_bits(3, 8)?;
             w.write_bits(0, 8)?;
             w.write_bits((*loss).into(), 8)?;
-            let mut old = ZERO_QW;
-            for &command in commands {
-                delta::write_qw(&mut w, old, command)?;
-                old = command;
-            }
+            write_series(&mut w, commands, ZERO_QW, delta::write_qw)?;
             // CL_SendCmd checksums only the move, before clc_delta.
             qw_move_end = w.size();
             if let Some(request) = delta_request {
@@ -221,11 +277,7 @@ pub fn write_with_commands(
             w.write_bits(2, 8)?;
             w.write_bits(0, 8)?;
             w.write_bits(*last_frame as u32, 32)?;
-            let mut old = ZERO_Q2;
-            for &command in commands {
-                delta::write_q2(&mut w, old, command)?;
-                old = command;
-            }
+            write_series(&mut w, commands, ZERO_Q2, delta::write_q2)?;
         }
         Move::Quake3 {
             commands,
@@ -248,11 +300,12 @@ pub fn write_with_commands(
             let command_key = key.checksum_feed
                 ^ key.acknowledgements.message as u32
                 ^ command_key(key.server_command);
-            let mut old = ZERO_Q3;
-            for &command in &commands[..usize::from(*count)] {
-                delta::write_q3(&mut w, old, command, command_key)?;
-                old = command;
-            }
+            write_series(
+                &mut w,
+                &commands[..usize::from(*count)],
+                ZERO_Q3,
+                |writer, old, command| delta::write_q3(writer, old, command, command_key),
+            )?;
             w.write_bits(5, 8)?;
         }
     }
@@ -367,11 +420,7 @@ pub fn read_with_commands(
             let checksum = r.read_bits(8)? as u8;
             let loss = r.read_bits(8)? as u8;
             let mut commands = [ZERO_QW; 3];
-            let mut old = ZERO_QW;
-            for command in &mut commands {
-                *command = delta::read_qw(&mut r, old)?;
-                old = *command;
-            }
+            read_series(&mut r, &mut commands, ZERO_QW, delta::read_qw)?;
             if checksum
                 != checksum::qw_sequence_crc(
                     &bytes[checksum_index + 1..r.byte_position()],
@@ -396,11 +445,7 @@ pub fn read_with_commands(
             let checksum = r.read_bits(8)? as u8;
             let last_frame = r.read_bits(32)? as i32;
             let mut commands = [ZERO_Q2; 3];
-            let mut old = ZERO_Q2;
-            for command in &mut commands {
-                *command = delta::read_q2(&mut r, old)?;
-                old = *command;
-            }
+            read_series(&mut r, &mut commands, ZERO_Q2, delta::read_q2)?;
             if checksum != checksum::q2_sequence_crc(&bytes[2..r.byte_position()], sequence) {
                 return Err(Error::Checksum);
             }
@@ -437,14 +482,15 @@ pub fn read_with_commands(
                 return Err(Error::Count);
             }
             let mut commands = [ZERO_Q3; 32];
-            let mut old = ZERO_Q3;
             let command_key = key.checksum_feed
                 ^ acknowledgements.message as u32
                 ^ command_key(key.server_command);
-            for command in &mut commands[..usize::from(count)] {
-                *command = delta::read_q3(&mut r, old, command_key)?;
-                old = *command;
-            }
+            read_series(
+                &mut r,
+                &mut commands[..usize::from(count)],
+                ZERO_Q3,
+                |reader, old| delta::read_q3(reader, old, command_key),
+            )?;
             if r.read_bits(8)? != 5 {
                 return Err(Error::Trailing);
             }

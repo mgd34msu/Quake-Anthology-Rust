@@ -1,7 +1,6 @@
 //! Original-C record comparisons and pinned field-table codec measurements.
-use qa_core::primitives::Vec3;
 use qa_network::{
-    commands::{Q2Cmd, Q2RrCmd, Q3Cmd, QwCmd, delta},
+    commands::delta,
     message::{Encoding, Reader, Writer},
 };
 use qa_platform::{Stopwatch, allocations};
@@ -10,43 +9,6 @@ use std::io::{Read, Write};
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
-fn qw(v: &[u32; 11]) -> QwCmd {
-    QwCmd {
-        view_angles: Vec3(std::array::from_fn(|i| f32::from_bits(v[i]))),
-        movement: std::array::from_fn(|i| v[3 + i] as i16),
-        buttons: v[6] as u8,
-        impulse: v[7] as u8,
-        msec: v[8] as u8,
-    }
-}
-fn q2(v: &[u32; 11]) -> Q2Cmd {
-    Q2Cmd {
-        angles: std::array::from_fn(|i| v[i] as i16),
-        movement: std::array::from_fn(|i| v[3 + i] as i16),
-        buttons: v[6] as u8,
-        impulse: v[7] as u8,
-        msec: v[8] as u8,
-        light_level: v[9] as u8,
-    }
-}
-fn q3(v: &[u32; 11]) -> Q3Cmd {
-    Q3Cmd {
-        angles: std::array::from_fn(|i| v[i] as i32),
-        movement: std::array::from_fn(|i| v[3 + i] as i8),
-        buttons: v[6],
-        weapon: v[7] as u8,
-        server_time: v[10] as i32,
-    }
-}
-fn q2_rr(v: &[u32; 11]) -> Q2RrCmd {
-    Q2RrCmd {
-        angles: Vec3(std::array::from_fn(|i| f32::from_bits(v[i]))),
-        movement: std::array::from_fn(|i| f32::from_bits(v[3 + i])),
-        buttons: v[6] as u8,
-        msec: v[8] as u8,
-        server_frame: v[10],
-    }
-}
 struct Encoded {
     bits: u32,
     length: usize,
@@ -66,10 +28,27 @@ fn encode(
     };
     let mut writer = Writer::new(bytes, encoding);
     match mode {
-        0 => delta::write_qw(&mut writer, qw(from), qw(to)),
-        1 => delta::write_q2(&mut writer, q2(from), q2(to)),
-        2 => delta::write_q3(&mut writer, q3(from), q3(to), key),
-        3 => delta::write_q2_repro(&mut writer, q2_rr(from), q2_rr(to)),
+        0 => delta::write_qw(
+            &mut writer,
+            delta::qw_from_words(from),
+            delta::qw_from_words(to),
+        ),
+        1 => delta::write_q2(
+            &mut writer,
+            delta::q2_from_words(from),
+            delta::q2_from_words(to),
+        ),
+        2 => delta::write_q3(
+            &mut writer,
+            delta::q3_from_words(from),
+            delta::q3_from_words(to),
+            key,
+        ),
+        3 => delta::write_q2_repro(
+            &mut writer,
+            delta::q2_rr_from_words(from),
+            delta::q2_rr_from_words(to),
+        ),
         _ => return Err("command dialect".into()),
     }
     .map_err(|e| e.to_string())?;
@@ -79,42 +58,22 @@ fn encode(
         decoded: [0; 11],
     };
     let mut reader = Reader::new(writer.bytes(), encoding);
-    let v = &mut result.decoded;
-    match mode {
-        0 => {
-            let c = delta::read_qw(&mut reader, qw(from)).map_err(|e| e.to_string())?;
-            v[..3].copy_from_slice(&c.view_angles.0.map(f32::to_bits));
-            v[3..6].copy_from_slice(&c.movement.map(|n| n as u32));
-            v[6] = c.buttons.into();
-            v[7] = c.impulse.into();
-            v[8] = c.msec.into();
-        }
-        1 => {
-            let c = delta::read_q2(&mut reader, q2(from)).map_err(|e| e.to_string())?;
-            v[..3].copy_from_slice(&c.angles.map(|n| n as u32));
-            v[3..6].copy_from_slice(&c.movement.map(|n| n as u32));
-            v[6] = c.buttons.into();
-            v[7] = c.impulse.into();
-            v[8] = c.msec.into();
-            v[9] = c.light_level.into();
-        }
-        2 => {
-            let c = delta::read_q3(&mut reader, q3(from), key).map_err(|e| e.to_string())?;
-            v[..3].copy_from_slice(&c.angles.map(|n| n as u32));
-            v[3..6].copy_from_slice(&c.movement.map(|n| n as u32));
-            v[6] = c.buttons;
-            v[7] = c.weapon.into();
-            v[10] = c.server_time as u32;
-        }
-        _ => {
-            let c = delta::read_q2_repro(&mut reader, q2_rr(from)).map_err(|e| e.to_string())?;
-            v[..3].copy_from_slice(&c.angles.0.map(f32::to_bits));
-            v[3..5].copy_from_slice(&c.movement.map(f32::to_bits));
-            v[6] = c.buttons.into();
-            v[8] = c.msec.into();
-            v[10] = c.server_frame;
-        }
-    }
+    result.decoded = match mode {
+        0 => delta::qw_words(
+            delta::read_qw(&mut reader, delta::qw_from_words(from)).map_err(|e| e.to_string())?,
+        ),
+        1 => delta::q2_words(
+            delta::read_q2(&mut reader, delta::q2_from_words(from)).map_err(|e| e.to_string())?,
+        ),
+        2 => delta::q3_words(
+            delta::read_q3(&mut reader, delta::q3_from_words(from), key)
+                .map_err(|e| e.to_string())?,
+        ),
+        _ => delta::q2_rr_words(
+            delta::read_q2_repro(&mut reader, delta::q2_rr_from_words(from))
+                .map_err(|e| e.to_string())?,
+        ),
+    };
     Ok(result)
 }
 struct Case {

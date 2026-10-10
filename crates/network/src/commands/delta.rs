@@ -99,7 +99,7 @@ pub fn qw_words(c: QwCmd) -> [u32; 11] {
     v[8] = c.msec.into();
     v
 }
-fn q2_words(c: Q2Cmd) -> [u32; 11] {
+pub fn q2_words(c: Q2Cmd) -> [u32; 11] {
     let mut v = [0; 11];
     v[..3].copy_from_slice(&c.angles.map(|v| v as u32));
     v[3..6].copy_from_slice(&c.movement.map(|v| v as u32));
@@ -109,7 +109,7 @@ fn q2_words(c: Q2Cmd) -> [u32; 11] {
     v[9] = c.light_level.into();
     v
 }
-fn q2_rr_words(c: Q2RrCmd) -> [u32; 11] {
+pub fn q2_rr_words(c: Q2RrCmd) -> [u32; 11] {
     let mut v = [0; 11];
     v[..3].copy_from_slice(&c.angles.0.map(f32::to_bits));
     v[3..5].copy_from_slice(&c.movement.map(f32::to_bits));
@@ -118,7 +118,7 @@ fn q2_rr_words(c: Q2RrCmd) -> [u32; 11] {
     v[10] = c.server_frame;
     v
 }
-fn q3_words(c: Q3Cmd) -> [u32; 11] {
+pub fn q3_words(c: Q3Cmd) -> [u32; 11] {
     let mut v = [0; 11];
     v[..3].copy_from_slice(&c.angles.map(|v| v as u32));
     v[3..6].copy_from_slice(&c.movement.map(|v| v as u32));
@@ -150,14 +150,17 @@ pub fn write_q2(writer: &mut Writer<'_>, from: Q2Cmd, to: Q2Cmd) -> Result<(), E
 pub fn read_q2(reader: &mut Reader<'_>, from: Q2Cmd) -> Result<Q2Cmd, Error> {
     let mut v = q2_words(from);
     delta::read(&Q2, &mut v, 0, reader)?;
-    Ok(Q2Cmd {
+    Ok(q2_from_words(&v))
+}
+pub fn q2_from_words(v: &[u32; 11]) -> Q2Cmd {
+    Q2Cmd {
         msec: v[8] as u8,
         angles: std::array::from_fn(|i| v[i] as i16),
         movement: std::array::from_fn(|i| v[3 + i] as i16),
         buttons: v[6] as u8,
         impulse: v[7] as u8,
         light_level: v[9] as u8,
-    })
+    }
 }
 /// Q2repro 1038, not retail KEX 2023. Per-command server_frame has no wire
 /// field here; the provider supplies it independently of this delta record.
@@ -179,13 +182,16 @@ pub fn read_q2_repro(reader: &mut Reader<'_>, from: Q2RrCmd) -> Result<Q2RrCmd, 
     }
     let mut v = q2_rr_words(from);
     delta::read(&Q2_REPRO, &mut v, u64::from(mask), reader)?;
-    Ok(Q2RrCmd {
+    Ok(q2_rr_from_words(&v))
+}
+pub fn q2_rr_from_words(v: &[u32; 11]) -> Q2RrCmd {
+    Q2RrCmd {
         angles: Vec3(std::array::from_fn(|i| f32::from_bits(v[i]))),
         movement: std::array::from_fn(|i| f32::from_bits(v[3 + i])),
         buttons: v[6] as u8,
         msec: v[8] as u8,
         server_frame: v[10],
-    })
+    }
 }
 #[inline]
 pub fn write_q3(writer: &mut Writer<'_>, from: Q3Cmd, to: Q3Cmd, key: u32) -> Result<(), Error> {
@@ -200,11 +206,14 @@ pub fn read_q3(reader: &mut Reader<'_>, from: Q3Cmd, key: u32) -> Result<Q3Cmd, 
     delta::read(&Q3_TIME, &mut v, 0, reader)?;
     let key = key ^ v[10];
     delta::read(&Q3, &mut v, u64::from(key), reader)?;
-    Ok(Q3Cmd {
+    Ok(q3_from_words(&v))
+}
+pub fn q3_from_words(v: &[u32; 11]) -> Q3Cmd {
+    Q3Cmd {
         server_time: v[10] as i32,
         angles: std::array::from_fn(|i| v[i] as i32),
         movement: std::array::from_fn(|i| v[3 + i] as i8),
         buttons: v[6],
         weapon: v[7] as u8,
-    })
+    }
 }
