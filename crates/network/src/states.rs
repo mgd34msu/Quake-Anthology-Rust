@@ -1121,13 +1121,14 @@ pub(crate) fn read_q2_entity_body(
     })
 }
 
-/// Q2repro 1038 native entity projection: protocol-34 word order, followed by
-/// effects high, alpha, scale, loop volume and attenuation. Angles are native
-/// signed short words; coordinates are float bits. Module conversion is later.
-pub const Q2_REPRO_ENTITY_WORDS: usize = 25;
-pub type Q2ReproEntityDelta = EntityDelta<Q2_REPRO_ENTITY_WORDS>;
-const fn q2_repro_entity_fields() -> [Field; Q2_REPRO_ENTITY_WORDS] {
-    let mut fields = [Field::new(0, 8, 0, Value::Unsigned); Q2_REPRO_ENTITY_WORDS];
+/// Enhanced Q2 native projection: protocol-34 word order, followed by effects
+/// high, alpha, scale, loop volume and attenuation. Coordinates are float bits;
+/// 1038 angles are signed short words, KEX angles are float bits. Module
+/// conversion is later.
+pub const Q2_RERELEASE_ENTITY_WORDS: usize = 25;
+pub type Q2RereleaseEntityDelta = EntityDelta<Q2_RERELEASE_ENTITY_WORDS>;
+const fn q2_enhanced_entity_fields<const KEX: bool>() -> [Field; Q2_RERELEASE_ENTITY_WORDS] {
+    let mut fields = [Field::new(0, 8, 0, Value::Unsigned); Q2_RERELEASE_ENTITY_WORDS];
     let mut i = 0;
     while i < fields.len() {
         let (bits, flag, value) = match i {
@@ -1204,9 +1205,38 @@ const fn q2_repro_entity_fields() -> [Field; Q2_REPRO_ENTITY_WORDS] {
         fields[i] = Field::new(i, bits, flag, value);
         i += 1;
     }
+    if KEX {
+        fields[5].value = Value::Packed {
+            rule: Packed::Unsigned15,
+            signed: false,
+        };
+        fields[6] = Field::new(6, 0, 0, Value::Unsigned);
+        fields[7].value = Value::Packed {
+            rule: Packed::Unsigned15,
+            signed: false,
+        };
+        fields[20] = Field::new(20, 0, 0, Value::Unsigned);
+        let mut i = 8;
+        while i < 14 {
+            fields[i] = Field::new(
+                i,
+                32,
+                fields[i].flag,
+                if i < 11 {
+                    Value::RawFloat
+                } else {
+                    Value::Unsigned
+                },
+            );
+            i += 1;
+        }
+    }
     fields
 }
-static Q2_REPRO_ENTITY_FIELDS: [Field; Q2_REPRO_ENTITY_WORDS] = q2_repro_entity_fields();
+static Q2_REPRO_ENTITY_FIELDS: [Field; Q2_RERELEASE_ENTITY_WORDS] =
+    q2_enhanced_entity_fields::<false>();
+static Q2_KEX_ENTITY_FIELDS: [Field; Q2_RERELEASE_ENTITY_WORDS] =
+    q2_enhanced_entity_fields::<true>();
 static Q2_REPRO_ENTITY_PREFIX: [Group<true, true, true>; 1] = [Group {
     fields: Q2_REPRO_ENTITY_FIELDS.split_at(17).0,
     presence: Presence::Fixed,
@@ -1215,7 +1245,7 @@ static Q2_REPRO_ENTITY_SUFFIX: [Group<true, true, true>; 1] = [Group {
     fields: Q2_REPRO_ENTITY_FIELDS.split_at(18).1.split_at(5).0,
     presence: Presence::Fixed,
 }];
-static Q2_REPRO_ENTITY_SOUND: [Group<true>; 1] = [Group {
+static Q2_RERELEASE_ENTITY_SOUND: [Group<true>; 1] = [Group {
     fields: &[
         Field::new(23, 8, 1, Value::Unsigned),
         Field::new(24, 8, 2, Value::Unsigned),
@@ -1226,60 +1256,229 @@ static Q2_REPRO_ENTITY_SOUND: [Group<true>; 1] = [Group {
         word: 17,
     },
 }];
+static Q2_KEX_ENTITY_START: [Group<true, true, true>; 1] = [Group {
+    fields: Q2_KEX_ENTITY_FIELDS.split_at(6).0,
+    presence: Presence::Fixed,
+}];
+const Q2_KEX_EFFECT_LOW: Field = Field::new(
+    6,
+    0,
+    (1 << 14) | (1 << 19),
+    Value::Packed {
+        rule: Packed::Unsigned15,
+        signed: false,
+    },
+);
+static Q2_KEX_ENTITY_LOW_EFFECTS: [Group<true, true, true>; 1] = [Group {
+    fields: &[Q2_KEX_EFFECT_LOW],
+    presence: Presence::Fixed,
+}];
+static Q2_KEX_ENTITY_HIGH_EFFECTS: [Group<true, true, true>; 1] = [Group {
+    fields: &[Field::new(6, 32, 1 << 29, Value::Unsigned), {
+        let mut field = Q2_KEX_EFFECT_LOW;
+        field.word = 20;
+        field
+    }],
+    presence: Presence::Fixed,
+}];
+static Q2_KEX_ENTITY_MIDDLE: [Group<true, true, true>; 1] = [Group {
+    fields: &[Q2_KEX_ENTITY_FIELDS[7], Q2_KEX_ENTITY_FIELDS[19]],
+    presence: Presence::Fixed,
+}];
+const fn kex_coordinates<const LOW: bool>() -> [Field; 9] {
+    let order = [8, 9, 10, 14, 15, 16, 11, 12, 13];
+    let mut fields = [Field::new(0, 0, 0, Value::Unsigned); 9];
+    let mut i = 0;
+    while i < fields.len() {
+        let mut field = Q2_KEX_ENTITY_FIELDS[order[i]];
+        if LOW && i < 6 {
+            field = Field::new(
+                field.word,
+                16,
+                field.flag,
+                Value::Scaled {
+                    factor: 8,
+                    read: ScaleRead::Signed,
+                },
+            );
+        }
+        fields[i] = field;
+        i += 1;
+    }
+    fields
+}
+static Q2_KEX_ENTITY_COORDS: [Group<true, true, true>; 1] = [Group {
+    fields: &kex_coordinates::<false>(),
+    presence: Presence::Fixed,
+}];
+static Q2_KEX_DEMO_COORDS: [Group<true, true, true>; 1] = [Group {
+    fields: &kex_coordinates::<true>(),
+    presence: Presence::Fixed,
+}];
+static Q2_KEX_ENTITY_SUFFIX: [Group<true, true, true>; 1] = [Group {
+    fields: &[
+        Q2_KEX_ENTITY_FIELDS[18],
+        Q2_KEX_ENTITY_FIELDS[21],
+        Q2_KEX_ENTITY_FIELDS[22],
+        Field::new(0, 8, 1 << 33, Value::Reserved),
+        Field::new(0, 16, 1 << 34, Value::Reserved),
+        Field::new(0, 16, 1 << 35, Value::Reserved),
+    ],
+    presence: Presence::Fixed,
+}];
 pub fn write_q2_repro_entity(
     writer: &mut Writer<'_>,
     number: u16,
-    from: &[u32; Q2_REPRO_ENTITY_WORDS],
-    to: Option<&[u32; Q2_REPRO_ENTITY_WORDS]>,
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+    to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
     write_old_origin: bool,
+) -> Result<(), Error> {
+    write_q2_extended_entity::<false>(writer, number, from, to, write_old_origin, false)
+}
+/// Retail KEX 2023; `demo` selects 2022's solid-dependent coordinate precision.
+pub fn write_q2_kex_entity(
+    writer: &mut Writer<'_>,
+    number: u16,
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+    to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
+    write_old_origin: bool,
+    demo: bool,
+) -> Result<(), Error> {
+    write_q2_extended_entity::<true>(writer, number, from, to, write_old_origin, demo)
+}
+fn write_q2_extended_entity<const KEX: bool>(
+    writer: &mut Writer<'_>,
+    number: u16,
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+    to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
+    write_old_origin: bool,
+    demo: bool,
 ) -> Result<(), Error> {
     let Some(to) = to else {
         write_q2_entity_prefix(writer, number, Q2_REMOVE, true)?;
         return Ok(());
     };
-    let mut flags =
-        delta::mask::<true, true, true, false>(&Q2_REPRO_ENTITY_FIELDS, from, to, 0, 14, 3);
-    for field in &Q2_REPRO_ENTITY_FIELDS[..4] {
+    let fields = if KEX {
+        &Q2_KEX_ENTITY_FIELDS
+    } else {
+        &Q2_REPRO_ENTITY_FIELDS
+    };
+    let mut flags = delta::mask::<true, true, true, false>(fields, from, to, 0, 14, 3);
+    for field in &fields[..4] {
         if flags & field.flag != 0 && to[field.word] > 255 {
             flags |= 1 << 28;
         }
     }
-    if flags & ((1 << 2) | (1 << 3) | (1 << 10)) != 0 {
+    if KEX && (from[6] != to[6] || from[20] != to[20]) {
+        flags |= Q2_KEX_EFFECT_LOW.flags::<true>(if to[20] != 0 { to[20] } else { to[6] });
+        if to[20] != 0 {
+            flags |= 1 << 29;
+        }
+    } else if !KEX && flags & ((1 << 2) | (1 << 3) | (1 << 10)) != 0 {
         flags |= 1 << 13;
     }
     if write_old_origin {
         flags |= 1 << 24;
     }
+    // Native workaround for KEX treating the fourth flags byte as signed.
+    if KEX && flags >= 0x1_0000_0000 {
+        flags |= 0xff_0000_0000;
+    }
     let flags = write_q2_entity_prefix(writer, number, flags, true)?;
-    delta::write(&Q2_REPRO_ENTITY_PREFIX, from, to, flags, writer)?;
+    if KEX {
+        delta::write(&Q2_KEX_ENTITY_START, from, to, flags, writer)?;
+        delta::write(kex_effects(flags), from, to, flags, writer)?;
+        delta::write(&Q2_KEX_ENTITY_MIDDLE, from, to, flags, writer)?;
+        delta::write(kex_coords(demo, to[19]), from, to, flags, writer)?;
+    } else {
+        delta::write(&Q2_REPRO_ENTITY_PREFIX, from, to, flags, writer)?;
+    }
     // Native q2proto emits loop metadata only with Q2P_ESD_SOUND. Its builder
     // does not promote a volume/attenuation-only change to that outer bit.
     if flags & (1 << 26) != 0 {
-        delta::write(&Q2_REPRO_ENTITY_SOUND, from, to, 0, writer)?;
+        delta::write(&Q2_RERELEASE_ENTITY_SOUND, from, to, 0, writer)?;
     }
-    delta::write(&Q2_REPRO_ENTITY_SUFFIX, from, to, flags, writer)
+    delta::write(
+        if KEX {
+            &Q2_KEX_ENTITY_SUFFIX
+        } else {
+            &Q2_REPRO_ENTITY_SUFFIX
+        },
+        from,
+        to,
+        flags,
+        writer,
+    )
 }
 pub fn read_q2_repro_entity(
     reader: &mut Reader<'_>,
-    from: &[u32; Q2_REPRO_ENTITY_WORDS],
-) -> Result<Q2ReproEntityDelta, Error> {
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+) -> Result<Q2RereleaseEntityDelta, Error> {
+    read_q2_extended_entity::<false>(reader, from, false)
+}
+pub fn read_q2_kex_entity(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+    demo: bool,
+) -> Result<Q2RereleaseEntityDelta, Error> {
+    read_q2_extended_entity::<true>(reader, from, demo)
+}
+fn kex_effects(flags: u64) -> &'static [Group<true, true, true>] {
+    if flags & (1 << 29) != 0 {
+        &Q2_KEX_ENTITY_HIGH_EFFECTS
+    } else {
+        &Q2_KEX_ENTITY_LOW_EFFECTS
+    }
+}
+fn kex_coords(demo: bool, solid: u32) -> &'static [Group<true, true, true>] {
+    if demo && solid == 0 {
+        &Q2_KEX_DEMO_COORDS
+    } else {
+        &Q2_KEX_ENTITY_COORDS
+    }
+}
+fn read_q2_extended_entity<const KEX: bool>(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+    demo: bool,
+) -> Result<Q2RereleaseEntityDelta, Error> {
     let EntityHeader { number, flags } = read_q2_entity_prefix(reader, true)?;
     if flags & Q2_REMOVE != 0 {
-        return Ok(Q2ReproEntityDelta {
+        return Ok(Q2RereleaseEntityDelta {
             number,
             words: None,
         });
     }
     let mut words = q2_unchanged_entity(from);
-    delta::read(&Q2_REPRO_ENTITY_PREFIX, &mut words, flags, reader)?;
-    if flags & (1 << 26) != 0 {
-        delta::read(&Q2_REPRO_ENTITY_SOUND, &mut words, 0, reader)?;
+    if KEX {
+        delta::read(&Q2_KEX_ENTITY_START, &mut words, flags, reader)?;
+        delta::read(kex_effects(flags), &mut words, flags, reader)?;
+        if flags & ((1 << 14) | (1 << 19) | (1 << 29)) != 0 && flags & (1 << 29) == 0 {
+            words[20] = 0;
+        }
+        delta::read(&Q2_KEX_ENTITY_MIDDLE, &mut words, flags, reader)?;
+        let groups = kex_coords(demo, words[19]);
+        delta::read(groups, &mut words, flags, reader)?;
+    } else {
+        delta::read(&Q2_REPRO_ENTITY_PREFIX, &mut words, flags, reader)?;
     }
-    delta::read(&Q2_REPRO_ENTITY_SUFFIX, &mut words, flags, reader)?;
+    if flags & (1 << 26) != 0 {
+        delta::read(&Q2_RERELEASE_ENTITY_SOUND, &mut words, 0, reader)?;
+    }
+    delta::read(
+        if KEX {
+            &Q2_KEX_ENTITY_SUFFIX
+        } else {
+            &Q2_REPRO_ENTITY_SUFFIX
+        },
+        &mut words,
+        flags,
+        reader,
+    )?;
     if flags & (1 << 24) == 0 && words[7] & 128 != 0 {
         words[14..17].copy_from_slice(&from[14..17]);
     }
-    Ok(Q2ReproEntityDelta {
+    Ok(Q2RereleaseEntityDelta {
         number,
         words: Some(words),
     })

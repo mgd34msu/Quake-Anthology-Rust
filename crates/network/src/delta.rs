@@ -57,6 +57,7 @@ pub(crate) enum Value {
     ShortAngle { flag: u64 },
     Transient,
     FloatInt,
+    Reserved,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Field {
@@ -97,7 +98,7 @@ impl Field {
             _ => from == to,
         }
     }
-    fn flags<const PACKED: bool>(self, word: u32) -> u64 {
+    pub(crate) fn flags<const PACKED: bool>(self, word: u32) -> u64 {
         if PACKED && let Value::Packed { rule, .. } = self.value {
             let bits = rule.width(word);
             if self.bits != 0 {
@@ -148,6 +149,7 @@ impl Field {
         bits: u8,
     ) -> u32 {
         match self.value {
+            Value::Reserved => 0,
             Value::ShortAngle { .. } if bits == 8 => (word as i32 >> 8) as u32,
             Value::Angle16 => {
                 angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide) as u32
@@ -537,6 +539,10 @@ pub(crate) fn read<
             }
             if keyed {
                 field_key = key as u32 & (u32::MAX >> (32 - (bits + key_extra).min(32)));
+            }
+            if matches!(field.value, Value::Reserved) {
+                reader.read_bits(bits)?;
+                continue;
             }
             words[field.word] = if let Value::Time = field.value {
                 if reader.read_bits(1)? != 0 {
