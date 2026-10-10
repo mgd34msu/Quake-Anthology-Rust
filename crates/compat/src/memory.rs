@@ -1,6 +1,7 @@
 //! One module byte view over owned VM storage or stopped native backing.
 use qa_core::heap::extent;
 pub use qa_core::heap::{Heap, MemoryError};
+use qa_core::primitives::Vec3;
 
 enum Bytes<'a> {
     Owned(Box<[u8]>),
@@ -88,6 +89,20 @@ impl<'a> ModuleMemory<'a> {
     }
     pub fn write_word(&mut self, address: u64, word: i32) -> Result<(), MemoryError> {
         self.write(address, &word.to_le_bytes())
+    }
+    pub fn read_vec3(&self, address: u64) -> Result<Vec3, MemoryError> {
+        let bytes = self.read(address, 12)?;
+        Ok(Vec3(std::array::from_fn(|axis| {
+            let at = axis * 4;
+            f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        })))
+    }
+    pub fn write_vec3(&mut self, address: u64, value: Vec3) -> Result<(), MemoryError> {
+        let bytes = self.read_mut(address, 12)?;
+        for (chunk, value) in bytes.chunks_exact_mut(4).zip(value.0) {
+            chunk.copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
     }
     pub fn cstring(&self, address: u64) -> Result<&[u8], MemoryError> {
         let start = self.range(address, 0)?.start;

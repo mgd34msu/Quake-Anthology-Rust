@@ -1772,7 +1772,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // Force the real loaded API frame to reach a named engine trap. No
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
-        let pointer = pointers[if rr { 21 } else { 18 }]; // linkentity
+        let pointer = pointers[if rr { 23 } else { 20 }]; // BoxEdicts
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -1811,7 +1811,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let import = game
             .vm
             .unresolved_imports()
-            .find(|i| i.name == Some(b"linkentity".as_slice()))
+            .find(|i| i.name == Some(b"BoxEdicts".as_slice()))
             .unwrap();
         assert_eq!(import.calls, 3);
         let mut batch = runtime.server.events.batch(observer).unwrap();
@@ -1824,8 +1824,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     prints += 1;
                 } else {
                     assert!(
-                        text.windows(b"native import linkentity at".len())
-                            .any(|s| s == b"native import linkentity at")
+                        text.windows(b"native import BoxEdicts at".len())
+                            .any(|s| s == b"native import BoxEdicts at")
                     );
                     logs += 1;
                 }
@@ -1903,14 +1903,95 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             }
         }
         let malloc_slot = if rr { 36 } else { 33 };
+        let link_slot = if rr { 21 } else { 18 };
         let unlink_slot = if rr { 22 } else { 19 };
         let entity_address = base + 0x3000 + stride;
+        let origin = qa_core::primitives::Vec3([3.0, 5.0, 7.0]);
+        let mut memory =
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap();
+        memory.write_vec3(entity_address + 4, origin).unwrap();
+        memory
+            .write_vec3(
+                entity_address + if rr { 1396 } else { 204 },
+                qa_core::primitives::Vec3([-16.0, -16.0, -24.0]),
+            )
+            .unwrap();
+        memory
+            .write_vec3(
+                entity_address + if rr { 1408 } else { 216 },
+                qa_core::primitives::Vec3([16.0, 16.0, 32.0]),
+            )
+            .unwrap();
+        if rr {
+            memory.write(entity_address + 1376, &[1]).unwrap();
+            memory.write(entity_address + 1456, &[2]).unwrap();
+        } else {
+            memory.write_word(entity_address + 96, 1).unwrap();
+            memory.write_word(entity_address + 264, 2).unwrap();
+        }
+        drop(memory);
+        let bounds = qa_core::primitives::Bounds {
+            mins: qa_core::primitives::Vec3([-1000.0; 3]),
+            maxs: qa_core::primitives::Vec3([1000.0; 3]),
+        };
+        let geometry = runtime
+            .geometry
+            .load_brushes(
+                vec![],
+                vec![],
+                vec![],
+                qa_world::collision::brushes::BrushTree {
+                    planes: vec![],
+                    nodes: vec![],
+                    leaves: vec![qa_world::collision::brushes::CollisionLeaf {
+                        stored_contents: None,
+                        first_brush: 0,
+                        brush_count: 0,
+                    }],
+                    leaf_brushes: vec![],
+                    models: vec![qa_world::collision::brushes::ModelRoot::Leaf(0); 2],
+                },
+                vec![bounds; 2],
+            )
+            .unwrap();
+        let visibility = qa_world::visibility::VisibilityWorld::load(
+            vec![qa_core::primitives::Plane::oriented(
+                qa_core::primitives::Vec3([1.0, 0.0, 0.0]),
+                0.0,
+            )],
+            vec![qa_world::visibility::VisNode {
+                plane: 0,
+                children: [-1, -2],
+                bounds,
+                surfaces: qa_world::visibility::SurfaceSpan::default(),
+            }],
+            [7, 9]
+                .map(|area| qa_world::visibility::VisLeaf {
+                    selector: Some(5),
+                    area: Some(area),
+                    solid: false,
+                    bounds,
+                    surfaces: qa_world::visibility::SurfaceSpan::default(),
+                })
+                .to_vec(),
+            vec![],
+            0,
+            0,
+            qa_world::visibility::PvsRows::all_visible(6),
+        )
+        .unwrap();
+        runtime.collision = Some(
+            qa_app::WorldCollision::new(&runtime.geometry, geometry, 0)
+                .with_visibility(std::sync::Arc::new(visibility)),
+        );
         if rr {
             game.vm.process.memory_mut().unwrap()[(entity_address - base) as usize + 1377] = 1;
         }
         let index_slot = if rr { 10 } else { 8 };
         let mut replacement = None;
         let mut observer_entity = None;
+        let mut owned_entity = None;
         let mut invoke_import = |game: &mut Game, slot: usize, a: [u64; 2]| {
             let returns_value = slot == malloc_slot || (index_slot..index_slot + 3).contains(&slot);
             let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
@@ -1943,7 +2024,142 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     &[1],
                 )
                 .unwrap();
-            if slot == if rr { 7 } else { 6 } {
+            if slot == link_slot && a[0] == entity_address {
+                let bounds = services.server.area.bounds(bound).unwrap();
+                assert_eq!(
+                    bounds.mins,
+                    qa_core::primitives::Vec3([-14.0, -12.0, -18.0])
+                );
+                assert_eq!(bounds.maxs, qa_core::primitives::Vec3([20.0, 22.0, 40.0]));
+                assert_eq!(
+                    services.server.entities.columns.position[bound.slot as usize],
+                    origin
+                );
+                assert_eq!(
+                    services.server.entities.columns.collision_shape[bound.slot as usize],
+                    qa_core::primitives::CollisionShape::Box
+                );
+                assert_eq!(
+                    services.server.entities.columns.collision_contents[bound.slot as usize],
+                    qa_world::collision::Contents::BODY.0
+                );
+                let memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    memory
+                        .read_vec3(entity_address + if rr { 1420 } else { 228 })
+                        .unwrap(),
+                    bounds.mins
+                );
+                assert_eq!(
+                    memory
+                        .read_vec3(entity_address + if rr { 1432 } else { 240 })
+                        .unwrap(),
+                    bounds.maxs
+                );
+                assert_eq!(
+                    memory
+                        .read_vec3(entity_address + if rr { 1444 } else { 252 })
+                        .unwrap(),
+                    qa_core::primitives::Vec3([32.0, 32.0, 56.0])
+                );
+                assert_eq!(memory.read_vec3(entity_address + 28).unwrap(), origin);
+                assert_eq!(
+                    memory
+                        .read_word(entity_address + if rr { 1384 } else { 192 })
+                        .unwrap(),
+                    7
+                );
+                assert_eq!(
+                    memory
+                        .read_word(entity_address + if rr { 1388 } else { 196 })
+                        .unwrap(),
+                    9
+                );
+                assert_eq!(
+                    memory
+                        .read_word(entity_address + if rr { 76 } else { 72 })
+                        .unwrap() as u32,
+                    if rr { 0x40181010 } else { 2 | 3 << 5 | 8 << 10 }
+                );
+                if rr {
+                    assert_eq!(memory.read(entity_address + 1377, 1).unwrap(), &[1]);
+                } else {
+                    assert_eq!(memory.read_word(entity_address + 120).unwrap(), 1);
+                    assert_eq!(memory.read_word(entity_address + 124).unwrap(), 5);
+                }
+            }
+            if slot == link_slot && a[0] == entity_address + stride {
+                let entity = services
+                    .server
+                    .entities
+                    .active()
+                    .find(|entity| {
+                        services.server.entities.columns.native_entity[entity.slot as usize]
+                            == Some(qa_core::primitives::NativeEntity {
+                                module: ModuleId(1),
+                                slot: 2,
+                            })
+                    })
+                    .unwrap();
+                if a[1] == 1 {
+                    let old = owned_entity.unwrap();
+                    assert_ne!(old, entity);
+                    assert!(services.server.entities.resolve(old).is_none());
+                    assert!(!services.server.navigation.contains(old));
+                } else if let Some(old) = owned_entity {
+                    assert_eq!(old, entity);
+                }
+                owned_entity = Some(entity);
+            }
+            if slot == link_slot && a[0] == entity_address + stride * 2 {
+                let entity = services
+                    .server
+                    .entities
+                    .active()
+                    .find(|entity| {
+                        services.server.entities.columns.native_entity[entity.slot as usize]
+                            == Some(qa_core::primitives::NativeEntity {
+                                module: ModuleId(1),
+                                slot: 3,
+                            })
+                    })
+                    .unwrap();
+                assert_eq!(
+                    services.server.entities.columns.collision_shape[entity.slot as usize],
+                    qa_core::primitives::CollisionShape::Model { geometry, index: 1 }
+                );
+                let absolute = services.server.area.bounds(entity).unwrap();
+                assert_eq!(
+                    absolute.mins,
+                    qa_core::primitives::Vec3([-30.0, -28.0, -26.0])
+                );
+                assert_eq!(absolute.maxs, qa_core::primitives::Vec3([36.0, 38.0, 40.0]));
+                let memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                let address = entity_address + stride * 2;
+                assert_eq!(
+                    memory
+                        .read_word(address + if rr { 76 } else { 72 })
+                        .unwrap(),
+                    31
+                );
+                assert_eq!(
+                    memory.read_vec3(address + 28).unwrap(),
+                    if rr {
+                        qa_core::primitives::Vec3([99.0; 3])
+                    } else {
+                        origin
+                    }
+                );
+            }
+            if slot == if rr { 7 } else { 6 } && a[0] == 3 {
                 assert_eq!(
                     services.storage.configstring(ModuleId(1), 3).unwrap(),
                     if a[1] == 0 {
@@ -2077,6 +2293,69 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             invoke_import(&mut game, 49, [entity_address + stride, 0]);
             invoke_import(&mut game, 48, [entity_address + stride, 0]);
         }
+        game.vm.process.memory_mut().unwrap()
+            [table_at + size as usize..table_at + size as usize + 4]
+            .copy_from_slice(&3u32.to_le_bytes());
+        if !rr {
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .write_word(entity_address + stride + 96, 1)
+                .unwrap();
+        }
+        invoke_import(&mut game, link_slot, [entity_address + stride, 0]);
+        invoke_import(&mut game, link_slot, [entity_address + stride, 0]);
+        qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+            .unwrap()
+            .write_word(entity_address + stride + if rr { 1380 } else { 100 }, 0)
+            .unwrap();
+        invoke_import(&mut game, link_slot, [entity_address + stride, 1]);
+        let address = entity_address + stride * 2;
+        let mut memory =
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap();
+        memory
+            .write_word(base + table_at as u64 + size as u64, 4)
+            .unwrap();
+        memory.write_vec3(address + 4, origin).unwrap();
+        memory
+            .write_vec3(address + 16, qa_core::primitives::Vec3([0.0, 90.0, 0.0]))
+            .unwrap();
+        memory
+            .write_vec3(address + 28, qa_core::primitives::Vec3([99.0; 3]))
+            .unwrap();
+        memory.write_word(address + 40, 2).unwrap();
+        memory
+            .write_vec3(
+                address + if rr { 1396 } else { 204 },
+                qa_core::primitives::Vec3([-16.0, -16.0, -24.0]),
+            )
+            .unwrap();
+        memory
+            .write_vec3(
+                address + if rr { 1408 } else { 216 },
+                qa_core::primitives::Vec3([16.0, 16.0, 32.0]),
+            )
+            .unwrap();
+        if rr {
+            memory.write(address + 1376, &[1]).unwrap();
+            memory.write(address + 1456, &[3]).unwrap();
+            memory.write_word(address + 72, 128).unwrap();
+        } else {
+            memory.write_word(address + 96, 1).unwrap();
+            memory.write_word(address + 264, 3).unwrap();
+        }
+        memory.write(base + 0x17a0, b"*1\0").unwrap();
+        drop(memory);
+        invoke_import(
+            &mut game,
+            config_slot,
+            [if rr { 64 } else { 34 }, base + 0x17a0],
+        );
+        invoke_import(&mut game, link_slot, [address, 0]);
+        invoke_import(&mut game, link_slot, [address, 0]);
+        invoke_import(&mut game, link_slot, [entity_address, 0]);
+        invoke_import(&mut game, link_slot, [entity_address, 0]);
+        invoke_import(&mut game, link_slot, [base + 0x3000, 0]);
         invoke_import(&mut game, unlink_slot, [entity_address, 0]);
         invoke_import(&mut game, unlink_slot, [entity_address, 1]);
         // A cached old lifetime cannot unlink a replacement owned by another module.
@@ -2085,7 +2364,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         invoke_import(&mut game, unlink_slot, [entity_address + stride, 0]);
         invoke_import(&mut game, unlink_slot, [base + 0x3000, 0]);
         drop(invoke_import);
-        if let Some(entity) = observer_entity {
+        if let Some(entity) = owned_entity {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             (qa_compat::services::ENGINE_CALLS.free)(&mut services, context, entity).unwrap();
             assert!(!services.server.navigation.contains(entity));

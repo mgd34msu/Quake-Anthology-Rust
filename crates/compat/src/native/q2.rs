@@ -2,6 +2,7 @@
 use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::ImportTrap};
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
 use crate::cvars::NativeCvars;
+use crate::entities::EntityLayout;
 use crate::services::ResourceRange;
 use qa_core::{
     names::NameTable,
@@ -31,6 +32,7 @@ struct Layout {
     imports: &'static [&'static [u8]],
     functions: &'static [Function],
     resources: [ResourceRange; 3],
+    entity: EntityLayout,
 }
 const CLASSIC_IMPORTS: &[&[u8]] = &[
     b"bprintf",
@@ -212,6 +214,28 @@ const CLASSIC: Layout = Layout {
     import_header: 0,
     imports: CLASSIC_IMPORTS,
     functions: CLASSIC_FUNCTIONS,
+    entity: EntityLayout {
+        bytes: 280,
+        in_use: (96, false),
+        linked: None,
+        link_count: 100,
+        flags: 200,
+        mins: 204,
+        maxs: 216,
+        abs_min: 228,
+        abs_max: 240,
+        size: 252,
+        solid: (264, false),
+        owner: 272,
+        area: 192,
+        area2: 196,
+        clusters: Some((120, 124, 188)),
+        network_solid: 72,
+        model_rules: qa_core::primitives::ModelRules {
+            rotation: qa_core::primitives::ModelRotation::NegativeEuler,
+            link_bounds: qa_core::primitives::RotatedLinkBounds::MaxAbsCube,
+        },
+    },
     resources: [
         ResourceRange {
             first: 32,
@@ -235,6 +259,25 @@ const RERELEASE: Layout = Layout {
     import_header: 16,
     imports: RERELEASE_IMPORTS,
     functions: RERELEASE_FUNCTIONS,
+    entity: EntityLayout {
+        bytes: 1472,
+        in_use: (1376, true),
+        linked: Some(1377),
+        link_count: 1380,
+        flags: 1392,
+        mins: 1396,
+        maxs: 1408,
+        abs_min: 1420,
+        abs_max: 1432,
+        size: 1444,
+        solid: (1456, true),
+        owner: 1464,
+        area: 1384,
+        area2: 1388,
+        clusters: None,
+        network_solid: 76,
+        model_rules: CLASSIC.entity.model_rules,
+    },
     resources: [
         ResourceRange {
             first: 62,
@@ -385,7 +428,12 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Word,
                     ))
-                } else if ordinal == if layout.version == 2023 { 22 } else { 19 }
+                } else if (if layout.version == 2023 {
+                    21..23
+                } else {
+                    18..20
+                })
+                .contains(&ordinal)
                     || (layout.version == 2023 && matches!(ordinal, 48 | 49))
                 {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
@@ -436,12 +484,8 @@ impl Game {
         vm.entities = Some(crate::entities::EntityProjection::load(
             layout.entity_offset,
             layout.wide_stride,
-            if layout.wide_stride { Some(1377) } else { None },
-            if layout.wide_stride {
-                (1376, true)
-            } else {
-                (96, false)
-            },
+            layout.entity,
+            layout.resources[0],
         ));
         let pointers = (0..imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))

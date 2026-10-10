@@ -216,6 +216,13 @@ impl AreaGrid {
         true
     }
 
+    pub fn bounds(&self, id: EntityId) -> Option<Bounds> {
+        self.links
+            .get(id.slot as usize)
+            .filter(|link| link.id == Some(id))
+            .map(|link| link.bounds)
+    }
+
     pub fn link(
         &mut self,
         table: &EntityTable,

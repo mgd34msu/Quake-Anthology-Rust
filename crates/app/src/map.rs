@@ -500,7 +500,8 @@ fn spawns(
     ))
 }
 
-fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, usize), String> {
+/// Dedicated servers use the same conversion without registering visual assets.
+pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryId, usize), String> {
     map.models.first().ok_or("missing world model")?;
     // Mod_LoadSubmodels/CMod_LoadSubmodels expands collision model bounds at
     // load. Entity linking applies its own independent one-unit expansion.
