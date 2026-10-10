@@ -76,12 +76,14 @@ fn runtime_file(encoding: Encoding, import: &[u8]) -> Vec<u8> {
     match encoding {
         Encoding::Elf => {
             file[0x1300] = 0xc3; // dllEntry has no syscall state to initialize
-            let at = 0x1280 + elf_name(b"external") as usize;
-            file[at..at + 9].fill(0);
+            let at = 0x1280 + ELF_SYMBOL_NAMES.len();
             file[at..at + import.len()].copy_from_slice(import);
+            put(&mut file, 0x1400 + 3 * 24, ELF_SYMBOL_NAMES.len() as u64, 4);
             put(&mut file, 0x1400 + 3 * 24 + 4, 0x12, 1); // required undefined function
             elf_relocation(&mut file, 64, 0x1b40, 0x3ac0, 7, 3, Some(0));
             let (_, mut tags) = elf_symbol_fixture(64);
+            tags.iter_mut().find(|(tag, _)| *tag == 10).unwrap().1 =
+                (ELF_SYMBOL_NAMES.len() + import.len()) as u64;
             tags.extend([(1, elf_name(b"libc.so.6")), (7, 0x3b40), (8, 24), (9, 24)]);
             elf_dynamic(&mut file, 64, &tags);
         }
@@ -611,8 +613,15 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
 
 fn runtime_binding_rejections_report_native_library_names_and_versions() {
     for encoding in [Encoding::Elf, Encoding::Pe] {
-        for versioned in [false, true] {
-            let file = runtime_file(encoding, if versioned { b"strlen\0" } else { b"missing\0" });
+        for (versioned, wrong_provider) in [(false, false), (true, false), (false, true)] {
+            let file = runtime_file(
+                encoding,
+                if versioned || wrong_provider {
+                    b"strlen\0"
+                } else {
+                    b"missing\0"
+                },
+            );
             let mut image = Image::parse(
                 &file,
                 (encoding == Encoding::Elf).then_some(0x2000_0000),
@@ -643,6 +652,37 @@ fn runtime_binding_rejections_report_native_library_names_and_versions() {
                     image.imports[0].library = image.names.find(b"Alias");
                 }
             }
+            if wrong_provider {
+                image.names = qa_core::names::NameTable::load_reserved(
+                    (0..image.names.len()).map(|i| {
+                        image
+                            .names
+                            .get(qa_core::primitives::NameId(i as u32))
+                            .unwrap()
+                    }),
+                    2,
+                    64,
+                )
+                .unwrap();
+                let provider = image
+                    .names
+                    .intern(if encoding == Encoding::Elf {
+                        b"libm.so.6".as_slice()
+                    } else {
+                        b"api-ms-win-crt-math-l1-1-0.dll"
+                    })
+                    .unwrap();
+                if encoding == Encoding::Elf {
+                    let version = image.names.intern(b"GLIBC_2.2.5").unwrap();
+                    image.symbols[3].version = Some(qa_formats::program::native::Version {
+                        name: version,
+                        library: Some(provider),
+                        weak: false,
+                    });
+                } else {
+                    image.imports[0].library = Some(provider);
+                }
+            }
             let error = Vm::map_image(
                 image,
                 &[NamedExport {
@@ -664,7 +704,13 @@ fn runtime_binding_rejections_report_native_library_names_and_versions() {
                 panic!("unexpected binding error {error:?}");
             };
             assert!(
-                message.contains(if versioned {
+                message.contains(if wrong_provider {
+                    if encoding == Encoding::Elf {
+                        "libm.so.6:strlen"
+                    } else {
+                        "api-ms-win-crt-math-l1-1-0.dll:strlen"
+                    }
+                } else if versioned {
                     if encoding == Encoding::Elf {
                         "strlen@VER_1"
                     } else {
@@ -674,6 +720,152 @@ fn runtime_binding_rejections_report_native_library_names_and_versions() {
                     "missing"
                 }),
                 "{message}"
+            );
+        }
+    }
+}
+
+fn native_math_imports_execute_in_owned_children_through_session_dispatch() {
+    let operations: [(&[u8], fn(f64) -> f64); 8] = [
+        (b"sin\0", f64::sin),
+        (b"cos\0", f64::cos),
+        (b"sqrt\0", f64::sqrt),
+        (b"floor\0", f64::floor),
+        (b"ceil\0", f64::ceil),
+        (b"acos\0", f64::acos),
+        (b"fabs\0", f64::abs),
+        (b"atan2\0", |x| x.atan2(2.0)),
+    ];
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        for &(import, operation) in &operations {
+            let mut file = runtime_file(encoding, import);
+            let code_at = if encoding == Encoding::Elf {
+                0x13c0
+            } else {
+                640
+            };
+            // Convert the native tick word to double, scale it to 0.5 at tick
+            // 50, then tail-call the file's PLT/IAT math import. XMM0 carries
+            // the result all the way through the hardware gate and session.
+            let mut code = vec![
+                0xf2,
+                0x48,
+                0x0f,
+                0x2a,
+                if encoding == Encoding::Elf {
+                    0xc7
+                } else {
+                    0xc1
+                },
+                0x48,
+                0xb8,
+            ];
+            let scale = if import == b"fabs\0" {
+                -0.01f64
+            } else {
+                0.01f64
+            };
+            code.extend_from_slice(&scale.to_bits().to_le_bytes());
+            code.extend_from_slice(&[0x66, 0x48, 0x0f, 0x6e, 0xd0, 0xf2, 0x0f, 0x59, 0xc2]);
+            code.extend_from_slice(&[0x48, 0xb8]);
+            code.extend_from_slice(&2.0f64.to_bits().to_le_bytes());
+            code.extend_from_slice(&[0x66, 0x48, 0x0f, 0x6e, 0xc8]);
+            let target = if encoding == Encoding::Elf {
+                0x1ac0
+            } else {
+                512 + 0x780
+            };
+            let displacement = (target as i64 - (code_at + code.len() + 6) as i64) as i32;
+            code.extend_from_slice(&[0xff, 0x25]);
+            code.extend_from_slice(&displacement.to_le_bytes());
+            file[code_at..code_at + code.len()].copy_from_slice(&code);
+            if encoding == Encoding::Elf {
+                let offset = ELF_SYMBOL_NAMES.len() + import.len();
+                file[0x1280 + offset..0x1280 + offset + 10].copy_from_slice(b"libm.so.6\0");
+                let (_, mut tags) = elf_symbol_fixture(64);
+                tags.iter_mut().find(|(tag, _)| *tag == 10).unwrap().1 = (offset + 10) as u64;
+                tags.extend([(1, offset as u64), (7, 0x3b40), (8, 24), (9, 24)]);
+                elf_dynamic(&mut file, 64, &tags);
+            }
+            let mut image = Image::parse(
+                &file,
+                (encoding == Encoding::Elf).then_some(0x20000000),
+                LoadRole::Library,
+            )
+            .unwrap();
+            image.names = qa_core::names::NameTable::load_reserved(
+                (0..image.names.len()).map(|i| {
+                    image
+                        .names
+                        .get(qa_core::primitives::NameId(i as u32))
+                        .unwrap()
+                }),
+                1,
+                64,
+            )
+            .unwrap();
+            let provider = image
+                .names
+                .intern(if encoding == Encoding::Elf {
+                    b"GLIBC_2.2.5".as_slice()
+                } else {
+                    b"API-MS-WIN-CRT-MATH-L1-1-0.dll"
+                })
+                .unwrap();
+            if encoding == Encoding::Elf {
+                image.symbols[3].version = Some(qa_formats::program::native::Version {
+                    name: provider,
+                    library: image.names.find(b"libm.so.6"),
+                    weak: false,
+                });
+            } else {
+                // API-set names use the same core folded comparison as full CRTs.
+                image.imports[0].library = Some(provider);
+            }
+            let vm = Vm::map_image(
+                image,
+                &[NamedExport {
+                    name: if encoding == Encoding::Elf {
+                        b"vmMain"
+                    } else {
+                        b"GetGameAPI"
+                    },
+                    command: None,
+                    parameters: &[NativeScalar::Word; 13],
+                    result: NativeScalar::Double,
+                }],
+                &[],
+                Duration::from_secs(3),
+            )
+            .unwrap();
+            let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+            let request = request(
+                &mut runtime,
+                ModuleId(1),
+                RuleSetId::Quake3,
+                TickRate::fixed(50).unwrap(),
+                vm,
+            );
+            let mut host = FrameHost::load_modules(
+                Console::new(Context::default()).unwrap(),
+                runtime,
+                TickRate::FrameDriven,
+                vec![request],
+            )
+            .unwrap();
+            let mut source = Source {
+                time: EventTime(0),
+                polls: 0,
+            };
+            host.frame(&mut source, true);
+            source.time = EventTime(50_000_000);
+            host.frame(&mut source, true);
+            let counts = host.module_counts(ModuleId(1)).unwrap();
+            assert_eq!(counts.traps, 0, "{encoding:?} {import:?}");
+            assert_eq!(
+                counts.last_result,
+                Some(ModuleResult::Native(operation(50.0 * scale).to_bits())),
+                "{encoding:?} {import:?}"
             );
         }
     }
@@ -864,5 +1056,6 @@ pub fn run() {
     native_files_use_the_qvm_role_policy_and_vfs_loader();
     runtime_binding_rejections_report_native_library_names_and_versions();
     scalar_native_export_results_survive_session_dispatch();
+    native_math_imports_execute_in_owned_children_through_session_dispatch();
     println!("native session dispatch checks passed");
 }

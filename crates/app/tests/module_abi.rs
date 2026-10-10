@@ -105,6 +105,101 @@ fn native_c_memory_calls_share_operations_and_keep_full_size_t_width() {
 }
 
 #[test]
+fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
+    use qa_compat::abi::{QUAKEC, runtime::FIRST};
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let mut memory = ModuleMemory::load(0, 64, &[]).unwrap();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let mut invoke = |table: &qa_compat::abi::CallTable, number, addresses, arguments: &[u64]| {
+        let mut call = Invocation {
+            services: &mut services,
+            memory: &mut memory,
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            addresses,
+            arguments,
+        };
+        table.invoke(number, &mut call, &mut unknown)
+    };
+    let functions: [(u32, &qa_compat::abi::CallTable, u32, fn(f64, f64) -> f64); 7] = [
+        (6, &Q3_SERVER, 103, |x, _| x.sin()),
+        (7, &Q3_SERVER, 104, |x, _| x.cos()),
+        (8, &Q3_SERVER, 105, f64::atan2),
+        (9, &Q3_SERVER, 106, |x, _| x.sqrt()),
+        (10, &Q3_SERVER, 110, |x, _| x.floor()),
+        (11, &Q3_SERVER, 111, |x, _| x.ceil()),
+        (12, &Q3_CLIENT, 111, |x, _| x.acos()),
+    ];
+    for x in [
+        -0.0,
+        0.0,
+        -0.5,
+        0.5,
+        1.0,
+        -12345.6789,
+        1e30,
+        f64::INFINITY,
+        f64::NAN,
+    ] {
+        for &(offset, table, original, operation) in &functions {
+            let args = [x.to_bits(), (-2.25f64).to_bits()];
+
+            let actual = f64::from_bits(
+                invoke(table, FIRST + offset, Addresses::NativeFunction, &args).unwrap(),
+            );
+            let expected = operation(x, -2.25);
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "native math {offset}({x})"
+                );
+            }
+            let x = x as f32;
+            let args = [
+                0xaabbccdd00000000 | u64::from(x.to_bits()),
+                u64::from((-2.25f32).to_bits()),
+            ];
+
+            let actual =
+                invoke(table, original, Addresses::Qvm { mask: 63 }, &args).unwrap() as u32;
+            let expected = operation(f64::from(x), -2.25) as f32;
+            if expected.is_nan() {
+                assert!(f32::from_bits(actual).is_nan());
+            } else {
+                assert_eq!(actual, expected.to_bits(), "original math {original}({x})");
+            }
+        }
+    }
+    // fabs does not widen a float NaN and lose its payload. Both widths just
+    // clear the sign; QuakeC's original builtin retains its raw float result.
+    for bits in [0x8000000000000000, 0xbfe0000000000000, 0xfff8000012345678] {
+        let args = [bits];
+
+        assert_eq!(
+            invoke(&Q3_SERVER, FIRST + 13, Addresses::NativeFunction, &args),
+            Ok(bits & 0x7fffffffffffffff)
+        );
+    }
+    for bits in [0x80000000u32, 0xbf000000, 0xffc12345] {
+        let args = [u64::from(bits)];
+
+        assert_eq!(
+            invoke(&QUAKEC, 43, Addresses::Native, &args),
+            Ok(u64::from(bits & 0x7fffffff))
+        );
+    }
+    assert_eq!(unknown.calls, 0);
+}
+
+#[test]
 fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_services() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();

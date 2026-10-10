@@ -123,20 +123,20 @@ const fn common() -> CallTable {
     table.entries[100] = Some(memset);
     table.entries[101] = Some(memcpy);
     table.entries[102] = Some(strncpy);
-    table.entries[103] = Some(sin);
-    table.entries[104] = Some(cos);
-    table.entries[105] = Some(atan2);
-    table.entries[106] = Some(sqrt);
-    table.entries[107] = Some(floor);
-    table.entries[108] = Some(ceil);
+    table.entries[103] = Some(sin::<false>);
+    table.entries[104] = Some(cos::<false>);
+    table.entries[105] = Some(atan2::<false>);
+    table.entries[106] = Some(sqrt::<false>);
+    table.entries[107] = Some(floor::<false>);
+    table.entries[108] = Some(ceil::<false>);
     table
 }
 const fn server() -> CallTable {
     let mut t = common();
     t.entries[107] = None;
     t.entries[108] = None;
-    t.entries[110] = Some(floor);
-    t.entries[111] = Some(ceil);
+    t.entries[110] = Some(floor::<false>);
+    t.entries[111] = Some(ceil::<false>);
     t.entries[0] = Some(print);
     t.entries[1] = Some(abort);
     t.entries[2] = Some(milliseconds);
@@ -166,7 +166,7 @@ const fn client() -> CallTable {
     t.entries[11] = Some(file_read);
     t.entries[13] = Some(file_close);
     t.entries[14] = Some(command_append);
-    t.entries[111] = Some(acos);
+    t.entries[111] = Some(acos::<false>);
     t
 }
 const fn ui() -> CallTable {
@@ -195,9 +195,9 @@ const fn quakec() -> CallTable {
         entries: [None; 320],
     };
     t.entries[25] = Some(qc_print);
-    t.entries[37] = Some(floor);
-    t.entries[38] = Some(ceil);
-    t.entries[43] = Some(absolute);
+    t.entries[37] = Some(floor::<false>);
+    t.entries[38] = Some(ceil::<false>);
+    t.entries[43] = Some(absolute::<false>);
     t.entries[45] = Some(cvar_number);
     t.entries[72] = Some(cvar_set);
     t
@@ -278,8 +278,13 @@ fn qc_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text.as_bytes())?;
     Ok(0)
 }
-fn absolute(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(f32::from_bits(c.arg(0)? as u32).abs().to_bits() as u64)
+fn absolute<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let value = c.arg(0)?;
+    Ok(if DOUBLE {
+        f64::from_bits(value).abs().to_bits()
+    } else {
+        u64::from(f32::from_bits(value as u32).abs().to_bits())
+    })
 }
 
 pub struct QvmCalls<'a, 'engine> {
@@ -519,30 +524,41 @@ fn strncpy(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     c.arg(0)
 }
-fn float(c: &Invocation<'_, '_, '_>, index: usize) -> Result<f64, CallError> {
-    Ok(f32::from_bits(c.arg(index)? as u32) as f64)
+fn float<const DOUBLE: bool>(c: &Invocation<'_, '_, '_>, index: usize) -> Result<f64, CallError> {
+    let value = c.arg(index)?;
+    Ok(if DOUBLE {
+        f64::from_bits(value)
+    } else {
+        f32::from_bits(value as u32) as f64
+    })
 }
-fn bits(value: f64) -> u64 {
-    (value as f32).to_bits() as u64
+fn bits<const DOUBLE: bool>(value: f64) -> u64 {
+    if DOUBLE {
+        value.to_bits()
+    } else {
+        u64::from((value as f32).to_bits())
+    }
 }
-fn sin(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.sin()))
+fn sin<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.sin()))
 }
-fn cos(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.cos()))
+fn cos<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.cos()))
 }
-fn atan2(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.atan2(float(c, 1)?)))
+fn atan2<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(
+        float::<DOUBLE>(c, 0)?.atan2(float::<DOUBLE>(c, 1)?),
+    ))
 }
-fn sqrt(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.sqrt()))
+fn sqrt<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.sqrt()))
 }
-fn floor(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.floor()))
+fn floor<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.floor()))
 }
-fn ceil(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.ceil()))
+fn ceil<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.ceil()))
 }
-fn acos(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(bits(float(c, 0)?.acos()))
+fn acos<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.acos()))
 }
