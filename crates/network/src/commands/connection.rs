@@ -32,6 +32,21 @@ impl Commands {
     pub fn delta_request(&self) -> Option<u32> {
         self.delta_request
     }
+    /// Select the native base for the current move and its retained reply
+    /// association. Selection is shared by encoding and transmit metadata.
+    pub fn snapshot_request(&self, channel: &Channel) -> Option<u32> {
+        let request = match self.protocol {
+            Protocol::NetQuake15 => None,
+            Protocol::QuakeWorld28 => self
+                .delta_request
+                .filter(|&base| base != 0 && channel.send_state().sequence.wrapping_sub(base) < 63),
+            Protocol::Quake2_34 => self.delta_request,
+            Protocol::Quake3_68 => channel
+                .command_state()
+                .map(|state| state.message_acknowledged),
+        };
+        request.filter(|&base| channel.snapshot(base).is_some())
+    }
     /// Native packet redundancy is caller-supplied. The development host has
     /// one current command and no input history, so its older entries are zero.
     pub fn encode(
@@ -40,6 +55,7 @@ impl Commands {
         channel: &Channel,
         out: &mut [u8],
     ) -> Result<usize, packet::Error> {
+        let request = self.snapshot_request(channel);
         let movement = match self.protocol {
             Protocol::NetQuake15 => Move::NetQuake {
                 timestamp: 0.,
@@ -48,14 +64,10 @@ impl Commands {
             Protocol::QuakeWorld28 => Move::QuakeWorld {
                 loss: 0,
                 commands: [ZERO_QW, ZERO_QW, to_qw_usercmd(command)],
-                // No QW CLIENT frame/request binding exists yet.
-                delta_request: None,
+                delta_request: request.map(|base| base as u8),
             },
             Protocol::Quake2_34 => Move::Quake2 {
-                last_frame: self
-                    .delta_request
-                    .filter(|&sequence| channel.snapshot(sequence).is_some())
-                    .map_or(-1, |sequence| sequence as i32),
+                last_frame: request.map_or(-1, |sequence| sequence as i32),
                 commands: [ZERO_Q2, ZERO_Q2, to_q2_usercmd(command)],
             },
             Protocol::Quake3_68 => {
@@ -66,9 +78,7 @@ impl Commands {
                 Move::Quake3 {
                     commands,
                     count: 1,
-                    delta: channel.command_state().is_some_and(|state| {
-                        channel.snapshot(state.message_acknowledged).is_some()
-                    }),
+                    delta: request.is_some(),
                 }
             }
         };
@@ -104,6 +114,7 @@ impl Commands {
         if self.protocol == Protocol::QuakeWorld28 {
             // SV_ExecuteClientMessage starts each message with delta_sequence=-1.
             self.delta_request = None;
+            channel.align_reply(sequence);
         }
         let scratch = &mut self.scratch[..length];
         // Keys borrow retained native strings. Scratch keeps that key stable
@@ -198,7 +209,7 @@ impl Commands {
             })?;
             return Ok(channel.snapshot(sequence).map(|frame| frame.sequence()));
         }
-        if self.protocol != Protocol::Quake2_34
+        if !matches!(self.protocol, Protocol::QuakeWorld28 | Protocol::Quake2_34)
             || channel.endpoint() != qa_core::loopback::Endpoint::Client
         {
             return Err(packet::Error::Context);
@@ -209,9 +220,31 @@ impl Commands {
             // Native CL_ParseServerMessage ends at the byte boundary, with no EOF
             // opcode. Each accepted service consumes bytes from fixed scratch.
             while at < scratch.len() {
-                match scratch[at] {
-                    6 => at += 1, // svc_nop
-                    20 => {
+                match (self.protocol, scratch[at]) {
+                    (Protocol::QuakeWorld28, 1) | (Protocol::Quake2_34, 6) => at += 1,
+                    (Protocol::QuakeWorld28, opcode @ (47 | 48)) => {
+                        self.delta_request = None;
+                        let outgoing = channel.send_state().sequence;
+                        let ring = channel.qw_snapshots_mut().ok_or(packet::Error::Context)?;
+                        let request = ring.requested_base(sequence).flatten();
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        let accepted = crate::snapshots::read_qw(
+                            &mut reader,
+                            ring,
+                            sequence,
+                            opcode == 48,
+                            request,
+                            outgoing,
+                        )?;
+                        at += 1 + reader.byte_position();
+                        snapshot = if accepted {
+                            ring.current().map(|frame| frame.sequence)
+                        } else {
+                            None
+                        };
+                        self.delta_request = snapshot;
+                    }
+                    (Protocol::Quake2_34, 20) => {
                         self.delta_request = None;
                         let ring = channel.q2_snapshots_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
@@ -224,7 +257,7 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    4 | 10 | 15 => {
+                    (Protocol::QuakeWorld28, 8 | 26) | (Protocol::Quake2_34, 4 | 10 | 15) => {
                         let mut prints = Prints::new(self.protocol, &scratch[at..]);
                         let print = prints
                             .next()

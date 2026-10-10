@@ -138,7 +138,7 @@ impl FrameSource for Source {
                 else {
                     return false;
                 };
-                self.peers[slot].prepare_move(&bytes[..n], time)
+                self.peers[slot].prepare_move(&bytes[..n], time, None)
             } else {
                 self.peers[slot].prepare(None, time)
             };

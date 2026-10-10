@@ -33,7 +33,7 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
     let encoder = Commands::load(Protocol::Quake3_68);
     let n = encoder.encode(&command, client, &mut bytes).unwrap();
     let data = client
-        .prepare_move(&bytes[..n], EventTime(time as u64))
+        .prepare_move(&bytes[..n], EventTime(time as u64), None)
         .unwrap()
         .unwrap()
         .bytes

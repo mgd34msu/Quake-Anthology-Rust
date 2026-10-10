@@ -285,7 +285,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
         )
         .map_err(|_| Error::Context)?;
     let Some(packet) = server
-        .prepare_move(&payload[..n], EventTime(1))
+        .prepare_move(&payload[..n], EventTime(1), None)
         .map_err(|_| Error::Context)?
     else {
         return Err(Error::Context);
@@ -345,7 +345,7 @@ fn deliver_server_message(
     })?;
     let mut bytes = [0; 1400];
     let packet = server
-        .prepare_move(&payload[..n], EventTime(1))
+        .prepare_move(&payload[..n], EventTime(1), None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let n = packet.bytes.len();
@@ -637,7 +637,7 @@ fn q2_deliver_frame(
     writer.write_data(b"after\0")?;
     let mut bytes = [0; 1400];
     let packet = server
-        .prepare_move(writer.bytes(), EventTime(1))
+        .prepare_move(writer.bytes(), EventTime(1), None)
         .map_err(|_| Error::Context)?
         .ok_or(Error::Context)?;
     let n = packet.bytes.len();
@@ -962,5 +962,363 @@ fn qw_packet_frames_bound_missing_truncated_and_native_capacity() -> Result<(), 
     assert!(snapshots::read_qw(&mut reader, &mut client, 35, false, None, 36).is_err());
     assert!(client.frame(35).is_none());
     assert!(client.frame(34).is_some());
+    Ok(())
+}
+
+fn qw_move(
+    connections: &mut Connections,
+    server: &mut Channel,
+    commands: &mut Commands,
+    deliver: bool,
+) -> Result<Option<u32>, Error> {
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let codec = client.commands.as_ref().ok_or(Error::Context)?;
+    let command = qa_core::primitives::UserCmd {
+        duration_ms: 20,
+        movement: [300., 0., 0.],
+        ..Default::default()
+    };
+    let mut payload = [0; 1400];
+    let length = codec.encode(&command, &client.channel, &mut payload)?;
+    let request = codec.snapshot_request(&client.channel);
+    let packet = if let Some(pending) = client.channel.pending_packet() {
+        pending
+    } else {
+        client
+            .channel
+            .prepare_move(&payload[..length], EventTime(1), request)
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?
+    };
+    let mut bytes = [0; 1400];
+    let length = packet.bytes.len();
+    bytes[..length].copy_from_slice(packet.bytes);
+    client
+        .channel
+        .submitted(EventTime(1))
+        .map_err(|_| Error::Context)?;
+    if deliver {
+        let received = server
+            .receive(&bytes[..length], EventTime(2))
+            .map_err(|_| Error::Context)?;
+        let sequence = received.header.sequence;
+        let qa_network::channel::Delivery::Payload(payload) = received.delivery else {
+            return Err(Error::Context);
+        };
+        let length = commands.stage(payload)?;
+        let command = commands
+            .decode(length, sequence, 0, 0, server)?
+            .ok_or(Error::Context)?;
+        assert_eq!(command.movement[0], 300.);
+        assert_eq!(command.duration_ms, 20);
+    }
+    Ok(commands.delta_request())
+}
+
+fn qw_reply(
+    server: &mut Channel,
+    connections: &mut Connections,
+    ring: &snapshots::QwRing,
+    sequence: u32,
+    request: Option<(u32, u8)>,
+    deliver: bool,
+    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+) -> Result<(), Error> {
+    assert_eq!(server.send_state().sequence, sequence);
+    let mut payload = [0; 1400];
+    let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+    writer.write_bits(8, 8)?;
+    writer.write_bits(2, 8)?;
+    writer.write_data(b"before\0")?;
+    let start = writer.size();
+    snapshots::write_qw(&mut writer, ring, sequence, request.map(|(base, _)| base))?;
+    writer.write_bits(1, 8)?;
+    writer.write_bits(26, 8)?;
+    writer.write_data(b"after\0")?;
+    let length = writer.size();
+    if let Some((_, advisory)) = request {
+        payload[start + 1] = advisory;
+    }
+    let packet = server
+        .prepare_move(&payload[..length], EventTime(2), None)
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let mut bytes = [0; 1400];
+    let length = packet.bytes.len();
+    bytes[..length].copy_from_slice(packet.bytes);
+    server.submitted(EventTime(2)).map_err(|_| Error::Context)?;
+    if deliver {
+        connections.receive(
+            Endpoint::Client.socket(),
+            Peer::Loopback(ClientId(0)),
+            &bytes[..length],
+            EventTime(3),
+            consume,
+        );
+    }
+    Ok(())
+}
+
+fn qw_connection() -> Result<(Channel, Commands, Connections), Error> {
+    let mut connections = Connections::load(1);
+    connections
+        .bind(
+            ClientId(0),
+            Endpoint::Client,
+            Connection {
+                route: Route {
+                    socket: Endpoint::Client.socket(),
+                    peer: Peer::Loopback(ClientId(0)),
+                },
+                channel: Channel::load(
+                    Protocol::QuakeWorld28.channel(),
+                    Endpoint::Client,
+                    8192,
+                    16,
+                )
+                .map_err(|_| Error::Context)?,
+                output: None,
+                commands: Some(Commands::load(Protocol::QuakeWorld28)),
+            },
+        )
+        .map_err(|_| Error::Context)?;
+    Ok((
+        Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
+            .map_err(|_| Error::Context)?,
+        Commands::load(Protocol::QuakeWorld28),
+        connections,
+    ))
+}
+
+#[test]
+fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() -> Result<(), Error>
+{
+    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let mut ring = snapshots::QwRing::load(64, 512, 0, None)?;
+    let mut frames = Vec::new();
+    let mut prints = Vec::new();
+    for sequence in 1..=4 {
+        let request = qw_move(&mut connections, &mut server, &mut commands, true)?;
+        assert_eq!(
+            request,
+            match sequence {
+                1 => None,
+                2 => Some(1),
+                _ => Some(2),
+            }
+        );
+        qw_store(&mut ring, sequence, &[qw_entity(3, sequence as f32)])?;
+        qw_reply(
+            &mut server,
+            &mut connections,
+            &ring,
+            sequence,
+            request.map(|n| (n, 255)),
+            sequence != 3,
+            |_, endpoint, incoming| {
+                assert_eq!(endpoint, Endpoint::Client);
+                match incoming {
+                    Incoming::Snapshot(snapshots::ReceivedFrame::QuakeWorld(frame)) => {
+                        assert_eq!(
+                            f32::from_bits(frame.entities[0].words[5]),
+                            frame.sequence as f32
+                        );
+                        frames.push(frame.sequence);
+                    }
+                    Incoming::Print(print) => prints.push(print.text.to_vec()),
+                    _ => panic!("QW native frame/print"),
+                }
+            },
+        )?;
+    }
+    assert_eq!(frames, [1, 2, 4]);
+    assert_eq!(prints.len(), 6);
+    for pair in prints.as_chunks::<2>().0 {
+        assert_eq!(pair[0], b"before");
+        assert_eq!(pair[1], b"after");
+    }
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    assert!(client.channel.snapshot(3).is_none());
+    let codec = client.commands.as_ref().ok_or(Error::Context)?;
+    let command = qa_core::primitives::UserCmd {
+        duration_ms: 20,
+        movement: [300., 0., 0.],
+        ..Default::default()
+    };
+    let mut payload = [0; 1400];
+    let n = codec.encode(&command, &client.channel, &mut payload)?;
+    let request = codec.snapshot_request(&client.channel);
+    assert_eq!(request, Some(4));
+    client
+        .channel
+        .prepare_move(&payload[..n], EventTime(4), request)
+        .map_err(|_| Error::Context)?;
+    // No transport admission yet: a delta response to that unsent request must
+    // not borrow a conveniently retained base and invent an accepted frame.
+    qw_store(&mut ring, 5, &[qw_entity(3, 5.)])?;
+    qw_reply(
+        &mut server,
+        &mut connections,
+        &ring,
+        5,
+        Some((4, 4)),
+        true,
+        |_, _, incoming| {
+            assert!(!matches!(incoming, Incoming::Snapshot(_)));
+        },
+    )?;
+    let client = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    assert!(client.channel.snapshot(5).is_none());
+    assert!(client.channel.snapshot(4).is_some());
+    assert_eq!(
+        client
+            .commands
+            .as_ref()
+            .ok_or(Error::Context)?
+            .delta_request(),
+        None
+    );
+    // Retry the exact pending move: its request is still four despite current
+    // CLIENT validity changing. SERVER processes it even though reply five slipped.
+    assert_eq!(
+        qw_move(&mut connections, &mut server, &mut commands, true)?,
+        Some(4)
+    );
+    assert_eq!(server.send_state().sequence, 6);
+    assert!(
+        server
+            .prepare_output(EventTime(5))
+            .map_err(|_| Error::Context)?
+            .is_none()
+    );
+    assert_eq!(
+        qw_move(&mut connections, &mut server, &mut commands, true)?,
+        None
+    );
+    qw_store(&mut ring, 6, &[qw_entity(3, 6.)])?;
+    let mut recovered = false;
+    qw_reply(
+        &mut server,
+        &mut connections,
+        &ring,
+        6,
+        None,
+        true,
+        |_, _, incoming| {
+            recovered |= matches!(incoming, Incoming::Snapshot(snapshots::ReceivedFrame::QuakeWorld(frame)) if frame.sequence == 6);
+        },
+    )?;
+    assert!(recovered);
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn qw_connected_request_byte_zero_retains_full_sequence_after_a_gap() -> Result<(), Error> {
+    let (mut server, mut commands, mut connections) = qw_connection()?;
+    for _ in 1..256 {
+        qw_move(&mut connections, &mut server, &mut commands, false)?;
+    }
+    assert_eq!(
+        qw_move(&mut connections, &mut server, &mut commands, true)?,
+        None
+    );
+    assert_eq!(server.send_state().sequence, 256);
+    let mut ring = snapshots::QwRing::load(64, 512, 0, None)?;
+    qw_store(&mut ring, 256, &[qw_entity(3, 10.)])?;
+    qw_reply(
+        &mut server,
+        &mut connections,
+        &ring,
+        256,
+        None,
+        true,
+        |_, _, _| {},
+    )?;
+    assert_eq!(
+        qw_move(&mut connections, &mut server, &mut commands, true)?,
+        Some(0)
+    );
+    qw_store(&mut ring, 257, &[qw_entity(3, 11.)])?;
+    let mut accepted = false;
+    qw_reply(
+        &mut server,
+        &mut connections,
+        &ring,
+        257,
+        Some((256, 255)),
+        true,
+        |_, _, incoming| {
+            accepted |= matches!(incoming, Incoming::Snapshot(snapshots::ReceivedFrame::QuakeWorld(frame)) if frame.sequence == 257 && frame.entities[0].words[5] == 11.0f32.to_bits());
+        },
+    )?;
+    assert!(accepted);
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn qw_reply_alignment_rebuilds_unsent_payload_without_retiring_reliable_data() -> Result<(), Error>
+{
+    let (mut server, mut commands, mut connections) = qw_connection()?;
+    qw_move(&mut connections, &mut server, &mut commands, true)?;
+    let print = b"\x08\x02retained\0";
+    let receipt = server.queue_reliable(print).map_err(|_| Error::Context)?;
+    assert!(
+        server
+            .prepare_output(EventTime(1))
+            .map_err(|_| Error::Context)?
+            .is_some()
+    );
+    let selected = server.send_state();
+    assert_eq!(selected.sequence, 1);
+    assert_eq!(selected.reliable_bytes, print.len());
+    assert_eq!(selected.packets, 0);
+    qw_move(&mut connections, &mut server, &mut commands, false)?;
+    qw_move(&mut connections, &mut server, &mut commands, false)?;
+    qw_move(&mut connections, &mut server, &mut commands, true)?;
+    assert!(server.pending_packet().is_none());
+    assert_eq!(server.send_state().sequence, 4);
+    assert_eq!(
+        server.send_state().reliable_sequence,
+        selected.reliable_sequence
+    );
+    assert_eq!(server.send_state().reliable_bytes, print.len());
+    assert!(server.reliable_receipts().is_empty());
+    let packet = server
+        .prepare_output(EventTime(2))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let mut bytes = [0; 1400];
+    let length = packet.bytes.len();
+    bytes[..length].copy_from_slice(packet.bytes);
+    assert_eq!(&bytes[length - print.len()..length], print);
+    server.submitted(EventTime(2)).map_err(|_| Error::Context)?;
+    assert_eq!(server.send_state().last_reliable_sequence, 5);
+    assert!(server.reliable_receipts().is_empty());
+    let mut delivered = 0;
+    connections.receive(
+        Endpoint::Client.socket(),
+        Peer::Loopback(ClientId(0)),
+        &bytes[..length],
+        EventTime(3),
+        |_, _, incoming| {
+            if let Incoming::Print(print) = incoming {
+                assert_eq!(print.text, b"retained");
+                delivered += 1;
+            }
+        },
+    );
+    assert_eq!(delivered, 1);
+    qw_move(&mut connections, &mut server, &mut commands, true)?;
+    assert_eq!(server.reliable_receipts(), &[receipt]);
+    assert_eq!(server.send_state().reliable_bytes, 0);
+    assert_eq!(connections.command_errors, 0);
     Ok(())
 }

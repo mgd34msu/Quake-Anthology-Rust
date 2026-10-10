@@ -647,3 +647,54 @@ prediction at `app/src/lib.rs:201` and `app/src/host.rs:480`; native snapshot
 submission/application must remove those callers in its integration slice.
 Other native service streams, rerelease/666/999, live legacy connections and
 THE-3169 native/installed acceptance remain open.
+
+## THE-860: connected QuakeWorld packet frames
+
+The load-selected CLIENT storage and ReceivedFrame now include QW using the
+same 32-slot Ring as Q2/Q3. Native packetentities and print/nop services pass
+through the existing connected Packet dispatcher. A delta without its submitted
+request/base is consumed without publishing a frame; CLIENT requests full
+recovery. Full replies remain usable without a delta association.
+
+Each existing slot holds the sequence/base scalars for its submitted move.
+The pending transmit retains that exact selection across rejected admission;
+submission publishes it, and received-frame replacement preserves it. The
+advisory byte never chooses a conveniently available base. Base 256 remains
+256 internally even when its native request byte is zero. These scalars retain
+protocol context, not input commands or a second snapshot implementation.
+One Commands selection entry serves both encoding and submission metadata;
+all prepare_move callers are migrated, including developer examples.
+
+The explicit QW parser selects qsrc SV_ExecuteClientMessage's reply alignment;
+the shared QW/Q2 header does not select it. A slipped reply is suppressed while
+its move still reaches SERVER. A new admitted request cancels an unsent old
+payload so the reply can be rebuilt, retaining its selected reliable flight and
+bit. Neither cancellation nor submission acknowledges reliable records.
+The connected fixture confirms actual native ACK retirement after replacement.
+
+Three new connected tests cover full/delta replies, prints around frames,
+advisory mismatch, dropped responses, rejected admission/exact retry, missing
+request/full recovery, skipped packet sequences, base-256 byte zero, and
+selected reliable data surviving cancellation until ACK. All 695 workspace
+tests, unchanged checker, warning-denied Clippy and format/diff checks pass.
+The normal release app and developer examples built in 31.46 s.
+Original-C QW/Q2/Q3 packet-frame comparisons remain exact: 512 cases each,
+593,264/913,057/2,035,577 bytes, decoded records and cursors. Original move
+packets remain exact for all 2,048 NQ/QW/Q2/Q3 cases. QW's prior documented
+32-slot retention/full-response policy still applies.
+
+The new connected QW caller-heap probe runs 60 warm-up plus 600 measured
+iterations through submitted moves, reply alignment, packet store/write,
+CLIENT ingress and print/frame callbacks: positive control 1, zero allocations,
+reallocations, requested bytes and command errors. Existing Q2 connected
+reduce/apply also passes 60+600 with zero caller heap/errors. These probes
+exclude playerinfo, app frames, workers and OS/driver heaps. No timing,
+game/window or install run. Evidence:
+`$HOME/.cache/qa-rust/THE-860-qw-connected-20261010/`.
+
+QW playerinfo/control-only services and SERVER conversion of the request byte
+to its retained native base remain next; full native service/signon binding is
+not claimed. App submission and decoded CLIENT player application must still
+replace `app/src/host.rs:480` and `app/src/lib.rs:201` direct prediction copies.
+NQ/negotiated 666/999/rerelease streams, live original peers and THE-3169
+native/installed acceptance remain open. THE-860 stays In Progress.

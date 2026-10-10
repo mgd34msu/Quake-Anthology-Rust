@@ -223,13 +223,17 @@ impl Runtime {
         let Ok(length) = commands.encode(command, &connection.channel, &mut bytes) else {
             return false;
         };
+        let snapshot_request = commands.snapshot_request(&connection.channel);
         // At most the load-sized control ring followed by this current move.
         // A rejected transport keeps the exact prepared packet for retry.
         for _ in 0..17 {
             let packet = if let Some(packet) = connection.channel.pending_packet() {
                 packet
             } else {
-                let Ok(Some(packet)) = connection.channel.prepare_move(&bytes[..length], time)
+                let Ok(Some(packet)) =
+                    connection
+                        .channel
+                        .prepare_move(&bytes[..length], time, snapshot_request)
                 else {
                     return false;
                 };

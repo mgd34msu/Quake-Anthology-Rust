@@ -318,6 +318,9 @@ fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
 }
 fn main() -> Result<(), String> {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|a| a == "--connected-qw-heap") {
+        return connected_qw_heap();
+    }
     if args.get(1).is_some_and(|a| a == "--connected-heap") {
         return connected_heap();
     }
@@ -462,7 +465,7 @@ fn connected_heap() -> Result<(), String> {
             snapshots::write_q2(&mut writer, &ring, frame, delta, 16)?;
             writer.write_data(&[10, 2, b'x', 0])?;
             let packet = server
-                .prepare_move(writer.bytes(), EventTime(1))
+                .prepare_move(writer.bytes(), EventTime(1), None)
                 .map_err(|_| qa_network::commands::packet::Error::Context)?
                 .ok_or(qa_network::commands::packet::Error::Context)?;
             let mut packet_bytes = [0; 1400];
@@ -548,6 +551,166 @@ fn connected_heap() -> Result<(), String> {
     }
     println!(
         "{{\"scope\":\"common player reduce/apply, Q2 frame store/write, Channel, CLIENT ingress, print dispatch and native move feedback; caller Rust heap, no workers/OS/app/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
+    );
+    Ok(())
+}
+
+fn connected_qw_heap() -> Result<(), String> {
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{ClientId, UserCmd},
+        sys_events::{EventTime, Peer},
+    };
+    use qa_network::{
+        channel::{Channel, Delivery},
+        commands::{
+            connection::Commands,
+            packet::{Error, Protocol},
+        },
+        ingress::{Connection, Connections, Incoming, Route},
+        snapshots::ReceivedFrame,
+        states,
+    };
+    check_heap_counter()?;
+    let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
+        .map_err(|e| e.to_string())?;
+    let mut server_commands = Commands::load(Protocol::QuakeWorld28);
+    let mut connections = Connections::load(1);
+    connections
+        .bind(
+            ClientId(0),
+            Endpoint::Client,
+            Connection {
+                route: Route {
+                    socket: Endpoint::Client.socket(),
+                    peer: Peer::Loopback(ClientId(0)),
+                },
+                channel: Channel::load(
+                    Protocol::QuakeWorld28.channel(),
+                    Endpoint::Client,
+                    8192,
+                    16,
+                )
+                .map_err(|e| e.to_string())?,
+                output: None,
+                commands: Some(Commands::load(Protocol::QuakeWorld28)),
+            },
+        )
+        .map_err(|e| format!("QW bind {e:?}"))?;
+    let mut ring = snapshots::QwRing::load(64, 512, 0, None).map_err(|e| e.to_string())?;
+    let mut measured = allocations::Counts::default();
+    let mut checks = 0;
+    for iteration in 0..660 {
+        let sequence = iteration + 1;
+        let x = sequence as f32 * 0.125;
+        let mut payload = [0; 1400];
+        let mut wire = [0; 1400];
+        allocations::begin_frame();
+        let result = (|| -> Result<(), Error> {
+            let client = connections
+                .get_mut(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?;
+            let codec = client.commands.as_ref().ok_or(Error::Context)?;
+            let command = UserCmd {
+                duration_ms: 20,
+                movement: [300., 0., 0.],
+                ..Default::default()
+            };
+            let length = codec.encode(&command, &client.channel, &mut payload)?;
+            let base = codec.snapshot_request(&client.channel);
+            let packet = client
+                .channel
+                .prepare_move(&payload[..length], EventTime(1), base)
+                .map_err(|_| Error::Context)?
+                .ok_or(Error::Context)?;
+            let length = packet.bytes.len();
+            wire[..length].copy_from_slice(packet.bytes);
+            client
+                .channel
+                .submitted(EventTime(1))
+                .map_err(|_| Error::Context)?;
+            let received = server
+                .receive(&wire[..length], EventTime(2))
+                .map_err(|_| Error::Context)?;
+            if received.header.sequence != sequence {
+                return Err(Error::Context);
+            }
+            let Delivery::Payload(bytes) = received.delivery else {
+                return Err(Error::Context);
+            };
+            let length = server_commands.stage(bytes)?;
+            let received = server_commands
+                .decode(length, sequence, 0, 0, &mut server)?
+                .ok_or(Error::Context)?;
+            if received.movement[0] != 300.
+                || server_commands.delta_request() != base.map(|n| u32::from(n as u8))
+            {
+                return Err(Error::Context);
+            }
+            let mut words = [0; states::QW_ENTITY_WORDS];
+            words[0] = 1;
+            words[5] = x.to_bits();
+            ring.store(Frame {
+                sequence,
+                time: 0,
+                command: 0,
+                flags: 0,
+                areas: &[],
+                player: &[],
+                entities: &[Entity { number: 3, words }],
+            })?;
+            let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+            snapshots::write_qw(&mut writer, &ring, sequence, base)?;
+            writer.write_bits(8, 8)?;
+            writer.write_bits(2, 8)?;
+            writer.write_data(b"connected\0")?;
+            let packet = server
+                .prepare_move(writer.bytes(), EventTime(3), None)
+                .map_err(|_| Error::Context)?
+                .ok_or(Error::Context)?;
+            let length = packet.bytes.len();
+            wire[..length].copy_from_slice(packet.bytes);
+            server.submitted(EventTime(3)).map_err(|_| Error::Context)?;
+            let mut outputs = 0;
+            let mut invalid = false;
+            connections.receive(
+                Endpoint::Client.socket(),
+                Peer::Loopback(ClientId(0)),
+                &wire[..length],
+                EventTime(4),
+                |_, _, incoming| match incoming {
+                    Incoming::Snapshot(ReceivedFrame::QuakeWorld(frame)) => {
+                        invalid |= frame.sequence != sequence
+                            || frame.entities.len() != 1
+                            || frame.entities[0].words[5] != x.to_bits();
+                        outputs += 1;
+                    }
+                    Incoming::Print(print) => {
+                        invalid |= print.text != b"connected";
+                        outputs += 1;
+                    }
+                    _ => invalid = true,
+                },
+            );
+            if invalid || outputs != 2 {
+                return Err(Error::Context);
+            }
+            Ok(())
+        })();
+        let heap = allocations::end_frame();
+        result.map_err(|e| e.to_string())?;
+        checks += 1;
+        if iteration >= 60 {
+            measured.allocations += heap.allocations;
+            measured.reallocations += heap.reallocations;
+            measured.requested_bytes += heap.requested_bytes;
+        }
+    }
+    if measured != allocations::Counts::default() || connections.command_errors != 0 {
+        return Err(format!("connected QW heap gate {measured:?}"));
+    }
+    println!(
+        "{{\"scope\":\"QW submitted move/request association, native reply alignment, packet frame store/write, connected CLIENT ingress and print dispatch; caller Rust heap, no playerinfo/app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
     );
     Ok(())
 }

@@ -73,6 +73,7 @@ struct Pending {
     unreliable: Unreliable,
     commit: Commit,
     commands: Option<u32>,
+    snapshot_request: Option<Option<u32>>,
 }
 pub(super) struct Transmit {
     direction: Direction,
@@ -93,6 +94,7 @@ pub(super) struct Transmit {
     command_flight: Option<u32>,
     packet: [u8; PACKET_BYTES],
     pending: Option<Pending>,
+    reply_allowed: bool,
 }
 
 impl Transmit {
@@ -134,6 +136,7 @@ impl Transmit {
             command_flight: None,
             packet: [0; PACKET_BYTES],
             pending: None,
+            reply_allowed: true,
         })
     }
     fn retire(&mut self) {
@@ -198,6 +201,18 @@ impl Transmit {
 }
 
 impl Channel {
+    /// Native callers that correlate replies with incoming packet sequences
+    /// select this behavior explicitly. Header format never selects it.
+    pub(crate) fn align_reply(&mut self, incoming: u32) {
+        let tx = &mut self.transmit;
+        tx.reply_allowed = incoming >= tx.state.sequence;
+        // An unsent old payload belongs to its old request. Retain its selected
+        // reliable flight/bit, but rebuild the reply against the new request.
+        tx.pending = None;
+        if tx.reply_allowed {
+            tx.state.sequence = incoming;
+        }
+    }
     pub fn has_output(&self) -> bool {
         self.transmit.pending.is_some()
             || !self.transmit.ring.is_empty()
@@ -267,16 +282,20 @@ impl Channel {
         unreliable: Option<&[u8]>,
         time: EventTime,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
-        self.prepare_inner(unreliable, time, None)
+        self.prepare_inner(unreliable, time, None, None)
     }
     fn prepare_inner(
         &mut self,
         unreliable: Option<&[u8]>,
         time: EventTime,
         commands: Option<u32>,
+        snapshot_request: Option<Option<u32>>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         if self.transmit.pending.is_some() {
             return Err(TransmitError::PendingPacket);
+        }
+        if !self.transmit.reply_allowed {
+            return Ok(None);
         }
         let tx = &mut self.transmit;
         let header_size = self
@@ -434,12 +453,14 @@ impl Channel {
             unreliable: disposition,
             commit,
             commands,
+            snapshot_request,
         });
         Ok(self.pending_packet())
     }
     pub fn submitted(&mut self, time: EventTime) -> Result<(), TransmitError> {
         let tx = &mut self.transmit;
         let pending = tx.pending.take().ok_or(TransmitError::NoPacket)?;
+        let request_sequence = tx.state.sequence;
         if pending.unreliable == Unreliable::Dropped {
             tx.state.unreliable_drops = tx.state.unreliable_drops.saturating_add(1);
         }
@@ -498,6 +519,12 @@ impl Channel {
         {
             commands.submitted(sequence, tx.state.sequence.wrapping_sub(1));
         }
+        if pending.unreliable != Unreliable::Deferred
+            && let Some(base) = pending.snapshot_request
+            && let Some(storage) = &mut self.snapshots
+        {
+            storage.record_request(request_sequence, base);
+        }
         Ok(())
     }
     #[inline(never)]
@@ -510,7 +537,7 @@ impl Channel {
             .encode_server_output(&mut bytes, |_| Ok(()))
             .map_err(|_| TransmitError::MessageTooLarge)?;
         let queued = self.command_state().map(|state| state.queued);
-        self.prepare_inner(Some(&bytes[..length]), time, queued)
+        self.prepare_inner(Some(&bytes[..length]), time, queued, None)
     }
     pub fn prepare_output(
         &mut self,
@@ -529,8 +556,9 @@ impl Channel {
         &mut self,
         bytes: &[u8],
         time: EventTime,
+        snapshot_request: Option<u32>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         let queued = self.command_state().map(|state| state.queued);
-        self.prepare_inner(Some(bytes), time, queued)
+        self.prepare_inner(Some(bytes), time, queued, Some(snapshot_request))
     }
 }

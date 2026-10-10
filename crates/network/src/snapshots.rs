@@ -17,6 +17,8 @@ pub struct Entity<const N: usize> {
 #[derive(Clone, Copy)]
 struct Slot<const P: usize> {
     sequence: Option<u32>,
+    request_sequence: Option<u32>,
+    requested_base: Option<u32>,
     valid: bool,
     time: i32,
     command: u32,
@@ -29,6 +31,8 @@ struct Slot<const P: usize> {
 impl<const P: usize> Slot<P> {
     const ZERO: Self = Self {
         sequence: None,
+        request_sequence: None,
+        requested_base: None,
         valid: false,
         time: 0,
         command: 0,
@@ -113,6 +117,17 @@ impl<const P: usize, const E: usize> Ring<P, E> {
     pub fn counts(&self) -> Counts {
         self.counts
     }
+    /// Association for the native reply to a submitted client packet. These
+    /// scalars are protocol metadata, never retained input or another frame.
+    pub(crate) fn record_request(&mut self, sequence: u32, base: Option<u32>) {
+        let slot = &mut self.slots[sequence as usize & (SLOTS - 1)];
+        slot.request_sequence = Some(sequence);
+        slot.requested_base = base;
+    }
+    pub(crate) fn requested_base(&self, sequence: u32) -> Option<Option<u32>> {
+        let slot = &self.slots[sequence as usize & (SLOTS - 1)];
+        (slot.request_sequence == Some(sequence)).then_some(slot.requested_base)
+    }
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(&self.slots)
             + std::mem::size_of_val(&*self.entities)
@@ -187,6 +202,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             count: frame.entities.len(),
             first_entity,
             player: *frame.player,
+            ..Slot::ZERO
         };
         let index = frame.sequence as usize & (SLOTS - 1);
         self.areas[index * self.area_capacity..index * self.area_capacity + frame.areas.len()]
@@ -196,7 +212,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         self.commit(slot);
         Ok(())
     }
-    fn commit(&mut self, slot: Slot<P>) {
+    fn commit(&mut self, mut slot: Slot<P>) {
         let Some(sequence) = slot.sequence else {
             return;
         };
@@ -208,6 +224,8 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             self.slots[missing as usize & (SLOTS - 1)].sequence = None;
         }
         let index = sequence as usize & (SLOTS - 1);
+        slot.request_sequence = self.slots[index].request_sequence;
+        slot.requested_base = self.slots[index].requested_base;
         self.slots[index] = slot;
         self.latest = Some(sequence);
         self.counts.accepted += u64::from(slot.valid);
@@ -253,16 +271,18 @@ pub type Q2Frame<'a> = Frame<'a, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTIT
 pub type QwRing = Ring<0, { states::QW_ENTITY_WORDS }>;
 pub type QwFrame<'a> = Frame<'a, 0, { states::QW_ENTITY_WORDS }>;
 
-/// Native record widths are protocol data; both variants borrow the same Ring
+/// Native record widths are protocol data; all variants borrow the same Ring
 /// implementation and never contain another engine player/entity store.
 #[derive(Clone, Copy, Debug)]
 pub enum ReceivedFrame<'a> {
+    QuakeWorld(QwFrame<'a>),
     Quake2(Q2Frame<'a>),
     Quake3(Q3Frame<'a>),
 }
 impl ReceivedFrame<'_> {
     pub fn sequence(self) -> u32 {
         match self {
+            Self::QuakeWorld(frame) => frame.sequence,
             Self::Quake2(frame) => frame.sequence,
             Self::Quake3(frame) => frame.sequence,
         }
@@ -270,12 +290,16 @@ impl ReceivedFrame<'_> {
 }
 
 pub(crate) enum Storage {
+    QuakeWorld(Box<QwRing>),
     Quake2(Box<Q2Ring>),
     Quake3(Box<Q3Ring>),
 }
 impl Storage {
     pub(crate) fn load(protocol: packet::Protocol) -> Result<Option<Self>, packet::Error> {
         Ok(match protocol {
+            packet::Protocol::QuakeWorld28 => {
+                Some(Self::QuakeWorld(Box::new(QwRing::load(64, 512, 0, None)?)))
+            }
             packet::Protocol::Quake2_34 => Some(Self::Quake2(Box::new(Q2Ring::load(
                 1023,
                 1024,
@@ -293,14 +317,22 @@ impl Storage {
     }
     pub(crate) fn protocol(&self) -> packet::Protocol {
         match self {
+            Self::QuakeWorld(_) => packet::Protocol::QuakeWorld28,
             Self::Quake2(_) => packet::Protocol::Quake2_34,
             Self::Quake3(_) => packet::Protocol::Quake3_68,
         }
     }
     pub(crate) fn frame(&self, sequence: u32) -> Option<ReceivedFrame<'_>> {
         match self {
+            Self::QuakeWorld(ring) => ring.frame(sequence).map(ReceivedFrame::QuakeWorld),
             Self::Quake2(ring) => ring.frame(sequence).map(ReceivedFrame::Quake2),
             Self::Quake3(ring) => ring.frame(sequence).map(ReceivedFrame::Quake3),
+        }
+    }
+    pub(crate) fn record_request(&mut self, sequence: u32, base: Option<u32>) {
+        match self {
+            Self::QuakeWorld(ring) => ring.record_request(sequence, base),
+            Self::Quake2(_) | Self::Quake3(_) => {}
         }
     }
 }
@@ -355,6 +387,7 @@ pub fn read_q3(
             count,
             first_entity: 0,
             player,
+            ..Slot::ZERO
         },
         base_valid,
         overflow,
@@ -414,6 +447,7 @@ pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packe
             count,
             first_entity: 0,
             player,
+            ..Slot::ZERO
         },
         base_valid,
         overflow,
@@ -436,12 +470,16 @@ pub fn read_qw(
         reader.read_bits(8)?;
     }
     let request = if delta { requested_base } else { None };
-    let full = request.is_none();
+    let full = !delta;
     let base_valid = full
         || request
             .is_some_and(|n| outgoing_sequence.wrapping_sub(n) < 63 && ring.frame(n).is_some());
     let index = request.map_or(0, |n| n as usize & (SLOTS - 1));
-    let count = if full { 0 } else { ring.slots[index].count };
+    let count = if request.is_none() {
+        0
+    } else {
+        ring.slots[index].count
+    };
     let mut invalid_full = false;
     let (count, overflow) = read_entities(
         reader,

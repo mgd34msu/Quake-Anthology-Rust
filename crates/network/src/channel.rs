@@ -206,6 +206,12 @@ impl Channel {
             _ => None,
         }
     }
+    pub(crate) fn qw_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::QwRing> {
+        match self.snapshots.as_mut()? {
+            crate::snapshots::Storage::QuakeWorld(ring) => Some(ring),
+            _ => None,
+        }
+    }
     pub fn endpoint(&self) -> Endpoint {
         match self.direction {
             Direction::ToClient => Endpoint::Client,
