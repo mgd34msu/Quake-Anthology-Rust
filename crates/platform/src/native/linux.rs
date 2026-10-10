@@ -28,6 +28,7 @@ const RETURN: u8 = 5;
 const REPLY: u8 = 6;
 const MAP: u8 = 7;
 const BIND: u8 = 8;
+const RUNTIME_ERROR: u8 = 9;
 #[path = "runtime/child.rs"]
 mod runtime;
 const PACKET_BYTES: usize = 200;
@@ -639,6 +640,17 @@ impl NativeProcess {
                 self.stop_boundary()?;
                 match packet.operation {
                     RETURN => return Ok(entry.result(packet.value)),
+                    RUNTIME_ERROR => {
+                        let ordinal =
+                            usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
+                        let &(number, _) =
+                            self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
+                        let function =
+                            super::runtime::function(number).ok_or(NativeError::Protocol)?;
+                        let name = std::str::from_utf8(function.name)
+                            .map_err(|_| NativeError::Protocol)?;
+                        return Err(NativeError::RuntimeImport(name));
+                    }
                     IMPORT => {
                         let (number, arguments, result_entry) = match packet.abi {
                             0 => (
@@ -747,7 +759,20 @@ extern "C" fn import(
         ) {
             Ok(Some(result)) => return result,
             Ok(None) => {}
-            Err(_) => std::process::exit(125),
+            Err(_) => {
+                // Publish only the load-declared ordinal. The parent enforces
+                // the same kernel stop, resolves its own static name and reaps
+                // this failed child before exposing any shared memory.
+                let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);
+                // SAFETY: borrowed wrapper for this owned child's IPC fd.
+                let mut stream = ManuallyDrop::new(unsafe { UnixStream::from_raw_fd(0) });
+                let mut packet = Packet::new(RUNTIME_ERROR, sequence);
+                packet.address = number;
+                if packet.send(&mut stream).is_ok() {
+                    let _ = Packet::receive(&mut stream);
+                }
+                std::process::exit(125);
+            }
         }
     }
     let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);

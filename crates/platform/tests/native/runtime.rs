@@ -1,6 +1,6 @@
 use super::{BASE, REGIONS, configured_child};
 use crate::native::{
-    NativeAbi, NativeImport, NativeProcess, NativeRegion, NativeScalar,
+    NativeAbi, NativeError, NativeImport, NativeProcess, NativeRegion, NativeScalar,
     runtime::{FIRST, FUNCTIONS, RuntimeConfig},
 };
 use std::time::Duration;
@@ -77,6 +77,42 @@ fn call(process: &mut NativeProcess, trace: &mut Vec<i32>, number: u32, args: &[
             Ok(if tag == 7 { 7 } else { 0 })
         })
         .unwrap()
+}
+
+#[test]
+fn rejected_child_runtime_calls_keep_the_import_name_and_isolate_the_child() {
+    let mut failed = runtime_child();
+    let mut healthy = runtime_child();
+    let ordinal = FUNCTIONS
+        .iter()
+        .position(|f| f.number == FIRST + 300)
+        .unwrap();
+    let entry = failed
+        .bind(
+            failed.import_pointer(ordinal).unwrap(),
+            NativeAbi::Microsoft,
+            &[NativeScalar::I32],
+            NativeScalar::I32,
+        )
+        .unwrap();
+    let mut arguments = [0; 13];
+    arguments[0] = 3;
+    let result = failed.invoke(entry, arguments, |_, _, _| {
+        panic!("runtime rejection must not dispatch an engine import")
+    });
+    assert!(
+        matches!(
+            result,
+            Err(NativeError::RuntimeImport("_configure_narrow_argv"))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(failed.pid(), 0);
+    assert!(failed.memory_mut().is_ok());
+    assert_eq!(
+        call(&mut healthy, &mut Vec::new(), 6, &[0.5f64.to_bits()]),
+        0.5f64.sin().to_bits()
+    );
 }
 
 #[test]

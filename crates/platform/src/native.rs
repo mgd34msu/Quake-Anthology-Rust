@@ -57,6 +57,7 @@ pub enum NativeError {
     Io(io::Error),
     Exited(std::process::ExitStatus),
     Callback,
+    RuntimeImport(&'static str),
 }
 impl From<io::Error> for NativeError {
     fn from(error: io::Error) -> Self {
