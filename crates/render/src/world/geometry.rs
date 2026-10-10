@@ -286,7 +286,7 @@ fn load_legacy(
             let mut uv = [0.0; 2];
             for axis in 0..2 {
                 let p = info.projection[axis];
-                uv[axis] = point.0[0] * p[0] + point.0[1] * p[1] + point.0[2] * p[2] + p[3];
+                uv[axis] = point.dot(Vec3([p[0], p[1], p[2]])) + p[3];
                 if !uv[axis].is_finite() || point.0.iter().any(|v| !v.is_finite()) {
                     return Err(GeometryError::NonFinite("texture projection", id));
                 }

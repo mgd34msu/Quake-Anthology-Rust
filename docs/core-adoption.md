@@ -496,3 +496,18 @@ cases (8,039,745 bytes and decoded words). The connected heap probe passes
 allocation control 1, zero caller allocations/reallocations/requested bytes
 and zero command errors. This counter covers the connected native codec path,
 not app frames, workers, OS/driver allocations or gameplay. No timing run.
+
+## THE-3176: fourth audit, texture projection
+
+`render/src/world/geometry.rs:289` now uses
+`point.dot(Vec3([p[0], p[1], p[2]])) + p[3]` for load-time texture projection.
+The local dot-product expression is deleted. Core Vec3::dot retains the same
+three products and left-to-right additions; the projection offset is still
+added last. Non-finite rejection, extrema and extent conversion are unchanged.
+
+All 687 workspace tests, the unchanged checker and format/diff checks pass.
+The normal release app built in 38.02 s. A separate release-mode expression
+probe matches all 16,384 seeded projection rows bit for bit against the
+compiled core helper. Existing geometry tests retain signed-edge, extent,
+lighting and non-finite projection checks. No timing, game/window or install
+run. Evidence: `$HOME/.cache/qa-rust/THE-3176-projection-dot-20261009/`.
