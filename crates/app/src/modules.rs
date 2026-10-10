@@ -17,7 +17,7 @@ use qa_world::entities::EntityTime;
 use std::sync::Arc;
 
 mod load;
-pub use load::{QuakeCSpec, load_quakec};
+pub use load::{QuakeCSpec, QvmSpec, load_quakec, load_qvm};
 
 pub enum Program {
     Qvm {
@@ -56,9 +56,29 @@ pub struct ModuleRequest {
     pub program: Program,
     pub entries: Vec<u32>,
     pub frame: CallbackId,
+    pub initialize: Option<Export>,
+    pub shutdown: Option<Export>,
     pub instruction_budget: u64,
     pub configstrings: usize,
     pub files: usize,
+}
+#[derive(Clone, Copy)]
+pub enum Argument {
+    Word(u64),
+    ClockMilliseconds,
+    PlatformMilliseconds,
+}
+#[derive(Clone, Copy)]
+pub struct Export {
+    pub callback: CallbackId,
+    pub arguments: [Argument; 9],
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Pending,
+    Running,
+    Failed,
+    Stopped,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleResult {
@@ -78,6 +98,7 @@ struct Module {
     scratch: qa_world::collision::TraceScratch,
     unknown: UnknownCalls,
     counts: Counts,
+    state: State,
 }
 pub struct Modules {
     functions: Arc<FunctionTable<FrameHost>>,
@@ -138,6 +159,10 @@ impl FrameHost {
                 .ok_or("stale module anchor")?;
             if host.runtime.server.entities.columns.owner[entity] != request.context.module
                 || request.frame.0 as usize >= request.entries.len()
+                || [request.initialize, request.shutdown]
+                    .into_iter()
+                    .flatten()
+                    .any(|export| export.callback.0 as usize >= request.entries.len())
                 || request.instruction_budget == 0
             {
                 return Err("invalid module binding".into());
@@ -165,12 +190,18 @@ impl FrameHost {
                 request.files,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
+            let state = if request.initialize.is_some() {
+                State::Pending
+            } else {
+                State::Running
+            };
             rows[index] = Some(Module {
                 request,
                 storage,
                 scratch: host.runtime.geometry.scratch(),
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
+                state,
             });
         }
         host.modules = Some(Modules {
@@ -186,6 +217,98 @@ impl FrameHost {
             .get(module.0 as usize)?
             .as_ref()
             .map(|m| &m.counts)
+    }
+    pub fn module_state(&self, module: ModuleId) -> Option<State> {
+        Some(
+            self.modules
+                .as_ref()?
+                .rows
+                .get(module.0 as usize)?
+                .as_ref()?
+                .state,
+        )
+    }
+    pub fn call_module_export(
+        &mut self,
+        module: ModuleId,
+        export: Export,
+        time: ThinkTime,
+    ) -> Result<(), CallError> {
+        let row = self
+            .modules
+            .as_ref()
+            .and_then(|m| m.rows.get(module.0 as usize))
+            .and_then(Option::as_ref)
+            .ok_or(CallError::MissingModule)?;
+        let entity = row.request.anchor;
+        let slot = self
+            .runtime
+            .server
+            .entities
+            .resolve(entity)
+            .ok_or(CallError::StaleEntity)?;
+        if self.runtime.server.entities.columns.owner[slot] != module {
+            return Err(CallError::MissingModule);
+        }
+        let arguments = export.arguments.map(|argument| match argument {
+            Argument::Word(word) => word,
+            Argument::ClockMilliseconds => time.milliseconds() as u64,
+            Argument::PlatformMilliseconds => self.time.milliseconds(),
+        });
+        self.call_module(
+            export.callback,
+            CallbackCall::Export {
+                entity,
+                time,
+                arguments,
+            },
+        )
+    }
+    /// Startup follows the first event/command phase, without another intake.
+    pub fn initialize_modules(&mut self) {
+        self.module_lifecycle(false);
+    }
+    /// Called for ordinary quit and frame-limit exit; repeating it is a no-op.
+    pub fn shutdown_modules(&mut self) {
+        self.module_lifecycle(true);
+    }
+    fn module_lifecycle(&mut self, shutdown: bool) {
+        let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
+        for index in 0..count {
+            let Some(row) = self.modules.as_ref().and_then(|m| m.rows[index].as_ref()) else {
+                continue;
+            };
+            if row.state
+                != if shutdown {
+                    State::Running
+                } else {
+                    State::Pending
+                }
+            {
+                continue;
+            }
+            let export = if shutdown {
+                row.request.shutdown
+            } else {
+                row.request.initialize
+            };
+            let time = module_time(row.request.context.clock, self.time);
+            let result = export.map_or(Ok(()), |export| {
+                self.call_module_export(ModuleId(index as u16), export, time)
+            });
+            if let Some(row) = self.modules.as_mut().and_then(|m| m.rows[index].as_mut()) {
+                if result.is_err() {
+                    row.counts.rejected += 1;
+                }
+                row.state = if shutdown {
+                    State::Stopped
+                } else if result.is_ok() {
+                    State::Running
+                } else {
+                    State::Failed
+                };
+            }
+        }
     }
     /// Providers invoke this at their native phase; it adds no think scan.
     pub fn call_module(
@@ -214,12 +337,12 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let Some(row) = modules.rows.get(module.0 as usize).and_then(Option::as_ref) else {
         return;
     };
+    if row.state != State::Running {
+        return;
+    }
     let entity = row.request.anchor;
     let callback = row.request.frame;
-    let time = match row.request.context.clock {
-        EntityTime::Seconds(_) => ThinkTime::Seconds(tick.end.seconds()),
-        EntityTime::Milliseconds(_) => ThinkTime::Milliseconds(tick.end.milliseconds() as i64),
-    };
+    let time = module_time(row.request.context.clock, tick.end);
     if host
         .runtime
         .server
@@ -248,6 +371,12 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     }
 }
 
+fn module_time(clock: EntityTime, time: qa_core::sys_events::EventTime) -> ThinkTime {
+    match clock {
+        EntityTime::Seconds(_) => ThinkTime::Seconds(time.seconds()),
+        EntityTime::Milliseconds(_) => ThinkTime::Milliseconds(time.milliseconds() as i64),
+    }
+}
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = match time {
         ThinkTime::Seconds(s) => EntityTime::Seconds(s),
@@ -256,8 +385,16 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context
 }
 fn qvm_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
-    let CallbackCall::Think { time, .. } = call else {
-        return false;
+    let (time, words) = match call {
+        CallbackCall::Think { time, .. } => {
+            let mut arguments = [0; 9];
+            arguments[0] = time.milliseconds() as u64;
+            (time, arguments)
+        }
+        CallbackCall::Export {
+            time, arguments, ..
+        } => (time, arguments),
+        _ => return false,
     };
     let Some(row) = host
         .modules
@@ -283,7 +420,9 @@ fn qvm_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackC
     };
     let mut arguments = [0; 10];
     arguments[0] = entry as i32;
-    arguments[1] = time.milliseconds() as i32;
+    for (output, word) in arguments[1..].iter_mut().zip(words) {
+        *output = word as u32 as i32;
+    }
     row.counts.calls += 1;
     match vm.call(&mut calls, arguments, row.request.instruction_budget, false) {
         Ok(result) => {

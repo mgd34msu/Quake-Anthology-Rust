@@ -1,8 +1,10 @@
 //! Cold module-file conversion; map and player roles do not select it.
-use super::{ModuleRequest, Program};
+use super::{Argument, Export, ModuleRequest, Program};
 use crate::Runtime;
 use qa_compat::{
+    abi::Q3_SERVER,
     quakec::{Layout, Vm},
+    qvm,
     services::CallContext,
 };
 use qa_console::{
@@ -37,6 +39,114 @@ impl QuakeCSpec {
     }
 }
 
+/// Only the server-game phase is wired here. Client/UI hosts must enter CLIENT.
+pub struct QvmSpec {
+    pub path: String,
+}
+impl QvmSpec {
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        let path = value
+            .strip_prefix("game:")
+            .filter(|path| !path.is_empty())
+            .ok_or("qvm-module needs game:virtual-file")?;
+        Ok(Self { path: path.into() })
+    }
+}
+
+fn module_bytes(
+    runtime: &Runtime,
+    path: &str,
+    reader: &mut ArchiveReader,
+) -> Result<Vec<u8>, String> {
+    let file = runtime
+        .vfs
+        .open(path.as_bytes())
+        .ok_or_else(|| format!("module not found: {path}"))?;
+    let length = usize::try_from(
+        runtime
+            .vfs
+            .length(file)
+            .map_err(|e| format!("module: {e:?}"))?,
+    )
+    .map_err(|_| "module too large")?;
+    if length > 256 * 1024 * 1024 {
+        return Err("module too large".into());
+    }
+    let mut bytes = vec![0; length];
+    if runtime
+        .vfs
+        .read_into_reusing(file, &mut bytes, reader)
+        .map_err(|e| format!("module: {e:?}"))?
+        != length
+    {
+        return Err("incomplete module".into());
+    }
+    Ok(bytes)
+}
+
+pub fn load_qvm(
+    runtime: &mut Runtime,
+    specs: &[QvmSpec],
+    requests: &mut Vec<ModuleRequest>,
+    rate: TickRate,
+) -> Result<(), String> {
+    let mut reader = ArchiveReader::default();
+    for spec in specs {
+        let module = ModuleId(u16::try_from(requests.len() + 1).map_err(|_| "too many modules")?);
+        let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
+        let image = qa_formats::program::qvm::Image::parse(&bytes)
+            .map_err(|e| format!("QVM module: {e:?}"))?;
+        let vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
+        let allocation = AllocationPolicy::q3(0);
+        let clock = EntityTime::Milliseconds(0);
+        let anchor = runtime
+            .server
+            .entities
+            .allocate(clock, module, allocation)
+            .ok_or("no module anchor slot")?
+            .id;
+        // qsrc game/g_public.h gameExport_t: INIT=0, SHUTDOWN=1, RUN_FRAME=8.
+        let mut initialize = [Argument::Word(0); 9];
+        initialize[0] = Argument::ClockMilliseconds;
+        initialize[1] = Argument::PlatformMilliseconds;
+        requests.push(ModuleRequest {
+            context: CallContext {
+                module,
+                clock,
+                console: Context {
+                    source: RuleSetId::Quake3,
+                    side: Scope::Server,
+                    role: Role::Game,
+                    ..Context::default()
+                },
+                allocation,
+                link_order: LinkOrder::Head,
+            },
+            timing_rules: RuleSetId::Quake3,
+            rate,
+            anchor,
+            program: Program::Qvm {
+                vm: Box::new(vm),
+                imports: &Q3_SERVER,
+            },
+            entries: (0..=10).collect(),
+            frame: CallbackId(8),
+            initialize: Some(Export {
+                callback: CallbackId(0),
+                arguments: initialize,
+            }),
+            shutdown: Some(Export {
+                callback: CallbackId(1),
+                arguments: [Argument::Word(0); 9],
+            }),
+            instruction_budget: 10_000_000,
+            configstrings: 1024,
+            files: 32,
+        });
+    }
+    Ok(())
+}
+
 /// The initial normal-app entry is StartFrame; native spawning stays separate.
 pub fn load_quakec(
     runtime: &mut Runtime,
@@ -47,29 +157,7 @@ pub fn load_quakec(
     for (index, spec) in specs.iter().enumerate() {
         // Module zero belongs to the existing built-in walk-through provider.
         let module = ModuleId(u16::try_from(index + 1).map_err(|_| "too many modules")?);
-        let file = runtime
-            .vfs
-            .open(spec.path.as_bytes())
-            .ok_or_else(|| format!("module not found: {}", spec.path))?;
-        let length = usize::try_from(
-            runtime
-                .vfs
-                .length(file)
-                .map_err(|e| format!("module: {e:?}"))?,
-        )
-        .map_err(|_| "module too large")?;
-        if length > 256 * 1024 * 1024 {
-            return Err("module too large".into());
-        }
-        let mut bytes = vec![0; length];
-        if runtime
-            .vfs
-            .read_into_reusing(file, &mut bytes, &mut reader)
-            .map_err(|e| format!("module: {e:?}"))?
-            != length
-        {
-            return Err("incomplete module".into());
-        }
+        let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
         let crc = if spec.rules == RuleSetId::QuakeWorld {
             54730
         } else {
@@ -128,6 +216,8 @@ pub fn load_quakec(
             program: Program::quakec(vm),
             entries,
             frame: CallbackId(frame),
+            initialize: None,
+            shutdown: None,
             instruction_budget: 1_000_000,
             configstrings: 64,
             files: 32,

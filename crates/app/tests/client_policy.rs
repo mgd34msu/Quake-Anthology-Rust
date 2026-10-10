@@ -80,14 +80,20 @@ fn foreign_movement_and_trace_overrides_do_not_select_native_clock_or_link_order
                 (movement.client, movement.movement, movement.trace),
                 (client, foreign, client)
             );
-            assert_eq!(movement.tick_rate(&mut cvars)?, rate);
+            assert_eq!(
+                qa_app::client_policy::tick_rate(movement.client, &mut cvars)?,
+                rate
+            );
             assert_eq!(movement.link_order(), order);
             let trace = ClientPolicy::select(None, Some(client), None, Some(foreign))?;
             assert_eq!(
                 (trace.client, trace.movement, trace.trace),
                 (client, client, foreign)
             );
-            assert_eq!(trace.tick_rate(&mut cvars)?, rate);
+            assert_eq!(
+                qa_app::client_policy::tick_rate(trace.client, &mut cvars)?,
+                rate
+            );
             assert_eq!(trace.link_order(), order);
         }
     }
@@ -125,7 +131,10 @@ fn q3_tick_period_and_low_rate_repair_use_the_client_view_in_every_console_diale
                 Some(RuleSetId::Quake),
                 Some(RuleSetId::Quake2),
             )?;
-            assert_eq!(policy.tick_rate(&mut cvars)?, fixed(milliseconds)?);
+            assert_eq!(
+                qa_app::client_policy::tick_rate(policy.client, &mut cvars)?,
+                fixed(milliseconds)?
+            );
             assert_eq!(cvars.integer_in(fps, RuleSetId::Quake3), expected_fps);
             assert_eq!(cvars.context(), context);
             if matches!(input, Some("0" | "-8")) {
@@ -172,7 +181,10 @@ fn non_q3_clients_do_not_repair_q3_sv_fps() -> Result<(), String> {
                 Some(RuleSetId::Quake3),
                 Some(RuleSetId::Quake3),
             )?;
-            assert_eq!(policy.tick_rate(&mut cvars)?, expected);
+            assert_eq!(
+                qa_app::client_policy::tick_rate(policy.client, &mut cvars)?,
+                expected
+            );
             assert_eq!(cvars.integer_in(fps, RuleSetId::Quake3), expected_fps);
             assert_eq!(cvars.generation(fps), generation);
         }

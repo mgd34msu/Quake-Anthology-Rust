@@ -55,12 +55,18 @@ fn run() -> Result<(), String> {
     let mut startup_sets = Vec::new();
     let mut precache_sounds = Vec::new();
     let mut quakec_modules = Vec::new();
+    let mut qvm_modules = Vec::new();
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--qvm-module" => {
+                qvm_modules.push(qa_app::modules::QvmSpec::parse(
+                    &args.next().ok_or("--qvm-module needs game:virtual-file")?,
+                )?);
+            }
             "--quakec-module" => {
                 quakec_modules.push(qa_app::modules::QuakeCSpec::parse(
                     &args
@@ -378,7 +384,7 @@ fn run() -> Result<(), String> {
                 ..WorldLoadOptions::default()
             },
         )?;
-        world_rate = policy.tick_rate(&mut console.cvars)?;
+        world_rate = qa_app::client_policy::tick_rate(policy.client, &mut console.cvars)?;
         let tick_ms = match world_rate {
             TickRate::FrameDriven => None,
             TickRate::FixedMilliseconds(period) => Some(period.get()),
@@ -447,7 +453,11 @@ fn run() -> Result<(), String> {
         loaded_world = Some(loaded.render);
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
-    let module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
+    let mut module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
+    if !qvm_modules.is_empty() {
+        let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
+        qa_app::modules::load_qvm(&mut runtime, &qvm_modules, &mut module_requests, rate)?;
+    }
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
     for (index, spec) in quakec_modules.iter().enumerate() {
         println!(
@@ -455,6 +465,13 @@ fn run() -> Result<(), String> {
             index + 1,
             json_string(&spec.path),
             spec.rules.name()
+        );
+    }
+    for (index, spec) in qvm_modules.iter().enumerate() {
+        println!(
+            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"q3\",\"entry\":\"game exports\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
+            quakec_modules.len() + index + 1,
+            json_string(&spec.path),
         );
     }
     let bank = qa_app::audio::load_bank(
@@ -726,11 +743,12 @@ fn run() -> Result<(), String> {
             );
         }
     }
-    for index in 0..quakec_modules.len() {
+    host.shutdown_modules();
+    for index in 0..quakec_modules.len() + qvm_modules.len() {
         if let Some(counts) = host.module_counts(qa_core::primitives::ModuleId((index + 1) as u16))
         {
             println!(
-                "{{\"event\":\"module_calls\",\"module\":{},\"calls\":{},\"traps\":{},\"rejected\":{},\"scope\":\"frame_entries_only\",\"gameplay\":false}}",
+                "{{\"event\":\"module_calls\",\"module\":{},\"calls\":{},\"traps\":{},\"rejected\":{},\"scope\":\"module_entries_only\",\"gameplay\":false}}",
                 index + 1,
                 counts.calls,
                 counts.traps,

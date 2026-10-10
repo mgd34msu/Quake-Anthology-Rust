@@ -54,36 +54,6 @@ impl ClientPolicy {
         })
     }
 
-    pub fn tick_rate(self, cvars: &mut Cvars) -> Result<TickRate, &'static str> {
-        let fps = if self.client == RuleSetId::Quake3 {
-            let handle = cvars.find("sv_fps").ok_or("missing sv_fps")?;
-            let mut value = cvars.integer_in(handle, self.client);
-            if value < 1 {
-                let view = cvars
-                    .bind(
-                        "sv_fps",
-                        Context {
-                            source: self.client,
-                            side: Scope::Server,
-                            ..cvars.context()
-                        },
-                    )
-                    .ok_or("missing Q3 sv_fps view")?;
-                cvars
-                    .write(view, "10")
-                    .map_err(|_| "Q3 sv_fps fallback write")?;
-                value = 10;
-            }
-            NonZeroU32::new(value as u32).ok_or("invalid Q3 sv_fps")?
-        } else {
-            NonZeroU32::MIN
-        };
-        Ok(match qa_gameplay::rules::tick_millis(self.client, fps) {
-            Some(period) => TickRate::FixedMilliseconds(period),
-            None => TickRate::FrameDriven,
-        })
-    }
-
     pub fn link_order(self) -> LinkOrder {
         if qa_gameplay::rules::link_first(self.client) {
             LinkOrder::Head
@@ -91,4 +61,34 @@ impl ClientPolicy {
             LinkOrder::Tail
         }
     }
+}
+
+pub fn tick_rate(rules: RuleSetId, cvars: &mut Cvars) -> Result<TickRate, &'static str> {
+    let fps = if rules == RuleSetId::Quake3 {
+        let handle = cvars.find("sv_fps").ok_or("missing sv_fps")?;
+        let mut value = cvars.integer_in(handle, rules);
+        if value < 1 {
+            let view = cvars
+                .bind(
+                    "sv_fps",
+                    Context {
+                        source: rules,
+                        side: Scope::Server,
+                        ..cvars.context()
+                    },
+                )
+                .ok_or("missing Q3 sv_fps view")?;
+            cvars
+                .write(view, "10")
+                .map_err(|_| "Q3 sv_fps fallback write")?;
+            value = 10;
+        }
+        NonZeroU32::new(value as u32).ok_or("invalid Q3 sv_fps")?
+    } else {
+        NonZeroU32::MIN
+    };
+    Ok(match qa_gameplay::rules::tick_millis(rules, fps) {
+        Some(period) => TickRate::FixedMilliseconds(period),
+        None => TickRate::FrameDriven,
+    })
 }

@@ -30,8 +30,21 @@ pub fn qvm() -> Vm {
         (Call, 0),
         (Leave, 64),
     ];
+    let mut data = [0; 128];
+    for (offset, text) in [
+        (16, &b"fov\0"[..]),
+        (32, b"105\0"),
+        (48, b"module print\n\0"),
+        (80, b"sensitivity 7\n\0"),
+    ] {
+        data[offset..offset + text.len()].copy_from_slice(text);
+    }
+    program(&operations, &data)
+}
+
+pub fn program(operations: &[(Opcode, i32)], data: &[u8]) -> Vm {
     let mut code = Vec::new();
-    for (op, arg) in operations {
+    for &(op, arg) in operations {
         code.push(op as u8);
         match op.operand_bytes() {
             1 => code.push(arg as u8),
@@ -47,22 +60,13 @@ pub fn qvm() -> Vm {
         32,
         code.len() as i32,
         32 + code.len() as i32,
-        128,
+        data.len() as i32,
         0,
-        65536 - 128,
+        65536 - data.len() as i32,
     ] {
         bytes.extend(word.to_le_bytes());
     }
     bytes.extend(code);
-    let data = bytes.len();
-    bytes.resize(data + 128, 0);
-    for (offset, text) in [
-        (16, &b"fov\0"[..]),
-        (32, b"105\0"),
-        (48, b"module print\n\0"),
-        (80, b"sensitivity 7\n\0"),
-    ] {
-        bytes[data + offset..data + offset + text.len()].copy_from_slice(text);
-    }
+    bytes.extend(data);
     Vm::load(Image::parse(&bytes).unwrap()).unwrap()
 }

@@ -236,9 +236,11 @@ impl FrameHost {
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
+            self.shutdown_modules();
             self.dispatch_output(source, &mut result);
             return result;
         }
+        self.initialize_modules();
         let server_time = self.time;
         self.previous = Some(server_time);
         let simulation = Stopwatch::start();
@@ -307,6 +309,7 @@ impl FrameHost {
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
+            self.shutdown_modules();
             self.dispatch_output(source, &mut result);
             return result;
         }

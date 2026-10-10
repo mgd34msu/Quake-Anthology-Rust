@@ -34,6 +34,218 @@ fn quakec_presets_are_explicit_and_do_not_inherit_map_or_player_rules() {
     }
 }
 
+#[test]
+fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
+    use qa_app::modules::QvmSpec;
+    assert_eq!(
+        QvmSpec::parse("game:vm/qagame.qvm").unwrap().path,
+        "vm/qagame.qvm"
+    );
+    for input in [
+        "vm/qagame.qvm",
+        "game:",
+        "client:vm/cgame.qvm",
+        "ui:vm/ui.qvm",
+    ] {
+        assert!(QvmSpec::parse(input).is_err());
+    }
+}
+
+fn lifecycle_host(budget: u64) -> FrameHost {
+    use qa_app::modules::{Argument, Export};
+    use qa_formats::program::qvm::Opcode::*;
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let id = runtime
+        .server
+        .entities
+        .allocate(
+            EntityTime::Milliseconds(0),
+            ModuleId(1),
+            AllocationPolicy::q3(0),
+        )
+        .unwrap()
+        .id;
+    // Return 1000*command + arg1 + arg2 + arg3, observing vmMain's stack ABI.
+    let vm = service_program::program(
+        &[
+            (Enter, 64),
+            (Local, 72),
+            (Load4, 0),
+            (Const, 1000),
+            (MulI, 0),
+            (Local, 76),
+            (Load4, 0),
+            (Add, 0),
+            (Local, 80),
+            (Load4, 0),
+            (Add, 0),
+            (Local, 84),
+            (Load4, 0),
+            (Add, 0),
+            (Leave, 64),
+        ],
+        &[0; 16],
+    );
+    FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![ModuleRequest {
+            context: CallContext {
+                module: ModuleId(1),
+                clock: EntityTime::Milliseconds(0),
+                console: Context::default(),
+                allocation: AllocationPolicy::q3(0),
+                link_order: LinkOrder::Head,
+            },
+            timing_rules: RuleSetId::Quake3,
+            rate: TickRate::fixed(50).unwrap(),
+            anchor: id,
+            program: Program::Qvm {
+                vm: Box::new(vm),
+                imports: &Q3_SERVER,
+            },
+            entries: (0..=10).collect(),
+            frame: CallbackId(8),
+            initialize: Some(Export {
+                callback: CallbackId(0),
+                arguments: [
+                    Argument::ClockMilliseconds,
+                    Argument::PlatformMilliseconds,
+                    Argument::Word(1),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                ],
+            }),
+            shutdown: Some(Export {
+                callback: CallbackId(1),
+                arguments: [
+                    Argument::Word(1),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                    Argument::Word(0),
+                ],
+            }),
+            instruction_budget: budget,
+            configstrings: 0,
+            files: 0,
+        }],
+    )
+    .unwrap()
+}
+
+#[test]
+fn lifecycle_is_once_only_uses_native_exports_and_keeps_two_physical_intakes() {
+    use qa_app::modules::State;
+    let mut host = lifecycle_host(100);
+    let mut source = Source {
+        time: EventTime(123_000_000),
+        polls: 0,
+    };
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(247))
+    );
+    assert_eq!(source.polls, 2);
+    host.initialize_modules();
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
+    source.time = EventTime(173_000_000);
+    host.frame(&mut source, true);
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(8173))
+    );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
+    host.shutdown_modules();
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Stopped));
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(1001))
+    );
+    host.shutdown_modules();
+    source.time = EventTime(223_000_000);
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+    assert_eq!(source.polls, 6);
+}
+
+#[test]
+fn failed_initialization_is_not_retried_or_advanced_as_a_running_module() {
+    use qa_app::modules::State;
+    let mut host = lifecycle_host(1);
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+    source.time = EventTime(150_000_000);
+    let result = host.frame(&mut source, true);
+    assert!(result.server_ticks >= 3);
+    let counts = host.module_counts(ModuleId(1)).unwrap();
+    assert_eq!((counts.calls, counts.traps, counts.rejected), (1, 1, 1));
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
+    assert_eq!(source.polls, 4);
+}
+
+#[test]
+fn export_words_narrow_only_at_the_qvm_boundary_and_owner_changes_are_rejected() {
+    use qa_app::modules::{Argument, Export};
+    let mut host = lifecycle_host(100);
+    let mut arguments = [Argument::Word(0); 9];
+    arguments[0] = Argument::Word(u64::MAX);
+    arguments[1] = Argument::Word(0x1_8000_0000);
+    arguments[2] = Argument::Word(0x1_0000_0007);
+    let export = Export {
+        callback: CallbackId(2),
+        arguments,
+    };
+    assert_eq!(
+        host.call_module_export(ModuleId(1), export, ThinkTime::Milliseconds(-123)),
+        Ok(())
+    );
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(i32::MIN.wrapping_add(2006)))
+    );
+    let slot = host
+        .runtime
+        .server
+        .entities
+        .next_active(0)
+        .into_iter()
+        .flat_map(|first| {
+            std::iter::successors(Some(first), |id| {
+                host.runtime
+                    .server
+                    .entities
+                    .next_active(id.slot as usize + 1)
+            })
+        })
+        .map(|id| id.slot as usize)
+        .find(|&slot| host.runtime.server.entities.columns.owner[slot] == ModuleId(1))
+        .unwrap();
+    host.runtime.server.entities.columns.owner[slot] = ModuleId(2);
+    assert_eq!(
+        host.call_module_export(ModuleId(1), export, ThinkTime::Milliseconds(0)),
+        Err(CallError::MissingModule)
+    );
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
+}
+
 pub struct Source {
     pub time: EventTime,
     pub polls: u64,
@@ -136,6 +348,8 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             },
             entries: vec![8],
             frame: CallbackId(0),
+            initialize: None,
+            shutdown: None,
             instruction_budget: qvm_budget,
             configstrings: 0,
             files: 0,
@@ -157,6 +371,8 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             program: Program::quakec(qc),
             entries: vec![1, 5],
             frame: CallbackId(0),
+            initialize: None,
+            shutdown: None,
             instruction_budget: 1000,
             configstrings: 0,
             files: 0,

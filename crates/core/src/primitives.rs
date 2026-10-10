@@ -239,6 +239,13 @@ impl ThinkTime {
 
 #[derive(Clone, Copy, Debug)]
 pub enum CallbackCall {
+    /// A module export keeps its native words at the ABI boundary. The entity
+    /// supplies the module owner and lifetime to the same dispatch table.
+    Export {
+        entity: EntityId,
+        time: ThinkTime,
+        arguments: [u64; 9],
+    },
     Think {
         entity: EntityId,
         time: ThinkTime,
@@ -269,7 +276,8 @@ pub enum CallbackCall {
 impl CallbackCall {
     pub fn entity(self) -> EntityId {
         match self {
-            Self::Think { entity, .. }
+            Self::Export { entity, .. }
+            | Self::Think { entity, .. }
             | Self::Touch { entity, .. }
             | Self::Use { entity, .. }
             | Self::Blocked { entity, .. } => entity,

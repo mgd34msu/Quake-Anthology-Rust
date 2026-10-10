@@ -109,11 +109,11 @@ The engine and everything shipped must be Rust. Python is allowed for developer
 tooling such as builds, checks, private harnesses, installation, timing and
 generators; that tooling is not part of the shipped platform.
 
-The 2026-10-08 22:30 budget ruling makes THE-2872/THE-2865 (one job dispatcher
-and automatic CPU bands) the next slice, followed by THE-889. Between commits,
-run the checker, workspace tests and allocation gate. Run the full private
-three-map CPU/GL qualification only when a slice is finished or an
-installation is due, rather than for each commit.
+Owner cadence, 2026-10-10: per commit, run one normal build and workspace tests
+only. Do not run allocation gates, timing runs or private CPU/GL qualification
+as routine gates. Run the private three-map matrix once at THE-3169 final
+installed acceptance. This supersedes the earlier per-slice qualification and
+allocation-gate cadence; the final acceptance criteria remain required.
 
 `cargo build --release` uses opt-level 3, fat LTO, one codegen unit and abort
 panics. `python3 tools/build.py` splits debug symbols into qa-rust.debug and
