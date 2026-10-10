@@ -1374,10 +1374,14 @@ pub fn write_q2_repro_entity(
         number,
         from,
         to,
-        write_old_origin,
-        false,
+        Q2EntityEncoding {
+            old_origin: write_old_origin,
+            demo: false,
+            force: true,
+        },
         &mut Q2KexWire::default(),
     )
+    .map(|_| ())
 }
 /// Retail KEX 2023; `demo` selects 2022's solid-dependent coordinate precision.
 pub fn write_q2_kex_entity(
@@ -1389,24 +1393,68 @@ pub fn write_q2_kex_entity(
     demo: bool,
     wire: &mut Q2KexWire,
 ) -> Result<(), Error> {
-    write_q2_extended_entity::<true>(writer, number, from, to, write_old_origin, demo, wire)
+    write_q2_extended_entity::<true>(
+        writer,
+        number,
+        from,
+        to,
+        Q2EntityEncoding {
+            old_origin: write_old_origin,
+            demo,
+            force: true,
+        },
+        wire,
+    )
+    .map(|_| ())
 }
-fn write_q2_extended_entity<const KEX: bool>(
+pub(crate) struct Q2EntityEncoding {
+    pub old_origin: bool,
+    pub demo: bool,
+    pub force: bool,
+}
+const fn q2_entity_admission() -> [Field; Q2_RERELEASE_ENTITY_WORDS] {
+    let mut fields = q2_enhanced_entity_fields::<false>();
+    let mut i = 0;
+    while i < fields.len() {
+        fields[i] = Field::new(
+            i,
+            0,
+            1,
+            if i == 18 {
+                Value::Transient
+            } else {
+                Value::Unsigned
+            },
+        );
+        i += 1;
+    }
+    fields
+}
+static Q2_ENTITY_ADMISSION: [Field; Q2_RERELEASE_ENTITY_WORDS] = q2_entity_admission();
+
+pub(crate) fn write_q2_extended_entity<const KEX: bool>(
     writer: &mut Writer<'_>,
     number: u16,
     from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
     to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
-    write_old_origin: bool,
-    demo: bool,
+    encoding: Q2EntityEncoding,
     wire: &mut Q2KexWire,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let Some(to) = to else {
         write_q2_entity_prefix(writer, number, Q2_REMOVE, true)?;
         if KEX {
             wire.nonzero_solid = wire.baseline_solid;
         }
-        return Ok(());
+        return Ok(true);
     };
+    // Native metadata admission precedes wire-width comparisons. A raw
+    // sub-eighth origin or loop-volume-only change can emit an empty header.
+    if !encoding.force
+        && !encoding.old_origin
+        && delta::mask::<true, true, true, false>(&Q2_ENTITY_ADMISSION, from, to, 0, 14, 3) == 0
+    {
+        return Ok(false);
+    }
     let fields = if KEX {
         &Q2_KEX_ENTITY_FIELDS
     } else {
@@ -1426,7 +1474,7 @@ fn write_q2_extended_entity<const KEX: bool>(
     } else if !KEX && flags & ((1 << 2) | (1 << 3) | (1 << 10)) != 0 {
         flags |= 1 << 13;
     }
-    if write_old_origin {
+    if encoding.old_origin {
         flags |= 1 << 24;
     }
     // Native workaround for KEX treating the fourth flags byte as signed.
@@ -1442,7 +1490,7 @@ fn write_q2_extended_entity<const KEX: bool>(
             wire.nonzero_solid = to[19] != 0;
         }
         delta::write(
-            kex_coords(demo, u32::from(wire.nonzero_solid)),
+            kex_coords(encoding.demo, u32::from(wire.nonzero_solid)),
             from,
             to,
             flags,
@@ -1466,7 +1514,8 @@ fn write_q2_extended_entity<const KEX: bool>(
         to,
         flags,
         writer,
-    )
+    )?;
+    Ok(true)
 }
 pub fn read_q2_repro_entity(
     reader: &mut Reader<'_>,

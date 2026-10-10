@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""THE-860 joined KEX receive comparison against original native functions."""
+"""THE-860 enhanced Q2 frame receive/transmit against original native functions."""
 import argparse
 import json
 from pathlib import Path
 import random
+import re
 import struct
 import subprocess
 
@@ -150,7 +151,84 @@ int main(int argc,char **argv) {
 '''
 
 
-def compile_reference(qsrc, evidence):
+TRANSMIT_BINDINGS = r'''
+#define RF_FRAMELERP BIT(6)
+#define RF_BEAM BIT(7)
+#define VectorCompare(a,b) ((a)[0]==(b)[0]&&(a)[1]==(b)[1]&&(a)[2]==(b)[2])
+#define VectorCopy(a,b) ((b)[0]=(a)[0],(b)[1]=(a)[1],(b)[2]=(a)[2])
+#define Q_assert assert
+typedef struct {int number;q2proto_packed_entity_state_t e;} server_entity_packed_t;
+typedef struct {int first_entity,num_entities;uint32_t player[107];} client_frame_t;
+typedef struct {q2proto_servercontext_t q2proto_ctx;kex_io_t io_data;
+ int maxclients,num_entities;server_entity_packed_t entities[512];
+ server_entity_packed_t *baselines[SV_BASELINES_CHUNKS];} client_t;
+#define msg_write ((struct {size_t cursize;}){.cursize=active_io->size})
+static bool SV_TruncPacketEntities(client_t *c,const client_frame_t *a,client_frame_t *b,int x,int y) {
+ (void)c;(void)a;(void)b;(void)x;(void)y;abort();
+}
+void q2proto_server_make_entity_state_delta(q2proto_servercontext_t *c,
+ const q2proto_packed_entity_state_t *a,const q2proto_packed_entity_state_t *b,
+ bool old,q2proto_entity_state_delta_t *d) {
+ c->make_entity_state_delta(c,a,b,old,d);
+}
+q2proto_error_t q2proto_server_write(q2proto_servercontext_t *c,uintptr_t io,const q2proto_svc_message_t *m) {
+ assert(m->type==Q2P_SVC_FRAME_ENTITY_DELTA);
+ return c->protocol==Q2P_PROTOCOL_Q2REPRO
+  ?q2repro_server_write_frame_entity_delta(c,io,&m->frame_entity_delta)
+  :kex_server_write_frame_entity_delta(c,io,&m->frame_entity_delta);
+}
+static const q2proto_packed_entity_state_t nullServerEntityState;
+'''
+
+TRANSMIT_DRIVER = r'''
+static void input(void *p,size_t size,size_t count) {assert(fread(p,size,count,stdin)==count);}
+static client_t client;
+static server_entity_packed_t baseline_entities[MAX_EDICTS];
+int main(int argc,char **argv) {
+ assert(argc==2);FILE *expected=fopen(argv[1],"wb");assert(expected);
+ uint32_t cases;input(&cases,4,1);
+ for(uint32_t k=0;k<cases;k++) {
+  uint8_t mode,frames,beam;uint16_t bases,maxclients,firstperson;
+  input(&mode,1,1);input(&beam,1,1);input(&maxclients,2,1);input(&firstperson,2,1);input(&bases,2,1);
+  bool kex=mode<2;int player_words=106+(!kex);
+  memset(&client,0,sizeof(client));memset(baseline_entities,0,sizeof(baseline_entities));
+  client.maxclients=maxclients;client.num_entities=512;
+  q2proto_servercontext_t *server=&client.q2proto_ctx;
+  server->protocol=mode==2?Q2P_PROTOCOL_Q2REPRO:mode==1?Q2P_PROTOCOL_KEX_DEMOS:Q2P_PROTOCOL_KEX;
+  server->features.has_beam_old_origin_fix=beam;
+  server->make_entity_state_delta=kex?kex_server_make_entity_state_delta:q2repro_server_make_entity_state_delta;
+  for(int i=0;i<SV_BASELINES_CHUNKS;i++)client.baselines[i]=baseline_entities+(i<<SV_BASELINES_SHIFT);
+  for(int i=0;i<bases;i++) {
+   uint16_t n;uint32_t words[25];input(&n,2,1);input(words,4,25);assert(n>0&&n<MAX_EDICTS);
+   baseline_entities[n].number=n;repro_entity_put(&baseline_entities[n].e,words);
+   q2proto_set_entity_bit(server->kex_demo_baseline_nonzero_solid,n,words[19]!=0);
+   q2proto_set_entity_bit(server->kex_demo_edict_nonzero_solid,n,words[19]!=0);
+  }
+  input(&frames,1,1);client_frame_t saved[32]={0};
+  for(int j=0;j<frames;j++) {
+   q2proto_svc_frame_t f={0};uint8_t flags,count,areas[255];uint16_t entities;
+   client_frame_t *to=&saved[(j+1)&31];to->first_entity=j*16;
+   input(&f.serverframe,4,1);input(&f.deltaframe,4,1);input(&flags,1,1);input(&count,1,1);
+   input(areas,1,count);input(to->player,4,player_words);input(&entities,2,1);assert(entities<=16);to->num_entities=entities;
+   for(int i=0;i<entities;i++) {
+    uint16_t n;uint32_t words[25];input(&n,2,1);input(words,4,25);assert(n>0&&n<MAX_EDICTS);
+    server_entity_packed_t *e=&client.entities[to->first_entity+i];e->number=n;repro_entity_put(&e->e,words);
+   }
+   client_frame_t *old=f.deltaframe>0?&saved[f.deltaframe&31]:NULL;
+   uint32_t zero[107]={0};f.playerstate=enhanced_player_delta(old?old->player:zero,to->player,kex);
+   f.suppress_count=f.q2pro_frame_flags=flags;f.areabits_len=count;f.areabits=areas;
+   uint8_t bytes[1400];client.io_data=(kex_io_t){.bytes=bytes};active_io=&client.io_data;
+   assert((kex?kex_server_write_frame(server,(uintptr_t)active_io,&f):q2repro_server_write_frame(server,(uintptr_t)active_io,&f))==Q2P_ERR_SUCCESS);
+   assert(emit_packet_entities(&client,old,to,firstperson?firstperson:-1,1400));
+   uint16_t size=active_io->size;fwrite(&size,2,1,expected);fwrite(bytes,1,size,expected);
+  }
+ }
+ assert(fclose(expected)==0);return 0;
+}
+'''
+
+
+def compile_reference(qsrc, evidence, transmit=False):
     base = qsrc / 'q2repro/q2proto'
     original = (base / 'src/q2proto_proto_kex.c').read_text()
     source = kex_player_reference(qsrc) + repro_entity_reference(qsrc) + BINDINGS
@@ -176,7 +254,17 @@ def compile_reference(qsrc, evidence):
     source += MERGE_BINDINGS
     source += function((qsrc / 'q2repro/src/client/parse.c').read_text(), 'CL_ParsePacketEntities')
     code = evidence / 'original-kex-frames.c'
-    code.write_text(source + DRIVER)
+    if transmit:
+        msg = (qsrc / 'q2repro/inc/common/msg.h').read_text()
+        source += re.search(r'typedef enum \{\s*MSG_ES_FORCE.*?\} msgEsFlags_t;', msg, re.S).group() + '\n'
+        source += re.search(r'^#define MAX_PACKETENTITY_BYTES.*$', msg, re.M).group() + '\n'
+        header = (qsrc / 'q2repro/src/server/server.h').read_text()
+        source += '\n'.join(re.findall(r'^#define SV_BASELINES_.*$', header, re.M)) + '\n'
+        source += TRANSMIT_BINDINGS
+        source += function((qsrc / 'q2repro/src/common/q2proto_shared.c').read_text(), 'Q2PROTO_MakeEntityDelta')
+        entities = (qsrc / 'q2repro/src/server/entities.c').read_text()
+        source += function(entities, 'write_entity_delta') + function(entities, 'emit_packet_entities')
+    code.write_text(source + (TRANSMIT_DRIVER if transmit else DRIVER))
     binary = evidence / 'original-kex-frames'
     command = ['cc', '-O2', '-std=c11', '-ffp-contract=off',
                '-DQ2PROTO_CONFIG_PROVIDED=1',
@@ -193,45 +281,50 @@ def float_word(value):
     return struct.unpack('<I', struct.pack('<f', value))[0]
 
 
+def projected_records(rng, mode, case):
+    def entity():
+        words = [0] * 25
+        for i in range(25):
+            if 8 <= i <= 16 and not (mode == 2 and 11 <= i <= 13):
+                words[i] = float_word(rng.uniform(-512, 512))
+            elif 11 <= i <= 13:
+                words[i] = rng.randrange(-32768, 32768) & 0xffffffff
+            elif i < 5:
+                words[i] = rng.randrange(65536)
+            elif i == 17:
+                words[i] = rng.randrange(16384)
+            elif i == 18 or i >= 21:
+                words[i] = rng.randrange(256)
+            else:
+                words[i] = rng.getrandbits(32)
+        words[19] = case % 2
+        return words
+
+    def player():
+        words = [0] * (106 + (mode == 2))
+        for i in range(len(words)):
+            if (1 <= i <= 6 or 10 <= i <= 12 or mode < 2 and (16 <= i <= 18 or 24 <= i <= 29)):
+                words[i] = float_word(rng.uniform(-512, 512))
+            elif i in (7, 8, 22):
+                words[i] = rng.randrange(65536)
+            elif i == 23:
+                words[i] = rng.randrange(65536 if mode == 2 else 512)
+            elif i in (0, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
+                words[i] = rng.randrange(256)
+            elif i == 41:
+                words[i] = rng.randrange(-128, 128) & 0xffffffff
+            else:
+                words[i] = rng.randrange(-32768, 32768) & 0xffffffff
+        return words
+    return entity, player
+
+
 def fixture():
     rng = random.Random(8602023)
     output = bytearray(struct.pack('<I', 768))
     for mode in range(3):
         for case in range(256):
-            def entity():
-                words = [0] * 25
-                for i in range(25):
-                    if 8 <= i <= 16 and not (mode == 2 and 11 <= i <= 13):
-                        words[i] = float_word(rng.uniform(-512, 512))
-                    elif 11 <= i <= 13:
-                        words[i] = rng.randrange(-32768, 32768) & 0xffffffff
-                    elif i < 5:
-                        words[i] = rng.randrange(65536)
-                    elif i == 17:
-                        words[i] = rng.randrange(16384)
-                    elif i == 18 or i >= 21:
-                        words[i] = rng.randrange(256)
-                    else:
-                        words[i] = rng.getrandbits(32)
-                words[19] = case % 2
-                return words
-
-            def player():
-                words = [0] * (106 + (mode == 2))
-                for i in range(len(words)):
-                    if (1 <= i <= 6 or 10 <= i <= 12 or mode < 2 and (16 <= i <= 18 or 24 <= i <= 29)):
-                        words[i] = float_word(rng.uniform(-512, 512))
-                    elif i in (7, 8, 22):
-                        words[i] = rng.randrange(65536)
-                    elif i == 23:
-                        words[i] = rng.randrange(65536 if mode == 2 else 512)
-                    elif i in (0, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40):
-                        words[i] = rng.randrange(256)
-                    elif i == 41:
-                        words[i] = rng.randrange(-128, 128) & 0xffffffff
-                    else:
-                        words[i] = rng.randrange(-32768, 32768) & 0xffffffff
-                return words
+            entity, player = projected_records(rng, mode, case)
 
             numbers = [1, 255, 256, 8191]
             bases = [entity() for _ in numbers]
@@ -267,14 +360,88 @@ def fixture():
     return output
 
 
+def transmit_fixture():
+    rng = random.Random(8601038)
+    output = bytearray(struct.pack('<I', 384))
+    for mode in range(3):
+        for case in range(128):
+            entity, player = projected_records(rng, mode, case)
+            output += struct.pack('<BBHHH', mode, case % 2, 2, case % 2, 4)
+            for number in (1, 255, 256, 8191):
+                output += struct.pack('<H25I', number, *entity())
+            output += bytes([6])
+            first = [entity() for _ in range(3)]
+            for words in first:
+                words[7] = (case % 3) * 64
+                words[18] = 0
+                words[14:17] = words[8:11]
+            second = [words.copy() for words in first[:2]]
+            second[0][8] = float_word(7.03125)
+            second[0][19] ^= 1
+            second[1][7] = 0
+            variant = case % 4
+            if variant == 0:
+                second[1][23] ^= 1  # Native metadata change, empty wire header.
+            elif variant == 1:
+                first[1][8] = float_word(0.01)
+                second[1][8] = float_word(0.02)  # Same eighth-unit coordinate.
+            elif variant == 2:
+                first[1][8] = float_word(0.0)
+                second[1][8] = float_word(-0.0)
+            else:
+                second[1][18] = 7
+            new = entity()
+            frames = [
+                (-1, list(zip((1, 255, 8191), first))),
+                (1, [(1, second[0]), (255, second[1]), (256, new)]),
+                (1, [(1, first[0]), (8191, first[2])]),
+                (3, [(8191, first[2])]),
+                (4, [(1, entity()), (256, new), (8191, first[2])]),
+                (5, [(1, entity()), (256, new)]),
+            ]
+            ps = player()
+            for sequence, (delta, entities) in enumerate(frames, 1):
+                areas = bytes(rng.getrandbits(8) for _ in range([0, 1, 32, 33, 255][(case + sequence) % 5]))
+                target = player() if sequence % 2 else ps.copy()
+                output += struct.pack('<IiBB', sequence, delta, rng.randrange(256), len(areas)) + areas
+                output += struct.pack(f'<{len(target)}IH', *target, len(entities))
+                for number, words in entities:
+                    output += struct.pack('<H25I', number, *words)
+                ps = target
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--qsrc', type=Path, default=ROOT.parent / 'qsrc')
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--probe', type=Path, default=ROOT / 'target/release/examples/rerelease_snapshots')
+    parser.add_argument('--transmit', action='store_true')
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
-    native = compile_reference(args.qsrc, args.evidence)
+    native = compile_reference(args.qsrc, args.evidence, args.transmit)
+    if args.transmit:
+        data = transmit_fixture()
+        fixture_path = args.evidence / 'fixture.bin'
+        fixture_path.write_bytes(data)
+        expected = args.evidence / 'original.bin'
+        subprocess.run([native, expected], input=data, check=True)
+        actual = subprocess.run([args.probe, '--compare-transmit', fixture_path], capture_output=True, check=True)
+        (args.evidence / 'rust.bin').write_bytes(actual.stdout)
+        (args.evidence / 'probe.json').write_bytes(actual.stderr)
+        equal = actual.stdout == expected.read_bytes()
+        result = {'result': 'PASS' if equal else 'FAIL', 'sequences': 384, 'frames': 2304,
+                  'formats': [2023, 2022, 1038], 'byte_exact': equal,
+                  'scope': 'complete native enhanced Q2 transmitted frames, original ordered emitter and retained first-person entity projection; no capacity truncation, module ABI, channel, OS or app',
+                  'source_functions': ['q2proto frame/player/entity writers and entity metadata builders',
+                                       'Q2PROTO_MakeEntityDelta', 'write_entity_delta', 'emit_packet_entities'],
+                  'cold_bindings': ['projected-word player delta metadata', 'connection/frame/entity storage', 'private IO'],
+                  'timing_run': False}
+        (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
+        print(json.dumps(result))
+        if not equal:
+            raise SystemExit('native enhanced Q2 frame transmission differs')
+        return
     data = fixture()
     (args.evidence / 'source-fixture.bin').write_bytes(data)
     projected = args.evidence / 'fixture.bin'

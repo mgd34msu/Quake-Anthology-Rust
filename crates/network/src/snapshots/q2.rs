@@ -1,4 +1,7 @@
-use super::{Frame, MergeRules, Ring, SLOTS, Slot, read_areas, read_entities};
+use super::{
+    Frame, MergeRules, Ring, SLOTS, Slot, delta_frame, native_entities, read_areas, read_entities,
+    write_entities,
+};
 use crate::{
     commands::packet,
     message::{Reader, Writer},
@@ -13,7 +16,7 @@ pub type Q2KexFrame<'a> = Frame<'a, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WO
 pub type Q2ReproRing = Ring<REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 pub type Q2ReproFrame<'a> = Frame<'a, REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 
-/// Endpoint-owned KEX decoder metadata. Snapshot bases remain in Ring; these
+/// Endpoint-owned KEX wire metadata. Snapshot bases remain in Ring; these
 /// small native columns select wire widths and reset to registered baselines.
 pub struct Q2KexContext {
     demo: bool,
@@ -68,6 +71,209 @@ pub(super) struct ReadRules {
     pub entity_opcode: bool,
     pub extended_header: bool,
     pub valid_base: bool,
+}
+
+/// Native per-connection entity policy, independent of common client slots.
+#[derive(Clone, Copy, Default)]
+pub struct Q2EntityPolicy {
+    pub native_clients: u32,
+    pub first_person: Option<u32>,
+    pub beam_old_origin_fix: bool,
+}
+
+pub(super) struct WriteRules {
+    pub area_limit: usize,
+    pub entity_limit: u32,
+    pub entity_opcode: bool,
+}
+
+pub fn write_q2_kex(
+    writer: &mut Writer<'_>,
+    ring: &mut Q2KexRing,
+    context: &mut Q2KexContext,
+    sequence: u32,
+    delta_request: Option<u32>,
+    policy: Q2EntityPolicy,
+) -> Result<(), packet::Error> {
+    prepare_first_person(ring, sequence, delta_request, policy.first_person)?;
+    write_records::<false, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
+        writer,
+        ring,
+        sequence,
+        delta_request,
+        WriteRules {
+            area_limit: 255,
+            entity_limit: 8192,
+            entity_opcode: true,
+        },
+        |writer, from, to| {
+            states::write_q2_kex_player(
+                writer,
+                &player_from_words::<42, KEX_PLAYER>(from),
+                &player_from_words::<42, KEX_PLAYER>(to),
+            )
+            .map(|()| 0)
+        },
+        |writer, number, from, to, force| {
+            let wire = context
+                .entities
+                .get_mut(number as usize)
+                .ok_or(crate::message::Error {
+                    byte: writer.size(),
+                    kind: crate::message::ErrorKind::Width,
+                })?;
+            states::write_q2_extended_entity::<true>(
+                writer,
+                number as u16,
+                from,
+                to,
+                states::Q2EntityEncoding {
+                    old_origin: write_old_origin(number, from, to, force, policy),
+                    demo: context.demo,
+                    force,
+                },
+                wire,
+            )
+        },
+    )
+}
+
+pub fn write_q2_repro(
+    writer: &mut Writer<'_>,
+    ring: &mut Q2ReproRing,
+    sequence: u32,
+    delta_request: Option<u32>,
+    policy: Q2EntityPolicy,
+) -> Result<(), packet::Error> {
+    prepare_first_person(ring, sequence, delta_request, policy.first_person)?;
+    write_records::<true, REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
+        writer,
+        ring,
+        sequence,
+        delta_request,
+        WriteRules {
+            area_limit: 255,
+            entity_limit: 8192,
+            entity_opcode: false,
+        },
+        |writer, from, to| {
+            states::write_q2_repro_player(
+                writer,
+                &player_from_words::<43, REPRO_PLAYER>(from),
+                &player_from_words::<43, REPRO_PLAYER>(to),
+            )
+        },
+        |writer, number, from, to, force| {
+            states::write_q2_extended_entity::<false>(
+                writer,
+                number as u16,
+                from,
+                to,
+                states::Q2EntityEncoding {
+                    old_origin: write_old_origin(number, from, to, force, policy),
+                    demo: false,
+                    force,
+                },
+                &mut states::Q2KexWire::default(),
+            )
+        },
+    )
+}
+
+fn prepare_first_person<const P: usize>(
+    ring: &mut Ring<P, { states::Q2_RERELEASE_ENTITY_WORDS }>,
+    sequence: u32,
+    request: Option<u32>,
+    number: Option<u32>,
+) -> Result<(), packet::Error> {
+    ring.frame(sequence).ok_or(packet::Error::Context)?;
+    if let Some(number) = number
+        && let Some(old) = delta_frame(ring, sequence, request)
+        && let Ok(index) = old.entities.binary_search_by_key(&number, |e| e.number)
+    {
+        let previous = old.entities[index].words;
+        let slot = sequence as usize & (SLOTS - 1);
+        let start = slot * ring.capacity;
+        let current = &mut ring.entities[start..start + ring.slots[slot].count];
+        if let Ok(index) = current.binary_search_by_key(&number, |e| e.number) {
+            // Native emit_packet_entities updates the retained client frame,
+            // not only the temporary delta, when suppressing its own pose.
+            current[index].words[8..14].copy_from_slice(&previous[8..14]);
+        }
+    }
+    Ok(())
+}
+
+fn write_old_origin(
+    number: u32,
+    from: &[u32; states::Q2_RERELEASE_ENTITY_WORDS],
+    to: Option<&[u32; states::Q2_RERELEASE_ENTITY_WORDS]>,
+    force: bool,
+    policy: Q2EntityPolicy,
+) -> bool {
+    let Some(to) = to else {
+        return false;
+    };
+    if !force && policy.first_person == Some(number) {
+        return false;
+    }
+    ((force || number <= policy.native_clients || to[7] & 64 != 0) && to[14..17] != from[8..11])
+        || (to[7] & 128 != 0 && (!policy.beam_old_origin_fix || to[14..17] != from[14..17]))
+}
+
+/// Shared Q2 frame prefix, scalar player records and ordered entity emission.
+pub(super) fn write_records<const PACKED: bool, const P: usize, const E: usize>(
+    writer: &mut Writer<'_>,
+    ring: &Ring<P, E>,
+    sequence: u32,
+    request: Option<u32>,
+    rules: WriteRules,
+    player: impl FnOnce(&mut Writer<'_>, &[u32; P], &[u32; P]) -> Result<u8, crate::message::Error>,
+    entity: impl FnMut(
+        &mut Writer<'_>,
+        u32,
+        &[u32; E],
+        Option<&[u32; E]>,
+        bool,
+    ) -> Result<bool, crate::message::Error>,
+) -> Result<(), packet::Error> {
+    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let from = delta_frame(ring, sequence, request);
+    let start = writer.size();
+    Q2Header {
+        sequence,
+        delta: from.map_or(-1, |f| f.sequence as i32),
+        flags: to.flags,
+        player_flags: 0,
+    }
+    .write::<PACKED>(writer, &to.areas[..to.areas.len().min(rules.area_limit)])?;
+    let flags = player(writer, from.map_or(&[0; P], |f| f.player), to.player)?;
+    if PACKED {
+        writer.patch_byte(start + 6, flags)?;
+    }
+    if rules.entity_opcode {
+        writer.write_bits(18, 8)?;
+    }
+    write_entities(
+        writer,
+        from.map_or(&[][..], |f| {
+            native_entities(f.entities, 1, rules.entity_limit)
+        }),
+        native_entities(to.entities, 1, rules.entity_limit),
+        &ring.baselines,
+        entity,
+    )?;
+    writer.write_bits(0, 16)?;
+    Ok(())
+}
+
+fn player_from_words<const F: usize, const P: usize>(
+    words: &[u32; P],
+) -> states::Q2RereleasePlayer<F> {
+    let mut player = states::Q2RereleasePlayer::default();
+    player.words.copy_from_slice(&words[..F]);
+    player.stats.copy_from_slice(&words[F..]);
+    player
 }
 
 /// KEX frame after svc_frame; the context selects retail 2023 or demo 2022
@@ -156,9 +362,7 @@ fn read_player<const F: usize, const P: usize>(
         u8,
     ) -> Result<states::Q2RereleasePlayer<F>, crate::message::Error>,
 ) -> Result<[u32; P], crate::message::Error> {
-    let mut old = states::Q2RereleasePlayer::default();
-    old.words.copy_from_slice(&from[..F]);
-    old.stats.copy_from_slice(&from[F..]);
+    let old = player_from_words(from);
     let decoded = decode(reader, &old, flags)?;
     let mut words = [0; P];
     words[..F].copy_from_slice(&decoded.words);

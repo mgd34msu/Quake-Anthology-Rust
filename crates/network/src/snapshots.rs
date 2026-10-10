@@ -7,8 +7,8 @@ use crate::{
 };
 mod q2;
 pub use q2::{
-    Q2Header, Q2KexContext, Q2KexFrame, Q2KexRing, Q2ReproFrame, Q2ReproRing, read_q2_kex,
-    read_q2_repro,
+    Q2EntityPolicy, Q2Header, Q2KexContext, Q2KexFrame, Q2KexRing, Q2ReproFrame, Q2ReproRing,
+    read_q2_kex, read_q2_repro, write_q2_kex, write_q2_repro,
 };
 
 pub const SLOTS: usize = 32;
@@ -861,27 +861,17 @@ pub fn write_q2(
     delta_request: Option<u32>,
     native_clients: u32,
 ) -> Result<(), packet::Error> {
-    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
-    let from = delta_frame(ring, sequence, delta_request);
-    let areas = &to.areas[..to.areas.len().min(32)];
-    Q2Header {
+    q2::write_records::<false, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>(
+        writer,
+        ring,
         sequence,
-        delta: from.map_or(-1, |f| f.sequence as i32),
-        flags: to.flags,
-        player_flags: 0,
-    }
-    .write::<false>(writer, areas)?;
-    states::write_q2_player(
-        writer,
-        from.map_or(&[0; states::Q2_PLAYER_WORDS], |f| f.player),
-        to.player,
-    )?;
-    writer.write_bits(18, 8)?;
-    write_entities(
-        writer,
-        from.map_or(&[][..], |f| native_entities(f.entities, 1, 1024)),
-        native_entities(to.entities, 1, 1024),
-        &ring.baselines,
+        delta_request,
+        q2::WriteRules {
+            area_limit: 32,
+            entity_limit: 1024,
+            entity_opcode: true,
+        },
+        |writer, from, to| states::write_q2_player(writer, from, to).map(|()| 0),
         |writer, number, old, new, force| {
             states::write_q2_entity(
                 writer,
@@ -892,9 +882,7 @@ pub fn write_q2(
                 force || number <= native_clients,
             )
         },
-    )?;
-    writer.write_bits(0, 16)?;
-    Ok(())
+    )
 }
 
 /// Native protocol-28 packetentities. An unavailable retained request receives
@@ -953,7 +941,7 @@ fn write_entities<const E: usize>(
     old: &[Entity<E>],
     entities: &[Entity<E>],
     baselines: &[[u32; E]],
-    encode: impl Fn(
+    mut encode: impl FnMut(
         &mut Writer<'_>,
         u32,
         &[u32; E],

@@ -198,6 +198,14 @@ impl<'a> Writer<'a> {
     pub fn bytes(&self) -> &[u8] {
         &self.data[..self.size()]
     }
+    /// Fill an already-written byte prefix after its variable-length body.
+    pub fn patch_byte(&mut self, position: usize, value: u8) -> Result<(), Error> {
+        if self.encoding != Encoding::Bytes || position >= self.size() {
+            return Err(self.error(ErrorKind::Width));
+        }
+        self.data[position] = value;
+        Ok(())
+    }
     pub fn size(&self) -> usize {
         if self.encoding == Encoding::Q3 && self.bit != 0 {
             self.bit / 8 + 1

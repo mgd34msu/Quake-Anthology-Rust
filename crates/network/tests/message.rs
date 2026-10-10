@@ -1,6 +1,33 @@
 use qa_network::message::{Encoding, ErrorKind, Reader, Writer};
 
 #[test]
+fn byte_prefix_patch_is_bounded_and_never_edits_bitstream_symbols() {
+    for encoding in [Encoding::Bytes, Encoding::Bits, Encoding::Q3] {
+        let mut data = [0xa5; 8];
+        let mut writer = Writer::new(&mut data, encoding);
+        writer.write_bits(0x1234, 16).expect("body");
+        let size = writer.size();
+        assert_eq!(
+            writer.patch_byte(size, 0xff).expect_err("unwritten").kind,
+            ErrorKind::Width
+        );
+        if encoding == Encoding::Bytes {
+            writer.patch_byte(0, 0xff).expect("prefix");
+            assert_eq!(writer.bytes(), &[0xff, 0x12]);
+        } else {
+            let mut before = [0; 8];
+            before[..size].copy_from_slice(writer.bytes());
+            assert_eq!(
+                writer.patch_byte(0, 0xff).expect_err("encoding").kind,
+                ErrorKind::Width
+            );
+            assert_eq!(writer.bytes(), &before[..size]);
+        }
+        assert_eq!(writer.size(), size);
+    }
+}
+
+#[test]
 fn little_endian_native_scalars_and_ieee_payloads() {
     let mut data = [0; 32];
     let mut writer = Writer::new(&mut data, Encoding::Bytes);

@@ -110,6 +110,102 @@ fn receive_repro(ring: &mut Q2ReproRing, bytes: &[u8]) -> Result<bool, Error> {
 }
 
 #[test]
+fn enhanced_first_person_projection_changes_the_retained_client_frame_only() -> Result<(), Error> {
+    let mut sender = Q2KexRing::load(4, 8192, 32, None)?;
+    let mut context = Q2KexContext::load(&sender, false)?;
+    let player = [0; 106];
+    let original = body(1, 2.5, false);
+    let mut changed = original;
+    changed.words[8] = 7.25f32.to_bits();
+    changed.words[11] = 90.0f32.to_bits();
+    let other = body(2, 12.5, false);
+    let store = |ring: &mut Q2KexRing, sequence, entities: &[_]| {
+        ring.store(Frame {
+            sequence,
+            time: ThinkTime::Milliseconds(0),
+            command: 0,
+            flags: 0,
+            areas: &[],
+            player: &player,
+            entities,
+        })
+    };
+    store(&mut sender, 1, &[original, other])?;
+    store(&mut sender, 2, &[changed, other])?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(1, 8)?;
+    snapshots::write_q2_kex(
+        &mut writer,
+        &mut sender,
+        &mut context,
+        2,
+        Some(1),
+        snapshots::Q2EntityPolicy {
+            native_clients: 2,
+            first_person: Some(1),
+            beam_old_origin_fix: true,
+        },
+    )?;
+    let current = sender.frame(2).ok_or(Error::Context)?;
+    assert_eq!(current.entities[0].words[8..14], original.words[8..14]);
+    assert_eq!(current.entities[1], other);
+    assert_eq!(sender.frame(1).ok_or(Error::Context)?.entities[0], original);
+    assert_eq!(changed.words[8], 7.25f32.to_bits());
+    Ok(())
+}
+
+#[test]
+fn repro_transmission_patches_the_player_prefix_after_existing_message_data() -> Result<(), Error> {
+    let mut sender = Q2ReproRing::load(1, 8192, 255, None)?;
+    let mut receiver = Q2ReproRing::load(1, 8192, 255, None)?;
+    let mut player = [0; 107];
+    player[42] = 255;
+    player[43 + 63] = (-32768i32) as u32;
+    sender.store(Frame {
+        sequence: 1,
+        time: ThinkTime::Milliseconds(0),
+        command: 0,
+        flags: 0xf5,
+        areas: &[0xa5; 255],
+        player: &player,
+        entities: &[],
+    })?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(1, 8)?;
+    snapshots::write_q2_repro(
+        &mut writer,
+        &mut sender,
+        1,
+        None,
+        snapshots::Q2EntityPolicy::default(),
+    )?;
+    let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+    assert_eq!(reader.read_bits(8)?, 1);
+    assert_eq!(reader.read_bits(8)?, 20);
+    assert!(snapshots::read_q2_repro(&mut reader, &mut receiver, |n| {
+        ThinkTime::Milliseconds(i64::from(n) * 100)
+    })?);
+    let decoded = receiver.current().ok_or(Error::Context)?;
+    assert_eq!(decoded.player, &player);
+    assert_eq!(decoded.areas, &[0xa5; 255]);
+    assert_eq!(decoded.flags, 5);
+    assert_eq!(reader.byte_position(), writer.size());
+    let mut tiny = [0; 7];
+    let error = snapshots::write_q2_repro(
+        &mut Writer::new(&mut tiny, Encoding::Bytes),
+        &mut sender,
+        1,
+        None,
+        snapshots::Q2EntityPolicy::default(),
+    )
+    .expect_err("bounded message");
+    assert!(matches!(error, Error::Message(_)));
+    Ok(())
+}
+
+#[test]
 fn repro_frames_use_packed_prefix_extra_flags_and_the_shared_merge() -> Result<(), Error> {
     let mut ring = Q2ReproRing::load(16, 8192, 32, Some(8192))?;
     let mut first = body(1, 1.25, false);
