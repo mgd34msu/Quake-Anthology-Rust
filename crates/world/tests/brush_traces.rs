@@ -18,7 +18,7 @@ fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Case, &'static str> {
         .load_brushes(
             planes,
             brushes,
-            surfaces,
+            qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
             tree,
             vec![Bounds {
                 mins: Vec3([-32768.0; 3]),

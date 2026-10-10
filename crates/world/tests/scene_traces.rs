@@ -25,7 +25,7 @@ fn brush_world(planes: Vec<Plane>, brushes: Vec<Brush>) -> FixtureWorld {
         .load_brushes(
             planes,
             brushes,
-            surfaces,
+            qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
             BrushTree {
                 planes: Vec::new(),
                 nodes: Vec::new(),

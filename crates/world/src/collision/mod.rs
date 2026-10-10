@@ -4,10 +4,11 @@ pub mod contents;
 pub mod hulls;
 pub mod scene;
 pub mod store;
+pub mod surfaces;
 pub mod tree;
 
 pub use contents::Contents;
-use qa_core::primitives::{EntityId, Plane, RuleSetId, SurfaceFlags, Vec3};
+use qa_core::primitives::{EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3};
 pub use scene::WorldTrace;
 pub use store::{CollisionStore, StoreError, TraceScratch};
 
@@ -300,6 +301,7 @@ pub struct Trace {
     pub contents: Contents,
     pub entity: Option<EntityId>,
     pub surface: SurfaceFlags,
+    pub surface_id: Option<SurfaceId>,
     /// Brush-solid contacts preserve NetQuake's SOLID_BSP grounding rule.
     pub brush_solid: bool,
 }
@@ -342,6 +344,7 @@ impl Trace {
             contents: Contents::EMPTY,
             entity: None,
             surface: SurfaceFlags::default(),
+            surface_id: None,
             brush_solid: true,
         }
     }

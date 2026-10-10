@@ -101,7 +101,7 @@ fn load(
                     distance,
                     axis,
                 });
-                surfaces.push(SurfaceFlags(word(&mut data)?));
+                surfaces.push(SurfaceFlags(u64::from(word(&mut data)?)));
             }
         }
         let tree = BrushTree::direct(brushes.len()).map_err(|_| "invalid fixture membership")?;
@@ -110,7 +110,7 @@ fn load(
                 .load_brushes(
                     planes,
                     brushes,
-                    surfaces,
+                    qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
                     tree,
                     vec![Bounds {
                         mins: Vec3([-65536.0; 3]),
@@ -215,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             trace.plane.distance.to_bits(),
             u32::from(trace.start_solid) | u32::from(trace.all_solid) << 1,
             trace.contents.0 as u32,
-            trace.surface.0,
+            trace.surface.0 as u32,
         ];
     }
     let allocations = allocation_counter::stop();

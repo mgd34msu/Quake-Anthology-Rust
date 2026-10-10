@@ -280,5 +280,56 @@ fn q3_trace_contacts_convert_early_side_flags_and_modern_shader_flags() {
             store.trace_model(geometry, 0, query, &mut scratch).surface,
             SurfaceFlags::SLICK
         );
+        let id = store
+            .trace_model(geometry, 0, query, &mut scratch)
+            .surface_id
+            .unwrap();
+        let row = store.surface(id).unwrap();
+        assert_eq!(row.flags.to_q3(), 2);
+        assert_eq!(
+            row.name,
+            if version == 44 {
+                &b""[..]
+            } else {
+                &b"test_slick"[..]
+            }
+        );
     }
+}
+
+#[test]
+fn q2_texinfo_contacts_keep_full_native_flags_name_value_and_index() {
+    let bytes = empty_map_bytes(38);
+    let mut map = Map::parse(&bytes).unwrap();
+    two_models(&mut map);
+    map.texture_info.push(qa_formats::bsp::TextureInfo {
+        projection: [[0.0; 4]; 2],
+        flags: 0x80000083u32 as i32,
+        texture: 0,
+        value: 96,
+        next: -1,
+        name: b"e1u1/Light_A",
+    });
+    for side in &mut map.brush_sides {
+        side.texture_info = Some(0);
+    }
+    let mut store = CollisionStore::new();
+    let (geometry, _) = collision(&map, &mut store).unwrap();
+    let mut scratch = store.scratch();
+    let (rules, entities) =
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2);
+    let hit = store.trace_model(
+        geometry,
+        0,
+        TraceQuery::point(Vec3([40.0, 0.0, 0.0]), Vec3::default(), rules, entities),
+        &mut scratch,
+    );
+    let id = hit.surface_id.unwrap();
+    assert_eq!(id.index, 1);
+    let row = store.surface(id).unwrap();
+    assert_eq!(row.name, b"e1u1/Light_A");
+    assert_eq!(row.value, 96);
+    assert_eq!(row.source_index, 1);
+    assert_eq!(row.flags.to_q2(), 0x80000083);
+    assert_eq!(store.surface_count(geometry), Some(2));
 }

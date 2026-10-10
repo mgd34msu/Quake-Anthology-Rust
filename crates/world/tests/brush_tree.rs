@@ -21,7 +21,13 @@ fn load_tree(
         tree.models.len()
     ];
     let mut store = CollisionStore::new();
-    let geometry = store.load_brushes(planes, brushes, surfaces, tree, bounds)?;
+    let geometry = store.load_brushes(
+        planes,
+        brushes,
+        qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
+        tree,
+        bounds,
+    )?;
     Ok(Case { store, geometry })
 }
 

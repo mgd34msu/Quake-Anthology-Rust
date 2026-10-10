@@ -18,6 +18,7 @@ use qa_world::collision::{
     CollisionStore, Contents,
     brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
     hulls::HullModel,
+    surfaces::{SurfaceInput, SurfaceTable},
 };
 use std::borrow::Cow;
 
@@ -555,25 +556,63 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
     // Model roots select membership; unplaced inline models are never part
     // of a world trace merely because their brushes share this storage.
     let mut planes = Vec::new();
-    let mut surfaces = Vec::new();
+    let q2 = matches!(map.bsp.format.rule_set(), RuleSetId::Quake2);
+    let early = map.bsp.format == BspFormat::Quake3Test;
+    let mut surfaces = SurfaceTable {
+        records: vec![SurfaceInput::unnamed(SurfaceFlags::default())],
+        sides: Vec::new(),
+    };
+    if q2 {
+        surfaces
+            .records
+            .extend(
+                map.texture_info
+                    .iter()
+                    .enumerate()
+                    .map(|(index, row)| SurfaceInput {
+                        name: row.name,
+                        material: b"",
+                        flags: SurfaceFlags::from_q2(row.flags as u32),
+                        value: row.value,
+                        source_index: index as u32 + 1,
+                    }),
+            );
+    } else if !early {
+        surfaces.records.extend(
+            map.shaders
+                .iter()
+                .enumerate()
+                .map(|(index, row)| SurfaceInput {
+                    name: row.name,
+                    material: b"",
+                    flags: SurfaceFlags::from_q3(row.surface_flags as u32),
+                    value: 0,
+                    source_index: index as u32 + 1,
+                }),
+        );
+    }
     let mut brushes = Vec::new();
     for source in &map.brushes {
         let first_plane = u32::try_from(planes.len()).map_err(|_| "collision plane count")?;
         for side in &map.brush_sides[source.sides.indices()] {
             planes.push(map.planes[side.plane as usize]);
-            surfaces.push(if matches!(map.bsp.format.rule_set(), RuleSetId::Quake2) {
-                SurfaceFlags::from_q2(
-                    side.texture_info
-                        .map_or(0, |id| map.texture_info[id as usize].flags as u32),
-                )
+            surfaces.sides.push(if q2 {
+                side.texture_info.map_or(0, |id| id + 1)
+            } else if early {
+                let index =
+                    u32::try_from(surfaces.records.len()).map_err(|_| "collision surface count")?;
+                surfaces.records.push(SurfaceInput {
+                    name: side
+                        .shader
+                        .map_or(&[][..], |id| map.shaders[id as usize].name),
+                    material: b"",
+                    flags: SurfaceFlags::from_q3(side.flags as u32),
+                    value: 0,
+                    source_index: side.shader.map_or(0, |id| id + 1),
+                });
+                index
             } else {
-                let flags = if map.bsp.format == BspFormat::Quake3Test {
-                    side.flags as u32
-                } else {
-                    side.shader
-                        .map_or(0, |id| map.shaders[id as usize].surface_flags as u32)
-                };
-                SurfaceFlags::from_q3(flags)
+                side.shader.map_or(0, |id| id + 1)
             });
         }
         brushes.push(Brush {

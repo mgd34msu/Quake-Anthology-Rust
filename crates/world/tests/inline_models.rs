@@ -33,7 +33,7 @@ fn empty(store: &mut CollisionStore) -> GeometryId {
         .load_brushes(
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
             BrushTree {
                 planes: Vec::new(),
                 nodes: Vec::new(),
@@ -89,7 +89,7 @@ fn brush_model(
                 plane_count: 6,
                 contents,
             }],
-            vec![SurfaceFlags::default(); 6],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
             BrushTree {
                 planes: Vec::new(),
                 nodes: Vec::new(),

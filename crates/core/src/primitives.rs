@@ -529,28 +529,54 @@ impl Default for MovementTuning {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SurfaceFlags(pub u32);
+pub struct SurfaceFlags(pub u64);
 impl SurfaceFlags {
     pub const SLICK: Self = Self(1);
     pub const LADDER: Self = Self(2);
     pub const NO_DAMAGE: Self = Self(4);
     pub const NO_FOOTSTEPS: Self = Self(8);
     pub const METAL_STEPS: Self = Self(16);
+    pub const SKY: Self = Self(1 << 36);
+    const Q2_BITS: [u8; 32] = [
+        5, 0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+        28, 29, 30, 31, 32, 33, 34, 35,
+    ];
+    const Q3_BITS: [u8; 32] = [
+        2, 0, 36, 1, 37, 38, 39, 11, 40, 41, 42, 43, 4, 3, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+        54, 55, 56, 57, 58, 59, 60, 61,
+    ];
     pub fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 != 0
     }
     pub fn from_q2(raw: u32) -> Self {
-        Self(u32::from(raw & 2 != 0))
+        Self::decode(raw, &Self::Q2_BITS)
     }
     pub fn from_q3(raw: u32) -> Self {
-        Self(
-            u32::from(raw & 2 != 0)
-                | (u32::from(raw & 8 != 0) << 1)
-                | (u32::from(raw & 1 != 0) << 2)
-                | (u32::from(raw & 0x2000 != 0) << 3)
-                | (u32::from(raw & 0x1000 != 0) << 4),
-        )
+        Self::decode(raw, &Self::Q3_BITS)
     }
+    pub fn to_q2(self) -> u32 {
+        self.encode(&Self::Q2_BITS) | if self.contains(Self::SKY) { 4 } else { 0 }
+    }
+    pub fn to_q3(self) -> u32 {
+        self.encode(&Self::Q3_BITS) | if self.0 & (1 << 6) != 0 { 4 | 16 } else { 0 }
+    }
+    fn decode(raw: u32, bits: &[u8; 32]) -> Self {
+        Self(bits.iter().enumerate().fold(0, |flags, (bit, &target)| {
+            flags | (u64::from((raw >> bit) & 1) << target)
+        }))
+    }
+    fn encode(self, bits: &[u8; 32]) -> u32 {
+        bits.iter().enumerate().fold(0, |flags, (bit, &source)| {
+            flags | (((self.0 >> source) as u32 & 1) << bit)
+        })
+    }
+}
+
+/// A collision contact retains its resource lifetime and original surface row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceId {
+    pub geometry: GeometryId,
+    pub index: u32,
 }
 
 /// Input/AI intent before rule-selected scaling, time and duration.

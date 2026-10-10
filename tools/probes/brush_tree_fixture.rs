@@ -122,7 +122,7 @@ pub fn load(
             });
             for _ in 0..plane_count {
                 side_planes.push(plane(&mut data)?);
-                surfaces.push(SurfaceFlags(word(&mut data)?));
+                surfaces.push(SurfaceFlags(u64::from(word(&mut data)?)));
             }
         }
         let plane_count = count(&mut data, 1, 64)?;
@@ -174,7 +174,7 @@ pub fn load(
                 .load_brushes(
                     side_planes,
                     brushes,
-                    surfaces,
+                    qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
                     BrushTree {
                         planes,
                         nodes,
@@ -262,7 +262,7 @@ pub fn result(trace: Trace, point: Contents) -> [u32; WORDS] {
         axis,
         u32::from(trace.start_solid) | u32::from(trace.all_solid) << 1,
         trace.contents.0 as u32,
-        trace.surface.0,
+        trace.surface.0 as u32,
         point.0 as u32,
     ]
 }

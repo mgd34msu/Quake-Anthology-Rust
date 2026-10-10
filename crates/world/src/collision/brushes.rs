@@ -1,3 +1,4 @@
+use super::surfaces::{SurfaceRows, SurfaceStorage, SurfaceTable};
 use super::tree::BrushScratch;
 use super::tree::Topology;
 pub use super::tree::{BrushTree, CollisionLeaf, ModelRoot};
@@ -17,6 +18,7 @@ pub struct Brush {
 #[derive(Debug, PartialEq, Eq)]
 pub enum GeometryError {
     Plane,
+    Surface,
     BrushRange,
     TreePlane,
     TreeRange,
@@ -27,7 +29,7 @@ pub enum GeometryError {
 pub(super) struct BrushMap {
     pub(super) planes: Box<[Plane]>,
     pub(super) brushes: Box<[Brush]>,
-    pub(super) surfaces: Box<[SurfaceFlags]>,
+    pub(super) surfaces: SurfaceStorage,
     pub(super) topology: Topology,
     pub(super) axial_bounds: Box<[Option<Bounds>]>,
 }
@@ -37,12 +39,13 @@ impl BrushMap {
     pub(crate) fn load_tree(
         planes: Vec<Plane>,
         brushes: Vec<Brush>,
-        surfaces: Vec<SurfaceFlags>,
+        surfaces: SurfaceTable<'_>,
         tree: BrushTree,
     ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
-        if surfaces.len() != planes.len() || planes.iter().any(|plane| !valid_plane(*plane)) {
+        if planes.iter().any(|plane| !valid_plane(*plane)) {
             return Err(GeometryError::Plane);
         }
+        let surfaces = SurfaceStorage::load(surfaces, planes.len())?;
         if brushes.iter().any(|brush| {
             (brush.first_plane as usize)
                 .checked_add(brush.plane_count as usize)
@@ -65,7 +68,7 @@ impl BrushMap {
             Self {
                 planes: planes.into_boxed_slice(),
                 brushes: brushes.into_boxed_slice(),
-                surfaces: surfaces.into_boxed_slice(),
+                surfaces,
                 topology,
                 axial_bounds,
             },
@@ -285,7 +288,7 @@ pub(super) fn clip_brush(
     work: &BrushWork,
     planes: &[Plane],
     brush: Brush,
-    surfaces: &[SurfaceFlags],
+    surfaces: SurfaceRows<'_>,
     trace: &mut Trace,
 ) {
     if brush.plane_count == 0 {
@@ -298,6 +301,7 @@ pub(super) fn clip_brush(
     let mut leave = 1.0f32;
     let mut contact = Plane::default();
     let mut surface = SurfaceFlags::default();
+    let mut surface_id = None;
     let mut start_out = false;
     let mut end_out = false;
     for (index, &plane) in sides.iter().enumerate() {
@@ -325,7 +329,7 @@ pub(super) fn clip_brush(
             if fraction > enter {
                 enter = fraction;
                 contact = plane;
-                surface = surfaces[brush.first_plane as usize + index];
+                (surface, surface_id) = surfaces.contact(brush.first_plane as usize + index);
             }
         } else {
             let mut fraction =
@@ -351,16 +355,17 @@ pub(super) fn clip_brush(
         trace.fraction = enter.max(0.0);
         trace.plane = contact;
         trace.surface = surface;
+        trace.surface_id = surface_id;
         trace.contents = brush.contents;
     }
 }
 
 /// Loaded geometry and stack-built temporary bodies share these kernels.
-pub(crate) fn trace_brushes(
+pub(super) fn trace_brushes(
     query: TraceQuery,
     planes: &[Plane],
     brushes: &[Brush],
-    surfaces: &[SurfaceFlags],
+    surfaces: SurfaceRows<'_>,
 ) -> Trace {
     let work = BrushWork::new(query);
     let mut trace = Trace::clear(query.end);

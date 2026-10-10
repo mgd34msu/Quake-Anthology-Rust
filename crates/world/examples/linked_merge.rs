@@ -43,7 +43,7 @@ fn input_trace(data: &mut &[u8]) -> Result<Trace, &'static str> {
     let contents = u64::from(word(data)?) | u64::from(word(data)?) << 32;
     let slot = word(data)?;
     let generation = word(data)?;
-    let surface = SurfaceFlags(word(data)?);
+    let surface = SurfaceFlags(u64::from(word(data)?));
     if !fraction.is_finite()
         || !(0.0..=1.0).contains(&fraction)
         || !end.0.iter().chain(&normal.0).all(|value| value.is_finite())
@@ -69,6 +69,7 @@ fn input_trace(data: &mut &[u8]) -> Result<Trace, &'static str> {
         contents: Contents(contents),
         entity: (slot != u32::MAX).then_some(EntityId { slot, generation }),
         surface,
+        surface_id: None,
         brush_solid: flags & 16 != 0,
     })
 }
@@ -101,7 +102,7 @@ fn output_trace(trace: Trace) -> [u32; WORDS] {
         (trace.contents.0 >> 32) as u32,
         slot,
         generation,
-        trace.surface.0,
+        trace.surface.0 as u32,
     ]
 }
 

@@ -78,7 +78,7 @@ fn scene(store: &mut CollisionStore) -> Result<GeometryId, String> {
         .load_brushes(
             planes,
             brushes,
-            surfaces,
+            qa_world::collision::surfaces::SurfaceTable::flags(surfaces),
             tree,
             vec![Bounds {
                 mins: Vec3([-160.0, -160.0, -512.0]),

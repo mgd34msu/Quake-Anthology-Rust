@@ -2,13 +2,12 @@ use super::{
     Contents, EntityTracePolicy, Trace, TraceQuery,
     brushes::{Brush, BrushMap, BrushTree, GeometryError, ModelRoot},
     hulls::{HullError, HullModel, HullScratch, Q1Hulls},
+    surfaces::{SurfaceTable, SurfaceView},
     tree::BrushScratch,
 };
 use qa_core::{
     math::{AngleBasis, angle_vectors_radians, radians_from_degrees, radians_from_degrees_f32},
-    primitives::{
-        Bounds, ClipNode, GeometryId, ModelRotation, ModelRules, Plane, SurfaceFlags, Vec3,
-    },
+    primitives::{Bounds, ClipNode, GeometryId, ModelRotation, ModelRules, Plane, SurfaceId, Vec3},
 };
 use std::ops::Range;
 
@@ -109,7 +108,7 @@ impl CollisionStore {
         &mut self,
         side_planes: Vec<Plane>,
         brushes: Vec<Brush>,
-        surfaces: Vec<SurfaceFlags>,
+        surfaces: SurfaceTable<'_>,
         tree: BrushTree,
         bounds: Vec<Bounds>,
     ) -> Result<GeometryId, StoreError> {
@@ -127,7 +126,11 @@ impl CollisionStore {
         self.insert(Geometry::Brushes(geometry), models)
     }
 
-    fn insert(&mut self, geometry: Geometry, models: Vec<Model>) -> Result<GeometryId, StoreError> {
+    fn insert(
+        &mut self,
+        mut geometry: Geometry,
+        models: Vec<Model>,
+    ) -> Result<GeometryId, StoreError> {
         let first = self.models.len();
         let end = first
             .checked_add(models.len())
@@ -152,14 +155,18 @@ impl CollisionStore {
             self.slots.len() - 1
         };
         self.models.extend(models);
+        let id = GeometryId {
+            slot: slot as u32,
+            generation: self.slots[slot].generation,
+        };
+        if let Geometry::Brushes(brushes) = &mut geometry {
+            brushes.surfaces.geometry = Some(id);
+        }
         self.slots[slot].resource = Some(Resource {
             geometry,
             models: first..end,
         });
-        Ok(GeometryId {
-            slot: slot as u32,
-            generation: self.slots[slot].generation,
-        })
+        Ok(id)
     }
 
     fn resource(&self, geometry: GeometryId) -> Option<&Resource> {
@@ -186,6 +193,20 @@ impl CollisionStore {
 
     pub fn model_bounds(&self, geometry: GeometryId, index: u32) -> Option<Bounds> {
         Some(self.resolve(geometry, index)?.1.bounds)
+    }
+
+    pub fn surface_count(&self, geometry: GeometryId) -> Option<u32> {
+        Some(match &self.resource(geometry)?.geometry {
+            Geometry::Hulls(_) => 0,
+            Geometry::Brushes(brushes) => brushes.surfaces.count(),
+        })
+    }
+
+    pub fn surface(&self, id: SurfaceId) -> Option<SurfaceView<'_>> {
+        match &self.resource(id.geometry)?.geometry {
+            Geometry::Brushes(brushes) => brushes.surfaces.view(id.index),
+            Geometry::Hulls(_) => None,
+        }
     }
 
     /// Cold removal compacts private rows. No body stores their physical index.

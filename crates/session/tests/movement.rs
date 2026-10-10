@@ -30,7 +30,7 @@ fn floor() -> (CollisionStore, GeometryId) {
                 plane_count: 1,
                 contents: Contents::SOLID,
             }],
-            vec![SurfaceFlags(0)],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(0)]),
             BrushTree::direct(1).unwrap(),
             vec![Bounds {
                 mins: Vec3([-131072.0; 3]),
@@ -356,7 +356,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
                     contents: Contents::SOLID,
                 })
                 .collect(),
-            vec![SurfaceFlags(0); 2],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(0); 2]),
             BrushTree {
                 planes: Vec::new(),
                 nodes: Vec::new(),

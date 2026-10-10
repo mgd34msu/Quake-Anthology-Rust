@@ -5,7 +5,90 @@ use qa_world::collision::{
     CollisionStore, Contents, EntityTracePolicy, StoreError, TraceQuery, TraceRules,
     brushes::{Brush, BrushTree, CollisionLeaf, GeometryError, ModelRoot},
     hulls::{HullError, HullModel},
+    surfaces::{SurfaceInput, SurfaceTable},
 };
+
+#[test]
+fn contact_rows_keep_exact_names_native_fields_and_resource_lifetimes() -> Result<(), StoreError> {
+    let mut store = CollisionStore::new();
+    let mut load = |name: &'static [u8], value| {
+        store.load_brushes(
+            vec![wall_plane()],
+            vec![Brush {
+                first_plane: 0,
+                plane_count: 1,
+                contents: Contents::SOLID,
+            }],
+            SurfaceTable {
+                records: vec![SurfaceInput {
+                    name,
+                    material: b"metal",
+                    flags: SurfaceFlags::from_q2(0x80000083),
+                    value,
+                    source_index: 19,
+                }],
+                sides: vec![0],
+            },
+            BrushTree::direct(1).map_err(StoreError::Brush)?,
+            vec![bounds()],
+        )
+    };
+    let first = load(b"Wall_A", 37)?;
+    let second = load(b"wall_a", -12)?;
+    let mut scratch = store.scratch();
+    let query = crossing(
+        TraceRules::LEGACY,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+    );
+    let hit = store.trace_model(first, 0, query, &mut scratch);
+    assert_eq!(hit.fraction.to_bits(), ((1.0f32 - 0.03125) / 2.0).to_bits());
+    let contact = hit.surface_id.expect("loaded contact");
+    assert_eq!(contact.geometry, first);
+    assert_eq!(contact.index, 0);
+    let row = store.surface(contact).expect("surface row");
+    assert_eq!(row.name, b"Wall_A");
+    assert_eq!(row.material, b"metal");
+    assert_eq!(row.value, 37);
+    assert_eq!(row.source_index, 19);
+    assert_eq!(row.flags.to_q2(), 0x80000083);
+    let other = store
+        .trace_model(second, 0, query, &mut scratch)
+        .surface_id
+        .expect("second contact");
+    assert_eq!(store.surface(other).expect("other row").name, b"wall_a");
+    assert_eq!(store.surface(other).expect("other row").value, -12);
+    assert!(store.remove(first));
+    assert!(store.surface(contact).is_none());
+    assert_eq!(store.surface_count(first), None);
+    assert!(store.surface(other).is_some());
+    let replacement = add_brush(&mut store)?;
+    assert_eq!(replacement.slot, first.slot);
+    assert_ne!(replacement.generation, first.generation);
+    assert!(store.surface(contact).is_none());
+    Ok(())
+}
+
+#[test]
+fn invalid_surface_indices_do_not_publish_geometry() -> Result<(), StoreError> {
+    let mut store = CollisionStore::new();
+    for sides in [vec![], vec![1]] {
+        assert_eq!(
+            store.load_brushes(
+                vec![wall_plane()],
+                Vec::new(),
+                SurfaceTable {
+                    records: vec![SurfaceInput::unnamed(SurfaceFlags::default())],
+                    sides
+                },
+                BrushTree::direct(0).map_err(StoreError::Brush)?,
+                vec![bounds()],
+            ),
+            Err(StoreError::Brush(GeometryError::Surface))
+        );
+    }
+    assert_eq!(add_brush(&mut store)?.slot, 0);
+    Ok(())
+}
 
 fn wall_plane() -> Plane {
     Plane {
@@ -45,7 +128,7 @@ fn add_brush(store: &mut CollisionStore) -> Result<GeometryId, StoreError> {
             plane_count: 1,
             contents: Contents::SOLID,
         }],
-        vec![SurfaceFlags(77)],
+        qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(77)]),
         BrushTree {
             planes: Vec::new(),
             nodes: Vec::new(),
@@ -246,7 +329,7 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
             store.load_brushes(
                 Vec::new(),
                 Vec::new(),
-                Vec::new(),
+                qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
                 BrushTree::direct(0).map_err(StoreError::Brush)?,
                 vec![invalid]
             ),
@@ -259,7 +342,7 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
         store.load_brushes(
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
             BrushTree::direct(0).map_err(StoreError::Brush)?,
             Vec::new()
         ),
@@ -268,7 +351,13 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
     let mut bad_tree = BrushTree::direct(0).map_err(StoreError::Brush)?;
     bad_tree.models[0] = ModelRoot::Leaf(1);
     assert!(matches!(
-        store.load_brushes(Vec::new(), Vec::new(), Vec::new(), bad_tree, vec![bounds()]),
+        store.load_brushes(
+            Vec::new(),
+            Vec::new(),
+            qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
+            bad_tree,
+            vec![bounds()]
+        ),
         Err(StoreError::Brush(GeometryError::TreeRange))
     ));
     assert!(matches!(

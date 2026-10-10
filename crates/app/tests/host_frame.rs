@@ -202,7 +202,7 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
                 plane_count: 1,
                 contents: Contents::SOLID,
             }],
-            vec![SurfaceFlags(0)],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(0)]),
             BrushTree::direct(1).unwrap(),
             vec![Bounds {
                 mins: Vec3([-131072.0; 3]),

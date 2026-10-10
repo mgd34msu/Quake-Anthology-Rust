@@ -1,10 +1,11 @@
 use super::EntityTraceFlags;
+use super::surfaces::{SurfaceRecord, SurfaceRows};
 use super::{
     Contents, Trace, TraceQuery,
     brushes::{Brush, trace_brushes},
     hulls::{ClipNode, Frame, Hull},
 };
-use qa_core::primitives::{Axis, Body, EntityId, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{Axis, Body, EntityId, Plane, Vec3};
 
 const fn nodes() -> [ClipNode; 6] {
     let mut result = [ClipNode {
@@ -129,7 +130,11 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
             plane_count: 6,
             contents: Contents::BODY,
         }],
-        &[SurfaceFlags::default(); 6],
+        SurfaceRows {
+            records: &[SurfaceRecord::EMPTY],
+            sides: &[0; 6],
+            geometry: None,
+        },
     );
     // CM_TransformedBoxTrace derives the endpoint from the original segment.
     trace.end = original.start.lerp(original.end, trace.fraction);

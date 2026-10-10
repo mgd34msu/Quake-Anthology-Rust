@@ -1941,7 +1941,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .load_brushes(
                 vec![],
                 vec![],
-                vec![],
+                qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
                 qa_world::collision::brushes::BrushTree {
                     planes: vec![],
                     nodes: vec![],

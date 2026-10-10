@@ -335,7 +335,7 @@ impl Topology {
             if position {
                 position_brush(work, &map.planes, brush, map.axial_bounds[index], trace);
             } else {
-                clip_brush(work, &map.planes, brush, &map.surfaces, trace);
+                clip_brush(work, &map.planes, brush, map.surfaces.borrow(), trace);
             }
             if trace.fraction == 0.0 {
                 return;
@@ -509,7 +509,7 @@ mod tests {
                 plane_count: 1,
                 contents: Contents::SOLID,
             }],
-            vec![SurfaceFlags::default()],
+            crate::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
             BrushTree::direct(1).map_err(StoreError::Brush)?,
             vec![Bounds {
                 mins: Vec3([-2.0; 3]),
