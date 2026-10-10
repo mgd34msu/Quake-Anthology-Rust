@@ -243,6 +243,30 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
                 &states::read_q2_rr_stats(&mut reader, from).map_err(|e| e.to_string())?,
             );
         }
+        9 => {
+            let from = states::Q2ReproPlayer {
+                words: std::array::from_fn(|i| case.from[i]),
+                stats: std::array::from_fn(|i| case.from[43 + i]),
+            };
+            let to = states::Q2ReproPlayer {
+                words: std::array::from_fn(|i| case.to[i]),
+                stats: std::array::from_fn(|i| case.to[43 + i]),
+            };
+            // Cold comparison envelope: native frame extra flags precede the
+            // ordinary player body only in this fixture stream.
+            writer.write_bits(0, 8).map_err(|e| e.to_string())?;
+            let extra = states::write_q2_repro_player(&mut writer, &from, &to)
+                .map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(&writer.bytes()[1..], Encoding::Bytes);
+            let decoded = states::read_q2_repro_player(&mut reader, &from, extra)
+                .map_err(|e| e.to_string())?;
+            result.decoded[..43].copy_from_slice(&decoded.words);
+            result.decoded[43..107].copy_from_slice(&decoded.stats);
+            result.bits = writer.bit_position() as u32;
+            result.length = writer.size();
+            bytes[0] = extra;
+            return Ok(result);
+        }
         _ => return Err("state dialect".into()),
     }
     result.bits = writer.bit_position() as u32;
@@ -316,7 +340,7 @@ fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> 
     let mut counts = allocations::Counts::default();
     let mut checks = 0;
     let mut wire_bytes = 0;
-    let mut mode_checks = [0u64; 9];
+    let mut mode_checks = [0u64; 10];
     for frame in 0..660 {
         allocations::begin_frame();
         let watch = (!heap_only).then(Stopwatch::start);
@@ -346,8 +370,10 @@ fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> 
         return Err(format!("state allocation/count gate {counts:?}"));
     }
     if heap_only {
-        if cases.iter().any(|case| case.mode == 8) && mode_checks[8] == 0 {
-            return Err("rerelease stats not exercised".into());
+        for (mode, count) in mode_checks.iter().enumerate().skip(8) {
+            if cases.iter().any(|case| case.mode as usize == mode) && *count == 0 {
+                return Err("rerelease records not exercised".into());
+            }
         }
         println!(
             "{{\"scope\":\"native state record encode/decode and original-C byte/word fidelity; caller Rust thread, no snapshot packets, workers, physical transport or gameplay\",\"warmup\":60,\"frames\":600,\"checks\":{checks},\"mode_checks_including_warmup\":{mode_checks:?},\"wire_bytes\":{wire_bytes},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":false}}",

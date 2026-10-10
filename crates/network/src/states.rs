@@ -399,6 +399,132 @@ pub fn read_q2_rr_stats(
     delta::read(&Q2_RR_STAT_GROUP, &mut words, 0, reader)?;
     Ok(words)
 }
+
+/// Q2repro's enhanced record, before native module/game-ABI conversion.
+/// Coordinates and delta angles contain native float bits. Small view/weapon
+/// offsets, view angles and blends are already packed at the native boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Q2ReproPlayer {
+    /// Classic field order, then damage blend, gunrate, viewheight and clientnum.
+    pub words: [u32; 43],
+    pub stats: [u32; Q2_RR_STATS],
+}
+impl Default for Q2ReproPlayer {
+    fn default() -> Self {
+        Self {
+            words: [0; 43],
+            stats: [0; Q2_RR_STATS],
+        }
+    }
+}
+const fn q2_repro_fields() -> [Field; 43] {
+    let mut fields = [Field::new(0, 8, 0, Value::Unsigned); 43];
+    let mut i = 0;
+    while i < fields.len() {
+        let (bits, flag, value) = match i {
+            0 => (8, 1, Value::Unsigned),
+            1..=2 => (32, 1 << 1, Value::RawFloat),
+            3 => (32, 1 << 19, Value::RawFloat),
+            4..=5 => (32, 1 << 2, Value::RawFloat),
+            6 => (32, 1 << 18, Value::RawFloat),
+            7 => (16, 1 << 3, Value::Unsigned),
+            8 => (16, 1 << 4, Value::Unsigned),
+            9 => (16, 1 << 5, Value::Signed),
+            10..=12 => (16, 1 << 6, Value::Angle16),
+            13..=15 => (16, 1 << 7, Value::Signed),
+            16..=17 => (16, 1 << 8, Value::Signed),
+            18 => (16, 1 << 20, Value::Signed),
+            19..=21 => (16, 1 << 9, Value::Signed),
+            22 => (16, 1 << 12, Value::Unsigned),
+            23 => (16, 1 << 13, Value::Unsigned),
+            24..=26 => (16, 1 << 16, Value::Signed),
+            27..=29 => (16, 1 << 17, Value::Signed),
+            30..=33 | 36..=39 => (8, 1 << 10, Value::Unsigned),
+            34 => (8, 1 << 11, Value::Unsigned),
+            35 => (8, 1 << 14, Value::Unsigned),
+            40 => (8, 1 << 23, Value::Unsigned),
+            41 => (8, 1 << 15, Value::Signed),
+            _ => (16, 1 << 22, Value::Signed),
+        };
+        fields[i] = Field::new(i, bits, flag, value);
+        i += 1;
+    }
+    fields
+}
+static Q2_REPRO_FIELDS: [Field; 43] = q2_repro_fields();
+const fn q2_repro_blend_fields() -> [Field; 8] {
+    let source = q2_repro_fields();
+    let mut fields = [source[30]; 8];
+    let mut i = 0;
+    while i < fields.len() {
+        fields[i] = source[if i < 4 { 30 + i } else { 32 + i }];
+        fields[i].flag = 1 << i;
+        i += 1;
+    }
+    fields
+}
+static Q2_REPRO_BLEND_FIELDS: [Field; 8] = q2_repro_blend_fields();
+static Q2_REPRO_BLEND_GROUP: [Group; 1] = [Group {
+    fields: &Q2_REPRO_BLEND_FIELDS,
+    presence: Presence::Mask(8),
+}];
+static Q2_REPRO_PREFIX: [Group<true, true>; 1] = [Group {
+    fields: Q2_REPRO_FIELDS.split_at(30).0,
+    presence: Presence::Fixed,
+}];
+static Q2_REPRO_VIEW: [Group<true, true>; 1] = [Group {
+    fields: Q2_REPRO_FIELDS.split_at(34).1.split_at(2).0,
+    presence: Presence::Fixed,
+}];
+static Q2_REPRO_SUFFIX: [Group<true, true>; 1] = [Group {
+    fields: Q2_REPRO_FIELDS.split_at(40).1,
+    presence: Presence::Fixed,
+}];
+const Q2_REPRO_STAT_FLAG: u64 = 1 << 21;
+
+/// The returned extra flags belong to the native frame prefix; the body starts
+/// with its 16-bit player flags. This is Q2repro 1038, not retail KEX 2023.
+pub fn write_q2_repro_player(
+    writer: &mut Writer<'_>,
+    from: &Q2ReproPlayer,
+    to: &Q2ReproPlayer,
+) -> Result<u8, Error> {
+    let mut flags =
+        delta::mask::<true, true, false, false>(&Q2_REPRO_FIELDS, &from.words, &to.words, 0, 0, 0);
+    if delta::changed::<false, false, false, false>(&Q2_RR_STAT_FIELDS, &from.stats, &to.stats) != 0
+    {
+        flags |= Q2_REPRO_STAT_FLAG;
+    }
+    writer.write_bits(flags as u32, 16)?;
+    delta::write(&Q2_REPRO_PREFIX, &from.words, &to.words, flags, writer)?;
+    if flags & (1 << 10) != 0 {
+        delta::write(&Q2_REPRO_BLEND_GROUP, &from.words, &to.words, 0, writer)?;
+    }
+    delta::write(&Q2_REPRO_VIEW, &from.words, &to.words, flags, writer)?;
+    if flags & Q2_REPRO_STAT_FLAG != 0 {
+        write_q2_rr_stats(writer, &from.stats, &to.stats)?;
+    }
+    delta::write(&Q2_REPRO_SUFFIX, &from.words, &to.words, flags, writer)?;
+    Ok((flags >> 16) as u8)
+}
+pub fn read_q2_repro_player(
+    reader: &mut Reader<'_>,
+    from: &Q2ReproPlayer,
+    extra_flags: u8,
+) -> Result<Q2ReproPlayer, Error> {
+    let flags = u64::from(reader.read_bits(16)?) | (u64::from(extra_flags) << 16);
+    let mut to = *from;
+    delta::read(&Q2_REPRO_PREFIX, &mut to.words, flags, reader)?;
+    if flags & (1 << 10) != 0 {
+        delta::read(&Q2_REPRO_BLEND_GROUP, &mut to.words, 0, reader)?;
+    }
+    delta::read(&Q2_REPRO_VIEW, &mut to.words, flags, reader)?;
+    if flags & Q2_REPRO_STAT_FLAG != 0 {
+        to.stats = read_q2_rr_stats(reader, &from.stats)?;
+    }
+    delta::read(&Q2_REPRO_SUFFIX, &mut to.words, flags, reader)?;
+    Ok(to)
+}
 static Q2_PLAYER_GROUPS: [Group<true>; 2] = [
     Group {
         fields: &Q2_PLAYER_FIELDS,

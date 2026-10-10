@@ -47,6 +47,7 @@ pub(crate) enum Value {
     Time,
     ZeroUnsigned,
     Float { zero: bool },
+    RawFloat,
     Scaled { factor: u8, read: ScaleRead },
     Angle8 { integral: bool },
     Packed(Packed),
@@ -77,7 +78,7 @@ impl Field {
         match self.value {
             Value::FloatInt if FLOAT_BYTES => (from as i32 as f32) == f32::from_bits(to),
             Value::Transient if PACKED => to == 0,
-            Value::Angle16 => f32::from_bits(from) == f32::from_bits(to),
+            Value::Angle16 | Value::RawFloat => f32::from_bits(from) == f32::from_bits(to),
             Value::Angle8 { .. } if PREFIX => f32::from_bits(from) == f32::from_bits(to),
             Value::Scaled {
                 read: ScaleRead::SignedTenthsDelta,

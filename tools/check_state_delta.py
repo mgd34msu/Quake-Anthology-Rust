@@ -512,7 +512,20 @@ static void qw_player_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *num
 def rr_stats_reference(qsrc):
     original = (qsrc / 'q2repro/src/common/msg.c').read_text()
     source = r'''
-typedef struct {int16_t stats[64];} rr_stats_t;
+typedef struct {
+ int pm_type;float origin[3],velocity[3];uint16_t pm_time,pm_flags;
+ int16_t gravity;float delta_angles[3];int8_t viewheight;
+} rr_pmove_t;
+typedef struct {
+ rr_pmove_t pmove;int16_t viewangles[3],viewoffset[3],kick_angles[3],gunangles[3],gunoffset[3];
+ uint16_t gunindex;uint8_t gunframe,screen_blend[4],damage_blend[4],fov,rdflags;
+ int16_t stats[64];int8_t gunrate;
+} rr_packed_t;
+typedef struct {
+ rr_pmove_t pmove;float viewangles[3],viewoffset[3],kick_angles[3],gunangles[3],gunoffset[3];
+ int gunindex,gunskin,gunframe,gunrate;float screen_blend[4],damage_blend[4],fov;
+ uint8_t rdflags;int16_t stats[64];
+} rr_player_t;
 static void rr_stat_write64(uint64_t v) {
  q2_write(&net_message,(uint32_t)v,32);q2_write(&net_message,(uint32_t)(v>>32),32);
 }
@@ -520,11 +533,12 @@ static uint64_t rr_stat_read64(void) {
  uint64_t low=(uint32_t)q2_read(&net_message,32,0);
  return low|((uint64_t)(uint32_t)q2_read(&net_message,32,0)<<32);
 }
-#define player_packed_t rr_stats_t
-#define player_state_t rr_stats_t
+#define player_packed_t rr_packed_t
+#define player_state_t rr_player_t
 #define msgPsFlags_t uint32_t
 #define MSG_PS_RERELEASE (1u<<11)
 #define MSG_PS_EXTENSIONS_2 (1u<<7)
+#define MSG_PS_EXTENSIONS (1u<<6)
 #define MAX_STATS_NEW 64
 #define MAX_STATS_OLD 32
 #define BIT_ULL(i) (UINT64_C(1)<<(i))
@@ -544,16 +558,137 @@ static uint64_t rr_stat_read64(void) {
     source += ''.join(function(original, name) for name in ['MSG_WriteVarInt64','MSG_ReadVarInt64','MSG_WriteStats','MSG_ReadStats'])
     source += r'''
 static void rr_stats_encode(msg_t *m,uint32_t *from,uint32_t *to) {
- rr_stats_t a={0},b={0};uint64_t mask=0;
+ rr_packed_t a={0},b={0};uint64_t mask=0;
  for(int i=0;i<64;i++){a.stats[i]=from[i];b.stats[i]=to[i];if(a.stats[i]!=b.stats[i])mask|=BIT_ULL(i);}
  net_message=*m;RR_WriteStats(&b,mask,MSG_PS_RERELEASE);*m=net_message;
 }
 static void rr_stats_decode(msg_t *m,uint32_t *from,uint32_t *out) {
- rr_stats_t a={0};for(int i=0;i<64;i++)a.stats[i]=from[i];
+ rr_player_t a={0};for(int i=0;i<64;i++)a.stats[i]=from[i];
  net_message=*m;RR_ReadStats(&a,MSG_PS_RERELEASE);*m=net_message;
  for(int i=0;i<64;i++)out[i]=(int)a.stats[i];
 }
 '''
+    protocol = (qsrc / 'q2repro/inc/common/protocol.h').read_text()
+    source += '\n#define BIT(i) (1u<<(i))\n'
+    definitions = re.findall(r'^#define\s+((?:PS_|EPS_)[A-Z_0-9]+)\s+(.*)$',protocol,re.M)
+    source += ''.join(f'\n#undef {name}\n#define {name} {value}\n' for name,value in definitions)
+    source += r'''
+#define MSG_PS_IGNORE_PREDICTION (1u<<0)
+#define MSG_PS_IGNORE_DELTAANGLES (1u<<1)
+#define MSG_PS_IGNORE_VIEWANGLES (1u<<2)
+#define MSG_PS_IGNORE_BLEND (1u<<3)
+#define MSG_PS_IGNORE_GUNINDEX (1u<<4)
+#define MSG_PS_IGNORE_GUNFRAMES (1u<<5)
+#define GUNINDEX_BITS 13
+#define GUNINDEX_MASK ((1u<<13)-1)
+#define Q_assert assert
+#define VectorCompare(a,b) ((a)[0]==(b)[0]&&(a)[1]==(b)[1]&&(a)[2]==(b)[2])
+#define Vector4Compare(a,b) (VectorCompare(a,b)&&(a)[3]==(b)[3])
+#undef VectorCopy
+#define VectorCopy(a,b) memcpy(b,a,12)
+#define Vector4Copy(a,b) memcpy(b,a,16)
+#define pmtype_to_game3(v) (v)
+#define pmtype_from_game3(v) (v)
+#define pmflags_to_game3(v,x) (v)
+#define pmflags_from_game3(v,x) (v)
+#define MSG_WriteData(v,n) do {memcpy(net_message.data+net_message.cursize,v,n);net_message.cursize+=n;net_message.bit=net_message.cursize*8;} while(0)
+#define MSG_WriteChar(v) q2_write(&net_message,v,8)
+#define MSG_ReadChar() q2_read(&net_message,8,1)
+#define MSG_ReadWord() q2_read(&net_message,16,0)
+#define MSG_WriteFloat RR_WriteFloat
+#define MSG_ReadFloat RR_ReadFloat
+#define MSG_WriteCoord RR_WriteCoord
+#define MSG_ReadCoordP RR_ReadCoordP
+#define MSG_WriteAngle16 RR_WriteAngle16
+#define MSG_ReadAngle16 RR_ReadAngle16
+#define MSG_ReadDeltaCoord(v) abort()
+#define SHORT2COORD(v) ((v)*(1.0f/8))
+#define MSG_WriteDeltaBlend RR_WriteDeltaBlend
+#define MSG_ReadBlend RR_ReadBlend
+#define MSG_WriteDeltaPlayerstate_Enhanced RR_WritePlayer
+#define MSG_ParseDeltaPlayerstate_Enhanced RR_ReadPlayer
+#define MSG_CalcStatBits RR_CalcStatBits
+#define MSG_ReadFog(v) abort()
+typedef int player_fogchange_t;
+static const rr_packed_t nullPlayerState;
+static void RR_WriteFloat(float v){uint32_t bits;memcpy(&bits,&v,4);q2_write(&net_message,bits,32);}
+static float RR_ReadFloat(void){uint32_t bits=q2_read(&net_message,32,0);float v;memcpy(&v,&bits,4);return v;}
+'''
+    source += ''.join(function(original,n) for n in ['MSG_WriteCoord','MSG_ReadCoordP','MSG_WriteAngle16','MSG_ReadAngle16','MSG_CalcStatBits','MSG_WriteDeltaBlend','MSG_ReadBlend','MSG_WriteDeltaPlayerstate_Enhanced','MSG_ParseDeltaPlayerstate_Enhanced'])
+    source += 'static void rr_player_put(rr_packed_t *p,uint32_t *w) {\n'
+    for i,(name,_) in enumerate(q2_layout()):
+        name=name.replace('blend[','screen_blend[')
+        source += f' memcpy(&p->{name},w+{i},4);\n' if 1<=i<=6 or 10<=i<=12 else f' p->{name}=w[{i}];\n'
+    source += ' for(int i=0;i<4;i++)p->damage_blend[i]=w[36+i];p->gunrate=w[40];p->pmove.viewheight=w[41];for(int i=0;i<64;i++)p->stats[i]=w[43+i];\n}\n'
+    # Only the cold fixture binds packed words to the expanded native parser
+    # ABI. It does not implement a player delta reader or writer.
+    source += 'static void rr_player_expanded(rr_player_t *p,uint32_t *w) {\n'
+    for i,(name,_) in enumerate(q2_layout()):
+        name=name.replace('blend[','screen_blend[')
+        if 1<=i<=6 or 10<=i<=12: expr=None
+        elif 13<=i<=15: expr=f'(int32_t)w[{i}]/16.f'
+        elif 16<=i<=18: expr=f'(int16_t)w[{i}]*(360.0f/65536)'
+        elif 19<=i<=21: expr=f'(int32_t)w[{i}]/1024.f'
+        elif 24<=i<=26: expr=f'(int32_t)w[{i}]/512.f'
+        elif 27<=i<=29: expr=f'(int32_t)w[{i}]/4096.f'
+        elif 30<=i<=33: expr=f'w[{i}]/255.f'
+        elif i==22: expr=f'w[{i}]&GUNINDEX_MASK'
+        else: expr=f'w[{i}]'
+        source += f' memcpy(&p->{name},w+{i},4);\n' if expr is None else f' p->{name}={expr};\n'
+    source += ' p->gunskin=w[22]>>GUNINDEX_BITS;for(int i=0;i<4;i++)p->damage_blend[i]=w[36+i]/255.f;p->gunrate=w[40];p->pmove.viewheight=w[41];for(int i=0;i<64;i++)p->stats[i]=w[43+i];\n}\n'
+    source += 'static void rr_player_get(rr_player_t *p,uint32_t *w) {\n'
+    for i,(name,_) in enumerate(q2_layout()):
+        name=name.replace('blend[','screen_blend[')
+        if 1<=i<=6 or 10<=i<=12: expr=None
+        elif 13<=i<=15: expr=f'(int)(p->{name}*16)'
+        elif 16<=i<=18: expr=f'(int16_t)ANGLE2SHORT(p->{name})'
+        elif 19<=i<=21: expr=f'(int)(p->{name}*1024)'
+        elif 24<=i<=26: expr=f'(int)(p->{name}*512)'
+        elif 27<=i<=29: expr=f'(int)(p->{name}*4096)'
+        elif 30<=i<=33: expr=f'(int)(p->{name}*255+0.5f)'
+        elif i==22: expr='p->gunindex|(p->gunskin<<GUNINDEX_BITS)'
+        else: expr=f'p->{name}'
+        source += f' memcpy(w+{i},&p->{name},4);\n' if expr is None else f' w[{i}]={expr};\n'
+    source += ' for(int i=0;i<4;i++)w[36+i]=(int)(p->damage_blend[i]*255+0.5f);w[40]=p->gunrate;w[41]=(int)p->pmove.viewheight;for(int i=0;i<64;i++)w[43+i]=(int)p->stats[i];\n}\n'
+    q2proto = (qsrc / 'q2repro/q2proto/src/q2proto_proto_q2repro.c').read_text()
+    tails = [
+        re.search(r'if \(\*extraflags & EPS_CLIENTNUM\)\s*WRITE_CHECKED\(server_write, io_arg, i16, playerstate->clientnum\);',q2proto).group(),
+        re.search(r'if \(delta_bits_check\(extraflags, EPS_CLIENTNUM, &playerstate->delta_bits, Q2P_PSD_CLIENTNUM\)\)\s*READ_CHECKED\(client_read, io_arg, playerstate->clientnum, i16\);',q2proto).group(),
+    ]
+    source += r'''
+typedef struct {int16_t clientnum;uint32_t delta_bits;} rr_clientnum_t;
+#define WRITE_CHECKED(owner,io,width,value) q2_write((msg_t*)io,value,16)
+#define READ_CHECKED(owner,io,value,width) ((value)=q2_read((msg_t*)io,16,1))
+#define Q2P_PSD_CLIENTNUM 1
+#define delta_bits_check(flags,bit,out,field) (((flags)&(bit))!=0)
+static void rr_write_clientnum(msg_t *m,uint8_t flags,int16_t value) {
+ uintptr_t io_arg=(uintptr_t)m;uint8_t *extraflags=&flags;
+ rr_clientnum_t record={.clientnum=value},*playerstate=&record;
+'''
+    source += tails[0] + '\n}\n'
+    source += 'static int16_t rr_read_clientnum(msg_t *m,uint8_t extraflags,int16_t value) {\n uintptr_t io_arg=(uintptr_t)m;rr_clientnum_t record={.clientnum=value},*playerstate=&record;\n'
+    source += tails[1] + '\nreturn record.clientnum;\n}\n'
+    source += '\n#undef WRITE_CHECKED\n#undef READ_CHECKED\n#undef Q2P_PSD_CLIENTNUM\n#undef delta_bits_check\n'
+    source += r'''
+static void rr_player_encode(msg_t *m,uint32_t *from,uint32_t *to) {
+ rr_packed_t a={0},b={0};rr_player_put(&a,from);rr_player_put(&b,to);
+ /* Extra flags are a cold fixture envelope, not part of the player body. */
+ q2_write(m,0,8);net_message=*m;int extra=RR_WritePlayer(&a,&b,MSG_PS_RERELEASE|MSG_PS_EXTENSIONS);
+ /* q2proto's EPS_CLIENTNUM tail follows gunrate and viewheight. */
+ if(from[42]!=to[42])extra|=EPS_CLIENTNUM;
+ rr_write_clientnum(&net_message,extra,to[42]);
+ *m=net_message;m->data[0]=extra;
+}
+static void rr_player_decode(msg_t *m,uint32_t *from,uint32_t *out) {
+ rr_player_t a={0},b={0};rr_player_expanded(&a,from);net_message=*m;
+ int extra=MSG_ReadByte(),flags=MSG_ReadWord();
+ RR_ReadPlayer(&a,&b,NULL,flags,extra,MSG_PS_RERELEASE|MSG_PS_EXTENSIONS);rr_player_get(&b,out);
+ out[42]=(int)rr_read_clientnum(&net_message,extra,from[42]);*m=net_message;
+}
+'''
+    extra_names=['BIT','MSG_PS_EXTENSIONS','MSG_PS_IGNORE_PREDICTION','MSG_PS_IGNORE_DELTAANGLES','MSG_PS_IGNORE_VIEWANGLES','MSG_PS_IGNORE_BLEND','MSG_PS_IGNORE_GUNINDEX','MSG_PS_IGNORE_GUNFRAMES','GUNINDEX_BITS','GUNINDEX_MASK','Q_assert','VectorCompare','Vector4Compare','VectorCopy','Vector4Copy','pmtype_to_game3','pmtype_from_game3','pmflags_to_game3','pmflags_from_game3','MSG_WriteData','MSG_WriteChar','MSG_ReadChar','MSG_ReadWord','MSG_WriteFloat','MSG_ReadFloat','MSG_WriteCoord','MSG_ReadCoordP','MSG_WriteAngle16','MSG_ReadAngle16','MSG_ReadDeltaCoord','SHORT2COORD','MSG_WriteDeltaBlend','MSG_ReadBlend','MSG_WriteDeltaPlayerstate_Enhanced','MSG_ParseDeltaPlayerstate_Enhanced','MSG_CalcStatBits','MSG_ReadFog']
+    extra_names += [name for name,_ in definitions]
+    source += ''.join(f'\n#undef {name}\n' for name in extra_names)
     names=['player_packed_t','player_state_t','msgPsFlags_t','MSG_PS_RERELEASE','MSG_PS_EXTENSIONS_2','MAX_STATS_NEW','MAX_STATS_OLD','BIT_ULL','MSG_WriteStats','MSG_ReadStats','MSG_WriteVarInt64','MSG_ReadVarInt64','MSG_WriteLong64','MSG_ReadLong64','MSG_WriteLong','MSG_WriteShort','MSG_WriteByte','MSG_ReadLong','MSG_ReadShort','MSG_ReadByte']
     return source + ''.join(f'\n#undef {name}\n' for name in names)
 
@@ -636,7 +771,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>8||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>9||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -652,7 +787,8 @@ int main(void) {
   } else if(mode==5) {nq_encode(&m,from,to,number,flags);
   } else if(mode==6) {nq_player_encode(&m,to,flags);
   } else if(mode==7) {qw_player_encode(&m,to,number);
-  } else {rr_stats_encode(&m,from,to);
+  } else if(mode==8) {rr_stats_encode(&m,from,to);
+  } else {rr_player_encode(&m,from,to);
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
   uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
@@ -667,13 +803,14 @@ int main(void) {
   else if(mode==5) {nq_decode(&m,from,decoded,&wire_number);}
   else if(mode==6) {nq_player_decode(&m,decoded);}
   else if(mode==7) {qw_player_decode(&m,from,decoded,&wire_number);}
-  else {rr_stats_decode(&m,from,decoded);}
+  else if(mode==8) {rr_stats_decode(&m,from,decoded);}
+  else {rr_player_decode(&m,from,decoded);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
 }
 '''
-    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), [(f'stats[{i}]',16) for i in range(64)]]
+    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), [(f'stats[{i}]',16) for i in range(64)], q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8),('clientnum',-16)]+[(f'stats[{i}]',16) for i in range(64)]]
 
 
 def compile_reference(qsrc, evidence):
@@ -691,6 +828,32 @@ def fixture(tables):
     floats = [-0.0, 0.0, -4096.0, -4097.0, 4095.0, 4096.0, 0.125, -0.125, 123456.75]
     for mode, table in enumerate(tables):
         for case in range(2048):
+            if mode == 9:
+                old,new=[0]*112,[0]*112
+                for i in range(107):
+                    if 1<=i<=6 or 10<=i<=12:
+                        a,b=rng.uniform(-32768,32768),rng.uniform(-32768,32768)
+                        if case<32:a,b=(-0.0,0.0) if i%2 else (0.0,-0.0)
+                        old[i]=struct.unpack('<I',struct.pack('<f',a))[0]
+                        new[i]=struct.unpack('<I',struct.pack('<f',b))[0]
+                    elif i in (7,8,22):
+                        old[i],new[i]=rng.randrange(65536),rng.randrange(65536)
+                    elif i in (0,23,30,31,32,33,34,35,36,37,38,39,40):
+                        old[i],new[i]=rng.randrange(256),rng.randrange(256)
+                    elif i==41:
+                        old[i],new[i]=rng.randrange(-128,128)&0xffffffff,rng.randrange(-128,128)&0xffffffff
+                    else:
+                        old[i],new[i]=rng.randrange(-32768,32768)&0xffffffff,rng.randrange(-32768,32768)&0xffffffff
+                    if (case+i)%3:new[i]=old[i]
+                if case<107:
+                    field=new[case]
+                    new=old.copy();new[case]=field
+                if case==107:new=old.copy()
+                if 108<=case<116:
+                    old=[0]*112;new=old.copy()
+                    new[1]=[0,0x80000000,0x7f800000,0xff800000,0x7fc00001,0x7f800001,1,0x80000001][case-108]
+                output+=struct.pack('<BBH224I',mode,0,0,*old,*new)
+                continue
             if mode == 8:
                 old,new=[0]*112,[0]*112
                 for i in range(64):
@@ -839,9 +1002,9 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro MSG_WriteStats/MSG_ReadStats unchanged; original removal statements, offsetof and private bindings only',
-                  limits='Seeded native delta records; no snapshot framing, common-state ABI projection, sign-on, captures, live or installed acceptance')
+    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, q2_repro_player_words=107, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro stats/enhanced-player/coordinate/angle/blend functions unchanged; q2proto clientnum statements unchanged; original removal statements, offsetof and private packed-word/struct bindings',
+                  limits='Seeded native delta records; Q2repro comparison uses packed view/weapon/color words and original MSG packed gunframe range 0..255; no snapshot framing, common-state/module ABI packing, retail KEX, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))
 
