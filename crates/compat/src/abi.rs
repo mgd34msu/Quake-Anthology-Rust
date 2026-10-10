@@ -193,6 +193,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[8] = Some(resource_index::<0>);
     table.entries[9] = Some(resource_index::<1>);
     table.entries[10] = Some(resource_index::<2>);
+    table.entries[11] = Some(native_set_model);
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[36] = Some(q2_cvar);
@@ -209,6 +210,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[10] = Some(resource_index::<0>);
     table.entries[11] = Some(resource_index::<1>);
     table.entries[12] = Some(resource_index::<2>);
+    table.entries[13] = Some(native_set_model);
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
     table.entries[48] = Some(native_register_observer);
@@ -586,6 +588,13 @@ fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u
         c.memory.cstring(pointer)?
     };
     (ENGINE_CALLS.resource_index)(c.services, c.context.module, range, name).map(u64::from)
+}
+fn native_set_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.pointer(0)?;
+    let name = c.pointer(1)?;
+    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.set_model(c.services, c.memory, c.context, *table, address, name)?;
+    Ok(0)
 }
 fn native_link(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;

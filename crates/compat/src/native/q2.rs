@@ -445,6 +445,11 @@ impl Game {
                 .contains(&ordinal)
                 {
                     Some((&[NativeScalar::Word][..], NativeScalar::I32))
+                } else if ordinal == if layout.version == 2023 { 13 } else { 11 } {
+                    Some((
+                        &[NativeScalar::Word, NativeScalar::Word][..],
+                        NativeScalar::Void,
+                    ))
                 } else if ordinal == if layout.version == 2023 { 7 } else { 6 } {
                     Some((
                         &[NativeScalar::I32, NativeScalar::Word][..],

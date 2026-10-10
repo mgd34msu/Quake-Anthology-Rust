@@ -1904,6 +1904,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         let malloc_slot = if rr { 36 } else { 33 };
         let link_slot = if rr { 21 } else { 18 };
+        let set_model_slot = if rr { 13 } else { 11 };
         let unlink_slot = if rr { 22 } else { 19 };
         let entity_address = base + 0x3000 + stride;
         let origin = qa_core::primitives::Vec3([3.0, 5.0, 7.0]);
@@ -2159,6 +2160,70 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     }
                 );
             }
+            if slot == set_model_slot {
+                let memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    memory.read_word(a[0] + 40).unwrap(),
+                    if a[1] == base + 0x17a0 { 2 } else { 1 }
+                );
+                if a[1] == base + 0x17a0 {
+                    assert_eq!(
+                        memory
+                            .read_vec3(a[0] + if rr { 1396 } else { 204 })
+                            .unwrap(),
+                        bounds.mins
+                    );
+                    assert_eq!(
+                        memory
+                            .read_vec3(a[0] + if rr { 1408 } else { 216 })
+                            .unwrap(),
+                        bounds.maxs
+                    );
+                    let entity = services
+                        .server
+                        .entities
+                        .active()
+                        .find(|entity| {
+                            services.server.entities.columns.native_entity[entity.slot as usize]
+                                == Some(qa_core::primitives::NativeEntity {
+                                    module: ModuleId(1),
+                                    slot: 3,
+                                })
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        services.server.entities.columns.collision_shape[entity.slot as usize],
+                        qa_core::primitives::CollisionShape::Model { geometry, index: 1 }
+                    );
+                    let absolute = services.server.area.bounds(entity).unwrap();
+                    assert_eq!(
+                        absolute.mins,
+                        qa_core::primitives::Vec3([-998.0, -996.0, -994.0])
+                    );
+                    assert_eq!(
+                        absolute.maxs,
+                        qa_core::primitives::Vec3([1004.0, 1006.0, 1008.0])
+                    );
+                    assert_eq!(
+                        memory
+                            .read_word(a[0] + if rr { 1380 } else { 100 })
+                            .unwrap(),
+                        3
+                    );
+                } else {
+                    // Non-inline registration changes only the published model.
+                    assert_eq!(
+                        memory
+                            .read_word(a[0] + if rr { 1380 } else { 100 })
+                            .unwrap(),
+                        2
+                    );
+                }
+            }
             if slot == if rr { 7 } else { 6 } && a[0] == 3 {
                 assert_eq!(
                     services.storage.configstring(ModuleId(1), 3).unwrap(),
@@ -2356,6 +2421,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         invoke_import(&mut game, link_slot, [entity_address, 0]);
         invoke_import(&mut game, link_slot, [entity_address, 0]);
         invoke_import(&mut game, link_slot, [base + 0x3000, 0]);
+        invoke_import(&mut game, set_model_slot, [entity_address, base + 0x1720]);
+        invoke_import(&mut game, set_model_slot, [address, base + 0x17a0]);
         invoke_import(&mut game, unlink_slot, [entity_address, 0]);
         invoke_import(&mut game, unlink_slot, [entity_address, 1]);
         // A cached old lifetime cannot unlink a replacement owned by another module.

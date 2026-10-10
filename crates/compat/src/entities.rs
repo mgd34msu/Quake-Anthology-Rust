@@ -350,16 +350,7 @@ impl EntityProjection {
             let (name, _) = services
                 .storage
                 .configstring(context.module, self.models.first + model as usize)?;
-            let index = std::str::from_utf8(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
-                .ok()
-                .and_then(|n| n.parse::<u32>().ok())
-                .ok_or(CallError::Geometry)?;
-            let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
-            services
-                .geometry
-                .model_bounds(geometry, index)
-                .ok_or(CallError::Geometry)?;
-            CollisionShape::Model { geometry, index }
+            Self::inline_model(services, name)?.0
         } else if solid == 2 {
             CollisionShape::Box
         } else {
@@ -505,6 +496,46 @@ impl EntityProjection {
             } else {
                 (ENGINE_CALLS.unlink)(services, binding.entity)?;
             }
+        }
+        Ok(())
+    }
+    fn inline_model(
+        services: &EngineServices<'_>,
+        name: &[u8],
+    ) -> Result<(CollisionShape, Bounds), CallError> {
+        let index = std::str::from_utf8(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
+            .ok()
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|&index| index != 0)
+            .ok_or(CallError::Geometry)?;
+        let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
+        let bounds = services
+            .geometry
+            .model_bounds(geometry, index)
+            .ok_or(CallError::Geometry)?;
+        Ok((CollisionShape::Model { geometry, index }, bounds))
+    }
+    pub fn set_model(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+        name: u64,
+    ) -> Result<(), CallError> {
+        self.entity(services, memory, context, table, address)?;
+        let name = memory.cstring(name)?;
+        let model = (ENGINE_CALLS.resource_index)(services, context.module, self.models, name)?;
+        let inline = name
+            .starts_with(b"*")
+            .then(|| Self::inline_model(services, name))
+            .transpose()?;
+        memory.write_word(address + 40, model as i32)?;
+        if let Some((_, bounds)) = inline {
+            memory.write_vec3(address + self.layout.mins as u64, bounds.mins)?;
+            memory.write_vec3(address + self.layout.maxs as u64, bounds.maxs)?;
+            self.link(services, memory, context, table, address)?;
         }
         Ok(())
     }
