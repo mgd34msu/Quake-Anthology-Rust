@@ -544,13 +544,13 @@ impl NativeProcess {
                 }
                 self.stop_boundary()?;
                 match packet.operation {
-                    RETURN => return Ok(packet.value),
+                    RETURN => return Ok(entry.result(packet.value)),
                     IMPORT => {
-                        let (number, arguments, result_kind) = match packet.abi {
+                        let (number, arguments, result_entry) = match packet.abi {
                             0 => (
                                 u32::try_from(packet.address).map_err(|_| NativeError::Protocol)?,
                                 packet.arguments,
-                                0,
+                                None,
                             ),
                             1 => {
                                 let ordinal = usize::try_from(packet.address)
@@ -560,7 +560,7 @@ impl NativeProcess {
                                 (
                                     number,
                                     entry.unpack(packet.arguments, packet.floats),
-                                    entry.control & 3,
+                                    Some(entry),
                                 )
                             }
                             _ => return Err(NativeError::Protocol),
@@ -571,8 +571,8 @@ impl NativeProcess {
                             self.memory.bytes_mut(),
                         )?;
                         let mut reply = Packet::new(REPLY, self.sequence);
-                        reply.value = result;
-                        reply.address = result_kind;
+                        reply.value = result_entry.map_or(result, |entry| entry.result(result));
+                        reply.address = result_entry.map_or(0, |entry| entry.control & 3);
                         reply.send_before(&mut self.stream, Some(deadline))?;
                         self.resume()?;
                     }

@@ -892,8 +892,113 @@ fn typed_native_function_imports_decode_scalar_arguments_and_return_in_the_nativ
                     NativeScalar::Word | NativeScalar::Double => 0x7ff8_5678_8000_0000,
                     NativeScalar::Float => 0x8000_0000,
                     NativeScalar::Void => 0,
+                    _ => unreachable!("this fixture selects word, floating or void results"),
                 }
             );
+        }
+    }
+}
+
+#[test]
+fn native_integer_exports_apply_declared_widths_to_arguments_and_results() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        // Return the whole incoming register, exposing the ABI conversion
+        // separately from whatever narrowing a C callee might perform.
+        let code = match abi {
+            NativeAbi::SystemV => [0x48, 0x89, 0xf8, 0xc3],
+            NativeAbi::Microsoft => [0x48, 0x89, 0xc8, 0xc3],
+        };
+        let mut process = standard(&code);
+        for &(kind, raw, expected) in INTEGER_CASES {
+            let mut arguments = [0; 13];
+            arguments[0] = raw;
+            for (parameters, result) in [(kind, NativeScalar::Word), (NativeScalar::Word, kind)] {
+                let entry = process.bind(BASE, abi, &[parameters], result).unwrap();
+                assert_eq!(
+                    process
+                        .invoke(entry, arguments, |_, _, _| Err(NativeError::Callback))
+                        .unwrap(),
+                    expected,
+                    "{abi:?} {kind:?} parameter {parameters:?} result {result:?}",
+                );
+            }
+        }
+    }
+}
+
+const INTEGER_CASES: &[(NativeScalar, u64, u64)] = &[
+    (
+        NativeScalar::I8,
+        0x1234_5678_90ab_cd80,
+        0xffff_ffff_ffff_ff80,
+    ),
+    (NativeScalar::I8, 0xffff_ffff_ffff_ff7f, 0x7f),
+    (NativeScalar::U8, 0x1234_5678_90ab_cdff, 0xff),
+    (
+        NativeScalar::I16,
+        0x1234_5678_90ab_8000,
+        0xffff_ffff_ffff_8000,
+    ),
+    (NativeScalar::I16, 0xffff_ffff_ffff_7fff, 0x7fff),
+    (NativeScalar::U16, 0x1234_5678_90ab_ffff, 0xffff),
+    (
+        NativeScalar::I32,
+        0x1234_5678_8000_0000,
+        0xffff_ffff_8000_0000,
+    ),
+    (NativeScalar::I32, 0xffff_ffff_7fff_ffff, 0x7fff_ffff),
+    (NativeScalar::U32, 0x1234_5678_ffff_ffff, 0xffff_ffff),
+    (
+        NativeScalar::Word,
+        0x1234_5678_90ab_cdef,
+        0x1234_5678_90ab_cdef,
+    ),
+];
+
+#[test]
+fn native_integer_imports_apply_declared_widths_in_both_directions() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        for &(kind, raw, expected) in INTEGER_CASES {
+            let reserve = if abi == NativeAbi::SystemV { 8 } else { 40 };
+            let code = [
+                0x48, 0x83, 0xec, reserve, 0x48, 0x8b, 0x05, 0xf5, 0x0f, 0, 0, 0xff, 0xd0, 0x48,
+                0x83, 0xc4, reserve, 0xc3,
+            ];
+            let mut bytes = vec![0; 8192];
+            bytes[..code.len()].copy_from_slice(&code);
+            let parameters = [kind];
+            let imports = [NativeImport {
+                number: 141,
+                abi,
+                parameters: &parameters,
+                result: kind,
+            }];
+            let mut process =
+                image_child(&bytes, &REGIONS, &imports, Duration::from_secs(3)).unwrap();
+            let pointer = process.import_pointer(0).unwrap();
+            process.memory_mut().unwrap()[4096..4104].copy_from_slice(&pointer.to_le_bytes());
+            // The surrounding export leaves upper bits untouched. The import
+            // itself must apply its declared width to the captured register.
+            let entry = process
+                .bind(BASE, abi, &[NativeScalar::Word], NativeScalar::Word)
+                .unwrap();
+            let mut arguments = [0; 13];
+            arguments[0] = raw;
+            let mut calls = 0;
+            let actual = process
+                .invoke(entry, arguments, |call, _, _| {
+                    calls += 1;
+                    assert_eq!(call.number, 141);
+                    assert_eq!(
+                        call.arguments[0], expected,
+                        "{abi:?} {kind:?} import argument"
+                    );
+                    assert!(call.arguments[1..].iter().all(|&value| value == 0));
+                    Ok(raw)
+                })
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(actual, expected, "{abi:?} {kind:?} import result");
         }
     }
 }

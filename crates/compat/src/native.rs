@@ -64,7 +64,8 @@ impl Vm {
                 if symbol.forward.is_some() || symbol.kind == 10 {
                     return Err(Error::Export);
                 }
-                if entry.command.is_some() && entry.parameters.first() != Some(&NativeScalar::Word)
+                if entry.command.is_some()
+                    && !entry.parameters.first().is_some_and(|kind| kind.integer())
                 {
                     return Err(Error::Export);
                 }
