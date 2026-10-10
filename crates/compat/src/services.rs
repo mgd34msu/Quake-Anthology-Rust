@@ -399,6 +399,7 @@ impl EngineServices<'_> {
         if !self.server.entities.release(entity, context.clock) {
             return Err(CallError::Entity);
         }
+        self.server.navigation.unregister(entity);
         Ok(())
     }
     pub fn cvar_register(

@@ -386,7 +386,7 @@ impl Game {
                         NativeScalar::Word,
                     ))
                 } else if ordinal == if layout.version == 2023 { 22 } else { 19 }
-                    || (layout.version == 2023 && ordinal == 49)
+                    || (layout.version == 2023 && matches!(ordinal, 48 | 49))
                 {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else if (if layout.version == 2023 {
@@ -437,6 +437,11 @@ impl Game {
             layout.entity_offset,
             layout.wide_stride,
             if layout.wide_stride { Some(1377) } else { None },
+            if layout.wide_stride {
+                (1376, true)
+            } else {
+                (96, false)
+            },
         ));
         let pointers = (0..imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))

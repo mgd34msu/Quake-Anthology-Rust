@@ -209,6 +209,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[11] = Some(resource_index::<1>);
     table.entries[12] = Some(resource_index::<2>);
     table.entries[22] = Some(native_unlink);
+    table.entries[48] = Some(native_register_observer);
     table.entries[49] = Some(native_forget_observer);
     table.entries[9] = Some(abort);
     table.entries[39] = Some(q2_cvar);
@@ -594,6 +595,12 @@ fn native_forget_observer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
     let address = c.pointer(0)?;
     let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
     entities.forget_observer(c.services, c.memory, c.context, *table, address)?;
+    Ok(0)
+}
+fn native_register_observer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.pointer(0)?;
+    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.register_observer(c.services, c.memory, c.context, *table, address)?;
     Ok(0)
 }
 fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

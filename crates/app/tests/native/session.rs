@@ -1910,6 +1910,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         let index_slot = if rr { 10 } else { 8 };
         let mut replacement = None;
+        let mut observer_entity = None;
         let mut invoke_import = |game: &mut Game, slot: usize, a: [u64; 2]| {
             let returns_value = slot == malloc_slot || (index_slot..index_slot + 3).contains(&slot);
             let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
@@ -1954,6 +1955,29 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             }
             if rr && slot == 49 {
                 assert!(!services.server.navigation.contains(bound));
+                if let Some(entity) = observer_entity {
+                    assert!(!services.server.navigation.contains(entity));
+                }
+            }
+            if rr && slot == 48 {
+                let entity = services
+                    .server
+                    .entities
+                    .active()
+                    .find(|entity| {
+                        services.server.entities.columns.native_entity[entity.slot as usize]
+                            == Some(qa_core::primitives::NativeEntity {
+                                module: ModuleId(1),
+                                slot: 2,
+                            })
+                    })
+                    .unwrap();
+                assert_eq!(*observer_entity.get_or_insert(entity), entity);
+                assert!(services.server.navigation.contains(entity));
+                assert_eq!(
+                    services.server.entities.columns.owner[entity.slot as usize],
+                    ModuleId(1)
+                );
             }
             if slot == unlink_slot && a[1] == 1 {
                 assert!(!services.server.area.unlink(bound));
@@ -2041,6 +2065,17 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             invoke_import(&mut game, 49, [entity_address, 0]);
             invoke_import(&mut game, 49, [0, 0]);
             invoke_import(&mut game, 49, [entity_address + stride, 0]);
+            // Registration observes a real native lifetime once. It neither
+            // derives its common slot from the edict ordinal nor duplicates it.
+            game.vm.process.memory_mut().unwrap()
+                [table_at + size as usize..table_at + size as usize + 4]
+                .copy_from_slice(&3u32.to_le_bytes());
+            game.vm.process.memory_mut().unwrap()
+                [(entity_address + stride - base) as usize + 1376] = 1;
+            invoke_import(&mut game, 48, [entity_address + stride, 0]);
+            invoke_import(&mut game, 48, [entity_address + stride, 0]);
+            invoke_import(&mut game, 49, [entity_address + stride, 0]);
+            invoke_import(&mut game, 48, [entity_address + stride, 0]);
         }
         invoke_import(&mut game, unlink_slot, [entity_address, 0]);
         invoke_import(&mut game, unlink_slot, [entity_address, 1]);
@@ -2050,6 +2085,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         invoke_import(&mut game, unlink_slot, [entity_address + stride, 0]);
         invoke_import(&mut game, unlink_slot, [base + 0x3000, 0]);
         drop(invoke_import);
+        if let Some(entity) = observer_entity {
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            (qa_compat::services::ENGINE_CALLS.free)(&mut services, context, entity).unwrap();
+            assert!(!services.server.navigation.contains(entity));
+            assert!(services.server.entities.resolve(entity).is_none());
+        }
         for first in if rr {
             [62, 8254, 10302]
         } else {

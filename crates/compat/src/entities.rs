@@ -20,15 +20,22 @@ pub struct EntityProjection {
     table_offset: usize,
     wide_stride: bool,
     linked: Option<usize>,
+    in_use: (usize, bool),
     owner: Option<ModuleId>,
     bindings: Box<[Option<EntityId>]>,
 }
 impl EntityProjection {
-    pub(crate) fn load(table_offset: usize, wide_stride: bool, linked: Option<usize>) -> Self {
+    pub(crate) fn load(
+        table_offset: usize,
+        wide_stride: bool,
+        linked: Option<usize>,
+        in_use: (usize, bool),
+    ) -> Self {
         Self {
             table_offset,
             wide_stride,
             linked,
+            in_use,
             owner: None,
             bindings: vec![None; MAX_ENTITIES].into_boxed_slice(),
         }
@@ -151,6 +158,46 @@ impl EntityProjection {
         }
         Ok((entities, slot, bound))
     }
+    fn observe(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<EntityId, CallError> {
+        let (entities, slot, bound) = self.entity(services, memory, context, table, address)?;
+        // Native world zero is geometry, not an allocated area-index body.
+        if slot == 0 || slot >= entities.count as usize {
+            return Err(CallError::Entity);
+        }
+        let (offset, byte) = self.in_use;
+        let length = if byte { 1 } else { 4 };
+        if offset as u64 + length > entities.stride {
+            return Err(CallError::Entity);
+        }
+        let at = address
+            .checked_add(offset as u64)
+            .ok_or(CallError::Memory)?;
+        let in_use = if byte {
+            memory.read(at, 1)?[0] != 0
+        } else {
+            memory.read_word(at)? != 0
+        };
+        if !in_use {
+            return Err(CallError::Entity);
+        }
+        if let Some(entity) = bound {
+            return Ok(entity);
+        }
+        let entity = (ENGINE_CALLS.spawn)(services, context)?;
+        services.server.entities.columns.native_entity[entity.slot as usize] = Some(NativeEntity {
+            module: context.module,
+            slot: slot as i32,
+        });
+        self.bindings[slot] = Some(entity);
+        Ok(entity)
+    }
     pub fn unlink(
         &mut self,
         services: &mut EngineServices<'_>,
@@ -196,5 +243,16 @@ impl EntityProjection {
             self.entity(services, memory, context, table, address)?.2
         };
         (ENGINE_CALLS.bot_registration)(services, bound, false)
+    }
+    pub fn register_observer(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<(), CallError> {
+        let entity = self.observe(services, memory, context, table, address)?;
+        (ENGINE_CALLS.bot_registration)(services, Some(entity), true)
     }
 }
