@@ -73,6 +73,36 @@ pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
     ])
 }
 
+/// Preserve each caller's native arithmetic order before integer narrowing.
+#[derive(Clone, Copy)]
+pub enum AngleShortForm {
+    MultiplyDivide,
+    Factored,
+    Double,
+}
+
+pub fn angle_to_short(angle: f32, form: AngleShortForm) -> i32 {
+    match form {
+        AngleShortForm::MultiplyDivide => (angle * 65536.0 / 360.0) as i32,
+        AngleShortForm::Factored => (angle * (65536.0 / 360.0)) as i32,
+        AngleShortForm::Double => (f64::from(angle) * (65536.0 / 360.0)) as i32,
+    }
+}
+
+pub fn short_to_angle(angle: i32) -> f32 {
+    angle as f32 * (360.0 / 65536.0)
+}
+
+/// Origin first, then each axis in order; do not regroup the products.
+pub fn transform_point(origin: Vec3, axes: [Vec3; 3], local: Vec3) -> Vec3 {
+    Vec3(std::array::from_fn(|i| {
+        origin.0[i]
+            + axes[0].0[i] * local.0[0]
+            + axes[1].0[i] * local.0[1]
+            + axes[2].0[i] * local.0[2]
+    }))
+}
+
 /// A quaternion rotation, shared by skeletal file conversion and deformation.
 pub fn rotate_quaternion(q: [f32; 4], p: Vec3) -> Vec3 {
     let dot = q[0] * p.0[0] + q[1] * p.0[1] + q[2] * p.0[2];
@@ -130,6 +160,5 @@ pub fn angle_vectors_radians(angles: Vec3) -> AngleBasis {
 }
 
 pub fn anglemod(angle: f32) -> f32 {
-    let short = (f64::from(angle) * (65536.0 / 360.0)) as i32 & 65535;
-    ((360.0 / 65536.0) * f64::from(short)) as f32
+    short_to_angle(angle_to_short(angle, AngleShortForm::Double) & 65535)
 }

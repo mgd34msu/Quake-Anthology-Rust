@@ -3,12 +3,7 @@ use qa_console::{cvars::Cvars, views::RuleSetId};
 use qa_render::{assets::upload, material::resources::ImageSettings};
 
 pub fn image_settings(vars: &Cvars, source: RuleSetId) -> Result<ImageSettings, &'static str> {
-    let family = match source {
-        RuleSetId::Quake | RuleSetId::QuakeWorld => 1,
-        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => 2,
-        RuleSetId::Quake3 => 3,
-    };
-    let mut settings = ImageSettings::native(family);
+    let mut settings = ImageSettings::native(source);
     if source == RuleSetId::Quake2Rerelease {
         settings.max_dimension = upload::MAX_DIMENSION;
     }

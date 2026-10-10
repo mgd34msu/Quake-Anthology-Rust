@@ -179,7 +179,7 @@ impl<'a> Model<'a> {
             eye_position: Vec3::default(),
             native_size: 0.0,
             declared_skins: 0,
-            bounds: read::empty_bounds(),
+            bounds: Bounds::empty(),
             meshes: Vec::new(),
             frames: Vec::new(),
             frame_groups: Vec::new(),

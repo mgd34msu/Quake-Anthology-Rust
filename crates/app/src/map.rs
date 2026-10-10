@@ -309,7 +309,7 @@ impl MapInput {
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
-        let (spawns, entity_count, sky_environment) = spawns(&map)?;
+        let (spawns, entity_count, sky_environment) = spawns(&map, self.native_source)?;
         let (collision, collision_brushes) = collision(&map, geometry)?;
         options.sky_environment = sky_environment;
         let render = match load_world(vfs, &map, assets, options) {
@@ -371,13 +371,12 @@ fn vector(bytes: &[u8]) -> Result<Vec3, String> {
     Ok(Vec3(result))
 }
 
-fn spawns(map: &Map<'_>) -> Result<(Box<[SpawnAnchor]>, usize, SkyEnvironment), String> {
+fn spawns(
+    map: &Map<'_>,
+    source: RuleSetId,
+) -> Result<(Box<[SpawnAnchor]>, usize, SkyEnvironment), String> {
     let family = map.bsp.format.family();
-    let syntax = match family {
-        1 => EntitySyntax::Quake,
-        2 => EntitySyntax::Quake2,
-        _ => EntitySyntax::Quake3,
-    };
+    let syntax = entity_syntax(source);
     let entities =
         EntityLump::parse(map.entity_text(), syntax).map_err(|e| format!("entity lump: {e:?}"))?;
     let mut preferred = None;

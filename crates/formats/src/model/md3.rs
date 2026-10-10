@@ -67,7 +67,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             return Err(FormatError::InvalidValue);
         }
         let name = s.name(16)?;
-        add_bounds(&mut m.bounds, bounds);
+        m.bounds.add_bounds(bounds);
         m.frames.push(Frame {
             bounds,
             origin,

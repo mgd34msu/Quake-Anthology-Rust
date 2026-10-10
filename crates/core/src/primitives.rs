@@ -286,6 +286,25 @@ pub struct Bounds {
 }
 
 impl Bounds {
+    pub fn empty() -> Self {
+        Self {
+            mins: Vec3([f32::INFINITY; 3]),
+            maxs: Vec3([f32::NEG_INFINITY; 3]),
+        }
+    }
+
+    pub fn add_point(&mut self, point: Vec3) {
+        for axis in 0..3 {
+            self.mins.0[axis] = self.mins.0[axis].min(point.0[axis]);
+            self.maxs.0[axis] = self.maxs.0[axis].max(point.0[axis]);
+        }
+    }
+
+    pub fn add_bounds(&mut self, other: Self) {
+        self.add_point(other.mins);
+        self.add_point(other.maxs);
+    }
+
     pub fn overlaps(self, other: Self) -> bool {
         (0..3).all(|axis| {
             self.mins.0[axis] <= other.maxs.0[axis] && self.maxs.0[axis] >= other.mins.0[axis]

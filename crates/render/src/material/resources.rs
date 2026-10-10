@@ -2,7 +2,7 @@
 use crate::assets::{Assets, ImageId, PaletteId, Sampler, upload};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use qa_content::vfs::{Vfs, VfsError};
-use qa_core::primitives::NameId;
+use qa_core::primitives::{NameId, RuleSetId};
 use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
@@ -53,17 +53,19 @@ pub struct ImageSettings {
     pub sky_mip: bool,
 }
 impl ImageSettings {
-    pub fn native(family: u8) -> Self {
+    pub fn native(source: RuleSetId) -> Self {
+        let q1 = matches!(source, RuleSetId::Quake | RuleSetId::QuakeWorld);
+        let q2 = matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease);
         Self {
             gamma_exponent: 1.0,
-            palette_exponent: if family == 1 { 0.7 } else { 1.0 },
-            intensity: if family == 2 { 2.0 } else { 1.0 },
-            picmip: u8::from(family == 3),
-            round_images_down: family != 1,
+            palette_exponent: if q1 { 0.7 } else { 1.0 },
+            intensity: if q2 { 2.0 } else { 1.0 },
+            picmip: u8::from(source == RuleSetId::Quake3),
+            round_images_down: !q1,
             simple_mipmaps: true,
-            max_dimension: match family {
-                1 => 1024,
-                2 => 256,
+            max_dimension: match source {
+                RuleSetId::Quake | RuleSetId::QuakeWorld => 1024,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => 256,
                 _ => upload::MAX_DIMENSION,
             },
             sky_mip: false,

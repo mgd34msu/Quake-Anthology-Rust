@@ -171,9 +171,13 @@ pub fn load_world(
     mut options: WorldLoadOptions,
 ) -> Result<LoadedWorld, WorldMaterialError> {
     let family = map.bsp.format.family();
-    let image_settings = options
-        .image_settings
-        .unwrap_or_else(|| ImageSettings::native(family));
+    let image_settings = options.image_settings.unwrap_or_else(|| {
+        ImageSettings::native(match family {
+            1 => qa_core::primitives::RuleSetId::Quake,
+            2 => qa_core::primitives::RuleSetId::Quake2,
+            _ => qa_core::primitives::RuleSetId::Quake3,
+        })
+    });
     if options.renderer_overbright > 2
         || options.map_overbright > 8
         || options.map_overbright < options.renderer_overbright

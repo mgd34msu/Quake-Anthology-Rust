@@ -225,3 +225,59 @@ and 512 reliable-command comparisons still match. Nine focused snapshot tests,
 673 workspace tests, unchanged checker and Clippy pass. See
 [frame-times.md](frame-times.md) and `THE-860-snapshots-20261009/` for CPU23
 release timing, allocation gates and the exact measured scopes. No install.
+
+## THE-3176: second supervisor adoption audit
+
+All eight audited groups now call the shared implementation. Their former
+production helpers/loops were deleted in this slice; no checker extension was
+added. Operation order and native signed narrowing remain unchanged.
+
+| Audited group | Shared implementation and migrated callers |
+| --- | --- |
+| Camera clipping | `render/src/cpu.rs:47,66` stores `Vec3` and uses `Vec3::lerp`; texture/lightmap/color interpolation is unchanged. Camera subtraction at `cpu.rs:159` also uses `Vec3`. |
+| Short angles | `core/src/math.rs:78-93` owns `angle_to_short` and `short_to_angle`. `network/src/commands.rs:158,221` and `network/src/delta.rs:130,173` use them, as does `movement/src/physics.rs:727`. Width/sign conversions remain at native boundaries. `anglemod` also uses this helper. |
+| Mip lengths | `render/src/cpu/world.rs:2806` uses `math::length`, preserving component sum order and the following average/thresholds. |
+| Bounds | `core/src/primitives.rs:289-306` owns `Bounds::empty/add_point/add_bounds`. All MDL/MD2/MD3/MD5/sprite readers use it; `formats/src/model/read.rs` no longer defines bounds helpers. `render/src/world/geometry.rs:712` retains its first-point initialization and finite-input rejection, then calls `add_point`. |
+| Entity syntax | `app/src/map.rs:312,379` passes the load-stored `native_source` to the existing `entity_syntax`; the second spawn-syntax family match is deleted. |
+| Image defaults | `render/src/material/resources.rs:56` takes `RuleSetId`. `app/src/render_settings.rs:6`, resource tests and the name-consumer example pass it directly. `material/world_load.rs:175` converts BSP provenance at the fallback boundary. Explicit presentation settings still win. |
+| Local points | `core/src/math.rs:97` owns `transform_point`: origin, then axis 0, 1, 2 in that order. CPU entity rendering at `cpu.rs:595`, CPU sky collection at `cpu/world.rs:1046`, and GL sky collection at `gl.rs:984` all use it. |
+| Path bytes | `core/src/names.rs:15` exposes the existing `path_byte`; `content/src/vfs.rs:113` now uses it. VFS component rejection, parent traversal and fixed output capacity are unchanged. |
+
+The short-angle policy preserves three arithmetic forms in one core helper:
+networking's float multiply then divide, movement's float precomputed factor,
+and native `anglemod`'s double precomputed factor. `AngleShortForm` selects
+arithmetic, not a game identity. Replacing these with one arithmetic order
+would change rounding before integer narrowing. The shared decoder retains
+signed integer input, including Q3 pitch-delta corrections outside i16 range.
+Eight-bit angle protocol encodings retain their different widths, including
+NetQuake's integral-value rejection; they are not 16-bit short conversions.
+
+Read every line of the 2,222-line pre-slice `render/src/gl.rs`. Two further
+host-side Vec3 additions at current `gl.rs:1170,1272` now use the core operator.
+No other local host implementation of a core helper was found in that full
+read. GL matrices, viewport checks, uniform packing and texture state have no
+core equivalent. The embedded GLSL shader executes fast normalization and
+noise on the GPU; it cannot call Rust's core helper. Its shader instructions
+are unchanged, with prepared stage/wave data still supplied by the one stage
+executor. This is not a claim that native modules or all engine consumers are
+wired. EventRing Sound-to-mixer and compat VM/CallTable session dispatch remain
+explicitly tracked on THE-3169 after THE-860.
+
+Evidence directory: `$HOME/.cache/qa-rust/THE-3176-adoption-20261009/`.
+The normal release app and developer comparison binaries built in 38.93 s.
+The initial command omitted the developer examples' required platform allocation
+feature and failed; the corrected command succeeded. Neither command enabled
+proof input. All 676 workspace tests, the unchanged checker, format and diff
+checks pass. New numeric checks cover 65,536 seeded float patterns across each
+angle form, all 65,536 signed shorts, 16,384 transforms/clipping interpolations,
+and signed-zero bounds unions. Existing CPU pixel/reference, geometry, model,
+path and console tests pass.
+
+`comparisons.json` records exact equality to both previous Rust and original C
+outputs for 16,384 native state cases (8,039,745 comparison bytes) and 512 Q3
+snapshot cases (2,035,577 comparison bytes). Q2 and Q3 movement each retain all
+1,152 prior Rust rows exactly. Q2 still matches C completely. Q3 still has the
+324 native-C float-component differences attributed on THE-3175, maximum
+0.0000112, with exact flags/timers. These are analytic fixtures, not gameplay.
+No timing run, game/window run, allocation measurement or installation was
+performed for this adoption slice, per the owner's cadence ruling.

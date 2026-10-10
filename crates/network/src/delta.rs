@@ -1,6 +1,7 @@
 //! One table walker for native scalar deltas. Protocol records supply words;
 //! only these field descriptors select comparison, projection and presence.
 use crate::message::{Error, ErrorKind, Reader, Writer};
+use qa_core::math::{AngleShortForm, angle_to_short, short_to_angle};
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScaleRead {
@@ -125,7 +126,9 @@ impl Field {
         word: u32,
     ) -> u32 {
         match self.value {
-            Value::Angle16 => (f32::from_bits(word) * 65536.0 / 360.0) as i32 as u32,
+            Value::Angle16 => {
+                angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide) as u32
+            }
             Value::Angle8 { integral } if PREFIX => {
                 if FLOAT_BYTES && integral {
                     ((f32::from_bits(word) as i32).wrapping_mul(256) / 360) as u32
@@ -167,7 +170,7 @@ impl Field {
                 ((word << (32 - bits)) as i32 >> (32 - bits)) as u32
             }
             Value::Signed => ((word << (32 - bits)) as i32 >> (32 - bits)) as u32,
-            Value::Angle16 => ((word as i16 as f32) * (360.0 / 65536.0)).to_bits(),
+            Value::Angle16 => short_to_angle(i32::from(word as i16)).to_bits(),
             Value::Angle8 { .. } if PREFIX => ((word as i8 as f32) * (360.0 / 256.0)).to_bits(),
             Value::Scaled { factor, read } if STATE => {
                 let value = if matches!(read, ScaleRead::Signed)

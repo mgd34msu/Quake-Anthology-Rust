@@ -161,7 +161,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
                     + (bone.position + rotate_quaternion(bone.orientation, w.offset)) * w.bias;
             }
             finite_vec(position)?;
-            add_point(&mut m.bounds, position);
+            m.bounds.add_point(position);
             mesh.vertices.push(Vertex {
                 position,
                 normal: Vec3::default(),

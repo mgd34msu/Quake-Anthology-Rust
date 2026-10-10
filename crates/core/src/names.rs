@@ -12,7 +12,7 @@ pub fn compare_folded(left: &[u8], right: &[u8]) -> Ordering {
         .map(|byte| byte.to_ascii_uppercase())
         .cmp(right.iter().copied().map(|byte| byte.to_ascii_uppercase()))
 }
-fn path_byte(byte: u8) -> u8 {
+pub fn path_byte(byte: u8) -> u8 {
     fold(if byte == b'\\' { b'/' } else { byte })
 }
 /// The sole renderer path conversion; other exact names never use this rule.

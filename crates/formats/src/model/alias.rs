@@ -42,13 +42,13 @@ fn packed_bounds(
     translation: Vec3,
 ) -> Result<Bounds, FormatError> {
     let points = r.take(8)?;
-    let mut bounds = empty_bounds();
+    let mut bounds = Bounds::empty();
     for p in points.as_chunks::<4>().0 {
         let point = Vec3(std::array::from_fn(|a| {
             f32::from(p[a]) * scale.0[a] + translation.0[a]
         }));
         finite_vec(point)?;
-        add_point(&mut bounds, point);
+        bounds.add_point(point);
     }
     Ok(bounds)
 }
@@ -76,7 +76,7 @@ fn vertices(
             f32::from(p[a]) * scale.0[a] + translation.0[a]
         }));
         finite_vec(position)?;
-        add_point(bounds, position);
+        bounds.add_point(position);
         out.push(Vertex { position, normal });
     }
     Ok(())
@@ -198,7 +198,7 @@ pub(super) fn mdl<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
                 scale,
                 translation,
                 &mut mesh.vertices,
-                &mut empty_bounds(),
+                &mut Bounds::empty(),
             )?;
             m.frames.push(Frame {
                 name,
@@ -212,7 +212,7 @@ pub(super) fn mdl<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
         if g.intervals.is_empty() {
             g.bounds = m.frames[g.members.start].bounds;
         }
-        add_bounds(&mut m.bounds, g.bounds);
+        m.bounds.add_bounds(g.bounds);
         m.frame_groups.push(g);
     }
     m.meshes.push(mesh);
@@ -287,7 +287,7 @@ pub(super) fn md2<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
         let translation = s.vector()?;
         let name = s.name(16)?;
         let packed_vertices = s.take(vertex_count * 4)?;
-        let mut bounds = empty_bounds();
+        let mut bounds = Bounds::empty();
         vertices(
             packed_vertices,
             scale,
@@ -295,7 +295,7 @@ pub(super) fn md2<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
             &mut mesh.vertices,
             &mut bounds,
         )?;
-        add_bounds(&mut m.bounds, bounds);
+        m.bounds.add_bounds(bounds);
         m.frames.push(Frame {
             name,
             bounds,
@@ -392,8 +392,8 @@ pub(super) fn sprite<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>,
                     .abs()
                     .max((h as f64 - f64::from(origin[1])).abs());
                 let radius = x.hypot(y) as f32;
-                add_point(&mut m.bounds, Vec3([-radius; 3]));
-                add_point(&mut m.bounds, Vec3([radius; 3]));
+                m.bounds.add_point(Vec3([-radius; 3]));
+                m.bounds.add_point(Vec3([radius; 3]));
                 Image::External(r.name(64)?)
             } else {
                 let length = w.checked_mul(h).ok_or(FormatError::InvalidRange)?;

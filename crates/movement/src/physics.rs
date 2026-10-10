@@ -724,21 +724,27 @@ impl Step<'_> {
         self.player.view_angles = self.command.view_angles + self.player.movement.delta_angles;
         if self.classic() || self.arena() {
             for i in 0..3 {
-                let to_short = |v: f32| (v * (65536.0 / 360.0)) as i32 as i16;
-                let mut angle = to_short(self.command.view_angles.0[i])
-                    .wrapping_add(to_short(self.player.movement.delta_angles.0[i]));
+                let mut angle = (math::angle_to_short(
+                    self.command.view_angles.0[i],
+                    math::AngleShortForm::Factored,
+                ) as i16)
+                    .wrapping_add(math::angle_to_short(
+                        self.player.movement.delta_angles.0[i],
+                        math::AngleShortForm::Factored,
+                    ) as i16);
                 if self.arena() && i == 0 {
                     let clamped = angle.clamp(-16000, 16000);
                     if clamped != angle {
-                        let command_angle =
-                            (self.command.view_angles.0[i] * (65536.0 / 360.0)) as i32 as u16;
+                        let command_angle = math::angle_to_short(
+                            self.command.view_angles.0[i],
+                            math::AngleShortForm::Factored,
+                        ) as u16;
                         self.player.movement.delta_angles.0[i] =
-                            (i32::from(clamped) - i32::from(command_angle)) as f32
-                                * (360.0 / 65536.0);
+                            math::short_to_angle(i32::from(clamped) - i32::from(command_angle));
                         angle = clamped;
                     }
                 }
-                self.player.view_angles.0[i] = f32::from(angle) * (360.0 / 65536.0);
+                self.player.view_angles.0[i] = math::short_to_angle(i32::from(angle));
             }
             if self.classic() {
                 let pitch = &mut self.player.view_angles.0[0];

@@ -1,5 +1,6 @@
 //! Protocol/ABI projections. Movement values retain the decoded command units;
 //! The shared input builder owns speed scaling. Packet compression enters in R11.
+use qa_core::math::{AngleShortForm, angle_to_short, short_to_angle};
 use qa_core::primitives::{UserCmd, Vec3, WeaponId, buttons as b};
 pub mod connection;
 pub mod delta;
@@ -93,12 +94,6 @@ fn to_buttons(value: u32, table: &[(u32, u32)]) -> u32 {
         }
     })
 }
-fn angle_short(angle: f32) -> i16 {
-    (angle * 65536.0 / 360.0) as i32 as i16
-}
-fn short_angle(angle: i32) -> f32 {
-    angle as f32 * (360.0 / 65536.0)
-}
 fn vertical(command: &UserCmd, amount: f32) -> f32 {
     if command.movement[2] != 0.0 {
         command.movement[2]
@@ -157,7 +152,10 @@ pub fn to_q2_usercmd(command: &UserCmd) -> Q2Cmd {
     movement[2] = vertical(command, 200.0);
     Q2Cmd {
         msec: command.duration_ms.min(255) as u8,
-        angles: command.view_angles.0.map(angle_short),
+        angles: command
+            .view_angles
+            .0
+            .map(|v| angle_to_short(v, AngleShortForm::MultiplyDivide) as i16),
         movement: movement.map(|value| value as i32 as i16),
         buttons: to_buttons(command.buttons, &Q2_BITS) as u8,
         impulse: command.impulse,
@@ -175,7 +173,7 @@ pub fn from_q2_usercmd(command: Q2Cmd, server_time_ms: i32) -> UserCmd {
     UserCmd {
         duration_ms: u16::from(command.msec),
         server_time_ms,
-        view_angles: Vec3(command.angles.map(|value| short_angle(i32::from(value)))),
+        view_angles: Vec3(command.angles.map(|value| short_to_angle(i32::from(value)))),
         movement: command.movement.map(f32::from),
         buttons: from_buttons(u32::from(command.buttons), &Q2_BITS) | vertical,
         impulse: command.impulse,
@@ -220,7 +218,7 @@ pub fn to_q3_usercmd(command: &UserCmd, weapon: u8) -> Q3Cmd {
         angles: command
             .view_angles
             .0
-            .map(|value| i32::from(angle_short(value) as u16)),
+            .map(|value| i32::from(angle_to_short(value, AngleShortForm::MultiplyDivide) as u16)),
         movement: movement.map(|value| value.clamp(-128.0, 127.0) as i8),
         buttons: to_buttons(command.buttons, &Q3_BITS),
         weapon,
@@ -240,7 +238,7 @@ pub fn from_q3_usercmd(command: Q3Cmd, previous_server_time: i32, weapon: Weapon
             .saturating_sub(previous_server_time)
             .clamp(0, i32::from(u16::MAX)) as u16,
         server_time_ms: command.server_time,
-        view_angles: Vec3(command.angles.map(short_angle)),
+        view_angles: Vec3(command.angles.map(short_to_angle)),
         movement: command.movement.map(f32::from),
         buttons: from_buttons(command.buttons, &Q3_BITS) | vertical,
         weapon: Some(weapon),

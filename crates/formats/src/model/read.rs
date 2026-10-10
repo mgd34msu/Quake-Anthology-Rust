@@ -16,22 +16,6 @@ pub(super) fn finite_vec(value: Vec3) -> Result<(), FormatError> {
     }
     Ok(())
 }
-pub(super) fn empty_bounds() -> Bounds {
-    Bounds {
-        mins: Vec3([f32::INFINITY; 3]),
-        maxs: Vec3([f32::NEG_INFINITY; 3]),
-    }
-}
-pub(super) fn add_point(bounds: &mut Bounds, point: Vec3) {
-    for a in 0..3 {
-        bounds.mins.0[a] = bounds.mins.0[a].min(point.0[a]);
-        bounds.maxs.0[a] = bounds.maxs.0[a].max(point.0[a]);
-    }
-}
-pub(super) fn add_bounds(bounds: &mut Bounds, other: Bounds) {
-    add_point(bounds, other.mins);
-    add_point(bounds, other.maxs);
-}
 pub(super) fn bounded_index(index: usize, count: usize) -> Result<u32, FormatError> {
     if index >= count {
         Err(FormatError::InvalidReference("model index", index))

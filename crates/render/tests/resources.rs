@@ -71,7 +71,7 @@ fn indexed_pcx_uses_selected_global_palette_and_explicit_mask() {
         &vfs,
         &mut assets,
         RasterPolicy::Quake2,
-        ImageSettings::native(2),
+        ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
     )
     .unwrap();
     let opaque = images
@@ -112,7 +112,7 @@ fn sky_resource_keeps_distinct_native_tga_pixels_and_pcx_dimensions() {
         &vfs,
         &mut assets,
         RasterPolicy::Quake2,
-        ImageSettings::native(2),
+        ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
     )
     .unwrap();
     let id = images
@@ -153,7 +153,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
     let settings = ImageSettings {
         picmip: 1,
         intensity: 2.5,
-        ..ImageSettings::native(2)
+        ..ImageSettings::native(qa_core::primitives::RuleSetId::Quake2)
     };
     // Different native contexts can coexist in the one numeric image table.
     let mut images = Images::new(&vfs, &mut assets, RasterPolicy::Quake2, settings).unwrap();
@@ -205,7 +205,7 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
         &vfs,
         &mut assets,
         RasterPolicy::Quake3,
-        ImageSettings::native(3),
+        ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
     )
     .unwrap();
     let usage = ImageUse {
@@ -256,7 +256,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     let settings = ImageSettings {
         intensity: 2.0,
         gamma_exponent: 2.0,
-        ..ImageSettings::native(3)
+        ..ImageSettings::native(qa_core::primitives::RuleSetId::Quake3)
     };
     let mut images = Images::new(&vfs, &mut assets, RasterPolicy::Quake3, settings).unwrap();
     let mipped = images

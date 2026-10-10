@@ -981,12 +981,7 @@ impl GlBackend {
                     for triangle in model.indices.chunks_exact(3) {
                         let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
                             let position = model.vertices[index as usize].position;
-                            Vec3(std::array::from_fn(|axis| {
-                                entity.origin.0[axis]
-                                    + entity.axes[0].0[axis] * position.0[0]
-                                    + entity.axes[1].0[axis] * position.0[1]
-                                    + entity.axes[2].0[axis] * position.0[2]
-                            }))
+                            qa_core::math::transform_point(entity.origin, entity.axes, position)
                         });
                         if !clip.add_polygon(&points, origin) {
                             stats.rejected = stats.rejected.saturating_add(1);
@@ -1172,9 +1167,7 @@ impl GlBackend {
                     cube.direction
                 };
                 Vertex {
-                    position: Vec3(std::array::from_fn(|i| {
-                        inputs.view_origin.0[i] + direction.0[i]
-                    })),
+                    position: inputs.view_origin + direction,
                     texcoord: cube.uv,
                     ..Vertex::default()
                 }
@@ -1276,9 +1269,7 @@ impl GlBackend {
                         )
                         .direction;
                         let vertex = Vertex {
-                            position: Vec3(std::array::from_fn(|i| {
-                                inputs.view_origin.0[i] + direction.0[i]
-                            })),
+                            position: inputs.view_origin + direction,
                             normal: Vec3::default(),
                             texcoord: grid.uv[face.index()][t][s],
                             ..Vertex::default()

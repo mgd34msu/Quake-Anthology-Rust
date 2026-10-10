@@ -110,7 +110,7 @@ fn normalize_into(path: &[u8], normalized: &mut [u8; 4096]) -> Result<usize, Vfs
                 length += 1;
             }
             for byte in component {
-                normalized[length] = byte.to_ascii_lowercase();
+                normalized[length] = qa_core::names::path_byte(*byte);
                 length += 1;
             }
         }

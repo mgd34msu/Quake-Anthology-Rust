@@ -725,9 +725,8 @@ fn vertex_bounds(vertices: &[WorldVertex]) -> Result<Bounds, GeometryError> {
             if !value.is_finite() {
                 return Err(GeometryError::SizeLimit);
             }
-            bounds.mins.0[axis] = bounds.mins.0[axis].min(value);
-            bounds.maxs.0[axis] = bounds.maxs.0[axis].max(value);
         }
+        bounds.add_point(vertex.vertex.position);
     }
     Ok(bounds)
 }

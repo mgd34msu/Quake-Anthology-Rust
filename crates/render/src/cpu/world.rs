@@ -1043,12 +1043,7 @@ impl WorldPrepare {
                     for triangle in model.indices.chunks_exact(3) {
                         let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
                             let position = model.vertices[index as usize].position;
-                            qa_core::primitives::Vec3(std::array::from_fn(|axis| {
-                                entity.origin.0[axis]
-                                    + entity.axes[0].0[axis] * position.0[0]
-                                    + entity.axes[1].0[axis] * position.0[1]
-                                    + entity.axes[2].0[axis] * position.0[2]
-                            }))
+                            qa_core::math::transform_point(entity.origin, entity.axes, position)
                         });
                         self.add_sky_polygon(material, points, camera, stats);
                     }
@@ -2807,7 +2802,8 @@ fn native_span(
 }
 
 fn mip_adjust(projection: [[f32; 4]; 2]) -> f32 {
-    let lengths = projection.map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt());
+    let lengths =
+        projection.map(|p| qa_core::math::length(qa_core::primitives::Vec3([p[0], p[1], p[2]])));
     let average = (lengths[0] + lengths[1]) * 0.5;
     if average < 0.32 {
         4.0

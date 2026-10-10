@@ -44,7 +44,7 @@ pub struct CpuBackend {
 
 #[derive(Clone, Copy, Default)]
 struct ClipVertex {
-    camera: [f32; 3],
+    camera: Vec3,
     texcoord: [f32; 2],
     lightmap_coord: [f32; 2],
     color: [f32; 4],
@@ -53,6 +53,7 @@ struct ClipVertex {
 impl ClipVertex {
     fn finite(self) -> bool {
         self.camera
+            .0
             .iter()
             .chain(self.texcoord.iter())
             .chain(self.lightmap_coord.iter())
@@ -62,9 +63,7 @@ impl ClipVertex {
 
     fn lerp(self, end: Self, fraction: f32) -> Self {
         Self {
-            camera: std::array::from_fn(|i| {
-                self.camera[i] + fraction * (end.camera[i] - self.camera[i])
-            }),
+            camera: self.camera.lerp(end.camera, fraction),
             texcoord: std::array::from_fn(|i| {
                 self.texcoord[i] + fraction * (end.texcoord[i] - self.texcoord[i])
             }),
@@ -157,15 +156,13 @@ impl Camera {
     }
 
     fn vertex(&self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
-        let delta = Vec3(std::array::from_fn(|i| {
-            world_position.0[i] - self.refdef.origin.0[i]
-        }));
+        let delta = world_position - self.refdef.origin;
         ClipVertex {
-            camera: [
+            camera: Vec3([
                 -delta.dot(self.refdef.axes[1]),
                 delta.dot(self.refdef.axes[2]),
                 delta.dot(self.refdef.axes[0]),
-            ],
+            ]),
             texcoord: vertex.texcoord,
             lightmap_coord: vertex.lightmap_coord,
             color: vertex.color.map(|c| c as f32 / 255.0),
@@ -173,18 +170,18 @@ impl Camera {
     }
 
     fn project(&self, vertex: ClipVertex) -> ScreenVertex {
-        let inverse_depth = 1.0 / vertex.camera[2];
+        let inverse_depth = 1.0 / vertex.camera.0[2];
         let viewport = self.refdef.viewport;
         ScreenVertex {
             xy: [
                 viewport.x as f32
                     + viewport.width as f32
                         * 0.5
-                        * (1.0 + vertex.camera[0] * inverse_depth / self.tangent[0]),
+                        * (1.0 + vertex.camera.0[0] * inverse_depth / self.tangent[0]),
                 viewport.y as f32
                     + viewport.height as f32
                         * 0.5
-                        * (1.0 - vertex.camera[1] * inverse_depth / self.tangent[1]),
+                        * (1.0 - vertex.camera.0[1] * inverse_depth / self.tangent[1]),
             ],
             inverse_depth,
             texcoord_over_depth: vertex.texcoord.map(|c| c * inverse_depth),
@@ -194,7 +191,7 @@ impl Camera {
     }
 
     fn distance(&self, vertex: ClipVertex, plane: usize) -> f32 {
-        let [x, y, z] = vertex.camera;
+        let [x, y, z] = vertex.camera.0;
         match plane {
             0 => z - self.refdef.near,
             1 => self.refdef.far - z,
@@ -595,12 +592,11 @@ impl CpuBackend {
                         .evaluator
                         .apply_deforms(deforms, model.vertices[indices[i] as usize]);
                     let evaluated = self.evaluator.evaluate(&stage, &vertex);
-                    let position = Vec3(std::array::from_fn(|axis| {
-                        entity.origin.0[axis]
-                            + evaluated.position.0[0] * entity.axes[0].0[axis]
-                            + evaluated.position.0[1] * entity.axes[1].0[axis]
-                            + evaluated.position.0[2] * entity.axes[2].0[axis]
-                    }));
+                    let position = qa_core::math::transform_point(
+                        entity.origin,
+                        entity.axes,
+                        evaluated.position,
+                    );
                     camera.vertex(
                         Vertex {
                             texcoord: evaluated.texcoord,
