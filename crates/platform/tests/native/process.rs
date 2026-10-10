@@ -253,6 +253,239 @@ fn c_runtime_imports_execute_in_the_child_without_an_engine_round_trip() {
 }
 
 #[test]
+fn c_runtime_scans_cross_region_boundaries_without_crossing_gaps() {
+    use super::runtime::FUNCTIONS;
+    let imports: Vec<_> = FUNCTIONS
+        .iter()
+        .take(7)
+        .map(|f| NativeImport {
+            number: f.number,
+            abi: NativeAbi::Microsoft,
+            parameters: f.parameters,
+            result: f.result,
+        })
+        .collect();
+    let regions = [
+        REGIONS[0],
+        REGIONS[1],
+        NativeRegion {
+            offset: 8192,
+            length: 4096,
+            permissions: 1,
+        },
+        NativeRegion {
+            offset: 16384,
+            length: 4096,
+            permissions: 3,
+        },
+        NativeRegion {
+            offset: 20480,
+            length: 4096,
+            permissions: 3,
+        },
+    ];
+    let mut bytes = vec![0x7f; 24576];
+    bytes[8190..8195].copy_from_slice(b"ab\xffd\0");
+    bytes[12286..12288].copy_from_slice(b"x\0");
+    let mut process = image_child(&bytes, &regions, &imports, Duration::from_secs(3)).unwrap();
+    let call = |process: &mut NativeProcess, ordinal: usize, arguments: &[u64]| {
+        let f = &FUNCTIONS[ordinal];
+        let entry = process
+            .bind(
+                process.import_pointer(ordinal).unwrap(),
+                NativeAbi::Microsoft,
+                f.parameters,
+                f.result,
+            )
+            .unwrap();
+        let mut words = [0; 13];
+        words[..arguments.len()].copy_from_slice(arguments);
+        process.invoke(entry, words, |_, _, _| Err(NativeError::Callback))
+    };
+    assert_eq!(call(&mut process, 4, &[BASE + 8190]).unwrap(), 4);
+    assert_eq!(
+        call(&mut process, 3, &[BASE + 20478, BASE + 8190, 8]).unwrap(),
+        BASE + 20478
+    );
+    assert_eq!(
+        call(&mut process, 5, &[BASE + 8190, BASE + 20478]).unwrap(),
+        0
+    );
+    assert_eq!(
+        call(&mut process, 6, &[BASE + 8192, BASE + 20481, 1]).unwrap(),
+        155
+    );
+    assert_eq!(
+        call(&mut process, 3, &[BASE + 20490, BASE + 12286, 8]).unwrap(),
+        BASE + 20490
+    );
+    assert_eq!(call(&mut process, 4, &[BASE + 12286]).unwrap(), 1);
+    assert_eq!(
+        call(&mut process, 3, &[BASE + 24576, u64::MAX, 0]).unwrap(),
+        BASE + 24576
+    );
+    assert_eq!(
+        call(&mut process, 6, &[BASE + 24576, BASE + 24576, 0]).unwrap(),
+        0
+    );
+    assert_eq!(&process.memory().unwrap()[20478..20486], b"ab\xffd\0\0\0\0");
+    assert_eq!(&process.memory().unwrap()[20490..20498], b"x\0\0\0\0\0\0\0");
+    drop(process);
+    // Both strings must terminate even when an earlier byte differs. Compare
+    // and copy validate their full bounded extents, including destination rights.
+    bytes[12287] = b'y';
+    for (ordinal, arguments) in [
+        (4, vec![BASE + 12286]),
+        (5, vec![BASE + 8190, BASE + 12286]),
+        (6, vec![BASE + 12286, BASE + 8190, 3]),
+        (3, vec![BASE + 20478, BASE + 12286, 3]),
+        (3, vec![BASE + 8190, BASE + 4096, 4]),
+    ] {
+        let mut process = image_child(&bytes, &regions, &imports, Duration::from_secs(3)).unwrap();
+        assert!(call(&mut process, ordinal, &arguments).is_err());
+    }
+}
+
+#[test]
+fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
+    use super::runtime::{FIRST, FUNCTIONS, RuntimeConfig};
+    let mut imports: Vec<_> = FUNCTIONS
+        .iter()
+        .filter(|f| f.windows_object())
+        .map(|f| NativeImport {
+            number: f.number,
+            abi: NativeAbi::Microsoft,
+            parameters: f.parameters,
+            result: f.result,
+        })
+        .collect();
+    imports.push(NativeImport {
+        number: 7,
+        abi: NativeAbi::Microsoft,
+        parameters: &[NativeScalar::Word],
+        result: NativeScalar::I32,
+    });
+    let mut bytes = vec![0; 12288];
+    let config = RuntimeConfig {
+        base: BASE + 4096,
+        heap_bytes: 4096,
+    };
+    config
+        .prepare_msvc(&mut bytes[4096..8192], |number| {
+            NativeProcess::import_address(
+                BASE,
+                12288,
+                imports.iter().position(|i| i.number == number).unwrap(),
+            )
+        })
+        .unwrap();
+    // The custom sync function tail-calls one engine import. This exercises a
+    // kernel-stopped borrow nested inside the runtime's MSVC vtable call.
+    bytes[256..262].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
+    let sync = NativeProcess::import_address(BASE, 12288, imports.len() - 1).unwrap();
+    bytes[262..270].copy_from_slice(&sync.to_le_bytes());
+    let regions = [
+        REGIONS[0],
+        NativeRegion {
+            length: 8192,
+            ..REGIONS[1]
+        },
+    ];
+    let mut process = configured_child(
+        &bytes,
+        &regions,
+        &imports,
+        Duration::from_secs(3),
+        Some(config),
+    )
+    .unwrap();
+    let buffer = config.base + 1024;
+    let output = config.base + 1200;
+    let data = config.base + 1400;
+    let table = config.base + 1600;
+    let mut callbacks = 0;
+    let mut invoke = |process: &mut NativeProcess, number, args: &[u64]| {
+        let f = FUNCTIONS.iter().find(|f| f.number == number).unwrap();
+        let ordinal = imports.iter().position(|i| i.number == number).unwrap();
+        let entry = process
+            .bind(
+                process.import_pointer(ordinal).unwrap(),
+                NativeAbi::Microsoft,
+                f.parameters,
+                f.result,
+            )
+            .unwrap();
+        let mut words = [0; 13];
+        words[..args.len()].copy_from_slice(args);
+        process
+            .invoke(entry, words, |call, base, bytes| {
+                assert_eq!(call.number, 7);
+                assert!(call.function);
+                assert_eq!(call.arguments[0], buffer);
+                assert_eq!(base, BASE);
+                assert_eq!(
+                    &bytes[(buffer - BASE + 76) as usize..(buffer - BASE + 80) as usize],
+                    &38u32.to_le_bytes()
+                );
+                callbacks += 1;
+                Ok(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(invoke(&mut process, FIRST + 150, &[buffer]), buffer);
+    let default = process.memory().unwrap()[4360..4480].to_vec();
+    {
+        let memory = process.memory_mut().unwrap();
+        let at = (table - BASE) as usize;
+        memory[at..at + 120].copy_from_slice(&default);
+        memory[at + 13 * 8..at + 14 * 8].copy_from_slice(&(BASE + 256).to_le_bytes());
+        let at = (buffer - BASE) as usize;
+        memory[at..at + 8].copy_from_slice(&table.to_le_bytes());
+        memory[at + 16..at + 24].copy_from_slice(&data.to_le_bytes());
+        memory[at + 48..at + 56].copy_from_slice(&data.to_le_bytes());
+        memory[at + 76..at + 80].copy_from_slice(&64u32.to_le_bytes());
+    }
+    assert_eq!(
+        invoke(&mut process, FIRST + 121, &[output, buffer, 0, 1]),
+        output
+    );
+    assert_eq!(
+        invoke(&mut process, FIRST + 155, &[output, (-42i64) as u64]),
+        output
+    );
+    assert_eq!(
+        invoke(&mut process, FIRST + 144, &[buffer, b':' as u64]),
+        b':' as u64
+    );
+    assert_eq!(
+        invoke(&mut process, FIRST + 156, &[output, i64::MIN as u64]),
+        output
+    );
+    let at = (data - BASE) as usize;
+    assert_eq!(
+        &process.memory().unwrap()[at..at + 24],
+        b"-42:-9223372036854775808"
+    );
+    assert_eq!(invoke(&mut process, FIRST + 147, &[buffer, data, 2]), 2);
+    assert_eq!(invoke(&mut process, FIRST + 151, &[output]), output);
+    let position = config.base + 1800;
+    assert_eq!(
+        invoke(&mut process, FIRST + 154, &[output, position]),
+        position
+    );
+    assert_eq!(
+        &process.memory().unwrap()[(position - BASE + 8) as usize..(position - BASE + 16) as usize],
+        &u64::MAX.to_le_bytes()
+    );
+    assert_eq!(invoke(&mut process, FIRST + 129, &[buffer]), 0);
+    invoke(&mut process, FIRST + 123, &[output + 16]);
+    invoke(&mut process, FIRST + 115, &[output + 16]);
+    invoke(&mut process, FIRST + 126, &[buffer]);
+    assert_eq!(callbacks, 1);
+    assert_eq!(&process.memory().unwrap()[4200..4204], &2u32.to_le_bytes());
+}
+
+#[test]
 fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
     let mut bytes = vec![0; 5000];
     // mov [rdi],rsi; mov rax,rsi; ret

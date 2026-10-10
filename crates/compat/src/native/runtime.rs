@@ -18,6 +18,10 @@ fn library(image: &Image, id: NameId, function: Option<&Function>) -> bool {
             |function| name == function.provider,
         ),
         Encoding::Pe => {
+            if function.is_some_and(|function| function.provider.ends_with(b".dll")) {
+                return function
+                    .is_some_and(|function| compare_folded(name, function.provider).is_eq());
+            }
             [b"msvcrt.dll".as_slice(), b"ucrtbase.dll"]
                 .iter()
                 .any(|expected| compare_folded(name, expected).is_eq())
@@ -154,6 +158,11 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         if provider.is_some_and(|id| !library(image, id, Some(function))) || !supported_version {
             return Err(import_error(image, name, provider, version));
         }
+        if let Some(offset) = function.data_offset() {
+            return config
+                .map(|config| config.base + offset as u64)
+                .ok_or_else(|| "native runtime data storage".into());
+        }
         let ordinal = match imports
             .iter()
             .position(|entry| entry.number == function.number)
@@ -209,6 +218,37 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
     }
     // Drop the cold resolver's borrow before patching the one image.
     drop(resolve);
+    if image.target.encoding == Encoding::Pe
+        && imports.iter().any(|i| {
+            qa_platform::native::runtime::function(i.number).is_some_and(Function::windows_object)
+        })
+    {
+        for function in FUNCTIONS.iter().filter(|f| f.windows_object()) {
+            if !imports.iter().any(|i| i.number == function.number) {
+                imports.push(NativeImport {
+                    number: function.number,
+                    abi,
+                    parameters: function.parameters,
+                    result: function.result,
+                });
+            }
+        }
+        let config = config.ok_or("native MSVC storage")?;
+        let at = usize::try_from(config.base - image.base).map_err(|_| "native MSVC storage")?;
+        let image_bytes = image.bytes.len();
+        config
+            .prepare_msvc(
+                &mut image.bytes[at..at + qa_platform::native::PAGE_BYTES],
+                |number| {
+                    let ordinal = imports
+                        .iter()
+                        .position(|i| i.number == number)
+                        .ok_or(qa_platform::native::NativeError::Extent)?;
+                    NativeProcess::import_address(image.base, image_bytes, prefix + ordinal)
+                },
+            )
+            .map_err(|e| format!("native MSVC tables: {e:?}"))?;
+    }
     if image.target.encoding == Encoding::Elf {
         let indirect = vec![None; image.relocations.len()];
         let bindings = Bindings {

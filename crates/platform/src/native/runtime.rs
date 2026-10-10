@@ -12,7 +12,7 @@ pub struct Function {
     pub result: NativeScalar,
     pub(crate) operation: Operation,
 }
-use NativeScalar::{Double, I32, Void, Word};
+use NativeScalar::{Double, I32, U32, Void, Word};
 const LIBC: &[u8] = b"libc.so.6";
 const LIBM: &[u8] = b"libm.so.6";
 const BASE_VERSION: &[&[u8]] = &[b"GLIBC_2.2.5"];
@@ -207,6 +207,66 @@ pub const FUNCTIONS: &[Function] = &[
         result: Void,
         operation: Operation::Free,
     },
+    windows(FIRST + 100, b"msvcp140.dll", b"?_Incref@facet@locale@std@@UEAAXXZ", Operation::Msvc(Msvc::Incref), &[Word], NativeScalar::Void),
+    windows(FIRST + 101, b"msvcp140.dll", b"?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ", Operation::Msvc(Msvc::Decref), &[Word], NativeScalar::Word),
+    windows(FIRST + 102, b"msvcp140.dll", b"??1facet@locale@std@@MEAA@XZ", Operation::Msvc(Msvc::FacetDtor), &[Word], NativeScalar::Void),
+    windows(FIRST + 103, b"msvcp140.dll", b"runtime:facet-delete", Operation::Msvc(Msvc::FacetDelete), &[Word, U32], NativeScalar::Word),
+    windows(FIRST + 104, b"msvcp140.dll", b"??0facet@locale@std@@IEAA@_K@Z", Operation::Msvc(Msvc::FacetCtor), &[Word, Word], NativeScalar::Word),
+    windows(FIRST + 105, b"msvcp140.dll", b"?_Init@locale@std@@CAPEAV_Locimp@12@_N@Z", Operation::Msvc(Msvc::LocaleInit), &[U32], NativeScalar::Word),
+    windows(FIRST + 106, b"msvcp140.dll", b"?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ", Operation::Msvc(Msvc::Global), &[], NativeScalar::Word),
+    windows(FIRST + 107, b"msvcp140.dll", b"??0_Lockit@std@@QEAA@H@Z", Operation::Msvc(Msvc::Lock), &[Word, I32], NativeScalar::Word),
+    windows(FIRST + 108, b"msvcp140.dll", b"??1_Lockit@std@@QEAA@XZ", Operation::Msvc(Msvc::Unlock), &[Word], NativeScalar::Void),
+    windows(FIRST + 109, b"msvcp140.dll", b"??0_Locinfo@std@@QEAA@PEBD@Z", Operation::Msvc(Msvc::LocinfoCtor), &[Word, Word], NativeScalar::Word),
+    windows(FIRST + 110, b"msvcp140.dll", b"??1_Locinfo@std@@QEAA@XZ", Operation::Msvc(Msvc::LocinfoDtor), &[Word], NativeScalar::Void),
+    windows(FIRST + 111, b"msvcp140.dll", b"?_Gettrue@_Locinfo@std@@QEBAPEBDXZ", Operation::Msvc(Msvc::True), &[Word], NativeScalar::Word),
+    windows(FIRST + 112, b"msvcp140.dll", b"?_Getfalse@_Locinfo@std@@QEBAPEBDXZ", Operation::Msvc(Msvc::False), &[Word], NativeScalar::Word),
+    windows(FIRST + 113, b"msvcp140.dll", b"?_Getlconv@_Locinfo@std@@QEBAPEBUlconv@@XZ", Operation::Msvc(Msvc::Lconv), &[Word], NativeScalar::Word),
+    windows(FIRST + 114, b"msvcp140.dll", b"?_Getcvt@_Locinfo@std@@QEBA?AU_Cvtvec@@XZ", Operation::Msvc(Msvc::Cvtvec), &[Word, Word], NativeScalar::Word),
+    windows(FIRST + 115, b"msvcp140.dll", b"??1?$basic_ios@DU?$char_traits@D@std@@@std@@UEAA@XZ", Operation::Msvc(Msvc::IosDtor), &[Word], NativeScalar::Void),
+    windows(FIRST + 116, b"msvcp140.dll", b"runtime:basic-ios-delete", Operation::Msvc(Msvc::IosDelete), &[Word, U32], NativeScalar::Word),
+    windows(FIRST + 117, b"msvcp140.dll", b"??0?$basic_ios@DU?$char_traits@D@std@@@std@@IEAA@XZ", Operation::Msvc(Msvc::IosCtor), &[Word], NativeScalar::Word),
+    windows(FIRST + 118, b"msvcp140.dll", b"?rdbuf@?$basic_ios@DU?$char_traits@D@std@@@std@@QEBAPEAV?$basic_streambuf@DU?$char_traits@D@std@@@2@XZ", Operation::Msvc(Msvc::Rdbuf), &[Word], NativeScalar::Word),
+    windows(FIRST + 119, b"msvcp140.dll", b"?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QEAAXH_N@Z", Operation::Msvc(Msvc::Setstate), &[Word, I32, U32], NativeScalar::Void),
+    windows(FIRST + 120, b"msvcp140.dll", b"?good@ios_base@std@@QEBA_NXZ", Operation::Msvc(Msvc::Good), &[Word], NativeScalar::U32),
+    windows(FIRST + 121, b"msvcp140.dll", b"??0?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z", Operation::Msvc(Msvc::OstreamCtor), &[Word, Word, U32, I32], NativeScalar::Word),
+    windows(FIRST + 122, b"msvcp140.dll", b"??0?$basic_iostream@DU?$char_traits@D@std@@@std@@QEAA@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z", Operation::Msvc(Msvc::IostreamCtor), &[Word, Word, I32], NativeScalar::Word),
+    windows(FIRST + 123, b"msvcp140.dll", b"??1?$basic_ostream@DU?$char_traits@D@std@@@std@@UEAA@XZ", Operation::Msvc(Msvc::OstreamDtor), &[Word], NativeScalar::Void),
+    windows(FIRST + 124, b"msvcp140.dll", b"??1?$basic_iostream@DU?$char_traits@D@std@@@std@@UEAA@XZ", Operation::Msvc(Msvc::IostreamDtor), &[Word], NativeScalar::Void),
+    windows(FIRST + 125, b"msvcp140.dll", b"runtime:ostream-delete", Operation::Msvc(Msvc::OstreamDelete), &[Word, U32], NativeScalar::Word),
+    windows(FIRST + 126, b"msvcp140.dll", b"??1?$basic_streambuf@DU?$char_traits@D@std@@@std@@UEAA@XZ", Operation::Msvc(Msvc::BufferDtor), &[Word], NativeScalar::Void),
+    windows(FIRST + 127, b"msvcp140.dll", b"runtime:streambuf-delete", Operation::Msvc(Msvc::BufferDelete), &[Word, U32], NativeScalar::Word),
+    windows(FIRST + 128, b"msvcp140.dll", b"?_Lock@?$basic_streambuf@DU?$char_traits@D@std@@@std@@UEAAXXZ", Operation::Msvc(Msvc::BufferLock), &[Word], NativeScalar::Void),
+    windows(FIRST + 129, b"msvcp140.dll", b"?_Unlock@?$basic_streambuf@DU?$char_traits@D@std@@@std@@UEAAXXZ", Operation::Msvc(Msvc::BufferLock), &[Word], NativeScalar::Void),
+    windows(FIRST + 130, b"msvcp140.dll", b"runtime:streambuf-overflow", Operation::Msvc(Msvc::BufferOverflow), &[Word, I32], NativeScalar::I32),
+    windows(FIRST + 131, b"msvcp140.dll", b"runtime:streambuf-pbackfail", Operation::Msvc(Msvc::BufferOverflow), &[Word, I32], NativeScalar::I32),
+    windows(FIRST + 132, b"msvcp140.dll", b"runtime:streambuf-underflow", Operation::Msvc(Msvc::BufferUnderflow), &[Word], NativeScalar::I32),
+    windows(FIRST + 133, b"msvcp140.dll", b"?showmanyc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAA_JXZ", Operation::Msvc(Msvc::Showmany), &[Word], NativeScalar::Word),
+    windows(FIRST + 134, b"msvcp140.dll", b"?sync@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAHXZ", Operation::Msvc(Msvc::Sync), &[Word], NativeScalar::I32),
+    windows(FIRST + 135, b"msvcp140.dll", b"?setbuf@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAPEAV12@PEAD_J@Z", Operation::Msvc(Msvc::Setbuf), &[Word, Word, Word], NativeScalar::Word),
+    windows(FIRST + 136, b"msvcp140.dll", b"?imbue@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAXAEBVlocale@2@@Z", Operation::Msvc(Msvc::Imbue), &[Word, Word], NativeScalar::Void),
+    windows(FIRST + 137, b"msvcp140.dll", b"?eback@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ", Operation::Msvc(Msvc::Eback), &[Word], NativeScalar::Word),
+    windows(FIRST + 138, b"msvcp140.dll", b"?pbase@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ", Operation::Msvc(Msvc::Pbase), &[Word], NativeScalar::Word),
+    windows(FIRST + 139, b"msvcp140.dll", b"?gptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ", Operation::Msvc(Msvc::Gptr), &[Word], NativeScalar::Word),
+    windows(FIRST + 140, b"msvcp140.dll", b"?pptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ", Operation::Msvc(Msvc::Pptr), &[Word], NativeScalar::Word),
+    windows(FIRST + 141, b"msvcp140.dll", b"?egptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ", Operation::Msvc(Msvc::Egptr), &[Word], NativeScalar::Word),
+    windows(FIRST + 142, b"msvcp140.dll", b"?epptr@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEBAPEADXZ", Operation::Msvc(Msvc::Epptr), &[Word], NativeScalar::Word),
+    windows(FIRST + 143, b"msvcp140.dll", b"?uflow@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAAHXZ", Operation::Msvc(Msvc::Uflow), &[Word], NativeScalar::I32),
+    windows(FIRST + 144, b"msvcp140.dll", b"?sputc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAAHD@Z", Operation::Msvc(Msvc::Putc), &[Word, I32], NativeScalar::I32),
+    windows(FIRST + 145, b"msvcp140.dll", b"?xsgetn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAA_JPEAD_J@Z", Operation::Msvc(Msvc::Getn), &[Word, Word, Word], NativeScalar::Word),
+    windows(FIRST + 146, b"msvcp140.dll", b"?xsputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MEAA_JPEBD_J@Z", Operation::Msvc(Msvc::Putn), &[Word, Word, Word], NativeScalar::Word),
+    windows(FIRST + 147, b"msvcp140.dll", b"?sputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QEAA_JPEBD_J@Z", Operation::Msvc(Msvc::Sputn), &[Word, Word, Word], NativeScalar::Word),
+    windows(FIRST + 148, b"msvcp140.dll", b"runtime:streambuf-seekoff", Operation::Msvc(Msvc::Seekoff), &[Word, Word, Word, I32, I32], NativeScalar::Word),
+    windows(FIRST + 149, b"msvcp140.dll", b"runtime:streambuf-seekpos", Operation::Msvc(Msvc::Seekpos), &[Word, Word, Word, I32], NativeScalar::Word),
+    windows(FIRST + 150, b"msvcp140.dll", b"??0?$basic_streambuf@DU?$char_traits@D@std@@@std@@IEAA@XZ", Operation::Msvc(Msvc::BufferCtor), &[Word], NativeScalar::Word),
+    windows(FIRST + 151, b"msvcp140.dll", b"?flush@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV12@XZ", Operation::Msvc(Msvc::Flush), &[Word], NativeScalar::Word),
+    windows(FIRST + 152, b"msvcp140.dll", b"?_Osfx@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAXXZ", Operation::Msvc(Msvc::Suffix), &[Word], NativeScalar::Void),
+    windows(FIRST + 153, b"msvcp140.dll", b"?uncaught_exception@std@@YA_NXZ", Operation::Msvc(Msvc::Uncaught), &[], NativeScalar::U32),
+    windows(FIRST + 154, b"msvcp140.dll", b"?tellp@?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAA?AV?$fpos@U_Mbstatet@@@2@XZ", Operation::Msvc(Msvc::Tellp), &[Word, Word], NativeScalar::Word),
+    windows(FIRST + 155, b"msvcp140.dll", b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@H@Z", Operation::Msvc(Msvc::Integer32), &[Word, I32], NativeScalar::Word),
+    windows(FIRST + 156, b"msvcp140.dll", b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@_J@Z", Operation::Msvc(Msvc::Integer64), &[Word, Word], NativeScalar::Word),
+    windows(FIRST + 157, b"msvcp140.dll", b"??6?$basic_ostream@DU?$char_traits@D@std@@@std@@QEAAAEAV01@PEAV?$basic_streambuf@DU?$char_traits@D@std@@@1@@Z", Operation::Msvc(Msvc::InsertBuffer), &[Word, Word], NativeScalar::Word),
+    windows(FIRST + 200, b"msvcp140.dll", b"?_Id_cnt@id@locale@std@@0HA", Operation::Data(16), &[], Word),
+    windows(FIRST + 201, b"msvcp140.dll", b"?id@?$numpunct@D@std@@2V0locale@2@A", Operation::Data(24), &[], Word),
 ];
 
 #[derive(Clone, Copy)]
@@ -229,13 +289,165 @@ pub(crate) enum Operation {
     Calloc,
     Realloc,
     Free,
+    Msvc(Msvc),
+    Data(usize),
 }
 
 pub fn function(number: u32) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.number == number)
 }
+impl Function {
+    pub fn data_offset(&self) -> Option<usize> {
+        if let Operation::Data(offset) = self.operation {
+            Some(offset)
+        } else {
+            None
+        }
+    }
+    pub fn windows_object(&self) -> bool {
+        matches!(self.operation, Operation::Msvc(_))
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeConfig {
     pub base: u64,
     pub heap_bytes: usize,
+}
+impl RuntimeConfig {
+    /// Exact x64 MSVC object/vtable layout from the C runtime. The one page is
+    /// owned writable module storage; callable slots refer to child gateways.
+    pub fn prepare_msvc(
+        self,
+        page: &mut [u8],
+        target: impl Fn(u32) -> Result<u64, super::NativeError>,
+    ) -> Result<(), super::NativeError> {
+        let mut put = |offset: usize, bytes: &[u8]| {
+            let end = offset
+                .checked_add(bytes.len())
+                .ok_or(super::NativeError::Extent)?;
+            page.get_mut(offset..end)
+                .ok_or(super::NativeError::Extent)?
+                .copy_from_slice(bytes);
+            Ok::<_, super::NativeError>(())
+        };
+        for (offset, data) in [
+            (160, &b"C\0"[..]),
+            (164, &b"true\0"[..]),
+            (172, &b"false\0"[..]),
+        ] {
+            put(offset, data)?;
+        }
+        for (offset, value) in [(96, self.base + 208), (136, self.base + 160)] {
+            put(offset, &value.to_le_bytes())?;
+        }
+        put(104, &2u32.to_le_bytes())?;
+        put(128, &63u32.to_le_bytes())?;
+        for (offset, numbers) in [
+            (208, &[103, 100, 101][..]),
+            (240, &[116][..]),
+            (248, &[125][..]),
+            (256, &[125][..]),
+            (
+                264,
+                &[
+                    127, 128, 129, 130, 131, 133, 132, 143, 145, 146, 148, 149, 135, 134, 136,
+                ][..],
+            ),
+        ] {
+            for (index, number) in numbers.iter().enumerate() {
+                put(offset + index * 8, &target(FIRST + number)?.to_le_bytes())?;
+            }
+        }
+        put(388, &16u32.to_le_bytes())?;
+        put(396, &32u32.to_le_bytes())?;
+        put(404, &16u32.to_le_bytes())?;
+        // Classic C lconv, all strings empty except decimal_point.
+        for index in 0..10 {
+            put(416 + index * 8, &(self.base + 600).to_le_bytes())?;
+        }
+        put(416, &(self.base + 604).to_le_bytes())?;
+        put(496, &[127; 16])?;
+        put(604, b".\0")?;
+        Ok(())
+    }
+}
+
+const fn windows(
+    number: u32,
+    library: &'static [u8],
+    name: &'static [u8],
+    operation: Operation,
+    parameters: &'static [NativeScalar],
+    result: NativeScalar,
+) -> Function {
+    Function {
+        name,
+        number,
+        heap: true,
+        provider: library,
+        versions: &[],
+        parameters,
+        result,
+        operation,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Msvc {
+    Incref,
+    Decref,
+    FacetDtor,
+    FacetDelete,
+    FacetCtor,
+    LocaleInit,
+    Global,
+    Lock,
+    Unlock,
+    LocinfoCtor,
+    LocinfoDtor,
+    True,
+    False,
+    Lconv,
+    Cvtvec,
+    IosDtor,
+    IosDelete,
+    IosCtor,
+    Rdbuf,
+    Setstate,
+    Good,
+    OstreamCtor,
+    IostreamCtor,
+    OstreamDtor,
+    IostreamDtor,
+    OstreamDelete,
+    BufferDtor,
+    BufferDelete,
+    BufferLock,
+    BufferOverflow,
+    BufferUnderflow,
+    Showmany,
+    Sync,
+    Setbuf,
+    Imbue,
+    Eback,
+    Pbase,
+    Gptr,
+    Pptr,
+    Egptr,
+    Epptr,
+    Uflow,
+    Putc,
+    Getn,
+    Putn,
+    Sputn,
+    Seekoff,
+    Seekpos,
+    BufferCtor,
+    Flush,
+    Suffix,
+    Uncaught,
+    Tellp,
+    Integer32,
+    Integer64,
+    InsertBuffer,
 }

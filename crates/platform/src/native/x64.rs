@@ -20,6 +20,8 @@ unsafe extern "sysv64" {
     pub(super) fn system_v_function();
     #[link_name = "qa_native_x64_microsoft_function"]
     pub(super) fn microsoft_function();
+    #[link_name = "qa_native_x64_callback_top"]
+    pub(super) fn callback_top() -> u64;
 }
 
 // The controller frame is private. Import capture contains raw guest words,
@@ -27,7 +29,8 @@ unsafe extern "sysv64" {
 // gate saves guest state, restores controller floating-point state and switches
 // back to that private stack. The controller may then publish every shared byte
 // while the parent enforces a kernel stop. Only one foreign call is active in
-// this single-thread child; nested exports are not admitted by this gate yet.
+// this single-thread child. Child-local callbacks save the outer gate state
+// on their private controller frame and use shared stack below the saved RSP.
 std::arch::global_asm!(
     r#"
     .pushsection .bss
@@ -50,17 +53,35 @@ std::arch::global_asm!(
     push r13
     push r14
     push r15
-    sub rsp, 536
+    sub rsp, 1288
     fxsave64 [rsp]
     mov [rsp + 512], r9
+    mov r13, rdi
+    mov r14, rsi
+    mov r15, rdx
+    mov rbp, rcx
     mov r12, r8
+    mov rax, [rip + .Lcontroller_stack]
+    mov [rsp + 544], rax
+    mov rax, [rip + .Lguest_bottom]
+    mov [rsp + 552], rax
+    mov rax, [rip + .Lguest_top]
+    mov [rsp + 560], rax
+    lea rsi, [rip + .Limport_state]
+    lea rdi, [rsp + 568]
+    mov ecx, 90
+    cld
+    rep movsq
     mov [rip + .Lcontroller_stack], rsp
-    mov [rip + .Lguest_top], rcx
-    mov rax, rcx
+    mov [rip + .Lguest_top], rbp
+    cmp qword ptr [rip + .Lguest_bottom], 0
+    jne .Lstack_bound
+    mov rax, rbp
     sub rax, {stack_bytes}
     mov [rip + .Lguest_bottom], rax
-    mov r11, rdi
-    mov r10, rdx
+.Lstack_bound:
+    mov r11, r13
+    mov r10, r15
     movq xmm0, [r12]
     movq xmm1, [r12 + 8]
     movq xmm2, [r12 + 16]
@@ -69,8 +90,8 @@ std::arch::global_asm!(
     movq xmm5, [r12 + 40]
     movq xmm6, [r12 + 48]
     movq xmm7, [r12 + 56]
-    mov rsp, rcx
-    test rsi, rsi
+    mov rsp, rbp
+    test r14, r14
     jne .Lmicrosoft_call
     // Seven stack words. RSP is 16-byte aligned before CALL.
     sub rsp, 64
@@ -118,14 +139,35 @@ std::arch::global_asm!(
 .Lvoid_result:
     xor eax, eax
 .Lresult:
+    mov r12, rax
+    mov rax, [rsp + 544]
+    mov [rip + .Lcontroller_stack], rax
+    mov rax, [rsp + 552]
+    mov [rip + .Lguest_bottom], rax
+    mov rax, [rsp + 560]
+    mov [rip + .Lguest_top], rax
+    lea rsi, [rsp + 568]
+    lea rdi, [rip + .Limport_state]
+    mov ecx, 90
+    cld
+    rep movsq
+    mov rax, r12
     fxrstor64 [rsp]
-    add rsp, 536
+    add rsp, 1288
     pop r15
     pop r14
     pop r13
     pop r12
     pop rbx
     pop rbp
+    ret
+
+    .global {callback_top}
+    .hidden {callback_top}
+{callback_top}:
+    mov rax, [rip + .Limport_state]
+    sub rax, 128
+    and rax, -16
     ret
 
     .global {system_v_import}
@@ -255,5 +297,6 @@ std::arch::global_asm!(
     system_v_function = sym system_v_function,
     microsoft_function = sym microsoft_function,
     import = sym import,
+    callback_top = sym callback_top,
     stack_bytes = const super::STACK,
 );

@@ -725,9 +725,18 @@ struct ImportResult {
     value: u64,
     kind: u64,
 }
-extern "C" fn import(words: &[u64; 14], floats: &[[u64; 2]; 8], typed: u64) -> ImportResult {
+extern "C" fn import(
+    words: *const [u64; 14],
+    floats: *const [[u64; 2]; 8],
+    typed: u64,
+) -> ImportResult {
     // The assembly gate supplies private, fully captured ABI words. No Rust
     // reference into the shared guest stack is retained while the parent borrows.
+    // SAFETY: assembly captured both arrays in its aligned import state. Copy
+    // them now so a child-local callback may reenter without aliasing a Rust
+    // reference to that state.
+    let words = unsafe { words.read() };
+    let floats = unsafe { floats.read() };
     let number = words[0];
     let arguments = std::array::from_fn(|i| words[i + 1]);
     if typed == 1 {
