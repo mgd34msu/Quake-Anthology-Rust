@@ -185,28 +185,25 @@ pub fn dispatch(
                 if !connection.channel.has_output() {
                     break;
                 }
-                let packet = if let Some(packet) = connection.channel.pending_packet() {
-                    packet
-                } else {
-                    let Ok(Some(packet)) = connection.channel.prepare_output(time) else {
+                if connection.channel.pending_packet().is_none() {
+                    let Ok(Some(_)) = connection.channel.prepare_output(time) else {
                         break;
                     };
-                    packet
-                };
-                let sent = match connection.route.peer {
-                    qa_core::sys_events::Peer::Loopback(client) => runtime
-                        .loopback
-                        .send(qa_core::loopback::Endpoint::Server, client, packet.bytes)
-                        .is_ok(),
-                    qa_core::sys_events::Peer::Socket(to) => {
-                        source.send_packet(connection.route.socket, to, packet.bytes)
-                    }
-                };
-                if !sent {
-                    counts.native_blocked += 1;
-                    break;
                 }
-                let Ok(()) = connection.channel.submitted(time) else {
+                let Ok(Some(_)) =
+                    connection
+                        .channel
+                        .submit_with(time, |bytes| match connection.route.peer {
+                            qa_core::sys_events::Peer::Loopback(client) => runtime
+                                .loopback
+                                .send(qa_core::loopback::Endpoint::Server, client, bytes)
+                                .is_ok(),
+                            qa_core::sys_events::Peer::Socket(to) => {
+                                source.send_packet(connection.route.socket, to, bytes)
+                            }
+                        })
+                else {
+                    counts.native_blocked += 1;
                     break;
                 };
                 counts.native_packets += 1;

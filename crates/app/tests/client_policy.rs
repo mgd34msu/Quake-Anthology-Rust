@@ -223,6 +223,7 @@ fn the_first_local_link_uses_client_order_and_snapshot_keeps_role_ids() -> Resul
             spawn,
             policy,
             qa_network::commands::packet::Protocol::QuakeWorld28,
+            seat.index() as u32,
         )?;
         let connected = &runtime.server.clients[id.0 as usize];
         assert_eq!(connected.client_rules, client);

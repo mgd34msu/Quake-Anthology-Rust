@@ -245,7 +245,10 @@ impl Channel {
         frame: crate::snapshots::ReceivedFrame<'_>,
     ) -> Result<(), crate::commands::packet::Error> {
         use crate::commands::packet::Error;
-        if self.endpoint() != Endpoint::Server || self.pending_packet().is_some() {
+        if self.endpoint() != Endpoint::Server
+            || self.pending_packet().is_some()
+            || self.pending_fragments()
+        {
             return Err(Error::Context);
         }
         self.snapshots.as_mut().ok_or(Error::Context)?.store(frame)

@@ -401,7 +401,7 @@ fn run() -> Result<(), String> {
             let traces = policy.trace;
             let spawn = loaded.spawns[index];
             let protocol = seat_protocols[index].unwrap_or(local_protocol);
-            let client = runtime.connect_local(seat, spawn, policy, protocol)?;
+            let client = runtime.connect_local(seat, spawn, policy, protocol, index as u32)?;
             println!(
                 "{{\"event\":\"local_channel\",\"seat\":{index},\"client\":{},\"protocol\":{},\"native_signon\":false}}",
                 client.0,

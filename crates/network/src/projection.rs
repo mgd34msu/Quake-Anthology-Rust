@@ -9,6 +9,7 @@ use qa_core::{
 };
 
 /// These are native values, never common entity, client or registry handles.
+#[derive(Default)]
 pub struct PlayerContext {
     pub client_number: Option<u32>,
     pub ground_number: Option<u32>,

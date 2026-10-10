@@ -6,6 +6,7 @@ pub mod output;
 pub mod profile;
 pub mod render_settings;
 pub mod renderer;
+pub mod snapshots;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
@@ -29,6 +30,7 @@ pub struct Runtime {
     /// Loaded geometry is independent of every player's movement rules.
     pub collision: Option<WorldCollision>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
+    pub local_snapshots: Box<[Option<snapshots::LocalSnapshot>]>,
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
@@ -122,6 +124,7 @@ impl Runtime {
             geometry: qa_world::collision::CollisionStore::new(),
             collision: None,
             prediction: std::array::from_fn(|_| Default::default()),
+            local_snapshots: std::iter::repeat_with(|| None).take(max_clients).collect(),
             loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
@@ -137,6 +140,7 @@ impl Runtime {
         spawn: map::SpawnAnchor,
         policy: client_policy::ClientPolicy,
         protocol: qa_network::commands::packet::Protocol,
+        native_client: u32,
     ) -> Result<ClientId, String> {
         let id = self
             .server
@@ -180,12 +184,18 @@ impl Runtime {
         let client = &mut self.server.clients[id.0 as usize];
         client.client_rules = policy.client;
         client.link_order = policy.link_order();
-        client.player.movement_rules = policy.movement;
-        client.player.trace_rules = policy.trace;
-        qa_movement::set_bounds(&mut client.player);
-        client.player.body.position = spawn.position;
-        client.player.view_angles = spawn.angles;
-        client.player.health = 100;
+        for player in [
+            &mut client.player,
+            &mut self.prediction[seat.index()].player,
+        ] {
+            player.reset();
+            player.movement_rules = policy.movement;
+            player.trace_rules = policy.trace;
+            qa_movement::set_bounds(player);
+            player.body.position = spawn.position;
+            player.view_angles = spawn.angles;
+            player.health = 100;
+        }
         self.server
             .entities
             .columns
@@ -198,7 +208,12 @@ impl Runtime {
             client.link_order,
             qa_world::area::LinkIntent::Explicit,
         );
-        self.prediction[seat.index()].apply_snapshot(&client.player);
+        self.local_snapshots[id.0 as usize] = Some(snapshots::LocalSnapshot::load(
+            seat,
+            client.output.ok_or("local output consumer")?,
+            protocol,
+            native_client,
+        ));
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)
     }
@@ -227,30 +242,97 @@ impl Runtime {
         // At most the load-sized control ring followed by this current move.
         // A rejected transport keeps the exact prepared packet for retry.
         for _ in 0..17 {
-            let packet = if let Some(packet) = connection.channel.pending_packet() {
-                packet
-            } else {
-                let Ok(Some(packet)) =
+            if connection.channel.pending_packet().is_none() {
+                let Ok(Some(_)) =
                     connection
                         .channel
                         .prepare_move(&bytes[..length], time, snapshot_request)
                 else {
                     return false;
                 };
-                packet
+            }
+            let Ok(Some(disposition)) = connection.channel.submit_with(time, |bytes| {
+                self.loopback
+                    .send(qa_core::loopback::Endpoint::Client, id, bytes)
+                    .is_ok()
+            }) else {
+                return false;
             };
-            let disposition = packet.unreliable;
-            if self
-                .loopback
-                .send(qa_core::loopback::Endpoint::Client, id, packet.bytes)
-                .is_err()
-            {
-                return false;
-            }
-            if connection.channel.submitted(time).is_err() {
-                return false;
-            }
             if disposition != qa_network::channel::Unreliable::Deferred {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// SERVER snapshots use the same native framing/loopback/Packet path as
+    /// commands. A rejected transport retains its exact prepared bytes.
+    pub fn send_local_snapshot(
+        &mut self,
+        id: ClientId,
+        time: qa_core::sys_events::EventTime,
+    ) -> bool {
+        use qa_core::loopback::Endpoint;
+        use qa_network::channel::Unreliable;
+        let client = &self.server.clients[id.0 as usize];
+        let Some(binding) = self.local_snapshots[id.0 as usize].as_mut() else {
+            return false;
+        };
+        if client.connection != Some(Connection::Local) || client.output != Some(binding.output) {
+            return false;
+        }
+        let Some(connection) = self.network.get_mut(id, Endpoint::Server) else {
+            return false;
+        };
+        let mut bytes = [0; 1400];
+        for _ in 0..17 {
+            if connection.channel.pending_packet().is_none() {
+                if connection.channel.pending_controls() != 0
+                    || connection.channel.pending_fragments()
+                {
+                    let Ok(Some(_)) = connection.channel.prepare_output(time) else {
+                        return false;
+                    };
+                } else {
+                    let sequence = binding.sequence(&connection.channel, time);
+                    if !binding.needs_send(&connection.channel, sequence) {
+                        return false;
+                    }
+                    let delta = connection
+                        .commands
+                        .as_ref()
+                        .and_then(|commands| commands.delta_request());
+                    let Ok(length) = binding.encode(
+                        &mut connection.channel,
+                        &client.player,
+                        sequence,
+                        time,
+                        delta,
+                        &mut bytes,
+                    ) else {
+                        return false;
+                    };
+                    let Ok(Some(packet)) =
+                        connection
+                            .channel
+                            .prepare_move(&bytes[..length], time, None)
+                    else {
+                        return false;
+                    };
+                    if packet.unreliable != Unreliable::Deferred {
+                        binding.pending = Some(sequence);
+                    }
+                }
+            }
+            let Ok(Some(disposition)) = connection.channel.submit_with(time, |bytes| {
+                self.loopback.send(Endpoint::Server, id, bytes).is_ok()
+            }) else {
+                return false;
+            };
+            if disposition != Unreliable::Deferred
+                && let Some(sequence) = binding.pending.take()
+            {
+                binding.submitted(sequence);
                 return true;
             }
         }

@@ -204,6 +204,7 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
                 },
                 policy,
                 qa_network::commands::packet::Protocol::QuakeWorld28,
+                seat.index() as u32,
             )
             .unwrap();
         runtime.server.clients[client.0 as usize]
@@ -286,6 +287,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
             )
             .unwrap(),
             qa_network::commands::packet::Protocol::QuakeWorld28,
+            0,
         )
         .unwrap();
     host.local_clients[SeatId::FIRST.index()] = Some(id);
@@ -308,7 +310,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     assert_eq!(frame.server_ticks, 3); // two world ticks and one Q2 provider tick
     assert_eq!(host.runtime.server.world_frame, 2);
     assert_eq!(host.runtime.server.clients[0].player.health, 30);
-    assert_eq!(host.runtime.network.packets, 3);
+    assert_eq!(host.runtime.network.packets, 4); // includes the admitted SERVER snapshot
     assert_eq!(
         host.runtime.network.last_socket,
         Some(Endpoint::Client.socket())
@@ -316,9 +318,7 @@ fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     assert_eq!(host.runtime.loopback.pending(Endpoint::Client), 0);
     assert_eq!(
         host.runtime.network.last_from,
-        Some(qa_network::ingress::Peer::Loopback(
-            qa_core::primitives::ClientId(7)
-        ))
+        Some(qa_network::ingress::Peer::Loopback(id))
     );
     assert_eq!(
         host.runtime.server.clients[id.0 as usize]

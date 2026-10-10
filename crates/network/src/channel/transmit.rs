@@ -275,6 +275,24 @@ impl Channel {
             unreliable: pending.unreliable,
         })
     }
+    pub fn pending_fragments(&self) -> bool {
+        self.transmit.fragment_pending
+    }
+    /// Admission and sequence commitment are one boundary operation. A full
+    /// transport retains the exact packet and all of its native metadata.
+    pub fn submit_with(
+        &mut self,
+        time: EventTime,
+        admit: impl FnOnce(&[u8]) -> bool,
+    ) -> Result<Option<Unreliable>, TransmitError> {
+        let packet = self.pending_packet().ok_or(TransmitError::NoPacket)?;
+        let disposition = packet.unreliable;
+        if !admit(packet.bytes) {
+            return Ok(None);
+        }
+        self.submitted(time)?;
+        Ok(Some(disposition))
+    }
     /// Encode once. A failed transport admission leaves pending_packet intact.
     /// The caller commits only after the platform or loopback accepts its bytes.
     pub fn prepare(

@@ -58,6 +58,7 @@ impl FrameSource for Source {
     }
 }
 fn main() -> Result<(), String> {
+    let heap_only = std::env::args().any(|arg| arg == "--heap-only");
     let mut runtime = Runtime::load(4, [])?;
     let protocols = [
         Protocol::NetQuake15,
@@ -85,6 +86,7 @@ fn main() -> Result<(), String> {
             },
             policy,
             protocols[slot],
+            slot as u32,
         )?;
         locals[slot] = Some(id);
         runtime
@@ -116,9 +118,9 @@ fn main() -> Result<(), String> {
     for frame in 0..660 {
         source.frame = frame;
         allocations::begin_frame();
-        let watch = Stopwatch::start();
+        let watch = (!heap_only).then(Stopwatch::start);
         let result = host.frame(&mut source, true);
-        let elapsed = watch.elapsed().as_nanos() as u64;
+        let elapsed = watch.map_or(0, |watch| watch.elapsed().as_nanos() as u64);
         let counts = allocations::end_frame();
         if result.drains != 2
             || result.output_drains != 1
@@ -145,18 +147,38 @@ fn main() -> Result<(), String> {
     {
         return Err("host packet fixture counts".into());
     }
-    samples.sort_unstable();
-    println!(
-        "{{\"scope\":\"ordinary headless host with four independently selected native local move protocols; no map or signon\",\"warmup\":60,\"frames\":600,\"protocols\":[15,28,34,68],\"packets\":{},\"decoded_commands\":{},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
-        host.runtime.network.packets,
-        host.runtime.network.commands,
-        source.polls,
-        (samples[299] + samples[300]) / 2,
-        samples[593],
-        totals.allocations,
-        totals.reallocations,
-        totals.requested_bytes
-    );
+    if heap_only {
+        let applied = std::array::from_fn::<_, 4, _>(|slot| {
+            host.runtime.local_snapshots[slot]
+                .as_ref()
+                .map_or(0, |binding| binding.applied)
+        });
+        if applied.contains(&0) {
+            return Err("missing native CLIENT projection".into());
+        }
+        println!(
+            "{{\"scope\":\"ordinary headless host commands and SERVER/CLIENT snapshots on four native local protocols; no map, native module or signon; calling Rust thread\",\"warmup\":60,\"frames\":600,\"protocols\":[15,28,34,68],\"packets\":{},\"decoded_commands\":{},\"applied_player_records\":{applied:?},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":false}}",
+            host.runtime.network.packets,
+            host.runtime.network.commands,
+            source.polls,
+            totals.allocations,
+            totals.reallocations,
+            totals.requested_bytes
+        );
+    } else {
+        samples.sort_unstable();
+        println!(
+            "{{\"scope\":\"ordinary headless host with four independently selected native local move protocols; no map or signon\",\"warmup\":60,\"frames\":600,\"protocols\":[15,28,34,68],\"packets\":{},\"decoded_commands\":{},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+            host.runtime.network.packets,
+            host.runtime.network.commands,
+            source.polls,
+            (samples[299] + samples[300]) / 2,
+            samples[593],
+            totals.allocations,
+            totals.reallocations,
+            totals.requested_bytes
+        );
+    }
     if totals.allocations + totals.reallocations != 0 {
         return Err("measured Rust heap activity".into());
     }

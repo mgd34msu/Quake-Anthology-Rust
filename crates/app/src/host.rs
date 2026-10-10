@@ -275,6 +275,9 @@ impl FrameHost {
             );
         }
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
+        for id in self.local_clients.iter().flatten() {
+            self.runtime.send_local_snapshot(*id, server_time);
+        }
         // Immediate server->client packets take this path in the same frame.
         source.poll_events(&mut self.queue);
         self.drain(&mut result);
@@ -360,12 +363,28 @@ impl FrameHost {
                         bytes,
                     } => {
                         let server = &mut self.runtime.server;
+                        let predictions = &mut self.runtime.prediction;
+                        let snapshots = &mut self.runtime.local_snapshots;
                         self.runtime.network.receive(
                             socket,
                             from,
                             bytes,
                             event.time,
                             |client, endpoint, incoming| {
+                                if endpoint == qa_core::loopback::Endpoint::Client {
+                                    if let Some(binding) = snapshots[client.0 as usize].as_mut()
+                                        && server.clients[client.0 as usize].connection
+                                            == Some(qa_session::clients::Connection::Local)
+                                        && server.clients[client.0 as usize].output
+                                            == Some(binding.output)
+                                    {
+                                        binding.apply(
+                                            incoming,
+                                            &mut predictions[binding.seat.index()].player,
+                                        );
+                                    }
+                                    return;
+                                }
                                 if endpoint == qa_core::loopback::Endpoint::Server {
                                     match incoming {
                                         qa_network::ingress::Incoming::Command {
@@ -436,21 +455,14 @@ impl FrameHost {
     fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {
         let mut commands = if self.native_input_policy_active() {
             let policies = std::array::from_fn(|seat| {
-                let rules = self.local_clients[seat].map_or(
-                    qa_core::primitives::RuleSetId::default(),
-                    |id| {
-                        self.runtime.server.clients[id.0 as usize]
-                            .player
-                            .movement_rules
-                    },
-                );
+                let rules = self.local_clients[seat]
+                    .map_or(qa_core::primitives::RuleSetId::default(), |_| {
+                        self.runtime.prediction[seat].player.movement_rules
+                    });
                 let mut policy = self.input_handles.policy(&self.console.cvars, rules);
-                if let Some(id) = self.local_clients[seat] {
-                    policy.delta_pitch = self.runtime.server.clients[id.0 as usize]
-                        .player
-                        .movement
-                        .delta_angles
-                        .0[0];
+                if self.local_clients[seat].is_some() {
+                    policy.delta_pitch =
+                        self.runtime.prediction[seat].player.movement.delta_angles.0[0];
                 }
                 policy
             });
@@ -463,11 +475,9 @@ impl FrameHost {
                 .build_frame(self.time, [127; 3], [0.022; 2])
         };
         for (seat, command) in commands.iter_mut().enumerate() {
-            let rules =
-                self.local_clients[seat].map_or(qa_core::primitives::RuleSetId::default(), |id| {
-                    self.runtime.server.clients[id.0 as usize]
-                        .player
-                        .movement_rules
+            let rules = self.local_clients[seat]
+                .map_or(qa_core::primitives::RuleSetId::default(), |_| {
+                    self.runtime.prediction[seat].player.movement_rules
                 });
             *command = qa_movement::prepare_command(rules, *command);
         }
@@ -477,7 +487,6 @@ impl FrameHost {
                     .send_local_command(*id, &commands[seat], self.time);
                 if let Some(world) = &mut self.runtime.collision {
                     let prediction = &mut self.runtime.prediction[seat];
-                    prediction.apply_snapshot(&self.runtime.server.clients[id.0 as usize].player);
                     let client = &self.runtime.server.clients[id.0 as usize];
                     let mut trace = qa_world::collision::WorldTrace::new(
                         &self.runtime.geometry,

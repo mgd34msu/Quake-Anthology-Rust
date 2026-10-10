@@ -509,6 +509,7 @@ fn run() -> Result<(), String> {
         loaded.spawns[0],
         policy,
         qa_network::commands::packet::Protocol::QuakeWorld28,
+        0,
     )?;
     let player = &runtime.server.clients[client.0 as usize].player;
     let basis = angle_vectors(player.view_angles);

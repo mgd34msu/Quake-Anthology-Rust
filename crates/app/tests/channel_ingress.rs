@@ -168,6 +168,7 @@ fn local_host(
         },
         policy,
         protocol,
+        0,
     )?;
     Ok((
         FrameHost::load(
@@ -229,6 +230,179 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
         }
         assert!(host.queue.is_empty());
     }
+    Ok(())
+}
+
+#[test]
+fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_roles()
+-> Result<(), String> {
+    use qa_core::primitives::{RuleSetId, Vec3};
+    use qa_network::commands::packet::Protocol;
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = local_host(protocol)?;
+        let player = &mut host.runtime.server.clients[0].player;
+        player.body.position = Vec3([12.375, -24.625, 48.125]);
+        player.body.velocity = Vec3([32., -48., 64.]);
+        player.health = -17;
+        player.view_offset.0[2] = 22.;
+        let predicted = &mut host.runtime.prediction[0].player;
+        predicted.movement_rules = RuleSetId::Quake3;
+        predicted.trace_rules = RuleSetId::Quake2;
+        if protocol == Protocol::QuakeWorld28 {
+            assert!(
+                host.runtime
+                    .send_local_command(client, &Default::default(), EventTime(0))
+            );
+            host.frame(&mut Clock::default(), true); // native reply waits for the first admitted move
+        }
+        let before = host.runtime.prediction[0].player.body.position;
+        assert!(
+            host.runtime
+                .send_local_snapshot(client, EventTime(1_001_000_000))
+        );
+        assert_eq!(host.runtime.prediction[0].player.body.position, before);
+        assert_eq!(
+            host.runtime.local_snapshots[0]
+                .as_ref()
+                .ok_or("binding")?
+                .applied,
+            0
+        );
+        let mut clock = Clock::default();
+        let frame = host.frame(&mut clock, true);
+        assert_eq!((frame.drains, clock.polls), (2, 2));
+        let predicted = &host.runtime.prediction[0].player;
+        assert_eq!(
+            (predicted.movement_rules, predicted.trace_rules),
+            (RuleSetId::Quake3, RuleSetId::Quake2)
+        );
+        assert_eq!(predicted.body.velocity, Vec3([32., -48., 64.]));
+        if protocol == Protocol::NetQuake15 {
+            // No native view entity exists before the module/signon binding.
+            assert_eq!(predicted.body.position, before);
+        } else {
+            assert_eq!(predicted.body.position, Vec3([12.375, -24.625, 48.125]));
+        }
+        assert_eq!(
+            predicted.health,
+            if protocol == Protocol::QuakeWorld28 {
+                100
+            } else {
+                -17
+            }
+        );
+        assert_eq!(
+            host.runtime.local_snapshots[0]
+                .as_ref()
+                .ok_or("binding")?
+                .applied,
+            1
+        );
+        assert_eq!(host.runtime.network.command_errors, 0);
+        if protocol == Protocol::Quake3_68 {
+            let connection = host
+                .runtime
+                .network
+                .get(client, Endpoint::Client)
+                .ok_or("CLIENT channel")?;
+            let Some(qa_network::snapshots::ReceivedFrame::Quake3(frame)) =
+                connection.channel.snapshot(1)
+            else {
+                return Err("CLIENT frame".into());
+            };
+            assert_eq!(
+                frame.time,
+                qa_core::primitives::ThinkTime::Milliseconds(1001)
+            );
+        }
+        assert!(
+            host.runtime.server.entities.columns.native_entity
+                [host.runtime.server.clients[0].entity.slot as usize]
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() -> Result<(), String>
+{
+    use qa_network::commands::packet::Protocol;
+    let (mut host, client) = local_host(Protocol::Quake2_34)?;
+    for _ in 0..16 {
+        host.runtime
+            .loopback
+            .send(Endpoint::Server, client, b"occupied")
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    host.runtime.server.clients[0].player.body.position.0[0] = 12.375;
+    assert!(!host.runtime.send_local_snapshot(client, EventTime(0)));
+    let channel = &host
+        .runtime
+        .network
+        .get(client, Endpoint::Server)
+        .ok_or("channel")?
+        .channel;
+    let pending = channel.pending_packet().ok_or("pending")?.bytes.to_vec();
+    let sequence = channel.send_state().sequence;
+    host.runtime.loopback.clear_client(client);
+    host.runtime.server.clients[0].player.body.position.0[0] = 99.;
+    assert!(
+        host.runtime
+            .send_local_snapshot(client, EventTime(100_000_000))
+    );
+    let channel = &host
+        .runtime
+        .network
+        .get(client, Endpoint::Server)
+        .ok_or("channel")?
+        .channel;
+    assert_eq!(channel.send_state().sequence, sequence + 1);
+    let Some(qa_network::snapshots::ReceivedFrame::Quake2(frame)) = channel.snapshot(0) else {
+        return Err("retained frame".into());
+    };
+    assert_eq!(frame.player[1] as i32, 99); // 12.375 * 8, not the new source position
+    let mut queue = SysEventQueue::load(8, 4096).map_err(|e| format!("{e:?}"))?;
+    assert_eq!(host.runtime.loopback.enqueue(&mut queue, EventTime(0)), 1);
+    let Some(SysEvent {
+        kind: EventKind::Packet { bytes, .. },
+        ..
+    }) = queue.pop()
+    else {
+        return Err("queued packet".into());
+    };
+    assert_eq!(bytes, pending);
+    Ok(())
+}
+
+#[test]
+fn delayed_local_snapshot_cannot_mutate_a_reused_client_lifetime() -> Result<(), String> {
+    use qa_network::commands::packet::Protocol;
+    let (mut host, client) = local_host(Protocol::Quake2_34)?;
+    host.runtime.server.clients[0].player.body.position.0[0] = 123.125;
+    assert!(host.runtime.send_local_snapshot(client, EventTime(0)));
+    assert!(host.runtime.server.disconnect(client));
+    assert_eq!(
+        host.runtime
+            .server
+            .connect(Connection::Local, ModuleId(0), PlayerTail::None, None),
+        Some(client)
+    );
+    let before = host.runtime.prediction[0].player.body.position;
+    host.frame(&mut Clock::default(), true);
+    assert_eq!(host.runtime.prediction[0].player.body.position, before);
+    assert_eq!(
+        host.runtime.local_snapshots[0]
+            .as_ref()
+            .ok_or("binding")?
+            .applied,
+        0
+    );
     Ok(())
 }
 

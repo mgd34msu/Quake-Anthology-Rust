@@ -1690,6 +1690,71 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
 }
 
 #[test]
+fn publication_retains_snapshot_between_native_q3_fragments() -> Result<(), Error> {
+    let mut server = Channel::load(Protocol::Quake3_68.channel(), Endpoint::Server, 8192, 16)
+        .map_err(|_| Error::Context)?;
+    server.configure_snapshots(Protocol::Quake3_68)?;
+    let mut player = [0; states::PLAYER_WORDS];
+    player[48] = 100;
+    let frame = Frame {
+        sequence: 1,
+        time: ThinkTime::Milliseconds(1001),
+        command: 0,
+        flags: 0,
+        areas: &[],
+        player: &player,
+        entities: &[],
+    };
+    server.publish_snapshot(snapshots::ReceivedFrame::Quake3(frame))?;
+    server
+        .prepare_move(&[0x55; 2600], EventTime(0), None)
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    assert_eq!(
+        server
+            .submit_with(EventTime(0), |_| false)
+            .map_err(|_| Error::Context)?,
+        None
+    );
+    assert_eq!(server.send_state().sequence, 1);
+    assert!(
+        server
+            .submit_with(EventTime(0), |_| true)
+            .map_err(|_| Error::Context)?
+            .is_some()
+    );
+    assert!(server.pending_packet().is_none());
+    assert!(server.pending_fragments());
+    assert!(
+        server
+            .publish_snapshot(snapshots::ReceivedFrame::Quake3(frame))
+            .is_err()
+    );
+    for _ in 0..2 {
+        server
+            .prepare_output(EventTime(1))
+            .map_err(|_| Error::Context)?
+            .ok_or(Error::Context)?;
+        assert!(
+            server
+                .submit_with(EventTime(1), |_| true)
+                .map_err(|_| Error::Context)?
+                .is_some()
+        );
+    }
+    assert!(!server.pending_fragments());
+    server.publish_snapshot(snapshots::ReceivedFrame::Quake3(Frame {
+        sequence: 2,
+        ..frame
+    }))?;
+    let Some(snapshots::ReceivedFrame::Quake3(retained)) = server.snapshot(1) else {
+        return Err(Error::Context);
+    };
+    assert_eq!(retained.player[48], 100);
+    Ok(())
+}
+
+#[test]
 fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<(), Error> {
     for protocol in [Protocol::Quake2_34, Protocol::Quake3_68] {
         let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
