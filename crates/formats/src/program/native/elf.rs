@@ -1,4 +1,6 @@
 use super::*;
+
+mod metadata;
 #[derive(Clone, Copy)]
 struct Segment {
     kind: u32,
@@ -250,17 +252,9 @@ pub(super) fn parse(
             count,
         )
     };
-    let virtual_file = |address: u64, count: usize| -> Result<&[u8], FormatError> {
-        let s = segments
-            .iter()
-            .find(|s| {
-                s.kind == 1
-                    && address >= s.address
-                    && address - s.address <= s.file_bytes
-                    && count as u64 <= s.file_bytes - (address - s.address)
-            })
-            .ok_or(FormatError::InvalidRange)?;
-        data(file, s.offset + (address - s.address), count)
+    let file_view = metadata::File {
+        bytes: file,
+        segments: &segments,
     };
     if entry != 0 {
         range(entry, 1)?;
@@ -275,6 +269,7 @@ pub(super) fn parse(
     // Validate section extents and names even though execution uses PT_LOAD.
     let mut section_names = None;
     let mut section_name_offsets = Vec::new();
+    let mut sections = Vec::new();
     for i in 0..shcount {
         let s = data(file, shoff + i * shstride, shstride as usize)?;
         let kind = word(s, 4, 32)?;
@@ -294,6 +289,14 @@ pub(super) fn parse(
             section_names = Some(data(file, offset, size as usize)?);
         }
         section_name_offsets.push(word(s, 0, 32)?);
+        sections.push(metadata::Section {
+            kind: kind as u32,
+            address: word(s, if wide { 16 } else { 12 }, bits)?,
+            offset,
+            bytes: size,
+            link: word(s, if wide { 40 } else { 24 }, 32)? as u32,
+            entry_bytes: word(s, if wide { 56 } else { 36 }, bits)?,
+        });
     }
     if string_section != 0 {
         let table = section_names.ok_or(FormatError::InvalidRange)?;
@@ -312,7 +315,7 @@ pub(super) fn parse(
             s.address,
             usize::try_from(s.memory_bytes).map_err(|_| FormatError::InvalidRange)?,
         )?;
-        let records = virtual_file(s.address, count)?;
+        let records = file_view.read(s.address, count)?;
         if records != data(file, s.offset, count)? {
             return Err(FormatError::InvalidValue);
         }
@@ -345,29 +348,25 @@ pub(super) fn parse(
             return Err(FormatError::InvalidRange);
         }
     }
-    let find = |tag: u64| dynamic.iter().find(|&&(t, _)| t == tag).map(|&(_, v)| v);
     let mut raw_names = Vec::new();
     let mut needed = Vec::new();
     for &(tag, value) in &dynamic {
         if matches!(tag, 1 | 14 | 15 | 29) {
-            let strings = find(5).ok_or(FormatError::InvalidRange)?;
-            let length = find(10).ok_or(FormatError::InvalidRange)?;
-            if value >= length {
-                return Err(FormatError::InvalidRange);
-            }
-            let label = terminated(
-                virtual_file(
-                    strings
-                        .checked_add(value)
-                        .ok_or(FormatError::InvalidRange)?,
-                    usize::try_from(length - value).map_err(|_| FormatError::InvalidRange)?,
-                )?,
-                0,
-            )?;
+            let label = file_view.text(&dynamic, value)?;
             raw_names.push(label);
             if tag == 1 {
                 needed.push(label);
             }
+        }
+    }
+    let raw_symbols = file_view.symbols(bits, &sections, &dynamic)?;
+    for symbol in &raw_symbols.rows {
+        raw_names.push(symbol.name);
+    }
+    for version in &raw_symbols.versions {
+        raw_names.push(version.name);
+        if let Some(library) = version.library {
+            raw_names.push(library);
         }
     }
     let names = names(&raw_names)?;
@@ -375,10 +374,50 @@ pub(super) fn parse(
         .into_iter()
         .map(|label| name(&names, label))
         .collect::<Result<Box<[_]>, _>>()?;
+    let symbols = raw_symbols
+        .rows
+        .into_iter()
+        .map(|s| {
+            let address =
+                if s.section == 0 || s.section == 0xfff1 || s.section == 0xfff2 || s.kind == 6 {
+                    s.value
+                } else {
+                    bias.checked_add(s.value).ok_or(FormatError::InvalidRange)?
+                };
+            if bits == 32 && address > u64::from(u32::MAX) {
+                return Err(FormatError::InvalidRange);
+            }
+            Ok(Symbol {
+                name: Some(name(&names, s.name)?),
+                address,
+                bytes: s.bytes,
+                ordinal: None,
+                forward: None,
+                defined: s.section != 0,
+                absolute: s.section == 0xfff1,
+                weak: s.binding == 2,
+                section: s.section,
+                binding: s.binding,
+                kind: s.kind,
+                visibility: s.visibility,
+                version: s
+                    .version
+                    .map(|v| {
+                        Ok(Version {
+                            name: name(&names, v.name)?,
+                            library: v.library.map(|library| name(&names, library)).transpose()?,
+                            weak: v.weak,
+                        })
+                    })
+                    .transpose()?,
+                hidden_version: s.hidden_version,
+            })
+        })
+        .collect::<Result<Box<[_]>, FormatError>>()?;
     let tls = tls_segment
         .map(|s| {
             if s.file_bytes != 0 {
-                virtual_file(
+                file_view.read(
                     s.address,
                     usize::try_from(s.file_bytes).map_err(|_| FormatError::InvalidRange)?,
                 )?;
@@ -415,7 +454,7 @@ pub(super) fn parse(
         bytes,
         regions: regions.into_boxed_slice(),
         names,
-        symbols: Box::new([]),
+        symbols,
         imports: Box::new([]),
         relocations: Box::new([]),
         needed,

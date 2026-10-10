@@ -30,6 +30,12 @@ pub struct Region {
     pub execute: bool,
 }
 #[derive(Clone, Copy, Debug)]
+pub struct Version {
+    pub name: NameId,
+    pub library: Option<NameId>,
+    pub weak: bool,
+}
+#[derive(Clone, Copy, Debug)]
 pub struct Symbol {
     pub name: Option<NameId>,
     pub address: u64,
@@ -39,6 +45,12 @@ pub struct Symbol {
     pub defined: bool,
     pub absolute: bool,
     pub weak: bool,
+    pub section: u32,
+    pub binding: u8,
+    pub kind: u8,
+    pub visibility: u8,
+    pub version: Option<Version>,
+    pub hidden_version: bool,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Import {
@@ -99,10 +111,24 @@ impl Image {
         }
     }
     pub fn symbol(&self, name: &[u8]) -> Option<&Symbol> {
+        self.symbol_version(name, None)
+    }
+    pub fn symbol_version(&self, name: &[u8], version: Option<&[u8]>) -> Option<&Symbol> {
         let id = self.names.find(name)?;
-        self.symbols
-            .iter()
-            .find(|s| s.defined && s.name == Some(id))
+        let version = match version {
+            Some(v) => Some(self.names.find(v)?),
+            None => None,
+        };
+        self.symbols.iter().find(|s| {
+            s.defined
+                && s.name == Some(id)
+                && matches!(s.binding, 1 | 2 | 10)
+                && !matches!(s.visibility, 1 | 2)
+                && match version {
+                    Some(v) => s.version.is_some_and(|actual| actual.name == v),
+                    None => !s.hidden_version,
+                }
+        })
     }
 }
 fn data(bytes: &[u8], offset: u64, length: usize) -> Result<&[u8], FormatError> {

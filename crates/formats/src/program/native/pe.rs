@@ -436,6 +436,12 @@ pub(super) fn parse(file: &[u8], requested_base: Option<u64>) -> Result<Image, F
                 defined: rva != 0,
                 absolute: false,
                 weak: false,
+                section: 0,
+                binding: 1,
+                kind: 0,
+                visibility: 0,
+                version: None,
+                hidden_version: false,
             })
         })
         .collect::<Result<Box<[_]>, FormatError>>()?;

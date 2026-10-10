@@ -437,3 +437,267 @@ fn elf_truncated_headers_and_overflowing_loads_are_errors() {
         assert!(Image::parse(&file, None, LoadRole::Library).is_err());
     }
 }
+
+const ELF_SYMBOL_NAMES: &[u8] = b"\0vmMain\0helper\0external\0COUNT\0tls\0VER_1\0libc.so.6\0";
+fn elf_name(label: &[u8]) -> u64 {
+    ELF_SYMBOL_NAMES
+        .windows(label.len())
+        .position(|s| s == label)
+        .unwrap() as u64
+}
+fn elf_dynamic(file: &mut [u8], bits: usize, tags: &[(u64, u64)]) {
+    let bytes = ((tags.len() + 1) * 2 * (bits / 8)) as u64;
+    elf_segment(file, bits, 2, 2, 0x1180, 0x3180, bytes, bytes);
+    for (i, (tag, value)) in tags.iter().copied().chain([(0, 0)]).enumerate() {
+        put(file, 0x1180 + i * (bits / 8) * 2, tag, bits / 8);
+        put(file, 0x1180 + (i * 2 + 1) * (bits / 8), value, bits / 8);
+    }
+}
+fn elf_symbol_fixture(bits: usize) -> (Vec<u8>, Vec<(u64, u64)>) {
+    let mut file = elf_dynamic_fixture(bits);
+    file.resize(0x3000, 0);
+    elf_segment(&mut file, bits, 1, 1, 0x1180, 0x3180, 0x1000, 0x1000);
+    file[0x1280..0x1280 + ELF_SYMBOL_NAMES.len()].copy_from_slice(ELF_SYMBOL_NAMES);
+    let stride = if bits == 64 { 24 } else { 16 };
+    file[0x1400..0x1400 + stride * 6].fill(0);
+    for (i, label, value, bytes, info, section) in [
+        (1, b"vmMain".as_slice(), 0x33c0, 48, 0x12, 1),
+        (2, b"helper".as_slice(), 0x3300, 8, 0x02, 1),
+        (3, b"external".as_slice(), 0, 0, 0x22, 0),
+        (4, b"COUNT".as_slice(), 3, 4, 0x11, 0xfff1),
+        (5, b"tls".as_slice(), 4, 4, 0x16, 1),
+    ] {
+        let at = 0x1400 + i * stride;
+        put(&mut file, at, elf_name(label), 4);
+        put(&mut file, at + if bits == 64 { 4 } else { 12 }, info, 1);
+        put(&mut file, at + if bits == 64 { 6 } else { 14 }, section, 2);
+        put(
+            &mut file,
+            at + if bits == 64 { 8 } else { 4 },
+            value,
+            bits / 8,
+        );
+        put(
+            &mut file,
+            at + if bits == 64 { 16 } else { 8 },
+            bytes,
+            bits / 8,
+        );
+    }
+    let tags = vec![
+        (5, 0x3280),
+        (10, ELF_SYMBOL_NAMES.len() as u64),
+        (6, 0x3400),
+        (11, stride as u64),
+        (39, (stride * 6) as u64),
+    ];
+    elf_dynamic(&mut file, bits, &tags);
+    (file, tags)
+}
+#[test]
+fn elf_symbol_ordinals_native_attributes_and_tls_offsets_are_preserved() {
+    for bits in [32, 64] {
+        let (file, _) = elf_symbol_fixture(bits);
+        let image = Image::parse(&file, Some(0x200000), LoadRole::Library).unwrap();
+        assert_eq!(image.symbols.len(), 6);
+        let export = image.symbol(b"vmMain").unwrap();
+        assert_eq!(export.address, 0x2033c0);
+        assert_eq!(export.bytes, 48);
+        assert_eq!(export.kind, 2);
+        assert!(image.symbol(b"VMMAIN").is_none());
+        assert!(image.symbol(b"helper").is_none());
+        assert!(image.symbol(b"external").is_none());
+        assert!(!image.symbols[3].defined);
+        assert!(image.symbols[3].weak);
+        assert_eq!(image.symbol(b"COUNT").unwrap().address, 3);
+        assert!(image.symbols[4].absolute);
+        assert_eq!(image.symbol(b"tls").unwrap().address, 4);
+        assert_eq!(image.symbols[5].kind, 6);
+    }
+}
+#[test]
+fn elf_stripped_symbols_use_checked_sysv_or_gnu_bucket_bounds() {
+    for bits in [32, 64] {
+        for gnu in [false, true] {
+            let (mut file, mut tags) = elf_symbol_fixture(bits);
+            tags.retain(|&(t, _)| t != 39);
+            tags.push((if gnu { 0x6ffffef5 } else { 4 }, 0x3600));
+            file[0x1600..0x1700].fill(0);
+            if gnu {
+                for (offset, value) in [(0, 1), (4, 1), (8, 1), (12, 5)] {
+                    put(&mut file, 0x1600 + offset, value, 4);
+                }
+                let buckets = 0x1600 + 16 + bits / 8;
+                put(&mut file, buckets, 1, 4);
+                for i in 0..5 {
+                    put(
+                        &mut file,
+                        buckets + 4 + i * 4,
+                        if i == 4 { 1 } else { 2 },
+                        4,
+                    );
+                }
+            } else {
+                put(&mut file, 0x1600, 1, 4);
+                put(&mut file, 0x1604, 6, 4);
+                put(&mut file, 0x1608, 1, 4);
+            }
+            elf_dynamic(&mut file, bits, &tags);
+            let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+            assert_eq!(image.symbols.len(), 6);
+            if gnu {
+                put(&mut file, 0x1604, 2, 4);
+            } else {
+                put(&mut file, 0x1608, 6, 4);
+            }
+            assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        }
+    }
+}
+#[test]
+fn elf_version_definitions_requirements_and_hidden_aliases_remain_distinct() {
+    for bits in [32, 64] {
+        let (mut file, mut tags) = elf_symbol_fixture(bits);
+        tags.extend([
+            (0x6ffffff0, 0x3800),
+            (0x6ffffffc, 0x3840),
+            (0x6ffffffd, 1),
+            (0x6ffffffe, 0x3880),
+            (0x6fffffff, 1),
+        ]);
+        file[0x1800..0x18c0].fill(0);
+        for (i, value) in [1, 0x8002, 1, 3, 1, 1].into_iter().enumerate() {
+            put(&mut file, 0x1800 + i * 2, value, 2);
+        }
+        for (offset, value, width) in [
+            (0, 1, 2),
+            (4, 2, 2),
+            (6, 1, 2),
+            (12, 20, 4),
+            (20, elf_name(b"VER_1"), 4),
+        ] {
+            put(&mut file, 0x1840 + offset, value, width);
+        }
+        for (offset, value, width) in [
+            (0, 1, 2),
+            (2, 1, 2),
+            (4, elf_name(b"libc.so.6"), 4),
+            (8, 16, 4),
+            (20, 2, 2),
+            (22, 3, 2),
+            (24, elf_name(b"VER_1"), 4),
+        ] {
+            put(&mut file, 0x1880 + offset, value, width);
+        }
+        elf_dynamic(&mut file, bits, &tags);
+        let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        assert!(image.symbol(b"vmMain").is_none());
+        let s = image.symbol_version(b"vmMain", Some(b"VER_1")).unwrap();
+        assert_eq!(s.address, 0x33c0);
+        assert!(s.hidden_version);
+        assert!(s.version.unwrap().library.is_none());
+        let imported = image.symbols[3].version.unwrap();
+        assert_eq!(
+            image.names.get(imported.library.unwrap()),
+            Some(b"libc.so.6".as_slice())
+        );
+        assert!(imported.weak);
+        assert!(image.symbol_version(b"vmMain", Some(b"MISSING")).is_none());
+        put(&mut file, 0x1802, 4, 2);
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        put(&mut file, 0x1802, 2, 2);
+        put(&mut file, 0x1896, 2, 2);
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        tags.retain(|&(tag, _)| !matches!(tag, 0x6ffffffe | 0x6fffffff));
+        elf_dynamic(&mut file, bits, &tags);
+        put(&mut file, 0x1844, 1, 2);
+        for i in 0..6 {
+            put(&mut file, 0x1800 + i * 2, 1, 2);
+        }
+        let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        assert!(image.symbol(b"vmMain").unwrap().version.is_none());
+    }
+}
+#[test]
+fn elf_static_symbols_and_extended_section_indices_use_one_symbol_table() {
+    for bits in [32, 64] {
+        let (mut file, _) = elf_symbol_fixture(bits);
+        put(&mut file, if bits == 64 { 56 } else { 44 }, 2, 2);
+        let stride = if bits == 64 { 64 } else { 40 };
+        let symbol_stride = if bits == 64 { 24 } else { 16 };
+        let mut section = |i: usize, kind, offset, length, link, entry| {
+            let at = 0x2000 + i * stride;
+            file[at..at + stride].fill(0);
+            for (field, value, width) in [
+                (4, kind, 4),
+                (if bits == 64 { 24 } else { 16 }, offset, bits / 8),
+                (if bits == 64 { 32 } else { 20 }, length, bits / 8),
+                (if bits == 64 { 40 } else { 24 }, link, 4),
+                (if bits == 64 { 56 } else { 36 }, entry, bits / 8),
+            ] {
+                put(&mut file, at + field, value, width);
+            }
+        };
+        section(0, 0, 0, 0, 0, 0);
+        section(1, 3, 0x1280, ELF_SYMBOL_NAMES.len() as u64, 0, 0);
+        section(
+            2,
+            2,
+            0x1400,
+            (symbol_stride * 6) as u64,
+            1,
+            symbol_stride as u64,
+        );
+        section(3, 18, 0x18c0, 24, 2, 4);
+        put(
+            &mut file,
+            if bits == 64 { 40 } else { 32 },
+            0x2000,
+            bits / 8,
+        );
+        put(
+            &mut file,
+            if bits == 64 { 58 } else { 46 },
+            stride as u64,
+            2,
+        );
+        put(&mut file, if bits == 64 { 60 } else { 48 }, 4, 2);
+        file[0x18c0..0x18d8].fill(0);
+        put(&mut file, 0x18c4, 1, 4);
+        put(
+            &mut file,
+            0x1400 + symbol_stride + if bits == 64 { 6 } else { 14 },
+            0xffff,
+            2,
+        );
+        let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        assert_eq!(image.symbols.len(), 6);
+        assert_eq!(image.symbols[1].section, 1);
+        assert_eq!(image.symbol(b"vmMain").unwrap().address, 0x33c0);
+        put(
+            &mut file,
+            0x2000 + stride * 3 + if bits == 64 { 32 } else { 20 },
+            20,
+            bits / 8,
+        );
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+    }
+}
+#[test]
+fn elf_symbol_width_name_and_version_chains_fail_at_admission() {
+    for bits in [32, 64] {
+        let (original, tags) = elf_symbol_fixture(bits);
+        for (tag, value) in [(11, 1), (39, 1), (10, 1), (6, 0x2000)] {
+            let mut file = original.clone();
+            let mut bad = tags.clone();
+            *bad.iter_mut().find(|(t, _)| *t == tag).unwrap() = (tag, value);
+            elf_dynamic(&mut file, bits, &bad);
+            assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        }
+        let mut file = original.clone();
+        let mut bad = tags.clone();
+        bad.extend([(0x6ffffffc, 0x3840), (0x6ffffffd, u64::MAX)]);
+        elf_dynamic(&mut file, bits, &bad);
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+    }
+}
