@@ -191,3 +191,69 @@ pub(super) fn elf_relocation(
         put(file, at + width * 2, addend as u64, width);
     }
 }
+
+pub(super) fn pe_rva(file: &mut [u8], at: usize, value: u64, width: usize) {
+    put(file, 512 + at - 4096, value, width);
+}
+pub(super) fn pe_text(file: &mut [u8], at: usize, value: &[u8]) {
+    let offset = 512 + at - 4096;
+    file[offset..offset + value.len()].copy_from_slice(value);
+}
+pub(super) fn pe_fixture(bits: usize) -> Vec<u8> {
+    let mut f = vec![0; 1024];
+    f[..2].copy_from_slice(b"MZ");
+    put(&mut f, 60, 128, 4);
+    f[128..132].copy_from_slice(b"PE\0\0");
+    let optional = if bits == 64 { 240 } else { 224 };
+    put(&mut f, 132, if bits == 64 { 0x8664 } else { 0x14c }, 2);
+    put(&mut f, 134, 1, 2);
+    put(&mut f, 148, optional, 2);
+    put(&mut f, 150, 0x2002, 2);
+    put(&mut f, 152, if bits == 64 { 0x20b } else { 0x10b }, 2);
+    put(&mut f, 168, 0x1080, 4);
+    put(
+        &mut f,
+        152 + if bits == 64 { 24 } else { 28 },
+        if bits == 64 { 0x180000000 } else { 0x10000000 },
+        bits / 8,
+    );
+    put(&mut f, 184, 4096, 4);
+    put(&mut f, 188, 512, 4);
+    put(&mut f, 208, 8192, 4);
+    put(&mut f, 212, 512, 4);
+    put(&mut f, 152 + if bits == 64 { 108 } else { 92 }, 16, 4);
+    let section = 152 + optional as usize;
+    f[section..section + 5].copy_from_slice(b".text");
+    put(&mut f, section + 8, 4096, 4);
+    put(&mut f, section + 12, 4096, 4);
+    put(&mut f, section + 16, 512, 4);
+    put(&mut f, section + 20, 512, 4);
+    put(&mut f, section + 36, 0xe0000020, 4);
+    f
+}
+pub(super) fn pe_directory(f: &mut [u8], bits: usize, index: usize, at: u64, length: u64) {
+    let d = 152 + if bits == 64 { 112 } else { 96 };
+    put(f, d + index * 8, at, 4);
+    put(f, d + index * 8 + 4, length, 4);
+}
+
+pub(super) fn pe_export_fixture(bits: usize) -> Vec<u8> {
+    let mut f = pe_fixture(bits);
+    pe_directory(&mut f, bits, 0, 0x1100, 0x80);
+    for (offset, value) in [
+        (16, 7),
+        (20, 1),
+        (24, 2),
+        (28, 0x1140),
+        (32, 0x1150),
+        (36, 0x1160),
+    ] {
+        pe_rva(&mut f, 0x1100 + offset, value, 4);
+    }
+    pe_rva(&mut f, 0x1140, 0x1080, 4);
+    pe_rva(&mut f, 0x1150, 0x1190, 4);
+    pe_rva(&mut f, 0x1154, 0x11a0, 4);
+    pe_text(&mut f, 0x1190, b"GetGameAPI\0");
+    pe_text(&mut f, 0x11a0, b"Alias\0");
+    f
+}

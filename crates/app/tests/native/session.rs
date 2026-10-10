@@ -5,7 +5,7 @@ use qa_app::{
 };
 use qa_compat::{
     abi::Q3_SERVER,
-    native::{Export, Vm},
+    native::{NamedExport, Vm},
     services::CallContext,
 };
 use qa_console::{commands::Console, views::Context};
@@ -14,34 +14,32 @@ use qa_core::{
     primitives::{CallbackId, ModuleId, RuleSetId},
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
-use qa_platform::native::{NativeAbi, NativeImage, NativeProcess, NativeRegion};
+use qa_formats::program::native::{Encoding, Image, LoadRole};
+use qa_platform::native::NativeAbi;
 use qa_session::timing::TickRate;
 use qa_world::entities::{AllocationPolicy, EntityTime};
 use std::time::Duration;
 
-const BASE: u64 = 0x2000_0000;
-fn standard(code: &[u8]) -> NativeProcess {
-    let mut bytes = vec![0; 8192];
-    bytes[..code.len()].copy_from_slice(code);
-    NativeProcess::load(NativeImage {
-        base: BASE,
-        pointer_bytes: 8,
-        bytes: &bytes,
-        regions: &[
-            NativeRegion {
-                offset: 0,
-                length: 4096,
-                permissions: 5,
-            },
-            NativeRegion {
-                offset: 4096,
-                length: 4096,
-                permissions: 3,
-            },
-        ],
-        timeout: Duration::from_secs(3),
-    })
-    .expect("owned native child")
+#[path = "../../../formats/tests/support/native_image.rs"]
+#[allow(dead_code)]
+mod native_image;
+use native_image::*;
+
+fn function_image(encoding: Encoding, code: &[u8]) -> Image {
+    match encoding {
+        Encoding::Elf => {
+            let (mut file, tags) = elf_symbol_fixture(64);
+            put(&mut file, 64 + 56 + 4, 7, 4);
+            file[0x13c0..0x13c0 + code.len()].copy_from_slice(code);
+            elf_dynamic(&mut file, 64, &tags);
+            Image::parse(&file, Some(0x2000_0000), LoadRole::Library).unwrap()
+        }
+        Encoding::Pe => {
+            let mut file = pe_export_fixture(64);
+            file[640..640 + code.len()].copy_from_slice(code);
+            Image::parse(&file, None, LoadRole::Library).unwrap()
+        }
+    }
 }
 
 fn module(
@@ -50,18 +48,50 @@ fn module(
     rules: RuleSetId,
     rate: TickRate,
     text: &[u8],
+    encoding: Encoding,
 ) -> ModuleRequest {
     // Load syscall pointer from shared RAM, print its shared text, then return.
-    // sub rsp,8; mov rax,[rip+4085]; mov edi,0; lea rsi,[rip+4089]; call rax; add rsp,8; ret
-    let code = [
-        0x48, 0x83, 0xec, 8, 0x48, 0x8b, 0x05, 0xf5, 0x0f, 0, 0, 0xbf, 0, 0, 0, 0, 0x48, 0x8d,
-        0x35, 0xf9, 0x0f, 0, 0, 0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3,
+    // SysV: sub rsp,8; mov rax,[rip+1781]; mov edi,0; lea rsi,[rip+1785]; call rax; add rsp,8; ret
+    // Microsoft: reserve the 32-byte shadow area too, and use rcx/rdx.
+    let mut code = [
+        0x48, 0x83, 0xec, 8, 0x48, 0x8b, 0x05, 0xf5, 0x06, 0, 0, 0xbf, 0, 0, 0, 0, 0x48, 0x8d,
+        0x35, 0xf9, 0x06, 0, 0, 0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3,
     ];
-    let mut process = standard(&code);
-    let pointer = process.callback(NativeAbi::SystemV);
-    let memory = process.memory_mut().expect("parked native backing");
-    memory[4096..4104].copy_from_slice(&pointer.to_le_bytes());
-    memory[4112..4112 + text.len()].copy_from_slice(text);
+    let (name, abi) = match encoding {
+        Encoding::Elf => (b"vmMain".as_slice(), NativeAbi::SystemV),
+        Encoding::Pe => {
+            code[3] = 40;
+            code[11] = 0xb9;
+            code[18] = 0x15;
+            code[28] = 40;
+            (b"GetGameAPI".as_slice(), NativeAbi::Microsoft)
+        }
+    };
+    let image = function_image(encoding, &code);
+    let at = (image.symbol(name).unwrap().address - image.base) as usize + 0x700;
+    let mut vm = Vm::map_image(
+        image,
+        &[NamedExport {
+            name,
+            command: None,
+        }],
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let pointer = vm.process.callback(abi);
+    let memory = vm.process.memory_mut().expect("parked native backing");
+    memory[at..at + 8].copy_from_slice(&pointer.to_le_bytes());
+    memory[at + 16..at + 16 + text.len()].copy_from_slice(text);
+    request(runtime, id, rules, rate, vm)
+}
+
+fn request(
+    runtime: &mut Runtime,
+    id: ModuleId,
+    rules: RuleSetId,
+    rate: TickRate,
+    vm: Vm,
+) -> ModuleRequest {
     let anchor = runtime
         .server
         .entities
@@ -84,17 +114,7 @@ fn module(
         rate,
         anchor,
         program: Program::Native {
-            vm: Box::new(
-                Vm::load(
-                    process,
-                    NativeAbi::SystemV,
-                    Box::new([Export {
-                        address: BASE,
-                        command: None,
-                    }]),
-                )
-                .unwrap(),
-            ),
+            vm: Box::new(vm),
             imports: &Q3_SERVER,
         },
         entries: vec![0],
@@ -106,6 +126,115 @@ fn module(
         configstrings: 0,
         files: 0,
     }
+}
+
+fn checked_exports_preserve_names_and_native_command_arguments() {
+    for (encoding, name, code) in [
+        (
+            Encoding::Elf,
+            b"vmMain".as_slice(),
+            [0x48, 0x89, 0xf8, 0x48, 0x01, 0xf0, 0xc3],
+        ),
+        (
+            Encoding::Pe,
+            b"GetGameAPI".as_slice(),
+            [0x48, 0x89, 0xc8, 0x48, 0x01, 0xd0, 0xc3],
+        ),
+    ] {
+        let named = [NamedExport {
+            name,
+            command: Some(7),
+        }];
+        let vm = Vm::map_image(
+            function_image(encoding, &code),
+            &named,
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let request = request(
+            &mut runtime,
+            ModuleId(1),
+            RuleSetId::Quake3,
+            TickRate::fixed(50).unwrap(),
+            vm,
+        );
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![request],
+        )
+        .unwrap();
+        let mut source = Source {
+            time: EventTime(0),
+            polls: 0,
+        };
+        host.frame(&mut source, true);
+        source.time = EventTime(50_000_000);
+        host.frame(&mut source, true);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::Native(57))
+        );
+        let missing = [NamedExport {
+            name: b"missing",
+            command: None,
+        }];
+        assert!(matches!(
+            Vm::map_image(
+                function_image(encoding, &code),
+                &missing,
+                Duration::from_secs(3)
+            ),
+            Err(qa_compat::native::Error::Export)
+        ));
+        let folded = name.to_ascii_lowercase();
+        assert!(matches!(
+            Vm::map_image(
+                function_image(encoding, &code),
+                &[NamedExport {
+                    name: &folded,
+                    command: None
+                }],
+                Duration::from_secs(3)
+            ),
+            Err(qa_compat::native::Error::Export)
+        ));
+    }
+    let (file, _) = elf_symbol_fixture(32);
+    let image = Image::parse(&file, Some(0x2000_0000), LoadRole::Library).unwrap();
+    assert!(matches!(
+        Vm::map_image(
+            image,
+            &[NamedExport {
+                name: b"vmMain",
+                command: None
+            }],
+            Duration::from_secs(3)
+        ),
+        Err(qa_compat::native::Error::Process(
+            qa_platform::native::NativeError::Unsupported
+        ))
+    ));
+    let mut image = function_image(Encoding::Elf, &[0xc3]);
+    image
+        .symbols
+        .iter_mut()
+        .find(|s| s.name == image.names.find(b"vmMain"))
+        .unwrap()
+        .kind = 10;
+    assert!(matches!(
+        Vm::map_image(
+            image,
+            &[NamedExport {
+                name: b"vmMain",
+                command: None
+            }],
+            Duration::from_secs(3)
+        ),
+        Err(qa_compat::native::Error::Export)
+    ));
 }
 struct Source {
     time: EventTime,
@@ -146,6 +275,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
         RuleSetId::Quake3,
         TickRate::fixed(50).unwrap(),
         b"q3 native\n\0",
+        Encoding::Elf,
     );
     let q2 = module(
         &mut runtime,
@@ -153,6 +283,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
         RuleSetId::Quake2,
         TickRate::fixed(100).unwrap(),
         b"q2 native\n\0",
+        Encoding::Pe,
     );
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
@@ -204,5 +335,6 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
 
 pub fn run() {
     two_native_modules_use_session_rates_and_the_same_calltable_output_ring();
+    checked_exports_preserve_names_and_native_command_arguments();
     println!("native session dispatch checks passed");
 }

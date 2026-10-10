@@ -5,7 +5,9 @@ use crate::{
     services::{CallContext, CallError, EngineServices},
 };
 use qa_core::sys_events::EventTime;
-use qa_platform::native::{NativeAbi, NativeError, NativeProcess};
+use qa_formats::program::native::{Encoding, Image};
+use qa_platform::native::{NativeAbi, NativeError, NativeImage, NativeProcess, NativeRegion};
+use std::time::Duration;
 
 pub mod elf;
 
@@ -14,6 +16,10 @@ pub struct Export {
     pub address: u64,
     /// vmMain command selectors are declared at binding; ordinary exports
     /// receive only their native arguments.
+    pub command: Option<u32>,
+}
+pub struct NamedExport<'a> {
+    pub name: &'a [u8],
     pub command: Option<u32>,
 }
 #[derive(Debug)]
@@ -36,11 +42,50 @@ pub struct NativeCalls<'a, 'engine> {
     pub unknown: &'a mut UnknownCalls,
 }
 impl Vm {
-    pub fn load(
-        process: NativeProcess,
-        abi: NativeAbi,
-        exports: Box<[Export]>,
+    /// Map a checked, bound image and register its ordinary exports. Import,
+    /// TLS and initializer orchestration belongs to the owning image loader;
+    /// this step only transfers its bytes to the authoritative child backing.
+    pub fn map_image(
+        image: Image,
+        named: &[NamedExport<'_>],
+        timeout: Duration,
     ) -> Result<Self, Error> {
+        let exports = named
+            .iter()
+            .map(|entry| {
+                let symbol = image.symbol(entry.name).ok_or(Error::Export)?;
+                if symbol.forward.is_some() || symbol.kind == 10 {
+                    return Err(Error::Export);
+                }
+                Ok(Export {
+                    address: symbol.address,
+                    command: entry.command,
+                })
+            })
+            .collect::<Result<Box<[_]>, _>>()?;
+        let regions = image
+            .regions
+            .iter()
+            .map(|region| NativeRegion {
+                offset: region.offset,
+                length: region.length,
+                permissions: u8::from(region.read)
+                    | (u8::from(region.write) << 1)
+                    | (u8::from(region.execute) << 2),
+            })
+            .collect::<Box<[_]>>();
+        let abi = match image.target.encoding {
+            Encoding::Pe => NativeAbi::Microsoft,
+            Encoding::Elf => NativeAbi::SystemV,
+        };
+        let process = NativeProcess::load(NativeImage {
+            base: image.base,
+            pointer_bytes: (image.target.bits / 8) as u8,
+            bytes: &image.bytes,
+            regions: &regions,
+            timeout,
+        })
+        .map_err(Error::Process)?;
         if exports.iter().any(|e| !process.executable(e.address)) {
             return Err(Error::Export);
         }
