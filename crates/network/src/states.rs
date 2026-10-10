@@ -559,6 +559,11 @@ pub const Q2_ENTITY_LAYOUT: [(&str, i8); 20] = [
 ];
 pub const Q2_ENTITY_WORDS: usize = Q2_ENTITY_LAYOUT.len();
 pub type Q2EntityDelta = EntityDelta<Q2_ENTITY_WORDS>;
+#[derive(Clone, Copy)]
+pub(crate) struct EntityHeader {
+    pub number: u16,
+    pub flags: u32,
+}
 static Q2_ENTITY_FIELDS: [Field; 21] = [
     Field::new(0, 8, 1 << 11, Value::Unsigned),
     Field::new(1, 8, 1 << 20, Value::Unsigned),
@@ -708,6 +713,11 @@ pub fn read_q2_entity(
     reader: &mut Reader<'_>,
     from: &[u32; Q2_ENTITY_WORDS],
 ) -> Result<Q2EntityDelta, Error> {
+    let header = read_q2_entity_header(reader)?;
+    read_q2_entity_body(reader, header, from)
+}
+
+pub(crate) fn read_q2_entity_header(reader: &mut Reader<'_>) -> Result<EntityHeader, Error> {
     let mut flags = reader.read_bits(8)?;
     if flags & Q2_MORE1 != 0 {
         flags |= reader.read_bits(8)? << 8;
@@ -719,15 +729,29 @@ pub fn read_q2_entity(
         flags |= reader.read_bits(8)? << 24;
     }
     let number = reader.read_bits(if flags & Q2_NUMBER16 != 0 { 16 } else { 8 })? as u16;
+    Ok(EntityHeader { number, flags })
+}
+
+pub(crate) fn q2_unchanged_entity(from: &[u32; Q2_ENTITY_WORDS]) -> [u32; Q2_ENTITY_WORDS] {
+    let mut words = *from;
+    words[14..17].copy_from_slice(&from[8..11]);
+    words[18] = 0;
+    words
+}
+
+pub(crate) fn read_q2_entity_body(
+    reader: &mut Reader<'_>,
+    header: EntityHeader,
+    from: &[u32; Q2_ENTITY_WORDS],
+) -> Result<Q2EntityDelta, Error> {
+    let EntityHeader { number, flags } = header;
     if flags & Q2_REMOVE != 0 {
         return Ok(Q2EntityDelta {
             number,
             words: None,
         });
     }
-    let mut words = *from;
-    words[14..17].copy_from_slice(&from[8..11]);
-    words[18] = 0;
+    let mut words = q2_unchanged_entity(from);
     delta::read(&Q2_ENTITY_GROUP, &mut words, flags, reader)?;
     Ok(Q2EntityDelta {
         number,

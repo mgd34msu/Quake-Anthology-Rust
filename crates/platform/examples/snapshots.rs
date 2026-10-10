@@ -1,7 +1,7 @@
 //! Developer-only native snapshot byte/word comparison and heap/timing probe.
 use qa_network::{
     message::{Encoding, Reader, Writer},
-    snapshots::{self, Entity, Frame, Q3Ring},
+    snapshots::{self, Entity, Frame, Ring},
     states::{ENTITY_WORDS, PLAYER_WORDS},
 };
 use qa_platform::{Stopwatch, allocations};
@@ -10,19 +10,55 @@ use std::io::{Read, Write};
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
-struct Case {
+struct Case<const P: usize, const E: usize> {
     distance: u8,
     prime: bool,
     flags: u8,
     areas: Vec<u8>,
-    old_player: [u32; PLAYER_WORDS],
-    player: [u32; PLAYER_WORDS],
-    old: Vec<Entity<ENTITY_WORDS>>,
-    entities: Vec<Entity<ENTITY_WORDS>>,
-    server: Q3Ring,
-    client: Q3Ring,
+    old_player: [u32; P],
+    player: [u32; P],
+    old: Vec<Entity<E>>,
+    entities: Vec<Entity<E>>,
+    server: Ring<P, E>,
+    client: Ring<P, E>,
     expected: Vec<u8>,
 }
+type WriteFrame<const P: usize, const E: usize> =
+    fn(
+        &mut Writer<'_>,
+        &Ring<P, E>,
+        u32,
+        Option<u32>,
+    ) -> Result<(), qa_network::commands::packet::Error>;
+type ReadFrame<const P: usize, const E: usize> =
+    fn(
+        &mut Reader<'_>,
+        &mut Ring<P, E>,
+        u32,
+        u32,
+    ) -> Result<bool, qa_network::commands::packet::Error>;
+struct Codec<const P: usize, const E: usize> {
+    encoding: Encoding,
+    opcode: u32,
+    end: u32,
+    write: WriteFrame<P, E>,
+    read: ReadFrame<P, E>,
+}
+const Q3: Codec<PLAYER_WORDS, ENTITY_WORDS> = Codec {
+    encoding: Encoding::Q3,
+    opcode: 7,
+    end: 8,
+    write: snapshots::write_q3,
+    read: snapshots::read_q3,
+};
+const Q2: Codec<{ qa_network::states::Q2_PLAYER_WORDS }, { qa_network::states::Q2_ENTITY_WORDS }> =
+    Codec {
+        encoding: Encoding::Bytes,
+        opcode: 20,
+        end: 6,
+        write: |w, r, n, d| snapshots::write_q2(w, r, n, d, 16),
+        read: |r, s, _, _| snapshots::read_q2(r, s),
+    };
 fn words<const N: usize>(reader: &mut Reader<'_>) -> Result<[u32; N], String> {
     let mut words = [0; N];
     for word in &mut words {
@@ -30,7 +66,10 @@ fn words<const N: usize>(reader: &mut Reader<'_>) -> Result<[u32; N], String> {
     }
     Ok(words)
 }
-fn entities(reader: &mut Reader<'_>, count: usize) -> Result<Vec<Entity<ENTITY_WORDS>>, String> {
+fn entities<const E: usize>(
+    reader: &mut Reader<'_>,
+    count: usize,
+) -> Result<Vec<Entity<E>>, String> {
     (0..count)
         .map(|_| {
             Ok(Entity {
@@ -40,7 +79,10 @@ fn entities(reader: &mut Reader<'_>, count: usize) -> Result<Vec<Entity<ENTITY_W
         })
         .collect()
 }
-fn load(input: &[u8]) -> Result<Vec<Case>, String> {
+fn load<const P: usize, const E: usize>(
+    input: &[u8],
+    retained: u64,
+) -> Result<Vec<Case<P, E>>, String> {
     let mut reader = Reader::new(input, Encoding::Bytes);
     let count = reader.read_bits(32).map_err(|e| e.to_string())?;
     let mut cases = Vec::new();
@@ -58,8 +100,8 @@ fn load(input: &[u8]) -> Result<Vec<Case>, String> {
         let baselines = entities(&mut reader, baseline_count)?;
         let old = entities(&mut reader, a)?;
         let entities = entities(&mut reader, b)?;
-        let mut server = Q3Ring::load(64, 1024, 32, None).map_err(|e| format!("{e:?}"))?;
-        let mut client = Q3Ring::load(64, 1024, 32, Some(1920)).map_err(|e| format!("{e:?}"))?;
+        let mut server = Ring::load(64, 1024, 32, None).map_err(|e| format!("{e:?}"))?;
+        let mut client = Ring::load(64, 1024, 32, Some(retained)).map_err(|e| format!("{e:?}"))?;
         for baseline in baselines {
             if !server.set_baseline(baseline.number, &baseline.words)
                 || !client.set_baseline(baseline.number, &baseline.words)
@@ -87,7 +129,12 @@ fn load(input: &[u8]) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
-fn run(case: &mut Case, base: u32, out: &mut [u8; 32768]) -> Result<usize, String> {
+fn run<const P: usize, const E: usize>(
+    case: &mut Case<P, E>,
+    codec: &Codec<P, E>,
+    base: u32,
+    out: &mut [u8; 32768],
+) -> Result<usize, String> {
     let mut wire = [0; 8192];
     case.server
         .store(Frame {
@@ -101,17 +148,15 @@ fn run(case: &mut Case, base: u32, out: &mut [u8; 32768]) -> Result<usize, Strin
         })
         .map_err(|e| format!("{e:?}"))?;
     if case.prime {
-        let mut writer = Writer::new(&mut wire, Encoding::Q3);
-        snapshots::write_q3(&mut writer, &case.server, base, None).map_err(|e| format!("{e:?}"))?;
-        writer.write_bits(8, 8).map_err(|e| e.to_string())?;
-        let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
+        let mut writer = Writer::new(&mut wire, codec.encoding);
+        (codec.write)(&mut writer, &case.server, base, None).map_err(|e| format!("{e:?}"))?;
+        writer.write_bits(codec.end, 8).map_err(|e| e.to_string())?;
+        let mut reader = Reader::new(writer.bytes(), codec.encoding);
         reader.read_bits(8).map_err(|e| e.to_string())?;
-        if !snapshots::read_q3(&mut reader, &mut case.client, base, 12)
-            .map_err(|e| format!("{e:?}"))?
-        {
+        if !(codec.read)(&mut reader, &mut case.client, base, 12).map_err(|e| format!("{e:?}"))? {
             return Err("initial full snapshot".into());
         }
-        if reader.read_bits(8).map_err(|e| e.to_string())? != 8 {
+        if reader.read_bits(8).map_err(|e| e.to_string())? != codec.end {
             return Err("full EOF".into());
         }
     }
@@ -127,24 +172,24 @@ fn run(case: &mut Case, base: u32, out: &mut [u8; 32768]) -> Result<usize, Strin
             entities: &case.entities,
         })
         .map_err(|e| format!("{e:?}"))?;
-    let mut writer = Writer::new(&mut wire, Encoding::Q3);
-    snapshots::write_q3(
+    let mut writer = Writer::new(&mut wire, codec.encoding);
+    (codec.write)(
         &mut writer,
         &case.server,
         sequence,
         (case.distance != 0).then_some(base),
     )
     .map_err(|e| format!("{e:?}"))?;
-    writer.write_bits(8, 8).map_err(|e| e.to_string())?;
+    writer.write_bits(codec.end, 8).map_err(|e| e.to_string())?;
     let bits = writer.bit_position() as u32;
     let n = writer.size();
-    let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
-    if reader.read_bits(8).map_err(|e| e.to_string())? != 7 {
+    let mut reader = Reader::new(writer.bytes(), codec.encoding);
+    if reader.read_bits(8).map_err(|e| e.to_string())? != codec.opcode {
         return Err("snapshot opcode".into());
     }
-    let accepted = snapshots::read_q3(&mut reader, &mut case.client, sequence, 12)
-        .map_err(|e| format!("{e:?}"))?;
-    if reader.read_bits(8).map_err(|e| e.to_string())? != 8 {
+    let accepted =
+        (codec.read)(&mut reader, &mut case.client, sequence, 12).map_err(|e| format!("{e:?}"))?;
+    if reader.read_bits(8).map_err(|e| e.to_string())? != codec.end {
         return Err("snapshot EOF".into());
     }
     let mut output = Writer::new(out, Encoding::Bytes);
@@ -189,11 +234,11 @@ fn run(case: &mut Case, base: u32, out: &mut [u8; 32768]) -> Result<usize, Strin
 fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
     let input = std::fs::read(fixture).map_err(|e| e.to_string())?;
     let oracle = std::fs::read(oracle).map_err(|e| e.to_string())?;
-    let mut cases = load(&input)?;
+    let mut cases = load(&input, 1920)?;
     let mut output = [0; 32768];
     let mut offset = 0;
     for case in &mut cases {
-        let n = run(case, 1, &mut output)?;
+        let n = run(case, &Q3, 1, &mut output)?;
         if oracle.get(offset..offset + n) != Some(&output[..n]) {
             return Err("native snapshot fidelity at load".into());
         }
@@ -208,13 +253,7 @@ fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
         .iter()
         .map(|case| case.server.allocated_bytes() + case.client.allocated_bytes())
         .sum();
-    allocations::begin_frame();
-    let control = Box::new(std::hint::black_box(1u64));
-    std::hint::black_box(&control);
-    drop(control);
-    if allocations::end_frame().allocations != 1 {
-        return Err("heap positive control".into());
-    }
+    check_heap_counter()?;
     let mut samples = [0u64; 600];
     let mut counts = allocations::Counts::default();
     let mut checks = 0;
@@ -225,6 +264,7 @@ fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
         for case in &mut cases {
             let n = run(
                 std::hint::black_box(case),
+                &Q3,
                 (frame as u32 + 1) * 64 + 1,
                 &mut output,
             )?;
@@ -269,12 +309,44 @@ fn main() -> Result<(), String> {
     std::io::stdin()
         .read_to_end(&mut input)
         .map_err(|e| e.to_string())?;
-    let mut cases = load(&input)?;
+    if args.get(1).is_some_and(|a| a == "--q2") {
+        return compare(&input, &Q2, 896);
+    }
+    compare(&input, &Q3, 1920)
+}
+
+fn compare<const P: usize, const E: usize>(
+    input: &[u8],
+    codec: &Codec<P, E>,
+    retained: u64,
+) -> Result<(), String> {
+    let mut cases = load(input, retained)?;
+    check_heap_counter()?;
     let mut stdout = std::io::stdout().lock();
     let mut output = [0; 32768];
     for case in &mut cases {
-        let n = run(case, 1, &mut output)?;
+        allocations::begin_frame();
+        let n = run(case, codec, 1, &mut output)?;
+        let heap = allocations::end_frame();
+        if heap != allocations::Counts::default() {
+            return Err(format!("snapshot comparison heap gate {heap:?}"));
+        }
         stdout.write_all(&output[..n]).map_err(|e| e.to_string())?;
+    }
+    eprintln!(
+        "{{\"scope\":\"caller Rust heap during native frame encode/decode; no host/workers/driver\",\"cases\":{},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0}}",
+        cases.len()
+    );
+    Ok(())
+}
+
+fn check_heap_counter() -> Result<(), String> {
+    allocations::begin_frame();
+    let control = Box::new(std::hint::black_box(1u64));
+    std::hint::black_box(&control);
+    drop(control);
+    if allocations::end_frame().allocations != 1 {
+        return Err("heap positive control".into());
     }
     Ok(())
 }

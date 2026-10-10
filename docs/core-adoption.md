@@ -359,3 +359,55 @@ native/combined/installed acceptance remain required. Evidence is in
 allocation measurement, game/window or installation run is claimed.
 All 682 workspace tests, the unchanged checker, formatting and diff checks
 pass. The final normal release workspace build completed in 30.72 s.
+
+## THE-860: shared packet-entity merge and Q2 frames
+
+`network/src/snapshots.rs:370,561` now owns one ordered read merge and one
+ordered write merge for native packet entities. Q3's separate loops were
+deleted; its existing snapshot/channel callers use these loops. Q2 frame
+codecs use the same loops and the same generic 32-slot Ring. Native prefixes,
+terminators, player layouts and unchanged-row policy select the data and codec
+entries; there is no second engine entity/player store or scalar encoder.
+
+The existing Q2 record reader at `states.rs:712` now delegates to its one
+prefix/body decoder. `states.rs:735` owns Q2's unchanged-row reset: old_origin
+receives the prior origin and event clears, including omitted prefix and
+trailing rows. Both packet and record callers use it. Q2 frame headers retain
+native frame/lastframe, suppression count, area bytes, playerinfo and
+packetentities. Frame time is the protocol's native frame * 100 milliseconds,
+independent of movement or map. The native client count is supplied explicitly
+for the player old-origin rule. Delta selection uses the actual requested
+frame and native 29-frame cutoff; unrepresentable entity numbers are omitted.
+
+The one ring publication path bounds capacity, counts missing bases/overflow
+and retains typed slot storage. Original Q2 CL_ParseFrame retains parsed
+invalid frames, then tests the addressed sequence/row age independently of
+old.valid on a later delta. The shared slot has that validity metadata;
+invalid frames remain unavailable through frame(). Q3 retains its existing
+discard behavior. Overflow never publishes a partial frame.
+
+The developer snapshot probe and original-C tool were extended rather than
+duplicated. Whole original Q2 SV_EmitPacketEntities/SV_WriteFrameToClient and
+CL_DeltaEntity/CL_ParsePacketEntities/CL_ParseFrame bodies run with private
+native state and stubbed presentation callbacks. All 512 Q2 cases match
+913,057 comparison bytes, decoded player/entities, flags, validity and cursors.
+All existing 512 Q3 cases still match 2,035,577 bytes. The existing 16,384
+native state cases match all 8,039,745 bytes and decoded words. These fixtures
+do not prove signon, native hosts or gameplay.
+
+The release snapshot probe records zero caller Rust allocations, reallocations
+and requested bytes across each protocol's 512 encode/decode cases, with a
+one-allocation positive control. This is a headless codec gate; it does not
+measure workers, driver/SDL or host frames. No timing runs were performed.
+Three new tests cover full/delta/removal, unchanged prefix/trailing resets,
+missing-base retention, overflow recovery and area limits. All 685 workspace
+tests, unchanged checker, warning-denied network/platform Clippy, formatting
+and diff checks pass. The normal release app and comparison binaries built in
+32.45 s. Evidence: `$HOME/.cache/qa-rust/THE-860-q2-frames-20261009/`.
+
+THE-860 remains In Progress. Q2's frame codec is not connected to ingress/app
+yet. Direct prediction copies remain `app/src/host.rs:480` and
+`app/src/lib.rs:201`; CLIENT Snapshot dispatch still ignores decoded Q3
+frames. QW/NQ frame streams, negotiated protocols/rerelease, native signon,
+common-state provider/client adoption and combined/installed proofs remain.
+No game/window run or installation is claimed.

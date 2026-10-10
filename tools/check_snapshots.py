@@ -6,8 +6,9 @@ from pathlib import Path
 import random
 import struct
 import subprocess
-from check_message import function
-from check_state_delta import reference_source
+from check_message import PREAMBLE, function
+from check_state_delta import (reference_source, q2_reference, q2_entity_reference,
+                               q2_layout, q2_entity_layout)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -121,39 +122,173 @@ def compile_reference(qsrc, evidence):
     return binary, tables
 
 
-def fixture(tables):
+def compile_q2_reference(qsrc, evidence):
+    """Whole original frame/packet bodies; binding types provide private state."""
+    source = PREAMBLE + '\ntypedef float vec3_t[3];\n#define true 1\n#define false 0\n#define ERR_FATAL 0\n'
+    player = q2_reference(qsrc)
+    player = player.replace('typedef struct {player_state_t ps;} client_frame_t;',
+        'typedef struct {player_state_t ps;int first_entity,num_entities,areabytes;byte areabits[32];} client_frame_t;')
+    player = player.replace('typedef struct {player_state_t playerstate;} frame_t;',
+        'typedef struct {player_state_t playerstate;int valid,serverframe,deltaframe,servertime,parse_entities,num_entities;byte areabits[32];} frame_t;')
+    player = player.replace('static struct {int attractloop;} cl;', r'''
+static struct {int attractloop,parse_entities,time,surpressCount,force_refdef,
+ servercount,refresh_prepped,sound_prepped;vec3_t predicted_origin,predicted_angles;
+ frame_t frame,frames[32];} cl;
+''')
+    source += player + q2_entity_reference(qsrc) + r'''
+#define UPDATE_BACKUP 32
+#define UPDATE_MASK 31
+#define MAX_PARSE_ENTITIES 1024
+#define ca_active 3
+#define svc_frame 20
+#define svc_packetentities 18
+#define MSG_WriteByte(m,v) q2_write(m,v,8)
+#define MSG_WriteChar(m,v) q2_write(m,v,8)
+#define MSG_WriteShort(m,v) q2_write(m,v,16)
+#define MSG_WriteLong(m,v) q2_write(m,v,32)
+#define MSG_ReadByte(m) q2_read(m,8,0)
+#define MSG_ReadChar(m) q2_read(m,8,1)
+#define MSG_ReadShort(m) q2_read(m,16,1)
+#define MSG_ReadLong(m) q2_read(m,32,0)
+#define MSG_WriteDeltaEntity Q2_WriteDeltaEntity
+#define CL_ParseDelta Q2_ParseDelta
+#define SHOWNET(x) ((void)0)
+typedef struct {entity_state_t baseline,current,prev;int serverframe,trailcount;vec3_t lerp_origin;} centity_t;
+static centity_t cl_entities[1024];static entity_state_t cl_parse_entities[1024];
+static struct {int state,serverProtocol,demowaiting,disable_servercount;} cls;
+typedef struct {client_frame_t frames[32];int lastframe,surpressCount;} client_t;
+static struct {int framenum;entity_state_t baselines[1024];} sv;
+static struct {entity_state_t client_entities[4096];int num_client_entities;} svs;
+static struct {float value;} maxclients_value={16},shownet_value={0};
+#define maxclients (&maxclients_value)
+#define cl_shownet (&shownet_value)
+static void Com_Printf(char *fmt,...) {(void)fmt;}
+static void SCR_EndLoadingPlaque(void) {}
+static void CL_FireEntityEvents(frame_t *f) {(void)f;}
+static void CL_CheckPredictionError(void) {}
+static void MSG_ReadData(msg_t *m,void *buffer,int n) {byte *out=buffer;for(int i=0;i<n;i++)out[i]=MSG_ReadByte(m);}
+static void SZ_Write(msg_t *m,byte *data,int n) {for(int i=0;i<n;i++)MSG_WriteByte(m,data[i]);}
+'''
+    header = (qsrc/'quake-2/game/q_shared.h').read_text()
+    end = header.index('} entity_event_t;') + len('} entity_event_t;')
+    source += header[header.rfind('typedef enum', 0, end):end] + '\n'
+    server = (qsrc/'quake-2/server/sv_ents.c').read_text()
+    client = (qsrc/'quake-2/client/cl_ents.c').read_text()
+    for name in ['SV_EmitPacketEntities', 'SV_WriteFrameToClient']:
+        source += function(server, name)
+    for name in ['CL_DeltaEntity', 'CL_ParsePacketEntities', 'CL_ParseFrame']:
+        source += function(client, name)
+    source += r'''
+static int entity_input(entity_state_t *e) {
+ uint16_t number;uint32_t words[20];
+ if(fread(&number,2,1,stdin)!=1||fread(words,4,20,stdin)!=20)return 0;
+ memset(e,0,sizeof(*e));e->number=number;q2_entity_put(e,words);return 1;
+}
+static void parse(msg_t *m) {
+ net_message=*m;net_message.bit=net_message.readcount=0;
+ if(MSG_ReadByte(&net_message)!=20)abort();CL_ParseFrame();
+ if(MSG_ReadByte(&net_message)!=6)abort();
+}
+int main(void) {
+ uint32_t cases;if(fread(&cases,4,1,stdin)!=1)return 2;
+ for(uint32_t k=0;k<cases;k++) {
+  byte h[4];uint16_t counts[3];uint32_t p[68],q[68];
+  if(fread(h,1,4,stdin)!=4||fread(counts,2,3,stdin)!=3||counts[0]>64||counts[1]>64||counts[2]>64||h[3]>32
+   ||fread(p,4,68,stdin)!=68||fread(q,4,68,stdin)!=68)return 3;
+  memset(&cl,0,sizeof(cl));memset(&sv,0,sizeof(sv));memset(&svs,0,sizeof(svs));
+  memset(cl_entities,0,sizeof(cl_entities));memset(cl_parse_entities,0,sizeof(cl_parse_entities));
+  cls.state=ca_active;cls.serverProtocol=34;client_t client={0};
+  int sequence=1+(h[0]?h[0]:1);client_frame_t *old=&client.frames[1],*to=&client.frames[sequence&31];
+  old->first_entity=0;old->num_entities=counts[0];old->areabytes=h[3];
+  byte area[32]={0};if(fread(area,1,h[3],stdin)!=h[3])return 4;
+  q2_put(&old->ps,p);memcpy(old->areabits,area,h[3]);
+  for(int i=0;i<counts[2];i++) {entity_state_t e;if(!entity_input(&e))return 5;
+   sv.baselines[e.number]=e;cl_entities[e.number].baseline=e;}
+  for(int i=0;i<counts[0];i++)if(!entity_input(&svs.client_entities[i]))return 6;
+  client_frame_t saved=*old;
+  memset(to,0,sizeof(*to));to->first_entity=128;to->num_entities=counts[1];to->areabytes=h[3];
+  q2_put(&to->ps,q);memcpy(to->areabits,area,h[3]);
+  for(int i=0;i<counts[1];i++)if(!entity_input(&svs.client_entities[128+i]))return 7;
+  svs.num_client_entities=4096;
+  if(h[1]) {
+   client_frame_t target=*to;client.frames[1]=saved;byte first[8192]={0};msg_t m={.data=first,.maxsize=sizeof(first)};
+   client.lastframe=-1;client.surpressCount=h[2];sv.framenum=1;
+   SV_WriteFrameToClient(&client,&m);MSG_WriteByte(&m,6);parse(&m);*to=target;
+  }
+  client.lastframe=h[0]?1:-1;client.surpressCount=h[2];sv.framenum=sequence;
+  byte wire[8192]={0};msg_t m={.data=wire,.maxsize=sizeof(wire)};
+  SV_WriteFrameToClient(&client,&m);MSG_WriteByte(&m,6);parse(&m);
+  uint32_t result[4]={m.cursize*8,m.cursize,cl.frame.valid,net_message.readcount*8};
+  fwrite(result,4,4,stdout);fwrite(wire,1,m.cursize,stdout);
+  if(cl.frame.valid) {
+   uint32_t words[68],meta[5]={cl.frame.servertime,0,cl.surpressCount,h[3],cl.frame.num_entities};
+   q2_get(&cl.frame.playerstate,words);fwrite(meta,4,5,stdout);fwrite(cl.frame.areabits,1,h[3],stdout);fwrite(words,4,68,stdout);
+   for(int i=0;i<cl.frame.num_entities;i++) {
+    entity_state_t *e=&cl_parse_entities[(cl.frame.parse_entities+i)&1023];uint32_t number=e->number,words[20];
+    q2_entity_get(e,words);fwrite(&number,4,1,stdout);fwrite(words,4,20,stdout);
+   }
+  }
+ }
+ return 0;
+}
+'''
+    code = evidence/'original-q2-frames.c'
+    code.write_text(source)
+    binary = evidence/'original-q2-frames'
+    subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
+    return binary, (q2_entity_layout(), q2_layout())
+
+
+def fixture(tables, q2=False):
     rng = random.Random(8603232)
     def words(layout, player=False):
         out = []
-        for _, width in layout:
-            if width == 0:
+        for i, (_, width) in enumerate(layout):
+            floating = (13 <= i <= 21 or 24 <= i <= 34) if player else 8 <= i <= 16
+            if q2 and floating:
+                if not player:
+                    value = rng.randrange(-32000,32000)*.125
+                elif 30 <= i <= 33:
+                    value = rng.randrange(256)/255.
+                elif i == 34:
+                    value = rng.randrange(10,141)
+                else:
+                    value = rng.randrange(-240,241)*.125
+                out.append(struct.unpack('<I', struct.pack('<f', value))[0])
+            elif q2 and player and width < 0:
+                out.append(rng.randrange(-32000,32000)&0xffffffff)
+            elif q2 and not player and width == 0:
+                out.append(rng.choice([0,128,255,256,32767,32768,65535,65536,1<<31]))
+            elif width == 0 and not q2:
                 value = rng.choice([0., -0., -4096., 4095., rng.randrange(-100, 100)*.125])
                 out.append(struct.unpack('<I', struct.pack('<f', value))[0])
             else:
                 out.append(rng.randrange(1 << min(abs(width), 31)))
         if player:
-            out += [rng.randrange(-32000, 32000) & 0xffffffff for _ in range(48)]
-            out += [rng.randrange(1 << 31) for _ in range(16)]
+            out += [rng.randrange(-32000, 32000) & 0xffffffff for _ in range(32 if q2 else 48)]
+            if not q2:
+                out += [rng.randrange(1 << 31) for _ in range(16)]
         return out
     output = bytearray(struct.pack('<I', 512))
     for case in range(512):
         distance = [0, 1, 2, 28, 29, 31, 32][case % 7]
         prime = case % 9 != 0
         area = bytes(rng.randrange(256) for _ in range(case % 33))
-        old_numbers = sorted(rng.sample(range(96), case % 25))
-        new_numbers = sorted(set(n for n in old_numbers if rng.randrange(4) != 0) | set(rng.sample(range(96), case % 8)))
+        pool = range(1,513) if q2 else range(96)
+        old_numbers = sorted(rng.sample(pool, case % 25))
+        new_numbers = sorted(set(n for n in old_numbers if rng.randrange(4) != 0) | set(rng.sample(pool, case % 8)))
         old = {n: words(tables[0]) for n in old_numbers}
         new = {n: old[n].copy() if n in old else words(tables[0]) for n in new_numbers}
         for n in new_numbers:
             if n in old and rng.randrange(3) == 0:
-                new[n][1] = struct.unpack('<I', struct.pack('<f', 0.5*case))[0]
-        baselines = {n: words(tables[0]) for n in rng.sample(range(96), 4)}
+                new[n][8 if q2 else 1] = struct.unpack('<I', struct.pack('<f', 0.5*case))[0]
+        baselines = {n: words(tables[0]) for n in rng.sample(pool, 4)}
         p, q = words(tables[1], True), words(tables[1], True)
         output += struct.pack('<4B3H', distance, prime, 4 | (case & 1), len(area), len(old), len(new), len(baselines))
-        output += struct.pack('<224I', *(p+q)) + area
+        output += struct.pack(f'<{len(p+q)}I', *(p+q)) + area
         for records in [baselines, old, new]:
             for number, record in records.items():
-                output += struct.pack('<H51I', number, *record)
+                output += struct.pack(f'<H{len(tables[0])}I', number, *record)
     return bytes(output)
 
 
@@ -162,16 +297,18 @@ def main():
     parser.add_argument('--qsrc', type=Path, default=ROOT.parent/'qsrc')
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--rust', type=Path, required=True)
+    parser.add_argument('--protocol', choices=['q3','q2'], default='q3')
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=True)
-    binary, tables = compile_reference(args.qsrc, args.evidence)
-    data = fixture(tables)
+    q2 = args.protocol == 'q2'
+    binary, tables = (compile_q2_reference if q2 else compile_reference)(args.qsrc, args.evidence)
+    data = fixture(tables, q2)
     (args.evidence/'fixtures.bin').write_bytes(data)
     native = subprocess.check_output([binary], input=data)
-    rust = subprocess.check_output([args.rust], input=data)
+    rust = subprocess.check_output([args.rust] + (['--q2'] if q2 else []), input=data)
     (args.evidence/'original.bin').write_bytes(native)
     (args.evidence/'rust.bin').write_bytes(rust)
-    result = {'cases': 512, 'bytes': len(native), 'exact': native == rust,
+    result = {'protocol': args.protocol, 'cases': 512, 'bytes': len(native), 'exact': native == rust,
               'scope': 'original snapshot writer/parser bodies with private native bindings; no signon/host/gameplay'}
     if native != rust:
         result['first_difference'] = next((i for i,(a,b) in enumerate(zip(native,rust)) if a != b), min(len(native),len(rust)))

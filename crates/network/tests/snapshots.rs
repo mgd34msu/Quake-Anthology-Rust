@@ -12,7 +12,7 @@ use qa_network::{
     ingress::{Connection, Connections, Incoming, Route},
     message::{Encoding, Reader, Writer},
     snapshots::{self, Entity, Frame, Q3Ring, Ring},
-    states::{ENTITY_WORDS, PLAYER_WORDS},
+    states::{self, ENTITY_WORDS, PLAYER_WORDS},
 };
 
 fn entity(number: u32, value: f32) -> Entity<ENTITY_WORDS> {
@@ -445,5 +445,144 @@ fn missing_snapshot_base_requests_full_without_acknowledging_an_invalid_frame() 
         (false, true)
     );
     assert_eq!(incoming.delta_request(), None);
+    Ok(())
+}
+
+fn q2_entity(number: u32, x: f32, event: u32) -> Entity<{ states::Q2_ENTITY_WORDS }> {
+    let mut words = [0; states::Q2_ENTITY_WORDS];
+    words[0] = 1;
+    words[8] = x.to_bits();
+    words[14] = 999.0f32.to_bits();
+    words[18] = event;
+    Entity { number, words }
+}
+
+fn q2_store(
+    ring: &mut snapshots::Q2Ring,
+    sequence: u32,
+    entities: &[Entity<{ states::Q2_ENTITY_WORDS }>],
+) -> Result<(), Error> {
+    let mut player = [0; states::Q2_PLAYER_WORDS];
+    player[1] = sequence;
+    ring.store(Frame {
+        sequence,
+        time: sequence as i32 * 100,
+        command: 0,
+        flags: 7,
+        player: &player,
+        areas: &[0x81, 0x42],
+        entities,
+    })
+}
+
+fn q2_send(
+    server: &snapshots::Q2Ring,
+    client: &mut snapshots::Q2Ring,
+    sequence: u32,
+    request: Option<u32>,
+) -> Result<bool, Error> {
+    let mut bytes = [0; 8192];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    snapshots::write_q2(&mut writer, server, sequence, request, 16)?;
+    writer.write_bits(6, 8)?;
+    let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+    assert_eq!(reader.read_bits(8)?, 20);
+    let accepted = snapshots::read_q2(&mut reader, client)?;
+    assert_eq!(reader.read_bits(8)?, 6);
+    assert_eq!(reader.byte_position(), writer.size());
+    Ok(accepted)
+}
+
+#[test]
+fn q2_frames_share_the_ring_and_reset_unchanged_rows() -> Result<(), Error> {
+    let mut server = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+    let mut client = snapshots::Q2Ring::load(8, 1024, 32, Some(896))?;
+    q2_store(
+        &mut server,
+        1,
+        &[q2_entity(30, 12., 9), q2_entity(31, 25., 9)],
+    )?;
+    assert!(q2_send(&server, &mut client, 1, None)?);
+    q2_store(
+        &mut server,
+        2,
+        &[
+            q2_entity(30, 12., 0),
+            q2_entity(31, 25., 0),
+            q2_entity(260, 33., 0),
+        ],
+    )?;
+    assert!(q2_send(&server, &mut client, 2, Some(1))?);
+    let frame = client.frame(2).ok_or(Error::Context)?;
+    assert_eq!(frame.time, 200);
+    assert_eq!(frame.flags, 7);
+    assert_eq!(frame.areas, &[0x81, 0x42]);
+    assert_eq!(frame.player[1], 2);
+    assert_eq!(
+        frame.entities.iter().map(|e| e.number).collect::<Vec<_>>(),
+        [30, 31, 260]
+    );
+    assert_eq!(frame.entities[0].words[18], 0);
+    assert_eq!(frame.entities[0].words[14], 12.0f32.to_bits());
+    // The unchanged trailing row also takes the native reset policy.
+    q2_store(
+        &mut server,
+        3,
+        &[q2_entity(31, 25., 0), q2_entity(260, 33., 0)],
+    )?;
+    assert!(q2_send(&server, &mut client, 3, Some(2))?);
+    let frame = client.frame(3).ok_or(Error::Context)?;
+    assert_eq!(frame.entities.len(), 2);
+    assert_eq!(frame.entities[0].number, 31);
+    assert_eq!(frame.entities[0].words[14], 25.0f32.to_bits());
+    assert_eq!(client.counts().accepted, 3);
+    Ok(())
+}
+
+#[test]
+fn q2_missing_base_is_consumed_and_retained_without_publishing() -> Result<(), Error> {
+    let mut server = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+    let mut client = snapshots::Q2Ring::load(8, 1024, 32, Some(896))?;
+    q2_store(&mut server, 1, &[q2_entity(30, 12., 0)])?;
+    q2_store(&mut server, 2, &[q2_entity(30, 25., 0)])?;
+    assert!(!q2_send(&server, &mut client, 2, Some(1))?);
+    assert!(client.frame(2).is_none());
+    assert_eq!(client.counts().missing_base, 1);
+    // Original CL_ParseFrame's next delta validates sequence/row age even
+    // when the saved addressed frame was invalid. Normal clients request full.
+    q2_store(&mut server, 3, &[q2_entity(30, 33., 0)])?;
+    assert!(q2_send(&server, &mut client, 3, Some(2))?);
+    assert_eq!(
+        client.frame(3).ok_or(Error::Context)?.entities[0].words[8],
+        33.0f32.to_bits()
+    );
+    Ok(())
+}
+
+#[test]
+fn q2_frame_overflow_and_area_limits_do_not_publish_partial_data() -> Result<(), Error> {
+    let mut server = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+    let mut client = snapshots::Q2Ring::load(1, 1024, 32, Some(896))?;
+    q2_store(
+        &mut server,
+        1,
+        &[q2_entity(30, 12., 0), q2_entity(31, 25., 0)],
+    )?;
+    assert!(!q2_send(&server, &mut client, 1, None)?);
+    assert!(client.frame(1).is_none());
+    assert_eq!(client.counts().overflow, 1);
+    q2_store(&mut server, 2, &[q2_entity(30, 12., 0)])?;
+    assert!(q2_send(&server, &mut client, 2, None)?);
+    let mut bytes = [0; 16];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    for (value, width) in [(3, 32), (u32::MAX, 32), (0, 8), (33, 8)] {
+        writer.write_bits(value, width)?;
+    }
+    let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+    assert_eq!(
+        snapshots::read_q2(&mut reader, &mut client),
+        Err(Error::Count)
+    );
+    assert!(client.frame(3).is_none());
     Ok(())
 }

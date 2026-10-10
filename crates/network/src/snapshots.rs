@@ -17,6 +17,7 @@ pub struct Entity<const N: usize> {
 #[derive(Clone, Copy)]
 struct Slot<const P: usize> {
     sequence: Option<u32>,
+    valid: bool,
     time: i32,
     command: u32,
     flags: u8,
@@ -28,6 +29,7 @@ struct Slot<const P: usize> {
 impl<const P: usize> Slot<P> {
     const ZERO: Self = Self {
         sequence: None,
+        valid: false,
         time: 0,
         command: 0,
         flags: 0,
@@ -133,7 +135,8 @@ impl<const P: usize, const E: usize> Ring<P, E> {
     pub fn frame(&self, sequence: u32) -> Option<Frame<'_, P, E>> {
         let index = sequence as usize & (SLOTS - 1);
         let slot = &self.slots[index];
-        if slot.sequence != Some(sequence)
+        if !slot.valid
+            || slot.sequence != Some(sequence)
             || self
                 .retained_rows
                 .is_some_and(|n| self.parsed_rows.saturating_sub(slot.first_entity) > n)
@@ -171,6 +174,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         self.parsed_rows = self.parsed_rows.saturating_add(frame.entities.len() as u64);
         let slot = Slot {
             sequence: Some(frame.sequence),
+            valid: true,
             time: frame.time,
             command: frame.command,
             flags: frame.flags,
@@ -201,12 +205,45 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         let index = sequence as usize & (SLOTS - 1);
         self.slots[index] = slot;
         self.latest = Some(sequence);
-        self.counts.accepted += 1;
+        self.counts.accepted += u64::from(slot.valid);
+    }
+
+    fn publish_received(
+        &mut self,
+        mut slot: Slot<P>,
+        base_valid: bool,
+        overflow: bool,
+        save_invalid: bool,
+    ) -> bool {
+        slot.first_entity = self.parsed_rows;
+        self.parsed_rows = self.parsed_rows.saturating_add(slot.count as u64);
+        if !base_valid {
+            self.counts.missing_base += 1;
+        }
+        if overflow {
+            self.counts.overflow += 1;
+        }
+        if overflow || (!base_valid && !save_invalid) {
+            return false;
+        }
+        let Some(sequence) = slot.sequence else {
+            return false;
+        };
+        let index = sequence as usize & (SLOTS - 1);
+        self.areas[index * self.area_capacity..index * self.area_capacity + slot.area_bytes]
+            .copy_from_slice(&self.scratch_areas[..slot.area_bytes]);
+        self.entities[index * self.capacity..index * self.capacity + slot.count]
+            .copy_from_slice(&self.scratch[..slot.count]);
+        slot.valid = base_valid;
+        self.commit(slot);
+        base_valid
     }
 }
 
 pub type Q3Ring = Ring<{ states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
 pub type Q3Frame<'a> = Frame<'a, { states::PLAYER_WORDS }, { states::ENTITY_WORDS }>;
+pub type Q2Ring = Ring<{ states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
+pub type Q2Frame<'a> = Frame<'a, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>;
 
 /// Original svc_snapshot body after its opcode. Missing deltas are consumed
 /// without publishing, so following server commands remain in the same stream.
@@ -221,13 +258,7 @@ pub fn read_q3(
     let base_sequence = sequence.saturating_sub(distance);
     let full = distance == 0 || base_sequence == 0;
     let flags = reader.read_bits(8)? as u8;
-    let area_bytes = reader.read_bits(8)? as usize;
-    if area_bytes > ring.area_capacity || area_bytes > 32 {
-        return Err(packet::Error::Count);
-    }
-    for byte in &mut ring.scratch_areas[..area_bytes] {
-        *byte = reader.read_bits(8)? as u8;
-    }
+    let area_bytes = read_areas(reader, &mut ring.scratch_areas, 32)?;
     let base_index = base_sequence as usize & (SLOTS - 1);
     let base_valid = full || ring.frame(base_sequence).is_some();
     // qsrc consumes an invalid delta using the addressed slot's retained
@@ -238,41 +269,151 @@ pub fn read_q3(
         Slot::ZERO
     };
     let player = states::read_q3_player(reader, &old.player)?;
+    let (count, overflow) = read_entities(
+        reader,
+        &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
+        &ring.baselines,
+        &mut ring.scratch,
+        1023,
+        |reader| {
+            Ok(states::EntityHeader {
+                number: reader.read_bits(10)? as u16,
+                flags: 0,
+            })
+        },
+        |reader, header, from| Ok(states::read_q3_entity_body(reader, header.number, from)?.words),
+        |from| *from,
+    )?;
+    Ok(ring.publish_received(
+        Slot {
+            sequence: Some(sequence),
+            valid: false,
+            time,
+            command,
+            flags,
+            area_bytes,
+            count,
+            first_entity: 0,
+            player,
+        },
+        base_valid,
+        overflow,
+        false,
+    ))
+}
+
+/// Protocol-34 svc_frame body. Unlike Q3, its frame number is carried in the
+/// payload and its native server time is frame * 100 milliseconds.
+pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packet::Error> {
+    let sequence = reader.read_bits(32)?;
+    let delta = reader.read_bits(32)? as i32;
+    let flags = reader.read_bits(8)? as u8;
+    let area_bytes = read_areas(reader, &mut ring.scratch_areas, 32)?;
+    let base_index = delta as usize & (SLOTS - 1);
+    let full = delta <= 0;
+    let old = if full {
+        Slot::ZERO
+    } else {
+        ring.slots[base_index]
+    };
+    // Original CL_ParseFrame tests sequence and parsed-row age independently
+    // of old.valid. Invalid frames are retained but never exposed to callers.
+    let base_valid = full
+        || (old.sequence == Some(delta as u32)
+            && !ring
+                .retained_rows
+                .is_some_and(|n| ring.parsed_rows.saturating_sub(old.first_entity) > n));
+    let player = states::read_q2_player(reader, &old.player)?;
+    if reader.read_bits(8)? != 18 {
+        return Err(packet::Error::Opcode);
+    }
+    let (count, overflow) = read_entities(
+        reader,
+        &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
+        &ring.baselines,
+        &mut ring.scratch,
+        0,
+        |reader| {
+            let header = states::read_q2_entity_header(reader)?;
+            if header.number >= 1024 {
+                return Err(packet::Error::Count);
+            }
+            Ok(header)
+        },
+        |reader, header, from| Ok(states::read_q2_entity_body(reader, header, from)?.words),
+        states::q2_unchanged_entity,
+    )?;
+    Ok(ring.publish_received(
+        Slot {
+            sequence: Some(sequence),
+            valid: false,
+            time: (sequence as i32).wrapping_mul(100),
+            command: 0,
+            flags,
+            area_bytes,
+            count,
+            first_entity: 0,
+            player,
+        },
+        base_valid,
+        overflow,
+        true,
+    ))
+}
+
+// The prefix and unchanged-row policy are native format data. The ordered
+// entity/baseline/removal merge is shared by every packet-frame decoder.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Typed native codec entries keep the one hot merge monomorphized"
+)]
+fn read_entities<const E: usize>(
+    reader: &mut Reader<'_>,
+    old: &[Entity<E>],
+    baselines: &[[u32; E]],
+    scratch: &mut [Entity<E>],
+    terminator: u16,
+    header: impl Fn(&mut Reader<'_>) -> Result<states::EntityHeader, packet::Error>,
+    body: impl Fn(
+        &mut Reader<'_>,
+        states::EntityHeader,
+        &[u32; E],
+    ) -> Result<Option<[u32; E]>, packet::Error>,
+    unchanged: impl Fn(&[u32; E]) -> [u32; E],
+) -> Result<(usize, bool), packet::Error> {
     let mut old_index = 0;
     let mut count = 0;
     let mut overflow = false;
     let mut previous = None;
     loop {
-        let number = reader.read_bits(10)? as u16;
-        if number == 1023 {
+        let prefix = header(reader)?;
+        let number = prefix.number;
+        if number == terminator {
             break;
         }
         if previous.is_some_and(|n| number <= n) {
             return Err(packet::Error::Count);
         }
         previous = Some(number);
-        while old_index < old.count {
-            let entity = ring.entities[base_index * ring.capacity + old_index];
+        while old_index < old.len() {
+            let mut entity = old[old_index];
             if entity.number >= u32::from(number) {
                 break;
             }
-            append(&mut ring.scratch, entity, &mut count, &mut overflow);
+            entity.words = unchanged(&entity.words);
+            append(scratch, entity, &mut count, &mut overflow);
             old_index += 1;
         }
-        let old_entity =
-            (old_index < old.count).then(|| ring.entities[base_index * ring.capacity + old_index]);
+        let old_entity = old.get(old_index);
         let from = if let Some(e) = old_entity.filter(|e| e.number == u32::from(number)) {
             old_index += 1;
             e.words
         } else {
-            *ring
-                .baselines
-                .get(number as usize)
-                .ok_or(packet::Error::Count)?
+            *baselines.get(number as usize).ok_or(packet::Error::Count)?
         };
-        if let Some(words) = states::read_q3_entity_body(reader, number, &from)?.words {
+        if let Some(words) = body(reader, prefix, &from)? {
             append(
-                &mut ring.scratch,
+                scratch,
                 Entity {
                     number: u32::from(number),
                     words,
@@ -282,39 +423,13 @@ pub fn read_q3(
             );
         }
     }
-    while old_index < old.count {
-        let entity = ring.entities[base_index * ring.capacity + old_index];
-        append(&mut ring.scratch, entity, &mut count, &mut overflow);
+    while old_index < old.len() {
+        let mut entity = old[old_index];
+        entity.words = unchanged(&entity.words);
+        append(scratch, entity, &mut count, &mut overflow);
         old_index += 1;
     }
-    let first_entity = ring.parsed_rows;
-    ring.parsed_rows = ring.parsed_rows.saturating_add(count as u64);
-    if !base_valid {
-        ring.counts.missing_base += 1;
-    }
-    if overflow {
-        ring.counts.overflow += 1;
-    }
-    if !base_valid || overflow {
-        return Ok(false);
-    }
-    // Scratch and slot storage are separate owned typed arrays, not a raw arena.
-    let index = sequence as usize & (SLOTS - 1);
-    ring.areas[index * ring.area_capacity..index * ring.area_capacity + area_bytes]
-        .copy_from_slice(&ring.scratch_areas[..area_bytes]);
-    ring.entities[index * ring.capacity..index * ring.capacity + count]
-        .copy_from_slice(&ring.scratch[..count]);
-    ring.commit(Slot {
-        sequence: Some(sequence),
-        time,
-        command,
-        flags,
-        area_bytes,
-        count,
-        first_entity,
-        player,
-    });
-    Ok(true)
+    Ok((count, overflow))
 }
 
 fn append<const E: usize>(
@@ -331,6 +446,35 @@ fn append<const E: usize>(
     *count += 1;
 }
 
+fn read_areas(
+    reader: &mut Reader<'_>,
+    out: &mut [u8],
+    limit: usize,
+) -> Result<usize, packet::Error> {
+    let count = reader.read_bits(8)? as usize;
+    if count > out.len() || count > limit {
+        return Err(packet::Error::Count);
+    }
+    reader.read_data(&mut out[..count])?;
+    Ok(count)
+}
+
+fn delta_frame<const P: usize, const E: usize>(
+    ring: &Ring<P, E>,
+    sequence: u32,
+    request: Option<u32>,
+) -> Option<Frame<'_, P, E>> {
+    request
+        .filter(|n| *n > 0 && sequence.checked_sub(*n).is_some_and(|d| d < 29))
+        .and_then(|n| ring.frame(n))
+}
+
+fn native_entities<const E: usize>(entities: &[Entity<E>], first: u32, end: u32) -> &[Entity<E>] {
+    let a = entities.partition_point(|e| e.number < first);
+    let b = entities.partition_point(|e| e.number < end);
+    &entities[a..b]
+}
+
 /// Native SV_WriteSnapshotToClient/SV_EmitPacketEntities ordering. The caller
 /// supplies the client's actual delta request; no transmit watermark is an ACK.
 pub fn write_q3(
@@ -343,10 +487,8 @@ pub fn write_q3(
     let areas = &to.areas[..to.areas.len().min(32)];
     // 1023 is the native packet-entity terminator. Higher common/native
     // namespace entries cannot be represented by this negotiated protocol.
-    let entities = &to.entities[..to.entities.partition_point(|e| e.number < 1023)];
-    let from = delta_request
-        .filter(|n| *n > 0 && sequence.checked_sub(*n).is_some_and(|d| d < 29))
-        .and_then(|n| ring.frame(n));
+    let entities = native_entities(to.entities, 0, 1023);
+    let from = delta_frame(ring, sequence, delta_request);
     writer.write_bits(7, 8)?;
     writer.write_bits(to.time as u32, 32)?;
     writer.write_bits(from.map_or(0, |f| sequence - f.sequence), 8)?;
@@ -360,16 +502,82 @@ pub fn write_q3(
         from.map_or(&[0; states::PLAYER_WORDS], |f| f.player),
         to.player,
     )?;
-    let old = from.map_or(&[][..], |f| {
-        &f.entities[..f.entities.partition_point(|e| e.number < 1023)]
-    });
+    let old = from.map_or(&[][..], |f| native_entities(f.entities, 0, 1023));
+    write_entities(
+        writer,
+        old,
+        entities,
+        &ring.baselines,
+        states::write_q3_entity,
+    )?;
+    writer.write_bits(1023, 10)?;
+    Ok(())
+}
+
+/// Native protocol-34 frame and packet entities. The caller supplies the
+/// acknowledged lastframe and its native client count, not common slot ids.
+pub fn write_q2(
+    writer: &mut Writer<'_>,
+    ring: &Q2Ring,
+    sequence: u32,
+    delta_request: Option<u32>,
+    native_clients: u32,
+) -> Result<(), packet::Error> {
+    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let from = delta_frame(ring, sequence, delta_request);
+    let areas = &to.areas[..to.areas.len().min(32)];
+    writer.write_bits(20, 8)?;
+    writer.write_bits(sequence, 32)?;
+    writer.write_bits(from.map_or(u32::MAX, |f| f.sequence), 32)?;
+    writer.write_bits(u32::from(to.flags), 8)?;
+    writer.write_bits(areas.len() as u32, 8)?;
+    writer.write_data(areas)?;
+    states::write_q2_player(
+        writer,
+        from.map_or(&[0; states::Q2_PLAYER_WORDS], |f| f.player),
+        to.player,
+    )?;
+    writer.write_bits(18, 8)?;
+    write_entities(
+        writer,
+        from.map_or(&[][..], |f| native_entities(f.entities, 1, 1024)),
+        native_entities(to.entities, 1, 1024),
+        &ring.baselines,
+        |writer, number, old, new, force| {
+            states::write_q2_entity(
+                writer,
+                number,
+                old,
+                new,
+                force,
+                force || number <= native_clients,
+            )
+        },
+    )?;
+    writer.write_bits(0, 16)?;
+    Ok(())
+}
+
+fn write_entities<const E: usize>(
+    writer: &mut Writer<'_>,
+    old: &[Entity<E>],
+    entities: &[Entity<E>],
+    baselines: &[[u32; E]],
+    encode: impl Fn(
+        &mut Writer<'_>,
+        u32,
+        &[u32; E],
+        Option<&[u32; E]>,
+        bool,
+    ) -> Result<bool, crate::message::Error>,
+) -> Result<(), packet::Error> {
     let mut a = 0;
     let mut b = 0;
     while a < old.len() || b < entities.len() {
         let old_number = old.get(a).map_or(u32::MAX, |e| e.number);
         let new_number = entities.get(b).map_or(u32::MAX, |e| e.number);
         if old_number == new_number {
-            states::write_q3_entity(
+            encode(
                 writer,
                 new_number,
                 &old[a].words,
@@ -379,19 +587,18 @@ pub fn write_q3(
             a += 1;
             b += 1;
         } else if new_number < old_number {
-            states::write_q3_entity(
+            encode(
                 writer,
                 new_number,
-                &ring.baselines[new_number as usize],
+                &baselines[new_number as usize],
                 Some(&entities[b].words),
                 true,
             )?;
             b += 1;
         } else {
-            states::write_q3_entity(writer, old_number, &old[a].words, None, true)?;
+            encode(writer, old_number, &old[a].words, None, true)?;
             a += 1;
         }
     }
-    writer.write_bits(1023, 10)?;
     Ok(())
 }
