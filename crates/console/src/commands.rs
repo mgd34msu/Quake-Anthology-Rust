@@ -605,10 +605,10 @@ impl<H: Host> Console<H> {
         }
         for (_, name, value, definition, seat) in self.cvars.entries() {
             let indent = if seat == 0 { "" } else { "  " };
-            if definition.stored {
+            if definition.is_none_or(|d| d.stored) {
                 host.print(format_args!(
                     "{indent}{name} = \"{}\"\n",
-                    if definition.policies & 2 != 0 {
+                    if definition.is_some_and(|d| d.policies & 2 != 0) {
                         "<private>"
                     } else {
                         value

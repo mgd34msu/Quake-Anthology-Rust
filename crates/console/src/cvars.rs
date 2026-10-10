@@ -14,6 +14,7 @@ use std::{borrow::Cow, fmt::Write};
 
 pub use crate::catalog::Definition;
 const EMPTY: u16 = u16::MAX;
+const MODULE_CVARS: usize = 1024;
 const ROLES: [Role; 3] = [Role::Engine, Role::Game, Role::Cgame];
 
 #[derive(Clone, Copy)]
@@ -35,6 +36,7 @@ impl View {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteError {
+    Capacity,
     Conversion(conversion::Error),
     ReadOnly,
     InitOnly,
@@ -47,7 +49,7 @@ impl From<conversion::Error> for WriteError {
     }
 }
 struct Value {
-    name: &'static str,
+    module_default: Option<NameId>,
     row: usize,
     seat: u8,
     explicit: bool,
@@ -96,6 +98,7 @@ impl PendingWrite {
 type Projections = [[Result<f32, conversion::Error>; 3]; 5];
 
 pub struct Cvars {
+    catalog_values: usize,
     values: Vec<Value>,
     texts: Box<[FixedText<MAX_TEXT>]>,
     offsets: Vec<usize>,
@@ -138,7 +141,7 @@ impl Cvars {
                 first: EMPTY,
                 second: EMPTY
             };
-            names.len()
+            names.capacity()
         ]
         .into_boxed_slice();
         for (binding, b) in BINDINGS.iter().enumerate() {
@@ -152,14 +155,15 @@ impl Cvars {
                 slot.second = binding as u16;
             }
         }
-        let binding_names: Box<[NameId]> = BINDINGS
+        let mut binding_names: Vec<NameId> = BINDINGS
             .iter()
             .map(|b| {
                 names
                     .find_folded(b.name.as_bytes())
                     .ok_or(NamesError::Capacity)
             })
-            .collect::<Result<Box<[_]>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
+        binding_names.resize(BINDINGS.len() + MODULE_CVARS, NameId(0));
         let autoswitch_text_name = names
             .find_folded(b"qts_weapon_autoswitch")
             .ok_or(NamesError::Capacity)?;
@@ -168,10 +172,18 @@ impl Cvars {
             .map(|c| names.find_folded(c.member.as_bytes()))
             .collect();
         let stock_roles = (0..DEFINITIONS.len())
-            .map(|row| RuleSetId::ALL.map(|source| stock_role(&names, &binding_names, row, source)))
+            .map(|row| {
+                RuleSetId::ALL
+                    .map(|source| stock_role(&names, &binding_names[..BINDINGS.len()], row, source))
+            })
             .collect();
-        let mut values =
-            Vec::with_capacity(DEFINITIONS.iter().map(|d| d.family_count as usize).sum());
+        let mut values = Vec::with_capacity(
+            DEFINITIONS
+                .iter()
+                .map(|d| d.family_count as usize)
+                .sum::<usize>()
+                + MODULE_CVARS,
+        );
         let mut offsets = Vec::with_capacity(DEFINITIONS.len());
         for (row, definition) in DEFINITIONS.iter().enumerate() {
             offsets.push(values.len());
@@ -186,10 +198,8 @@ impl Cvars {
                     .find(|b| b.canonical && b.row as usize == row && b.seat == seat);
                 let name = binding.map_or(definition.name, |b| b.name);
                 values.push(Value {
-                    name_id: names
-                        .find_folded(name.as_bytes())
-                        .ok_or(NamesError::Capacity)?,
-                    name,
+                    name_id: names.find(name.as_bytes()).ok_or(NamesError::Capacity)?,
+                    module_default: None,
                     row,
                     seat,
                     explicit: false,
@@ -201,15 +211,19 @@ impl Cvars {
                 });
             }
         }
-        let pending_capacity = values.len();
-        let texts = (0..values.len()).map(|_| FixedText::default()).collect();
+        let catalog_values = values.len();
+        let pending_capacity = catalog_values + MODULE_CVARS;
+        let texts = (0..pending_capacity)
+            .map(|_| FixedText::default())
+            .collect();
         let mut registry = Self {
+            catalog_values,
             values,
             texts,
             offsets,
             names,
             name_bindings,
-            binding_names,
+            binding_names: binding_names.into_boxed_slice(),
             autoswitch_text_name,
             flag_names,
             stock_roles,
@@ -330,7 +344,9 @@ impl Cvars {
             if binding == EMPTY {
                 continue;
             }
-            let scope = BINDINGS[binding as usize].scope;
+            let scope = BINDINGS
+                .get(binding as usize)
+                .map_or(Scope::Any, |b| b.scope);
             if scope == Scope::Any {
                 fallback = Some(binding);
             } else if scope == side || (scope == Scope::Client && side == Scope::Any) {
@@ -343,16 +359,89 @@ impl Cvars {
         self.binding_id(self.lookup_name(name)?, side)
     }
     pub(crate) fn bind_id(&self, id: NameId, context: Context) -> Option<View> {
-        let binding = self.binding_id(id, context.side)?;
-        let b = &BINDINGS[binding as usize];
+        let binding = self.binding_id(self.names.folded(id)?, context.side)?;
+        let handle = BINDINGS.get(binding as usize).map_or_else(
+            || CvarHandle((self.catalog_values + binding as usize - BINDINGS.len()) as u32),
+            |b| self.slot(b.row as usize, b.seat),
+        );
         Some(View {
-            handle: self.slot(b.row as usize, b.seat),
+            handle,
             binding,
             context,
         })
     }
     pub fn bind(&self, name: &str, context: Context) -> Option<View> {
         self.bind_id(self.lookup_name(name)?, context)
+    }
+
+    /// Module names enter the existing table using capacity reserved at load.
+    /// Catalog defaults and previously written values survive registration.
+    /// Flags use the registry's common meanings; ABIs convert native bits.
+    pub fn register(
+        &mut self,
+        name: &str,
+        default: &str,
+        flags: u32,
+        context: Context,
+    ) -> Result<View, WriteError> {
+        if name.is_empty() || (flags & 6 != 0 && (!info_text(name) || !info_text(default))) {
+            return Err(WriteError::InvalidInfo);
+        }
+        if default.len() > MAX_TEXT {
+            return Err(conversion::Error::TextTooLong.into());
+        }
+        if let Some(view) = self.bind(name, context) {
+            let merged = self.flags(view) | flags;
+            if merged != self.flags(view) {
+                self.values[view.handle.0 as usize].command_flags[context.source as usize] =
+                    Some(merged);
+                self.mark_change(view.handle);
+                self.refresh_changes();
+            }
+            return Ok(view);
+        }
+        let module_index = self.values.len() - self.catalog_values;
+        if module_index >= MODULE_CVARS {
+            return Err(WriteError::Capacity);
+        }
+        let binding =
+            u16::try_from(BINDINGS.len() + module_index).map_err(|_| WriteError::Capacity)?;
+        let name_id = self
+            .names
+            .intern(name.as_bytes())
+            .map_err(|_| WriteError::Capacity)?;
+        let default_id = self
+            .names
+            .intern(default.as_bytes())
+            .map_err(|_| WriteError::Capacity)?;
+        let folded = self.names.folded(name_id).ok_or(WriteError::Capacity)?;
+        let handle = CvarHandle(self.values.len() as u32);
+        self.values.push(Value {
+            module_default: Some(default_id),
+            row: DEFINITIONS.len(),
+            seat: 0,
+            explicit: false,
+            name_id,
+            numbers: [0.0; 5],
+            integers: [0; 5],
+            revision: 0,
+            command_flags: [Some(flags); 5],
+            latch_active: false,
+        });
+        self.name_bindings[folded.0 as usize].first = binding;
+        self.binding_names[binding as usize] = folded;
+        self.refresh_number_at(handle.0 as usize);
+        self.mark_change(handle);
+        self.refresh_changes();
+        Ok(View {
+            handle,
+            binding,
+            context,
+        })
+    }
+
+    fn name_text(&self, id: NameId) -> &str {
+        std::str::from_utf8(self.names.get(id).unwrap_or_default()).unwrap_or_default()
     }
 
     /// Canonical engine handle; converted boundaries retain a View instead.
@@ -363,6 +452,8 @@ impl Cvars {
         let value = &self.values[handle.0 as usize];
         if value.explicit {
             self.texts[handle.0 as usize].as_str()
+        } else if let Some(default) = value.module_default {
+            self.name_text(default)
         } else {
             self.defaults[value.row][source as usize]
                 .as_deref()
@@ -409,11 +500,17 @@ impl Cvars {
         self.values[handle.0 as usize].explicit
     }
     pub fn default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
+        if self.values[handle.0 as usize].module_default.is_some() {
+            return true;
+        }
         self.defaults[self.values[handle.0 as usize].row][source as usize].is_some()
     }
     /// Load-time consumers may retain native behavior for settings that the
     /// unified catalog accepts but the selected engine never registered.
     pub fn native_default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
+        if self.values[handle.0 as usize].module_default.is_some() {
+            return true;
+        }
         let row = self.values[handle.0 as usize].row;
         let context = Context {
             source,
@@ -430,6 +527,11 @@ impl Cvars {
                 })
     }
     pub fn read(&self, view: View) -> Result<Text<'_>, conversion::Error> {
+        if view.binding as usize >= BINDINGS.len() {
+            return Ok(Text::Borrowed(
+                self.effective(view.handle, view.context.source),
+            ));
+        }
         let b = &BINDINGS[view.binding as usize];
         let definition = &DEFINITIONS[b.row as usize];
         let text = self.effective(view.handle, view.context.source);
@@ -450,6 +552,9 @@ impl Cvars {
         })
     }
     pub fn numeric(&self, view: View) -> Result<f32, conversion::Error> {
+        if view.binding as usize >= BINDINGS.len() {
+            return Ok(self.value_in(view.handle, view.context.source));
+        }
         let b = &BINDINGS[view.binding as usize];
         if b.canonical && view.context.role == Role::Engine && DEFINITIONS[b.row as usize].stored {
             Ok(self.values[view.handle.0 as usize].numbers[view.context.source as usize])
@@ -459,6 +564,9 @@ impl Cvars {
         }
     }
     fn conversion(&self, view: View) -> &'static crate::catalog::Conversion {
+        if view.binding as usize >= BINDINGS.len() {
+            return &CONVERSIONS[0];
+        }
         let b = &BINDINGS[view.binding as usize];
         let row = &DEFINITIONS[b.row as usize];
         &CONVERSIONS[if row.stored {
@@ -499,6 +607,9 @@ impl Cvars {
         flags
     }
     pub fn private(&self, view: View) -> bool {
+        if view.binding as usize >= BINDINGS.len() {
+            return false;
+        }
         DEFINITIONS[BINDINGS[view.binding as usize].row as usize].policies & 2 != 0
     }
     fn check_write(&self, view: View, text: &str) -> Result<(), WriteError> {
@@ -512,11 +623,7 @@ impl Cvars {
         if flags & 512 != 0 && !self.cheats {
             return Err(WriteError::Cheats);
         }
-        if flags & 6 != 0
-            && text
-                .bytes()
-                .any(|b| matches!(b, b'\\' | b'"' | b';') || b < 32)
-        {
+        if flags & 6 != 0 && !info_text(text) {
             return Err(WriteError::InvalidInfo);
         }
         Ok(())
@@ -541,13 +648,13 @@ impl Cvars {
         if enforce {
             self.check_write(view, text)?;
         }
-        let binding = &BINDINGS[view.binding as usize];
+        let binding = BINDINGS.get(view.binding as usize);
         let current = self.effective(view.handle, view.context.source);
         let detail = self.detail(view);
         let operands = |row| self.effective(self.slot(row as usize, 0), view.context.source);
-        let c = if binding.canonical
+        let c = if binding.is_none_or(|b| b.canonical)
             && view.context.role == Role::Engine
-            && DEFINITIONS[binding.row as usize].stored
+            && binding.is_none_or(|b| DEFINITIONS[b.row as usize].stored)
         {
             &CONVERSIONS[0]
         } else {
@@ -579,7 +686,7 @@ impl Cvars {
             detail: None,
         };
         let mut pending = enforce && self.latch_pending(view);
-        if DEFINITIONS[binding.row as usize].stored {
+        if binding.is_none_or(|b| DEFINITIONS[b.row as usize].stored) {
             let mut value = FixedText::default();
             if let Some(prefix) = out.prefix {
                 value
@@ -627,7 +734,7 @@ impl Cvars {
         Ok(())
     }
     fn detail(&self, view: View) -> Option<&str> {
-        self.details[view.binding as usize][view.context.source as usize]
+        self.details.get(view.binding as usize)?[view.context.source as usize]
             .as_ref()
             .filter(|d| {
                 d.present
@@ -762,14 +869,14 @@ impl Cvars {
     }
     pub fn entries(
         &self,
-    ) -> impl Iterator<Item = (CvarHandle, &'static str, &str, &'static Definition, u8)> {
+    ) -> impl Iterator<Item = (CvarHandle, &str, &str, Option<&'static Definition>, u8)> {
         self.values.iter().enumerate().map(|(index, v)| {
             let handle = CvarHandle(index as u32);
             (
                 handle,
-                v.name,
+                self.name_text(v.name_id),
                 self.text(handle),
-                &DEFINITIONS[v.row],
+                DEFINITIONS.get(v.row),
                 v.seat,
             )
         })
@@ -1021,4 +1128,10 @@ fn stock_role(names: &NameTable, binding_names: &[NameId], row: usize, source: R
         }
     }
     role
+}
+
+fn info_text(text: &str) -> bool {
+    !text
+        .bytes()
+        .any(|b| matches!(b, b'\\' | b'"' | b';') || b < 32)
 }

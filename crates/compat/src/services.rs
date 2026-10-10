@@ -1,7 +1,7 @@
 //! One engine implementation of module calls, independent of module encoding.
 use qa_console::{
     command_buffer::CommandBuffer,
-    cvars::{Cvars, View},
+    cvars::{Cvars, View, WriteError},
     views::Context,
 };
 use qa_content::vfs::{FileRef, Vfs};
@@ -144,6 +144,8 @@ pub type PrintCall =
     fn(&mut EngineServices<'_>, Option<ClientId>, PrintKind, &[u8]) -> Result<u64, CallError>;
 pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
+pub type CvarRegisterCall =
+    fn(&mut EngineServices<'_>, Context, &str, &str, u32) -> Result<View, CallError>;
 pub struct EngineCallTable {
     pub print: PrintCall,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
@@ -154,6 +156,7 @@ pub struct EngineCallTable {
     pub unlink: fn(&mut EngineServices<'_>, EntityId) -> Result<(), CallError>,
     pub spawn: fn(&mut EngineServices<'_>, CallContext) -> Result<EntityId, CallError>,
     pub free: fn(&mut EngineServices<'_>, CallContext, EntityId) -> Result<(), CallError>,
+    pub cvar_register: CvarRegisterCall,
     pub cvar_set: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
@@ -173,6 +176,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     unlink: |s, e| s.unlink(e),
     spawn: |s, c| s.spawn(c),
     free: |s, c, e| s.free(c, e),
+    cvar_register: |s, c, n, d, f| s.cvar_register(c, n, d, f),
     cvar_set: |s, v, t| s.cvar_set(v, t),
     command: |s, c, t| s.command(c, t),
     configstring: |s, m, i, t| s.configstring(m, i, t),
@@ -277,6 +281,23 @@ impl EngineServices<'_> {
             return Err(CallError::Entity);
         }
         Ok(())
+    }
+    pub fn cvar_register(
+        &mut self,
+        context: Context,
+        name: &str,
+        default: &str,
+        flags: u32,
+    ) -> Result<View, CallError> {
+        self.cvars
+            .register(name, default, flags, context)
+            .map_err(|error| {
+                if error == WriteError::Capacity {
+                    CallError::Capacity
+                } else {
+                    CallError::Cvar
+                }
+            })
     }
     pub fn cvar_set(&mut self, view: View, text: &str) -> Result<(), CallError> {
         self.cvars.write(view, text).map_err(|_| CallError::Cvar)
