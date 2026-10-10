@@ -122,7 +122,9 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert!(states::write_qw_player(&mut writer, 17, &words, command)?);
     let n = writer.size();
     let decoded =
-        states::read_qw_player(&mut Reader::new(&bytes[..n], Encoding::Bytes), 0, command)?;
+        states::read_qw_player(&mut Reader::new(&bytes[..n], Encoding::Bytes), 0, |_| {
+            command
+        })?;
     assert_eq!(decoded.number, 17);
     assert_eq!(f32::from_bits(decoded.words[0]), 12.25);
     assert_eq!(f32::from_bits(decoded.words[6]), -32.);

@@ -222,6 +222,18 @@ impl Commands {
             while at < scratch.len() {
                 match (self.protocol, scratch[at]) {
                     (Protocol::QuakeWorld28, 1) | (Protocol::Quake2_34, 6) => at += 1,
+                    (Protocol::QuakeWorld28, 42) => {
+                        let (prior, model) = channel
+                            .qw_player_context(sequence)
+                            .ok_or(packet::Error::Context)?;
+                        let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
+                        let player = crate::states::read_qw_player(&mut reader, model, |number| {
+                            prior[usize::from(number)]
+                        })?;
+                        prior[usize::from(player.number)] = player.command;
+                        at += reader.byte_position();
+                        consume(Incoming::PlayerInfo(player));
+                    }
                     (Protocol::QuakeWorld28, opcode @ (47 | 48)) => {
                         self.delta_request = None;
                         let outgoing = channel.send_state().sequence;

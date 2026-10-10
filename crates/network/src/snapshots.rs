@@ -290,16 +290,25 @@ impl ReceivedFrame<'_> {
 }
 
 pub(crate) enum Storage {
-    QuakeWorld(Box<QwRing>),
+    QuakeWorld {
+        ring: Box<QwRing>,
+        // CL_ParsePlayerinfo preserves an omitted PF_COMMAND in its native
+        // 64-slot frame. Only that received decoder context is retained here;
+        // engine player state and the 32-slot snapshot ring remain independent.
+        player_commands: Box<[[crate::commands::QwCmd; 32]]>,
+        player_model: u32,
+    },
     Quake2(Box<Q2Ring>),
     Quake3(Box<Q3Ring>),
 }
 impl Storage {
     pub(crate) fn load(protocol: packet::Protocol) -> Result<Option<Self>, packet::Error> {
         Ok(match protocol {
-            packet::Protocol::QuakeWorld28 => {
-                Some(Self::QuakeWorld(Box::new(QwRing::load(64, 512, 0, None)?)))
-            }
+            packet::Protocol::QuakeWorld28 => Some(Self::QuakeWorld {
+                ring: Box::new(QwRing::load(64, 512, 0, None)?),
+                player_commands: vec![[packet::ZERO_QW; 32]; 64].into_boxed_slice(),
+                player_model: 0,
+            }),
             packet::Protocol::Quake2_34 => Some(Self::Quake2(Box::new(Q2Ring::load(
                 1023,
                 1024,
@@ -317,21 +326,21 @@ impl Storage {
     }
     pub(crate) fn protocol(&self) -> packet::Protocol {
         match self {
-            Self::QuakeWorld(_) => packet::Protocol::QuakeWorld28,
+            Self::QuakeWorld { .. } => packet::Protocol::QuakeWorld28,
             Self::Quake2(_) => packet::Protocol::Quake2_34,
             Self::Quake3(_) => packet::Protocol::Quake3_68,
         }
     }
     pub(crate) fn frame(&self, sequence: u32) -> Option<ReceivedFrame<'_>> {
         match self {
-            Self::QuakeWorld(ring) => ring.frame(sequence).map(ReceivedFrame::QuakeWorld),
+            Self::QuakeWorld { ring, .. } => ring.frame(sequence).map(ReceivedFrame::QuakeWorld),
             Self::Quake2(ring) => ring.frame(sequence).map(ReceivedFrame::Quake2),
             Self::Quake3(ring) => ring.frame(sequence).map(ReceivedFrame::Quake3),
         }
     }
     pub(crate) fn record_request(&mut self, sequence: u32, base: Option<u32>) {
         match self {
-            Self::QuakeWorld(ring) => ring.record_request(sequence, base),
+            Self::QuakeWorld { ring, .. } => ring.record_request(sequence, base),
             Self::Quake2(_) | Self::Quake3(_) => {}
         }
     }

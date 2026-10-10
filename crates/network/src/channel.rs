@@ -208,9 +208,36 @@ impl Channel {
     }
     pub(crate) fn qw_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::QwRing> {
         match self.snapshots.as_mut()? {
-            crate::snapshots::Storage::QuakeWorld(ring) => Some(ring),
+            crate::snapshots::Storage::QuakeWorld { ring, .. } => Some(ring),
             _ => None,
         }
+    }
+    /// Signon/model registration supplies the native player.mdl ordinal. It is
+    /// unrelated to an engine ModelId, map family or movement role.
+    pub fn set_qw_player_model(
+        &mut self,
+        model: u32,
+    ) -> Result<(), crate::commands::packet::Error> {
+        let Some(crate::snapshots::Storage::QuakeWorld { player_model, .. }) = &mut self.snapshots
+        else {
+            return Err(crate::commands::packet::Error::Context);
+        };
+        *player_model = model;
+        Ok(())
+    }
+    pub(crate) fn qw_player_context(
+        &mut self,
+        sequence: u32,
+    ) -> Option<(&mut [crate::commands::QwCmd; 32], u32)> {
+        let crate::snapshots::Storage::QuakeWorld {
+            player_commands,
+            player_model,
+            ..
+        } = self.snapshots.as_mut()?
+        else {
+            return None;
+        };
+        Some((&mut player_commands[sequence as usize & 63], *player_model))
     }
     pub fn endpoint(&self) -> Endpoint {
         match self.direction {

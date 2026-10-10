@@ -558,7 +558,7 @@ fn connected_heap() -> Result<(), String> {
 fn connected_qw_heap() -> Result<(), String> {
     use qa_core::{
         loopback::Endpoint,
-        primitives::{ClientId, UserCmd},
+        primitives::{ClientId, PlayerState, RuleSetId, UserCmd},
         sys_events::{EventTime, Peer},
     };
     use qa_network::{
@@ -568,6 +568,7 @@ fn connected_qw_heap() -> Result<(), String> {
             packet::{Error, Protocol},
         },
         ingress::{Connection, Connections, Incoming, Route},
+        projection::{PlayerContext, PlayerProjection},
         snapshots::ReceivedFrame,
         states,
     };
@@ -597,6 +598,31 @@ fn connected_qw_heap() -> Result<(), String> {
             },
         )
         .map_err(|e| format!("QW bind {e:?}"))?;
+    connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or("QW CLIENT")?
+        .channel
+        .set_qw_player_model(42)
+        .map_err(|e| e.to_string())?;
+    let projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
+    let mut source = PlayerState::default();
+    let mut destination = PlayerState {
+        movement_rules: RuleSetId::Quake3,
+        trace_rules: RuleSetId::Quake2,
+        health: 100,
+        ..Default::default()
+    };
+    let mut context = PlayerContext {
+        client_number: None,
+        ground_number: None,
+        weapon_number: None,
+        weapon_model: None,
+        gravity: 0.,
+        speed: 0.,
+        player_info_flags: 31,
+        command_age_ms: 17,
+        body_yaw: 0.,
+    };
     let mut ring = snapshots::QwRing::load(64, 512, 0, None).map_err(|e| e.to_string())?;
     let mut measured = allocations::Counts::default();
     let mut checks = 0;
@@ -660,6 +686,20 @@ fn connected_qw_heap() -> Result<(), String> {
                 entities: &[Entity { number: 3, words }],
             })?;
             let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+            source.body.position.0[0] = x;
+            source.body.velocity.0[0] = 300.;
+            let mut player_words = [0; states::QW_PLAYER_WORDS];
+            if !projection.reduce(&source, &context, &mut player_words) {
+                return Err(Error::Context);
+            }
+            if !states::write_qw_player(
+                &mut writer,
+                31,
+                &player_words,
+                qa_network::commands::to_qw_usercmd(&command),
+            )? {
+                return Err(Error::Context);
+            }
             snapshots::write_qw(&mut writer, &ring, sequence, base)?;
             writer.write_bits(8, 8)?;
             writer.write_bits(2, 8)?;
@@ -685,6 +725,24 @@ fn connected_qw_heap() -> Result<(), String> {
                             || frame.entities[0].words[5] != x.to_bits();
                         outputs += 1;
                     }
+                    Incoming::PlayerInfo(info) => {
+                        invalid |= info.number != 31
+                            || info.words[8] != 42
+                            || info.command.msec != 20
+                            || info.command.movement != [300, 0, 0]
+                            || !projection.apply(
+                                &info.words,
+                                &mut destination,
+                                &mut context,
+                                |_| None,
+                            )
+                            || destination.body.position.0[0] != x
+                            || destination.body.velocity.0[0] != 300.
+                            || destination.movement_rules != RuleSetId::Quake3
+                            || destination.trace_rules != RuleSetId::Quake2
+                            || destination.health != 100;
+                        outputs += 1;
+                    }
                     Incoming::Print(print) => {
                         invalid |= print.text != b"connected";
                         outputs += 1;
@@ -692,7 +750,7 @@ fn connected_qw_heap() -> Result<(), String> {
                     _ => invalid = true,
                 },
             );
-            if invalid || outputs != 2 {
+            if invalid || outputs != 3 {
                 return Err(Error::Context);
             }
             Ok(())
@@ -710,7 +768,7 @@ fn connected_qw_heap() -> Result<(), String> {
         return Err(format!("connected QW heap gate {measured:?}"));
     }
     println!(
-        "{{\"scope\":\"QW submitted move/request association, native reply alignment, packet frame store/write, connected CLIENT ingress and print dispatch; caller Rust heap, no playerinfo/app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
+        "{{\"scope\":\"QW submitted move/request association, native reply alignment, playerinfo/common projection, packet frame store/write, connected CLIENT ingress and print dispatch; caller Rust heap, no app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
     );
     Ok(())
 }

@@ -36,6 +36,7 @@ pub enum Incoming<'a> {
         text: &'a [u8],
     },
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
+    PlayerInfo(crate::states::QwPlayerInfo),
     Print(crate::outputs::Print<'a>),
     Command {
         command: qa_core::primitives::UserCmd,

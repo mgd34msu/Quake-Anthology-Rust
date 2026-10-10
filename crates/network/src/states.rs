@@ -1145,6 +1145,7 @@ static QW_PLAYER_SUFFIX: [Group<true, true, false, true>; 1] = [Group {
     ],
     presence: Presence::Fixed,
 }];
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct QwPlayerInfo {
     pub number: u8,
     pub words: [u32; QW_PLAYER_WORDS],
@@ -1186,7 +1187,7 @@ pub fn write_qw_player(
 pub fn read_qw_player(
     reader: &mut Reader<'_>,
     default_model: u32,
-    prior_slot_command: QwCmd,
+    prior_slot_command: impl FnOnce(u8) -> QwCmd,
 ) -> Result<QwPlayerInfo, Error> {
     if reader.read_bits(8)? != 42 {
         return Err(Error {
@@ -1209,7 +1210,7 @@ pub fn read_qw_player(
     let command = if flags & (1 << 1) != 0 {
         command_delta::read_qw(reader, ZERO_QW)?
     } else {
-        prior_slot_command
+        prior_slot_command(number as u8)
     };
     delta::read(&QW_PLAYER_SUFFIX, &mut words, flags, reader)?;
     Ok(QwPlayerInfo {
@@ -1241,7 +1242,7 @@ mod tests {
         assert!(write_qw_player(&mut writer, 0, &to, ZERO_QW)?);
         assert_eq!(writer.size(), 11);
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-        let decoded = read_qw_player(&mut reader, 44, prior)?;
+        let decoded = read_qw_player(&mut reader, 44, |_| prior)?;
         assert_eq!(decoded.number, 0);
         assert_eq!(decoded.command, prior);
         assert_eq!(decoded.words[3], 7);
@@ -1254,7 +1255,7 @@ mod tests {
         let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
         assert!(write_qw_player(&mut writer, 31, &to, prior)?);
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-        let decoded = read_qw_player(&mut reader, 44, ZERO_QW)?;
+        let decoded = read_qw_player(&mut reader, 44, |_| ZERO_QW)?;
         assert_eq!(decoded.words[4], 255);
         assert_eq!(decoded.words[5], (-300.0f32).to_bits());
         assert_eq!(decoded.command.buttons, 0);
@@ -1265,7 +1266,7 @@ mod tests {
         for length in 0..writer.size() {
             let mut reader = Reader::new(&writer.bytes()[..length], Encoding::Bytes);
             assert_eq!(
-                read_qw_player(&mut reader, 44, prior)
+                read_qw_player(&mut reader, 44, |_| prior)
                     .map_err(|e| e.kind)
                     .err(),
                 Some(ErrorKind::Truncated)

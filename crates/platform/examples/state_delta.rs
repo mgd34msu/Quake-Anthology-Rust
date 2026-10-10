@@ -222,11 +222,9 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             )
             .map_err(|e| e.to_string())?;
             let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-            let decoded = states::read_qw_player(
-                &mut reader,
-                case.from[8],
-                command_delta::qw_from_words(old_command),
-            )
+            let decoded = states::read_qw_player(&mut reader, case.from[8], |_| {
+                command_delta::qw_from_words(old_command)
+            })
             .map_err(|e| e.to_string())?;
             result.number = u32::from(decoded.number);
             result.decoded[..QW_PLAYER_WORDS].copy_from_slice(&decoded.words);

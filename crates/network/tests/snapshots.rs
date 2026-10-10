@@ -1322,3 +1322,249 @@ fn qw_reply_alignment_rebuilds_unsent_payload_without_retiring_reliable_data() -
     assert_eq!(connections.command_errors, 0);
     Ok(())
 }
+
+fn qw_player_payload(
+    server: &mut Channel,
+    connections: &mut Connections,
+    payload: &[u8],
+    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+) -> Result<(), Error> {
+    let packet = server
+        .prepare_move(payload, EventTime(2), None)
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let mut bytes = [0; 1400];
+    let length = packet.bytes.len();
+    bytes[..length].copy_from_slice(packet.bytes);
+    server.submitted(EventTime(2)).map_err(|_| Error::Context)?;
+    connections.receive(
+        Endpoint::Client.socket(),
+        Peer::Loopback(ClientId(0)),
+        &bytes[..length],
+        EventTime(3),
+        consume,
+    );
+    Ok(())
+}
+
+#[test]
+fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_players()
+-> Result<(), Error> {
+    use qa_core::primitives::Vec3;
+    use qa_network::commands::{QwCmd, packet::ZERO_QW};
+    let (mut server, mut commands, mut connections) = qw_connection()?;
+    connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .set_qw_player_model(42)?;
+    let first = QwCmd {
+        msec: 20,
+        view_angles: Vec3([90., 45., -90.]),
+        movement: [300, -20, 0],
+        ..ZERO_QW
+    };
+    let later = QwCmd {
+        view_angles: Vec3([-180., 90., 45.]),
+        movement: [-17, 18, 19],
+        ..first
+    };
+    let projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
+    let mut players: [PlayerState; 2] = std::array::from_fn(|_| PlayerState {
+        movement_rules: RuleSetId::Quake3,
+        trace_rules: RuleSetId::Quake2,
+        view_angles: Vec3([17., 18., 19.]),
+        health: 123,
+        ..Default::default()
+    });
+    let mut seen = 0;
+    for sequence in 1..=65 {
+        qw_move(&mut connections, &mut server, &mut commands, true)?;
+        if ![1, 2, 33, 65].contains(&sequence) {
+            continue;
+        }
+        let mut payload = [0; 1400];
+        let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+        let mut words = [0; states::QW_PLAYER_WORDS];
+        words[0] = (sequence as f32 * 0.125).to_bits();
+        words[3] = 9.0f32.to_bits();
+        if sequence == 1 {
+            words[4] = 17;
+            words[5] = 300.0f32.to_bits();
+            words[8] = 99.0f32.to_bits();
+            words[9] = 7.0f32.to_bits();
+            words[10] = 8.0f32.to_bits();
+            words[11] = 9.0f32.to_bits();
+            words[12] = 0x1ff;
+        } else if sequence == 33 {
+            words[12] = 2;
+        }
+        assert!(states::write_qw_player(
+            &mut writer,
+            0,
+            &words,
+            if sequence == 33 { later } else { first },
+        )?);
+        if matches!(sequence, 1 | 65) {
+            let mut other = words;
+            other[12] = if sequence == 1 { 2 } else { 0 };
+            assert!(states::write_qw_player(&mut writer, 31, &other, later)?);
+        }
+        writer.write_bits(26, 8)?;
+        writer.write_data(b"playerinfo\0")?;
+        let mut records = 0;
+        qw_player_payload(
+            &mut server,
+            &mut connections,
+            writer.bytes(),
+            |_, _, incoming| {
+                match incoming {
+                    Incoming::PlayerInfo(info) => {
+                        let expected = match (sequence, info.number) {
+                            (2, 0) => ZERO_QW,
+                            (33, 0) | (_, 31) => later,
+                            _ => first,
+                        };
+                        assert_eq!(info.command, expected);
+                        assert_eq!(
+                            info.words[8],
+                            if sequence == 1 && info.number == 0 {
+                                99
+                            } else {
+                                42
+                            }
+                        );
+                        if sequence != 1 || info.number == 31 {
+                            assert_eq!(&info.words[5..8], &[0; 3]);
+                            assert_eq!(&info.words[9..12], &[0; 3]);
+                        }
+                        // An explicit connection namespace maps native players to
+                        // the common array; native 31 is not common ClientId(31).
+                        let slot = match info.number {
+                            0 => 1,
+                            31 => 0,
+                            _ => panic!("native player namespace"),
+                        };
+                        let mut context = native_player_context();
+                        assert!(projection.apply(
+                            &info.words,
+                            &mut players[slot],
+                            &mut context,
+                            |_| None
+                        ));
+                        assert_eq!(players[slot].body.position.0[0], sequence as f32 * 0.125);
+                        assert_eq!(players[slot].movement_rules, RuleSetId::Quake3);
+                        assert_eq!(players[slot].trace_rules, RuleSetId::Quake2);
+                        assert_eq!(players[slot].view_angles, Vec3([17., 18., 19.]));
+                        assert_eq!(players[slot].health, 123);
+                        records += 1;
+                        seen += 1;
+                    }
+                    Incoming::Print(print) => assert_eq!(print.text, b"playerinfo"),
+                    _ => panic!("QW playerinfo/print stream"),
+                }
+            },
+        )?;
+        assert_eq!(records, if matches!(sequence, 1 | 65) { 2 } else { 1 });
+    }
+    assert_eq!(seen, 6);
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() -> Result<(), Error> {
+    use qa_network::commands::{QwCmd, packet::ZERO_QW};
+    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let mut seen = 0;
+    for sequence in 1..=67 {
+        qw_move(&mut connections, &mut server, &mut commands, true)?;
+        if ![1, 2, 3, 67].contains(&sequence) {
+            continue;
+        }
+        let mut payload = [0; 1400];
+        let length = match sequence {
+            1 => {
+                payload[0] = 42;
+                1
+            }
+            2 => {
+                payload[..2].copy_from_slice(&[42, 32]);
+                2
+            }
+            _ => {
+                let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+                let mut words = [0; states::QW_PLAYER_WORDS];
+                words[12] = if sequence == 3 { 2 | (1 << 8) } else { 0 };
+                assert!(states::write_qw_player(
+                    &mut writer,
+                    0,
+                    &words,
+                    QwCmd {
+                        msec: 99,
+                        ..ZERO_QW
+                    }
+                )?);
+                writer.size() - usize::from(sequence == 3)
+            }
+        };
+        qw_player_payload(
+            &mut server,
+            &mut connections,
+            &payload[..length],
+            |_, _, incoming| {
+                let Incoming::PlayerInfo(info) = incoming else {
+                    panic!("player record")
+                };
+                assert_eq!(sequence, 67);
+                assert_eq!(info.command, ZERO_QW);
+                seen += 1;
+            },
+        )?;
+    }
+    assert_eq!(seen, 1);
+    assert_eq!(connections.command_errors, 3);
+    Ok(())
+}
+
+#[test]
+fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() -> Result<(), Error>
+{
+    use qa_network::commands::packet::ZERO_QW;
+    let (mut server, _, mut connections) = qw_connection()?;
+    assert!(server.set_qw_player_model(7).is_err());
+    let mut other = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Client, 8192, 16)
+        .map_err(|_| Error::Context)?;
+    other.configure_client_snapshots(Protocol::QuakeWorld28)?;
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    client.channel.set_qw_player_model(42)?;
+    other.set_qw_player_model(88)?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    assert!(states::write_qw_player(
+        &mut writer,
+        31,
+        &[0; states::QW_PLAYER_WORDS],
+        ZERO_QW
+    )?);
+    let mut codec = Commands::load(Protocol::QuakeWorld28);
+    for (channel, model) in [(&mut client.channel, 42), (&mut other, 88)] {
+        let length = codec.stage(writer.bytes())?;
+        let mut count = 0;
+        assert_eq!(
+            codec.decode_output(length, 65, channel, |incoming| {
+                let Incoming::PlayerInfo(info) = incoming else {
+                    panic!("player record")
+                };
+                assert_eq!(info.words[8], model);
+                assert_eq!(info.command, ZERO_QW);
+                count += 1;
+            })?,
+            None
+        );
+        assert_eq!(count, 1);
+    }
+    Ok(())
+}
