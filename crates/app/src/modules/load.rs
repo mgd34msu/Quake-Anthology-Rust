@@ -212,13 +212,8 @@ pub fn load_q3(
                     let base = bytes.starts_with(b"\x7fELF").then_some(0x2000_0000);
                     let image = Image::parse(&bytes, base, LoadRole::Library)
                         .map_err(|e| format!("native module: {e:?}"))?;
-                    if image.tls.is_some() {
+                    if image.target.encoding == Encoding::Elf && image.tls.is_some() {
                         return Err("native TLS provider is not bound".into());
-                    }
-                    if !image.initializers.is_empty()
-                        || (image.target.encoding == Encoding::Pe && image.entry != 0)
-                    {
-                        return Err("native initializer provider is not bound".into());
                     }
                     let mut named: Vec<_> = (0..=10)
                         .map(|command| NamedExport {

@@ -1026,19 +1026,20 @@ fn native_heap_imports_share_owned_memory_through_session_dispatch() {
     }
 }
 
+fn append_trace_digit(file: &mut [u8], at: usize, trace: usize, digit: u8) {
+    let mut code = vec![0x8b, 0x05];
+    code.extend((trace as i32 - (at + 6) as i32).to_le_bytes());
+    code.extend([0x6b, 0xc0, 10, 0x83, 0xc0, digit, 0x89, 0x05]);
+    code.extend((trace as i32 - (at + 18) as i32).to_le_bytes());
+    code.push(0xc3);
+    file[at..at + code.len()].copy_from_slice(&code);
+}
+
 fn elf_lifecycle_file() -> Vec<u8> {
     let mut file = function_file(Encoding::Elf, &[0xc3]);
     put(&mut file, 64 + 3 * 56, 0, 4); // no TLS dependency
     put(&mut file, 0x1400 + 24 + 8, 0x3600, 8); // game export code
     file[0x1a80..0x1a90].fill(0); // trace and initialization count
-    fn append(file: &mut [u8], at: usize, digit: u8) {
-        let mut code = vec![0x8b, 0x05];
-        code.extend_from_slice(&((0x1a80i32 - (at + 6) as i32).to_le_bytes()));
-        code.extend_from_slice(&[0x6b, 0xc0, 10, 0x83, 0xc0, digit, 0x89, 0x05]);
-        code.extend_from_slice(&((0x1a80i32 - (at + 18) as i32).to_le_bytes()));
-        code.push(0xc3);
-        file[at..at + code.len()].copy_from_slice(&code);
-    }
     for (at, digit) in [
         (0x1700, 1),
         (0x1740, 2),
@@ -1047,7 +1048,7 @@ fn elf_lifecycle_file() -> Vec<u8> {
         (0x1800, 7),
         (0x1840, 8),
     ] {
-        append(&mut file, at, digit);
+        append_trace_digit(&mut file, at, 0x1a80, digit);
     }
     // The final native callback traps unless the whole reached order is exact.
     // This checks finalizer order without exposing raw module memory to app.
@@ -1058,16 +1059,16 @@ fn elf_lifecycle_file() -> Vec<u8> {
         0x0f, 0x0b, 0x0f, 0x0b,
     ];
     file[0x1700..0x1700 + checks.len()].copy_from_slice(&checks);
-    append(&mut file, 0x1700 + checks.len(), 1);
+    append_trace_digit(&mut file, 0x1700 + checks.len(), 0x1a80, 1);
     // dllEntry stores the shared syscall callback and appends digit 4.
     file[0x1300..0x1307].copy_from_slice(&[0x48, 0x89, 0x3d, 0xb9, 7, 0, 0]);
-    append(&mut file, 0x1307, 4);
+    append_trace_digit(&mut file, 0x1307, 0x1a80, 4);
     // Game command 1 is shutdown; all other commands return the reached trace.
     file[0x1600..0x1605].copy_from_slice(&[0x83, 0xff, 1, 0x74, 7]);
     file[0x1605..0x1607].copy_from_slice(&[0x8b, 0x05]);
     put(&mut file, 0x1607, (0x1a80 - 0x160b) as u64, 4);
     file[0x160b] = 0xc3;
-    append(&mut file, 0x160c, 5);
+    append_trace_digit(&mut file, 0x160c, 0x1a80, 5);
     for (at, value) in [
         (0x1a00, 0x3740),
         (0x1a08, 0x3780),
@@ -1220,6 +1221,146 @@ fn elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets() {
     }
 }
 
+fn pe_lifecycle_file() -> Vec<u8> {
+    let mut file = function_file(Encoding::Pe, &[0xc3]);
+    put(&mut file, 392 + 16, 4096, 4);
+    file.resize(4608, 0);
+    pe_text(&mut file, 0x1190, b"vmMain\0");
+    put(&mut file, 168, 0x1400, 4);
+    let base = Image::parse(&file, None, LoadRole::Library).unwrap().base;
+    pe_directory(&mut file, 64, 9, 0x1a00, 40);
+    for (at, value) in [
+        (0x1a00, base + 0x1a80),
+        (0x1a08, base + 0x1a84),
+        (0x1a10, base + 0x1a90),
+        (0x1a18, base + 0x1aa0),
+        (0x1aa0, base + 0x1500),
+        (0x1aa8, base + 0x1580),
+    ] {
+        pe_rva(&mut file, at, value, 8);
+    }
+    pe_rva(&mut file, 0x1a20, 16, 4);
+    pe_rva(&mut file, 0x1a24, 5 << 20, 4); // sixteen-byte native alignment
+    pe_rva(&mut file, 0x1a80, 0x11223344, 4);
+    for (at, attach, detach) in [(0x600, 3, 6), (0x700, 1, 7), (0x780, 2, 8)] {
+        let mut prefix = vec![0x48, 0xb8];
+        prefix.extend(base.to_le_bytes());
+        prefix.extend([0x48, 0x39, 0xc1, 0x74, 2, 0x0f, 0x0b]); // correct HMODULE
+        prefix.extend([0x4d, 0x85, 0xc0, 0x74, 2, 0x0f, 0x0b]); // null reserved pointer
+        prefix.extend([0x65, 0x48, 0x8b, 0x04, 0x25, 0x58, 0, 0, 0, 0x48, 0x8b, 0]);
+        prefix.extend([0x81, 0x38, 0x44, 0x33, 0x22, 0x11, 0x74, 2, 0x0f, 0x0b]);
+        prefix.extend([0x85, 0xd2, 0x74, 19]); // detach skips one complete append
+        file[at..at + prefix.len()].copy_from_slice(&prefix);
+        append_trace_digit(&mut file, at + prefix.len(), 0xd00, attach);
+        append_trace_digit(&mut file, at + prefix.len() + 19, 0xd00, detach);
+        if detach == 8 {
+            let end = at + prefix.len() + 19 + 18;
+            file[end..end + 10]
+                .copy_from_slice(&[0x3d, 0x4e, 0x61, 0xbc, 0, 0x74, 2, 0x0f, 0x0b, 0xc3]);
+        }
+    }
+    // dllEntry follows TLS callbacks and DllMain, then game init/frame run.
+    file[704..711].copy_from_slice(&[0x48, 0x89, 0x0d, 0xb9, 6, 0, 0]);
+    append_trace_digit(&mut file, 711, 0xd00, 4);
+    file[640..645].copy_from_slice(&[0x83, 0xf9, 1, 0x74, 7]);
+    file[645..647].copy_from_slice(&[0x8b, 0x05]);
+    put(&mut file, 647, (0xd00 - 651) as u64, 4);
+    file[651] = 0xc3;
+    append_trace_digit(&mut file, 652, 0xd00, 5);
+    file
+}
+
+fn pe_lifecycle_uses_session_order_and_rejects_false_attach() {
+    use qa_app::modules::{Q3Spec, load_q3};
+    let files = Files(std::env::temp_dir().join(format!("qa-pe-lifecycle-{}", std::process::id())));
+    std::fs::create_dir(&files.0).unwrap();
+    let file = pe_lifecycle_file();
+    std::fs::write(files.0.join("good.dll"), &file).unwrap();
+    let mut bad = file;
+    bad[0x600..0x603].copy_from_slice(&[0x31, 0xc0, 0xc3]);
+    std::fs::write(files.0.join("bad.dll"), &bad).unwrap();
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &[
+            Q3Spec::parse("game:bad.dll").unwrap(),
+            Q3Spec::parse("game:good.dll").unwrap(),
+        ],
+        &mut requests,
+        TickRate::fixed(50).unwrap(),
+    )
+    .unwrap();
+    for request in &requests {
+        assert_eq!(request.prepare.len(), 4);
+        assert_eq!(request.shutdown.len(), 4);
+    }
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    for tick in [0, 50, 100] {
+        source.time = EventTime(tick * 1_000_000);
+        host.frame(&mut source, true);
+        assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+        assert_eq!(
+            host.module_counts(ModuleId(2)).unwrap().last_result,
+            Some(ModuleResult::Native(1234))
+        );
+    }
+    let calls = host.module_counts(ModuleId(2)).unwrap().calls;
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, calls + 4);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, calls + 4);
+}
+
+fn pe_lifecycle_rejects_unmapped_callbacks_and_read_only_tls_indices() {
+    for kind in 0..3 {
+        let mut image = Image::parse(&pe_lifecycle_file(), None, LoadRole::Library).unwrap();
+        match kind {
+            0 => image.initializers[0] = image.base + 80,
+            1 => image.entry = image.base + image.bytes.len() as u64 + 0x1000,
+            _ => {
+                for region in &mut image.regions {
+                    region.write = false;
+                }
+            }
+        }
+        let error = Vm::map_image(
+            image,
+            &[NamedExport {
+                name: b"vmMain",
+                command: Some(0),
+                parameters: &[NativeScalar::Word; 13],
+                result: NativeScalar::Word,
+            }],
+            &[],
+            Duration::from_secs(3),
+        )
+        .err()
+        .expect("invalid PE lifecycle");
+        assert!(
+            matches!(
+                error,
+                qa_compat::native::Error::Export | qa_compat::native::Error::Binding(_)
+            ),
+            "{error:?}"
+        );
+    }
+}
+
 fn scalar_native_export_results_survive_session_dispatch() {
     use qa_platform::native::NativeScalar;
     for encoding in [Encoding::Elf, Encoding::Pe] {
@@ -1290,6 +1431,7 @@ fn q2_table_file() -> Vec<u8> {
     // API 3 x86-64 layout from quake-2/game/game.h: version at 0,
     // Init/Shutdown at 8/16, RunFrame at 112, edict metadata through 148.
     let mut file = function_file(Encoding::Pe, &[0x48, 0x8d, 0x05, 0x79, 7, 0, 0, 0xc3]);
+    put(&mut file, 168, 0, 4); // this API-table fixture has no DLL lifecycle
     file.resize(4608, 0);
     put(&mut file, 392 + 16, 4096, 4);
     pe_rva(&mut file, 0x1800, 3, 4);
@@ -1639,6 +1781,8 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 }
 
 pub fn run() {
+    pe_lifecycle_uses_session_order_and_rejects_false_attach();
+    pe_lifecycle_rejects_unmapped_callbacks_and_read_only_tls_indices();
     native_windows_counter_uses_host_event_time_in_session_dispatch();
     pe_static_tls_template_is_owned_and_aligned_before_child_start();
     for functions in [false, true] {

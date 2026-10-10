@@ -23,6 +23,7 @@ struct Export {
     /// vmMain command selectors are declared at binding; ordinary exports
     /// receive only their native arguments.
     command: Option<u32>,
+    reject_zero: bool,
 }
 impl Export {
     fn bind(
@@ -41,6 +42,7 @@ impl Export {
                     error => Error::Process(error),
                 })?,
             command,
+            reject_zero: false,
         })
     }
 }
@@ -58,6 +60,7 @@ pub struct NamedExport<'a> {
 #[derive(Debug)]
 pub enum Error {
     Export,
+    DllAttach,
     Service(CallError),
     Process(NativeError),
     Binding(String),
@@ -112,6 +115,7 @@ impl Vm {
                     entry.parameters,
                     entry.result,
                     entry.command,
+                    false,
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -141,8 +145,39 @@ impl Vm {
         ] {
             for address in targets {
                 let ordinal = u32::try_from(bindings.len()).map_err(|_| Error::Export)?;
-                bindings.push((address, parameters, NativeScalar::Void, None));
+                bindings.push((address, parameters, NativeScalar::Void, None, false));
                 calls.push(LifecycleCall { ordinal, arguments });
+            }
+        }
+        if image.target.encoding == Encoding::Pe {
+            for (calls, reason) in [(&mut initialize, 1), (&mut finalize, 0)] {
+                let mut targets: Vec<_> =
+                    image.initializers.iter().map(|&at| (at, false)).collect();
+                if image.entry != 0 {
+                    if reason == 1 {
+                        targets.push((image.entry, true));
+                    } else {
+                        targets.insert(0, (image.entry, true));
+                    }
+                }
+                for (address, entry) in targets {
+                    let ordinal = u32::try_from(bindings.len()).map_err(|_| Error::Export)?;
+                    bindings.push((
+                        address,
+                        &[NativeScalar::Word, NativeScalar::U32, NativeScalar::Word],
+                        if entry {
+                            NativeScalar::I32
+                        } else {
+                            NativeScalar::Void
+                        },
+                        None,
+                        entry && reason == 1,
+                    ));
+                    calls.push(LifecycleCall {
+                        ordinal,
+                        arguments: [image.base, reason, 0],
+                    });
+                }
             }
         }
         // Native ELF RELRO protects complete pages, rounding both ends down.
@@ -228,8 +263,10 @@ impl Vm {
         .map_err(Error::Process)?;
         let exports = bindings
             .into_iter()
-            .map(|(address, parameters, result, command)| {
-                Export::bind(&process, abi, address, parameters, result, command).map(Some)
+            .map(|(address, parameters, result, command, reject_zero)| {
+                let mut export = Export::bind(&process, abi, address, parameters, result, command)?;
+                export.reject_zero = reject_zero;
+                Ok(Some(export))
             })
             .collect::<Result<Box<[_]>, Error>>()?;
         Ok(Self {
@@ -307,6 +344,11 @@ impl Vm {
                         NativeError::Callback
                     })
             });
-        result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))
+        let value =
+            result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))?;
+        if export.reject_zero && value == 0 {
+            return Err(Error::DllAttach);
+        }
+        Ok(value)
     }
 }
