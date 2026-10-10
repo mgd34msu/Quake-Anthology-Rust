@@ -233,6 +233,129 @@ static void q2_entity_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *num
     return source
 
 
+def nq_layout():
+    rust = (ROOT / 'crates/network/src/states.rs').read_text()
+    block = re.search(r'pub const NQ_ENTITY_LAYOUT.*?=\s*\[(.*?)\n\];', rust, re.S).group(1)
+    return [(name, int(width)) for name, width in re.findall(r'\("([^"]+)",\s*(-?\d+)\)', block)]
+
+
+def nq_reference(qsrc):
+    folder = qsrc / 'quake/WinQuake'
+    protocol = (folder / 'protocol.h').read_text()
+    common = (folder / 'common.c').read_text()
+    header = (folder / 'quakedef.h').read_text()
+    progs = (folder / 'progdefs.q1').read_text()
+    source = r'''
+#define entity_state_t nq_baseline_t
+#define entvars_t nq_entvars_t
+#define edict_t nq_edict_t
+#define entity_t nq_entity_t
+#define model_t nq_model_t
+#define sv nq_sv
+#define cl nq_cl
+#define cls nq_cls
+#define vid nq_vid
+#define bitcounts nq_bitcounts
+typedef int string_t,func_t;
+'''
+    end = header.index('} entity_state_t;') + len('} entity_state_t;')
+    source += header[header.rfind('typedef struct',0,end):end] + '\n'
+    end = progs.index('} entvars_t;') + len('} entvars_t;')
+    source += progs[progs.rfind('typedef struct',0,end):end] + '\n'
+    for line in re.findall(r'^#define\s+U_[A-Z0-9_]+\s+.*$', protocol, re.M):
+        source += '#undef ' + line.split()[1] + '\n' + line + '\n'
+    source += r'''
+#define true 1
+#define false 0
+#define MAX_MODELS 256
+#define SIGNONS 4
+#define ST_RAND 1
+#define MOVETYPE_STEP 4
+typedef struct {entvars_t v;entity_state_t baseline;int num_leafs;short leafnums[16];} edict_t;
+typedef struct {int synctype;} model_t;
+typedef struct {entity_state_t baseline;model_t *model;double msgtime;
+ vec3_t msg_origins[2],msg_angles[2],origin,angles;int frame,skinnum,effects,forcelink;
+ float syncbase;byte *colormap;} entity_t;
+static struct {edict_t *edicts;int num_edicts;} sv;
+static struct {int signon;} cls;
+static struct {double mtime[2];model_t *model_precache[256];int maxclients;
+ struct {byte translations[1];} scores[16];} cl;
+static struct {byte *colormap;} vid;
+static edict_t nq_edicts[32768];static entity_t nq_decoded;static model_t nq_models[256];
+static byte nq_pvs[1]={255},nq_global_colormap[1];static char pr_strings[2]={0,1};
+static int pr_edict_size=sizeof(edict_t);
+static int bitcounts[16];
+#define NEXT_EDICT(e) ((edict_t *)((byte *)(e)+pr_edict_size))
+#define VectorAdd(a,b,c) {c[0]=a[0]+b[0];c[1]=a[1]+b[1];c[2]=a[2]+b[2];}
+static byte *SV_FatPVS(vec3_t p) {(void)p;return nq_pvs;}
+static int nq_parsed_number;
+static entity_t *CL_EntityNum(int n) {if(n<0||n>=32768)abort();nq_parsed_number=n;return &nq_decoded;}
+static void CL_SignonReply(void) {}
+static void Host_Error(char *fmt,...) {(void)fmt;abort();}
+static void Con_Printf(char *fmt,...) {(void)fmt;}
+#define MSG_WriteByte(m,v) q2_write(m,v,8)
+#define MSG_WriteShort(m,v) q2_write(m,v,16)
+#define MSG_ReadByte() q2_read(&net_message,8,0)
+#define MSG_ReadChar() q2_read(&net_message,8,1)
+#define MSG_ReadShort() q2_read(&net_message,16,1)
+#define MSG_WriteCoord NQ_WriteCoord
+#define MSG_WriteAngle NQ_WriteAngle
+#define MSG_ReadCoord NQ_ReadCoord
+#define MSG_ReadAngle NQ_ReadAngle
+'''
+    for name in ['MSG_WriteCoord','MSG_WriteAngle','MSG_ReadCoord','MSG_ReadAngle']:
+        source += function(common,name)
+    source += function((folder/'sv_main.c').read_text(),'SV_WriteEntitiesToClient')
+    source += function((folder/'cl_parse.c').read_text(),'CL_ParseUpdate')
+    source += 'static void nq_baseline(entity_state_t *p,uint32_t *words) {\n'
+    for i,(name,_) in enumerate(nq_layout()[:11]):
+        source += f' memcpy(&p->{name}, &words[{i}],4);\n'
+    source += '}\nstatic void nq_encode(msg_t *m,uint32_t *from,uint32_t *to,int number,int flags) {\n'
+    source += ' edict_t *p=&nq_edicts[number];memset(p,0,sizeof(*p));nq_baseline(&p->baseline,from);\n'
+    for i,(name,_) in enumerate(nq_layout()[:11]):
+        source += f' memcpy(&p->v.{name}, &to[{i}],4);\n'
+    source += r'''
+ p->v.model=1;p->v.movetype=(flags&4)?MOVETYPE_STEP:0;
+ sv.edicts=nq_edicts;sv.num_edicts=number+1;SV_WriteEntitiesToClient(p,m);
+ // Clear the selected entity so future record helpers see no extra visible entity.
+ p->v.modelindex=0;p->v.model=0;
+}
+static void nq_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *number) {
+ memset(&nq_decoded,0,sizeof(nq_decoded));nq_baseline(&nq_decoded.baseline,from);
+ for(int i=0;i<256;i++)cl.model_precache[i]=&nq_models[i];
+ cl.maxclients=16;vid.colormap=nq_global_colormap;net_message=*m;
+ int bits=MSG_ReadByte();CL_ParseUpdate(bits&127);*number=nq_parsed_number;
+ out[0]=(int)(nq_decoded.model-nq_models);
+ out[1]=nq_decoded.frame;out[3]=nq_decoded.skinnum;out[4]=nq_decoded.effects;
+ if(nq_decoded.colormap!=vid.colormap)
+  for(int i=0;i<cl.maxclients;i++)if(nq_decoded.colormap==cl.scores[i].translations)out[2]=i+1;
+ for(int i=0;i<3;i++) {memcpy(out+5+2*i,nq_decoded.msg_origins[0]+i,4);
+  memcpy(out+6+2*i,nq_decoded.msg_angles[0]+i,4);}
+ out[11]=!!(bits&U_NOLERP);
+}
+#undef entity_state_t
+#undef entvars_t
+#undef edict_t
+#undef entity_t
+#undef model_t
+#undef sv
+#undef cl
+#undef cls
+#undef vid
+#undef bitcounts
+#undef MSG_WriteByte
+#undef MSG_WriteShort
+#undef MSG_ReadByte
+#undef MSG_ReadChar
+#undef MSG_ReadShort
+#undef MSG_WriteCoord
+#undef MSG_WriteAngle
+#undef MSG_ReadCoord
+#undef MSG_ReadAngle
+'''
+    return source
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -285,6 +408,7 @@ typedef struct {char *name;int offset,bits;} netField_t;
     source += q2_reference(qsrc)
     source += qw_reference(qsrc)
     source += q2_entity_reference(qsrc)
+    source += nq_reference(qsrc)
     source += r'''
 static void put(void *record,netField_t *fields,int count,uint32_t *words) {
  for(int i=0;i<count;i++)memcpy((byte*)record+fields[i].offset,&words[i],4);
@@ -308,7 +432,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>4||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>5||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -320,7 +444,8 @@ int main(void) {
   } else if(mode==2) {
    client_frame_t x={0},y={0};q2_put(&x.ps,from);q2_put(&y.ps,to);SV_WritePlayerstateToClient(&x,&y,&m);
   } else if(mode==3) {qw_encode(&m,from,to,number,flags);
-  } else {q2_entity_encode(&m,from,to,number,flags);
+  } else if(mode==4) {q2_entity_encode(&m,from,to,number,flags);
+  } else {nq_encode(&m,from,to,number,flags);
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
   uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
@@ -331,7 +456,8 @@ int main(void) {
   } else if(mode==1) {MSG_ReadDeltaPlayerstate(&m,&p,&r);get(&r,playerStateFields,48,decoded);arrays(&r,decoded,1);}
   else if(mode==2) {player_state_t x={0},y={0};q2_put(&x,from);q2_decode(&m,&x,&y);q2_get(&y,decoded);}
   else if(mode==3) {qw_decode(&m,from,decoded,&wire_number,&removed);}
-  else {q2_entity_decode(&m,from,decoded,&wire_number,&removed);}
+  else if(mode==4) {q2_entity_decode(&m,from,decoded,&wire_number,&removed);}
+  else {nq_decode(&m,from,decoded,&wire_number);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
@@ -341,7 +467,7 @@ int main(void) {
     code.write_text(source)
     binary = evidence / 'original-state-delta'
     subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
-    return binary, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout()]
+    return binary, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout()]
 
 
 def fixture(tables):
@@ -350,6 +476,27 @@ def fixture(tables):
     floats = [-0.0, 0.0, -4096.0, -4097.0, 4095.0, 4096.0, 0.125, -0.125, 123456.75]
     for mode, table in enumerate(tables):
         for case in range(2048):
+            if mode == 5:
+                old,new=[0]*112,[0]*112
+                for i in range(5):
+                    old[i]=rng.randrange(17 if i==2 else 256)
+                    value=old[i]+rng.choice([0.0,0.0,0.25,-0.25,1.0])
+                    if i==2: value=max(0,min(16,value))
+                    new[i]=struct.unpack('<I',struct.pack('<f',value))[0]
+                for i in range(5,11):
+                    old[i]=struct.unpack('<I',struct.pack('<f',rng.uniform(-4096,4096)))[0]
+                    value=struct.unpack('<f',struct.pack('<I',old[i]))[0]
+                    if case%4: value+=rng.uniform(-8,8)
+                    new[i]=struct.unpack('<I',struct.pack('<f',value))[0]
+                if case<128:
+                    old=[0]*112;new=old.copy();old[1]=4
+                    new[1]=struct.unpack('<I',struct.pack('<f',4.5 if case%2 else 4.0))[0]
+                    new[6]=struct.unpack('<I',struct.pack('<f',[1.40625,-1.40625,1.999,-1.999,180.25,-180.25][case%6]))[0]
+                    new[5]=[0x3dcccccc,0x3dcccccd,0x3dccccce,0xbdcccccc,0xbdcccccd,0xbdccccce][case%6]
+                flags=4 if case%2 else 0
+                number=[1,255,256,599,32767][case%5]
+                output += struct.pack('<BBH224I',mode,flags,number,*old,*new)
+                continue
             old, new = [0] * 112, [0] * 112
             for i, (_, width) in enumerate(table):
                 if mode == 3 and 5 <= i <= 10:
@@ -432,8 +579,8 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=10240, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser and QW SV_WriteDelta/CL_ParseDelta and Q2 entity writer/bits/parser unchanged; original removal statements, offsetof and private bindings only',
+    result = dict(result='PASS', cases=12288, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser and QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser and NQ SV_WriteEntitiesToClient/CL_ParseUpdate unchanged; original removal statements, offsetof and private bindings only',
                   limits='Seeded native delta records; no snapshot framing, common-state ABI projection, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))

@@ -3790,3 +3790,72 @@ path: this record probe normalizes an omitted record to its supplied baseline.
 Common-state projection, snapshot framing/32-slot rings, NQ/rerelease state
 coverage, native signon/captures/live/combined clients and installed acceptance
 remain on THE-860/THE-3169. No snapshot/gameplay caller or install is claimed.
+
+
+### THE-860: NetQuake signon-baseline entity records
+
+Protocol 15 uses the same scalar walker. Its first five target fields retain
+QuakeC floats until comparison against integer signon-baseline values and wire
+truncation. Fractional fields can therefore change a flag while sending the
+same byte. Native MSG_WriteAngle truncates to integer degrees before integer
+scaling, unlike QW/Q2. Shared angle metadata selects that order; signed angle
+and coordinate decoding and the native double-literal origin epsilon remain
+shared. Static float-byte group metadata removes these conversions from older
+tables. No second encoder or entity store is added.
+
+Every visible entity emits an update, including unchanged values. Native signal,
+MOREBITS, long number and no-lerp flags remain exact. The final projection word
+reports the wire no-lerp flag, not scene interpolation state. Inputs use explicit
+native numbers; the client permits entity zero, while the server omits it.
+Protocol-15 short numbers are signed; out-of-range server numbers are omitted.
+Absence from an unreliable datagram is neither a removal record nor an ACK.
+
+Unchanged SV_WriteEntitiesToClient and CL_ParseUpdate functions are compiled
+with private edict/model/visibility bindings. All 12,288 mixed records,
+6,060,382 comparison bytes and decoded words match; 2,048 NQ records cover all
+15 update bits and native number-width boundaries. The expanded fixture entity
+binding covers up to 32,767; it does not qualify stock MAX_EDICTS 600, native
+signon, visibility selection, interpolation or presentation side effects.
+Earlier 3,072 command and 768 MSG/Huff cases remain exact. Eight focused tests,
+661 workspace tests, the unchanged checker, formatting and Clippy pass. The
+comparison helper's initial long-number footer error was corrected by capturing
+the original CL_EntityNum argument; no original function body was altered.
+
+CPU23 portable release, five ABBA blocks, 60 warm-up plus 600 measured frames,
+sixteen records/frame with original-C byte/word checks. Baselines and fixtures
+are retained from 3141177c. No other owned benchmark/build runs alongside the
+final serial matrix. Earlier overlapping and prototype runs are retained but
+do not qualify this matrix. Final example rebuild: Cargo 5.61 s; allocation
+tracking enabled, no proof feature or installation candidate.
+
+| Existing codec workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed usercmds | 3000.5 | 3088 | +2.916% | 4356 | 4297 |
+| QW usercmds | 1753.5 | 1736.5 | -0.969% | 2636 | 2770 |
+| Q2 usercmds | 1861 | 1960.05 | +5.322% | 2746 | 3087 |
+| Q3 usercmds | 3548 | 3540.5 | -0.211% | 4959 | 5191 |
+| Q3 entity/player records | 18562 | 18873 | +1.675% | 35844 | 36504 |
+| Q2 player records | 13274.5 | 13301.5 | +0.203% | 20285 | 18851 |
+| QW entity records | 2525 | 2564.5 | +1.564% | 3667 | 3599 |
+| Q2 entity records | 5061.5 | 5306.5 | +4.840% | 7199 | 7070 |
+
+Positive medians range from 0.203% to 5.322%; QW/Q3 commands improve. QW/Q2/Q3
+command and Q3-state p99 increase; the other tails improve. All meet the existing
+10% median guard; this addition is not reported as a general speedup. Each leg
+retains its wire-byte total and 10,560 checks including warm-up, with zero
+measured allocations/reallocations/requested bytes and a one-allocation positive
+control.
+
+Four new NQ entity runs average 3732.5 ns median / 5627.5 ns p99
+per sixteen records, 134,427 wire bytes and 10,560 checks including warm-up,
+with zero measured heap. No comparable prior NQ entity engine path exists. These
+probes exclude host, workers, sockets and gameplay.
+
+Evidence: `THE-860-nq-entity-20261009/`, final-original/comparison.json,
+final-commands/comparison.json, final-message/comparison.json,
+nq-flag-coverage.json, final-abba-summary.json and final-serial raw legs,
+final-nq-entity-summary.json/four runs, checker/workspace/Clippy/build logs.
+Common-state projection, snapshot framing/32-slot rings, NQ client data,
+negotiated 666/999/rerelease coverage, captures/live/native/installed acceptance
+remain on THE-860/THE-3169. These state tables have no snapshot/gameplay caller
+yet; no install is claimed.

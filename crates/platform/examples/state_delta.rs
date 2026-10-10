@@ -1,7 +1,10 @@
 //! Developer-only original-C delta record fidelity and allocation/timing probe.
 use qa_network::{
     message::{Encoding, Reader, Writer},
-    states::{self, ENTITY_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS, Q2_PLAYER_WORDS, QW_ENTITY_WORDS},
+    states::{
+        self, ENTITY_WORDS, NQ_ENTITY_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS, Q2_PLAYER_WORDS,
+        QW_ENTITY_WORDS,
+    },
 };
 use qa_platform::{Stopwatch, allocations};
 use std::io::{Read, Write};
@@ -173,6 +176,22 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
                 result.decoded[..Q2_ENTITY_WORDS].copy_from_slice(from);
             }
         }
+        5 => {
+            let from: &[u32; NQ_ENTITY_WORDS] = case.from[..NQ_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "NQ baseline words")?;
+            let to: &[u32; NQ_ENTITY_WORDS] = case.to[..NQ_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "NQ entity words")?;
+            states::write_nq_entity(&mut writer, case.number, from, to, case.flags & 4 != 0)
+                .map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+            let decoded = states::read_nq_entity(&mut reader, from).map_err(|e| e.to_string())?;
+            result.number = u32::from(decoded.number);
+            if let Some(words) = decoded.words {
+                result.decoded[..NQ_ENTITY_WORDS].copy_from_slice(&words);
+            }
+        }
         _ => return Err("state dialect".into()),
     }
     result.bits = writer.bit_position() as u32;
@@ -272,7 +291,7 @@ fn timing(fixture: &str, original: &str) -> Result<(), String> {
     }
     samples.sort_unstable();
     println!(
-        "{{\"scope\":\"16 Q3 state records per iteration, encode/decode and original-C byte/word fidelity; no snapshot packets or gameplay\",\"warmup\":60,\"frames\":600,\"checks\":{checks},\"wire_bytes\":{wire_bytes},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"16 native state records per iteration, encode/decode and original-C byte/word fidelity; no snapshot packets or gameplay\",\"warmup\":60,\"frames\":600,\"checks\":{checks},\"wire_bytes\":{wire_bytes},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"median_ns\":{},\"p99_ns\":{}}}",
         counts.allocations,
         counts.reallocations,
         counts.requested_bytes,

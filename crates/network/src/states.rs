@@ -193,7 +193,7 @@ pub fn write_q3_entity(
         return Ok(false);
     }
     let count = to.map_or(0, |to| {
-        delta::changed::<true, false, false>(&ENTITY_FIELDS, from, to)
+        delta::changed::<true, false, false, false>(&ENTITY_FIELDS, from, to)
     });
     if to.is_some() && count == 0 && !force {
         return Ok(false);
@@ -247,7 +247,7 @@ pub fn write_q3_player(
     delta::write(&PLAYER_GROUP, from, to, 0, writer)?;
     let arrays = PLAYER_ARRAYS
         .iter()
-        .any(|group| delta::changed::<true, false, false>(group.fields, from, to) != 0);
+        .any(|group| delta::changed::<true, false, false, false>(group.fields, from, to) != 0);
     writer.write_bits(u32::from(arrays), 1)?;
     if arrays {
         delta::write(&PLAYER_ARRAYS, from, to, 0, writer)?;
@@ -440,7 +440,7 @@ static QW_ENTITY_FIELDS: [Field; 11] = [
             read: ScaleRead::SignedTenthsDelta,
         },
     ),
-    Field::new(6, 8, 1 << 0, Value::Angle8),
+    Field::new(6, 8, 1 << 0, Value::Angle8 { integral: false }),
     Field::new(
         7,
         16,
@@ -450,7 +450,7 @@ static QW_ENTITY_FIELDS: [Field; 11] = [
             read: ScaleRead::SignedTenthsDelta,
         },
     ),
-    Field::new(8, 8, 1 << 12, Value::Angle8),
+    Field::new(8, 8, 1 << 12, Value::Angle8 { integral: false }),
     Field::new(
         9,
         16,
@@ -460,7 +460,7 @@ static QW_ENTITY_FIELDS: [Field; 11] = [
             read: ScaleRead::SignedTenthsDelta,
         },
     ),
-    Field::new(10, 8, 1 << 1, Value::Angle8),
+    Field::new(10, 8, 1 << 1, Value::Angle8 { integral: false }),
 ];
 static QW_ENTITY_GROUP: [Group<true, true>; 1] = [Group {
     fields: &QW_ENTITY_FIELDS,
@@ -483,7 +483,7 @@ pub fn write_qw_entity(
         writer.write_bits(number | (1 << 14), 16)?;
         return Ok(true);
     };
-    let mut flags = delta::mask::<true, true, false>(&QW_ENTITY_FIELDS, from, to, 0, 0, 0);
+    let mut flags = delta::mask::<true, true, false, false>(&QW_ENTITY_FIELDS, from, to, 0, 0, 0);
     if flags & 511 != 0 {
         flags |= 1 << 15;
     }
@@ -598,9 +598,9 @@ static Q2_ENTITY_FIELDS: [Field; 21] = [
             read: ScaleRead::Signed,
         },
     ),
-    Field::new(11, 8, 1 << 10, Value::Angle8),
-    Field::new(12, 8, 1 << 2, Value::Angle8),
-    Field::new(13, 8, 1 << 3, Value::Angle8),
+    Field::new(11, 8, 1 << 10, Value::Angle8 { integral: false }),
+    Field::new(12, 8, 1 << 2, Value::Angle8 { integral: false }),
+    Field::new(13, 8, 1 << 3, Value::Angle8 { integral: false }),
     Field::new(
         14,
         16,
@@ -683,7 +683,7 @@ pub fn write_q2_entity(
         return Ok(true);
     };
     let mut flags =
-        delta::mask::<true, true, true>(&Q2_ENTITY_FIELDS, from, to, number_flag, 15, 3);
+        delta::mask::<true, true, true, false>(&Q2_ENTITY_FIELDS, from, to, number_flag, 15, 3);
     if new_entity || to[7] & 128 != 0 {
         flags |= 1 << 24;
     }
@@ -726,10 +726,185 @@ pub fn read_q2_entity(
     })
 }
 
+/// Protocol 15: baseline byte fields are native integers; target byte fields
+/// retain QuakeC floats until comparison and truncation. Origin/angles are f32.
+/// The final column reports the wire no-lerp flag, not interpolation state.
+pub const NQ_ENTITY_LAYOUT: [(&str, i8); 12] = [
+    ("modelindex", 8),
+    ("frame", 8),
+    ("colormap", 8),
+    ("skin", 8),
+    ("effects", 8),
+    ("origin[0]", -16),
+    ("angles[0]", -8),
+    ("origin[1]", -16),
+    ("angles[1]", -8),
+    ("origin[2]", -16),
+    ("angles[2]", -8),
+    ("no_lerp", 0),
+];
+pub const NQ_ENTITY_WORDS: usize = NQ_ENTITY_LAYOUT.len();
+static NQ_ENTITY_FIELDS: [Field; 11] = [
+    Field::new(0, 8, 1 << 10, Value::FloatByte),
+    Field::new(1, 8, 1 << 6, Value::FloatByte),
+    Field::new(2, 8, 1 << 11, Value::FloatByte),
+    Field::new(3, 8, 1 << 12, Value::FloatByte),
+    Field::new(4, 8, 1 << 13, Value::FloatByte),
+    Field::new(
+        5,
+        16,
+        1 << 1,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::SignedTenthsDelta,
+        },
+    ),
+    Field::new(6, 8, 1 << 8, Value::Angle8 { integral: true }),
+    Field::new(
+        7,
+        16,
+        1 << 2,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::SignedTenthsDelta,
+        },
+    ),
+    Field::new(8, 8, 1 << 4, Value::Angle8 { integral: true }),
+    Field::new(
+        9,
+        16,
+        1 << 3,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::SignedTenthsDelta,
+        },
+    ),
+    Field::new(10, 8, 1 << 9, Value::Angle8 { integral: true }),
+];
+static NQ_ENTITY_GROUP: [Group<true, true, false, true>; 1] = [Group {
+    fields: &NQ_ENTITY_FIELDS,
+    presence: Presence::Fixed,
+}];
+pub type NqEntityUpdate = EntityDelta<NQ_ENTITY_WORDS>;
+
+/// Always emits a visible entity, including unchanged signon-baseline values.
+/// Absence from a datagram is not a remove record or a new ACK requirement.
+pub fn write_nq_entity(
+    writer: &mut Writer<'_>,
+    number: u32,
+    baseline: &[u32; NQ_ENTITY_WORDS],
+    to: &[u32; NQ_ENTITY_WORDS],
+    step: bool,
+) -> Result<bool, Error> {
+    if number == 0 || number >= 32768 {
+        return Ok(false);
+    }
+    let mut flags = delta::mask::<true, true, false, true>(
+        &NQ_ENTITY_FIELDS,
+        baseline,
+        to,
+        u32::from(step) << 5,
+        0,
+        0,
+    );
+    if number >= 256 {
+        flags |= 1 << 14;
+    }
+    if flags >= 256 {
+        flags |= 1;
+    }
+    writer.write_bits(flags | 128, 8)?;
+    if flags & 1 != 0 {
+        writer.write_bits(flags >> 8, 8)?;
+    }
+    writer.write_bits(number, if flags & (1 << 14) != 0 { 16 } else { 8 })?;
+    delta::write(&NQ_ENTITY_GROUP, baseline, to, flags, writer)?;
+    Ok(true)
+}
+pub fn read_nq_entity(
+    reader: &mut Reader<'_>,
+    baseline: &[u32; NQ_ENTITY_WORDS],
+) -> Result<NqEntityUpdate, Error> {
+    let mut flags = reader.read_bits(8)?;
+    if flags & 128 == 0 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Symbol,
+        });
+    }
+    if flags & 1 != 0 {
+        flags |= reader.read_bits(8)? << 8;
+    }
+    let number = reader.read_bits(if flags & (1 << 14) != 0 { 16 } else { 8 })?;
+    if number >= 32768 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Symbol,
+        });
+    }
+    let mut words = *baseline;
+    words[11] = u32::from(flags & (1 << 5) != 0);
+    delta::read(&NQ_ENTITY_GROUP, &mut words, flags, reader)?;
+    Ok(NqEntityUpdate {
+        number: number as u16,
+        words: Some(words),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{Encoding, ErrorKind};
+
+    #[test]
+    fn nq_baseline_float_comparison_angle_truncation_and_number_width() -> Result<(), Error> {
+        let mut baseline = [0; NQ_ENTITY_WORDS];
+        baseline[1] = 4;
+        baseline[11] = 1;
+        let mut to = baseline;
+        to[..5].fill(0.0f32.to_bits());
+        to[1] = 4.5f32.to_bits();
+        to[6] = 1.40625f32.to_bits();
+        to[8] = (-1.40625f32).to_bits();
+        let mut bytes = [0xff; 128];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_nq_entity(&mut writer, 256, &baseline, &to, true)?;
+        assert_eq!(writer.bytes(), &[0xf1, 0x41, 0, 1, 4, 0, 0]);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let update = read_nq_entity(&mut reader, &baseline)?;
+        let Some(words) = update.words else {
+            return Err(Error {
+                byte: 0,
+                kind: ErrorKind::Symbol,
+            });
+        };
+        assert_eq!(update.number, 256);
+        assert_eq!(words[1], 4);
+        assert_eq!(words[6], 0.0f32.to_bits());
+        assert_eq!(words[8], 0.0f32.to_bits());
+        assert_eq!(words[11], 1);
+        for length in 0..writer.size() {
+            let mut reader = Reader::new(&writer.bytes()[..length], Encoding::Bytes);
+            assert_eq!(
+                read_nq_entity(&mut reader, &baseline).map_err(|e| e.kind),
+                Err(ErrorKind::Truncated)
+            );
+        }
+        to[1] = 4.0f32.to_bits();
+        to[6] = 0.0f32.to_bits();
+        to[8] = 0.0f32.to_bits();
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_nq_entity(&mut writer, 255, &baseline, &to, false)?;
+        assert_eq!(writer.bytes(), &[0x80, 255]);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let update = read_nq_entity(&mut reader, &baseline)?;
+        assert_eq!(update.words.map(|words| words[11]), Some(0));
+        assert!(!write_nq_entity(&mut writer, 0, &baseline, &to, false)?);
+        assert!(!write_nq_entity(&mut writer, 32768, &baseline, &to, false)?);
+        let mut reader = Reader::new(&[0x80, 0], Encoding::Bytes);
+        assert_eq!(read_nq_entity(&mut reader, &baseline)?.number, 0);
+        Ok(())
+    }
 
     #[test]
     fn q2_widths_defaults_transient_event_and_frame_flag_order() -> Result<(), Error> {
