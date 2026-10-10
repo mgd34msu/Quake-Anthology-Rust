@@ -6,6 +6,8 @@ use qa_core::heap::{Heap, MemoryError};
 use std::sync::{Mutex, OnceLock};
 #[path = "crt.rs"]
 mod crt;
+#[path = "kernel.rs"]
+mod kernel;
 #[path = "msvc.rs"]
 mod msvc;
 
@@ -187,6 +189,7 @@ struct Runtime {
     imports: Box<[Option<(&'static Function, NativeEntry)>]>,
     heap: Mutex<Option<Heap>>,
     config: Option<RuntimeConfig>,
+    kernel: Mutex<kernel::State>,
 }
 static CHILD: OnceLock<Runtime> = OnceLock::new();
 
@@ -236,6 +239,7 @@ pub(super) fn initialize(
             imports,
             heap: Mutex::new(heap),
             config,
+            kernel: Mutex::new(kernel::State::default()),
         })
         .map_err(|_| NativeError::Protocol)
 }
@@ -320,6 +324,7 @@ impl Runtime {
         let m = &self.memory;
         Ok(match operation {
             Operation::Msvc(operation) => return self.msvc(operation, a),
+            Operation::Kernel(operation) => return self.kernel(operation, a),
             Operation::Crt(operation) => return self.crt(operation, a, abi),
             Operation::Math(operation, precision) => return self.math(operation, precision, a),
             Operation::Data(_) => return Err(NativeError::Unsupported),

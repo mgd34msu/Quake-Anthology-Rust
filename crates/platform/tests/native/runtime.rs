@@ -22,7 +22,7 @@ fn runtime_child() -> NativeProcess {
         parameters: &[NativeScalar::I32],
         result: NativeScalar::I32,
     });
-    let mut bytes = vec![0; 12288];
+    let mut bytes = vec![0; 12288 + crate::native::runtime::THREAD_BYTES];
     let gate = NativeProcess::import_address(BASE, bytes.len(), imports.len() - 1).unwrap();
     // Real native callbacks import their tags through the kernel-stop boundary.
     for (at, tag) in [(256, 2u32), (320, 7), (384, 9)] {
@@ -32,10 +32,27 @@ fn runtime_child() -> NativeProcess {
         bytes[at + 11..at + 19].copy_from_slice(&gate.to_le_bytes());
     }
     bytes[512..517].copy_from_slice(&[0x8b, 0x01, 0x2b, 0x02, 0xc3]);
+    let alloc = NativeProcess::import_address(
+        BASE,
+        bytes.len(),
+        FUNCTIONS
+            .iter()
+            .position(|f| f.number == FIRST + 418)
+            .unwrap(),
+    )
+    .unwrap();
+    // A destructor reenters FlsAlloc, then reports the returned index through
+    // the engine import. Reusing its own slot proves retirement preceded it.
+    let mut destructor = vec![0x48, 0x83, 0xec, 40, 0x31, 0xc9, 0x48, 0xb8];
+    destructor.extend(alloc.to_le_bytes());
+    destructor.extend([0xff, 0xd0, 0x89, 0xc1, 0x48, 0x83, 0xc4, 40, 0x48, 0xb8]);
+    destructor.extend(gate.to_le_bytes());
+    destructor.extend([0xff, 0xe0]);
+    bytes[768..768 + destructor.len()].copy_from_slice(&destructor);
     let config = RuntimeConfig {
         base: BASE + 4096,
         heap_bytes: 4096,
-        teb: None,
+        teb: Some(BASE + 12288),
     };
     config.prepare_crt(&mut bytes[4096..8192]).unwrap();
     configured_child(
@@ -43,7 +60,7 @@ fn runtime_child() -> NativeProcess {
         &[
             REGIONS[0],
             NativeRegion {
-                length: 8192,
+                length: bytes.len() - 4096,
                 ..REGIONS[1]
             },
         ],
@@ -210,6 +227,89 @@ fn rejected_child_runtime_calls_keep_the_import_name_and_isolate_the_child() {
         call(&mut healthy, &mut Vec::new(), 6, &[0.5f64.to_bits()]),
         0.5f64.sin().to_bits()
     );
+}
+
+#[test]
+fn windows_tls_and_fls_slots_remain_independent_and_reuse_native_indices() {
+    let mut first = runtime_child();
+    let mut second = runtime_child();
+    let mut trace = Vec::new();
+    for index in 0..1088 {
+        assert_eq!(call(&mut first, &mut trace, 414, &[]), index);
+        assert_eq!(call(&mut first, &mut trace, 417, &[index, index + 17]), 1);
+    }
+    assert_eq!(call(&mut first, &mut trace, 414, &[]), u64::from(u32::MAX));
+    assert_eq!(call(&mut second, &mut trace, 414, &[]), 0);
+    assert_eq!(call(&mut second, &mut trace, 416, &[0]), 0);
+    for index in [0, 63, 64, 1087] {
+        assert_eq!(call(&mut first, &mut trace, 416, &[index]), index + 17);
+        assert_eq!(call(&mut first, &mut trace, 400, &[]), 0);
+    }
+    assert_eq!(call(&mut first, &mut trace, 416, &[1088]), 0);
+    assert_eq!(call(&mut first, &mut trace, 400, &[]), 87);
+    assert_eq!(call(&mut first, &mut trace, 415, &[64]), 1);
+    assert_eq!(call(&mut first, &mut trace, 414, &[]), 64);
+    assert_eq!(call(&mut first, &mut trace, 416, &[64]), 0);
+    assert_eq!(call(&mut first, &mut trace, 418, &[BASE + 768]), 0);
+    assert_eq!(call(&mut first, &mut trace, 421, &[0, 77]), 1);
+    assert_eq!(call(&mut first, &mut trace, 420, &[0]), 77);
+    assert_eq!(call(&mut first, &mut trace, 419, &[0]), 1);
+    assert_eq!(trace, [0]);
+    assert_eq!(call(&mut first, &mut trace, 420, &[0]), 0);
+    assert_eq!(call(&mut first, &mut trace, 400, &[]), 0);
+    assert_eq!(call(&mut first, &mut trace, 419, &[0]), 1);
+    assert_eq!(call(&mut first, &mut trace, 420, &[0]), 0);
+    assert_eq!(call(&mut first, &mut trace, 400, &[]), 87);
+    for index in 0..128 {
+        assert_eq!(call(&mut first, &mut trace, 418, &[0]), index);
+    }
+    assert_eq!(call(&mut first, &mut trace, 418, &[0]), u64::from(u32::MAX));
+    assert_eq!(call(&mut first, &mut trace, 400, &[]), 8);
+    assert_eq!(call(&mut second, &mut trace, 418, &[0]), 0);
+    assert_eq!(call(&mut second, &mut trace, 420, &[0]), 0);
+}
+
+#[test]
+fn windows_sync_and_environment_services_keep_the_c_state_changes() {
+    let mut process = runtime_child();
+    let mut trace = Vec::new();
+    assert_eq!(call(&mut process, &mut trace, 402, &[]), 1);
+    assert_eq!(call(&mut process, &mut trace, 403, &[]), 1);
+    assert_eq!(call(&mut process, &mut trace, 404, &[]), u64::MAX);
+    assert_eq!(call(&mut process, &mut trace, 401, &[123]), 0);
+    assert_eq!(call(&mut process, &mut trace, 400, &[]), 123);
+    assert_eq!(call(&mut process, &mut trace, 412, &[BASE]), 1);
+    assert_eq!(call(&mut process, &mut trace, 412, &[BASE + 1]), 0);
+    assert_eq!(call(&mut process, &mut trace, 400, &[]), 87);
+    process.memory_mut().unwrap()[12288 + crate::native::runtime::STATIC_TLS_OFFSET
+        ..12296 + crate::native::runtime::STATIC_TLS_OFFSET]
+        .copy_from_slice(&(BASE + 6200).to_le_bytes());
+    assert_eq!(call(&mut process, &mut trace, 412, &[BASE]), 0);
+    assert_eq!(call(&mut process, &mut trace, 413, &[BASE + 256]), 0);
+    assert_eq!(call(&mut process, &mut trace, 413, &[0]), BASE + 256);
+    let lock = BASE + 6400;
+    assert_eq!(call(&mut process, &mut trace, 405, &[lock]), 0);
+    assert_eq!(&process.memory().unwrap()[6400..6408], &1u64.to_le_bytes());
+    assert_eq!(call(&mut process, &mut trace, 406, &[lock]), 0);
+    assert_eq!(&process.memory().unwrap()[6400..6408], &[0; 8]);
+    process.memory_mut().unwrap()[6400..6416].fill(255);
+    assert_eq!(call(&mut process, &mut trace, 407, &[lock]), 0);
+    assert_eq!(&process.memory().unwrap()[6400..6416], &[0; 16]);
+    process.memory_mut().unwrap()[6400..6408]
+        .copy_from_slice(&0xffff_ffff_ffff_abcd_u64.to_le_bytes());
+    process.memory_mut().unwrap()[6408..6416].copy_from_slice(&(BASE + 6603).to_le_bytes());
+    assert_eq!(call(&mut process, &mut trace, 408, &[lock]), BASE + 6592);
+    assert_eq!(&process.memory().unwrap()[6400..6408], &[0; 8]);
+    assert_eq!(&process.memory().unwrap()[6408..6416], &11u64.to_le_bytes());
+    for flag in [0, 6, 10, 40] {
+        assert_eq!(
+            call(&mut process, &mut trace, 411, &[flag]),
+            u64::from(flag == 6 || flag == 10)
+        );
+    }
+    assert_eq!(call(&mut process, &mut trace, 409, &[u64::MAX]), 0);
+    assert_eq!(call(&mut process, &mut trace, 410, &[]), 0);
+    assert!(trace.is_empty());
 }
 
 #[test]

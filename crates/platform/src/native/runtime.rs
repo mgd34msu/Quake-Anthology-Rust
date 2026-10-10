@@ -306,6 +306,28 @@ pub const FUNCTIONS: &[Function] = &[
     windows(FIRST + 336, b"api-ms-win-crt-convert-l1-1-0.dll", b"atoi", Operation::Crt(Crt::Integer), &[Word], I32),
     windows(FIRST + 337, b"api-ms-win-crt-convert-l1-1-0.dll", b"atoll", Operation::Crt(Crt::Integer), &[Word], Word),
     windows(FIRST + 338, b"api-ms-win-crt-convert-l1-1-0.dll", b"atof", Operation::Crt(Crt::Float), &[Word], Double),
+    windows(FIRST + 400, b"kernel32.dll", b"GetLastError", Operation::Kernel(Kernel::Teb(0x68, 4)), &[], U32),
+    windows(FIRST + 401, b"kernel32.dll", b"SetLastError", Operation::Kernel(Kernel::SetError), &[U32], Void),
+    windows(FIRST + 402, b"kernel32.dll", b"GetCurrentThreadId", Operation::Kernel(Kernel::Teb(0x48, 8)), &[], U32),
+    windows(FIRST + 403, b"kernel32.dll", b"GetCurrentProcessId", Operation::Kernel(Kernel::Teb(0x40, 8)), &[], U32),
+    windows(FIRST + 404, b"kernel32.dll", b"GetCurrentProcess", Operation::Kernel(Kernel::CurrentProcess), &[], Word),
+    windows(FIRST + 405, b"kernel32.dll", b"AcquireSRWLockExclusive", Operation::Kernel(Kernel::Srw(true)), &[Word], Void),
+    windows(FIRST + 406, b"kernel32.dll", b"ReleaseSRWLockExclusive", Operation::Kernel(Kernel::Srw(false)), &[Word], Void),
+    windows(FIRST + 407, b"kernel32.dll", b"InitializeSListHead", Operation::Kernel(Kernel::SlistInit), &[Word], Void),
+    windows(FIRST + 408, b"kernel32.dll", b"InterlockedFlushSList", Operation::Kernel(Kernel::SlistFlush), &[Word], Word),
+    windows(FIRST + 409, b"kernel32.dll", b"WakeAllConditionVariable", Operation::Crt(Crt::Zero), &[Word], Void),
+    windows(FIRST + 410, b"kernel32.dll", b"IsDebuggerPresent", Operation::Crt(Crt::Zero), &[], I32),
+    windows(FIRST + 411, b"kernel32.dll", b"IsProcessorFeaturePresent", Operation::Kernel(Kernel::Feature), &[U32], I32),
+    windows(FIRST + 412, b"kernel32.dll", b"DisableThreadLibraryCalls", Operation::Kernel(Kernel::DisableThread), &[Word], I32),
+    windows(FIRST + 413, b"kernel32.dll", b"SetUnhandledExceptionFilter", Operation::Kernel(Kernel::ExceptionFilter), &[Word], Word),
+    windows(FIRST + 414, b"kernel32.dll", b"TlsAlloc", Operation::Kernel(Kernel::TlsAlloc), &[], U32),
+    windows(FIRST + 415, b"kernel32.dll", b"TlsFree", Operation::Kernel(Kernel::Tls(Slot::Free)), &[U32], I32),
+    windows(FIRST + 416, b"kernel32.dll", b"TlsGetValue", Operation::Kernel(Kernel::Tls(Slot::Get)), &[U32], Word),
+    windows(FIRST + 417, b"kernel32.dll", b"TlsSetValue", Operation::Kernel(Kernel::Tls(Slot::Set)), &[U32, Word], I32),
+    windows(FIRST + 418, b"kernel32.dll", b"FlsAlloc", Operation::Kernel(Kernel::FlsAlloc), &[Word], U32),
+    windows(FIRST + 419, b"kernel32.dll", b"FlsFree", Operation::Kernel(Kernel::Fls(Slot::Free)), &[U32], I32),
+    windows(FIRST + 420, b"kernel32.dll", b"FlsGetValue", Operation::Kernel(Kernel::Fls(Slot::Get)), &[U32], Word),
+    windows(FIRST + 421, b"kernel32.dll", b"FlsSetValue", Operation::Kernel(Kernel::Fls(Slot::Set)), &[U32, Word], I32),
 ];
 
 #[derive(Clone, Copy)]
@@ -318,12 +340,36 @@ pub(crate) enum Operation {
     Find(bool),
     Math(Math, NativeScalar),
     Crt(Crt),
+    Kernel(Kernel),
     Malloc,
     Calloc,
     Realloc,
     Free,
     Msvc(Msvc),
     Data(usize),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Kernel {
+    Teb(u64, usize),
+    SetError,
+    CurrentProcess,
+    Srw(bool),
+    SlistInit,
+    SlistFlush,
+    Feature,
+    DisableThread,
+    ExceptionFilter,
+    TlsAlloc,
+    Tls(Slot),
+    FlsAlloc,
+    Fls(Slot),
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Slot {
+    Free,
+    Get,
+    Set,
 }
 
 #[derive(Clone, Copy)]
@@ -381,7 +427,7 @@ impl Function {
         use qa_core::names::compare_folded;
         let equal = |expected| compare_folded(name, expected).is_eq();
         if equal(b"msvcrt.dll") || equal(b"ucrtbase.dll") {
-            return self.provider != b"msvcp140.dll";
+            return self.provider != b"msvcp140.dll" && self.provider != b"kernel32.dll";
         }
         if self.provider.ends_with(b".dll") {
             return equal(self.provider);
