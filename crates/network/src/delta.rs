@@ -13,6 +13,7 @@ pub(crate) enum ScaleRead {
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Packed {
+    Unsigned8,
     Unsigned16,
     Unsigned15,
     Signed15,
@@ -31,7 +32,7 @@ impl Packed {
             Self::Unsigned16 => word < 0x10000,
             Self::Unsigned15 => word < 0x8000,
             Self::Signed15 => (word as i32) < 0x8000,
-            Self::Signed8 => true,
+            Self::Signed8 | Self::Unsigned8 => true,
         } {
             16
         } else {
@@ -48,9 +49,12 @@ pub(crate) enum Value {
     ZeroUnsigned,
     Float { zero: bool },
     RawFloat,
+    RawCoord,
     Scaled { factor: u8, read: ScaleRead },
     Angle8 { integral: bool },
-    Packed(Packed),
+    Packed { rule: Packed, signed: bool },
+    FlagWidth { flag: u64, wide: u8 },
+    ShortAngle { flag: u64 },
     Transient,
     FloatInt,
 }
@@ -76,6 +80,7 @@ impl Field {
         to: u32,
     ) -> bool {
         match self.value {
+            Value::RawCoord => pack_scaled_float(from, 8, false) == pack_scaled_float(to, 8, false),
             Value::FloatInt if FLOAT_BYTES => (from as i32 as f32) == f32::from_bits(to),
             Value::Transient if PACKED => to == 0,
             Value::Angle16 | Value::RawFloat => f32::from_bits(from) == f32::from_bits(to),
@@ -93,7 +98,7 @@ impl Field {
         }
     }
     fn flags<const PACKED: bool>(self, word: u32) -> u64 {
-        if PACKED && let Value::Packed(rule) = self.value {
+        if PACKED && let Value::Packed { rule, .. } = self.value {
             let bits = rule.width(word);
             if self.bits != 0 {
                 return if self.bits == bits { self.flag } else { 0 };
@@ -109,9 +114,24 @@ impl Field {
         }
     }
     fn width<const PACKED: bool>(self, flags: u64) -> u8 {
-        if PACKED && self.bits == 0 && matches!(self.value, Value::Packed(_)) {
+        if let Value::FlagWidth { flag, wide } = self.value {
+            return if flags & flag != 0 { wide } else { self.bits };
+        }
+        if let Value::ShortAngle { flag } = self.value {
+            return if flags & flag != 0 { 16 } else { 8 };
+        }
+        if PACKED
+            && self.bits == 0
+            && let Value::Packed { rule, .. } = self.value
+        {
             let selected = flags & self.flag;
-            if selected == self.flag {
+            if matches!(rule, Packed::Unsigned8) {
+                if selected & (self.flag & self.flag.wrapping_neg()) != 0 {
+                    8
+                } else {
+                    16
+                }
+            } else if selected == self.flag {
                 32
             } else if selected == self.flag & self.flag.wrapping_neg() {
                 8
@@ -125,8 +145,10 @@ impl Field {
     fn project<const STATE: bool, const PREFIX: bool, const FLOAT_BYTES: bool>(
         self,
         word: u32,
+        bits: u8,
     ) -> u32 {
         match self.value {
+            Value::ShortAngle { .. } if bits == 8 => (word as i32 >> 8) as u32,
             Value::Angle16 => {
                 angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide) as u32
             }
@@ -138,14 +160,11 @@ impl Field {
                 }
             }
             Value::FloatInt if FLOAT_BYTES => f32::from_bits(word) as i32 as u32,
-            Value::Scaled { factor, read } if STATE => {
-                let value = f32::from_bits(word);
-                if FLOAT_BYTES && matches!(read, ScaleRead::SignedInverse) {
-                    (value / f32::from(factor)) as i32 as u32
-                } else {
-                    (value * f32::from(factor)) as i32 as u32
-                }
-            }
+            Value::Scaled { factor, read } if STATE => pack_scaled_float(
+                word,
+                factor,
+                FLOAT_BYTES && matches!(read, ScaleRead::SignedInverse),
+            ),
             _ => word,
         }
     }
@@ -160,8 +179,16 @@ impl Field {
         bits: u8,
     ) -> u32 {
         match self.value {
-            Value::Packed(_) if PACKED => {
-                if bits == 8 {
+            Value::ShortAngle { .. } => {
+                let value = if bits == 8 {
+                    (word as i8 as i16).wrapping_mul(0x101)
+                } else {
+                    word as i16
+                };
+                value as i32 as u32
+            }
+            Value::Packed { signed, .. } if PACKED => {
+                if bits == 8 || !signed {
                     word
                 } else {
                     ((word << (32 - bits)) as i32 >> (32 - bits)) as u32
@@ -193,6 +220,14 @@ impl Field {
             _ => word,
         }
     }
+}
+fn pack_scaled_float(word: u32, factor: u8, inverse: bool) -> u32 {
+    let value = f32::from_bits(word);
+    (if inverse {
+        value / f32::from(factor)
+    } else {
+        value * f32::from(factor)
+    }) as i32 as u32
 }
 pub(crate) enum Presence {
     Fixed,
@@ -416,7 +451,7 @@ pub(crate) fn write<
                 }
             } else {
                 writer.write_bits(
-                    field.project::<STATE, PREFIX, FLOAT_BYTES>(new) ^ field_key,
+                    field.project::<STATE, PREFIX, FLOAT_BYTES>(new, bits) ^ field_key,
                     bits,
                 )?;
             }

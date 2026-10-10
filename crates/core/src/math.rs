@@ -93,6 +93,11 @@ pub fn short_to_angle(angle: i32) -> f32 {
     angle as f32 * (360.0 / 65536.0)
 }
 
+/// Native Q2 signed 16-bit coordinates and velocities in eighth units.
+pub fn narrow_eighth(value: f32) -> f32 {
+    f32::from((value * 8.0) as i32 as i16) * 0.125
+}
+
 /// Origin first, then each axis in order; do not regroup the products.
 pub fn transform_point(origin: Vec3, axes: [Vec3; 3], local: Vec3) -> Vec3 {
     Vec3(std::array::from_fn(|i| {

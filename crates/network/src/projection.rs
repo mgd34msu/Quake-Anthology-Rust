@@ -2,7 +2,7 @@
 //! Native ordinals and effective tuning are supplied by the module/connection.
 use crate::{commands::packet::Protocol, states};
 use qa_core::{
-    math::{AngleShortForm, angle_to_short, short_to_angle},
+    math::{AngleShortForm, angle_to_short, narrow_eighth, short_to_angle},
     primitives::{
         EntityId, MovementMode, MovementTimer, PlayerState, PlayerTail, ValueBinding, ValueWidth,
     },
@@ -236,7 +236,7 @@ impl PlayerProjection {
                 Bits => word,
                 IntegerFloat => (word as i32 as f32).to_bits(),
                 FloatInteger => f32::from_bits(word) as i32 as u32,
-                Eighth => (f32::from_bits(word) * 8.0) as i32 as i16 as i32 as u32,
+                Eighth => (narrow_eighth(f32::from_bits(word)) * 8.0) as i32 as u32,
                 ShortAngle => angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide)
                     as i16 as i32 as u32,
                 UnsignedShortAngle => {

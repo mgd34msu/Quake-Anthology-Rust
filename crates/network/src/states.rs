@@ -895,21 +895,51 @@ static Q2_ENTITY_FIELDS: [Field; 21] = [
     Field::new(2, 8, 1 << 21, Value::Unsigned),
     Field::new(3, 8, 1 << 22, Value::Unsigned),
     // Both native frame flags are read independently in their original order.
-    Field::new(4, 8, 1 << 4, Value::Packed(Packed::Signed8)),
-    Field::new(4, 16, 1 << 17, Value::Packed(Packed::Signed8)),
+    Field::new(
+        4,
+        8,
+        1 << 4,
+        Value::Packed {
+            rule: Packed::Signed8,
+            signed: true,
+        },
+    ),
+    Field::new(
+        4,
+        16,
+        1 << 17,
+        Value::Packed {
+            rule: Packed::Signed8,
+            signed: true,
+        },
+    ),
     Field::new(
         5,
         0,
         (1 << 16) | (1 << 25),
-        Value::Packed(Packed::Unsigned16),
+        Value::Packed {
+            rule: Packed::Unsigned16,
+            signed: true,
+        },
     ),
     Field::new(
         6,
         0,
         (1 << 14) | (1 << 19),
-        Value::Packed(Packed::Unsigned15),
+        Value::Packed {
+            rule: Packed::Unsigned15,
+            signed: true,
+        },
     ),
-    Field::new(7, 0, (1 << 12) | (1 << 18), Value::Packed(Packed::Signed15)),
+    Field::new(
+        7,
+        0,
+        (1 << 12) | (1 << 18),
+        Value::Packed {
+            rule: Packed::Signed15,
+            signed: true,
+        },
+    ),
     Field::new(
         8,
         16,
@@ -1064,7 +1094,7 @@ pub fn read_q2_entity_prefix(
     Ok(EntityHeader { number, flags })
 }
 
-pub(crate) fn q2_unchanged_entity(from: &[u32; Q2_ENTITY_WORDS]) -> [u32; Q2_ENTITY_WORDS] {
+pub(crate) fn q2_unchanged_entity<const N: usize>(from: &[u32; N]) -> [u32; N] {
     let mut words = *from;
     words[14..17].copy_from_slice(&from[8..11]);
     words[18] = 0;
@@ -1086,6 +1116,170 @@ pub(crate) fn read_q2_entity_body(
     let mut words = q2_unchanged_entity(from);
     delta::read(&Q2_ENTITY_GROUP, &mut words, flags, reader)?;
     Ok(Q2EntityDelta {
+        number,
+        words: Some(words),
+    })
+}
+
+/// Q2repro 1038 native entity projection: protocol-34 word order, followed by
+/// effects high, alpha, scale, loop volume and attenuation. Angles are native
+/// signed short words; coordinates are float bits. Module conversion is later.
+pub const Q2_REPRO_ENTITY_WORDS: usize = 25;
+pub type Q2ReproEntityDelta = EntityDelta<Q2_REPRO_ENTITY_WORDS>;
+const fn q2_repro_entity_fields() -> [Field; Q2_REPRO_ENTITY_WORDS] {
+    let mut fields = [Field::new(0, 8, 0, Value::Unsigned); Q2_REPRO_ENTITY_WORDS];
+    let mut i = 0;
+    while i < fields.len() {
+        let (bits, flag, value) = match i {
+            0 => (
+                8,
+                1 << 11,
+                Value::FlagWidth {
+                    flag: 1 << 28,
+                    wide: 16,
+                },
+            ),
+            1..=3 => (
+                8,
+                1 << (19 + i),
+                Value::FlagWidth {
+                    flag: 1 << 28,
+                    wide: 16,
+                },
+            ),
+            4 => (
+                0,
+                (1 << 4) | (1 << 17),
+                Value::Packed {
+                    rule: Packed::Unsigned8,
+                    signed: false,
+                },
+            ),
+            5 => (
+                0,
+                (1 << 16) | (1 << 25),
+                Value::Packed {
+                    rule: Packed::Unsigned16,
+                    signed: false,
+                },
+            ),
+            6 => (
+                0,
+                (1 << 14) | (1 << 19),
+                Value::Packed {
+                    rule: Packed::Unsigned16,
+                    signed: false,
+                },
+            ),
+            7 => (
+                0,
+                (1 << 12) | (1 << 18),
+                Value::Packed {
+                    rule: Packed::Unsigned16,
+                    signed: false,
+                },
+            ),
+            8 => (32, 1, Value::RawCoord),
+            9 => (32, 1 << 1, Value::RawCoord),
+            10 => (32, 1 << 9, Value::RawCoord),
+            11 => (16, 1 << 10, Value::ShortAngle { flag: 1 << 13 }),
+            12 => (16, 1 << 2, Value::ShortAngle { flag: 1 << 13 }),
+            13 => (16, 1 << 3, Value::ShortAngle { flag: 1 << 13 }),
+            14..=16 => (32, 1 << 24, Value::RawFloat),
+            17 => (16, 1 << 26, Value::Unsigned),
+            18 => (8, 1 << 5, Value::Transient),
+            19 => (32, 1 << 27, Value::Unsigned),
+            20 => (
+                0,
+                (1 << 29) | (1 << 33),
+                Value::Packed {
+                    rule: Packed::Unsigned16,
+                    signed: false,
+                },
+            ),
+            21 => (8, 1 << 30, Value::Unsigned),
+            22 => (8, 1 << 32, Value::Unsigned),
+            _ => (8, 0, Value::Unsigned),
+        };
+        fields[i] = Field::new(i, bits, flag, value);
+        i += 1;
+    }
+    fields
+}
+static Q2_REPRO_ENTITY_FIELDS: [Field; Q2_REPRO_ENTITY_WORDS] = q2_repro_entity_fields();
+static Q2_REPRO_ENTITY_PREFIX: [Group<true, true, true>; 1] = [Group {
+    fields: Q2_REPRO_ENTITY_FIELDS.split_at(17).0,
+    presence: Presence::Fixed,
+}];
+static Q2_REPRO_ENTITY_SUFFIX: [Group<true, true, true>; 1] = [Group {
+    fields: Q2_REPRO_ENTITY_FIELDS.split_at(18).1.split_at(5).0,
+    presence: Presence::Fixed,
+}];
+static Q2_REPRO_ENTITY_SOUND: [Group<true>; 1] = [Group {
+    fields: &[
+        Field::new(23, 8, 1, Value::Unsigned),
+        Field::new(24, 8, 2, Value::Unsigned),
+    ],
+    presence: Presence::PackedMask {
+        bits: 16,
+        shift: 14,
+        word: 17,
+    },
+}];
+pub fn write_q2_repro_entity(
+    writer: &mut Writer<'_>,
+    number: u16,
+    from: &[u32; Q2_REPRO_ENTITY_WORDS],
+    to: Option<&[u32; Q2_REPRO_ENTITY_WORDS]>,
+    write_old_origin: bool,
+) -> Result<(), Error> {
+    let Some(to) = to else {
+        write_q2_entity_prefix(writer, number, Q2_REMOVE, true)?;
+        return Ok(());
+    };
+    let mut flags =
+        delta::mask::<true, true, true, false>(&Q2_REPRO_ENTITY_FIELDS, from, to, 0, 14, 3);
+    for field in &Q2_REPRO_ENTITY_FIELDS[..4] {
+        if flags & field.flag != 0 && to[field.word] > 255 {
+            flags |= 1 << 28;
+        }
+    }
+    if flags & ((1 << 2) | (1 << 3) | (1 << 10)) != 0 {
+        flags |= 1 << 13;
+    }
+    if write_old_origin {
+        flags |= 1 << 24;
+    }
+    let flags = write_q2_entity_prefix(writer, number, flags, true)?;
+    delta::write(&Q2_REPRO_ENTITY_PREFIX, from, to, flags, writer)?;
+    // Native q2proto emits loop metadata only with Q2P_ESD_SOUND. Its builder
+    // does not promote a volume/attenuation-only change to that outer bit.
+    if flags & (1 << 26) != 0 {
+        delta::write(&Q2_REPRO_ENTITY_SOUND, from, to, 0, writer)?;
+    }
+    delta::write(&Q2_REPRO_ENTITY_SUFFIX, from, to, flags, writer)
+}
+pub fn read_q2_repro_entity(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_REPRO_ENTITY_WORDS],
+) -> Result<Q2ReproEntityDelta, Error> {
+    let EntityHeader { number, flags } = read_q2_entity_prefix(reader, true)?;
+    if flags & Q2_REMOVE != 0 {
+        return Ok(Q2ReproEntityDelta {
+            number,
+            words: None,
+        });
+    }
+    let mut words = q2_unchanged_entity(from);
+    delta::read(&Q2_REPRO_ENTITY_PREFIX, &mut words, flags, reader)?;
+    if flags & (1 << 26) != 0 {
+        delta::read(&Q2_REPRO_ENTITY_SOUND, &mut words, 0, reader)?;
+    }
+    delta::read(&Q2_REPRO_ENTITY_SUFFIX, &mut words, flags, reader)?;
+    if flags & (1 << 24) == 0 && words[7] & 128 != 0 {
+        words[14..17].copy_from_slice(&from[14..17]);
+    }
+    Ok(Q2ReproEntityDelta {
         number,
         words: Some(words),
     })

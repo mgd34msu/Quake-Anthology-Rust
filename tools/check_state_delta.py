@@ -816,6 +816,63 @@ void kex_player_decode(uint8_t *bytes,uint32_t size,uint32_t *from,uint32_t *out
     return source
 
 
+def repro_entity_reference(qsrc):
+    """Native metadata, writer and reader, with cold packed-word bindings."""
+    base = qsrc / 'q2repro/q2proto/src'
+    original = (base / 'q2proto_proto_q2repro.c').read_text()
+    common = (base / 'q2proto_internal_common.c').read_text()
+    source = '\n'
+    for name in ['q2proto_common_server_write_entity_bits', 'q2proto_common_client_read_entity_bits']:
+        source += function(common, name)
+    for name in ['q2repro_server_make_entity_state_delta', 'q2proto_q2repro_server_write_entity_state_delta', 'q2repro_client_read_entity_delta']:
+        source += function(original, name)
+    scalars = {0:('modelindex','MODELINDEX'),1:('modelindex2','MODELINDEX2'),
+               2:('modelindex3','MODELINDEX3'),3:('modelindex4','MODELINDEX4'),
+               4:('frame','FRAME'),5:('skinnum','SKINNUM'),6:('effects','EFFECTS'),
+               7:('renderfx','RENDERFX'),17:('sound','SOUND'),18:('event','EVENT'),
+               19:('solid','SOLID'),20:('effects_more','EFFECTS_MORE'),
+               21:('alpha','ALPHA'),22:('scale','SCALE'),
+               23:('loop_volume','LOOP_VOLUME'),24:('loop_attenuation','LOOP_ATTENUATION')}
+    source += 'static void repro_entity_put(q2proto_packed_entity_state_t *p,uint32_t *w) {\n'
+    for i,(name,_) in scalars.items():
+        if i not in (6,20): source += f' p->{name}=w[{i}];\n'
+    source += ' p->effects=w[6]|((uint64_t)w[20]<<32);\n'
+    source += ' for(int i=0;i<3;i++){p->origin[i]=w[8+i];p->angles[i]=w[11+i];p->old_origin[i]=w[14+i];}\n}\n'
+    source += r'''
+uint32_t repro_entity_encode(uint8_t *bytes,uint32_t *from,uint32_t *to,uint16_t number,uint8_t flags) {
+ kex_io_t io={.bytes=bytes};q2proto_packed_entity_state_t a={0},b={0};
+ repro_entity_put(&a,from);repro_entity_put(&b,to);
+ if(flags&2)assert(q2proto_common_server_write_entity_bits((uintptr_t)&io,U_REMOVE,number)==Q2P_ERR_SUCCESS);
+ else {
+  q2proto_entity_state_delta_t d;
+  q2repro_server_make_entity_state_delta(NULL,&a,&b,(flags&4)!=0,&d);
+  assert(q2proto_q2repro_server_write_entity_state_delta(NULL,(uintptr_t)&io,number,&d)==Q2P_ERR_SUCCESS);
+ }
+ return io.size;
+}
+void repro_entity_decode(uint8_t *bytes,uint32_t size,uint32_t *from,uint32_t *out,uint32_t *number,uint8_t *removed) {
+ kex_io_t io={.bytes=bytes,.size=size};uint64_t bits;uint16_t entnum;
+ assert(q2proto_common_client_read_entity_bits((uintptr_t)&io,&bits,&entnum)==Q2P_ERR_SUCCESS);
+ *number=entnum;*removed=(bits&U_REMOVE)!=0;
+ if(*removed){assert(io.pos==size);return;}
+ q2proto_entity_state_delta_t d={0};
+ assert(q2repro_client_read_entity_delta(NULL,(uintptr_t)&io,bits,&d)==Q2P_ERR_SUCCESS);
+ assert(io.pos==size);memcpy(out,from,25*4);out[18]=0;
+'''
+    for i,(name,flag) in scalars.items():
+        source += f' if(d.delta_bits&Q2P_ESD_{flag})out[{i}]=d.{name};\n'
+    source += r'''
+ for(int i=0;i<3;i++) {
+  if(d.origin.read.value.delta_bits&(1u<<i))out[8+i]=_q2proto_valenc_float2bits(q2proto_var_coords_get_float_comp(&d.origin.read.value.values,i));
+  if(d.angle.delta_bits&(1u<<i))out[11+i]=(int32_t)q2proto_var_angles_get_short_comp(&d.angle.values,i);
+  if(d.delta_bits&Q2P_ESD_OLD_ORIGIN)out[14+i]=_q2proto_valenc_float2bits(q2proto_var_coords_get_float_comp(&d.old_origin,i));
+  else if(!(out[7]&128))out[14+i]=from[8+i];
+ }
+}
+'''
+    return source
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -895,7 +952,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>11||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>12||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -914,7 +971,8 @@ int main(void) {
   } else if(mode==8) {rr_stats_encode(&m,from,to);
   } else if(mode==9) {rr_player_encode(&m,from,to);
   } else if(mode==10) {kex_stats_encode(&m,from,to);
-  } else {m.cursize=kex_player_encode(data,from,to);m.bit=m.cursize*8;
+  } else if(mode==11) {m.cursize=kex_player_encode(data,from,to);m.bit=m.cursize*8;
+  } else {m.cursize=repro_entity_encode(data,from,to,number,flags);m.bit=m.cursize*8;
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
   uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
@@ -932,29 +990,33 @@ int main(void) {
   else if(mode==8) {rr_stats_decode(&m,from,decoded);}
   else if(mode==9) {rr_player_decode(&m,from,decoded);}
   else if(mode==10) {kex_stats_decode(&m,from,decoded);}
-  else {kex_player_decode(data,m.cursize,from,decoded);}
+  else if(mode==11) {kex_player_decode(data,m.cursize,from,decoded);}
+  else {repro_entity_decode(data,m.cursize,from,decoded,&wire_number,&removed);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
 }
 '''
     stat_layout = [(f'stats[{i}]',16) for i in range(64)]
-    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8),('clientnum',-16)]+stat_layout, stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8)]+stat_layout]
+    entity_layout = q2_entity_layout()+[('effects_high',32),('alpha',8),('scale',8),('loop_volume',8),('loop_attenuation',8)]
+    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8),('clientnum',-16)]+stat_layout, stat_layout, q2_layout()+[(f'damage_blend[{i}]',8) for i in range(4)]+[('gunrate',8),('pmove.viewheight',-8)]+stat_layout, entity_layout]
 
 
 def compile_reference(qsrc, evidence):
     source, tables = reference_source(qsrc)
     declarations = 'extern uint32_t kex_player_encode(uint8_t*,uint32_t*,uint32_t*);\nextern void kex_player_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*);\n'
+    declarations += 'extern uint32_t repro_entity_encode(uint8_t*,uint32_t*,uint32_t*,uint16_t,uint8_t);\nextern void repro_entity_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*,uint32_t*,uint8_t*);\n'
     source = source.replace('int main(void)',declarations+'int main(void)',1)
     code = evidence / 'original-state-delta.c'
     code.write_text(source)
     binary = evidence / 'original-state-delta'
     kex_code = evidence / 'original-kex-player.c'
-    kex_code.write_text(kex_player_reference(qsrc))
+    kex_code.write_text(kex_player_reference(qsrc)+repro_entity_reference(qsrc))
     base = qsrc / 'q2repro/q2proto'
     command = ['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off',
                '-ffunction-sections','-fdata-sections','-DQ2PROTO_CONFIG_PROVIDED=1',
                '-DQ2PROTO_PLAYER_STATE_FEATURES=Q2PROTO_FEATURES_RERELEASE',
+               '-DQ2PROTO_ENTITY_STATE_FEATURES=Q2PROTO_FEATURES_RERELEASE',
                '-I',str(base/'inc'),'-I',str(base/'src'),str(code),str(kex_code),str(base/'src/q2proto_coords.c'),
                '-Wl,--gc-sections','-lm','-o',str(binary)]
     (evidence/'compile-command.json').write_text(json.dumps(command,indent=2)+'\n')
@@ -968,6 +1030,40 @@ def fixture(tables):
     floats = [-0.0, 0.0, -4096.0, -4097.0, 4095.0, 4096.0, 0.125, -0.125, 123456.75]
     for mode, table in enumerate(tables):
         for case in range(2048):
+            if mode == 12:
+                old,new=[0]*112,[0]*112
+                for i in range(25):
+                    if 8<=i<=10 or 14<=i<=16:
+                        a,b=rng.uniform(-4096,4096),rng.uniform(-4096,4096)
+                        old[i]=struct.unpack('<I',struct.pack('<f',a))[0]
+                        new[i]=struct.unpack('<I',struct.pack('<f',b))[0]
+                    elif 11<=i<=13:
+                        old[i],new[i]=rng.randrange(-32768,32768)&0xffffffff,rng.randrange(-32768,32768)&0xffffffff
+                    elif i<5:
+                        old[i],new[i]=rng.randrange(65536),rng.randrange(65536)
+                    elif i==17:
+                        old[i],new[i]=rng.randrange(16384),rng.randrange(16384)
+                    elif i==18 or i>=21:
+                        old[i],new[i]=rng.randrange(256),rng.randrange(256)
+                    else:
+                        old[i],new[i]=rng.getrandbits(32),rng.getrandbits(32)
+                    if (case+i)%3:new[i]=old[i]
+                if case<25:
+                    word=new[case];new=old.copy();new[case]=word
+                if case%8==0:new=old.copy();new[18]=0
+                if 25<=case<40:
+                    old=[0]*112;new=old.copy()
+                    new[5]=[255,256,32767,32768,65535,65536,0x80000000,0xffffffff][case%8]
+                    new[20]=new[5];new[22]=255
+                if 40<=case<56:
+                    old[8]=struct.unpack('<I',struct.pack('<f',1.25))[0]
+                    new[8]=struct.unpack('<I',struct.pack('<f',1.25+(0.01 if case%2 else 0.125)))[0]
+                if 56<=case<64:
+                    old[8]=0x80000000;new[8]=0
+                flags=(2 if case%17==0 else 0)|(4 if case%3==0 else 0)
+                number=[1,255,256,8191,65535][case%5]
+                output+=struct.pack('<BBH224I',mode,flags,number,*old,*new)
+                continue
             if mode in (9,11):
                 old,new=[0]*112,[0]*112
                 count = 107 if mode==9 else 106
@@ -1230,9 +1326,9 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, q2_repro_player_words=107, kex_stats=64, kex_player_words=106, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro stats/enhanced-player/coordinate/angle/blend functions unchanged; q2proto clientnum statements, KEX stat blocks and full KEX player writer/parser unchanged; KEX uses original q2proto headers, coordinate code and IO helpers; original removal statements, offsetof and private packed-word/struct bindings',
-                  limits='Seeded native delta records; Q2repro comparison uses packed view/weapon/color words and original MSG packed gunframe range 0..255; KEX binds already projected scalar words and native delta metadata; no snapshot/channel framing, common-state/module ABI packing, sign-on, captures, live or installed acceptance')
+    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, q2_repro_player_words=107, q2_repro_entity_words=25, kex_stats=64, kex_player_words=106, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro stats/enhanced-player/coordinate/angle/blend functions unchanged; q2proto clientnum statements, KEX stat blocks and full KEX player writer/parser unchanged; Q2repro entity metadata builder, writer and reader unchanged with native common headers, coordinate code and IO helpers; original removal statements, offsetof and private packed-word/struct bindings',
+                  limits='Seeded native delta records; Q2repro comparison uses packed view/weapon/color words and original MSG packed gunframe range 0..255; entity records bind native packed short angles, finite map-range float coordinates and literal metadata including sound-only loop presence; KEX binds already projected scalar words and native delta metadata; no rerelease snapshot/channel framing, common-state/module ABI packing, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))
 

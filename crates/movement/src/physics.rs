@@ -679,9 +679,9 @@ impl Step<'_> {
         if !self.classic() {
             return;
         }
-        self.player.body.velocity.0 = self.player.body.velocity.0.map(eighth);
+        self.player.body.velocity.0 = self.player.body.velocity.0.map(math::narrow_eighth);
         let position = self.player.body.position;
-        let base = Vec3(position.0.map(eighth));
+        let base = Vec3(position.0.map(math::narrow_eighth));
         let signs =
             std::array::from_fn::<_, 3, _>(|i| if position.0[i] >= 0.0 { 1.0 } else { -1.0 });
         for bits in [0, 4, 1, 2, 3, 5, 6, 7] {
@@ -896,16 +896,13 @@ fn quake2(
 ) -> MovementResult {
     // Native pmove_state_t carries signed 16-bit coordinates and velocities
     // in eighth units. Rerelease deliberately keeps its floating ABI.
-    player.body.position.0 = player.body.position.0.map(eighth);
-    player.body.velocity.0 = player.body.velocity.0.map(eighth);
+    player.body.position.0 = player.body.position.0.map(math::narrow_eighth);
+    player.body.velocity.0 = player.body.velocity.0.map(math::narrow_eighth);
     let command = super::prepare_command(RuleSetId::Quake2, command);
     let parameters = Parameters::load(RuleSetId::Quake2, player);
     let mut result = MovementResult::default();
     run_step(command, player, world, parameters, &mut result);
     result
-}
-fn eighth(value: f32) -> f32 {
-    f32::from((value * 8.0) as i32 as i16) * 0.125
 }
 fn rerelease(
     command: UserCmd,

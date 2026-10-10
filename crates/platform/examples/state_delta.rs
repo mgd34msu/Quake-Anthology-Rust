@@ -295,6 +295,33 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             result.decoded[..42].copy_from_slice(&decoded.words);
             result.decoded[42..106].copy_from_slice(&decoded.stats);
         }
+        12 => {
+            let from = case.from[..states::Q2_REPRO_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "repro entity words")?;
+            let to = case.to[..states::Q2_REPRO_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "repro entity words")?;
+            states::write_q2_repro_entity(
+                &mut writer,
+                case.number as u16,
+                from,
+                if case.flags & 2 != 0 { None } else { Some(to) },
+                case.flags & 4 != 0,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+            let decoded =
+                states::read_q2_repro_entity(&mut reader, from).map_err(|e| e.to_string())?;
+            if reader.byte_position() != writer.size() {
+                return Err("repro entity record boundary".into());
+            }
+            result.number = u32::from(decoded.number);
+            result.removed = decoded.words.is_none();
+            if let Some(words) = decoded.words {
+                result.decoded[..states::Q2_REPRO_ENTITY_WORDS].copy_from_slice(&words);
+            }
+        }
         _ => return Err("state dialect".into()),
     }
     result.bits = writer.bit_position() as u32;
@@ -368,7 +395,7 @@ fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> 
     let mut counts = allocations::Counts::default();
     let mut checks = 0;
     let mut wire_bytes = 0;
-    let mut mode_checks = [0u64; 12];
+    let mut mode_checks = [0u64; 13];
     for frame in 0..660 {
         allocations::begin_frame();
         let watch = (!heap_only).then(Stopwatch::start);
