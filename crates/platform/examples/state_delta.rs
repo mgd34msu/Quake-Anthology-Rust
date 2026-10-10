@@ -1,7 +1,7 @@
 //! Developer-only original-C delta record fidelity and allocation/timing probe.
 use qa_network::{
     message::{Encoding, Reader, Writer},
-    states::{self, ENTITY_WORDS, PLAYER_WORDS, Q2_PLAYER_WORDS, QW_ENTITY_WORDS},
+    states::{self, ENTITY_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS, Q2_PLAYER_WORDS, QW_ENTITY_WORDS},
 };
 use qa_platform::{Stopwatch, allocations};
 use std::io::{Read, Write};
@@ -141,6 +141,36 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
                 }
             } else {
                 result.decoded[..QW_ENTITY_WORDS].copy_from_slice(from);
+            }
+        }
+        4 => {
+            let from: &[u32; Q2_ENTITY_WORDS] = case.from[..Q2_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "Q2 entity words")?;
+            let to: &[u32; Q2_ENTITY_WORDS] = case.to[..Q2_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "Q2 entity words")?;
+            result.number = case.number;
+            let sent = states::write_q2_entity(
+                &mut writer,
+                case.number,
+                from,
+                if case.flags & 2 != 0 { None } else { Some(to) },
+                case.flags & 1 != 0,
+                case.flags & 4 != 0,
+            )
+            .map_err(|e| e.to_string())?;
+            if sent {
+                let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+                let decoded =
+                    states::read_q2_entity(&mut reader, from).map_err(|e| e.to_string())?;
+                result.number = u32::from(decoded.number);
+                result.removed = decoded.words.is_none();
+                if let Some(words) = decoded.words {
+                    result.decoded[..Q2_ENTITY_WORDS].copy_from_slice(&words);
+                }
+            } else {
+                result.decoded[..Q2_ENTITY_WORDS].copy_from_slice(from);
             }
         }
         _ => return Err("state dialect".into()),

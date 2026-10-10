@@ -151,6 +151,88 @@ static void qw_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *number,byt
     return source
 
 
+def q2_entity_layout():
+    rust = (ROOT / 'crates/network/src/states.rs').read_text()
+    block = re.search(r'pub const Q2_ENTITY_LAYOUT.*?=\s*\[(.*?)\n\];', rust, re.S).group(1)
+    return [(name, int(width)) for name, width in re.findall(r'\("([^"]+)",\s*(-?\d+)\)', block)]
+
+
+def q2_entity_reference(qsrc):
+    header = (qsrc / 'quake-2/game/q_shared.h').read_text()
+    constants = (qsrc / 'quake-2/qcommon/qcommon.h').read_text()
+    common = (qsrc / 'quake-2/qcommon/common.c').read_text()
+    client = (qsrc / 'quake-2/client/cl_ents.c').read_text()
+    end = header.index('} entity_state_t;') + len('} entity_state_t;')
+    source = '\n' + header[header.rfind('typedef struct entity_state_s',0,end):end] + '\n'
+    for line in re.findall(r'^#define\s+U_[A-Z0-9_]+\s+.*$', constants, re.M):
+        name = line.split()[1]
+        source += f'#undef {name}\n' + line + '\n'
+    source += '\n'.join(re.findall(r'^#define\s+(?:MAX_EDICTS|RF_BEAM|VectorCopy).*$',header,re.M)) + '\n'
+    source += r'''
+#define bitcounts q2_entity_bitcounts
+static int bitcounts[32];
+#define MSG_WriteByte(m,v) q2_write(m,v,8)
+#define MSG_WriteShort(m,v) q2_write(m,v,16)
+#define MSG_WriteLong(m,v) q2_write(m,v,32)
+#define MSG_ReadByte(m) q2_read(m,8,0)
+#define MSG_ReadChar(m) q2_read(m,8,1)
+#define MSG_ReadShort(m) q2_read(m,16,1)
+#define MSG_ReadLong(m) q2_read(m,32,0)
+#define MSG_WriteCoord Q2_WriteCoord
+#define MSG_WriteAngle Q2_WriteAngle
+#define MSG_ReadCoord Q2_ReadCoord
+#define MSG_ReadAngle Q2_ReadAngle
+#define MSG_ReadPos Q2_ReadPos
+#define MSG_WriteDeltaEntity Q2_WriteDeltaEntity
+#define CL_ParseDelta Q2_ParseDelta
+'''
+    for name in ['MSG_WriteCoord','MSG_WriteAngle','MSG_ReadCoord','MSG_ReadAngle','MSG_ReadPos','MSG_WriteDeltaEntity']:
+        source += function(common,name)
+    source += function(client,'CL_ParseEntityBits') + function(client,'CL_ParseDelta')
+    source += 'static void q2_entity_put(entity_state_t *p,uint32_t *words) {\n'
+    for i,(name,_) in enumerate(q2_entity_layout()):
+        source += f' memcpy(&p->{name}, &words[{i}],4);\n' if 8 <= i <= 16 else f' p->{name}=words[{i}];\n'
+    source += '}\nstatic void q2_entity_get(entity_state_t *p,uint32_t *words) {\n'
+    for i,(name,_) in enumerate(q2_entity_layout()):
+        source += f' memcpy(&words[{i}], &p->{name},4);\n' if 8 <= i <= 16 else f' words[{i}]=p->{name};\n'
+    source += r'''
+}
+static void q2_entity_encode(msg_t *msg,uint32_t *from,uint32_t *to,int number,int flags) {
+ entity_state_t a={.number=number},b={.number=number};q2_entity_put(&a,from);q2_entity_put(&b,to);
+ if(!(flags&2)) {MSG_WriteDeltaEntity(&a,&b,msg,flags&1,flags&4);return;}
+ int oldnum=number,bits;
+'''
+    emitter = (qsrc/'quake-2/server/sv_ents.c').read_text()
+    start = emitter.index('bits = U_REMOVE;')
+    source += emitter[start:emitter.index('oldindex++;',start)]
+    source += r'''
+}
+static void q2_entity_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *number,byte *removed) {
+ entity_state_t a={.number=*number},b={0};q2_entity_put(&a,from);
+ if(!m->cursize) {q2_entity_get(&a,out);return;}
+ net_message=*m;unsigned flags;*number=CL_ParseEntityBits(&flags);
+ if(flags&U_REMOVE) {*removed=1;return;}
+ CL_ParseDelta(&a,&b,*number,flags);q2_entity_get(&b,out);
+}
+#undef bitcounts
+#undef MSG_WriteByte
+#undef MSG_WriteShort
+#undef MSG_WriteLong
+#undef MSG_ReadByte
+#undef MSG_ReadChar
+#undef MSG_ReadShort
+#undef MSG_ReadLong
+#undef MSG_WriteCoord
+#undef MSG_WriteAngle
+#undef MSG_ReadCoord
+#undef MSG_ReadAngle
+#undef MSG_ReadPos
+#undef MSG_WriteDeltaEntity
+#undef CL_ParseDelta
+'''
+    return source
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -202,6 +284,7 @@ typedef struct {char *name;int offset,bits;} netField_t;
         source += function(msg, name)
     source += q2_reference(qsrc)
     source += qw_reference(qsrc)
+    source += q2_entity_reference(qsrc)
     source += r'''
 static void put(void *record,netField_t *fields,int count,uint32_t *words) {
  for(int i=0;i<count;i++)memcpy((byte*)record+fields[i].offset,&words[i],4);
@@ -216,11 +299,16 @@ static void arrays(playerState_t *p,uint32_t *words,int output) {
  }
 }
 int main(void) {
+ {byte wire[]={0x90,0x80,2,1,4,0xbf,0xfe};msg_t check={.data=wire,.cursize=sizeof(wire)};
+  uint32_t from[112]={0},out[112]={0},number=1;byte removed=0;
+  q2_entity_decode(&check,from,out,&number,&removed);
+  if(out[4]!=(uint32_t)-321||number!=1||removed||net_message.readcount!=7)return 9;
+ }
  Huff_Init(&msgHuff);for(int i=0;i<256;i++)for(int j=0;j<msg_hData[i];j++)Huff_addRef(&msgHuff.compressor,(byte)i);
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>3||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>4||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -231,17 +319,19 @@ int main(void) {
    MSG_WriteDeltaPlayerstate(&m,&p,&q);
   } else if(mode==2) {
    client_frame_t x={0},y={0};q2_put(&x.ps,from);q2_put(&y.ps,to);SV_WritePlayerstateToClient(&x,&y,&m);
-  } else {qw_encode(&m,from,to,number,flags);
+  } else if(mode==3) {qw_encode(&m,from,to,number,flags);
+  } else {q2_entity_encode(&m,from,to,number,flags);
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
-  uint32_t decoded[112]={0},wire_number=(mode==0||mode==3)?number:0;byte removed=0;m.bit=m.readcount=0;
+  uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
   if(mode==0) {
    if(header[0]) {wire_number=MSG_ReadBits(&m,10);MSG_ReadDeltaEntity(&m,&a,&c,wire_number);removed=(flags&2)!=0;}
    else c=a;
    get(&c,entityStateFields,51,decoded);
   } else if(mode==1) {MSG_ReadDeltaPlayerstate(&m,&p,&r);get(&r,playerStateFields,48,decoded);arrays(&r,decoded,1);}
   else if(mode==2) {player_state_t x={0},y={0};q2_put(&x,from);q2_decode(&m,&x,&y);q2_get(&y,decoded);}
-  else {qw_decode(&m,from,decoded,&wire_number,&removed);}
+  else if(mode==3) {qw_decode(&m,from,decoded,&wire_number,&removed);}
+  else {q2_entity_decode(&m,from,decoded,&wire_number,&removed);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
@@ -251,7 +341,7 @@ int main(void) {
     code.write_text(source)
     binary = evidence / 'original-state-delta'
     subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
-    return binary, layouts(msg) + [q2_layout(), qw_layout()]
+    return binary, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout()]
 
 
 def fixture(tables):
@@ -264,6 +354,11 @@ def fixture(tables):
             for i, (_, width) in enumerate(table):
                 if mode == 3 and 5 <= i <= 10:
                     value = lambda: struct.unpack('<I',struct.pack('<f',rng.uniform(-4096,4096)))[0]
+                elif mode == 4:
+                    if 8 <= i <= 16:
+                        value = lambda: struct.unpack('<I',struct.pack('<f',rng.uniform(-4096,4096)))[0]
+                    else:
+                        value = lambda: rng.getrandbits(32)
                 elif mode == 2:
                     if 13 <= i <= 21 or 24 <= i <= 34:
                         bounds = (0,1) if 30 <= i <= 33 else (-32,32) if i < 16 or 19 <= i <= 29 else (-1024,1024)
@@ -281,7 +376,7 @@ def fixture(tables):
                 change = i == case - 1 if case <= len(table) else rng.randrange(4) == 0
                 new[i] = value() if change else old[i]
                 if change and new[i] == old[i]:
-                    floating = width == 0 or mode == 2 and (13 <= i <= 21 or 24 <= i <= 34) or mode == 3 and 5 <= i <= 10
+                    floating = width == 0 and mode != 4 or mode == 2 and (13 <= i <= 21 or 24 <= i <= 34) or mode == 3 and 5 <= i <= 10 or mode == 4 and 8 <= i <= 16
                     new[i] = struct.unpack('<I', struct.pack('<f', 0.25))[0] if floating else old[i] ^ 1
             if mode == 1 and case > len(table):
                 for i in range(48, 112):
@@ -299,8 +394,19 @@ def fixture(tables):
                 if case < 96: new[5]=edge
                 new[11] = 64 if case%2 else 0
                 if case >= 96: new[0]=3 if case%4 else 0
-            flags = case % 2 | (2 if mode in (0,3) and case % 17 == 0 else 0)
-            number = 1 + case%511 if mode==3 else case%1023
+            flags = case % 2 | (2 if mode in (0,3,4) and case % 17 == 0 else 0)
+            if mode == 4:
+                flags |= 4 if case%3==0 else 0
+                if case < 128:
+                    old=[0]*112;new=old.copy()
+                    edges=[0,255,256,32767,32768,65535,65536,0x7fffffff,0x80000000,0xffffffff]
+                    for i in (4,5,6,7): new[i]=edges[(case+i)%len(edges)]
+                    old[18]=7;new[18]=0 if case%2 else 7
+                    old[8]=struct.unpack('<I',struct.pack('<f',1.25))[0]
+                    old[14]=struct.unpack('<I',struct.pack('<f',-4.0))[0]
+                    new[8]=old[8];new[14]=old[14]
+                    if case>=100: new=old.copy();new[18]=0
+            number = 1 + case%511 if mode==3 else 1+case%1023 if mode==4 else case%1023
             output += struct.pack('<BBH224I', mode, flags, number, *old, *new)
     return output
 
@@ -326,8 +432,8 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=8192, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser and QW SV_WriteDelta/CL_ParseDelta unchanged; original removal statement, offsetof and private bindings only',
+    result = dict(result='PASS', cases=10240, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser and QW SV_WriteDelta/CL_ParseDelta and Q2 entity writer/bits/parser unchanged; original removal statements, offsetof and private bindings only',
                   limits='Seeded native delta records; no snapshot framing, common-state ABI projection, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))

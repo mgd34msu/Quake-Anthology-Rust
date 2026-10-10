@@ -1,6 +1,6 @@
 //! Native state projections in protocol table order, not engine entity storage.
 use crate::{
-    delta::{self, Field, Group, Presence, ScaleRead, Value},
+    delta::{self, Field, Group, Packed, Presence, ScaleRead, Value},
     message::{Error, Reader, Writer},
 };
 
@@ -193,7 +193,7 @@ pub fn write_q3_entity(
         return Ok(false);
     }
     let count = to.map_or(0, |to| {
-        delta::changed::<true, false>(&ENTITY_FIELDS, from, to)
+        delta::changed::<true, false, false>(&ENTITY_FIELDS, from, to)
     });
     if to.is_some() && count == 0 && !force {
         return Ok(false);
@@ -247,7 +247,7 @@ pub fn write_q3_player(
     delta::write(&PLAYER_GROUP, from, to, 0, writer)?;
     let arrays = PLAYER_ARRAYS
         .iter()
-        .any(|group| delta::changed::<true, false>(group.fields, from, to) != 0);
+        .any(|group| delta::changed::<true, false, false>(group.fields, from, to) != 0);
     writer.write_bits(u32::from(arrays), 1)?;
     if arrays {
         delta::write(&PLAYER_ARRAYS, from, to, 0, writer)?;
@@ -393,6 +393,7 @@ pub fn write_q2_player(
     writer.write_bits(17, 8)?;
     delta::write(&Q2_PLAYER_GROUPS, from, to, 0, writer)
 }
+#[inline(always)]
 pub fn read_q2_player(
     reader: &mut Reader<'_>,
     from: &[u32; Q2_PLAYER_WORDS],
@@ -482,7 +483,7 @@ pub fn write_qw_entity(
         writer.write_bits(number | (1 << 14), 16)?;
         return Ok(true);
     };
-    let mut flags = delta::mask::<true, true>(&QW_ENTITY_FIELDS, from, to, 0, 0, 0);
+    let mut flags = delta::mask::<true, true, false>(&QW_ENTITY_FIELDS, from, to, 0, 0, 0);
     if flags & 511 != 0 {
         flags |= 1 << 15;
     }
@@ -524,10 +525,272 @@ pub fn read_qw_entity(
     })
 }
 
+/// Protocol-34 entity words. Number belongs to the record prefix.
+pub const Q2_ENTITY_LAYOUT: [(&str, i8); 20] = [
+    ("modelindex", 8),
+    ("modelindex2", 8),
+    ("modelindex3", 8),
+    ("modelindex4", 8),
+    ("frame", 0),
+    ("skinnum", 0),
+    ("effects", 0),
+    ("renderfx", 0),
+    ("origin[0]", -16),
+    ("origin[1]", -16),
+    ("origin[2]", -16),
+    ("angles[0]", -8),
+    ("angles[1]", -8),
+    ("angles[2]", -8),
+    ("old_origin[0]", -16),
+    ("old_origin[1]", -16),
+    ("old_origin[2]", -16),
+    ("sound", 8),
+    ("event", 8),
+    ("solid", -16),
+];
+pub const Q2_ENTITY_WORDS: usize = Q2_ENTITY_LAYOUT.len();
+pub type Q2EntityDelta = EntityDelta<Q2_ENTITY_WORDS>;
+static Q2_ENTITY_FIELDS: [Field; 21] = [
+    Field::new(0, 8, 1 << 11, Value::Unsigned),
+    Field::new(1, 8, 1 << 20, Value::Unsigned),
+    Field::new(2, 8, 1 << 21, Value::Unsigned),
+    Field::new(3, 8, 1 << 22, Value::Unsigned),
+    // Both native frame flags are read independently in their original order.
+    Field::new(4, 8, 1 << 4, Value::Packed(Packed::Signed8)),
+    Field::new(4, 16, 1 << 17, Value::Packed(Packed::Signed8)),
+    Field::new(
+        5,
+        0,
+        (1 << 16) | (1 << 25),
+        Value::Packed(Packed::Unsigned16),
+    ),
+    Field::new(
+        6,
+        0,
+        (1 << 14) | (1 << 19),
+        Value::Packed(Packed::Unsigned15),
+    ),
+    Field::new(7, 0, (1 << 12) | (1 << 18), Value::Packed(Packed::Signed15)),
+    Field::new(
+        8,
+        16,
+        1,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        9,
+        16,
+        1 << 1,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        10,
+        16,
+        1 << 9,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(11, 8, 1 << 10, Value::Angle8),
+    Field::new(12, 8, 1 << 2, Value::Angle8),
+    Field::new(13, 8, 1 << 3, Value::Angle8),
+    Field::new(
+        14,
+        16,
+        1 << 24,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        15,
+        16,
+        1 << 24,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        16,
+        16,
+        1 << 24,
+        Value::Scaled {
+            factor: 8,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(17, 8, 1 << 26, Value::Unsigned),
+    Field::new(18, 8, 1 << 5, Value::Transient),
+    Field::new(19, 16, 1 << 27, Value::Signed),
+];
+static Q2_ENTITY_GROUP: [Group<true, true, true>; 1] = [Group {
+    fields: &Q2_ENTITY_FIELDS,
+    presence: Presence::Fixed,
+}];
+const Q2_NUMBER16: u32 = 1 << 8;
+const Q2_REMOVE: u32 = 1 << 6;
+const Q2_MORE1: u32 = 1 << 7;
+const Q2_MORE2: u32 = 1 << 15;
+const Q2_MORE3: u32 = 1 << 23;
+fn write_q2_entity_prefix(
+    writer: &mut Writer<'_>,
+    number: u32,
+    mut flags: u32,
+) -> Result<u32, Error> {
+    if flags & 0xff00_0000 != 0 {
+        flags |= Q2_MORE1 | Q2_MORE2 | Q2_MORE3;
+    } else if flags & 0x00ff_0000 != 0 {
+        flags |= Q2_MORE1 | Q2_MORE2;
+    } else if flags & 0x0000_ff00 != 0 {
+        flags |= Q2_MORE1;
+    }
+    writer.write_bits(flags, 8)?;
+    if flags & Q2_MORE1 != 0 {
+        writer.write_bits(flags >> 8, 8)?;
+    }
+    if flags & Q2_MORE2 != 0 {
+        writer.write_bits(flags >> 16, 8)?;
+    }
+    if flags & Q2_MORE3 != 0 {
+        writer.write_bits(flags >> 24, 8)?;
+    }
+    writer.write_bits(number, if flags & Q2_NUMBER16 != 0 { 16 } else { 8 })?;
+    Ok(flags)
+}
+pub fn write_q2_entity(
+    writer: &mut Writer<'_>,
+    number: u32,
+    from: &[u32; Q2_ENTITY_WORDS],
+    to: Option<&[u32; Q2_ENTITY_WORDS]>,
+    force: bool,
+    new_entity: bool,
+) -> Result<bool, Error> {
+    if number == 0 || number >= 1024 {
+        return Ok(false);
+    }
+    let number_flag = if number >= 256 { Q2_NUMBER16 } else { 0 };
+    let Some(to) = to else {
+        write_q2_entity_prefix(writer, number, Q2_REMOVE | number_flag)?;
+        return Ok(true);
+    };
+    let mut flags =
+        delta::mask::<true, true, true>(&Q2_ENTITY_FIELDS, from, to, number_flag, 15, 3);
+    if new_entity || to[7] & 128 != 0 {
+        flags |= 1 << 24;
+    }
+    // Native U_NUMBER16 precedes the unchanged-record check.
+    if flags == 0 && !force {
+        return Ok(false);
+    }
+    let flags = write_q2_entity_prefix(writer, number, flags)?;
+    delta::write(&Q2_ENTITY_GROUP, from, to, flags, writer)?;
+    Ok(true)
+}
+pub fn read_q2_entity(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_ENTITY_WORDS],
+) -> Result<Q2EntityDelta, Error> {
+    let mut flags = reader.read_bits(8)?;
+    if flags & Q2_MORE1 != 0 {
+        flags |= reader.read_bits(8)? << 8;
+    }
+    if flags & Q2_MORE2 != 0 {
+        flags |= reader.read_bits(8)? << 16;
+    }
+    if flags & Q2_MORE3 != 0 {
+        flags |= reader.read_bits(8)? << 24;
+    }
+    let number = reader.read_bits(if flags & Q2_NUMBER16 != 0 { 16 } else { 8 })? as u16;
+    if flags & Q2_REMOVE != 0 {
+        return Ok(Q2EntityDelta {
+            number,
+            words: None,
+        });
+    }
+    let mut words = *from;
+    words[14..17].copy_from_slice(&from[8..11]);
+    words[18] = 0;
+    delta::read(&Q2_ENTITY_GROUP, &mut words, flags, reader)?;
+    Ok(Q2EntityDelta {
+        number,
+        words: Some(words),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{Encoding, ErrorKind};
+
+    #[test]
+    fn q2_widths_defaults_transient_event_and_frame_flag_order() -> Result<(), Error> {
+        let mut from = [0; Q2_ENTITY_WORDS];
+        from[8] = 1.25f32.to_bits();
+        from[14] = (-4.0f32).to_bits();
+        from[18] = 7;
+        let mut to = from;
+        to[18] = 0;
+        let mut bytes = [0; 128];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_q2_entity(&mut writer, 256, &from, Some(&to), false, false)?;
+        assert_eq!(writer.bytes(), &[128, 1, 0, 1]);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let decoded = read_q2_entity(&mut reader, &from)?;
+        let Some(words) = decoded.words else {
+            return Err(Error {
+                byte: 0,
+                kind: ErrorKind::Symbol,
+            });
+        };
+        assert_eq!(words[14], from[8]);
+        assert_eq!(words[18], 0);
+        to[4] = 32768;
+        to[5] = 65535;
+        to[6] = 32768;
+        to[7] = (-1i32) as u32;
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_q2_entity(&mut writer, 1, &from, Some(&to), false, false)?;
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let Some(words) = read_q2_entity(&mut reader, &from)?.words else {
+            return Err(Error {
+                byte: 0,
+                kind: ErrorKind::Symbol,
+            });
+        };
+        assert_eq!(words[4], (-32768i32) as u32);
+        assert_eq!(words[5], u32::MAX);
+        assert_eq!(words[6], 32768);
+        assert_eq!(words[7], 255);
+        assert_eq!(words[14], to[14]);
+        for size in 0..writer.size() {
+            assert!(
+                read_q2_entity(
+                    &mut Reader::new(&writer.bytes()[..size], Encoding::Bytes),
+                    &from
+                )
+                .is_err()
+            );
+        }
+        let mut reader = Reader::new(&[0x90, 0x80, 2, 1, 4, 0xbf, 0xfe], Encoding::Bytes);
+        assert_eq!(
+            read_q2_entity(&mut reader, &from)?.words.map(|w| w[4]),
+            Some((-321i32) as u32)
+        );
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_q2_entity(&mut writer, 256, &from, None, false, false)?;
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        assert!(read_q2_entity(&mut reader, &from)?.words.is_none());
+        Ok(())
+    }
 
     #[test]
     fn qw_threshold_uses_native_double_literal_and_solid_flag_order() -> Result<(), Error> {

@@ -3727,3 +3727,66 @@ checkpoint: common-state projections, snapshot framing/rings, Q2 entity and
 NQ/rerelease state tables, native signon, captures, live connections and
 installed acceptance remain on THE-860/THE-3169. No snapshot/gameplay caller
 is claimed for these tables yet.
+
+
+### THE-860: Q2 entity records on the common walker
+
+Protocol 34 registers twenty native entity words in the same scalar table.
+The native frame field has two ordered descriptors because its parser reads
+byte and short flags independently. Skin/effects/render flags choose byte,
+short or long widths from signed/unsigned threshold data. Byte decoding stays
+unsigned and short decoding signed, including the original skin-short result.
+Transient events compare to zero and clear when absent. Old origin defaults
+to the previous origin and is forced by new-entity/beam policy. Entity number
+is explicit; U_NUMBER16 precedes the unchanged-record check. Native flag
+extension bytes, removals and field order remain unchanged.
+
+Static group metadata excludes variable-width/transient branches from existing
+tables. No second encoder, reader or engine entity store is introduced. The
+unused fixed-width accessor is deleted; the generic entity result is reused.
+Q2 player decoding is inlined at its fixed-array boundary after the first
+measurement showed a 9.609% median increase in that older workload.
+
+The original MSG_WriteDeltaEntity, CL_ParseEntityBits and CL_ParseDelta bodies
+join the existing Q3/Q2-player/QW oracle. All 10,240 records, 5,090,044 comparison
+bytes and decoded words match. Native removal statements are extracted from
+SV_EmitPacketEntities; the whole packet emitter is not compared. An additional
+original-parser assertion and Rust test agree on both frame flags and their
+seven-byte cursor. Focused tests also cover signed width boundaries, event
+reset, old-origin defaults/beam forcing, unchanged entity 256 and every
+truncated active-record prefix. Earlier 3,072 command records and 768 MSG/Huff
+cases remain exact. The unchanged checker, 660 workspace tests and Clippy pass.
+
+CPU23, portable release, five ABBA blocks, 60 warm-up plus 600 measured frames,
+sixteen records with original-C fidelity checks per frame. Baselines and
+unchanged fixtures are retained from f38fe5a2. Measured codec allocations,
+reallocations and requested bytes are zero; the positive control counts one.
+
+| Existing codec workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed usercmds | 3083 | 3002 | -2.627% | 4304 | 4472 |
+| QW usercmds | 1859.5 | 1826 | -1.802% | 3009 | 2889 |
+| Q2 usercmds | 2026.5 | 1852 | -8.611% | 2976 | 2834 |
+| Q3 usercmds | 3521 | 3522.5 | 0.043% | 4700 | 4293 |
+| Q3 entity/player records | 20375.5 | 20274.5 | -0.496% | 37682 | 40781.1 |
+| Q2 player records | 12720.5 | 13111.55 | 3.074% | 18289 | 19052 |
+| QW entity records | 2774.5 | 2544 | -8.308% | 3742 | 3373 |
+
+Q3-command/Q2-player medians increase by 0.043%/3.074%; other medians improve.
+Mixed-command/Q3-state/Q2-player p99 increases are 3.903%/8.225%/4.172%; other
+tails improve. This meets the existing 10% median guard, with the increases
+reported explicitly. Every leg retains its byte total and 10,560 fidelity
+checks including warm-up. Four new Q2 entity runs average 4,943.75 ns median
+and 6,647.5 ns p99 per sixteen records, 169,004 wire bytes and 10,560 checks
+including warm-up, with zero measured heap. There is no comparable prior Q2
+entity engine path. These timings exclude host, transport, workers and gameplay.
+
+Evidence: `THE-860-q2-entity-20261009/`, final-original/comparison.json,
+final-commands/comparison.json, final-message/comparison.json,
+final-abba-summary.json and inline-q2-read raw legs, final-q2-entity-summary.json
+and four runs, final-checker.json, workspace summary/log and Clippy log.
+Native implicit unchanged-entity application still belongs to the packet-frame
+path: this record probe normalizes an omitted record to its supplied baseline.
+Common-state projection, snapshot framing/32-slot rings, NQ/rerelease state
+coverage, native signon/captures/live/combined clients and installed acceptance
+remain on THE-860/THE-3169. No snapshot/gameplay caller or install is claimed.
