@@ -6,46 +6,38 @@ use crate::{
 };
 use qa_core::primitives::Vec3;
 
-const fn field(word: usize, bits: u8, flag: u32, value: Value) -> Field {
-    Field {
-        word,
-        bits,
-        flag,
-        value,
-    }
-}
 const QW: [Group; 1] = [Group {
     presence: Presence::Mask(8),
     fields: &[
-        field(0, 16, 1, Value::Angle16),
-        field(1, 16, 128, Value::Angle16),
-        field(2, 16, 2, Value::Angle16),
-        field(3, 16, 4, Value::Signed),
-        field(4, 16, 8, Value::Signed),
-        field(5, 16, 16, Value::Signed),
-        field(6, 8, 32, Value::Unsigned),
-        field(7, 8, 64, Value::Unsigned),
-        field(8, 8, 0, Value::Unsigned),
+        Field::new(0, 16, 1, Value::Angle16),
+        Field::new(1, 16, 128, Value::Angle16),
+        Field::new(2, 16, 2, Value::Angle16),
+        Field::new(3, 16, 4, Value::Signed),
+        Field::new(4, 16, 8, Value::Signed),
+        Field::new(5, 16, 16, Value::Signed),
+        Field::new(6, 8, 32, Value::Unsigned),
+        Field::new(7, 8, 64, Value::Unsigned),
+        Field::new(8, 8, 0, Value::Unsigned),
     ],
 }];
 const Q2: [Group; 1] = [Group {
     presence: Presence::Mask(8),
     fields: &[
-        field(0, 16, 1, Value::Signed),
-        field(1, 16, 2, Value::Signed),
-        field(2, 16, 4, Value::Signed),
-        field(3, 16, 8, Value::Signed),
-        field(4, 16, 16, Value::Signed),
-        field(5, 16, 32, Value::Signed),
-        field(6, 8, 64, Value::Unsigned),
-        field(7, 8, 128, Value::Unsigned),
-        field(8, 8, 0, Value::Unsigned),
-        field(9, 8, 0, Value::Unsigned),
+        Field::new(0, 16, 1, Value::Signed),
+        Field::new(1, 16, 2, Value::Signed),
+        Field::new(2, 16, 4, Value::Signed),
+        Field::new(3, 16, 8, Value::Signed),
+        Field::new(4, 16, 16, Value::Signed),
+        Field::new(5, 16, 32, Value::Signed),
+        Field::new(6, 8, 64, Value::Unsigned),
+        Field::new(7, 8, 128, Value::Unsigned),
+        Field::new(8, 8, 0, Value::Unsigned),
+        Field::new(9, 8, 0, Value::Unsigned),
     ],
 }];
 const Q3_TIME: [Group; 1] = [Group {
     presence: Presence::Fixed,
-    fields: &[field(10, 32, 0, Value::Time)],
+    fields: &[Field::new(10, 32, 0, Value::Time)],
 }];
 const Q3: [Group; 1] = [Group {
     presence: Presence::Changed {
@@ -55,14 +47,14 @@ const Q3: [Group; 1] = [Group {
         key_extra: 1,
     },
     fields: &[
-        field(0, 16, 0, Value::Unsigned),
-        field(1, 16, 0, Value::Unsigned),
-        field(2, 16, 0, Value::Unsigned),
-        field(3, 8, 0, Value::Signed),
-        field(4, 8, 0, Value::Signed),
-        field(5, 8, 0, Value::Signed),
-        field(6, 16, 0, Value::Unsigned),
-        field(7, 8, 0, Value::Unsigned),
+        Field::new(0, 16, 0, Value::Unsigned),
+        Field::new(1, 16, 0, Value::Unsigned),
+        Field::new(2, 16, 0, Value::Unsigned),
+        Field::new(3, 8, 0, Value::Signed),
+        Field::new(4, 8, 0, Value::Signed),
+        Field::new(5, 8, 0, Value::Signed),
+        Field::new(6, 16, 0, Value::Unsigned),
+        Field::new(7, 8, 0, Value::Unsigned),
     ],
 }];
 fn qw_words(c: QwCmd) -> [u32; 11] {
@@ -122,12 +114,14 @@ pub fn read_q2(reader: &mut Reader<'_>, from: Q2Cmd) -> Result<Q2Cmd, Error> {
         light_level: v[9] as u8,
     })
 }
+#[inline(always)]
 pub fn write_q3(writer: &mut Writer<'_>, from: Q3Cmd, to: Q3Cmd, key: u32) -> Result<(), Error> {
     let from = q3_words(from);
     let to = q3_words(to);
     delta::write(&Q3_TIME, &from, &to, 0, writer)?;
     delta::write(&Q3, &from, &to, key ^ to[10], writer)
 }
+#[inline(always)]
 pub fn read_q3(reader: &mut Reader<'_>, from: Q3Cmd, key: u32) -> Result<Q3Cmd, Error> {
     let mut v = q3_words(from);
     delta::read(&Q3_TIME, &mut v, 0, reader)?;

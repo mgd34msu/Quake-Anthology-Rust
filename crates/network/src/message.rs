@@ -34,32 +34,21 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-const fn decode_tree() -> [[i16; 2]; 256] {
-    let mut tree = [[i16::MIN; 2]; 256];
-    let mut used = 1;
+const fn decode_table() -> [(u16, u8); 2048] {
+    let mut table = [(256, 0); 2048];
     let mut symbol = 0;
     while symbol < CODES.len() {
         let (code, width) = CODES[symbol];
-        let mut node = 0;
-        let mut bit = 0;
-        while bit < width {
-            let branch = ((code >> bit) & 1) as usize;
-            if bit + 1 == width {
-                tree[node][branch] = -(symbol as i16) - 1;
-            } else {
-                if tree[node][branch] == i16::MIN {
-                    tree[node][branch] = used as i16;
-                    used += 1;
-                }
-                node = tree[node][branch] as usize;
-            }
-            bit += 1;
+        let mut suffix = 0;
+        while suffix < 1 << (11 - width) {
+            table[code as usize | (suffix << width)] = (symbol as u16, width);
+            suffix += 1;
         }
         symbol += 1;
     }
-    tree
+    table
 }
-const TREE: [[i16; 2]; 256] = decode_tree();
+const DECODE: [(u16, u8); 2048] = decode_table();
 
 fn valid_width(encoding: Encoding, width: u8) -> bool {
     match encoding {
@@ -122,18 +111,31 @@ impl<'a> Reader<'a> {
         Ok(((value >> shift) & ((1u64 << width) - 1)) as u32)
     }
     fn symbol(&mut self) -> Result<u32, Error> {
-        let mut node = 0usize;
-        loop {
-            let next = TREE[node][self.raw(1)? as usize];
-            if next < 0 {
-                let symbol = -i32::from(next) - 1;
-                return if symbol < 256 {
-                    Ok(symbol as u32)
-                } else {
-                    Err(self.error(ErrorKind::Symbol))
-                };
-            }
-            node = next as usize;
+        let start = self.bit / 8;
+        let shift = self.bit % 8;
+        let Some(&first) = self.data.get(start) else {
+            return Err(Error {
+                byte: self.data.len(),
+                kind: ErrorKind::Truncated,
+            });
+        };
+        let lookahead = u32::from(first)
+            | self.data.get(start + 1).map_or(0, |b| u32::from(*b)) << 8
+            | self.data.get(start + 2).map_or(0, |b| u32::from(*b)) << 16;
+        let (symbol, width) = DECODE[((lookahead >> shift) & 2047) as usize];
+        if usize::from(width) > (self.data.len() - start) * 8 - shift {
+            // The former bit walk consumed every available bit before this error.
+            self.bit = self.data.len() * 8;
+            return Err(Error {
+                byte: self.data.len(),
+                kind: ErrorKind::Truncated,
+            });
+        }
+        self.bit += usize::from(width);
+        if symbol < 256 {
+            Ok(u32::from(symbol))
+        } else {
+            Err(self.error(ErrorKind::Symbol))
         }
     }
     pub fn read_bits(&mut self, width: u8) -> Result<u32, Error> {
@@ -175,7 +177,10 @@ pub struct Writer<'a> {
 }
 impl<'a> Writer<'a> {
     pub fn new(data: &'a mut [u8], encoding: Encoding) -> Self {
-        data.fill(0);
+        // Byte streams overwrite every exposed byte; bit streams retain zero padding.
+        if encoding != Encoding::Bytes {
+            data.fill(0);
+        }
         Self {
             data,
             encoding,

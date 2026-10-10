@@ -3661,3 +3661,69 @@ logs. The common-state projection, snapshot/channel integration, Q2 entity,
 QW/NQ/rerelease state tables and native/installed acceptance remain open on
 THE-860/THE-3169. This checkpoint is a record-codec proof, not complete network
 or gameplay acceptance.
+
+
+### THE-860: QW entity records and the shared message decoder
+QW protocol 28 supplies one entity field table to the existing walker. The
+prefix carries the native entity number and mask; table metadata removes
+prefix-only comparisons and projections from inline-mask/player/command paths.
+Origin differences retain float subtraction followed by comparison to the
+original double 0.1 literals. Coordinates and angles retain their native
+signed decoding. MOREBITS is selected before SOLID, and the decoded header
+retains MSG_ReadShort sign extension. Removal and forced unchanged records
+preserve the native controls; out-of-range entity numbers are omitted.
+Every field constructor now uses the one common constructor; the old command
+constructor is deleted. One generic entity-delta result replaces the Q3-only
+result structure, with aliases for each temporary wire shape.
+
+The shared message reader replaces its bit-at-a-time Huffman tree with one
+2,048-entry prefix table derived from the same original fixed codes. The tree
+and old walk are deleted. Reserved-symbol errors and truncated-code offsets/
+bit cursors remain checked. Byte-stream writers omit whole-buffer clearing
+because every emitted byte is overwritten; bit/Huffman streams still clear
+for their zero padding. Reused dirty buffers match clean streams.
+
+Unchanged QW SV_WriteDelta and CL_ParseDelta, Q2 player writer/parser and Q3
+entity/player MSG functions match all 8,192 records, 4,113,114 comparison bytes
+and decoded words. The QW removal uses the original SV_EmitPacketEntities
+statement; this does not compare the full packet emitter. Native struct and
+byte bindings stay in the developer-only helper. The earlier 3,072 command
+cases and all 256 QW/Q2 masks remain exact. The original MSG/Huff oracle also
+matches 768 cases and 49,152 fields. Focused tests cover epsilon boundaries,
+SOLID ordering, sign extension, dirty-buffer padding, reserved symbols and
+truncation cursors. The unchanged checker, 659 workspace tests and Clippy pass.
+
+CPU23, portable release, five ABBA blocks, 60 warm-up and 600 measured frames
+per leg, sixteen records with original-C byte/word checks per frame. The
+baseline binaries and fixtures are retained from 0d8a7600. Earlier expanded
+comparison branches and general lazy buffer initialization were slower and
+are discarded; their measurements remain in the evidence. The final metadata
+and fixed-prefix decoder meet the median gate for all six existing workloads.
+
+| Existing codec workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed usercmds | 3155.5 | 3112 | -1.379% | 6270 | 4449 |
+| QW usercmds | 1797.5 | 1772 | -1.419% | 2793 | 2825 |
+| Q2 usercmds | 2060 | 1996 | -3.107% | 2911 | 3290 |
+| Q3 usercmds | 5137.5 | 3563 | -30.647% | 6652 | 4771 |
+| Q3 entity/player records | 23882 | 18078 | -24.303% | 47896 | 34526 |
+| Q2 player records | 11877.5 | 11760.5 | -0.985% | 15923 | 16062 |
+
+All medians improve. QW/Q2-command/Q2-state p99 increases are 1.146%,
+13.020% and 0.873%; the other tails improve. Every leg retains its workload,
+byte total and 10,560 fidelity checks including warm-up. Measured allocations,
+reallocations and requested bytes are zero, with a one-allocation positive
+control. Four new QW entity runs average 2,617.5 ns median and 3,202.5 ns p99
+per sixteen records, 55,725 wire bytes and 10,560 checks including warm-up,
+with zero measured heap activity. There is no prior QW entity engine path for
+a matched before/after measurement. These probes exclude host, workers,
+sockets, rendering and gameplay.
+
+Evidence: `THE-860-qw-entity-20261009/`, final-original/comparison.json,
+final-commands/comparison.json, final-message/comparison.json,
+final-abba-summary.json and lookup-final raw legs, final-qw-summary.json and
+four QW runs, checker/workspace/Clippy logs. This remains a record-codec
+checkpoint: common-state projections, snapshot framing/rings, Q2 entity and
+NQ/rerelease state tables, native signon, captures, live connections and
+installed acceptance remain on THE-860/THE-3169. No snapshot/gameplay caller
+is claimed for these tables yet.

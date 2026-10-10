@@ -52,6 +52,32 @@ fn mixed_bit_widths_and_signed_native_widths() {
 }
 
 #[test]
+fn reused_dirty_buffers_match_clean_streams_including_padding() {
+    for encoding in [Encoding::Bytes, Encoding::Bits, Encoding::Q3] {
+        let mut clean = [0; 512];
+        let mut reused = [0xa5; 512];
+        let mut a = Writer::new(&mut clean, encoding);
+        let mut b = Writer::new(&mut reused, encoding);
+        for i in 0..128u32 {
+            let width = if encoding == Encoding::Bytes {
+                [8, 16, 32][i as usize % 3]
+            } else {
+                (i % 32 + 1) as u8
+            };
+            let word = i.wrapping_mul(0x9876_5431);
+            a.write_bits(word, width).expect("clean");
+            b.write_bits(word, width).expect("reused");
+            assert_eq!(b.bytes(), a.bytes());
+            assert_eq!(b.bit_position(), a.bit_position());
+        }
+        let used = b.size();
+        if encoding == Encoding::Bytes {
+            assert_eq!(&reused[used..], vec![0xa5; 512 - used]);
+        }
+    }
+}
+
+#[test]
 fn oob_signature_and_body_share_the_message_path() {
     let mut data = [0; 16];
     let mut writer = Writer::out_of_band(&mut data).expect("oob");
@@ -111,4 +137,9 @@ fn invalid_width_and_q3_reserved_symbol_are_errors() {
         reader.read_bits(8).expect_err("reserved NYT").kind,
         ErrorKind::Symbol
     );
+    assert_eq!(reader.bit_position(), 11);
+    let mut reader = Reader::new(&[0], Encoding::Q3);
+    let error = reader.read_bits(8).expect_err("truncated code");
+    assert_eq!((error.byte, error.kind), (1, ErrorKind::Truncated));
+    assert_eq!(reader.bit_position(), 8);
 }

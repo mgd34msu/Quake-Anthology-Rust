@@ -1,7 +1,7 @@
 //! Developer-only original-C delta record fidelity and allocation/timing probe.
 use qa_network::{
     message::{Encoding, Reader, Writer},
-    states::{self, ENTITY_WORDS, PLAYER_WORDS, Q2_PLAYER_WORDS},
+    states::{self, ENTITY_WORDS, PLAYER_WORDS, Q2_PLAYER_WORDS, QW_ENTITY_WORDS},
 };
 use qa_platform::{Stopwatch, allocations};
 use std::io::{Read, Write};
@@ -56,7 +56,7 @@ fn case(reader: &mut Reader<'_>) -> Result<Case, String> {
     })
 }
 fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
-    let encoding = if case.mode == 2 {
+    let encoding = if case.mode >= 2 {
         Encoding::Bytes
     } else {
         Encoding::Q3
@@ -113,6 +113,35 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             result.decoded[..Q2_PLAYER_WORDS].copy_from_slice(
                 &states::read_q2_player(&mut reader, from).map_err(|e| e.to_string())?,
             );
+        }
+        3 => {
+            let from: &[u32; QW_ENTITY_WORDS] = case.from[..QW_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "QW entity words")?;
+            let to: &[u32; QW_ENTITY_WORDS] = case.to[..QW_ENTITY_WORDS]
+                .try_into()
+                .map_err(|_| "QW entity words")?;
+            result.number = case.number;
+            let sent = states::write_qw_entity(
+                &mut writer,
+                case.number,
+                from,
+                if case.flags & 2 != 0 { None } else { Some(to) },
+                case.flags & 1 != 0,
+            )
+            .map_err(|e| e.to_string())?;
+            if sent {
+                let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+                let decoded =
+                    states::read_qw_entity(&mut reader, from).map_err(|e| e.to_string())?;
+                result.number = u32::from(decoded.number);
+                result.removed = decoded.words.is_none();
+                if let Some(words) = decoded.words {
+                    result.decoded[..QW_ENTITY_WORDS].copy_from_slice(&words);
+                }
+            } else {
+                result.decoded[..QW_ENTITY_WORDS].copy_from_slice(from);
+            }
         }
         _ => return Err("state dialect".into()),
     }

@@ -87,6 +87,70 @@ static void q2_decode(msg_t *m,player_state_t *from,player_state_t *to) {
     return source
 
 
+def qw_layout():
+    rust = (ROOT / 'crates/network/src/states.rs').read_text()
+    block = re.search(r'pub const QW_ENTITY_LAYOUT.*?=\s*\[(.*?)\n\];', rust, re.S).group(1)
+    return [(name, int(width)) for name, width in re.findall(r'\("([^"]+)",\s*(-?\d+)\)', block)]
+
+
+def qw_reference(qsrc):
+    protocol = (qsrc / 'quake/QW/client/protocol.h').read_text()
+    common = (qsrc / 'quake/QW/client/common.c').read_text()
+    end = protocol.index('} entity_state_t;') + len('} entity_state_t;')
+    source = '\n#define entity_state_t qw_entity_state_t\n' + protocol[protocol.rfind('typedef struct',0,end):end] + '\n'
+    source += '\n'.join(re.findall(r'^#define\s+U_[A-Z0-9_]+\s+.*$', protocol, re.M)) + '\n'
+    source += r'''
+static int bitcounts[16];
+static void SV_Error(char *fmt,...) {(void)fmt;abort();}
+static void Sys_Error(char *fmt,...) {(void)fmt;abort();}
+#define MSG_WriteByte(m,v) q2_write(m,v,8)
+#define MSG_WriteShort(m,v) q2_write(m,v,16)
+#define MSG_ReadByte() q2_read(&net_message,8,0)
+#define MSG_ReadChar() q2_read(&net_message,8,1)
+#define MSG_ReadShort() q2_read(&net_message,16,1)
+#define MSG_WriteCoord QW_WriteCoord
+#define MSG_WriteAngle QW_WriteAngle
+#define MSG_ReadCoord QW_ReadCoord
+#define MSG_ReadAngle QW_ReadAngle
+'''
+    for name in ['MSG_WriteCoord','MSG_WriteAngle','MSG_ReadCoord','MSG_ReadAngle']:
+        source += function(common,name)
+    source += function((qsrc/'quake/QW/server/sv_ents.c').read_text(),'SV_WriteDelta')
+    source += function((qsrc/'quake/QW/client/cl_ents.c').read_text(),'CL_ParseDelta')
+    source += 'static void qw_put(qw_entity_state_t *p,uint32_t *words) {\n'
+    for i,(name,_) in enumerate(qw_layout()):
+        source += f' memcpy(&p->{name}, &words[{i}],4);\n' if 5 <= i <= 10 else f' p->{name}=words[{i}];\n'
+    source += '}\nstatic void qw_get(qw_entity_state_t *p,uint32_t *words) {\n'
+    for i,(name,_) in enumerate(qw_layout()):
+        source += f' memcpy(&words[{i}], &p->{name},4);\n' if 5 <= i <= 10 else f' words[{i}]=p->{name};\n'
+    source += r'''
+}
+static void qw_encode(msg_t *m,uint32_t *from,uint32_t *to,int number,int flags) {
+ qw_entity_state_t a={.number=number},b={.number=number};qw_put(&a,from);qw_put(&b,to);
+ // Native SV_EmitPacketEntities removal statement, sv_ents.c:307.
+ if(flags&2)MSG_WriteShort(m,number|U_REMOVE);else SV_WriteDelta(&a,&b,m,flags&1);
+}
+static void qw_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *number,byte *removed) {
+ qw_entity_state_t a={.number=*number},b={0};qw_put(&a,from);
+ if(!m->cursize) {qw_get(&a,out);return;}
+ net_message=*m;int header=MSG_ReadShort();*number=header&511;
+ if(header&U_REMOVE) {*removed=1;return;}
+ CL_ParseDelta(&a,&b,header);qw_get(&b,out);
+}
+#undef entity_state_t
+#undef MSG_WriteByte
+#undef MSG_WriteShort
+#undef MSG_ReadByte
+#undef MSG_ReadChar
+#undef MSG_ReadShort
+#undef MSG_WriteCoord
+#undef MSG_WriteAngle
+#undef MSG_ReadCoord
+#undef MSG_ReadAngle
+'''
+    return source
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -137,6 +201,7 @@ typedef struct {char *name;int offset,bits;} netField_t;
         # cl_shownet is already bound to the private fixture's cvar; no print path runs.
         source += function(msg, name)
     source += q2_reference(qsrc)
+    source += qw_reference(qsrc)
     source += r'''
 static void put(void *record,netField_t *fields,int count,uint32_t *words) {
  for(int i=0;i<count;i++)memcpy((byte*)record+fields[i].offset,&words[i],4);
@@ -155,7 +220,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>2||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>3||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -164,17 +229,19 @@ int main(void) {
   } else if(mode==1) {
    put(&p,playerStateFields,48,from);arrays(&p,from,0);put(&q,playerStateFields,48,to);arrays(&q,to,0);
    MSG_WriteDeltaPlayerstate(&m,&p,&q);
-  } else {
+  } else if(mode==2) {
    client_frame_t x={0},y={0};q2_put(&x.ps,from);q2_put(&y.ps,to);SV_WritePlayerstateToClient(&x,&y,&m);
+  } else {qw_encode(&m,from,to,number,flags);
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
-  uint32_t decoded[112]={0},wire_number=mode==0?number:0;byte removed=0;m.bit=m.readcount=0;
+  uint32_t decoded[112]={0},wire_number=(mode==0||mode==3)?number:0;byte removed=0;m.bit=m.readcount=0;
   if(mode==0) {
    if(header[0]) {wire_number=MSG_ReadBits(&m,10);MSG_ReadDeltaEntity(&m,&a,&c,wire_number);removed=(flags&2)!=0;}
    else c=a;
    get(&c,entityStateFields,51,decoded);
   } else if(mode==1) {MSG_ReadDeltaPlayerstate(&m,&p,&r);get(&r,playerStateFields,48,decoded);arrays(&r,decoded,1);}
-  else {player_state_t x={0},y={0};q2_put(&x,from);q2_decode(&m,&x,&y);q2_get(&y,decoded);}
+  else if(mode==2) {player_state_t x={0},y={0};q2_put(&x,from);q2_decode(&m,&x,&y);q2_get(&y,decoded);}
+  else {qw_decode(&m,from,decoded,&wire_number,&removed);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
@@ -184,7 +251,7 @@ int main(void) {
     code.write_text(source)
     binary = evidence / 'original-state-delta'
     subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
-    return binary, layouts(msg) + [q2_layout()]
+    return binary, layouts(msg) + [q2_layout(), qw_layout()]
 
 
 def fixture(tables):
@@ -195,7 +262,9 @@ def fixture(tables):
         for case in range(2048):
             old, new = [0] * 112, [0] * 112
             for i, (_, width) in enumerate(table):
-                if mode == 2:
+                if mode == 3 and 5 <= i <= 10:
+                    value = lambda: struct.unpack('<I',struct.pack('<f',rng.uniform(-4096,4096)))[0]
+                elif mode == 2:
                     if 13 <= i <= 21 or 24 <= i <= 34:
                         bounds = (0,1) if 30 <= i <= 33 else (-32,32) if i < 16 or 19 <= i <= 29 else (-1024,1024)
                         value = lambda: struct.unpack('<I', struct.pack('<f', rng.uniform(*bounds)))[0]
@@ -212,7 +281,8 @@ def fixture(tables):
                 change = i == case - 1 if case <= len(table) else rng.randrange(4) == 0
                 new[i] = value() if change else old[i]
                 if change and new[i] == old[i]:
-                    new[i] = struct.unpack('<I', struct.pack('<f', 0.25))[0] if width == 0 or mode == 2 and (13 <= i <= 21 or 24 <= i <= 34) else old[i] ^ 1
+                    floating = width == 0 or mode == 2 and (13 <= i <= 21 or 24 <= i <= 34) or mode == 3 and 5 <= i <= 10
+                    new[i] = struct.unpack('<I', struct.pack('<f', 0.25))[0] if floating else old[i] ^ 1
             if mode == 1 and case > len(table):
                 for i in range(48, 112):
                     old[i] = rng.getrandbits(32)
@@ -223,8 +293,15 @@ def fixture(tables):
                     new[i] = rng.randrange(-32768,32768) & 0xffffffff if case > 36 and rng.randrange(4) == 0 else old[i]
             if case >= 256 and case % 8 == 0:
                 new = old.copy()
-            flags = case % 2 | (2 if mode == 0 and case % 17 == 0 else 0)
-            output += struct.pack('<BBH224I', mode, flags, case % 1023, *old, *new)
+            if mode == 3 and case < 128:
+                old = [0]*112;new = old.copy()
+                edge = [0x3dcccccc,0x3dcccccd,0x3dccccce,0xbdcccccc,0xbdcccccd,0xbdccccce][case%6]
+                if case < 96: new[5]=edge
+                new[11] = 64 if case%2 else 0
+                if case >= 96: new[0]=3 if case%4 else 0
+            flags = case % 2 | (2 if mode in (0,3) and case % 17 == 0 else 0)
+            number = 1 + case%511 if mode==3 else case%1023
+            output += struct.pack('<BBH224I', mode, flags, number, *old, *new)
     return output
 
 
@@ -249,8 +326,8 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=6144, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player and Q2 server player writer/client parser, struct layouts and Huffman unchanged; offsetof and private bindings only',
+    result = dict(result='PASS', cases=8192, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser and QW SV_WriteDelta/CL_ParseDelta unchanged; original removal statement, offsetof and private bindings only',
                   limits='Seeded native delta records; no snapshot framing, common-state ABI projection, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))
