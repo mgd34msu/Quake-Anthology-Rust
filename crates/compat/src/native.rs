@@ -13,6 +13,7 @@ use qa_platform::native::{
 use std::{fmt::Write, time::Duration};
 
 pub mod elf;
+pub mod q2;
 mod runtime;
 mod table;
 pub use table::{ReturnedTable, TableFunction};

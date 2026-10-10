@@ -1606,6 +1606,219 @@ fn q2_table_file() -> Vec<u8> {
     file
 }
 
+fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
+    use qa_compat::native::{NativeCalls, q2::Game};
+    use qa_compat::{abi::UnknownCalls, services::ServiceStorage};
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let rr = rules == RuleSetId::Quake2Rerelease;
+        let mut file = q2_table_file();
+        let version = if rr { 2023 } else { 3 };
+        pe_rva(&mut file, 0x1800, version, 4);
+        pe_text(&mut file, 0x1500, &[0xc3]);
+        let count = if rr { 29 } else { 15 };
+        for slot in 0..count {
+            let offset = if !rr || slot < 19 {
+                8 + slot * 8
+            } else {
+                192 + (slot - 19) * 8
+            };
+            pe_rva(&mut file, 0x1800 + offset, 0x180001500, 8);
+        }
+        let entity_offset = if rr { 160 } else { 128 };
+        pe_rva(&mut file, 0x1800 + entity_offset, 0x180001c00, 8);
+        pe_rva(
+            &mut file,
+            0x1800 + entity_offset + 8,
+            64,
+            if rr { 8 } else { 4 },
+        );
+        let size = if rr { 16 } else { 12 };
+        pe_rva(&mut file, 0x1800 + entity_offset + size, 2, 4);
+        pe_rva(&mut file, 0x1800 + entity_offset + size + 4, 4, 4);
+        if rr {
+            pe_rva(&mut file, 0x1800 + entity_offset + 24, 5, 4);
+        }
+        let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        let mut game = Game::map(image, rules, 25, Duration::from_secs(3)).unwrap();
+        assert!(game.entities().is_err());
+        let imports = game.imports_address;
+        let base = game.vm.process.base();
+        let first = (imports - base) as usize;
+        let header = if rr { 16 } else { 0 };
+        let service_count = if rr { 70 } else { 44 };
+        let pointers = (0..service_count)
+            .map(|n| game.vm.process.import_pointer(n).unwrap())
+            .collect::<Vec<_>>();
+        let memory = game.vm.process.memory_mut().unwrap();
+        if rr {
+            assert_eq!(&memory[first..first + 4], &40u32.to_le_bytes());
+            assert_eq!(&memory[first + 4..first + 8], &0.025f32.to_le_bytes());
+            assert_eq!(&memory[first + 8..first + 12], &25u32.to_le_bytes());
+            assert_eq!(&memory[first + 12..first + 16], &[0; 4]);
+        }
+        for (slot, pointer) in pointers.iter().enumerate() {
+            let at = first + header + slot * 8;
+            assert_eq!(&memory[at..at + 8], &pointer.to_le_bytes());
+        }
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let observer = runtime
+            .server
+            .events
+            .bind(OutputTarget::Module(ModuleId(7)))
+            .unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let mut storage = ServiceStorage::load(&[], 0).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut unknown = UnknownCalls::load(8).unwrap();
+        let context = CallContext {
+            module: ModuleId(1),
+            clock: ThinkTime::Milliseconds(0),
+            console: Context::default(),
+            allocation: AllocationPolicy::EDICT,
+            link_order: qa_gameplay::rules::link_order(rules),
+        };
+        let returned = {
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            game.vm
+                .call(
+                    &mut NativeCalls {
+                        services: &mut services,
+                        table: game.imports,
+                        context,
+                        platform_time: EventTime(0),
+                        command: &[],
+                        unknown: &mut unknown,
+                    },
+                    0,
+                    &[imports],
+                )
+                .unwrap()
+        };
+        let target = 0x180001600u64;
+        let frame_offset = if rr { 136 } else { 112 };
+        game.vm.process.memory_mut().unwrap()[0x1800 + frame_offset..0x1808 + frame_offset]
+            .copy_from_slice(&target.to_le_bytes());
+        game.vm.bind_table(returned).unwrap();
+        let entities = game.entities().unwrap();
+        assert_eq!(entities.address, 0x180001c00);
+        assert_eq!(
+            (
+                entities.stride,
+                entities.count,
+                entities.capacity,
+                entities.server_flags
+            ),
+            (64, 2, 4, if rr { 5 } else { 0 })
+        );
+        let table_at = (returned - base) as usize + entity_offset as usize;
+        for (at, value) in [
+            (table_at + size as usize, 5u32),
+            (table_at + size as usize + 4, u32::MAX),
+        ] {
+            let saved = game.vm.process.memory_mut().unwrap()[at..at + 4].to_vec();
+            game.vm.process.memory_mut().unwrap()[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(game.entities().is_err());
+            game.vm.process.memory_mut().unwrap()[at..at + 4].copy_from_slice(&saved);
+        }
+        let run = game.entry(b"RunFrame").unwrap();
+        assert_eq!(run, if rr { 17 } else { 14 });
+        assert_eq!(game.entry(b"Pmove").is_some(), rr);
+        assert_eq!(game.entry(b"unknown"), None);
+        // Force the real loaded API frame to reach a named engine trap. No
+        // guessed argument signature is read, and instructions after it stop.
+        let target = 0x180001600u64;
+        let pointer = pointers[if rr { 39 } else { 36 }]; // cvar, same service in each ABI
+        let code_at = (target - base) as usize;
+        let mut code = vec![0x48, 0x83, 0xec, 0x28];
+        if rr {
+            code.extend([0x48, 0xb9]);
+            code.extend((base + 0x1700).to_le_bytes());
+            code.extend([0x48, 0xb8]);
+            code.extend(pointers[1].to_le_bytes());
+            code.extend([0xff, 0xd0]);
+            let text = b"API 2023 print\0";
+            game.vm.process.memory_mut().unwrap()[0x1700..0x1700 + text.len()]
+                .copy_from_slice(text);
+        }
+        code.extend([0x48, 0xb8]);
+        code.extend(pointer.to_le_bytes());
+        code.extend([0xff, 0xd0, 0x0f, 0x0b]);
+        game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()].copy_from_slice(&code);
+        for _ in 0..3 {
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let error = game
+                .vm
+                .call(
+                    &mut NativeCalls {
+                        services: &mut services,
+                        table: game.imports,
+                        context,
+                        platform_time: EventTime(0),
+                        command: &[],
+                        unknown: &mut unknown,
+                    },
+                    run,
+                    &[1],
+                )
+                .unwrap_err();
+            assert!(error.recoverable());
+        }
+        let import = game
+            .vm
+            .unresolved_imports()
+            .find(|i| i.name == Some(b"cvar".as_slice()))
+            .unwrap();
+        assert_eq!(import.calls, 3);
+        let mut batch = runtime.server.events.batch(observer).unwrap();
+        let mut logs = 0;
+        let mut prints = 0;
+        while let Some(record) = runtime.server.events.next(&mut batch) {
+            if let FrameEvent::Print(print) = record.event {
+                let text = runtime.server.events.texts.get(print.text).unwrap();
+                if text == b"API 2023 print" {
+                    prints += 1;
+                } else {
+                    assert!(
+                        text.windows(b"native import cvar at".len())
+                            .any(|s| s == b"native import cvar at")
+                    );
+                    logs += 1;
+                }
+            }
+        }
+        assert_eq!(logs, 1);
+        assert_eq!(prints, if rr { 3 } else { 0 });
+        game.vm.process.memory_mut().unwrap()[code_at] = 0xc3;
+        // A session-owned frame is still callable after the trap.
+        let imports_table = game.imports;
+        let mut request = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            TickRate::fixed(if rr { 25 } else { 100 }).unwrap(),
+            game.vm,
+        );
+        request.entries = (0..1 + count as u32).collect();
+        request.frame = CallbackId(run);
+        if let Program::Native { imports, .. } = &mut request.program {
+            *imports = imports_table;
+        }
+        let mut host =
+            FrameHost::load_modules(console, runtime, TickRate::FrameDriven, vec![request])
+                .unwrap();
+        let mut source = Source {
+            time: EventTime(0),
+            polls: 0,
+        };
+        host.frame(&mut source, true);
+        source.time = EventTime(100_000_000);
+        host.frame(&mut source, true);
+        assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+        assert!(host.module_counts(ModuleId(1)).unwrap().calls > 0);
+    }
+}
+
 fn returned_native_tables_bind_once_and_isolate_bad_apis() {
     use qa_app::modules::ApiCheck;
     use qa_compat::native::{ReturnedTable, TableFunction};
@@ -1946,5 +2159,6 @@ pub fn run() {
     elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_module();
     elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets();
     returned_native_tables_bind_once_and_isolate_bad_apis();
+    q2_api_layouts_bind_the_full_table_and_name_missing_engine_services();
     println!("native session dispatch checks passed");
 }

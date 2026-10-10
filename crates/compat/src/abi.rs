@@ -180,6 +180,18 @@ pub const Q3_SERVER: CallTable = server();
 pub const Q3_CLIENT: CallTable = client();
 pub const Q3_UI: CallTable = ui();
 
+// Q2 function-pointer slots map into this same service table. Unimplemented
+// native slots bind named traps before reaching this numbered dispatcher.
+pub const Q2_CLASSIC: CallTable = CallTable {
+    entries: [None; 256],
+};
+pub const Q2_RERELEASE: CallTable = {
+    let mut table = Q2_CLASSIC;
+    table.entries[1] = Some(print);
+    table.entries[9] = Some(abort);
+    table
+};
+
 const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
