@@ -1,6 +1,6 @@
 //! Native state projections in protocol table order, not engine entity storage.
 use crate::{
-    commands::{QwCmd, delta as command_delta},
+    commands::{QwCmd, delta as command_delta, packet::ZERO_QW},
     delta::{self, Field, Group, Packed, Presence, ScaleRead, Value},
     message::{Error, Reader, Writer},
 };
@@ -1145,13 +1145,6 @@ static QW_PLAYER_SUFFIX: [Group<true, true, false, true>; 1] = [Group {
     ],
     presence: Presence::Fixed,
 }];
-const NULL_QW_COMMAND: QwCmd = QwCmd {
-    msec: 0,
-    view_angles: qa_core::primitives::Vec3([0.0; 3]),
-    movement: [0; 3],
-    buttons: 0,
-    impulse: 0,
-};
 pub struct QwPlayerInfo {
     pub number: u8,
     pub words: [u32; QW_PLAYER_WORDS],
@@ -1185,7 +1178,7 @@ pub fn write_qw_player(
         }
         command.buttons = 0;
         command.impulse = 0;
-        command_delta::write_qw(writer, NULL_QW_COMMAND, command)?;
+        command_delta::write_qw(writer, ZERO_QW, command)?;
     }
     delta::write(&QW_PLAYER_SUFFIX, &words, &words, flags, writer)?;
     Ok(true)
@@ -1214,7 +1207,7 @@ pub fn read_qw_player(
     words[12] = flags as i16 as i32 as u32;
     delta::read(&QW_PLAYER_PREFIX, &mut words, flags, reader)?;
     let command = if flags & (1 << 1) != 0 {
-        command_delta::read_qw(reader, NULL_QW_COMMAND)?
+        command_delta::read_qw(reader, ZERO_QW)?
     } else {
         prior_slot_command
     };
@@ -1245,7 +1238,7 @@ mod tests {
         to[3] = 7.5f32.to_bits();
         let mut bytes = [0xff; 128];
         let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-        assert!(write_qw_player(&mut writer, 0, &to, NULL_QW_COMMAND)?);
+        assert!(write_qw_player(&mut writer, 0, &to, ZERO_QW)?);
         assert_eq!(writer.size(), 11);
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
         let decoded = read_qw_player(&mut reader, 44, prior)?;
@@ -1261,7 +1254,7 @@ mod tests {
         let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
         assert!(write_qw_player(&mut writer, 31, &to, prior)?);
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-        let decoded = read_qw_player(&mut reader, 44, NULL_QW_COMMAND)?;
+        let decoded = read_qw_player(&mut reader, 44, ZERO_QW)?;
         assert_eq!(decoded.words[4], 255);
         assert_eq!(decoded.words[5], (-300.0f32).to_bits());
         assert_eq!(decoded.command.buttons, 0);

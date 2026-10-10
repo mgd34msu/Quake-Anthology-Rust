@@ -37,6 +37,17 @@ pub struct ClipNode {
 }
 
 impl Plane {
+    pub fn oriented(normal: Vec3, distance: f32) -> Self {
+        let axis = (0..3)
+            .find(|&a| normal.0[a] == 1.0 && (0..3).all(|b| b == a || normal.0[b] == 0.0))
+            .map(|a| [Axis::X, Axis::Y, Axis::Z][a]);
+        Self {
+            normal,
+            distance,
+            axis,
+        }
+    }
+
     pub fn signed_distance(self, point: Vec3) -> f32 {
         let coordinate = match self.axis {
             Some(Axis::X) => point.0[0],

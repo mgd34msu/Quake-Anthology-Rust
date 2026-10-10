@@ -87,18 +87,11 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         } else {
             3
         };
-        let axis = if !matches!(rules, RuleSetId::Quake3) && (0..3).contains(&plane_type) {
-            Some([Axis::X, Axis::Y, Axis::Z][plane_type as usize])
-        } else {
-            (0..3)
-                .find(|&a| normal.0[a] == 1.0 && (0..3).all(|b| b == a || normal.0[b] == 0.0))
-                .map(|a| [Axis::X, Axis::Y, Axis::Z][a])
-        };
-        Ok(Plane {
-            normal,
-            distance,
-            axis,
-        })
+        let mut plane = Plane::oriented(normal, distance);
+        if !matches!(rules, RuleSetId::Quake3) && (0..3).contains(&plane_type) {
+            plane.axis = Some([Axis::X, Axis::Y, Axis::Z][plane_type as usize]);
+        }
+        Ok(plane)
     })?;
     let vertices = records(&bsp, Vertices, |r| {
         let position = r.vector()?;

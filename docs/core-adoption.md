@@ -226,61 +226,30 @@ and 512 reliable-command comparisons still match. Nine focused snapshot tests,
 [frame-times.md](frame-times.md) and `THE-860-snapshots-20261009/` for CPU23
 release timing, allocation gates and the exact measured scopes. No install.
 
-## THE-3176: second supervisor adoption audit
+## THE-3176: audited helper adoption
 
-All eight audited groups now call the shared implementation. Their former
-production helpers/loops were deleted in this slice; no checker extension was
-added. Operation order and native signed narrowing remain unchanged.
-
-| Audited group | Shared implementation and migrated callers |
+| Implementation | Migrated callers and deleted copies |
 | --- | --- |
-| Camera clipping | `render/src/cpu.rs:47,66` stores `Vec3` and uses `Vec3::lerp`; texture/lightmap/color interpolation is unchanged. Camera subtraction at `cpu.rs:159` also uses `Vec3`. |
-| Short angles | `core/src/math.rs:78-93` owns `angle_to_short` and `short_to_angle`. `network/src/commands.rs:158,221` and `network/src/delta.rs:130,173` use them, as does `movement/src/physics.rs:727`. Width/sign conversions remain at native boundaries. `anglemod` also uses this helper. |
-| Mip lengths | `render/src/cpu/world.rs:2806` uses `math::length`, preserving component sum order and the following average/thresholds. |
-| Bounds | `core/src/primitives.rs:289-306` owns `Bounds::empty/add_point/add_bounds`. All MDL/MD2/MD3/MD5/sprite readers use it; `formats/src/model/read.rs` no longer defines bounds helpers. `render/src/world/geometry.rs:712` retains its first-point initialization and finite-input rejection, then calls `add_point`. |
-| Entity syntax | `app/src/map.rs:312,379` passes the load-stored `native_source` to the existing `entity_syntax`; the second spawn-syntax family match is deleted. |
-| Image defaults | `render/src/material/resources.rs:56` takes `RuleSetId`. `app/src/render_settings.rs:6`, resource tests and the name-consumer example pass it directly. `material/world_load.rs:175` receives the BSP natural `RuleSetId` directly at the fallback boundary. Explicit presentation settings still win. |
-| Local points | `core/src/math.rs:97` owns `transform_point`: origin, then axis 0, 1, 2 in that order. CPU entity rendering at `cpu.rs:595`, CPU sky collection at `cpu/world.rs:1046`, and GL sky collection at `gl.rs:984` all use it. |
-| Path bytes | `core/src/names.rs:15` exposes the existing `path_byte`; `content/src/vfs.rs:113` now uses it. VFS component rejection, parent traversal and fixed output capacity are unchanged. |
+| `core/src/primitives.rs:12` Vec3::lerp | CPU ClipVertex camera interpolation and camera subtraction use Vec3; local component arithmetic deleted. |
+| `core/src/math.rs:78` short-angle helpers | Network commands/deltas and movement use the shared native arithmetic forms; local conversions deleted. |
+| `core/src/math.rs:38` length | CPU mip adjustment uses length; local squared-component sum deleted. |
+| `core/src/primitives.rs:299` Bounds | Model readers and render geometry use empty/add_point/add_bounds; local bounds loops deleted. |
+| `app/src/map.rs:379` entity_syntax | Uses stored RuleSetId; duplicate spawn-syntax match deleted. |
+| `render/src/material/resources.rs:56` ImageSettings::native | App/resource callers pass RuleSetId; numeric source mapping deleted. |
+| `core/src/math.rs:97` transform_point | CPU entity, CPU sky and GL sky callers migrated; three local transforms deleted. |
+| `core/src/names.rs:15` path_byte | VFS uses the same path folding; local byte folding deleted. |
+| `formats/src/bsp.rs:25` BspFormat::rule_set | All load/visibility/collision/example/test callers use RuleSetId; family() and numeric comparisons deleted. |
+| `core/src/primitives.rs:8` Vec3::dot | Geometry texture projection uses dot plus offset; local three-product expression deleted. |
+| `core/src/primitives.rs:40` Plane::oriented | Render geometry and BSP decode use the exact positive-unit orientation test; two local checks deleted. Native BSP axial metadata is retained. |
+| `network/src/commands/packet.rs:121` ZERO_QW | State codecs and tests use this value; NULL_QW_COMMAND deleted. |
 
-The short-angle policy preserves three arithmetic forms in one core helper:
-networking's float multiply then divide, movement's float precomputed factor,
-and native `anglemod`'s double precomputed factor. `AngleShortForm` selects
-arithmetic, not a game identity. Replacing these with one arithmetic order
-would change rounding before integer narrowing. The shared decoder retains
-signed integer input, including Q3 pitch-delta corrections outside i16 range.
-Eight-bit angle protocol encodings retain their different widths, including
-NetQuake's integral-value rejection; they are not 16-bit short conversions.
-
-Read every line of the 2,222-line pre-slice `render/src/gl.rs`. Two further
-host-side Vec3 additions at current `gl.rs:1170,1272` now use the core operator.
-No other local host implementation of a core helper was found in that full
-read. GL matrices, viewport checks, uniform packing and texture state have no
-core equivalent. The embedded GLSL shader executes fast normalization and
-noise on the GPU; it cannot call Rust's core helper. Its shader instructions
-are unchanged, with prepared stage/wave data still supplied by the one stage
-executor. This is not a claim that native modules or all engine consumers are
-wired. EventRing Sound-to-mixer and compat VM/CallTable session dispatch remain
-explicitly tracked on THE-3169 after THE-860.
-
-Evidence directory: `$HOME/.cache/qa-rust/THE-3176-adoption-20261009/`.
-The normal release app and developer comparison binaries built in 38.93 s.
-The initial command omitted the developer examples' required platform allocation
-feature and failed; the corrected command succeeded. Neither command enabled
-proof input. All 676 workspace tests, the unchanged checker, format and diff
-checks pass. New numeric checks cover 65,536 seeded float patterns across each
-angle form, all 65,536 signed shorts, 16,384 transforms/clipping interpolations,
-and signed-zero bounds unions. Existing CPU pixel/reference, geometry, model,
-path and console tests pass.
-
-`comparisons.json` records exact equality to both previous Rust and original C
-outputs for 16,384 native state cases (8,039,745 comparison bytes) and 512 Q3
-snapshot cases (2,035,577 comparison bytes). Q2 and Q3 movement each retain all
-1,152 prior Rust rows exactly. Q2 still matches C completely. Q3 still has the
-324 native-C float-component differences attributed on THE-3175, maximum
-0.0000112, with exact flags/timers. These are analytic fixtures, not gameplay.
-No timing run, game/window run, allocation measurement or installation was
-performed for this adoption slice, per the owner's cadence ruling.
+All audited callers are migrated. The full GL host-code read also replaced
+sky-position additions with Vec3. No audited host-side bypass remains; GPU
+shader instructions cannot call Rust helpers and are unchanged. Sound-ring
+mixing and compat session dispatch remain THE-3169 after THE-860.
+Verification artifacts remain in the THE-3176-adoption, bsp-rules,
+projection-dot and plane-qw-zero directories under `$HOME/.cache/qa-rust/`.
+The issue's single Linear evidence comment retains results and commit ids.
 
 ## THE-860: native snapshot delta request
 
@@ -413,36 +382,6 @@ common-state provider/client adoption and combined/installed proofs remain.
 No game/window run or installation is claimed.
 
 
-## THE-3176: BSP rule identity follow-up
-
-`formats/src/bsp.rs:25` replaces `BspFormat::family() -> u8` with
-`rule_set() -> core RuleSetId`: Quake, HalfLife, Bsp2, Psb2 and Quake64 select
-Quake; Quake2 and Qbsp select Quake2; Quake3Test, Quake3 and QuakeLive select
-Quake3. This is file provenance, independently of movement, trace, module,
-client and presentation roles. No numeric family identity remains in the API.
-
-Every former caller is migrated in the same slice:
-
-| Caller | Adoption |
-| --- | --- |
-| `formats/src/bsp.rs`, `bsp/decode.rs`, `bsp/validate.rs` | Directory clamping, record decoding, extension discovery and visibility validation match the natural RuleSetId. Native layout widths, finite/reference checks and compressed visibility rules are unchanged. |
-| `render/src/material/world_load.rs:174,514,882` | ImageSettings::native receives the id directly; lightmap preparation and legacy materials take RuleSetId. Palette, colormap, texture flags, RGB lightmap arithmetic and native sky/liquid rules keep their original selection. |
-| `render/src/world.rs:183`, `world/geometry.rs` | Visibility and geometry conversion use RuleSetId matches, preserving source leaf/cluster membership, flags, extents and light encodings. |
-| `app/src/map.rs:237,374,503` | Map source initialization, spawn data and collision loading receive the natural id without a second numeric conversion. Stored entity syntax and caller movement/trace rules remain independent. |
-| `app/tests/retail_collision.rs`, `platform/examples/visibility.rs` | Existing load probes use RuleSetId. The example stores the id and checks the three required sources without a second numeric identity; its pre-existing JSON `family` numbers are formatted only at the report boundary to preserve its output schema. |
-
-Repository search finds no `family()` call or method in crates. The existing
-synthetic layout/material/geometry tests and the retail load checks validate
-source-specific results; this slice adds no rendering, gameplay or timing
-qualification claim. The checker is unchanged. Evidence is in
-`$HOME/.cache/qa-rust/THE-3176-bsp-rules-20261009/`.
-
-All 685 workspace tests and six existing retail collision/inline-model load
-checks pass, alongside the unchanged checker and warning-denied Clippy. The
-normal release app and developer visibility example built in 38.22 s. Format
-and diff checks pass. No timing, game/window or installation runs were made.
-
-
 ## THE-860: Q2 connected snapshot delivery
 
 `network/src/snapshots.rs` now supplies one load-selected native storage
@@ -496,21 +435,6 @@ cases (8,039,745 bytes and decoded words). The connected heap probe passes
 allocation control 1, zero caller allocations/reallocations/requested bytes
 and zero command errors. This counter covers the connected native codec path,
 not app frames, workers, OS/driver allocations or gameplay. No timing run.
-
-## THE-3176: fourth audit, texture projection
-
-`render/src/world/geometry.rs:289` now uses
-`point.dot(Vec3([p[0], p[1], p[2]])) + p[3]` for load-time texture projection.
-The local dot-product expression is deleted. Core Vec3::dot retains the same
-three products and left-to-right additions; the projection offset is still
-added last. Non-finite rejection, extrema and extent conversion are unchanged.
-
-All 687 workspace tests, the unchanged checker and format/diff checks pass.
-The normal release app built in 38.02 s. A separate release-mode expression
-probe matches all 16,384 seeded projection rows bit for bit against the
-compiled core helper. Existing geometry tests retain signed-edge, extent,
-lighting and non-finite projection checks. No timing, game/window or install
-run. Evidence: `$HOME/.cache/qa-rust/THE-3176-projection-dot-20261009/`.
 
 ## THE-860: decoded player fields
 

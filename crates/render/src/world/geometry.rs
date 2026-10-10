@@ -4,7 +4,7 @@
 use crate::assets::Vertex;
 use qa_core::{
     math::length,
-    primitives::{Axis, Bounds, Plane, RuleSetId, Vec3},
+    primitives::{Bounds, Plane, RuleSetId, Vec3},
 };
 use qa_formats::bsp::{BspFormat, IndexRange, LightmapSource, Lump, Map, SurfaceKind};
 
@@ -266,7 +266,7 @@ fn load_legacy(
         let plane = if face.flags == 0 {
             source_plane
         } else {
-            oriented_plane(source_plane.normal * (-1.0), -source_plane.distance)
+            Plane::oriented(source_plane.normal * (-1.0), -source_plane.distance)
         };
         let edges = section(&map.surface_edges, face.edges, "surface edges", id)?;
         let vertex_start = out.vertices.len();
@@ -612,7 +612,7 @@ fn load_modern(
             if normal.0.iter().any(|v| !v.is_finite()) || !distance.is_finite() {
                 return Err(GeometryError::NonFinite("plane", id));
             }
-            Some(oriented_plane(normal, distance))
+            Some(Plane::oriented(normal, distance))
         } else {
             None
         };
@@ -729,16 +729,6 @@ fn vertex_bounds(vertices: &[WorldVertex]) -> Result<Bounds, GeometryError> {
         bounds.add_point(vertex.vertex.position);
     }
     Ok(bounds)
-}
-fn oriented_plane(normal: Vec3, distance: f32) -> Plane {
-    let axis = (0..3)
-        .find(|&a| normal.0[a] == 1.0 && (0..3).all(|b| b == a || normal.0[b] == 0.0))
-        .map(|a| [Axis::X, Axis::Y, Axis::Z][a]);
-    Plane {
-        normal,
-        distance,
-        axis,
-    }
 }
 fn color_shift(color: [u8; 4], shift: i8) -> [u8; 4] {
     // Q3 tr_bsp.c R_ColorShiftLightingBytes. Apply before patch interpolation.
