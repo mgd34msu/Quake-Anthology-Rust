@@ -1524,6 +1524,59 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
     );
 }
 
+fn native_windows_counter_uses_host_event_time_in_session_dispatch() {
+    let mut file = runtime_file(Encoding::Pe, b"QueryPerformanceCounter\0");
+    pe_text(&mut file, 0x1280, b"KERNEL32.dll\0");
+    let mut code = vec![0x48, 0x83, 0xec, 40, 0x48, 0x8d, 0x0d];
+    code.extend(((512 + 0x790) as i32 - (640 + code.len() + 4) as i32).to_le_bytes());
+    code.extend([0xff, 0x15]);
+    code.extend(((512 + 0x780) as i32 - (640 + code.len() + 4) as i32).to_le_bytes());
+    code.extend([0x48, 0x8b, 0x05]);
+    code.extend(((512 + 0x790) as i32 - (640 + code.len() + 4) as i32).to_le_bytes());
+    code.extend([0x48, 0x83, 0xc4, 40, 0xc3]);
+    file[640..640 + code.len()].copy_from_slice(&code);
+    let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+    let vm = Vm::map_image(
+        image,
+        &[NamedExport {
+            name: b"GetGameAPI",
+            command: None,
+            parameters: &[NativeScalar::Word; 13],
+            result: NativeScalar::Word,
+        }],
+        &[],
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let request = request(
+        &mut runtime,
+        ModuleId(1),
+        RuleSetId::Quake3,
+        TickRate::fixed(50).unwrap(),
+        vm,
+    );
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    for time in [50_000_000, 125_678_999, 200_123_456] {
+        source.time = EventTime(time);
+        host.frame(&mut source, true);
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        assert_eq!(counts.traps, 0);
+        assert_eq!(counts.last_result, Some(ModuleResult::Native(time)));
+    }
+}
+
 fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
     use qa_formats::program::native::Tls;
     let code = [
@@ -1586,6 +1639,7 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 }
 
 pub fn run() {
+    native_windows_counter_uses_host_event_time_in_session_dispatch();
     pe_static_tls_template_is_owned_and_aligned_before_child_start();
     for functions in [false, true] {
         two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions);

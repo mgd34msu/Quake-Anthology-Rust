@@ -278,6 +278,9 @@ impl Vm {
         }
         words[first..first + arguments.len()].copy_from_slice(arguments);
         let mut rejected = None;
+        self.process
+            .set_event_time(calls.platform_time)
+            .map_err(Error::Process)?;
         let result = self
             .process
             .invoke(export.entry, words, |call, base, bytes| {

@@ -266,6 +266,12 @@ pub(super) fn invoke(
     }))
 }
 impl Runtime {
+    fn wall_millis(&self) -> Result<i64, NativeError> {
+        Ok(self.memory.unsigned(
+            self.state()? + crate::native::runtime::TIME_OFFSET as u64 + 8,
+            8,
+        )? as i64)
+    }
     fn state(&self) -> Result<u64, NativeError> {
         self.config.map(|c| c.base).ok_or(NativeError::Extent)
     }

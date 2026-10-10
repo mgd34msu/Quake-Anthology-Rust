@@ -313,6 +313,54 @@ fn windows_sync_and_environment_services_keep_the_c_state_changes() {
 }
 
 #[test]
+fn windows_time_uses_parked_event_snapshots_and_native_integer_conversions() {
+    use crate::native::runtime::TIME_OFFSET;
+    use qa_core::sys_events::EventTime;
+    let mut process = runtime_child();
+    let mut trace = Vec::new();
+    let word = |process: &NativeProcess, at| {
+        u64::from_le_bytes(process.memory().unwrap()[at..at + 8].try_into().unwrap())
+    };
+    let origin = word(&process, 4096 + TIME_OFFSET + 8) as i64;
+    process.set_event_time(EventTime(2_345_999_999)).unwrap();
+    assert_eq!(word(&process, 4096 + TIME_OFFSET), 2_345_999_999);
+    assert_eq!(word(&process, 4096 + TIME_OFFSET + 8) as i64, origin + 2345);
+    for _ in 0..3 {
+        assert_eq!(call(&mut process, &mut trace, 422, &[BASE + 6400]), 1);
+        assert_eq!(word(&process, 6400), 2_345_999_999);
+    }
+    assert_eq!(call(&mut process, &mut trace, 423, &[BASE + 6400]), 1);
+    assert_eq!(word(&process, 6400), 1_000_000_000);
+    for millis in [-1001i64, -1000, -1, 0, 999, 1000, 1700000000123, i64::MAX] {
+        process.memory_mut().unwrap()[4096 + TIME_OFFSET + 8..4096 + TIME_OFFSET + 16]
+            .copy_from_slice(&millis.to_le_bytes());
+        assert_eq!(
+            call(&mut process, &mut trace, 340, &[BASE + 6400]),
+            millis.div_euclid(1000) as u64
+        );
+        assert_eq!(word(&process, 6400), millis.div_euclid(1000) as u64);
+        assert_eq!(
+            call(&mut process, &mut trace, 340, &[0]),
+            millis.div_euclid(1000) as u64
+        );
+        assert_eq!(
+            call(&mut process, &mut trace, 339, &[]),
+            (millis as u64).wrapping_mul(10000)
+        );
+        assert_eq!(call(&mut process, &mut trace, 424, &[BASE + 6400]), 0);
+        assert_eq!(
+            word(&process, 6400),
+            (millis as u64)
+                .wrapping_mul(10000)
+                .wrapping_add(116444736000000000)
+        );
+    }
+    process.set_event_time(EventTime(4_500_000_000)).unwrap();
+    assert_eq!(word(&process, 4096 + TIME_OFFSET + 8) as i64, origin + 4500);
+    assert!(trace.is_empty());
+}
+
+#[test]
 fn crt_math_matches_the_original_c_switch() {
     let mut process = runtime_child();
     let mut trace = Vec::new();

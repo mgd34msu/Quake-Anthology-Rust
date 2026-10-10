@@ -316,6 +316,8 @@ pub struct NativeProcess {
     imports: Box<[(u32, NativeEntry)]>,
     reaped: Option<std::process::ExitStatus>,
     timeout: Duration,
+    runtime: Option<super::runtime::RuntimeConfig>,
+    epoch_millis: i64,
 }
 impl NativeProcess {
     pub fn load(image: NativeImage<'_>) -> Result<Self, NativeError> {
@@ -442,10 +444,13 @@ impl NativeProcess {
             imports,
             reaped: None,
             timeout: image.timeout,
+            runtime: image.runtime,
+            epoch_millis: crate::clock::event_epoch_millis(),
         };
         if let Err(error) = owner.start(&mapped, image.runtime) {
             return Err(owner.failure(error));
         }
+        owner.set_event_time(qa_core::sys_events::EventTime(0))?;
         // Patch each numeric import gateway only at the enforced load stop.
         // The indirect jump preserves AL and all native parameter registers.
         for (index, (_, entry)) in owner.imports.iter().enumerate() {
@@ -544,6 +549,35 @@ impl NativeProcess {
             return Err(NativeError::Protocol);
         }
         Ok(self.memory.bytes_mut())
+    }
+    /// Publish a queued time snapshot only while the owned child is stopped.
+    pub fn set_event_time(
+        &mut self,
+        time: qa_core::sys_events::EventTime,
+    ) -> Result<(), NativeError> {
+        let Some(config) = self.runtime else {
+            return Ok(());
+        };
+        let at = usize::try_from(
+            config
+                .base
+                .checked_sub(self.base)
+                .ok_or(NativeError::Extent)?,
+        )
+        .map_err(|_| NativeError::Extent)?
+        .checked_add(super::runtime::TIME_OFFSET)
+        .ok_or(NativeError::Extent)?;
+        let millis = self
+            .epoch_millis
+            .checked_add(i64::try_from(time.0 / 1_000_000).map_err(|_| NativeError::Extent)?)
+            .ok_or(NativeError::Extent)?;
+        let bytes = self
+            .memory_mut()?
+            .get_mut(at..at.checked_add(16).ok_or(NativeError::Extent)?)
+            .ok_or(NativeError::Extent)?;
+        bytes[..8].copy_from_slice(&time.0.to_le_bytes());
+        bytes[8..].copy_from_slice(&millis.to_le_bytes());
+        Ok(())
     }
     fn resume(&mut self) -> Result<(), NativeError> {
         if !self.parked || self.child.is_none() {

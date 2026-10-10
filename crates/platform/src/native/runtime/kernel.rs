@@ -2,7 +2,7 @@
 use super::{NativeError, Runtime};
 use crate::native::{
     NativeAbi, NativeScalar,
-    runtime::{Kernel, Slot},
+    runtime::{Kernel, Slot, TIME_OFFSET, Time},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -48,6 +48,17 @@ impl Runtime {
     pub(super) fn kernel(&self, operation: Kernel, a: [u64; 13]) -> Result<u64, NativeError> {
         let memory = &self.memory;
         match operation {
+            Kernel::Time(kind) => {
+                let value = match kind {
+                    Time::Counter => memory.unsigned(self.state()? + TIME_OFFSET as u64, 8)?,
+                    Time::Frequency => 1_000_000_000,
+                    Time::File => (self.wall_millis()? as u64)
+                        .wrapping_mul(10000)
+                        .wrapping_add(116444736000000000),
+                };
+                memory.put(a[0], 8, value)?;
+                Ok(1)
+            }
             Kernel::Teb(offset, width) => memory.unsigned(self.teb()? + offset, width),
             Kernel::SetError => {
                 self.last_error(a[0] as u32)?;

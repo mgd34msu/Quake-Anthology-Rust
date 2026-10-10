@@ -317,6 +317,14 @@ impl Runtime {
             }
             Crt::Errno => self.state()? + 632,
             Crt::Locale => self.state()? + 416,
+            Crt::Ticks => (self.wall_millis()? as u64).wrapping_mul(10000),
+            Crt::Time => {
+                let seconds = self.wall_millis()?.div_euclid(1000) as u64;
+                if a[0] != 0 {
+                    m.put(a[0], 8, seconds)?;
+                }
+                seconds
+            }
             Crt::Substring => {
                 // SAFETY: this block only inspects byte slices. No callback,
                 // write or publication can run while either borrow exists.

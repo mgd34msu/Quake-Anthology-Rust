@@ -1,6 +1,22 @@
 //! All event time and developer performance counters use SDL3 in platform.
 use qa_core::sys_events::EventTime;
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    sync::OnceLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+/// One cold wall-time origin for native calendar APIs. Hot calls advance it
+/// only with the existing queued event time, without another clock intake.
+pub(crate) fn event_epoch_millis() -> i64 {
+    static EPOCH: OnceLock<i64> = OnceLock::new();
+    *EPOCH.get_or_init(|| {
+        let millis = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(delta) => delta.as_millis() as i128,
+            Err(error) => -(error.duration().as_nanos().div_ceil(1_000_000) as i128),
+        };
+        millis.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+    })
+}
 #[link(name = "SDL3")]
 unsafe extern "C" {
     fn SDL_GetTicksNS() -> u64;
@@ -31,7 +47,9 @@ impl Stopwatch {
 pub(crate) struct Clock(u64);
 impl Clock {
     pub fn new() -> Self {
-        Self(unsafe { SDL_GetTicksNS() })
+        let start = unsafe { SDL_GetTicksNS() };
+        event_epoch_millis();
+        Self(start)
     }
     pub fn now(&self) -> EventTime {
         EventTime(unsafe { SDL_GetTicksNS() }.saturating_sub(self.0))

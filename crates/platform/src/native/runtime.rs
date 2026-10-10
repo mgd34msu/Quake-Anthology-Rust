@@ -328,6 +328,11 @@ pub const FUNCTIONS: &[Function] = &[
     windows(FIRST + 419, b"kernel32.dll", b"FlsFree", Operation::Kernel(Kernel::Fls(Slot::Free)), &[U32], I32),
     windows(FIRST + 420, b"kernel32.dll", b"FlsGetValue", Operation::Kernel(Kernel::Fls(Slot::Get)), &[U32], Word),
     windows(FIRST + 421, b"kernel32.dll", b"FlsSetValue", Operation::Kernel(Kernel::Fls(Slot::Set)), &[U32, Word], I32),
+    windows(FIRST + 422, b"kernel32.dll", b"QueryPerformanceCounter", Operation::Kernel(Kernel::Time(Time::Counter)), &[Word], I32),
+    windows(FIRST + 423, b"kernel32.dll", b"QueryPerformanceFrequency", Operation::Kernel(Kernel::Time(Time::Frequency)), &[Word], I32),
+    windows(FIRST + 424, b"kernel32.dll", b"GetSystemTimeAsFileTime", Operation::Kernel(Kernel::Time(Time::File)), &[Word], Void),
+    windows(FIRST + 339, b"msvcp140.dll", b"_Xtime_get_ticks", Operation::Crt(Crt::Ticks), &[], Word),
+    windows(FIRST + 340, b"api-ms-win-crt-time-l1-1-0.dll", b"_time64", Operation::Crt(Crt::Time), &[Word], Word),
 ];
 
 #[derive(Clone, Copy)]
@@ -364,6 +369,13 @@ pub(crate) enum Kernel {
     Tls(Slot),
     FlsAlloc,
     Fls(Slot),
+    Time(Time),
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Time {
+    Counter,
+    Frequency,
+    File,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Slot {
@@ -411,6 +423,8 @@ pub(crate) enum Crt {
     Unsigned,
     Integer,
     Float,
+    Ticks,
+    Time,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Comparison {
@@ -472,6 +486,7 @@ pub struct RuntimeConfig {
 pub const THREAD_BYTES: usize = 0x8000;
 pub const STATIC_TLS_OFFSET: usize = 0x3000;
 pub const TLS_DATA_OFFSET: usize = 0x7000;
+pub const TIME_OFFSET: usize = 640;
 impl RuntimeConfig {
     pub fn prepare_crt(self, page: &mut [u8]) -> Result<(), super::NativeError> {
         let page = page.get_mut(..608).ok_or(super::NativeError::Extent)?;
