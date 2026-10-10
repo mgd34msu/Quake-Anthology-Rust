@@ -511,3 +511,53 @@ probe matches all 16,384 seeded projection rows bit for bit against the
 compiled core helper. Existing geometry tests retain signed-edge, extent,
 lighting and non-finite projection checks. No timing, game/window or install
 run. Evidence: `$HOME/.cache/qa-rust/THE-3176-projection-dot-20261009/`.
+
+## THE-860: decoded player fields
+
+The existing `network/src/projection.rs` table now serves both SERVER reduction
+and CLIENT application. There is no second player store, scalar decoder or
+per-game import loop. Application consumes the existing decoder's words:
+NQ QC float stats have become native integers, Q2 position/velocity use signed
+eighth units and timers use 8-ms units, and Q2/Q3 delta angles retain their
+signed/unsigned short forms through core short_to_angle.
+
+Movement and trace RuleSetIds, absent hot fields, tuning, inventory arenas and
+foreign module tails remain owned by the recipient. A native mode that cannot
+distinguish existing common modes retains that choice; otherwise load-selected
+mode data supplies its common meaning. Simultaneous represented timer flags
+are restored without clearing a timer the protocol cannot express. NQ's water
+bit changes only the known below/above-two boundary. QW's writer-only body yaw
+placeholder never overwrites incoming context.
+
+Client, weapon/model and ground ordinals stay in explicit native context; a
+caller callback resolves Q3 ground into its own current lifetime namespace.
+Native none clears contact without calling the resolver, and native world may
+remain grounded without a common entity handle. No ordinal is cast to an
+EntityId or registry handle. Effective native gravity/speed stay in context
+until the movement adapter accounts for its chosen tuning/multipliers. Existing
+ValueBinding imports update the same load-sized ValueBank; missing bindings
+drop without allocating.
+
+The existing four-protocol codec test now applies each decoded record to a
+player with foreign movement/trace roles. Connected Q2/Q3 fixtures apply
+borrowed CLIENT frames; two focused tests cover lossy modes, timer flags,
+ground resolution/none, module tails, bindings and short-input rejection.
+The connected heap probe includes common reduction/application.
+
+App CLIENT application and the direct prediction copies at
+`app/src/host.rs:480` and `app/src/lib.rs:201` remain for the next integration
+slice. QW/NQ connected streams, rerelease/666/999, native signon, live legacy
+peers and THE-3169 native/installed acceptance remain open. This component
+does not claim native prediction, complete HUD/stat imports or gameplay.
+Evidence: `$HOME/.cache/qa-rust/THE-860-player-import-20261010/`.
+
+All 689 workspace tests, unchanged checker, warning-denied Clippy and
+format/diff checks pass. The normal release app and developer codec examples
+built in 33.77 s. Existing original-C codec comparisons remain exact for
+512 Q2 frame cases (913,057 bytes), 512 Q3 cases (2,035,577 bytes) and
+16,384 scalar-state cases (8,039,745 bytes and decoded words). These compare
+the native codecs, not a complete player ABI or prediction implementation.
+The connected caller-heap probe includes reduction and decoded application:
+60 warm-up plus 600 measured iterations, positive allocation control 1,
+zero allocations/reallocations/requested bytes and command errors. No worker,
+OS/driver or app-frame claim. No timing, game/window or installation run.

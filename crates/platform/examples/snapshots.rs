@@ -357,13 +357,14 @@ fn check_heap_counter() -> Result<(), String> {
 fn connected_heap() -> Result<(), String> {
     use qa_core::{
         loopback::Endpoint,
-        primitives::{ClientId, UserCmd},
+        primitives::{ClientId, PlayerState, RuleSetId, UserCmd, Vec3},
         sys_events::{EventTime, Peer},
     };
     use qa_network::{
         channel::Channel,
         commands::{connection::Commands, packet::Protocol},
         ingress::{Connection, Connections, Incoming, Route},
+        projection::{PlayerContext, PlayerProjection},
         states,
     };
     let protocol = Protocol::Quake2_34;
@@ -388,6 +389,24 @@ fn connected_heap() -> Result<(), String> {
         )
         .map_err(|e| format!("{e:?}"))?;
     let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None).map_err(|e| e.to_string())?;
+    let projection = PlayerProjection::load(protocol, &[]);
+    let mut source = PlayerState::with_capacity(2, 2, 4);
+    source.health = 100;
+    source.body.velocity = Vec3([-14.75, 0., 0.]);
+    let mut imported = PlayerState::with_capacity(2, 2, 4);
+    imported.movement_rules = RuleSetId::Quake3;
+    imported.trace_rules = RuleSetId::Quake;
+    let mut context = PlayerContext {
+        client_number: None,
+        ground_number: None,
+        weapon_number: None,
+        weapon_model: None,
+        gravity: 800.,
+        speed: 320.,
+        player_info_flags: 0,
+        command_age_ms: 0,
+        body_yaw: 0.,
+    };
     check_heap_counter()?;
     let mut measured = allocations::Counts::default();
     let mut checks = 0;
@@ -395,7 +414,6 @@ fn connected_heap() -> Result<(), String> {
         let frame = 100 + iteration;
         let delta = server_commands.delta_request();
         let mut player = [0; states::Q2_PLAYER_WORDS];
-        player[1] = frame;
         let mut entity = Entity {
             number: 30,
             words: [0; states::Q2_ENTITY_WORDS],
@@ -404,6 +422,10 @@ fn connected_heap() -> Result<(), String> {
         entity.words[14] = 999.0f32.to_bits();
         allocations::begin_frame();
         let result = (|| -> Result<(), qa_network::commands::packet::Error> {
+            source.body.position.0[0] = frame as f32 * 0.125;
+            if !projection.reduce(&source, &context, &mut player) {
+                return Err(qa_network::commands::packet::Error::Context);
+            }
             ring.store(Frame {
                 sequence: frame,
                 time: 0,
@@ -442,6 +464,14 @@ fn connected_heap() -> Result<(), String> {
                             && received.player[1] == frame
                             && received.entities.len() == 1
                             && received.entities[0].words[8] == entity.words[8];
+                        valid &=
+                            projection
+                                .apply(received.player, &mut imported, &mut context, |_| None)
+                                && imported.body.position == source.body.position
+                                && imported.body.velocity == source.body.velocity
+                                && imported.health == 100
+                                && imported.movement_rules == RuleSetId::Quake3
+                                && imported.trace_rules == RuleSetId::Quake;
                     }
                     Incoming::Print(print) => {
                         prints += 1;
@@ -495,7 +525,7 @@ fn connected_heap() -> Result<(), String> {
         return Err(format!("connected snapshot heap/count gate {measured:?}"));
     }
     println!(
-        "{{\"scope\":\"Q2 frame store/write, Channel, CLIENT ingress, print dispatch and native move feedback; caller Rust heap, no workers/OS/app/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
+        "{{\"scope\":\"common player reduce/apply, Q2 frame store/write, Channel, CLIENT ingress, print dispatch and native move feedback; caller Rust heap, no workers/OS/app/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
     );
     Ok(())
 }

@@ -1,6 +1,6 @@
 use qa_core::{
     loopback::Endpoint,
-    primitives::ClientId,
+    primitives::{ClientId, PlayerState, RuleSetId},
     sys_events::{EventTime, Peer},
 };
 use qa_network::{
@@ -11,9 +11,24 @@ use qa_network::{
     },
     ingress::{Connection, Connections, Incoming, Route},
     message::{Encoding, Reader, Writer},
+    projection::{PlayerContext, PlayerProjection},
     snapshots::{self, Entity, Frame, Q3Ring, Ring},
     states::{self, ENTITY_WORDS, PLAYER_WORDS},
 };
+
+fn native_player_context() -> PlayerContext {
+    PlayerContext {
+        client_number: None,
+        ground_number: None,
+        weapon_number: None,
+        weapon_model: None,
+        gravity: 0.,
+        speed: 0.,
+        player_info_flags: 0,
+        command_age_ms: 0,
+        body_yaw: 0.,
+    }
+}
 
 fn entity(number: u32, value: f32) -> Entity<ENTITY_WORDS> {
     let mut words = [0; ENTITY_WORDS];
@@ -277,6 +292,13 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
     };
     let mut snapshots = 0;
     let mut reliable = 0;
+    let projection = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut imported = PlayerState {
+        movement_rules: RuleSetId::Quake2,
+        trace_rules: RuleSetId::Quake,
+        ..PlayerState::default()
+    };
+    let mut native = native_player_context();
     connections.receive(
         Endpoint::Client.socket(),
         Peer::Loopback(ClientId(0)),
@@ -289,6 +311,12 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
                 assert_eq!(frame.entities, [entity(1, 7.5)]);
                 assert_eq!(frame.sequence, 1);
                 assert_eq!(frame.command, 64);
+                assert!(projection.apply(frame.player, &mut imported, &mut native, |_| None));
+                assert_eq!(imported.body.position.0[0], 0.5);
+                assert_eq!(imported.health, 100);
+                assert_eq!(imported.movement.command_time_ms, 50);
+                assert_eq!(imported.movement_rules, RuleSetId::Quake2);
+                assert_eq!(imported.trace_rules, RuleSetId::Quake);
                 snapshots += 1;
             } else if let Incoming::ReliableCommand { .. } = incoming {
                 reliable += 1;
@@ -684,6 +712,13 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
     let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None)?;
     let mut frames = 0;
     let mut prints = 0;
+    let projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
+    let mut imported = PlayerState {
+        movement_rules: RuleSetId::Quake3,
+        trace_rules: RuleSetId::QuakeWorld,
+        ..PlayerState::default()
+    };
+    let mut native = native_player_context();
     assert_eq!(q2_request(&connections, &mut commands, &mut server)?, None);
     for (frame, delta, deliver, valid) in [
         (41, None, true, true),
@@ -708,6 +743,15 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
                         assert!(valid);
                         assert_eq!(snapshot.sequence, frame);
                         assert_eq!(snapshot.time, frame as i32 * 100);
+                        assert!(projection.apply(
+                            snapshot.player,
+                            &mut imported,
+                            &mut native,
+                            |_| None,
+                        ));
+                        assert_eq!(imported.body.position.0[0], frame as f32 * 0.125);
+                        assert_eq!(imported.movement_rules, RuleSetId::Quake3);
+                        assert_eq!(imported.trace_rules, RuleSetId::QuakeWorld);
                         let mut expected = q2_entity(30, frame as f32, 0);
                         if let Some(previous) = delta {
                             expected.words[14] = (previous as f32).to_bits();

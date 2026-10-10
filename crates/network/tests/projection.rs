@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    MovementMode, MovementTimer, NumericValue, PlayerState, RuleSetId, ValueBinding, ValueId,
-    ValueReset, ValueWidth, Vec3,
+    EntityId, MovementMode, MovementTimer, NumericValue, PlayerState, PlayerTail, RuleSetId,
+    ValueBinding, ValueId, ValueReset, ValueWidth, Vec3,
 };
 use qa_network::{
     commands::{QwCmd, packet::Protocol},
@@ -45,6 +45,36 @@ fn player() -> PlayerState {
     p
 }
 
+fn destination() -> PlayerState {
+    let mut p = PlayerState::with_capacity(2, 2, 4);
+    p.movement_rules = RuleSetId::Quake3;
+    p.trace_rules = RuleSetId::Quake;
+    p.body.position = Vec3([999.; 3]);
+    p.view_angles = Vec3([-111.; 3]);
+    p.health = 9876;
+    p.inventory[1] = 19;
+    p.movement.tuning.max_speed = Some(17.);
+    p.movement.tuning.speed_multiplier = 2.;
+    p.tail = PlayerTail::Q1 {
+        attack_finished: 5.,
+    };
+    p
+}
+
+fn assert_independent_state(p: &PlayerState) {
+    assert_eq!(p.movement_rules, RuleSetId::Quake3);
+    assert_eq!(p.trace_rules, RuleSetId::Quake);
+    assert_eq!(p.inventory[1], 19);
+    assert_eq!(p.movement.tuning.max_speed, Some(17.));
+    assert_eq!(p.movement.tuning.speed_multiplier, 2.);
+    assert_eq!(
+        p.tail,
+        PlayerTail::Q1 {
+            attack_finished: 5.
+        }
+    );
+}
+
 #[test]
 fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 -> Result<(), qa_network::message::Error> {
@@ -65,6 +95,18 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(decoded[10], 55);
     assert_eq!(f32::from_bits(decoded[3]), 16.);
     assert_eq!(f32::from_bits(decoded[5]), -32.);
+    let mut imported = destination();
+    let mut native = context();
+    assert!(nq.apply(&decoded, &mut imported, &mut native, |_| {
+        panic!("NQ clientdata has no ground ordinal")
+    }));
+    assert_eq!((imported.health, imported.armor), (-12, 55));
+    assert_eq!(imported.body.velocity.0[0..2], [16., -32.]);
+    assert_eq!(imported.body.position, Vec3([999.; 3]));
+    assert_eq!(imported.view_angles, Vec3([-111.; 3]));
+    assert!(imported.movement.grounded);
+    assert_eq!(imported.movement.water_level, 2);
+    assert_independent_state(&imported);
 
     let qw = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
     let mut words = [0; states::QW_PLAYER_WORDS];
@@ -84,6 +126,18 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(decoded.number, 17);
     assert_eq!(f32::from_bits(decoded.words[0]), 12.25);
     assert_eq!(f32::from_bits(decoded.words[6]), -32.);
+    let mut imported = destination();
+    assert!(qw.apply(&decoded.words, &mut imported, &mut native, |_| {
+        panic!("QW playerinfo has no ground ordinal")
+    }));
+    assert_eq!(imported.body.position.0[0], 12.25);
+    assert_eq!(imported.body.velocity.0[1], -32.);
+    assert_eq!(imported.health, 9876);
+    assert_eq!(imported.view_angles, Vec3([-111.; 3]));
+    assert_eq!(native.command_age_ms, 0); // PF_MSEC is absent in flags 28
+    assert_eq!(native.player_info_flags, 28);
+    assert_eq!(native.body_yaw, 75.); // writer-only command input
+    assert_independent_state(&imported);
 
     let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut words = [0; states::Q2_PLAYER_WORDS];
@@ -108,6 +162,23 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(decoded[37], words[37]);
     assert_eq!(decoded[41], words[41]);
     assert_eq!(decoded[50], words[50]);
+    let mut imported = destination();
+    assert!(q2.apply(&decoded, &mut imported, &mut native, |_| {
+        panic!("Q2 transmits ground presence, not its ordinal")
+    }));
+    assert_eq!(imported.body.position.0[0..2], [12.25, -47.125]);
+    assert_eq!(imported.movement.delta_angles, Vec3([90., -180., -90.]));
+    assert_eq!(imported.movement.remaining_ms, 248);
+    assert_eq!(imported.movement.timer, MovementTimer::LAND);
+    assert!(imported.movement.ducked && imported.movement.jump_held);
+    assert!(imported.movement.grounded);
+    assert_eq!(imported.movement.ground, None);
+    assert_eq!(
+        (imported.health, imported.armor, imported.frags),
+        (-12, 55, 7)
+    );
+    assert_eq!(native.gravity, 800.);
+    assert_independent_state(&imported);
 
     let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let mut words = [0; states::PLAYER_WORDS];
@@ -131,6 +202,28 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(decoded[48] as i32, -12);
     assert_eq!(decoded[26], words[26]);
     assert_eq!(decoded[36], words[36]);
+    let mut imported = destination();
+    let mut ground_calls = 0;
+    assert!(q3.apply(&decoded, &mut imported, &mut native, |number| {
+        ground_calls += 1;
+        assert_eq!(number, 1022); // native world, not a common lifetime handle
+        None
+    }));
+    assert_eq!(ground_calls, 1);
+    assert_eq!(imported.body.position, p.body.position);
+    assert_eq!(imported.body.velocity, p.body.velocity);
+    assert_eq!(imported.view_angles, p.view_angles);
+    assert_eq!(imported.movement.delta_angles, Vec3([90., 180., 270.]));
+    assert_eq!(imported.movement.remaining_ms, 250);
+    assert_eq!(imported.movement.command_time_ms, 1200);
+    assert_eq!(imported.movement.timer, p.movement.timer);
+    assert!(imported.movement.grounded);
+    assert_eq!(imported.movement.ground, None);
+    assert_eq!(native.ground_number, Some(1022));
+    assert_eq!(native.client_number, Some(17));
+    assert_eq!(native.weapon_number, Some(5));
+    assert_eq!(native.speed, 300.);
+    assert_independent_state(&imported);
     assert_eq!(p.movement_rules, RuleSetId::Quake2);
     assert_eq!(p.trace_rules, RuleSetId::QuakeWorld);
     Ok(())
@@ -213,4 +306,100 @@ fn delta_angles_keep_the_native_macro_order_and_signedness() {
             assert_eq!(q3_words[index], (native & 65535) as u32);
         }
     }
+}
+
+#[test]
+fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
+    let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
+    let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let mut p = destination();
+    let mut c = context();
+    let mut q2_words = [0; states::Q2_PLAYER_WORDS];
+    q2_words[0] = 1;
+    p.movement.mode = MovementMode::Noclip;
+    p.movement.timer = MovementTimer::KNOCKBACK;
+    assert!(q2.apply(&q2_words, &mut p, &mut c, |_| None));
+    assert_eq!(p.movement.mode, MovementMode::Noclip);
+    assert_eq!(p.movement.timer, MovementTimer::KNOCKBACK); // not in Q2's flags
+    p.movement.mode = MovementMode::Walk;
+    assert!(q2.apply(&q2_words, &mut p, &mut c, |_| None));
+    assert_eq!(p.movement.mode, MovementMode::Spectator);
+    p.tail = PlayerTail::Q2 { weapon_frame: 0 };
+    q2_words[23] = 42;
+    assert!(q2.apply(&q2_words, &mut p, &mut c, |_| None));
+    assert_eq!(p.tail, PlayerTail::Q2 { weapon_frame: 42 });
+
+    let mut words = [0; states::PLAYER_WORDS];
+    words[34] = 3;
+    words[20] = 27;
+    words[19] = 32 | 64; // simultaneous landing and knockback
+    let lifetime = EntityId {
+        slot: 91,
+        generation: 44,
+    };
+    p.movement.mode = MovementMode::Gib;
+    assert!(q3.apply(&words, &mut p, &mut c, |number| {
+        assert_eq!(number, 27);
+        Some(lifetime)
+    }));
+    assert_eq!(p.movement.mode, MovementMode::Gib);
+    assert_eq!(p.movement.ground, Some(lifetime));
+    assert_eq!(
+        p.movement.timer.0,
+        MovementTimer::LAND.0 | MovementTimer::KNOCKBACK.0
+    );
+    words[20] = 1023;
+    words[19] = 0;
+    words[8] = 77;
+    p.tail = PlayerTail::Q3 { weapon_time: 0 };
+    for (native, mode) in [
+        (3, MovementMode::Dead),
+        (5, MovementMode::Frozen),
+        (6, MovementMode::Frozen),
+        (255, MovementMode::Frozen),
+    ] {
+        p.movement.mode = MovementMode::Walk;
+        words[34] = native;
+        assert!(q3.apply(&words, &mut p, &mut c, |_| {
+            panic!("native none must not resolve")
+        }));
+        assert_eq!(p.movement.mode, mode);
+        assert!(!p.movement.grounded);
+        assert_eq!(p.movement.ground, None);
+        assert_eq!(c.ground_number, None);
+        assert_eq!(p.movement.timer, MovementTimer::NONE);
+        assert_eq!(p.tail, PlayerTail::Q3 { weapon_time: 77 });
+    }
+}
+
+#[test]
+fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
+    let binding = ValueBinding {
+        id: ValueId(2),
+        width: ValueWidth::Signed16,
+        reset: ValueReset::Life,
+    };
+    let absent = ValueBinding {
+        id: ValueId(999),
+        ..binding
+    };
+    let projection = PlayerProjection::load(
+        Protocol::Quake3_68,
+        &[(48, binding), (49, absent), (1000, binding)],
+    );
+    let mut p = destination();
+    let arena = p.inventory.as_ptr();
+    let mut c = context();
+    assert!(!projection.apply(&[7; 8], &mut p, &mut c, |_| panic!("short record")));
+    assert_eq!(p.health, 9876);
+    assert_eq!(p.body.position, Vec3([999.; 3]));
+    assert_eq!(c.ground_number, Some(1022));
+    let mut words = [0; states::PLAYER_WORDS];
+    words[48] = 65534;
+    words[20] = 1023;
+    assert!(projection.apply(&words, &mut p, &mut c, |_| None));
+    assert_eq!(p.values.get(ValueId(2)), Some(NumericValue::integer(-2)));
+    assert_eq!(p.inventory.as_ptr(), arena);
+    assert_eq!(projection.dropped_bindings, 1);
+    assert_independent_state(&p);
 }
