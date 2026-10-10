@@ -230,17 +230,27 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             result.decoded[..QW_PLAYER_WORDS].copy_from_slice(&decoded.words);
             result.decoded[14..25].copy_from_slice(&command_delta::qw_words(decoded.command));
         }
-        8 => {
+        8 | 10 => {
             let from = case.from[..states::Q2_RR_STATS]
                 .try_into()
                 .map_err(|_| "RR stats")?;
             let to = case.to[..states::Q2_RR_STATS]
                 .try_into()
                 .map_err(|_| "RR stats")?;
-            states::write_q2_rr_stats(&mut writer, from, to).map_err(|e| e.to_string())?;
+            if case.mode == 8 {
+                states::write_q2_rr_stats(&mut writer, from, to)
+            } else {
+                states::write_q2_kex_stats(&mut writer, from, to)
+            }
+            .map_err(|e| e.to_string())?;
             let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
             result.decoded[..states::Q2_RR_STATS].copy_from_slice(
-                &states::read_q2_rr_stats(&mut reader, from).map_err(|e| e.to_string())?,
+                &if case.mode == 8 {
+                    states::read_q2_rr_stats(&mut reader, from)
+                } else {
+                    states::read_q2_kex_stats(&mut reader, from)
+                }
+                .map_err(|e| e.to_string())?,
             );
         }
         9 => {
@@ -340,7 +350,7 @@ fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> 
     let mut counts = allocations::Counts::default();
     let mut checks = 0;
     let mut wire_bytes = 0;
-    let mut mode_checks = [0u64; 10];
+    let mut mode_checks = [0u64; 11];
     for frame in 0..660 {
         allocations::begin_frame();
         let watch = (!heap_only).then(Stopwatch::start);

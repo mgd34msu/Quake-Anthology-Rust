@@ -381,6 +381,37 @@ static Q2_RR_STAT_GROUP: [Group; 1] = [Group {
     fields: &Q2_RR_STAT_FIELDS,
     presence: Presence::Mask(64),
 }];
+static Q2_KEX_STAT_HALVES: [[Field; 32]; 2] = [
+    mask_fields(0, 16, Value::Signed),
+    mask_fields(32, 16, Value::Signed),
+];
+static Q2_KEX_STAT_GROUPS: [Group; 2] = [
+    Group {
+        fields: &Q2_KEX_STAT_HALVES[0],
+        presence: Presence::Mask(32),
+    },
+    Group {
+        fields: &Q2_KEX_STAT_HALVES[1],
+        presence: Presence::Mask(32),
+    },
+];
+
+/// Retail KEX: each 32-bit stat mask precedes that half's signed values.
+pub fn write_q2_kex_stats(
+    writer: &mut Writer<'_>,
+    from: &[u32; Q2_RR_STATS],
+    to: &[u32; Q2_RR_STATS],
+) -> Result<(), Error> {
+    delta::write(&Q2_KEX_STAT_GROUPS, from, to, 0, writer)
+}
+pub fn read_q2_kex_stats(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_RR_STATS],
+) -> Result<[u32; Q2_RR_STATS], Error> {
+    let mut words = *from;
+    delta::read(&Q2_KEX_STAT_GROUPS, &mut words, 0, reader)?;
+    Ok(words)
+}
 
 /// Q2repro MSG_PS_RERELEASE: both halves of the stat mask precede all values.
 /// Retail KEX instead interleaves each 32-bit mask and its own stat values.

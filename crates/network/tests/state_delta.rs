@@ -88,6 +88,38 @@ fn rerelease_player_fields_change_without_other_group_flags() -> Result<(), Stri
 
 #[test]
 fn rerelease_stat_mask_keeps_high_bits_before_all_signed_values() -> Result<(), String> {
+    stat_records(
+        states::write_q2_rr_stats,
+        states::read_q2_rr_stats,
+        &[
+            1, 0, 0, 128, 1, 0, 0, 128, 0, 128, 255, 127, 255, 255, 199, 207,
+        ],
+        &[255; 8],
+    )
+}
+
+#[test]
+fn kex_stat_masks_interleave_their_own_signed_values() -> Result<(), String> {
+    stat_records(
+        states::write_q2_kex_stats,
+        states::read_q2_kex_stats,
+        &[
+            1, 0, 0, 128, 0, 128, 255, 127, 1, 0, 0, 128, 255, 255, 199, 207,
+        ],
+        &[255; 4],
+    )
+}
+
+type StatWriter =
+    fn(&mut Writer<'_>, &[u32; 64], &[u32; 64]) -> Result<(), qa_network::message::Error>;
+type StatReader = fn(&mut Reader<'_>, &[u32; 64]) -> Result<[u32; 64], qa_network::message::Error>;
+
+fn stat_records(
+    write: StatWriter,
+    read: StatReader,
+    expected: &[u8],
+    mask_prefix: &[u8],
+) -> Result<(), String> {
     let from = std::array::from_fn(|i| i as u32);
     let mut to = from;
     to[0] = (-32768i32) as u32;
@@ -96,22 +128,14 @@ fn rerelease_stat_mask_keeps_high_bits_before_all_signed_values() -> Result<(), 
     to[63] = (-12345i32) as u32;
     let mut bytes = [0; 136];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    states::write_q2_rr_stats(&mut writer, &from, &to).map_err(|e| e.to_string())?;
-    assert_eq!(
-        writer.bytes(),
-        &[
-            1, 0, 0, 128, 1, 0, 0, 128, 0, 128, 255, 127, 255, 255, 199, 207
-        ]
-    );
+    write(&mut writer, &from, &to).map_err(|e| e.to_string())?;
+    assert_eq!(writer.bytes(), expected);
     let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-    assert_eq!(
-        states::read_q2_rr_stats(&mut reader, &from).map_err(|e| e.to_string())?,
-        to
-    );
+    assert_eq!(read(&mut reader, &from).map_err(|e| e.to_string())?, to);
     assert_eq!(reader.byte_position(), writer.size());
     for length in 0..writer.size() {
         assert!(
-            states::read_q2_rr_stats(
+            read(
                 &mut Reader::new(&writer.bytes()[..length], Encoding::Bytes),
                 &from
             )
@@ -119,21 +143,19 @@ fn rerelease_stat_mask_keeps_high_bits_before_all_signed_values() -> Result<(), 
         );
     }
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    states::write_q2_rr_stats(&mut writer, &from, &from).map_err(|e| e.to_string())?;
+    write(&mut writer, &from, &from).map_err(|e| e.to_string())?;
     assert_eq!(writer.bytes(), &[0; 8]);
     assert_eq!(
-        states::read_q2_rr_stats(&mut Reader::new(writer.bytes(), Encoding::Bytes), &from)
-            .map_err(|e| e.to_string())?,
+        read(&mut Reader::new(writer.bytes(), Encoding::Bytes), &from).map_err(|e| e.to_string())?,
         from
     );
     let all = std::array::from_fn(|i| (i as i32 - 32768) as u32);
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    states::write_q2_rr_stats(&mut writer, &from, &all).map_err(|e| e.to_string())?;
+    write(&mut writer, &from, &all).map_err(|e| e.to_string())?;
     assert_eq!(writer.size(), 136);
-    assert_eq!(&writer.bytes()[..8], &[255; 8]);
+    assert_eq!(&writer.bytes()[..mask_prefix.len()], mask_prefix);
     assert_eq!(
-        states::read_q2_rr_stats(&mut Reader::new(writer.bytes(), Encoding::Bytes), &from)
-            .map_err(|e| e.to_string())?,
+        read(&mut Reader::new(writer.bytes(), Encoding::Bytes), &from).map_err(|e| e.to_string())?,
         all
     );
     Ok(())
