@@ -192,23 +192,21 @@ impl NativeProcess {
         }
         if image.bytes.is_empty()
             || image.bytes.len() > LIMIT
-            || image.bytes.len() % PAGE != 0
             || image.base < PAGE as u64
             || image.base % PAGE as u64 != 0
-            || image.base.checked_add(image.bytes.len() as u64).is_none()
             || image.timeout.is_zero()
             || image.regions.len() > 65536
         {
             return Err(NativeError::Extent);
         }
+        let length = image.bytes.len().div_ceil(PAGE) * PAGE;
+        if image.base.checked_add(length as u64).is_none() {
+            return Err(NativeError::Extent);
+        }
+        let mut pages = vec![0u8; length / PAGE];
         let mut end = 0;
         for region in image.regions {
-            if region.offset < end
-                || region.offset % PAGE != 0
-                || region.length == 0
-                || region.length % PAGE != 0
-                || region.permissions > 7
-            {
+            if region.offset < end || region.length == 0 || region.permissions > 7 {
                 return Err(NativeError::Extent);
             }
             end = region
@@ -216,6 +214,28 @@ impl NativeProcess {
                 .checked_add(region.length)
                 .filter(|&n| n <= image.bytes.len())
                 .ok_or(NativeError::Extent)?;
+            for rights in &mut pages[region.offset / PAGE..end.div_ceil(PAGE)] {
+                *rights |= region.permissions;
+            }
+        }
+        let mut mapped = Vec::new();
+        let mut at = 0;
+        while at < pages.len() {
+            let begin = at;
+            let rights = pages[at];
+            while at < pages.len() && pages[at] == rights {
+                at += 1;
+            }
+            if rights != 0 {
+                mapped.push(NativeRegion {
+                    offset: begin * PAGE,
+                    length: (at - begin) * PAGE,
+                    permissions: rights,
+                });
+            }
+        }
+        if mapped.len() > 65536 {
+            return Err(NativeError::Extent);
         }
         // SAFETY: valid terminated name; returns a fresh owned descriptor.
         let fd = unsafe { memfd_create(c"qa-native-memory".as_ptr(), 3) };
@@ -224,13 +244,13 @@ impl NativeProcess {
         }
         // SAFETY: fd is fresh and has no other Rust owner.
         let file = unsafe { File::from_raw_fd(fd) };
-        file.set_len(image.bytes.len() as u64)?;
+        file.set_len(length as u64)?;
         // SAFETY: F_ADD_SEALS fixes the size before any mapped view escapes.
         if unsafe { fcntl(fd, 1033, 1 | 2 | 4) } < 0 {
             return Err(io::Error::last_os_error().into());
         }
-        let mut memory = Mapping::map(&file, image.bytes.len(), None)?;
-        memory.bytes_mut().copy_from_slice(image.bytes);
+        let mut memory = Mapping::map(&file, length, None)?;
+        memory.bytes_mut()[..image.bytes.len()].copy_from_slice(image.bytes);
         let (stream, child_stream) = UnixStream::pair()?;
         stream.set_read_timeout(Some(image.timeout))?;
         stream.set_write_timeout(Some(image.timeout))?;
@@ -251,18 +271,18 @@ impl NativeProcess {
             timeout: image.timeout,
             reaped: None,
         };
-        if let Err(error) = owner.start() {
+        if let Err(error) = owner.start(&mapped) {
             return Err(owner.failure(error));
         }
         Ok(owner)
     }
-    fn start(&mut self) -> Result<(), NativeError> {
+    fn start(&mut self, mapped: &[NativeRegion]) -> Result<(), NativeError> {
         let mut packet = Packet::new(START, 0);
         packet.address = self.base;
         packet.arguments[0] = self.memory.length as u64;
-        packet.arguments[1] = self.regions.len() as u64;
+        packet.arguments[1] = mapped.len() as u64;
         packet.send(&mut self.stream)?;
-        for region in &self.regions {
+        for region in mapped {
             let mut packet = Packet::new(MAP, 0);
             packet.address = region.offset as u64;
             packet.arguments[0] = region.length as u64;

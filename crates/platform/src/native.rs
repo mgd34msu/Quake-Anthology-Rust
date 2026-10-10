@@ -12,7 +12,8 @@ pub enum NativeAbi {
 pub struct NativeRegion {
     pub offset: usize,
     pub length: usize,
-    /// Native page rights: read=1, write=2, execute=4.
+    /// Native byte-range rights: read=1, write=2, execute=4. Platform combines
+    /// rights for ranges sharing an OS page; entry checks keep the byte ranges.
     pub permissions: u8,
 }
 

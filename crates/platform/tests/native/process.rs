@@ -28,6 +28,14 @@ fn child_entry() {
 fn child(code: &[u8], timeout: Duration) -> Result<NativeProcess, NativeError> {
     let mut bytes = vec![0; 8192];
     bytes[..code.len()].copy_from_slice(code);
+    image_child(&bytes, &REGIONS, timeout)
+}
+
+fn image_child(
+    bytes: &[u8],
+    regions: &[NativeRegion],
+    timeout: Duration,
+) -> Result<NativeProcess, NativeError> {
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args(["--exact", "native::tests::child_entry", "--nocapture"])
@@ -37,11 +45,84 @@ fn child(code: &[u8], timeout: Duration) -> Result<NativeProcess, NativeError> {
         NativeImage {
             base: BASE,
             pointer_bytes: 8,
-            bytes: &bytes,
-            regions: &REGIONS,
+            bytes,
+            regions,
             timeout,
         },
     )
+}
+
+#[test]
+fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
+    let mut bytes = vec![0; 5000];
+    // mov [rdi],rsi; mov rax,rsi; ret
+    let code = [0x48, 0x89, 0x37, 0x48, 0x89, 0xf0, 0xc3];
+    bytes[512..512 + code.len()].copy_from_slice(&code);
+    let regions = [
+        NativeRegion {
+            offset: 0,
+            length: 512,
+            permissions: 1,
+        },
+        NativeRegion {
+            offset: 512,
+            length: code.len(),
+            permissions: 5,
+        },
+        NativeRegion {
+            offset: 1000,
+            length: 24,
+            permissions: 3,
+        },
+        NativeRegion {
+            offset: 4096,
+            length: 904,
+            permissions: 1,
+        },
+    ];
+    let mut process = image_child(&bytes, &regions, Duration::from_secs(3)).unwrap();
+    assert!(process.executable(BASE + 512));
+    for offset in [0, 511, 519, 1000, 4096, 5000, 8191] {
+        assert!(!process.executable(BASE + offset));
+    }
+    assert_eq!(process.memory().unwrap().len(), 8192);
+    assert!(process.memory().unwrap()[5000..].iter().all(|&b| b == 0));
+    let mut words = [0; 13];
+    words[0] = BASE + 1000;
+    words[1] = 0xabcdef;
+    assert_eq!(
+        process
+            .invoke(BASE + 512, NativeAbi::SystemV, words, |_, _, _| {
+                Err(NativeError::Callback)
+            })
+            .unwrap(),
+        words[1]
+    );
+    assert_eq!(
+        &process.memory().unwrap()[1000..1008],
+        &words[1].to_le_bytes()
+    );
+    assert!(matches!(
+        process.invoke(BASE + 519, NativeAbi::SystemV, words, |_, _, _| {
+            Err(NativeError::Callback)
+        }),
+        Err(NativeError::Extent)
+    ));
+
+    for (offset, length, permissions) in [(4999, 2, 1), (0, 0, 1), (0, 1, 8)] {
+        assert!(matches!(
+            image_child(
+                &bytes,
+                &[NativeRegion {
+                    offset,
+                    length,
+                    permissions
+                }],
+                Duration::from_secs(3)
+            ),
+            Err(NativeError::Extent)
+        ));
+    }
 }
 
 fn standard(code: &[u8]) -> NativeProcess {
