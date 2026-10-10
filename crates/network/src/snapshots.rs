@@ -5,6 +5,8 @@ use crate::{
     message::{Reader, Writer},
     states,
 };
+mod q2;
+pub use q2::Q2Header;
 
 pub const SLOTS: usize = 32;
 
@@ -596,10 +598,13 @@ pub fn read_q3(
 /// Protocol-34 svc_frame body. Unlike Q3, its frame number is carried in the
 /// payload and its native server time is frame * 100 milliseconds.
 pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packet::Error> {
-    let sequence = reader.read_bits(32)?;
-    let delta = reader.read_bits(32)? as i32;
-    let flags = reader.read_bits(8)? as u8;
-    let area_bytes = read_areas(reader, &mut ring.scratch_areas, 32)?;
+    let (header, area_bytes) = Q2Header::read::<false>(reader, &mut ring.scratch_areas, 32)?;
+    let Q2Header {
+        sequence,
+        delta,
+        flags,
+        ..
+    } = header;
     let base_index = delta as usize & (SLOTS - 1);
     let full = delta <= 0;
     let old = if full {
@@ -882,12 +887,13 @@ pub fn write_q2(
     let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
     let from = delta_frame(ring, sequence, delta_request);
     let areas = &to.areas[..to.areas.len().min(32)];
-    writer.write_bits(20, 8)?;
-    writer.write_bits(sequence, 32)?;
-    writer.write_bits(from.map_or(u32::MAX, |f| f.sequence), 32)?;
-    writer.write_bits(u32::from(to.flags), 8)?;
-    writer.write_bits(areas.len() as u32, 8)?;
-    writer.write_data(areas)?;
+    Q2Header {
+        sequence,
+        delta: from.map_or(-1, |f| f.sequence as i32),
+        flags: to.flags,
+        player_flags: 0,
+    }
+    .write::<false>(writer, areas)?;
     states::write_q2_player(
         writer,
         from.map_or(&[0; states::Q2_PLAYER_WORDS], |f| f.player),
