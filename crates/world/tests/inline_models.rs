@@ -65,6 +65,7 @@ fn brush_model(
             let axis = side / 2;
             let positive = side % 2 == 0;
             Plane {
+                encoding: None,
                 normal: Vec3(std::array::from_fn(|i| {
                     if i == axis {
                         if positive { 1.0 } else { -1.0 }
@@ -134,6 +135,7 @@ fn hull_model(store: &mut CollisionStore) -> GeometryId {
     store
         .load_hulls(
             vec![Plane {
+                encoding: None,
                 normal: Vec3([1.0, 0.0, 0.0]),
                 distance: 0.0,
                 axis: Some(Axis::X),

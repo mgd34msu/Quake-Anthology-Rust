@@ -62,6 +62,7 @@ fn add_box(map: &mut Map<'_>, center: f32) {
             normal.0[axis] = if positive { 1.0 } else { -1.0 };
             let plane = map.planes.len() as u32;
             map.planes.push(Plane {
+                encoding: None,
                 normal,
                 distance: 10.0 + if axis == 0 { center * normal.0[0] } else { 0.0 },
                 axis: positive.then_some([Axis::X, Axis::Y, Axis::Z][axis]),

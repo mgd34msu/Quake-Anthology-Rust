@@ -89,6 +89,7 @@ fn box_map() -> Case {
             let mut normal = [0.0; 3];
             normal[index / 2] = if index % 2 == 0 { 1.0 } else { -1.0 };
             Plane {
+                encoding: None,
                 normal: Vec3(normal),
                 distance: 10.0,
                 axis: None,
@@ -203,6 +204,7 @@ fn half_spaces(normals: &[Vec3]) -> Case {
         normals
             .iter()
             .map(|&normal| Plane {
+                encoding: None,
                 normal,
                 distance: 0.0,
                 axis: None,
@@ -494,6 +496,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
     let origin = 16_777_216.0;
     let world = load(
         vec![Plane {
+            encoding: None,
             normal: Vec3([1.0, 0.0, 0.0]),
             distance: origin,
             axis: None,
@@ -538,11 +541,13 @@ fn overlapping_contents() -> Case {
     load(
         vec![
             Plane {
+                encoding: None,
                 normal: Vec3([1.0, 0.0, 0.0]),
                 distance: 0.0,
                 axis: None,
             },
             Plane {
+                encoding: None,
                 normal: Vec3([1.0, 0.0, 0.0]),
                 distance: 1.0,
                 axis: None,

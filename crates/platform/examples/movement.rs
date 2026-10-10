@@ -25,6 +25,7 @@ fn box_brush(planes: &mut Vec<Plane>, brushes: &mut Vec<Brush>, mins: Vec3, maxs
             let mut normal = Vec3::default();
             normal.0[axis] = sign;
             planes.push(Plane {
+                encoding: None,
                 normal,
                 distance: if sign > 0.0 {
                     maxs.0[axis]
@@ -44,6 +45,7 @@ fn box_brush(planes: &mut Vec<Plane>, brushes: &mut Vec<Brush>, mins: Vec3, maxs
 
 fn scene(store: &mut CollisionStore) -> Result<GeometryId, String> {
     let mut planes = vec![Plane {
+        encoding: None,
         normal: Vec3([0.0, 0.0, 1.0]),
         distance: 0.0,
         axis: None,

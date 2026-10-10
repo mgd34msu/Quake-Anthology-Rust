@@ -614,6 +614,7 @@ fn native_contents_filter_and_point_contents_face_semantics() {
 fn native_world_zero_fraction_returns_before_linked_body_merging() {
     let world = brush_world(
         vec![Plane {
+            encoding: None,
             normal: Vec3([1.0, 0.0, 0.0]),
             distance: 0.0,
             axis: None,

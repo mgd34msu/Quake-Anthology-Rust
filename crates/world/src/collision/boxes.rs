@@ -36,6 +36,7 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
     let planes: [Plane; 6] = std::array::from_fn(|index| {
         let axis = index / 2;
         Plane {
+            encoding: None,
             normal: Vec3(std::array::from_fn(|coordinate| {
                 if coordinate == axis { 1.0 } else { 0.0 }
             })),
@@ -98,6 +99,19 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
         let axis = index / 2;
         let positive = index & 1 == 0;
         Plane {
+            encoding: Some([
+                if positive { axis as u8 } else { 3 + axis as u8 },
+                if !positive
+                    && query
+                        .entity_rules
+                        .filtering
+                        .contains(EntityTraceFlags::CENTER_BOX)
+                {
+                    1 << axis
+                } else {
+                    0
+                },
+            ]),
             normal: Vec3(std::array::from_fn(|coordinate| {
                 if coordinate == axis {
                     if positive { 1.0 } else { -1.0 }

@@ -29,6 +29,7 @@ fn load(
 fn wall() -> (Vec<Plane>, Vec<ClipNode>, Vec<HullModel>) {
     (
         vec![Plane {
+            encoding: None,
             normal: Vec3([1.0, 0.0, 0.0]),
             distance: 0.0,
             axis: Some(Axis::X),
@@ -162,11 +163,13 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
     let hulls = load(
         vec![
             Plane {
+                encoding: None,
                 normal: Vec3([0.0, 0.0, 1.0]),
                 distance: 0.0,
                 axis: Some(Axis::Z),
             },
             Plane {
+                encoding: None,
                 normal: Vec3([0.0, 0.0, 1.0]),
                 distance: -32.0,
                 axis: Some(Axis::Z),

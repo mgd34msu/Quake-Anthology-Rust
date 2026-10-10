@@ -14,6 +14,7 @@ fn geometry(points: &[[f32; 3]], offset: [f32; 2]) -> WorldGeometry {
     let map = Map {
         bsp: Bsp::parse(&bytes).unwrap(),
         planes: vec![Plane {
+            encoding: None,
             normal: Vec3([0.0, 0.0, 1.0]),
             distance: 0.0,
             axis: None,

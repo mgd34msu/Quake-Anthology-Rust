@@ -154,6 +154,7 @@ pub fn frustum(view: Refdef) -> Result<[Plane; 6], VisibilityQueryError> {
         -view.axes[0],
     ];
     Ok(std::array::from_fn(|i| Plane {
+        encoding: None,
         normal: normals[i],
         distance: normals[i].dot(view.origin)
             + if i == 4 {

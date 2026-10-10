@@ -193,6 +193,7 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
         .geometry
         .load_brushes(
             vec![Plane {
+                encoding: None,
                 normal: Vec3([0.0, 0.0, 1.0]),
                 distance: 0.0,
                 axis: None,

@@ -411,7 +411,10 @@ impl Trace {
         Self {
             fraction: 1.0,
             end,
-            plane: Plane::default(),
+            plane: Plane {
+                encoding: Some([0, 0]),
+                ..Plane::default()
+            },
             start_solid: false,
             all_solid: false,
             in_open: false,

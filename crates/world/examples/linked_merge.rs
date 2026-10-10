@@ -58,6 +58,7 @@ fn input_trace(data: &mut &[u8]) -> Result<Trace, &'static str> {
         fraction,
         end,
         plane: Plane {
+            encoding: None,
             normal,
             distance,
             axis,

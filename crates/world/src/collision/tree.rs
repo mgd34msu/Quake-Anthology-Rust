@@ -506,6 +506,7 @@ mod tests {
         let mut map = CollisionStore::new();
         let geometry = map.load_brushes(
             vec![Plane {
+                encoding: None,
                 normal: Vec3([1.0, 0.0, 0.0]),
                 distance: 0.0,
                 axis: None,

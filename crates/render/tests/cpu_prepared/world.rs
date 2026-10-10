@@ -54,6 +54,7 @@ fn fixture_world(
             indices: IndexRange { first: 0, count: 6 },
             boundaries: IndexRange { first: 0, count: 1 },
             plane: Some(Plane {
+                encoding: None,
                 normal: Vec3([-1.0, 0.0, 0.0]),
                 distance: -depth,
                 axis: None,
@@ -1493,6 +1494,7 @@ fn indexed_wall_on_eye_plane_skips_without_rejecting_nearby_drawable_wall() {
             let surface = &mut geometry.surfaces[0];
             surface.vertices.count = 5;
             surface.plane = Some(Plane {
+                encoding: None,
                 normal,
                 distance: -128.0,
                 axis: None,

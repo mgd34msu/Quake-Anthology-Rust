@@ -65,6 +65,7 @@ fn vertex(position: [f32; 3]) -> Vertex {
 fn legacy_map(bytes: &[u8]) -> Map<'_> {
     let mut map = empty_map(bytes);
     map.planes.push(Plane {
+        encoding: None,
         normal: Vec3([0.0, 0.0, 1.0]),
         distance: 2.0,
         axis: None,

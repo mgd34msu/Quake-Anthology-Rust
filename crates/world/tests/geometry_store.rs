@@ -92,6 +92,7 @@ fn invalid_surface_indices_do_not_publish_geometry() -> Result<(), StoreError> {
 
 fn wall_plane() -> Plane {
     Plane {
+        encoding: None,
         normal: Vec3([1.0, 0.0, 0.0]),
         distance: 0.0,
         axis: Some(Axis::X),

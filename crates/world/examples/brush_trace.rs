@@ -97,6 +97,7 @@ fn load(
                     _ => return Err("invalid plane axis"),
                 };
                 planes.push(Plane {
+                    encoding: None,
                     normal,
                     distance,
                     axis,

@@ -28,6 +28,9 @@ pub struct Plane {
     pub normal: Vec3,
     pub distance: f32,
     pub axis: Option<Axis>,
+    /// Original cplane type/sign bits may deliberately differ from the normal,
+    /// including temporary boxes and transformed native model contacts.
+    pub encoding: Option<[u8; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,7 +48,28 @@ impl Plane {
             normal,
             distance,
             axis,
+            encoding: None,
         }
+    }
+
+    pub fn type_sign(self) -> [u8; 2] {
+        self.encoding.unwrap_or_else(|| {
+            let kind = match self.axis {
+                Some(Axis::X) => 0,
+                Some(Axis::Y) => 1,
+                Some(Axis::Z) => 2,
+                None => 3,
+            };
+            let signs = self
+                .normal
+                .0
+                .iter()
+                .enumerate()
+                .fold(0, |bits, (axis, value)| {
+                    bits | (u8::from(*value < 0.0) << axis)
+                });
+            [kind, signs]
+        })
     }
 
     pub fn signed_distance(self, point: Vec3) -> f32 {

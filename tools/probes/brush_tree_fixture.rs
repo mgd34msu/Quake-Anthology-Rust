@@ -65,6 +65,7 @@ fn plane(data: &mut &[u8]) -> Result<Plane, &'static str> {
         return Err("nonfinite tree fixture plane distance");
     }
     Ok(Plane {
+        encoding: None,
         normal,
         distance,
         axis,

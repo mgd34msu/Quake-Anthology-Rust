@@ -1,7 +1,29 @@
 use qa_core::{
     math::*,
-    primitives::{Bounds, Vec3},
+    primitives::{Bounds, Plane, Vec3},
 };
+
+#[test]
+fn plane_encoding_keeps_native_fields_independent_of_transformed_normals() {
+    assert_eq!(size_of::<Plane>(), 20);
+    for axis in 0..3 {
+        let mut normal = [0.0; 3];
+        normal[axis] = 1.0;
+        let positive = Plane::oriented(Vec3(normal), 7.0);
+        assert_eq!(positive.type_sign(), [axis as u8, 0]);
+        normal[axis] = -1.0;
+        let negative = Plane::oriented(Vec3(normal), 7.0);
+        assert_eq!(negative.type_sign(), [3, 1 << axis]);
+        let mut encoded = Plane {
+            encoding: Some([3 + axis as u8, 0]),
+            ..negative
+        };
+        encoded.normal = Vec3([0.2, -0.6, -0.8]);
+        assert_eq!(encoded.type_sign(), [3 + axis as u8, 0]);
+        encoded.encoding = None;
+        assert_eq!(encoded.type_sign(), [3, 6]);
+    }
+}
 
 #[test]
 fn vector_operations_normalization_and_angle_wrapping() {

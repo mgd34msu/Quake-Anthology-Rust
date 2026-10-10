@@ -91,6 +91,15 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         if !matches!(rules, RuleSetId::Quake3) && (0..3).contains(&plane_type) {
             plane.axis = Some([Axis::X, Axis::Y, Axis::Z][plane_type as usize]);
         }
+        let [kind, signs] = plane.type_sign();
+        plane.encoding = Some([
+            if bsp.stride(Planes) == 20 {
+                plane_type as u8
+            } else {
+                kind
+            },
+            signs,
+        ]);
         Ok(plane)
     })?;
     let vertices = records(&bsp, Vertices, |r| {

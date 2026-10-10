@@ -67,6 +67,7 @@ fn legacy_map<'a>(bytes: &'a [u8], family: u8) -> Result<Map<'a>, String> {
         maxs: Vec3([16.0, 16.0, 0.0]),
     };
     map.planes.push(Plane {
+        encoding: None,
         normal: Vec3([0.0, 0.0, 1.0]),
         distance: 0.0,
         axis: None,

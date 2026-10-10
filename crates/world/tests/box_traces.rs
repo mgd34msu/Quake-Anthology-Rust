@@ -2,6 +2,50 @@ use qa_core::primitives::{Body, EntityId, Vec3};
 use qa_world::collision::{Contents, TraceQuery, TraceRules, boxes::trace_box};
 
 #[test]
+fn temporary_box_planes_keep_native_type_and_sign_conventions() {
+    use qa_core::primitives::RuleSetId;
+    let entity = EntityId {
+        slot: 2,
+        generation: 7,
+    };
+    let body = Body {
+        mins: Vec3([-10.0; 3]),
+        maxs: Vec3([10.0; 3]),
+        ..Body::default()
+    };
+    for id in [
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        let (rules, entities) = qa_world::collision::trace_policy(id);
+        for axis in 0..3 {
+            for positive in [false, true] {
+                let mut start = [0.0; 3];
+                start[axis] = if positive { 100.0 } else { -100.0 };
+                let query = TraceQuery {
+                    mask: Contents::BODY,
+                    ..TraceQuery::point(Vec3(start), Vec3::default(), rules, entities)
+                };
+                let hit = trace_box(query, &body, entity);
+                assert!(hit.fraction < 1.0);
+                assert_eq!(
+                    hit.plane.type_sign(),
+                    [
+                        if positive { axis as u8 } else { 3 + axis as u8 },
+                        if id == RuleSetId::Quake3 && !positive {
+                            1 << axis
+                        } else {
+                            0
+                        },
+                    ]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
     let entity = EntityId {
         slot: 3,

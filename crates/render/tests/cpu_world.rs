@@ -595,6 +595,7 @@ fn world_bound(
             indices: IndexRange { first: 0, count: 6 },
             boundaries: IndexRange { first: 0, count: 1 },
             plane: Some(Plane {
+                encoding: None,
                 normal: Vec3([-1.0, 0.0, 0.0]),
                 distance: -depth,
                 axis: None,
@@ -1567,6 +1568,7 @@ fn retail_collinear_face_is_skipped_but_nonempty_zero_extent_is_rejected() {
             }
             let surface = &mut geometry.surfaces[0];
             surface.plane = Some(Plane {
+                encoding: None,
                 normal: Vec3([0.0, 0.0, 1.0]),
                 distance: -112.0,
                 axis: Some(qa_core::primitives::Axis::Z),

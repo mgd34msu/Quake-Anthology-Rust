@@ -135,6 +135,7 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
             return Err("nonfinite hull-model distance");
         }
         planes.push(Plane {
+            encoding: None,
             normal,
             distance,
             axis,

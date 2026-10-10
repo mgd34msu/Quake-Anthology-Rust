@@ -71,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => None,
         };
         planes.push(Plane {
+            encoding: None,
             normal,
             distance,
             axis,

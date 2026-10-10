@@ -39,6 +39,7 @@ fn load(planes: Vec<Plane>, brushes: Vec<Brush>) -> Result<Case, StoreError> {
 
 fn plane(normal: [f32; 3], distance: f32) -> Plane {
     Plane {
+        encoding: None,
         normal: Vec3(normal),
         distance,
         axis: None,
@@ -47,6 +48,7 @@ fn plane(normal: [f32; 3], distance: f32) -> Plane {
 
 fn x_split(distance: f32) -> Plane {
     Plane {
+        encoding: None,
         normal: Vec3([1.0, 0.0, 0.0]),
         distance,
         axis: Some(Axis::X),
@@ -807,6 +809,7 @@ fn load_preserves_both_axial_unit_signs_and_rejects_malformed_normals() {
             let mut normal = [0.0; 3];
             normal[component] = sign;
             tree.planes[0] = Plane {
+                encoding: None,
                 normal: Vec3(normal),
                 distance: -17.0,
                 axis: Some(axis),

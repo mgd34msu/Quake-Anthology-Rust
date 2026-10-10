@@ -48,6 +48,7 @@ impl TraceServices for FixtureWorld {
                 if fraction < result.fraction {
                     result.fraction = fraction;
                     result.plane = Plane {
+                        encoding: None,
                         normal,
                         distance,
                         axis: None,

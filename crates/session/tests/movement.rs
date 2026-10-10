@@ -21,6 +21,7 @@ fn floor() -> (CollisionStore, GeometryId) {
     let geometry = store
         .load_brushes(
             vec![Plane {
+                encoding: None,
                 normal: Vec3([0.0, 0.0, 1.0]),
                 distance: 0.0,
                 axis: None,
@@ -344,6 +345,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
             [64.0, 0.0]
                 .into_iter()
                 .map(|distance| Plane {
+                    encoding: None,
                     normal: Vec3([0.0, 0.0, 1.0]),
                     distance,
                     axis: None,

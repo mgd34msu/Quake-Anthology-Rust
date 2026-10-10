@@ -131,6 +131,31 @@ fn native_layouts_convert_into_the_same_flat_tree_and_core_plane() {
 }
 
 #[test]
+fn native_plane_rows_keep_original_type_and_signed_normal_bits() {
+    for version in [29, 38, 0x50534251] {
+        for kind in 0..6 {
+            let mut bytes = fixture(version);
+            let header = if version == 29 { 4 } else { 8 };
+            let at =
+                u32::from_le_bytes(bytes[header + 8..header + 12].try_into().unwrap()) as usize;
+            let normal = if kind < 3 {
+                std::array::from_fn(|axis| if axis == kind as usize { -1.0f32 } else { 0.0 })
+            } else {
+                [-0.6, 0.0, -0.8]
+            };
+            for (axis, value) in normal.into_iter().enumerate() {
+                put(&mut bytes, at + axis * 4, value.to_bits() as i32);
+            }
+            put(&mut bytes, at + 16, kind);
+            let map = Map::parse(&bytes).unwrap();
+            let signs = if kind < 3 { 1 << kind } else { 5 };
+            assert_eq!(map.planes[0].encoding, Some([kind as u8, signs]));
+            assert_eq!(map.planes[0].type_sign(), [kind as u8, signs]);
+        }
+    }
+}
+
+#[test]
 fn admission_rejects_cycles_indices_and_nonfinite_geometry() {
     let mut bytes = fixture(29);
     let node = u32::from_le_bytes(bytes[44..48].try_into().unwrap()) as usize;

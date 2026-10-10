@@ -143,6 +143,7 @@ impl Hull<'_> {
                 trace.plane.normal = Vec3(trace.plane.normal.0.map(|value| 0.0 - value));
                 trace.plane.distance = -trace.plane.distance;
                 trace.plane.axis = None;
+                trace.plane.encoding = None;
             }
             trace.contents = Contents::from_q1(self.point_contents(frame.mid, frame.far));
             while self.blocked(frame.mid, self.root, mask) {

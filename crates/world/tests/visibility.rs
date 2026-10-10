@@ -19,6 +19,7 @@ fn plane(axis: usize) -> Plane {
     let mut normal = [0.0; 3];
     normal[axis] = 1.0;
     Plane {
+        encoding: None,
         normal: Vec3(normal),
         distance: 0.0,
         axis: None,
