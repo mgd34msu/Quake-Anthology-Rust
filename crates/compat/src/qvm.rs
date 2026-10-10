@@ -25,7 +25,7 @@ pub trait SystemCalls {
 pub use crate::hooks::Hooks;
 
 pub struct Vm {
-    pub memory: ModuleMemory,
+    pub memory: ModuleMemory<'static>,
     pub image: Image,
     pub hooks: Hooks,
     program_stack: usize,

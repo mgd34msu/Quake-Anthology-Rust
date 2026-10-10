@@ -11,3 +11,4 @@ qa-session = { path = "../session" }
 qa-console = { path = "../console" }
 qa-content = { path = "../content" }
 qa-formats = { path = "../formats" }
+qa-platform = { path = "../platform" }

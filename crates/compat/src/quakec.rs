@@ -49,8 +49,8 @@ struct StateFields {
 }
 pub struct Vm {
     pub image: Image,
-    pub entities: ModuleMemory,
-    pub strings: ModuleMemory,
+    pub entities: ModuleMemory<'static>,
+    pub strings: ModuleMemory<'static>,
     pub hooks: Hooks,
     pub active: bool,
     pub argc: usize,

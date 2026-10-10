@@ -292,6 +292,16 @@ impl NativeProcess {
     pub fn callback(&self, abi: NativeAbi) -> u64 {
         self.callbacks[abi as usize]
     }
+    pub fn executable(&self, address: u64) -> bool {
+        address
+            .checked_sub(self.base)
+            .and_then(|o| usize::try_from(o).ok())
+            .is_some_and(|offset| {
+                self.regions.iter().any(|r| {
+                    r.permissions & 4 != 0 && offset >= r.offset && offset - r.offset < r.length
+                })
+            })
+    }
     pub fn memory(&self) -> Result<&[u8], NativeError> {
         if !self.parked {
             return Err(NativeError::Protocol);
@@ -354,13 +364,7 @@ impl NativeProcess {
         if !self.parked || self.child.is_none() {
             return Err(NativeError::Protocol);
         }
-        let offset = usize::try_from(address.checked_sub(self.base).ok_or(NativeError::Extent)?)
-            .map_err(|_| NativeError::Extent)?;
-        if !self
-            .regions
-            .iter()
-            .any(|r| r.permissions & 4 != 0 && offset >= r.offset && offset - r.offset < r.length)
-        {
+        if !self.executable(address) {
             return Err(NativeError::Extent);
         }
         let run = (|| {

@@ -12,16 +12,16 @@ pub enum Addresses {
     Qvm { mask: u32 },
     Native,
 }
-pub struct Invocation<'a, 'engine> {
+pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
-    pub memory: &'a mut ModuleMemory,
+    pub memory: &'a mut ModuleMemory<'memory>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
     pub addresses: Addresses,
     pub arguments: &'a [u64],
 }
-impl Invocation<'_, '_> {
+impl Invocation<'_, '_, '_> {
     fn arg(&self, index: usize) -> Result<u64, CallError> {
         self.arguments.get(index).copied().ok_or(CallError::Memory)
     }
@@ -43,7 +43,7 @@ impl Invocation<'_, '_> {
     }
 }
 
-type Entry = fn(&mut Invocation<'_, '_>) -> Result<u64, CallError>;
+type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<u64, CallError>;
 pub struct CallTable {
     entries: [Option<Entry>; 256],
 }
@@ -69,7 +69,7 @@ impl CallTable {
     pub fn invoke(
         &self,
         number: u32,
-        call: &mut Invocation<'_, '_>,
+        call: &mut Invocation<'_, '_, '_>,
         unknown: &mut UnknownCalls,
     ) -> Result<u64, CallError> {
         if let Some(Some(entry)) = self.entries.get(number as usize) {
@@ -250,7 +250,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
     }
 }
 
-fn qc_print(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn qc_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let mut text = FixedText::<1024>::default();
     for index in 0..c.arguments.len() {
         let bytes = c.memory.cstring(c.pointer(index)?)?;
@@ -260,7 +260,7 @@ fn qc_print(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text.as_bytes())?;
     Ok(0)
 }
-fn absolute(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn absolute(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(f32::from_bits(c.arg(0)? as u32).abs().to_bits() as u64)
 }
 
@@ -299,19 +299,19 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
     }
 }
 
-fn print(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(0)?)?;
     (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text)?;
     Ok(0)
 }
-fn abort(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     print(c)?;
     Err(CallError::Aborted)
 }
-fn milliseconds(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn milliseconds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.platform_time.milliseconds() as u32 as u64)
 }
-fn cvar_set(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn cvar_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name = c.text(0)?;
     let view = c
         .services
@@ -323,14 +323,14 @@ fn cvar_set(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
     Ok(0)
 }
-fn cvar_integer(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn cvar_integer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {
         return Ok(0);
     };
     let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
     Ok(qa_console::numbers::integer(text.as_str()) as u32 as u64)
 }
-fn cvar_number(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn cvar_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {
         return Ok(0);
     };
@@ -341,7 +341,7 @@ fn cvar_number(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
         .to_bits() as u64)
 }
 fn write_string(
-    memory: &mut ModuleMemory,
+    memory: &mut ModuleMemory<'_>,
     target: u64,
     length: usize,
     text: &[u8],
@@ -354,7 +354,7 @@ fn write_string(
     }
     Ok(())
 }
-fn cvar_string(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn cvar_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(1)?;
     let length = c.length(2)?;
     let view = c.services.cvars.bind(c.text(0)?, c.context.console);
@@ -366,10 +366,10 @@ fn cvar_string(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     }
     Ok(0)
 }
-fn argc(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn argc(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.command.len() as u64)
 }
-fn argv(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let index = c.arg(0)? as u32 as usize;
     let target = c.pointer(1)?;
     let length = c.length(2)?;
@@ -381,7 +381,7 @@ fn argv(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     )?;
     Ok(0)
 }
-fn command(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text =
         std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
     // Only EXEC_APPEND is implemented; immediate/insert execution must use the
@@ -392,13 +392,13 @@ fn command(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
     Ok(0)
 }
-fn command_append(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn command_append(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text =
         std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
     (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
     Ok(0)
 }
-fn file_open(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     if c.arg(2)? != 0 {
         return Err(CallError::File);
     }
@@ -428,7 +428,7 @@ fn file_open(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
         Err(error) => Err(error),
     }
 }
-fn file_read(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn file_read(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(0)?;
     let length = c.length(1)?;
     let handle = c.arg(2)? as u32;
@@ -440,11 +440,11 @@ fn file_read(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     )?;
     Ok(0)
 }
-fn file_close(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn file_close(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.file_close)(c.services, c.context.module, c.arg(0)? as u32)?;
     Ok(0)
 }
-fn config_set(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.configstring)(
         c.services,
         c.context.module,
@@ -453,7 +453,7 @@ fn config_set(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     )?;
     Ok(0)
 }
-fn config_get(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn config_get(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(1)?;
     let length = c.length(2)?;
     let (text, _) = c
@@ -463,18 +463,18 @@ fn config_get(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     write_string(c.memory, target, length, text)?;
     Ok(0)
 }
-fn memset(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn memset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(0)?;
     let value = c.arg(1)? as u8;
     let length = c.length(2)?;
     c.memory.read_mut(target, length)?.fill(value);
     Ok(0)
 }
-fn memcpy(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn memcpy(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     c.memory.copy(c.pointer(0)?, c.pointer(1)?, c.length(2)?)?;
     Ok(0)
 }
-fn strncpy(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn strncpy(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let from = c.pointer(1)?;
     let to = c.pointer(0)?;
     let length = c.length(2)?;
@@ -493,30 +493,30 @@ fn strncpy(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
     }
     c.arg(0)
 }
-fn float(c: &Invocation<'_, '_>, index: usize) -> Result<f64, CallError> {
+fn float(c: &Invocation<'_, '_, '_>, index: usize) -> Result<f64, CallError> {
     Ok(f32::from_bits(c.arg(index)? as u32) as f64)
 }
 fn bits(value: f64) -> u64 {
     (value as f32).to_bits() as u64
 }
-fn sin(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn sin(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.sin()))
 }
-fn cos(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn cos(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.cos()))
 }
-fn atan2(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn atan2(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.atan2(float(c, 1)?)))
 }
-fn sqrt(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn sqrt(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.sqrt()))
 }
-fn floor(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn floor(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.floor()))
 }
-fn ceil(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn ceil(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.ceil()))
 }
-fn acos(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+fn acos(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits(float(c, 0)?.acos()))
 }

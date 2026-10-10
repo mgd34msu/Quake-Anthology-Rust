@@ -25,6 +25,11 @@ pub enum Program {
         imports: &'static CallTable,
     },
     QuakeC(QuakeCProgram),
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    Native {
+        vm: Box<qa_compat::native::Vm>,
+        imports: &'static CallTable,
+    },
 }
 pub struct QuakeCProgram {
     vm: Box<quakec::Vm>,
@@ -43,7 +48,9 @@ impl Program {
     }
     fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> bool {
         match self {
-            Self::Qvm { .. } => qvm_entry,
+            Self::Qvm { .. } => word_entry,
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Native { .. } => word_entry,
             Self::QuakeC(_) => quakec_entry,
         }
     }
@@ -95,6 +102,7 @@ pub enum State {
 pub enum ModuleResult {
     Qvm(i32),
     QuakeC([u32; 3]),
+    Native(u64),
 }
 #[derive(Default, Debug)]
 pub struct Counts {
@@ -200,6 +208,12 @@ impl FrameHost {
                     )
                     .ok_or("missing QuakeC entity namespace")?;
                 }
+            }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if let Program::Native { vm, .. } = &request.program
+                && request.entries.iter().any(|&entry| !vm.has_export(entry))
+            {
+                return Err("invalid native export".into());
             }
             let storage = ServiceStorage::load(
                 &[(request.context.module, request.configstrings)],
@@ -321,10 +335,15 @@ impl FrameHost {
             let result = api
                 .map_or(Ok(()), |(export, accepted)| {
                     self.call_module_export(module, export, time)?;
-                    match self.module_counts(module).and_then(|c| c.last_result) {
-                        Some(ModuleResult::Qvm(value)) if accepted.contains(&value) => Ok(()),
-                        _ => Err(CallError::Rejected),
-                    }
+                    let value = match self.module_counts(module).and_then(|c| c.last_result) {
+                        Some(ModuleResult::Qvm(value)) => Some(value),
+                        Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
+                        _ => None,
+                    };
+                    value
+                        .filter(|v| accepted.contains(v))
+                        .map(|_| ())
+                        .ok_or(CallError::Rejected)
                 })
                 .and_then(|()| {
                     export.map_or(Ok(()), |export| {
@@ -446,7 +465,7 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     };
     context
 }
-fn qvm_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
+fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
     let (time, words) = match call {
         CallbackCall::Think { time, .. } => {
             let mut arguments = [0; 9];
@@ -466,29 +485,54 @@ fn qvm_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackC
     else {
         return false;
     };
-    let Program::Qvm { vm, imports } = &mut row.request.program else {
+    if matches!(row.request.program, Program::QuakeC(_)) {
         return false;
-    };
+    }
     let mut services =
         host.runtime
             .engine_services(&mut host.console, &mut row.storage, &mut row.scratch);
-    let mut calls = QvmCalls {
-        services: &mut services,
-        table: imports,
-        context: context(row.request.context, time),
-        platform_time: host.time,
-        command: &[],
-        unknown: &mut row.unknown,
-    };
-    let mut arguments = [0; 10];
-    arguments[0] = entry as i32;
-    for (output, word) in arguments[1..].iter_mut().zip(words) {
-        *output = word as u32 as i32;
-    }
     row.counts.calls += 1;
-    match vm.call(&mut calls, arguments, row.request.instruction_budget, false) {
+    let call_context = context(row.request.context, time);
+    let result = match &mut row.request.program {
+        Program::Qvm { vm, imports } => {
+            let mut calls = QvmCalls {
+                services: &mut services,
+                table: imports,
+                context: call_context,
+                platform_time: host.time,
+                command: &[],
+                unknown: &mut row.unknown,
+            };
+            let mut arguments = [0; 10];
+            arguments[0] = entry as i32;
+            for (output, word) in arguments[1..].iter_mut().zip(words) {
+                *output = word as u32 as i32;
+            }
+            vm.call(&mut calls, arguments, row.request.instruction_budget, false)
+                .map(ModuleResult::Qvm)
+                .map_err(|_| ())
+        }
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Program::Native { vm, imports } => {
+            let mut calls = qa_compat::native::NativeCalls {
+                services: &mut services,
+                table: imports,
+                context: call_context,
+                platform_time: host.time,
+                command: &[],
+                unknown: &mut row.unknown,
+            };
+            vm.call(&mut calls, entry, &words)
+                .map(ModuleResult::Native)
+                .map_err(|_| {
+                    row.state = State::Failed;
+                })
+        }
+        Program::QuakeC(_) => return false,
+    };
+    match result {
         Ok(result) => {
-            row.counts.last_result = Some(ModuleResult::Qvm(result));
+            row.counts.last_result = Some(result);
             true
         }
         Err(_) => {
