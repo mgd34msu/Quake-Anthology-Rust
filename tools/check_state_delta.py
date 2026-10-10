@@ -7,7 +7,8 @@ import random
 import re
 import struct
 import subprocess
-from check_message import PREAMBLE, function
+from check_message import PREAMBLE
+from check_hull_trace import function
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -508,6 +509,55 @@ static void qw_player_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *num
     return source
 
 
+def rr_stats_reference(qsrc):
+    original = (qsrc / 'q2repro/src/common/msg.c').read_text()
+    source = r'''
+typedef struct {int16_t stats[64];} rr_stats_t;
+static void rr_stat_write64(uint64_t v) {
+ q2_write(&net_message,(uint32_t)v,32);q2_write(&net_message,(uint32_t)(v>>32),32);
+}
+static uint64_t rr_stat_read64(void) {
+ uint64_t low=(uint32_t)q2_read(&net_message,32,0);
+ return low|((uint64_t)(uint32_t)q2_read(&net_message,32,0)<<32);
+}
+#define player_packed_t rr_stats_t
+#define player_state_t rr_stats_t
+#define msgPsFlags_t uint32_t
+#define MSG_PS_RERELEASE (1u<<11)
+#define MSG_PS_EXTENSIONS_2 (1u<<7)
+#define MAX_STATS_NEW 64
+#define MAX_STATS_OLD 32
+#define BIT_ULL(i) (UINT64_C(1)<<(i))
+#define MSG_WriteStats RR_WriteStats
+#define MSG_ReadStats RR_ReadStats
+#define MSG_WriteVarInt64 RR_WriteVarInt64
+#define MSG_ReadVarInt64 RR_ReadVarInt64
+#define MSG_WriteLong64 rr_stat_write64
+#define MSG_ReadLong64 rr_stat_read64
+#define MSG_WriteLong(v) q2_write(&net_message,v,32)
+#define MSG_WriteShort(v) q2_write(&net_message,v,16)
+#define MSG_WriteByte(v) q2_write(&net_message,v,8)
+#define MSG_ReadLong() q2_read(&net_message,32,0)
+#define MSG_ReadShort() q2_read(&net_message,16,1)
+#define MSG_ReadByte() q2_read(&net_message,8,0)
+'''
+    source += ''.join(function(original, name) for name in ['MSG_WriteVarInt64','MSG_ReadVarInt64','MSG_WriteStats','MSG_ReadStats'])
+    source += r'''
+static void rr_stats_encode(msg_t *m,uint32_t *from,uint32_t *to) {
+ rr_stats_t a={0},b={0};uint64_t mask=0;
+ for(int i=0;i<64;i++){a.stats[i]=from[i];b.stats[i]=to[i];if(a.stats[i]!=b.stats[i])mask|=BIT_ULL(i);}
+ net_message=*m;RR_WriteStats(&b,mask,MSG_PS_RERELEASE);*m=net_message;
+}
+static void rr_stats_decode(msg_t *m,uint32_t *from,uint32_t *out) {
+ rr_stats_t a={0};for(int i=0;i<64;i++)a.stats[i]=from[i];
+ net_message=*m;RR_ReadStats(&a,MSG_PS_RERELEASE);*m=net_message;
+ for(int i=0;i<64;i++)out[i]=(int)a.stats[i];
+}
+'''
+    names=['player_packed_t','player_state_t','msgPsFlags_t','MSG_PS_RERELEASE','MSG_PS_EXTENSIONS_2','MAX_STATS_NEW','MAX_STATS_OLD','BIT_ULL','MSG_WriteStats','MSG_ReadStats','MSG_WriteVarInt64','MSG_ReadVarInt64','MSG_WriteLong64','MSG_ReadLong64','MSG_WriteLong','MSG_WriteShort','MSG_WriteByte','MSG_ReadLong','MSG_ReadShort','MSG_ReadByte']
+    return source + ''.join(f'\n#undef {name}\n' for name in names)
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -562,6 +612,7 @@ typedef struct {char *name;int offset,bits;} netField_t;
     source += q2_entity_reference(qsrc)
     source += nq_reference(qsrc)
     source += qw_player_reference(qsrc)
+    source += rr_stats_reference(qsrc)
     source += r'''
 static void put(void *record,netField_t *fields,int count,uint32_t *words) {
  for(int i=0;i<count;i++)memcpy((byte*)record+fields[i].offset,&words[i],4);
@@ -585,7 +636,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>7||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>8||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -600,7 +651,8 @@ int main(void) {
   } else if(mode==4) {q2_entity_encode(&m,from,to,number,flags);
   } else if(mode==5) {nq_encode(&m,from,to,number,flags);
   } else if(mode==6) {nq_player_encode(&m,to,flags);
-  } else {qw_player_encode(&m,to,number);
+  } else if(mode==7) {qw_player_encode(&m,to,number);
+  } else {rr_stats_encode(&m,from,to);
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
   uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
@@ -614,13 +666,14 @@ int main(void) {
   else if(mode==4) {q2_entity_decode(&m,from,decoded,&wire_number,&removed);}
   else if(mode==5) {nq_decode(&m,from,decoded,&wire_number);}
   else if(mode==6) {nq_player_decode(&m,decoded);}
-  else {qw_player_decode(&m,from,decoded,&wire_number);}
+  else if(mode==7) {qw_player_decode(&m,from,decoded,&wire_number);}
+  else {rr_stats_decode(&m,from,decoded);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
 }
 '''
-    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout()]
+    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout(), [(f'stats[{i}]',16) for i in range(64)]]
 
 
 def compile_reference(qsrc, evidence):
@@ -638,6 +691,18 @@ def fixture(tables):
     floats = [-0.0, 0.0, -4096.0, -4097.0, 4095.0, 4096.0, 0.125, -0.125, 123456.75]
     for mode, table in enumerate(tables):
         for case in range(2048):
+            if mode == 8:
+                old,new=[0]*112,[0]*112
+                for i in range(64):
+                    old[i]=rng.randrange(-32768,32768)&0xffffffff
+                    new[i]=(rng.randrange(-32768,32768)&0xffffffff) if (case+i)%3==0 else old[i]
+                if case<64:
+                    new=old.copy();new[case]=(old[case]+1)&0xffff
+                    if new[case]&0x8000:new[case]|=0xffff0000
+                if case==64:new=old.copy()
+                if case==65:new=[((old[i]^1)&0xffffffff) if i<64 else 0 for i in range(112)]
+                output+=struct.pack('<BBH224I',mode,0,0,*old,*new)
+                continue
             if mode == 7:
                 old,new=[0]*112,[0]*112;old[8]=case%256
                 for i in list(range(4))+list(range(5,12))+[13,14,15,16]:
@@ -774,8 +839,8 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=16384, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo and usercmd helpers unchanged; original removal statements, offsetof and private bindings only',
+    result = dict(result='PASS', cases=len(data)//900, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, q2_repro_stats=64, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo, usercmd helpers and Q2repro MSG_WriteStats/MSG_ReadStats unchanged; original removal statements, offsetof and private bindings only',
                   limits='Seeded native delta records; no snapshot framing, common-state ABI projection, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))

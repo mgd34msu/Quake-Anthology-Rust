@@ -165,7 +165,7 @@ pub fn write_q2_repro(writer: &mut Writer<'_>, from: Q2RrCmd, to: Q2RrCmd) -> Re
     let from = q2_rr_words(from);
     let to = q2_rr_words(to);
     let mask = delta::mask::<true, true, false, false>(Q2_REPRO[0].fields, &from, &to, 0, 0, 0);
-    writer.write_bits(mask, 8)?;
+    writer.write_bits(mask as u32, 8)?;
     delta::write(&Q2_REPRO, &from, &to, mask, writer)
 }
 pub fn read_q2_repro(reader: &mut Reader<'_>, from: Q2RrCmd) -> Result<Q2RrCmd, Error> {
@@ -178,7 +178,7 @@ pub fn read_q2_repro(reader: &mut Reader<'_>, from: Q2RrCmd) -> Result<Q2RrCmd, 
         });
     }
     let mut v = q2_rr_words(from);
-    delta::read(&Q2_REPRO, &mut v, mask, reader)?;
+    delta::read(&Q2_REPRO, &mut v, u64::from(mask), reader)?;
     Ok(Q2RrCmd {
         angles: Vec3(std::array::from_fn(|i| f32::from_bits(v[i]))),
         movement: std::array::from_fn(|i| f32::from_bits(v[3 + i])),
@@ -192,14 +192,14 @@ pub fn write_q3(writer: &mut Writer<'_>, from: Q3Cmd, to: Q3Cmd, key: u32) -> Re
     let from = q3_words(from);
     let to = q3_words(to);
     delta::write(&Q3_TIME, &from, &to, 0, writer)?;
-    delta::write(&Q3, &from, &to, key ^ to[10], writer)
+    delta::write(&Q3, &from, &to, u64::from(key ^ to[10]), writer)
 }
 #[inline]
 pub fn read_q3(reader: &mut Reader<'_>, from: Q3Cmd, key: u32) -> Result<Q3Cmd, Error> {
     let mut v = q3_words(from);
     delta::read(&Q3_TIME, &mut v, 0, reader)?;
     let key = key ^ v[10];
-    delta::read(&Q3, &mut v, key, reader)?;
+    delta::read(&Q3, &mut v, u64::from(key), reader)?;
     Ok(Q3Cmd {
         server_time: v[10] as i32,
         angles: std::array::from_fn(|i| v[i] as i32),

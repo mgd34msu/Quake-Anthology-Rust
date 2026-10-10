@@ -230,6 +230,19 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             result.decoded[..QW_PLAYER_WORDS].copy_from_slice(&decoded.words);
             result.decoded[14..25].copy_from_slice(&command_delta::qw_words(decoded.command));
         }
+        8 => {
+            let from = case.from[..states::Q2_RR_STATS]
+                .try_into()
+                .map_err(|_| "RR stats")?;
+            let to = case.to[..states::Q2_RR_STATS]
+                .try_into()
+                .map_err(|_| "RR stats")?;
+            states::write_q2_rr_stats(&mut writer, from, to).map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+            result.decoded[..states::Q2_RR_STATS].copy_from_slice(
+                &states::read_q2_rr_stats(&mut reader, from).map_err(|e| e.to_string())?,
+            );
+        }
         _ => return Err("state dialect".into()),
     }
     result.bits = writer.bit_position() as u32;
@@ -269,7 +282,7 @@ fn compare() -> Result<(), String> {
     }
     Ok(())
 }
-fn timing(fixture: &str, original: &str) -> Result<(), String> {
+fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> {
     let input = std::fs::read(fixture).map_err(|e| e.to_string())?;
     let oracle = std::fs::read(original).map_err(|e| e.to_string())?;
     let mut reader = Reader::new(&input, Encoding::Bytes);
@@ -303,22 +316,27 @@ fn timing(fixture: &str, original: &str) -> Result<(), String> {
     let mut counts = allocations::Counts::default();
     let mut checks = 0;
     let mut wire_bytes = 0;
+    let mut mode_checks = [0u64; 9];
     for frame in 0..660 {
         allocations::begin_frame();
-        let watch = Stopwatch::start();
+        let watch = (!heap_only).then(Stopwatch::start);
         for peer in 0..16 {
-            let case = &cases[(frame * 16 + peer) % cases.len()];
+            let offset = frame * 16 + peer;
+            let case = &cases[(if heap_only { offset * 257 } else { offset }) % cases.len()];
             let result = encode(std::hint::black_box(case), &mut bytes)?;
             if result != case.expected || bytes[..result.length] != case.bytes[..result.length] {
                 return Err("native state fidelity".into());
             }
             checks += 1;
+            mode_checks[case.mode as usize] += 1;
             wire_bytes += result.length;
         }
-        let elapsed = watch.elapsed().as_nanos() as u64;
+        let elapsed = watch.map(|watch| watch.elapsed().as_nanos() as u64);
         let actual = allocations::end_frame();
         if frame >= 60 {
-            samples[frame - 60] = elapsed;
+            if let Some(elapsed) = elapsed {
+                samples[frame - 60] = elapsed;
+            }
             counts.allocations += actual.allocations;
             counts.reallocations += actual.reallocations;
             counts.requested_bytes += actual.requested_bytes;
@@ -326,6 +344,16 @@ fn timing(fixture: &str, original: &str) -> Result<(), String> {
     }
     if counts != allocations::Counts::default() || checks != 10560 {
         return Err(format!("state allocation/count gate {counts:?}"));
+    }
+    if heap_only {
+        if cases.iter().any(|case| case.mode == 8) && mode_checks[8] == 0 {
+            return Err("rerelease stats not exercised".into());
+        }
+        println!(
+            "{{\"scope\":\"native state record encode/decode and original-C byte/word fidelity; caller Rust thread, no snapshot packets, workers, physical transport or gameplay\",\"warmup\":60,\"frames\":600,\"checks\":{checks},\"mode_checks_including_warmup\":{mode_checks:?},\"wire_bytes\":{wire_bytes},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":false}}",
+            counts.allocations, counts.reallocations, counts.requested_bytes
+        );
+        return Ok(());
     }
     samples.sort_unstable();
     println!(
@@ -342,9 +370,9 @@ fn main() -> Result<(), String> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.get(1).is_some_and(|s| s == "--compare") {
         compare()
-    } else if args.len() == 4 && args[1] == "--timing" {
-        timing(&args[2], &args[3])
+    } else if args.len() == 4 && matches!(args[1].as_str(), "--timing" | "--heap-only") {
+        timing(&args[2], &args[3], args[1] == "--heap-only")
     } else {
-        Err("--compare or --timing fixture original".into())
+        Err("--compare or --timing/--heap-only fixture original".into())
     }
 }

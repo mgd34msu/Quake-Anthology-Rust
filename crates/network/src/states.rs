@@ -375,6 +375,30 @@ const fn q2_player_fields() -> [Field; 36] {
 }
 static Q2_PLAYER_FIELDS: [Field; 36] = q2_player_fields();
 static Q2_STATS: [Field; 32] = mask_fields(36, 16, Value::Signed);
+pub const Q2_RR_STATS: usize = 64;
+static Q2_RR_STAT_FIELDS: [Field; Q2_RR_STATS] = mask_fields(0, 16, Value::Signed);
+static Q2_RR_STAT_GROUP: [Group; 1] = [Group {
+    fields: &Q2_RR_STAT_FIELDS,
+    presence: Presence::Mask(64),
+}];
+
+/// Q2repro MSG_PS_RERELEASE: both halves of the stat mask precede all values.
+/// Retail KEX instead interleaves each 32-bit mask and its own stat values.
+pub fn write_q2_rr_stats(
+    writer: &mut Writer<'_>,
+    from: &[u32; Q2_RR_STATS],
+    to: &[u32; Q2_RR_STATS],
+) -> Result<(), Error> {
+    delta::write(&Q2_RR_STAT_GROUP, from, to, 0, writer)
+}
+pub fn read_q2_rr_stats(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_RR_STATS],
+) -> Result<[u32; Q2_RR_STATS], Error> {
+    let mut words = *from;
+    delta::read(&Q2_RR_STAT_GROUP, &mut words, 0, reader)?;
+    Ok(words)
+}
 static Q2_PLAYER_GROUPS: [Group<true>; 2] = [
     Group {
         fields: &Q2_PLAYER_FIELDS,
@@ -492,7 +516,8 @@ pub fn write_qw_entity(
         writer.write_bits(number | (1 << 14), 16)?;
         return Ok(true);
     };
-    let mut flags = delta::mask::<true, true, false, false>(&QW_ENTITY_FIELDS, from, to, 0, 0, 0);
+    let mut flags =
+        delta::mask::<true, true, false, false>(&QW_ENTITY_FIELDS, from, to, 0, 0, 0) as u32;
     if flags & 511 != 0 {
         flags |= 1 << 15;
     }
@@ -505,7 +530,7 @@ pub fn write_qw_entity(
     if flags & (1 << 15) != 0 {
         writer.write_bits(flags & 255, 8)?;
     }
-    delta::write(&QW_ENTITY_GROUP, from, to, flags, writer)?;
+    delta::write(&QW_ENTITY_GROUP, from, to, u64::from(flags), writer)?;
     Ok(true)
 }
 pub fn read_qw_entity(
@@ -538,7 +563,12 @@ pub(crate) fn read_qw_entity_body(
     }
     let mut words = *from;
     words[11] = header.flags;
-    delta::read(&QW_ENTITY_GROUP, &mut words, header.flags, reader)?;
+    delta::read(
+        &QW_ENTITY_GROUP,
+        &mut words,
+        u64::from(header.flags),
+        reader,
+    )?;
     Ok(QwEntityDelta {
         number: header.number,
         words: Some(words),
@@ -707,8 +737,14 @@ pub fn write_q2_entity(
         write_q2_entity_prefix(writer, number, Q2_REMOVE | number_flag)?;
         return Ok(true);
     };
-    let mut flags =
-        delta::mask::<true, true, true, false>(&Q2_ENTITY_FIELDS, from, to, number_flag, 15, 3);
+    let mut flags = delta::mask::<true, true, true, false>(
+        &Q2_ENTITY_FIELDS,
+        from,
+        to,
+        u64::from(number_flag),
+        15,
+        3,
+    ) as u32;
     if new_entity || to[7] & 128 != 0 {
         flags |= 1 << 24;
     }
@@ -717,7 +753,7 @@ pub fn write_q2_entity(
         return Ok(false);
     }
     let flags = write_q2_entity_prefix(writer, number, flags)?;
-    delta::write(&Q2_ENTITY_GROUP, from, to, flags, writer)?;
+    delta::write(&Q2_ENTITY_GROUP, from, to, u64::from(flags), writer)?;
     Ok(true)
 }
 pub fn read_q2_entity(
@@ -763,7 +799,7 @@ pub(crate) fn read_q2_entity_body(
         });
     }
     let mut words = q2_unchanged_entity(from);
-    delta::read(&Q2_ENTITY_GROUP, &mut words, flags, reader)?;
+    delta::read(&Q2_ENTITY_GROUP, &mut words, u64::from(flags), reader)?;
     Ok(Q2EntityDelta {
         number,
         words: Some(words),
@@ -848,10 +884,10 @@ pub fn write_nq_entity(
         &NQ_ENTITY_FIELDS,
         baseline,
         to,
-        u32::from(step) << 5,
+        u64::from(step) << 5,
         0,
         0,
-    );
+    ) as u32;
     if number >= 256 {
         flags |= 1 << 14;
     }
@@ -863,7 +899,7 @@ pub fn write_nq_entity(
         writer.write_bits(flags >> 8, 8)?;
     }
     writer.write_bits(number, if flags & (1 << 14) != 0 { 16 } else { 8 })?;
-    delta::write(&NQ_ENTITY_GROUP, baseline, to, flags, writer)?;
+    delta::write(&NQ_ENTITY_GROUP, baseline, to, u64::from(flags), writer)?;
     Ok(true)
 }
 #[inline(always)]
@@ -905,7 +941,7 @@ pub(crate) fn read_nq_entity_body(
     let EntityHeader { number, flags } = header;
     let mut words = *baseline;
     words[11] = u32::from(flags & (1 << 5) != 0);
-    delta::read(&NQ_ENTITY_GROUP, &mut words, flags, reader)?;
+    delta::read(&NQ_ENTITY_GROUP, &mut words, u64::from(flags), reader)?;
     Ok(NqEntityUpdate {
         number,
         words: Some(words),
@@ -1041,13 +1077,19 @@ pub fn write_nq_player(writer: &mut Writer<'_>, to: &[u32; NQ_PLAYER_WORDS]) -> 
         &NQ_PLAYER_FIELDS,
         &NQ_PLAYER_DEFAULTS,
         to,
-        always,
+        u64::from(always),
         0,
         0,
-    );
+    ) as u32;
     writer.write_bits(15, 8)?;
     writer.write_bits(flags, 16)?;
-    delta::write(&NQ_PLAYER_GROUP, &NQ_PLAYER_DEFAULTS, to, flags, writer)
+    delta::write(
+        &NQ_PLAYER_GROUP,
+        &NQ_PLAYER_DEFAULTS,
+        to,
+        u64::from(flags),
+        writer,
+    )
 }
 #[inline(always)]
 pub fn read_nq_player(
@@ -1064,7 +1106,7 @@ pub fn read_nq_player(
     let mut words = NQ_PLAYER_DEFAULTS;
     words[19] = u32::from(flags & (1 << 10) != 0);
     words[20] = u32::from(flags & (1 << 11) != 0);
-    delta::read(&NQ_PLAYER_GROUP, &mut words, flags, reader)?;
+    delta::read(&NQ_PLAYER_GROUP, &mut words, u64::from(flags), reader)?;
     if active_weapon_is_mask {
         words[18] = 1u32.wrapping_shl(words[18]);
     }
@@ -1185,7 +1227,7 @@ pub fn write_qw_player(
     writer.write_bits(42, 8)?;
     writer.write_bits(number, 8)?;
     writer.write_bits(flags, 16)?;
-    delta::write(&QW_PLAYER_PREFIX, &words, &words, flags, writer)?;
+    delta::write(&QW_PLAYER_PREFIX, &words, &words, u64::from(flags), writer)?;
     if flags & (1 << 1) != 0 {
         if flags & (1 << 9) != 0 {
             // qsrc resets pitch twice; its roll remains the supplied command.
@@ -1196,7 +1238,7 @@ pub fn write_qw_player(
         command.impulse = 0;
         command_delta::write_qw(writer, ZERO_QW, command)?;
     }
-    delta::write(&QW_PLAYER_SUFFIX, &words, &words, flags, writer)?;
+    delta::write(&QW_PLAYER_SUFFIX, &words, &words, u64::from(flags), writer)?;
     Ok(true)
 }
 pub fn read_qw_player(
@@ -1221,13 +1263,13 @@ pub fn read_qw_player(
     let mut words = [0; QW_PLAYER_WORDS];
     words[8] = default_model;
     words[12] = flags as i16 as i32 as u32;
-    delta::read(&QW_PLAYER_PREFIX, &mut words, flags, reader)?;
+    delta::read(&QW_PLAYER_PREFIX, &mut words, u64::from(flags), reader)?;
     let command = if flags & (1 << 1) != 0 {
         command_delta::read_qw(reader, ZERO_QW)?
     } else {
         prior_slot_command(number as u8)
     };
-    delta::read(&QW_PLAYER_SUFFIX, &mut words, flags, reader)?;
+    delta::read(&QW_PLAYER_SUFFIX, &mut words, u64::from(flags), reader)?;
     Ok(QwPlayerInfo {
         number: number as u8,
         words,

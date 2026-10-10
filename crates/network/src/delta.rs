@@ -57,11 +57,11 @@ pub(crate) enum Value {
 pub(crate) struct Field {
     pub word: usize,
     bits: u8,
-    pub flag: u32,
+    pub flag: u64,
     pub value: Value,
 }
 impl Field {
-    pub(crate) const fn new(word: usize, bits: u8, flag: u32, value: Value) -> Self {
+    pub(crate) const fn new(word: usize, bits: u8, flag: u64, value: Value) -> Self {
         Self {
             word,
             bits,
@@ -91,7 +91,7 @@ impl Field {
             _ => from == to,
         }
     }
-    fn flags<const PACKED: bool>(self, word: u32) -> u32 {
+    fn flags<const PACKED: bool>(self, word: u32) -> u64 {
         if PACKED && let Value::Packed(rule) = self.value {
             let bits = rule.width(word);
             if self.bits != 0 {
@@ -107,7 +107,7 @@ impl Field {
             self.flag
         }
     }
-    fn width<const PACKED: bool>(self, flags: u32) -> u8 {
+    fn width<const PACKED: bool>(self, flags: u64) -> u8 {
         if PACKED && self.bits == 0 && matches!(self.value, Value::Packed(_)) {
             let selected = flags & self.flag;
             if selected == self.flag {
@@ -199,7 +199,7 @@ pub(crate) enum Presence {
     OptionalMask(u8),
     MaskPreset {
         bits: u8,
-        always: u32,
+        always: u64,
         dependent_start: u8,
         dependent_count: u8,
     },
@@ -247,10 +247,10 @@ pub(crate) fn mask<
     fields: &[Field],
     from: &[u32],
     to: &[u32],
-    always: u32,
+    always: u64,
     start: u8,
     count: u8,
-) -> u32 {
+) -> u64 {
     let mut mask = always;
     for (index, field) in fields.iter().enumerate() {
         if (!STATE
@@ -261,6 +261,23 @@ pub(crate) fn mask<
         }
     }
     mask
+}
+
+fn write_mask(writer: &mut Writer<'_>, value: u64, bits: u8) -> Result<(), Error> {
+    writer.write_bits(value as u32, bits.min(32))?;
+    if bits > 32 {
+        writer.write_bits((value >> 32) as u32, bits - 32)?;
+    }
+    Ok(())
+}
+
+fn read_mask(reader: &mut Reader<'_>, bits: u8) -> Result<u64, Error> {
+    let low = u64::from(reader.read_bits(bits.min(32))?);
+    if bits > 32 {
+        Ok(low | (u64::from(reader.read_bits(bits - 32)?) << 32))
+    } else {
+        Ok(low)
+    }
 }
 
 /// Static engine tables consume the fixed records supplied by the projections.
@@ -275,7 +292,7 @@ pub(crate) fn write<
     groups: &[Group<STATE, PREFIX, PACKED, FLOAT_BYTES>],
     from: &[u32],
     to: &[u32],
-    key: u32,
+    key: u64,
     writer: &mut Writer<'_>,
 ) -> Result<(), Error> {
     for group in groups {
@@ -286,7 +303,7 @@ pub(crate) fn write<
         let compare = matches!(group.presence, Presence::Changed { .. })
             || STATE && matches!(group.presence, Presence::LastChanged(_));
         let field_key = if matches!(group.presence, Presence::Changed { keyed: true, .. }) {
-            key
+            key as u32
         } else {
             0
         };
@@ -317,7 +334,7 @@ pub(crate) fn write<
                     continue;
                 }
             }
-            writer.write_bits(mask, bits)?;
+            write_mask(writer, mask, bits)?;
         } else {
             match group.presence {
                 Presence::LastChanged(bits) if STATE => {
@@ -399,7 +416,7 @@ pub(crate) fn read<
 >(
     groups: &[Group<STATE, PREFIX, PACKED, FLOAT_BYTES>],
     words: &mut [u32],
-    key: u32,
+    key: u64,
     reader: &mut Reader<'_>,
 ) -> Result<(), Error> {
     for group in groups {
@@ -420,13 +437,13 @@ pub(crate) fn read<
             key
         } else {
             match group.presence {
-                Presence::Mask(bits) => reader.read_bits(bits)?,
-                Presence::MaskPreset { bits, .. } if STATE => reader.read_bits(bits)?,
+                Presence::Mask(bits) => read_mask(reader, bits)?,
+                Presence::MaskPreset { bits, .. } if STATE => read_mask(reader, bits)?,
                 Presence::OptionalMask(bits) => {
                     if reader.read_bits(1)? == 0 {
                         continue;
                     }
-                    reader.read_bits(bits)?
+                    read_mask(reader, bits)?
                 }
                 Presence::LastChanged(bits) if STATE => {
                     count = reader.read_bits(bits)? as usize;
@@ -459,7 +476,7 @@ pub(crate) fn read<
                 continue;
             }
             if keyed {
-                field_key = key & (u32::MAX >> (32 - (bits + key_extra).min(32)));
+                field_key = key as u32 & (u32::MAX >> (32 - (bits + key_extra).min(32)));
             }
             words[field.word] = if let Value::Time = field.value {
                 if reader.read_bits(1)? != 0 {
