@@ -294,6 +294,13 @@ pub struct Body {
     pub maxs: Vec3,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkOrder {
+    Head,
+    #[default]
+    Tail,
+}
+
 /// Translation-only attachment capabilities; independently chosen by a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyFollow {

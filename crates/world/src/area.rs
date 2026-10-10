@@ -18,12 +18,7 @@ impl LinkFlags {
     pub const LINKED: Self = Self(8);
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LinkOrder {
-    Head,
-    #[default]
-    Tail,
-}
+pub use qa_core::primitives::LinkOrder;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkIntent {

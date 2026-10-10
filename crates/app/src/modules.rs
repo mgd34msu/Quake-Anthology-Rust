@@ -17,7 +17,7 @@ use qa_world::entities::EntityTime;
 use std::sync::Arc;
 
 mod load;
-pub use load::{QuakeCSpec, QvmSpec, load_quakec, load_qvm};
+pub use load::{QuakeCSpec, QvmRole, QvmSpec, load_quakec, load_qvm};
 
 pub enum Program {
     Qvm {
@@ -50,6 +50,7 @@ impl Program {
 }
 pub struct ModuleRequest {
     pub context: CallContext,
+    pub phase: Phase,
     pub timing_rules: RuleSetId,
     pub rate: TickRate,
     pub anchor: EntityId,
@@ -57,10 +58,20 @@ pub struct ModuleRequest {
     pub entries: Vec<u32>,
     pub frame: CallbackId,
     pub initialize: Option<Export>,
+    pub api: Option<VersionCheck>,
     pub shutdown: Option<Export>,
     pub instruction_budget: u64,
     pub configstrings: usize,
     pub files: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Server,
+    Client,
+}
+pub struct VersionCheck {
+    pub export: Export,
+    pub accepted: &'static [i32],
 }
 #[derive(Clone, Copy)]
 pub enum Argument {
@@ -120,6 +131,7 @@ impl FrameHost {
     ) -> Result<Self, String> {
         let providers = requests
             .iter()
+            .filter(|m| m.phase == Phase::Server)
             .map(|m| Provider {
                 module: m.context.module,
                 rate: m.rate,
@@ -159,10 +171,14 @@ impl FrameHost {
                 .ok_or("stale module anchor")?;
             if host.runtime.server.entities.columns.owner[entity] != request.context.module
                 || request.frame.0 as usize >= request.entries.len()
-                || [request.initialize, request.shutdown]
-                    .into_iter()
-                    .flatten()
-                    .any(|export| export.callback.0 as usize >= request.entries.len())
+                || [
+                    request.initialize,
+                    request.shutdown,
+                    request.api.as_ref().map(|api| api.export),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|export| export.callback.0 as usize >= request.entries.len())
                 || request.instruction_budget == 0
             {
                 return Err("invalid module binding".into());
@@ -190,7 +206,7 @@ impl FrameHost {
                 request.files,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
-            let state = if request.initialize.is_some() {
+            let state = if request.initialize.is_some() || request.api.is_some() {
                 State::Pending
             } else {
                 State::Running
@@ -264,15 +280,16 @@ impl FrameHost {
             },
         )
     }
-    /// Startup follows the first event/command phase, without another intake.
-    pub fn initialize_modules(&mut self) {
-        self.module_lifecycle(false);
+    /// Startup follows its event/command phase, without another intake.
+    pub fn initialize_modules(&mut self, phase: Phase) {
+        self.module_lifecycle(Some(phase));
     }
     /// Called for ordinary quit and frame-limit exit; repeating it is a no-op.
     pub fn shutdown_modules(&mut self) {
-        self.module_lifecycle(true);
+        self.module_lifecycle(None);
     }
-    fn module_lifecycle(&mut self, shutdown: bool) {
+    fn module_lifecycle(&mut self, phase: Option<Phase>) {
+        let shutdown = phase.is_none();
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
         for index in 0..count {
             let Some(row) = self.modules.as_ref().and_then(|m| m.rows[index].as_ref()) else {
@@ -287,15 +304,33 @@ impl FrameHost {
             {
                 continue;
             }
+            if phase.is_some_and(|phase| row.request.phase != phase) {
+                continue;
+            }
+            let api = (!shutdown)
+                .then_some(row.request.api.as_ref())
+                .flatten()
+                .map(|api| (api.export, api.accepted));
             let export = if shutdown {
                 row.request.shutdown
             } else {
                 row.request.initialize
             };
             let time = module_time(row.request.context.clock, self.time);
-            let result = export.map_or(Ok(()), |export| {
-                self.call_module_export(ModuleId(index as u16), export, time)
-            });
+            let module = ModuleId(index as u16);
+            let result = api
+                .map_or(Ok(()), |(export, accepted)| {
+                    self.call_module_export(module, export, time)?;
+                    match self.module_counts(module).and_then(|c| c.last_result) {
+                        Some(ModuleResult::Qvm(value)) if accepted.contains(&value) => Ok(()),
+                        _ => Err(CallError::Rejected),
+                    }
+                })
+                .and_then(|()| {
+                    export.map_or(Ok(()), |export| {
+                        self.call_module_export(module, export, time)
+                    })
+                });
             if let Some(row) = self.modules.as_mut().and_then(|m| m.rows[index].as_mut()) {
                 if result.is_err() {
                     row.counts.rejected += 1;
@@ -308,6 +343,20 @@ impl FrameHost {
                     State::Failed
                 };
             }
+        }
+    }
+    pub fn client_modules(&mut self) {
+        self.initialize_modules(Phase::Client);
+        let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
+        for index in 0..count {
+            let Some(row) = self.modules.as_ref().and_then(|m| m.rows[index].as_ref()) else {
+                continue;
+            };
+            if row.request.phase != Phase::Client {
+                continue;
+            }
+            let time = module_time(row.request.context.clock, self.time);
+            invoke_frame(self, ModuleId(index as u16), time);
         }
     }
     /// Providers invoke this at their native phase; it adds no think scan.
@@ -331,10 +380,24 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let qa_session::timing::TickTarget::Provider(module) = tick.target else {
         return;
     };
-    let Some(modules) = &host.modules else {
+    let Some(row) = host
+        .modules
+        .as_ref()
+        .and_then(|m| m.rows.get(module.0 as usize))
+        .and_then(Option::as_ref)
+    else {
         return;
     };
-    let Some(row) = modules.rows.get(module.0 as usize).and_then(Option::as_ref) else {
+    let time = module_time(row.request.context.clock, tick.end);
+    invoke_frame(host, module, time);
+}
+fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
+    let Some(row) = host
+        .modules
+        .as_ref()
+        .and_then(|m| m.rows.get(module.0 as usize))
+        .and_then(Option::as_ref)
+    else {
         return;
     };
     if row.state != State::Running {
@@ -342,7 +405,6 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     }
     let entity = row.request.anchor;
     let callback = row.request.frame;
-    let time = module_time(row.request.context.clock, tick.end);
     if host
         .runtime
         .server

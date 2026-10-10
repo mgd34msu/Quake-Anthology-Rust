@@ -2,7 +2,7 @@ pub mod q1;
 pub mod q2;
 pub mod q3;
 
-use qa_core::primitives::RuleSetId;
+use qa_core::primitives::{LinkOrder, RuleSetId};
 use std::num::NonZeroU32;
 
 /// Native server cadence data; the host owns the timeline and resolves cvars.
@@ -20,4 +20,12 @@ pub fn tick_millis(rules: RuleSetId, sv_fps: NonZeroU32) -> Option<NonZeroU32> {
 /// Q3 InsertLinkAfter puts the newest entity first; Q1/QW/Q2 append it.
 pub fn link_first(rules: RuleSetId) -> bool {
     rules == RuleSetId::Quake3
+}
+
+pub fn link_order(rules: RuleSetId) -> LinkOrder {
+    if link_first(rules) {
+        LinkOrder::Head
+    } else {
+        LinkOrder::Tail
+    }
 }

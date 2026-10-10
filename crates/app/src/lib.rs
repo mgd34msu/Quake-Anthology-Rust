@@ -191,7 +191,7 @@ impl Runtime {
         }
         let client = &mut self.server.clients[id.0 as usize];
         client.client_rules = policy.client;
-        client.link_order = policy.link_order();
+        client.link_order = qa_gameplay::rules::link_order(policy.client);
         for player in [
             &mut client.player,
             &mut self.prediction[seat.index()].player,

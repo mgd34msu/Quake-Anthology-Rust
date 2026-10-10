@@ -240,7 +240,7 @@ impl FrameHost {
             self.dispatch_output(source, &mut result);
             return result;
         }
-        self.initialize_modules();
+        self.initialize_modules(crate::modules::Phase::Server);
         let server_time = self.time;
         self.previous = Some(server_time);
         let simulation = Stopwatch::start();
@@ -315,6 +315,7 @@ impl FrameHost {
         }
         let client = Stopwatch::start();
         result.commands = self.client_frame();
+        self.client_modules();
         result.client_ns = client.elapsed().as_nanos() as u64;
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
@@ -494,13 +495,14 @@ impl FrameHost {
     }
 
     fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {
+        let rules: [_; SeatId::COUNT] = std::array::from_fn(|seat| {
+            self.local_clients[seat].map_or(qa_core::primitives::RuleSetId::default(), |_| {
+                self.runtime.prediction[seat].player.movement_rules
+            })
+        });
         let policies = self.native_input_policy_active().then(|| {
             std::array::from_fn(|seat| {
-                let rules = self.local_clients[seat]
-                    .map_or(qa_core::primitives::RuleSetId::default(), |_| {
-                        self.runtime.prediction[seat].player.movement_rules
-                    });
-                let mut policy = self.input_handles.policy(&self.console.cvars, rules);
+                let mut policy = self.input_handles.policy(&self.console.cvars, rules[seat]);
                 if self.local_clients[seat].is_some() {
                     policy.delta_pitch =
                         self.runtime.prediction[seat].player.movement.delta_angles.0[0];
@@ -518,11 +520,7 @@ impl FrameHost {
                 .build_frame(self.time, [127; 3], [0.022; 2])
         };
         for (seat, command) in commands.iter_mut().enumerate() {
-            let rules = self.local_clients[seat]
-                .map_or(qa_core::primitives::RuleSetId::default(), |_| {
-                    self.runtime.prediction[seat].player.movement_rules
-                });
-            *command = qa_movement::prepare_command(rules, *command);
+            *command = qa_movement::prepare_command(rules[seat], *command);
         }
         for (seat, id) in self.local_clients.iter().enumerate() {
             if let Some(id) = id {

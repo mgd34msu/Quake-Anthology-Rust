@@ -30,6 +30,9 @@ pub struct LocalSnapshot {
 }
 
 impl LocalSnapshot {
+    pub fn native_client(&self) -> u32 {
+        self.native_client
+    }
     pub fn load(
         seat: SeatId,
         output: OutputConsumerId,

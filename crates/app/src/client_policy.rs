@@ -2,7 +2,6 @@
 use qa_console::{catalog::Scope, cvars::Cvars, views::Context};
 use qa_core::primitives::RuleSetId;
 use qa_session::timing::TickRate;
-use qa_world::area::LinkOrder;
 use std::num::NonZeroU32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,14 +51,6 @@ impl ClientPolicy {
             movement: explicit_movement.unwrap_or(client),
             trace: explicit_trace.unwrap_or(client),
         })
-    }
-
-    pub fn link_order(self) -> LinkOrder {
-        if qa_gameplay::rules::link_first(self.client) {
-            LinkOrder::Head
-        } else {
-            LinkOrder::Tail
-        }
     }
 }
 

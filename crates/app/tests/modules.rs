@@ -6,7 +6,7 @@ mod service_program;
 use qa_app::{
     Runtime,
     host::{FrameHost, FrameSource},
-    modules::{ModuleRequest, ModuleResult, Program},
+    modules::{ModuleRequest, ModuleResult, Phase, Program},
 };
 use qa_compat::{
     abi::Q3_SERVER,
@@ -36,22 +36,36 @@ fn quakec_presets_are_explicit_and_do_not_inherit_map_or_player_rules() {
 
 #[test]
 fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
-    use qa_app::modules::QvmSpec;
+    use qa_app::modules::{QvmRole, QvmSpec};
     assert_eq!(
         QvmSpec::parse("game:vm/qagame.qvm").unwrap().path,
         "vm/qagame.qvm"
+    );
+    assert_eq!(QvmSpec::parse("ui:vm/ui.qvm").unwrap().role, QvmRole::Ui);
+    assert_eq!(
+        QvmSpec::parse("cgame:1:vm/cgame.qvm").unwrap().role,
+        QvmRole::Cgame(SeatId::new(1).unwrap())
     );
     for input in [
         "vm/qagame.qvm",
         "game:",
         "client:vm/cgame.qvm",
-        "ui:vm/ui.qvm",
+        "cgame:4:file",
+        "cgame:0:",
+        "ui:",
     ] {
         assert!(QvmSpec::parse(input).is_err());
     }
 }
 
 fn lifecycle_host(budget: u64) -> FrameHost {
+    lifecycle_host_in(budget, Phase::Server, None)
+}
+fn lifecycle_host_in(
+    budget: u64,
+    phase: Phase,
+    api: Option<qa_app::modules::VersionCheck>,
+) -> FrameHost {
     use qa_app::modules::{Argument, Export};
     use qa_formats::program::qvm::Opcode::*;
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
@@ -66,26 +80,33 @@ fn lifecycle_host(budget: u64) -> FrameHost {
         .unwrap()
         .id;
     // Return 1000*command + arg1 + arg2 + arg3, observing vmMain's stack ABI.
-    let vm = service_program::program(
-        &[
-            (Enter, 64),
-            (Local, 72),
-            (Load4, 0),
-            (Const, 1000),
-            (MulI, 0),
-            (Local, 76),
-            (Load4, 0),
-            (Add, 0),
-            (Local, 80),
-            (Load4, 0),
-            (Add, 0),
-            (Local, 84),
-            (Load4, 0),
-            (Add, 0),
-            (Leave, 64),
-        ],
-        &[0; 16],
-    );
+    let mut operations = vec![
+        (Enter, 64),
+        (Local, 72),
+        (Load4, 0),
+        (Const, 1000),
+        (MulI, 0),
+        (Local, 76),
+        (Load4, 0),
+        (Add, 0),
+        (Local, 80),
+        (Load4, 0),
+        (Add, 0),
+        (Local, 84),
+        (Load4, 0),
+        (Add, 0),
+        (Leave, 64),
+    ];
+    let (initialize, frame, shutdown) = if api.is_some() {
+        let body = operations.drain(1..).collect::<Vec<_>>();
+        operations.extend([(Local, 72), (Load4, 0), (Const, 0), (Eq, 19)]);
+        operations.extend(body);
+        operations.extend([(Const, 6), (Leave, 64)]);
+        (1, 5, 2)
+    } else {
+        (0, if phase == Phase::Client { 3 } else { 8 }, 1)
+    };
+    let vm = service_program::program(&operations, &[0; 16]);
     FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -99,6 +120,8 @@ fn lifecycle_host(budget: u64) -> FrameHost {
                 link_order: LinkOrder::Head,
             },
             timing_rules: RuleSetId::Quake3,
+            phase,
+            api,
             rate: TickRate::fixed(50).unwrap(),
             anchor: id,
             program: Program::Qvm {
@@ -106,9 +129,9 @@ fn lifecycle_host(budget: u64) -> FrameHost {
                 imports: &Q3_SERVER,
             },
             entries: (0..=10).collect(),
-            frame: CallbackId(8),
+            frame: CallbackId(frame),
             initialize: Some(Export {
-                callback: CallbackId(0),
+                callback: CallbackId(initialize),
                 arguments: [
                     Argument::ClockMilliseconds,
                     Argument::PlatformMilliseconds,
@@ -122,7 +145,7 @@ fn lifecycle_host(budget: u64) -> FrameHost {
                 ],
             }),
             shutdown: Some(Export {
-                callback: CallbackId(1),
+                callback: CallbackId(shutdown),
                 arguments: [
                     Argument::Word(1),
                     Argument::Word(0),
@@ -159,7 +182,7 @@ fn lifecycle_is_once_only_uses_native_exports_and_keeps_two_physical_intakes() {
         Some(ModuleResult::Qvm(247))
     );
     assert_eq!(source.polls, 2);
-    host.initialize_modules();
+    host.initialize_modules(Phase::Server);
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
     source.time = EventTime(173_000_000);
     host.frame(&mut source, true);
@@ -199,6 +222,106 @@ fn failed_initialization_is_not_retried_or_advanced_as_a_running_module() {
     host.shutdown_modules();
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
     assert_eq!(source.polls, 4);
+}
+
+#[test]
+fn client_exports_run_once_per_client_frame_instead_of_catching_up_server_ticks() {
+    let mut host = lifecycle_host_in(100, Phase::Client, None);
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
+    source.time = EventTime(150_000_000);
+    let frame = host.frame(&mut source, true);
+    assert_eq!(frame.server_ticks, 1);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+    assert_eq!(
+        host.module_counts(ModuleId(1)).unwrap().last_result,
+        Some(ModuleResult::Qvm(3150))
+    );
+    assert_eq!(source.polls, 4);
+}
+
+#[test]
+fn ui_api_version_is_checked_before_initialization_and_failure_stops_client_calls() {
+    use qa_app::modules::{Argument, Export, State, VersionCheck};
+    for (accepted, running, expected_calls) in [(&[4, 6][..], true, 3), (&[4][..], false, 1)] {
+        let api = VersionCheck {
+            export: Export {
+                callback: CallbackId(0),
+                arguments: [Argument::Word(0); 9],
+            },
+            accepted,
+        };
+        let mut host = lifecycle_host_in(100, Phase::Client, Some(api));
+        let mut source = Source {
+            time: EventTime(0),
+            polls: 0,
+        };
+        host.frame(&mut source, true);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().calls,
+            expected_calls
+        );
+        assert_eq!(
+            host.module_state(ModuleId(1)),
+            Some(if running {
+                State::Running
+            } else {
+                State::Failed
+            })
+        );
+        source.time = EventTime(250_000_000);
+        host.frame(&mut source, true);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().calls,
+            expected_calls + u64::from(running)
+        );
+        assert_eq!(source.polls, 4);
+    }
+}
+
+#[test]
+fn quit_in_second_command_phase_prevents_client_module_startup() {
+    use qa_app::modules::State;
+    struct QuitAtSecond(Source);
+    impl FrameSource for QuitAtSecond {
+        fn begin_frame(&mut self) -> EventTime {
+            self.0.begin_frame()
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.0.poll_events(queue);
+            if self.0.polls == 2 {
+                queue
+                    .push(SysEvent {
+                        time: self.0.time,
+                        kind: EventKind::ConsoleLine("quit"),
+                    })
+                    .unwrap();
+            }
+        }
+        fn wait_time(&mut self, duration: Duration) -> EventTime {
+            self.0.wait_time(duration)
+        }
+        fn elapsed(&self) -> Duration {
+            self.0.elapsed()
+        }
+        fn present(&mut self) {
+            self.0.present();
+        }
+    }
+    let mut host = lifecycle_host_in(100, Phase::Client, None);
+    let mut source = QuitAtSecond(Source {
+        time: EventTime(0),
+        polls: 0,
+    });
+    host.frame(&mut source, true);
+    assert!(host.runtime.quit);
+    assert_eq!(source.0.polls, 2);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 0);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Pending));
 }
 
 #[test]
@@ -340,6 +463,8 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
                 link_order: LinkOrder::Head,
             },
             timing_rules: RuleSetId::Quake3,
+            phase: Phase::Server,
+            api: None,
             rate: TickRate::fixed(50).unwrap(),
             anchor: ids[0],
             program: Program::Qvm {
@@ -366,6 +491,8 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
                 link_order: LinkOrder::Tail,
             },
             timing_rules: RuleSetId::Quake,
+            phase: Phase::Server,
+            api: None,
             rate: TickRate::fixed(100).unwrap(),
             anchor: ids[1],
             program: Program::quakec(qc),

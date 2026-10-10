@@ -84,7 +84,7 @@ fn foreign_movement_and_trace_overrides_do_not_select_native_clock_or_link_order
                 qa_app::client_policy::tick_rate(movement.client, &mut cvars)?,
                 rate
             );
-            assert_eq!(movement.link_order(), order);
+            assert_eq!(qa_gameplay::rules::link_order(movement.client), order);
             let trace = ClientPolicy::select(None, Some(client), None, Some(foreign))?;
             assert_eq!(
                 (trace.client, trace.movement, trace.trace),
@@ -94,7 +94,7 @@ fn foreign_movement_and_trace_overrides_do_not_select_native_clock_or_link_order
                 qa_app::client_policy::tick_rate(trace.client, &mut cvars)?,
                 rate
             );
-            assert_eq!(trace.link_order(), order);
+            assert_eq!(qa_gameplay::rules::link_order(trace.client), order);
         }
     }
     Ok(())

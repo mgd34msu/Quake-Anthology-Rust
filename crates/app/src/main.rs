@@ -64,7 +64,9 @@ fn run() -> Result<(), String> {
         match arg.as_str() {
             "--qvm-module" => {
                 qvm_modules.push(qa_app::modules::QvmSpec::parse(
-                    &args.next().ok_or("--qvm-module needs game:virtual-file")?,
+                    &args
+                        .next()
+                        .ok_or("--qvm-module needs game:path, cgame:seat:path or ui:path")?,
                 )?);
             }
             "--quakec-module" => {
@@ -395,7 +397,7 @@ fn run() -> Result<(), String> {
             policy.client.name(),
             serde_json::to_string(&tick_ms).map_err(|e| format!("client period report: {e}"))?,
             policy.client.name(),
-            policy.link_order() == qa_world::area::LinkOrder::Head,
+            qa_gameplay::rules::link_order(policy.client) == qa_world::area::LinkOrder::Head,
         );
         runtime.entity_sources.push(loaded.entity_source);
         runtime.server.area = qa_world::area::AreaGrid::load(
@@ -469,9 +471,10 @@ fn run() -> Result<(), String> {
     }
     for (index, spec) in qvm_modules.iter().enumerate() {
         println!(
-            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"q3\",\"entry\":\"game exports\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
+            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"q3\",\"role\":\"{:?}\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
             quakec_modules.len() + index + 1,
             json_string(&spec.path),
+            spec.role,
         );
     }
     let bank = qa_app::audio::load_bank(
