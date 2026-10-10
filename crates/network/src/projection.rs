@@ -64,6 +64,8 @@ enum Convert {
     ShortAngle,
     UnsignedShortAngle,
     TimerEighth,
+    Milliseconds16,
+    ScaledShort(u16),
 }
 #[derive(Clone, Copy)]
 struct Field {
@@ -107,7 +109,7 @@ static QW: &[Field] = &[
     f(12, InfoFlags, Bits),
     f(13, BodyYaw, Bits),
 ];
-static Q2: &[Field] = &[
+const Q2: &[Field] = &[
     f(0, Mode, Bits),
     f(1, Position(0), Eighth),
     f(2, Position(1), Eighth),
@@ -136,6 +138,29 @@ static Q2: &[Field] = &[
     f(41, Armor, Bits),
     f(50, Frags, Bits),
 ];
+const fn q2_repro_fields() -> [Field; Q2.len() + 1] {
+    let mut fields = [f(0, Mode, Bits); Q2.len() + 1];
+    let mut i = 0;
+    while i < Q2.len() {
+        let mut field = Q2[i];
+        field.convert = match field.source {
+            Position(_) | Velocity(_) | DeltaAngle(_) => Bits,
+            ViewOffset(_) => ScaledShort(16),
+            Punch(_) => ScaledShort(1024),
+            View(_) => ShortAngle,
+            Timer => Milliseconds16,
+            _ => field.convert,
+        };
+        if field.word >= 36 {
+            field.word += 7;
+        }
+        fields[i] = field;
+        i += 1;
+    }
+    fields[Q2.len()] = f(42, Client, Bits);
+    fields
+}
+static Q2_REPRO: &[Field] = &q2_repro_fields();
 static Q3: &[Field] = &[
     f(0, CommandTime, Bits),
     f(1, Position(0), Bits),
@@ -172,6 +197,7 @@ pub struct PlayerProjection {
     modes: [u32; 7],
     received_modes: &'static [MovementMode],
     flags: [u32; 7],
+    client_limit: u32,
     bindings: Box<[(usize, ValueBinding)]>,
     pub dropped_bindings: usize,
 }
@@ -186,6 +212,21 @@ impl PlayerProjection {
                 states::Q2_PLAYER_WORDS,
                 [0, 1, 1, 1, 2, 3, 4],
                 &[M::Walk, M::Spectator, M::Dead, M::Gib, M::Frozen][..],
+                [1, 2, 4, 8, 16, 32, 0],
+            ),
+            Protocol::Quake2Repro1038 => (
+                Q2_REPRO,
+                states::Q2_REPRO_PLAYER_WORDS,
+                [0, 1, 2, 3, 4, 5, 6],
+                &[
+                    M::Walk,
+                    M::Fly,
+                    M::Noclip,
+                    M::Spectator,
+                    M::Dead,
+                    M::Gib,
+                    M::Frozen,
+                ][..],
                 [1, 2, 4, 8, 16, 32, 0],
             ),
             Protocol::Quake3_68 => (
@@ -215,6 +256,11 @@ impl PlayerProjection {
             modes,
             received_modes,
             flags,
+            client_limit: if protocol == Protocol::Quake2Repro1038 {
+                256
+            } else {
+                64
+            },
             dropped_bindings: bindings.len() - admitted.len(),
             bindings: admitted,
         }
@@ -244,6 +290,11 @@ impl PlayerProjection {
                         as u32
                 }
                 TimerEighth => (word / 8).min(255),
+                Milliseconds16 => word.min(u32::from(u16::MAX)),
+                ScaledShort(scale) => {
+                    let scaled = f32::from_bits(word) * f32::from(scale);
+                    (scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i32) as u32
+                }
             };
         }
         for &(word, binding) in &self.bindings {
@@ -283,6 +334,8 @@ impl PlayerProjection {
                 ShortAngle => short_to_angle(word as i16 as i32).to_bits(),
                 UnsignedShortAngle => short_to_angle(word as u16 as i32).to_bits(),
                 TimerEighth => u32::from(word as u8) * 8,
+                Milliseconds16 => u32::from(word as u16),
+                ScaledShort(scale) => (f32::from(word as i16) / f32::from(scale)).to_bits(),
             };
             match field.source {
                 Position(i) => player.body.position.0[i] = f32::from_bits(value),
@@ -357,7 +410,7 @@ impl PlayerProjection {
                         *weapon_frame = value as i32;
                     }
                 }
-                Client => context.client_number = (value < 64).then_some(value),
+                Client => context.client_number = (value < self.client_limit).then_some(value),
                 Ground => {
                     context.ground_number = (value < 1023).then_some(value);
                     player.movement.grounded = context.ground_number.is_some();
@@ -439,7 +492,10 @@ impl PlayerProjection {
                     0
                 }
             }
-            Client => c.client_number.filter(|&n| n < 64).unwrap_or(0),
+            Client => c
+                .client_number
+                .filter(|&n| n < self.client_limit)
+                .unwrap_or(0),
             Ground => c.ground_number.filter(|&n| n < 1024).unwrap_or(1023),
             Weapon => c.weapon_number.unwrap_or(0),
             WeaponModel => c.weapon_model.unwrap_or(0),

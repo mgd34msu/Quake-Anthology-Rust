@@ -59,6 +59,9 @@ impl LocalSnapshot {
             // Protocol 34 derives time from serverframe * 100; publish only at
             // representable boundaries, independently of the world tick rate.
             Protocol::Quake2_34 => (time.milliseconds() / 100) as u32,
+            Protocol::Quake2Repro1038 => channel.q2_repro_frame_ms().map_or(0, |duration| {
+                (time.milliseconds() / u64::from(duration)) as u32
+            }),
             _ => channel.send_state().sequence,
         }
     }
@@ -112,9 +115,10 @@ impl LocalSnapshot {
             Protocol::NetQuake15 => frame!(NetQuake, states::NQ_PLAYER_WORDS),
             Protocol::QuakeWorld28 => frame!(QuakeWorld, 0),
             Protocol::Quake2_34 => frame!(Quake2, states::Q2_PLAYER_WORDS),
+            Protocol::Quake2Repro1038 => frame!(Quake2Repro, states::Q2_REPRO_PLAYER_WORDS),
             Protocol::Quake3_68 => frame!(Quake3, states::PLAYER_WORDS),
         })?;
-        let body = |writer: &mut Writer<'_>| {
+        let body = |writer: &mut Writer<'_>, channel: &mut Channel| {
             if self.protocol == Protocol::QuakeWorld28 {
                 states::write_qw_player(
                     writer,
@@ -131,7 +135,7 @@ impl LocalSnapshot {
             channel.encode_server_output(bytes, body)
         } else {
             let mut writer = Writer::new(bytes, Encoding::Bytes);
-            body(&mut writer)?;
+            body(&mut writer, channel)?;
             Ok(writer.size())
         }
     }
@@ -152,6 +156,9 @@ impl LocalSnapshot {
             Incoming::Snapshot(frame) => match (self.protocol, frame) {
                 (Protocol::NetQuake15, ReceivedFrame::NetQuake(frame)) => Some(frame.player),
                 (Protocol::Quake2_34, ReceivedFrame::Quake2(frame)) => Some(frame.player),
+                (Protocol::Quake2Repro1038, ReceivedFrame::Quake2Repro(frame)) => {
+                    Some(frame.player)
+                }
                 (Protocol::Quake3_68, ReceivedFrame::Quake3(frame)) => Some(frame.player),
                 _ => None,
             },

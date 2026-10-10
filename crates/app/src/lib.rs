@@ -148,7 +148,7 @@ impl Runtime {
             Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
                 attack_finished: 0.0,
             },
-            Protocol::Quake2_34 => PlayerTail::Q2 { weapon_frame: 0 },
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2 { weapon_frame: 0 },
             Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
         };
         let id = self

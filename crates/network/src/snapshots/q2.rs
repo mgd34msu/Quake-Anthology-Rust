@@ -10,7 +10,7 @@ use crate::{
 use qa_core::primitives::ThinkTime;
 
 const KEX_PLAYER: usize = 42 + states::Q2_RR_STATS;
-const REPRO_PLAYER: usize = 43 + states::Q2_RR_STATS;
+const REPRO_PLAYER: usize = states::Q2_REPRO_PLAYER_WORDS;
 pub type Q2KexRing = Ring<KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 pub type Q2KexFrame<'a> = Frame<'a, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 pub type Q2ReproRing = Ring<REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;

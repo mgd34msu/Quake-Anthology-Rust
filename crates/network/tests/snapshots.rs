@@ -266,7 +266,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
     }
     let mut payload = [0; 1400];
     let n =
-        server.encode_server_output(&mut payload, |w| snapshots::write_q3(w, &ring, 1, None))?;
+        server.encode_server_output(&mut payload, |w, _| snapshots::write_q3(w, &ring, 1, None))?;
     let mut connections = Connections::load(1);
     connections
         .bind(
@@ -337,7 +337,7 @@ fn deliver_server_message(
 ) -> Result<(), Error> {
     let sequence = server.send_state().sequence;
     let mut payload = [0; 1400];
-    let n = server.encode_server_output(&mut payload, |writer| {
+    let n = server.encode_server_output(&mut payload, |writer, _| {
         if let Some((ring, from)) = snapshot {
             snapshots::write_q3(writer, ring, sequence, from)?;
         }

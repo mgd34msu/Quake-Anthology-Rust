@@ -195,7 +195,12 @@ impl Channel {
         protocol: crate::commands::packet::Protocol,
     ) -> Result<(), crate::commands::packet::Error> {
         use crate::commands::packet::Error;
-        if protocol.channel() != self.policy {
+        let compatible = if protocol == crate::commands::packet::Protocol::Quake2Repro1038 {
+            self.policy == q2_new(false) || self.policy == q2_new(true)
+        } else {
+            protocol.channel() == self.policy
+        };
+        if !compatible {
             return Err(Error::Context);
         }
         if let Some(storage) = &self.snapshots {
@@ -219,6 +224,9 @@ impl Channel {
                 .try_into()
                 .is_ok_and(|words| ring.set_baseline(number, words)),
             Some(crate::snapshots::Storage::Quake2(ring)) => words
+                .try_into()
+                .is_ok_and(|words| ring.set_baseline(number, words)),
+            Some(crate::snapshots::Storage::Quake2Repro { ring, .. }) => words
                 .try_into()
                 .is_ok_and(|words| ring.set_baseline(number, words)),
             Some(crate::snapshots::Storage::Quake3(ring)) => words
@@ -257,7 +265,7 @@ impl Channel {
         self.snapshots.as_mut().ok_or(Error::Context)?.store(frame)
     }
     pub fn write_snapshot(
-        &self,
+        &mut self,
         writer: &mut crate::message::Writer<'_>,
         sequence: u32,
         request: Option<u32>,
@@ -267,17 +275,57 @@ impl Channel {
         if self.endpoint() != Endpoint::Server {
             return Err(Error::Context);
         }
-        self.snapshots.as_ref().ok_or(Error::Context)?.write(
+        self.snapshots.as_mut().ok_or(Error::Context)?.write(
             writer,
             sequence,
             request,
             native_clients,
         )
     }
-    pub(crate) fn q2_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::Q2Ring> {
-        match self.snapshots.as_mut()? {
-            crate::snapshots::Storage::Quake2(ring) => Some(ring),
+    /// Native gamestate/module metadata, supplied independently of movement.
+    pub fn configure_q2_repro(
+        &mut self,
+        frame_ms: u16,
+        policy: crate::snapshots::Q2EntityPolicy,
+    ) -> Result<(), crate::commands::packet::Error> {
+        if frame_ms == 0 {
+            return Err(crate::commands::packet::Error::Count);
+        }
+        let Some(crate::snapshots::Storage::Quake2Repro {
+            frame_ms: duration,
+            entity_policy,
+            ..
+        }) = &mut self.snapshots
+        else {
+            return Err(crate::commands::packet::Error::Context);
+        };
+        *duration = frame_ms;
+        *entity_policy = policy;
+        Ok(())
+    }
+    pub fn q2_repro_frame_ms(&self) -> Option<u16> {
+        match self.snapshots.as_ref()? {
+            crate::snapshots::Storage::Quake2Repro { frame_ms, .. } => Some(*frame_ms),
             _ => None,
+        }
+    }
+    pub(crate) fn read_q2_snapshot(
+        &mut self,
+        reader: &mut crate::message::Reader<'_>,
+    ) -> Result<bool, crate::commands::packet::Error> {
+        match self
+            .snapshots
+            .as_mut()
+            .ok_or(crate::commands::packet::Error::Context)?
+        {
+            crate::snapshots::Storage::Quake2(ring) => crate::snapshots::read_q2(reader, ring),
+            crate::snapshots::Storage::Quake2Repro { ring, frame_ms, .. } => {
+                let duration = *frame_ms;
+                crate::snapshots::read_q2_repro(reader, ring, |n| {
+                    qa_core::primitives::ThinkTime::Milliseconds(i64::from(n) * i64::from(duration))
+                })
+            }
+            _ => Err(crate::commands::packet::Error::Context),
         }
     }
     pub(crate) fn qw_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::QwRing> {

@@ -1,8 +1,8 @@
 //! The connection owns its packet codec and fixed decode scratch.
 use super::{
-    from_q1_move, from_q2_usercmd, from_q3_usercmd, from_qw_usercmd,
-    packet::{self, Key, Move, Protocol, ZERO_Q2, ZERO_Q3, ZERO_QW},
-    to_q1_move, to_q2_usercmd, to_q3_usercmd, to_qw_usercmd,
+    from_q1_move, from_q2_rr_usercmd, from_q2_usercmd, from_q3_usercmd, from_qw_usercmd,
+    packet::{self, Key, Move, Protocol, ZERO_Q2, ZERO_Q2_RR, ZERO_Q3, ZERO_QW},
+    to_q1_move, to_q2_rr_usercmd, to_q2_usercmd, to_q3_usercmd, to_qw_usercmd,
 };
 use crate::channel::Channel;
 use crate::{
@@ -40,7 +40,7 @@ impl Commands {
             Protocol::QuakeWorld28 => self
                 .delta_request
                 .filter(|&base| base != 0 && channel.send_state().sequence.wrapping_sub(base) < 63),
-            Protocol::Quake2_34 => self.delta_request,
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => self.delta_request,
             Protocol::Quake3_68 => channel
                 .command_state()
                 .map(|state| state.message_acknowledged),
@@ -71,6 +71,19 @@ impl Commands {
             Protocol::Quake2_34 => Move::Quake2 {
                 last_frame: request.map_or(-1, |sequence| sequence as i32),
                 commands: [ZERO_Q2, ZERO_Q2, to_q2_usercmd(command)],
+            },
+            Protocol::Quake2Repro1038 => Move::Quake2Repro {
+                last_frame: request.map_or(-1, |sequence| sequence as i32),
+                commands: [
+                    ZERO_Q2_RR,
+                    ZERO_Q2_RR,
+                    to_q2_rr_usercmd(
+                        command,
+                        channel
+                            .current_snapshot()
+                            .map_or(0, |frame| frame.sequence()),
+                    ),
+                ],
             },
             Protocol::Quake3_68 => {
                 let mut commands = [ZERO_Q3; 32];
@@ -176,6 +189,16 @@ impl Commands {
                     self.previous_time.wrapping_add(i32::from(commands[2].msec)),
                 )
             }
+            Move::Quake2Repro {
+                last_frame,
+                commands,
+            } => {
+                self.delta_request = (last_frame >= 0).then_some(last_frame as u32);
+                from_q2_rr_usercmd(
+                    commands[2],
+                    self.previous_time.wrapping_add(i32::from(commands[2].msec)),
+                )
+            }
             Move::Quake3 {
                 commands,
                 count,
@@ -213,7 +236,10 @@ impl Commands {
         }
         if !matches!(
             self.protocol,
-            Protocol::NetQuake15 | Protocol::QuakeWorld28 | Protocol::Quake2_34
+            Protocol::NetQuake15
+                | Protocol::QuakeWorld28
+                | Protocol::Quake2_34
+                | Protocol::Quake2Repro1038
         ) || channel.endpoint() != qa_core::loopback::Endpoint::Client
         {
             return Err(packet::Error::Context);
@@ -236,7 +262,7 @@ impl Commands {
             while at < scratch.len() {
                 match (self.protocol, scratch[at]) {
                     (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
-                    | (Protocol::Quake2_34, 6) => at += 1,
+                    | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 6) => at += 1,
                     (Protocol::NetQuake15, 4) => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
@@ -298,21 +324,20 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    (Protocol::Quake2_34, 20) => {
+                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 20) => {
                         self.delta_request = None;
-                        let ring = channel.q2_snapshots_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
-                        let accepted = crate::snapshots::read_q2(&mut reader, ring)?;
+                        let accepted = channel.read_q2_snapshot(&mut reader)?;
                         at += 1 + reader.byte_position();
                         snapshot = if accepted {
-                            ring.current().map(|frame| frame.sequence)
+                            channel.current_snapshot().map(|frame| frame.sequence())
                         } else {
                             None
                         };
                         self.delta_request = snapshot;
                     }
                     (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26)
-                    | (Protocol::Quake2_34, 4 | 10 | 15) => {
+                    | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 4 | 10 | 15) => {
                         let mut prints = Prints::new(self.protocol, &scratch[at..]);
                         let print = prints
                             .next()

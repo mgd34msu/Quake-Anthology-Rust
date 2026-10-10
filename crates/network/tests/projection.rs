@@ -76,6 +76,79 @@ fn assert_independent_state(p: &PlayerState) {
 }
 
 #[test]
+fn repro_projection_preserves_float_motion_and_native_packed_fields()
+-> Result<(), qa_network::message::Error> {
+    let mut p = player();
+    p.movement.mode = MovementMode::Noclip;
+    p.movement.remaining_ms = 70_000;
+    p.view_offset = Vec3([4096., -4096., 22.0625]);
+    p.punch_angles = Vec3([0.03125, -0.0625, 32.]);
+    p.tail = PlayerTail::Q2 {
+        weapon_frame: 65535,
+    };
+    let mut native = context();
+    native.client_number = Some(255);
+    let projection = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
+    let mut words = [0; states::Q2_REPRO_PLAYER_WORDS];
+    assert!(projection.reduce(&p, &native, &mut words));
+    assert_eq!(words[0], 2);
+    assert_eq!(&words[1..4], &p.body.position.0.map(f32::to_bits));
+    assert_eq!(&words[4..7], &p.body.velocity.0.map(f32::to_bits));
+    assert_eq!(words[7], 65535);
+    assert_eq!(&words[10..13], &p.movement.delta_angles.0.map(f32::to_bits));
+    assert_eq!(&words[13..16], &[32767, (-32768i32) as u32, 353]);
+    assert_eq!(&words[19..22], &[32, (-64i32) as u32, 32767]);
+    assert_eq!(words[23], 65535);
+    assert_eq!(words[42], 255);
+    assert_eq!((words[44] as i32, words[48]), (-12, 55));
+    let mut source = states::Q2ReproPlayer::default();
+    source.words.copy_from_slice(&words[..43]);
+    source.stats.copy_from_slice(&words[43..]);
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    let flags = states::write_q2_repro_player(&mut writer, &Default::default(), &source)?;
+    let decoded = states::read_q2_repro_player(
+        &mut Reader::new(writer.bytes(), Encoding::Bytes),
+        &Default::default(),
+        flags,
+    )?;
+    words[..43].copy_from_slice(&decoded.words);
+    words[43..].copy_from_slice(&decoded.stats);
+    let mut imported = destination();
+    imported.tail = PlayerTail::Q2 { weapon_frame: 0 };
+    assert!(projection.apply(&words, &mut imported, &mut native, |_| None));
+    assert_eq!(
+        imported.body.position.0.map(f32::to_bits),
+        [
+            p.body.position.0[0].to_bits(),
+            p.body.position.0[1].to_bits(),
+            0
+        ]
+    );
+    assert_eq!(imported.body.velocity, p.body.velocity);
+    assert_eq!(imported.movement.remaining_ms, 65535);
+    assert_eq!(imported.movement.mode, MovementMode::Noclip);
+    assert_eq!(native.client_number, Some(255));
+    assert_eq!(
+        imported.tail,
+        PlayerTail::Q2 {
+            weapon_frame: 65535
+        }
+    );
+    assert_eq!(
+        (imported.movement_rules, imported.trace_rules),
+        (RuleSetId::Quake3, RuleSetId::Quake)
+    );
+    assert_eq!(imported.view_offset, Vec3([2047.9375, -2048., 22.0625]));
+    assert_eq!(
+        imported.punch_angles,
+        Vec3([0.03125, -0.0625, 32767. / 1024.])
+    );
+    assert_eq!((imported.health, imported.armor), (-12, 55));
+    Ok(())
+}
+
+#[test]
 fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 -> Result<(), qa_network::message::Error> {
     let p = player();

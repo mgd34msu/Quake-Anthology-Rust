@@ -449,6 +449,7 @@ impl<const WORDS: usize> Default for Q2RereleasePlayer<WORDS> {
 /// Q2repro: classic order, damage blend, gunrate, viewheight and clientnum.
 /// Coordinates/delta angles are float bits; view/weapon/color words are packed.
 pub type Q2ReproPlayer = Q2RereleasePlayer<43>;
+pub const Q2_REPRO_PLAYER_WORDS: usize = 43 + Q2_RR_STATS;
 /// Retail KEX: same order through viewheight, without clientnum. Coordinates,
 /// delta/view/weapon angles and weapon offsets are native float bits. Viewoffset,
 /// kickangles and blends are packed words. Gunframe has nine native bits.

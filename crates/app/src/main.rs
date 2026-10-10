@@ -132,17 +132,19 @@ fn run() -> Result<(), String> {
             }
             "--local-protocol" => {
                 local_protocol = qa_network::commands::packet::Protocol::parse(
-                    &args.next().ok_or("--local-protocol needs 15/28/34/68")?,
+                    &args
+                        .next()
+                        .ok_or("--local-protocol needs 15/28/34/1038/68")?,
                 )
                 .ok_or("unsupported local protocol")?;
             }
             "--seat-protocol" => {
                 let value = args
                     .next()
-                    .ok_or("--seat-protocol needs seat:15/28/34/68")?;
+                    .ok_or("--seat-protocol needs seat:15/28/34/1038/68")?;
                 let (seat, protocol) = value
                     .split_once(':')
-                    .ok_or("--seat-protocol needs seat:15/28/34/68")?;
+                    .ok_or("--seat-protocol needs seat:15/28/34/1038/68")?;
                 let seat = seat
                     .parse()
                     .ok()

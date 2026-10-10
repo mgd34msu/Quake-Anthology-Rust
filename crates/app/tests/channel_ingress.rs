@@ -188,6 +188,7 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
         Protocol::NetQuake15,
         Protocol::QuakeWorld28,
         Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
         Protocol::Quake3_68,
     ] {
         let (mut host, client) = local_host(protocol)?;
@@ -242,6 +243,7 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         Protocol::NetQuake15,
         Protocol::QuakeWorld28,
         Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
         Protocol::Quake3_68,
     ] {
         let (mut host, client) = local_host(protocol)?;
@@ -249,13 +251,13 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
             Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
                 attack_finished: 0.,
             },
-            Protocol::Quake2_34 => PlayerTail::Q2 { weapon_frame: 0 },
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2 { weapon_frame: 0 },
             Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
         };
         assert_eq!(host.runtime.server.clients[0].player.tail, initial_tail);
         assert_eq!(host.runtime.prediction[0].player.tail, initial_tail);
         let received_tail = match protocol {
-            Protocol::Quake2_34 => PlayerTail::Q2 { weapon_frame: 173 },
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2 { weapon_frame: 173 },
             Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: -197 },
             _ => initial_tail,
         };
@@ -470,11 +472,113 @@ fn q3_duplicate_usercmd_time_does_not_submit_a_second_command() -> Result<(), St
 }
 
 #[test]
+fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
+-> Result<(), String> {
+    use qa_network::{commands::packet::Protocol, snapshots::Q2EntityPolicy};
+    for qport in [0, 37] {
+        let (mut host, client) = local_host(Protocol::Quake2Repro1038)?;
+        for endpoint in [Endpoint::Client, Endpoint::Server] {
+            let connection = host
+                .runtime
+                .network
+                .get_mut(client, endpoint)
+                .ok_or("connection")?;
+            connection.channel = Channel::load(channel::q2_new(qport != 0), endpoint, 8192, 16)
+                .map_err(|e| e.to_string())?;
+            connection.channel.set_qport(qport);
+            connection
+                .channel
+                .configure_snapshots(Protocol::Quake2Repro1038)
+                .map_err(|e| e.to_string())?;
+            let policy = Q2EntityPolicy {
+                native_clients: 256,
+                first_person: None,
+                beam_old_origin_fix: true,
+            };
+            assert!(connection.channel.configure_q2_repro(0, policy).is_err());
+            connection
+                .channel
+                .configure_q2_repro(50, policy)
+                .map_err(|e| e.to_string())?;
+        }
+        host.runtime.server.clients[0].player.body.position.0[0] = 12.375;
+        assert!(
+            host.runtime
+                .send_local_snapshot(client, EventTime(1_001_000_000))
+        );
+        let channel = &host
+            .runtime
+            .network
+            .get(client, Endpoint::Server)
+            .ok_or("server")?
+            .channel;
+        assert_eq!(
+            channel.current_snapshot().map(|frame| frame.sequence()),
+            Some(20)
+        );
+        let mut clock = Clock::default();
+        host.frame(&mut clock, true);
+        let connection = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .ok_or("client")?;
+        assert_eq!(
+            connection
+                .channel
+                .current_snapshot()
+                .map(|frame| frame.time()),
+            Some(qa_core::primitives::ThinkTime::Milliseconds(1000))
+        );
+        assert_eq!(
+            connection
+                .commands
+                .as_ref()
+                .ok_or("commands")?
+                .delta_request(),
+            Some(20)
+        );
+        assert_eq!(host.runtime.prediction[0].player.body.position.0[0], 12.375);
+        let command = qa_core::primitives::UserCmd {
+            duration_ms: 17,
+            movement: [123., -31., 0.],
+            ..Default::default()
+        };
+        assert!(
+            host.runtime
+                .send_local_command(client, &command, EventTime(1_050_000_000))
+        );
+        host.frame(&mut clock, true);
+        let connection = host
+            .runtime
+            .network
+            .get(client, Endpoint::Server)
+            .ok_or("server")?;
+        assert_eq!(
+            connection
+                .commands
+                .as_ref()
+                .ok_or("commands")?
+                .delta_request(),
+            Some(20)
+        );
+        assert_eq!(
+            host.runtime.server.clients[0].command.movement,
+            command.movement
+        );
+        assert_eq!(host.runtime.network.command_errors, 0);
+        assert_eq!(clock.polls, 4);
+    }
+    Ok(())
+}
+
+#[test]
 fn native_acks_traverse_the_host_queue_and_only_retire_their_peer() -> Result<(), String> {
     for policy in [
         channel::NETQUAKE,
         channel::QUAKEWORLD,
         channel::QUAKE2,
+        channel::q2_new(false),
         channel::q2_new(true),
     ] {
         let (mut host, clients) = host(policy)?;

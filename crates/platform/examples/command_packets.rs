@@ -30,6 +30,7 @@ fn native_words(movement: Move) -> [[u32; 11]; 3] {
         }
         Move::QuakeWorld { commands, .. } => rows = commands.map(delta::qw_words),
         Move::Quake2 { commands, .. } => rows = commands.map(delta::q2_words),
+        Move::Quake2Repro { commands, .. } => rows = commands.map(delta::q2_rr_words),
         Move::Quake3 { commands, .. } => {
             rows = std::array::from_fn(|i| delta::q3_words(commands[i]))
         }
@@ -76,7 +77,7 @@ fn main() -> Result<(), String> {
         r.read_data(&mut text[..length])
             .map_err(|e| e.to_string())?;
         let movement = match mode {
-            0 => Some(Move::NetQuake {
+            0 => Move::NetQuake {
                 timestamp,
                 command: Q1Move {
                     view_angles: delta::qw_from_words(&rows[2]).view_angles,
@@ -84,29 +85,32 @@ fn main() -> Result<(), String> {
                     buttons: rows[2][6] as u8,
                     impulse: rows[2][7] as u8,
                 },
-            }),
-            1 => Some(Move::QuakeWorld {
+            },
+            1 => Move::QuakeWorld {
                 loss,
                 commands: rows.map(|v| delta::qw_from_words(&v)),
                 delta_request: (context[1] != 0 && sequence.wrapping_sub(context[1]) < 63)
                     .then_some(context[1] as u8),
-            }),
-            2 => Some(Move::Quake2 {
+            },
+            2 => Move::Quake2 {
                 last_frame: -1,
                 commands: rows.map(|v| delta::q2_from_words(&v)),
-            }),
+            },
             3 => {
                 let mut commands = [ZERO_Q3; 32];
                 for (c, v) in commands.iter_mut().zip(&rows) {
                     *c = delta::q3_from_words(v);
                 }
-                Some(Move::Quake3 {
+                Move::Quake3 {
                     commands,
                     count: 3,
                     delta: false,
-                })
+                }
             }
-            4 => None,
+            4 => Move::Quake2Repro {
+                last_frame: context[1] as i32,
+                commands: rows.map(|v| delta::q2_rr_from_words(&v)),
+            },
             _ => return Err("fixture protocol".into()),
         };
         let key = Key {
@@ -122,16 +126,6 @@ fn main() -> Result<(), String> {
         let mut packet = [0; 1400];
         allocations::begin_frame();
         let encoded = (|| {
-            let Some(movement) = movement else {
-                let commands = rows.map(|v| delta::q2_rr_from_words(&v));
-                let frame = context[1] as i32;
-                let n = packet::write_q2_repro_move(&mut packet, frame, &commands)?;
-                let (decoded_frame, commands) = packet::read_q2_repro_move(&packet[..n])?;
-                if decoded_frame != frame {
-                    return Err(packet::Error::Context);
-                }
-                return Ok((n, commands.map(delta::q2_rr_words)));
-            };
             let n = packet::write(&mut packet, &movement, sequence, key)?;
             let mut scratch = packet;
             let decoded = packet::read(movement.protocol(), &mut scratch[..n], sequence, key)?;

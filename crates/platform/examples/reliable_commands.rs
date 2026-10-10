@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..count {
             server.queue_reliable(&string(&mut input)?)?;
         }
-        let n = server.encode_server_output(&mut bytes, |_| Ok(()))?;
+        let n = server.encode_server_output(&mut bytes, |_, _| Ok(()))?;
         output.write_all(&(n as u32).to_le_bytes())?;
         output.write_all(&bytes[..n])?;
         let mut parsed: Vec<(u32, Vec<u8>)> = Vec::new();

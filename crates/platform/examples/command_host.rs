@@ -59,11 +59,16 @@ impl FrameSource for Source {
 }
 fn main() -> Result<(), String> {
     let heap_only = std::env::args().any(|arg| arg == "--heap-only");
+    let repro = std::env::args().any(|arg| arg == "--repro");
     let mut runtime = Runtime::load(4, [])?;
     let protocols = [
         Protocol::NetQuake15,
         Protocol::QuakeWorld28,
-        Protocol::Quake2_34,
+        if repro {
+            Protocol::Quake2Repro1038
+        } else {
+            Protocol::Quake2_34
+        },
         Protocol::Quake3_68,
     ];
     let roles = [
@@ -72,6 +77,7 @@ fn main() -> Result<(), String> {
         RuleSetId::Quake2,
         RuleSetId::QuakeWorld,
     ];
+    let protocol_numbers = protocols.map(Protocol::number);
     let mut locals = [None; SeatId::COUNT];
     for seat in SeatId::ALL {
         let slot = seat.index();
@@ -157,7 +163,7 @@ fn main() -> Result<(), String> {
             return Err("missing native CLIENT projection".into());
         }
         println!(
-            "{{\"scope\":\"ordinary headless host commands and SERVER/CLIENT snapshots on four native local protocols; no map, native module or signon; calling Rust thread\",\"warmup\":60,\"frames\":600,\"protocols\":[15,28,34,68],\"packets\":{},\"decoded_commands\":{},\"applied_player_records\":{applied:?},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":false}}",
+            "{{\"scope\":\"ordinary headless host commands and SERVER/CLIENT snapshots on four native local protocols; no map, native module or signon; calling Rust thread\",\"warmup\":60,\"frames\":600,\"protocols\":{protocol_numbers:?},\"packets\":{},\"decoded_commands\":{},\"applied_player_records\":{applied:?},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":false}}",
             host.runtime.network.packets,
             host.runtime.network.commands,
             source.polls,
@@ -168,7 +174,7 @@ fn main() -> Result<(), String> {
     } else {
         samples.sort_unstable();
         println!(
-            "{{\"scope\":\"ordinary headless host with four independently selected native local move protocols; no map or signon\",\"warmup\":60,\"frames\":600,\"protocols\":[15,28,34,68],\"packets\":{},\"decoded_commands\":{},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+            "{{\"scope\":\"ordinary headless host with four independently selected native local move protocols; no map or signon\",\"warmup\":60,\"frames\":600,\"protocols\":{protocol_numbers:?},\"packets\":{},\"decoded_commands\":{},\"physical_intake_calls\":{},\"measured_ticks\":{ticks},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
             host.runtime.network.packets,
             host.runtime.network.commands,
             source.polls,

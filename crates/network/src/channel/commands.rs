@@ -279,26 +279,27 @@ impl Channel {
     /// Original SV_UpdateServerCommandsToClient and SV_Netchan_Encode payload.
     /// The shared prepare/submitted path still owns headers and fragmentation.
     pub fn encode_server_output(
-        &self,
+        &mut self,
         out: &mut [u8],
-        body: impl FnOnce(&mut Writer<'_>) -> Result<(), packet::Error>,
+        body: impl FnOnce(&mut Writer<'_>, &mut Channel) -> Result<(), packet::Error>,
     ) -> Result<usize, packet::Error> {
         if self.endpoint() != Endpoint::Server {
             return Err(packet::Error::Context);
         }
         let c = self.commands.as_ref().ok_or(packet::Error::Context)?;
+        let incoming = c.incoming.sequence;
+        let key = (c.context.challenge ^ self.send_state().sequence) as u8;
+        let text = c.incoming.text(incoming);
+        let length = text.len();
+        let mut command_text = [0; STRING_BYTES];
+        command_text[..length].copy_from_slice(text);
         let mut writer = Writer::new(out, Encoding::Q3);
-        writer.write_bits(c.incoming.sequence, 32)?;
+        writer.write_bits(incoming, 32)?;
         self.write_command_records(&mut writer)?;
-        body(&mut writer)?;
+        body(&mut writer, self)?;
         writer.write_bits(8, 8)?; // svc_EOF
         let n = writer.size();
-        packet::xor(
-            &mut out[..n],
-            4,
-            (c.context.challenge ^ self.send_state().sequence) as u8,
-            c.incoming.text(c.incoming.sequence),
-        );
+        packet::xor(&mut out[..n], 4, key, &command_text[..length]);
         Ok(n)
     }
     /// Native server commands and snapshots share this MSG stream. Gamestate

@@ -411,6 +411,7 @@ pub enum ReceivedFrame<'a> {
     NetQuake(NqFrame<'a>),
     QuakeWorld(QwFrame<'a>),
     Quake2(Q2Frame<'a>),
+    Quake2Repro(Q2ReproFrame<'a>),
     Quake3(Q3Frame<'a>),
 }
 impl ReceivedFrame<'_> {
@@ -419,6 +420,7 @@ impl ReceivedFrame<'_> {
             Self::NetQuake(frame) => frame.time,
             Self::QuakeWorld(frame) => frame.time,
             Self::Quake2(frame) => frame.time,
+            Self::Quake2Repro(frame) => frame.time,
             Self::Quake3(frame) => frame.time,
         }
     }
@@ -427,6 +429,7 @@ impl ReceivedFrame<'_> {
             Self::NetQuake(frame) => frame.sequence,
             Self::QuakeWorld(frame) => frame.sequence,
             Self::Quake2(frame) => frame.sequence,
+            Self::Quake2Repro(frame) => frame.sequence,
             Self::Quake3(frame) => frame.sequence,
         }
     }
@@ -443,6 +446,11 @@ pub(crate) enum Storage {
         player_model: u32,
     },
     Quake2(Box<Q2Ring>),
+    Quake2Repro {
+        ring: Box<Q2ReproRing>,
+        frame_ms: u16,
+        entity_policy: Q2EntityPolicy,
+    },
     Quake3(Box<Q3Ring>),
 }
 impl Storage {
@@ -468,6 +476,14 @@ impl Storage {
             packet::Protocol::Quake2_34 => {
                 Self::Quake2(Box::new(Q2Ring::load(1023, 1024, 32, Some(1024 - 128))?))
             }
+            packet::Protocol::Quake2Repro1038 => Self::Quake2Repro {
+                ring: Box::new(Q2ReproRing::load(8191, 8192, 255, Some(8192))?),
+                frame_ms: 25,
+                entity_policy: Q2EntityPolicy {
+                    beam_old_origin_fix: true,
+                    ..Default::default()
+                },
+            },
             packet::Protocol::Quake3_68 => {
                 Self::Quake3(Box::new(Q3Ring::load(1023, 1024, 32, Some(2048 - 128))?))
             }
@@ -478,6 +494,7 @@ impl Storage {
             Self::NetQuake(_) => packet::Protocol::NetQuake15,
             Self::QuakeWorld { .. } => packet::Protocol::QuakeWorld28,
             Self::Quake2(_) => packet::Protocol::Quake2_34,
+            Self::Quake2Repro { .. } => packet::Protocol::Quake2Repro1038,
             Self::Quake3(_) => packet::Protocol::Quake3_68,
         }
     }
@@ -486,13 +503,14 @@ impl Storage {
             Self::NetQuake(storage) => storage.ring.frame(sequence).map(ReceivedFrame::NetQuake),
             Self::QuakeWorld { ring, .. } => ring.frame(sequence).map(ReceivedFrame::QuakeWorld),
             Self::Quake2(ring) => ring.frame(sequence).map(ReceivedFrame::Quake2),
+            Self::Quake2Repro { ring, .. } => ring.frame(sequence).map(ReceivedFrame::Quake2Repro),
             Self::Quake3(ring) => ring.frame(sequence).map(ReceivedFrame::Quake3),
         }
     }
     pub(crate) fn record_request(&mut self, sequence: u32, base: Option<u32>) {
         match self {
             Self::QuakeWorld { ring, .. } => ring.record_request(sequence, base),
-            Self::NetQuake(_) | Self::Quake2(_) | Self::Quake3(_) => {}
+            Self::NetQuake(_) | Self::Quake2(_) | Self::Quake2Repro { .. } | Self::Quake3(_) => {}
         }
     }
     pub(crate) fn current(&self) -> Option<ReceivedFrame<'_>> {
@@ -500,6 +518,7 @@ impl Storage {
             Self::NetQuake(storage) => storage.ring.latest,
             Self::QuakeWorld { ring, .. } => ring.latest,
             Self::Quake2(ring) => ring.latest,
+            Self::Quake2Repro { ring, .. } => ring.latest,
             Self::Quake3(ring) => ring.latest,
         }?;
         self.frame(sequence)
@@ -509,12 +528,15 @@ impl Storage {
             (Self::NetQuake(storage), ReceivedFrame::NetQuake(frame)) => storage.ring.store(frame),
             (Self::QuakeWorld { ring, .. }, ReceivedFrame::QuakeWorld(frame)) => ring.store(frame),
             (Self::Quake2(ring), ReceivedFrame::Quake2(frame)) => ring.store(frame),
+            (Self::Quake2Repro { ring, .. }, ReceivedFrame::Quake2Repro(frame)) => {
+                ring.store(frame)
+            }
             (Self::Quake3(ring), ReceivedFrame::Quake3(frame)) => ring.store(frame),
             _ => Err(packet::Error::Context),
         }
     }
     pub(crate) fn write(
-        &self,
+        &mut self,
         writer: &mut Writer<'_>,
         sequence: u32,
         request: Option<u32>,
@@ -534,6 +556,15 @@ impl Storage {
                 write_qw(writer, ring, sequence, request)
             }
             Self::Quake2(ring) => write_q2(writer, ring, sequence, request, native_clients),
+            Self::Quake2Repro {
+                ring,
+                entity_policy,
+                ..
+            } => {
+                let mut policy = *entity_policy;
+                policy.native_clients = native_clients;
+                write_q2_repro(writer, ring, sequence, request, policy)
+            }
             Self::Quake3(ring) => write_q3(writer, ring, sequence, request),
         }
     }

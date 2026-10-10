@@ -48,7 +48,7 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
             level: true,
             chat_prefix: false,
         },
-        Protocol::Quake2_34 => PrintFormat {
+        Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PrintFormat {
             print: 10,
             center: 15,
             layout: Some(4),

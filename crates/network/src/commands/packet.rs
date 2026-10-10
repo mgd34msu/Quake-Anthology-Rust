@@ -12,6 +12,7 @@ pub enum Protocol {
     NetQuake15,
     QuakeWorld28,
     Quake2_34,
+    Quake2Repro1038,
     Quake3_68,
 }
 impl Protocol {
@@ -20,6 +21,7 @@ impl Protocol {
             "15" => Some(Self::NetQuake15),
             "28" => Some(Self::QuakeWorld28),
             "34" => Some(Self::Quake2_34),
+            "1038" => Some(Self::Quake2Repro1038),
             "68" => Some(Self::Quake3_68),
             _ => None,
         }
@@ -29,6 +31,7 @@ impl Protocol {
             Self::NetQuake15 => 15,
             Self::QuakeWorld28 => 28,
             Self::Quake2_34 => 34,
+            Self::Quake2Repro1038 => 1038,
             Self::Quake3_68 => 68,
         }
     }
@@ -37,6 +40,7 @@ impl Protocol {
             Self::NetQuake15 => channel::NETQUAKE,
             Self::QuakeWorld28 => channel::QUAKEWORLD,
             Self::Quake2_34 => channel::QUAKE2,
+            Self::Quake2Repro1038 => channel::q2_new(false),
             Self::Quake3_68 => channel::QUAKE3,
         }
     }
@@ -67,6 +71,10 @@ pub enum Move {
         last_frame: i32,
         commands: [Q2Cmd; 3],
     },
+    Quake2Repro {
+        last_frame: i32,
+        commands: [Q2RrCmd; 3],
+    },
     Quake3 {
         commands: [Q3Cmd; 32],
         count: u8,
@@ -79,6 +87,7 @@ impl Move {
             Self::NetQuake { .. } => Protocol::NetQuake15,
             Self::QuakeWorld { .. } => Protocol::QuakeWorld28,
             Self::Quake2 { .. } => Protocol::Quake2_34,
+            Self::Quake2Repro { .. } => Protocol::Quake2Repro1038,
             Self::Quake3 { .. } => Protocol::Quake3_68,
         }
     }
@@ -181,23 +190,31 @@ pub fn write_q2_repro_move(
     last_frame: i32,
     commands: &[Q2RrCmd; 3],
 ) -> Result<usize, Error> {
-    let mut writer = Writer::new(out, Encoding::Bytes);
-    writer.write_bits(2, 8)?;
-    writer.write_bits(last_frame as u32, 32)?;
-    write_series(&mut writer, commands, ZERO_Q2_RR, delta::write_q2_repro)?;
-    Ok(writer.size())
+    write(
+        out,
+        &Move::Quake2Repro {
+            last_frame,
+            commands: *commands,
+        },
+        0,
+        Key::default(),
+    )
 }
 pub fn read_q2_repro_move(bytes: &[u8]) -> Result<(i32, [Q2RrCmd; 3]), Error> {
     let mut reader = Reader::new(bytes, Encoding::Bytes);
+    let decoded = read_repro_move(&mut reader)?;
+    if reader.byte_position() != bytes.len() {
+        return Err(Error::Trailing);
+    }
+    Ok(decoded)
+}
+fn read_repro_move(reader: &mut Reader<'_>) -> Result<(i32, [Q2RrCmd; 3]), Error> {
     if reader.read_bits(8)? != 2 {
         return Err(Error::Opcode);
     }
     let last_frame = reader.read_bits(32)? as i32;
     let mut commands = [ZERO_Q2_RR; 3];
-    read_series(&mut reader, &mut commands, ZERO_Q2_RR, delta::read_q2_repro)?;
-    if reader.byte_position() != bytes.len() {
-        return Err(Error::Trailing);
-    }
+    read_series(reader, &mut commands, ZERO_Q2_RR, delta::read_q2_repro)?;
     Ok((last_frame, commands))
 }
 
@@ -278,6 +295,14 @@ pub fn write_with_commands(
             w.write_bits(0, 8)?;
             w.write_bits(*last_frame as u32, 32)?;
             write_series(&mut w, commands, ZERO_Q2, delta::write_q2)?;
+        }
+        Move::Quake2Repro {
+            last_frame,
+            commands,
+        } => {
+            w.write_bits(2, 8)?;
+            w.write_bits(*last_frame as u32, 32)?;
+            write_series(&mut w, commands, ZERO_Q2_RR, delta::write_q2_repro)?;
         }
         Move::Quake3 {
             commands,
@@ -450,6 +475,13 @@ pub fn read_with_commands(
                 return Err(Error::Checksum);
             }
             Move::Quake2 {
+                last_frame,
+                commands,
+            }
+        }
+        Protocol::Quake2Repro1038 => {
+            let (last_frame, commands) = read_repro_move(&mut r)?;
+            Move::Quake2Repro {
                 last_frame,
                 commands,
             }
