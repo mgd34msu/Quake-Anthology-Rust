@@ -1,7 +1,7 @@
 //! Original-C record comparisons and pinned field-table codec measurements.
 use qa_core::primitives::Vec3;
 use qa_network::{
-    commands::{Q2Cmd, Q3Cmd, QwCmd, delta},
+    commands::{Q2Cmd, Q2RrCmd, Q3Cmd, QwCmd, delta},
     message::{Encoding, Reader, Writer},
 };
 use qa_platform::{Stopwatch, allocations};
@@ -38,6 +38,15 @@ fn q3(v: &[u32; 11]) -> Q3Cmd {
         server_time: v[10] as i32,
     }
 }
+fn q2_rr(v: &[u32; 11]) -> Q2RrCmd {
+    Q2RrCmd {
+        angles: Vec3(std::array::from_fn(|i| f32::from_bits(v[i]))),
+        movement: std::array::from_fn(|i| f32::from_bits(v[3 + i])),
+        buttons: v[6] as u8,
+        msec: v[8] as u8,
+        server_frame: v[10],
+    }
+}
 struct Encoded {
     bits: u32,
     length: usize,
@@ -60,6 +69,7 @@ fn encode(
         0 => delta::write_qw(&mut writer, qw(from), qw(to)),
         1 => delta::write_q2(&mut writer, q2(from), q2(to)),
         2 => delta::write_q3(&mut writer, q3(from), q3(to), key),
+        3 => delta::write_q2_repro(&mut writer, q2_rr(from), q2_rr(to)),
         _ => return Err("command dialect".into()),
     }
     .map_err(|e| e.to_string())?;
@@ -88,13 +98,21 @@ fn encode(
             v[8] = c.msec.into();
             v[9] = c.light_level.into();
         }
-        _ => {
+        2 => {
             let c = delta::read_q3(&mut reader, q3(from), key).map_err(|e| e.to_string())?;
             v[..3].copy_from_slice(&c.angles.map(|n| n as u32));
             v[3..6].copy_from_slice(&c.movement.map(|n| n as u32));
             v[6] = c.buttons;
             v[7] = c.weapon.into();
             v[10] = c.server_time as u32;
+        }
+        _ => {
+            let c = delta::read_q2_repro(&mut reader, q2_rr(from)).map_err(|e| e.to_string())?;
+            v[..3].copy_from_slice(&c.angles.0.map(f32::to_bits));
+            v[3..5].copy_from_slice(&c.movement.map(f32::to_bits));
+            v[6] = c.buttons.into();
+            v[8] = c.msec.into();
+            v[10] = c.server_frame;
         }
     }
     Ok(result)
@@ -156,7 +174,7 @@ fn compare() -> Result<(), String> {
     }
     Ok(())
 }
-fn timing(fixture: &str, original: &str) -> Result<(), String> {
+fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> {
     let data = std::fs::read(fixture).map_err(|e| e.to_string())?;
     let oracle = std::fs::read(original).map_err(|e| e.to_string())?;
     let mut reader = Reader::new(&data, Encoding::Bytes);
@@ -192,7 +210,7 @@ fn timing(fixture: &str, original: &str) -> Result<(), String> {
     let mut wire_bytes = 0;
     for frame in 0..660 {
         allocations::begin_frame();
-        let watch = Stopwatch::start();
+        let watch = (!heap_only).then(Stopwatch::start);
         for peer in 0..16 {
             let c = &cases[(frame * 16 + peer) % cases.len()];
             let v = encode(
@@ -212,10 +230,12 @@ fn timing(fixture: &str, original: &str) -> Result<(), String> {
             checks += 1;
             wire_bytes += v.length;
         }
-        let elapsed = watch.elapsed().as_nanos() as u64;
+        let elapsed = watch.map(|watch| watch.elapsed().as_nanos() as u64);
         let actual = allocations::end_frame();
         if frame >= 60 {
-            samples[frame - 60] = elapsed;
+            if let Some(elapsed) = elapsed {
+                samples[frame - 60] = elapsed;
+            }
             counts.allocations += actual.allocations;
             counts.reallocations += actual.reallocations;
             counts.requested_bytes += actual.requested_bytes;
@@ -223,6 +243,13 @@ fn timing(fixture: &str, original: &str) -> Result<(), String> {
     }
     if counts != allocations::Counts::default() || checks != 10560 {
         return Err(format!("command allocation/count gate {counts:?}"));
+    }
+    if heap_only {
+        println!(
+            "{{\"scope\":\"native command record encode/decode and original-C byte/word fidelity; caller Rust thread, no packets, workers, physical transport or gameplay\",\"warmup\":60,\"frames\":600,\"checks\":{checks},\"wire_bytes\":{wire_bytes},\"positive_control_allocations\":1,\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":false}}",
+            counts.allocations, counts.reallocations, counts.requested_bytes
+        );
+        return Ok(());
     }
     samples.sort_unstable();
     println!(
@@ -239,9 +266,9 @@ fn main() -> Result<(), String> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.get(1).is_some_and(|s| s == "--compare") {
         compare()
-    } else if args.len() == 4 && args[1] == "--timing" {
-        timing(&args[2], &args[3])
+    } else if args.len() == 4 && matches!(args[1].as_str(), "--timing" | "--heap-only") {
+        timing(&args[2], &args[3], args[1] == "--heap-only")
     } else {
-        Err("--compare or --timing fixture original".into())
+        Err("--compare or --timing/--heap-only fixture original".into())
     }
 }

@@ -1,8 +1,92 @@
 use qa_core::primitives::Vec3;
 use qa_network::{
-    commands::{Q2Cmd, Q3Cmd, QwCmd, delta},
+    commands::{Q2Cmd, Q2RrCmd, Q3Cmd, QwCmd, delta},
     message::{Encoding, Reader, Writer},
 };
+
+#[test]
+fn q2_repro_float_abi_uses_native_widths_and_drops_unrepresented_fields() -> Result<(), String> {
+    let from = Q2RrCmd {
+        angles: Vec3([-0., 0.001, 17.]),
+        movement: [-0., 12.25],
+        buttons: 191,
+        msec: 1,
+        server_frame: 41,
+    };
+    let to = Q2RrCmd {
+        angles: Vec3([0., 0.002, 17.]),
+        movement: [0., 12.75],
+        buttons: 31,
+        msec: 255,
+        server_frame: 999,
+    };
+    let mut bytes = [0; 32];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    delta::write_q2_repro(&mut writer, from, to).map_err(|e| e.to_string())?;
+    assert_eq!(writer.bytes(), &[82, 0, 0, 12, 0, 31, 255, 0]);
+    let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+    let decoded = delta::read_q2_repro(&mut reader, from).map_err(|e| e.to_string())?;
+    assert_eq!(reader.byte_position(), writer.size());
+    assert_eq!(
+        decoded.angles.0.map(f32::to_bits),
+        [(-0.0f32).to_bits(), 0, 17.0f32.to_bits()]
+    );
+    assert_eq!(
+        decoded.movement.map(f32::to_bits),
+        [(-0.0f32).to_bits(), 12.0f32.to_bits()]
+    );
+    assert_eq!(
+        (decoded.buttons, decoded.msec, decoded.server_frame),
+        (31, 255, 41)
+    );
+    for prefix in 0..writer.size() {
+        assert!(
+            delta::read_q2_repro(
+                &mut Reader::new(&writer.bytes()[..prefix], Encoding::Bytes),
+                from
+            )
+            .is_err()
+        );
+    }
+    let mut reader = Reader::new(&[128, 239, 23, 214], Encoding::Bytes);
+    let skipped = delta::read_q2_repro(&mut reader, from).map_err(|e| e.to_string())?;
+    assert_eq!(skipped, Q2RrCmd { msec: 23, ..from });
+    assert_eq!(reader.byte_position(), 4);
+    assert!(
+        delta::read_q2_repro(&mut Reader::new(&[32, 0, 0, 0, 0], Encoding::Bytes), from).is_err()
+    );
+    let engine = qa_core::primitives::UserCmd {
+        buttons: qa_core::primitives::buttons::ATTACK | qa_core::primitives::buttons::HOLSTER,
+        movement: [12.25, -31.75, 200.],
+        duration_ms: 300,
+        impulse: 129,
+        light_level: 211,
+        ..Default::default()
+    };
+    let native = qa_network::commands::to_q2_rr_usercmd(&engine, 3001);
+    let zero = Q2RrCmd {
+        angles: Default::default(),
+        movement: [0.; 2],
+        buttons: 0,
+        msec: 0,
+        server_frame: 0,
+    };
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    delta::write_q2_repro(&mut writer, zero, native).map_err(|e| e.to_string())?;
+    let native = delta::read_q2_repro(&mut Reader::new(writer.bytes(), Encoding::Bytes), zero)
+        .map_err(|e| e.to_string())?;
+    let received = qa_network::commands::from_q2_rr_usercmd(native, 999);
+    assert_eq!(received.movement, [12., -31., 0.]);
+    assert_eq!(
+        received.buttons,
+        engine.buttons | qa_core::primitives::buttons::JUMP
+    );
+    assert_eq!(
+        (received.duration_ms, received.impulse, received.light_level),
+        (255, 0, 0)
+    );
+    Ok(())
+}
 
 #[test]
 fn qw_mask_compares_native_floats_before_angle_quantization() -> Result<(), String> {
