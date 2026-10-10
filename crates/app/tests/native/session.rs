@@ -1625,11 +1625,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             pe_rva(&mut file, 0x1800 + offset, 0x180001500, 8);
         }
         let entity_offset = if rr { 160 } else { 128 };
-        pe_rva(&mut file, 0x1800 + entity_offset, 0x180001c00, 8);
+        let stride = if rr { 1472 } else { 280 };
+        pe_rva(&mut file, 0x1800 + entity_offset, 0x180003000, 8);
         pe_rva(
             &mut file,
             0x1800 + entity_offset + 8,
-            64,
+            stride,
             if rr { 8 } else { 4 },
         );
         let size = if rr { 16 } else { 12 };
@@ -1638,7 +1639,20 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         if rr {
             pe_rva(&mut file, 0x1800 + entity_offset + 24, 5, 4);
         }
-        let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        let mut image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        let entity_bytes = (stride as usize * 4).div_ceil(4096) * 4096;
+        let mut bytes = std::mem::take(&mut image.bytes).into_vec();
+        bytes.resize(0x3000 + entity_bytes, 0);
+        image.bytes = bytes.into_boxed_slice();
+        let mut regions = std::mem::take(&mut image.regions).into_vec();
+        regions.push(qa_formats::program::native::Region {
+            offset: 0x3000,
+            length: entity_bytes,
+            read: true,
+            write: true,
+            execute: false,
+        });
+        image.regions = regions.into_boxed_slice();
         let mut game = Game::map(image, rules, 25, Duration::from_secs(3)).unwrap();
         assert!(game.entities().is_err());
         let imports = game.imports_address;
@@ -1661,6 +1675,29 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(&memory[at..at + 8], &pointer.to_le_bytes());
         }
         let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let bound = runtime
+            .server
+            .entities
+            .allocate(
+                ThinkTime::Milliseconds(0),
+                ModuleId(1),
+                AllocationPolicy::EDICT,
+            )
+            .unwrap()
+            .id;
+        runtime.server.entities.columns.native_entity[bound.slot as usize] =
+            Some(qa_core::primitives::NativeEntity {
+                module: ModuleId(1),
+                slot: 1,
+            });
+        let order = qa_gameplay::rules::link_order(rules);
+        assert!(runtime.server.area.link(
+            &runtime.server.entities,
+            bound,
+            qa_world::area::LinkFlags::SOLID,
+            order,
+            qa_world::area::LinkIntent::Explicit
+        ));
         let observer = runtime
             .server
             .events
@@ -1705,7 +1742,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .copy_from_slice(&target.to_le_bytes());
         game.vm.bind_table(returned).unwrap();
         let entities = game.entities().unwrap();
-        assert_eq!(entities.address, 0x180001c00);
+        assert_eq!(entities.address, base + 0x3000);
         assert_eq!(
             (
                 entities.stride,
@@ -1713,7 +1750,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 entities.capacity,
                 entities.server_flags
             ),
-            (64, 2, 4, if rr { 5 } else { 0 })
+            (stride, 2, 4, if rr { 5 } else { 0 })
         );
         let table_at = (returned - base) as usize + entity_offset as usize;
         for (at, value) in [
@@ -1863,7 +1900,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             }
         }
         let malloc_slot = if rr { 36 } else { 33 };
+        let unlink_slot = if rr { 22 } else { 19 };
+        let entity_address = base + 0x3000 + stride;
+        if rr {
+            game.vm.process.memory_mut().unwrap()[(entity_address - base) as usize + 1377] = 1;
+        }
         let index_slot = if rr { 10 } else { 8 };
+        let mut replacement = None;
         let mut invoke_import = |game: &mut Game, slot: usize, a: [u64; 2]| {
             let returns_value = slot == malloc_slot || (index_slot..index_slot + 3).contains(&slot);
             let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
@@ -1905,6 +1948,40 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         (&b"_qa_child_cvar"[..], 1)
                     }
                 );
+            }
+            if slot == unlink_slot && a[1] == 1 {
+                assert!(!services.server.area.unlink(bound));
+                assert!(
+                    services
+                        .server
+                        .entities
+                        .release(bound, ThinkTime::Seconds(3.0))
+                );
+                let next = services
+                    .server
+                    .entities
+                    .allocate(
+                        ThinkTime::Seconds(4.0),
+                        ModuleId(2),
+                        AllocationPolicy::EDICT,
+                    )
+                    .unwrap()
+                    .id;
+                assert_eq!(next.slot, bound.slot);
+                assert_ne!(next.generation, bound.generation);
+                services.server.entities.columns.native_entity[next.slot as usize] =
+                    Some(qa_core::primitives::NativeEntity {
+                        module: ModuleId(2),
+                        slot: 1,
+                    });
+                assert!(services.server.area.link(
+                    &services.server.entities,
+                    next,
+                    qa_world::area::LinkFlags::SOLID,
+                    order,
+                    qa_world::area::LinkIntent::Explicit
+                ));
+                replacement = Some(next);
             }
             if returns_value {
                 u64::from_le_bytes(
@@ -1953,6 +2030,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
             assert_eq!(invoke_import(&mut game, slot, [0, 0]), 0);
         }
+        invoke_import(&mut game, unlink_slot, [entity_address, 0]);
+        invoke_import(&mut game, unlink_slot, [entity_address, 1]);
+        // A cached old lifetime cannot unlink a replacement owned by another module.
+        invoke_import(&mut game, unlink_slot, [entity_address, 0]);
+        // Unlinking a never-published native slot must not create a common entity.
+        invoke_import(&mut game, unlink_slot, [entity_address + stride, 0]);
+        invoke_import(&mut game, unlink_slot, [base + 0x3000, 0]);
         drop(invoke_import);
         for first in if rr {
             [62, 8254, 10302]
@@ -1962,6 +2046,15 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(
                 storage.configstring(ModuleId(1), first + 1).unwrap(),
                 (&b"_qa_child_cvar"[..], 1)
+            );
+        }
+        assert!(!runtime.server.area.unlink(bound));
+        assert!(runtime.server.entities.resolve(bound).is_none());
+        assert!(runtime.server.area.unlink(replacement.unwrap()));
+        if rr {
+            assert_eq!(
+                game.vm.process.memory().unwrap()[(entity_address - base) as usize + 1377],
+                0
             );
         }
         let frame_code = if rr {

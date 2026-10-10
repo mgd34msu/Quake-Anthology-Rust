@@ -3,6 +3,7 @@
 
 pub mod abi;
 pub mod cvars;
+pub mod entities;
 mod hooks;
 pub mod memory;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

@@ -21,6 +21,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub memory: &'a mut ModuleMemory<'memory>,
     pub native_cvars: Option<&'a mut crate::cvars::NativeCvars>,
     pub native_resources: Option<&'a [crate::services::ResourceRange; 3]>,
+    pub native_entities: Option<(&'a mut crate::entities::EntityProjection, u64)>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -192,6 +193,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[8] = Some(resource_index::<0>);
     table.entries[9] = Some(resource_index::<1>);
     table.entries[10] = Some(resource_index::<2>);
+    table.entries[19] = Some(native_unlink);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -206,6 +208,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[10] = Some(resource_index::<0>);
     table.entries[11] = Some(resource_index::<1>);
     table.entries[12] = Some(resource_index::<2>);
+    table.entries[22] = Some(native_unlink);
     table.entries[9] = Some(abort);
     table.entries[39] = Some(q2_cvar);
     table.entries[40] = Some(q2_cvar_set::<false>);
@@ -276,6 +279,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             memory: &mut vm.strings,
             native_cvars: None,
             native_resources: None,
+            native_entities: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -336,6 +340,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             memory: &mut vm.memory,
             native_cvars: None,
             native_resources: None,
+            native_entities: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
@@ -577,6 +582,12 @@ fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u
         c.memory.cstring(pointer)?
     };
     (ENGINE_CALLS.resource_index)(c.services, c.context.module, range, name).map(u64::from)
+}
+fn native_unlink(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.pointer(0)?;
+    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.unlink(c.services, c.memory, c.context, *table, address)?;
+    Ok(0)
 }
 fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let pointer = c.pointer(1)?;

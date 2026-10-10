@@ -2,7 +2,6 @@
 use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::ImportTrap};
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
 use crate::cvars::NativeCvars;
-use crate::memory::ModuleMemory;
 use crate::services::ResourceRange;
 use qa_core::{
     names::NameTable,
@@ -252,16 +251,7 @@ const RERELEASE: Layout = Layout {
     ],
 };
 
-/// Published native entity memory. These values are read from the stopped
-/// module, never from common entity reservations or another module's layout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Entities {
-    pub address: u64,
-    pub stride: u64,
-    pub count: u32,
-    pub capacity: u32,
-    pub server_flags: u32,
-}
+pub use crate::entities::Entities;
 pub struct Game {
     pub vm: Vm,
     pub imports_address: u64,
@@ -395,6 +385,8 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Word,
                     ))
+                } else if ordinal == if layout.version == 2023 { 22 } else { 19 } {
+                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else if (if layout.version == 2023 {
                     10..13
                 } else {
@@ -439,6 +431,11 @@ impl Game {
             layout.version == 2023,
         ));
         vm.resources = Some(layout.resources);
+        vm.entities = Some(crate::entities::EntityProjection::load(
+            layout.entity_offset,
+            layout.wide_stride,
+            if layout.wide_stride { Some(1377) } else { None },
+        ));
         let pointers = (0..imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))
             .collect::<Result<Vec<_>, _>>()?;
@@ -497,60 +494,6 @@ impl Game {
             .map(|n| self.first + n as u32)
     }
     pub fn entities(&mut self) -> Result<Entities, Error> {
-        let table = self.vm.table_address().ok_or(Error::Export)?;
-        let base = self.vm.process.base();
-        let memory =
-            ModuleMemory::borrow(base, self.vm.process.memory_mut().map_err(Error::Process)?)
-                .map_err(|_| Error::Export)?;
-        let at = table
-            .checked_add(self.layout.entity_offset as u64)
-            .ok_or(Error::Export)?;
-        let word = |offset| -> Result<u64, Error> {
-            Ok(u64::from_le_bytes(
-                memory
-                    .read(at + offset, 8)
-                    .map_err(|_| Error::Export)?
-                    .try_into()
-                    .map_err(|_| Error::Export)?,
-            ))
-        };
-        let address = word(0)?;
-        let (stride, offset) = if self.layout.wide_stride {
-            (word(8)?, 16)
-        } else {
-            (
-                u64::try_from(memory.read_word(at + 8).map_err(|_| Error::Export)?)
-                    .map_err(|_| Error::Export)?,
-                12,
-            )
-        };
-        let count = memory.read_word(at + offset).map_err(|_| Error::Export)? as u32;
-        let capacity = memory
-            .read_word(at + offset + 4)
-            .map_err(|_| Error::Export)? as u32;
-        let server_flags = if self.layout.wide_stride {
-            memory
-                .read_word(at + offset + 8)
-                .map_err(|_| Error::Export)? as u32
-        } else {
-            0
-        };
-        if count > capacity || (address == 0 && count != 0) || (address != 0 && stride == 0) {
-            return Err(Error::Export);
-        }
-        if address != 0 {
-            let bytes = stride
-                .checked_mul(u64::from(capacity))
-                .and_then(|n| usize::try_from(n).ok())
-                .ok_or(Error::Export)?;
-            memory.read(address, bytes).map_err(|_| Error::Export)?;
-        }
-        Ok(Entities {
-            address,
-            stride,
-            count,
-            capacity,
-            server_flags,
-        })
+        self.vm.entities()
     }
 }

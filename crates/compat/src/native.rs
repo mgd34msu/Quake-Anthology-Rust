@@ -13,6 +13,7 @@ use qa_platform::native::{
 use std::{fmt::Write, time::Duration};
 
 pub mod elf;
+use crate::entities::{Entities, EntityProjection};
 pub mod q2;
 mod runtime;
 mod table;
@@ -89,6 +90,7 @@ pub struct Vm {
     traps: Box<[runtime::ImportTrap]>,
     cvars: Option<crate::cvars::NativeCvars>,
     resources: Option<[crate::services::ResourceRange; 3]>,
+    entities: Option<EntityProjection>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -297,6 +299,7 @@ impl Vm {
             traps: runtime.traps.into_boxed_slice(),
             cvars: None,
             resources: None,
+            entities: None,
         })
     }
     pub fn unresolved_imports(&self) -> impl Iterator<Item = ImportTrapInfo<'_>> {
@@ -354,8 +357,15 @@ impl Vm {
                 .refresh(calls.services.cvars, &mut memory)
                 .map_err(Error::Service)?;
         }
+        let table_address = self.table_address();
         let cvars = &mut self.cvars;
         let resources = self.resources.as_ref();
+        if let Some(entities) = &mut self.entities {
+            entities
+                .seed(&calls.services.server.entities, calls.context.module)
+                .map_err(Error::Service)?;
+        }
+        let entities = &mut self.entities;
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -369,6 +379,7 @@ impl Vm {
                     memory: &mut memory,
                     native_cvars: cvars.as_mut(),
                     native_resources: resources,
+                    native_entities: entities.as_mut().zip(table_address),
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,
@@ -427,5 +438,16 @@ impl Vm {
             return Err(Error::DllAttach);
         }
         Ok(value)
+    }
+}
+
+impl Vm {
+    pub fn entities(&mut self) -> Result<Entities, Error> {
+        let table = self.table_address().ok_or(Error::Export)?;
+        let layout = self.entities.as_ref().ok_or(Error::Export)?;
+        let base = self.process.base();
+        let memory = ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
+            .map_err(|_| Error::Export)?;
+        layout.read(&memory, table).map_err(|_| Error::Export)
     }
 }
