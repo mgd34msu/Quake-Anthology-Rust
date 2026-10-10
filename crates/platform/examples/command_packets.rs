@@ -7,7 +7,11 @@ use qa_network::{
     },
     message::{Encoding, Reader},
 };
+use qa_platform::allocations;
 use std::io::{Read, Write};
+
+#[global_allocator]
+static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
 fn words(r: &mut Reader<'_>) -> Result<[u32; 11], String> {
     let mut words = [0; 11];
@@ -85,6 +89,24 @@ fn native_words(movement: Move) -> [[u32; 11]; 3] {
     rows
 }
 fn main() -> Result<(), String> {
+    allocations::begin_frame();
+    let control = Box::new(std::hint::black_box(1u64));
+    std::hint::black_box(&control);
+    drop(control);
+    if allocations::end_frame().allocations != 1 {
+        return Err("heap positive control".into());
+    }
+    let mut qw_connection = qa_network::commands::connection::Commands::load(
+        qa_network::commands::packet::Protocol::QuakeWorld28,
+    );
+    let mut qw_channel = qa_network::channel::Channel::load(
+        qa_network::channel::QUAKEWORLD,
+        qa_core::loopback::Endpoint::Server,
+        8192,
+        8,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut checks = 0;
     let mut input = Vec::new();
     std::io::stdin()
         .read_to_end(&mut input)
@@ -118,6 +140,8 @@ fn main() -> Result<(), String> {
             1 => Move::QuakeWorld {
                 loss,
                 commands: rows.map(|v| qw(&v)),
+                delta_request: (context[1] != 0 && sequence.wrapping_sub(context[1]) < 63)
+                    .then_some(context[1] as u8),
             },
             2 => Move::Quake2 {
                 last_frame: -1,
@@ -147,13 +171,30 @@ fn main() -> Result<(), String> {
             server_command: &text[..length],
         };
         let mut packet = [0; 1400];
-        let n = packet::write(&mut packet, &movement, sequence, key).map_err(|e| e.to_string())?;
+        allocations::begin_frame();
+        let encoded = (|| {
+            let n = packet::write(&mut packet, &movement, sequence, key)?;
+            let mut scratch = packet;
+            let decoded = packet::read(movement.protocol(), &mut scratch[..n], sequence, key)?;
+            if let Move::QuakeWorld { delta_request, .. } = decoded {
+                let length = qw_connection.stage(&packet[..n])?;
+                qw_connection.decode(length, sequence, 0, 0, &mut qw_channel)?;
+                if qw_connection.delta_request() != delta_request.map(u32::from) {
+                    return Err(packet::Error::Context);
+                }
+            }
+            Ok((n, decoded))
+        })();
+        let heap = allocations::end_frame();
+        let (n, decoded) = encoded.map_err(|e: packet::Error| e.to_string())?;
+        if heap != allocations::Counts::default() {
+            return Err(format!("move packet caller heap {heap:?}"));
+        }
+        checks += 1;
         output
             .write_all(&(n as u32).to_le_bytes())
             .map_err(|e| e.to_string())?;
         output.write_all(&packet[..n]).map_err(|e| e.to_string())?;
-        let decoded = packet::read(movement.protocol(), &mut packet[..n], sequence, key)
-            .map_err(|e| e.to_string())?;
         for row in native_words(decoded) {
             for word in row {
                 output
@@ -162,5 +203,8 @@ fn main() -> Result<(), String> {
             }
         }
     }
+    eprintln!(
+        "{{\"scope\":\"native move packet encode/decode and QW SERVER delta request; caller Rust heap, no app/workers/OS/gameplay\",\"cases\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"timing_run\":false}}"
+    );
     output.flush().map_err(|e| e.to_string())
 }

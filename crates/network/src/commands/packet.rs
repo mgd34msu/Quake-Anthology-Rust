@@ -61,6 +61,7 @@ pub enum Move {
     QuakeWorld {
         loss: u8,
         commands: [QwCmd; 3],
+        delta_request: Option<u8>,
     },
     Quake2 {
         last_frame: i32,
@@ -179,6 +180,7 @@ pub fn write_with_commands(
     reliable: impl FnOnce(&mut Writer<'_>) -> Result<(), Error>,
 ) -> Result<usize, Error> {
     let mut w = Writer::new(out, movement.protocol().encoding());
+    let mut qw_move_end = 0;
     match movement {
         Move::NetQuake { timestamp, command } => {
             w.write_bits(3, 8)?;
@@ -192,7 +194,11 @@ pub fn write_with_commands(
             w.write_bits(command.buttons.into(), 8)?;
             w.write_bits(command.impulse.into(), 8)?;
         }
-        Move::QuakeWorld { loss, commands } => {
+        Move::QuakeWorld {
+            loss,
+            commands,
+            delta_request,
+        } => {
             w.write_bits(3, 8)?;
             w.write_bits(0, 8)?;
             w.write_bits((*loss).into(), 8)?;
@@ -200,6 +206,12 @@ pub fn write_with_commands(
             for &command in commands {
                 delta::write_qw(&mut w, old, command)?;
                 old = command;
+            }
+            // CL_SendCmd checksums only the move, before clc_delta.
+            qw_move_end = w.size();
+            if let Some(request) = delta_request {
+                w.write_bits(5, 8)?;
+                w.write_bits((*request).into(), 8)?;
             }
         }
         Move::Quake2 {
@@ -246,7 +258,9 @@ pub fn write_with_commands(
     }
     let n = w.size();
     match movement.protocol() {
-        Protocol::QuakeWorld28 => out[1] = checksum::qw_sequence_crc(&out[2..n], sequence),
+        Protocol::QuakeWorld28 => {
+            out[1] = checksum::qw_sequence_crc(&out[2..qw_move_end], sequence);
+        }
         Protocol::Quake2_34 => out[1] = checksum::q2_sequence_crc(&out[2..n], sequence),
         Protocol::Quake3_68 => xor(
             &mut out[..n],
@@ -279,6 +293,24 @@ pub fn read(
 ) -> Result<Move, Error> {
     read_with_commands(protocol, bytes, sequence, key, |_, _| Ok(()))?.ok_or(Error::Opcode)
 }
+
+/// SV_ExecuteClientMessage permits nop and repeated clc_delta around one move.
+/// Requests replace earlier requests; their bytes are outside the move CRC.
+fn qw_opcode(
+    reader: &mut Reader<'_>,
+    length: usize,
+    request: &mut Option<u8>,
+) -> Result<Option<u32>, Error> {
+    while reader.byte_position() < length {
+        match reader.read_bits(8)? {
+            1 => {} // clc_nop
+            5 => *request = Some(reader.read_bits(8)? as u8),
+            opcode => return Ok(Some(opcode)),
+        }
+    }
+    Ok(None)
+}
+
 pub fn read_with_commands(
     protocol: Protocol,
     bytes: &mut [u8],
@@ -327,9 +359,11 @@ pub fn read_with_commands(
             }
         }
         Protocol::QuakeWorld28 => {
-            if r.read_bits(8)? != 3 {
+            let mut delta_request = None;
+            if qw_opcode(&mut r, bytes.len(), &mut delta_request)? != Some(3) {
                 return Err(Error::Opcode);
             }
+            let checksum_index = r.byte_position();
             let checksum = r.read_bits(8)? as u8;
             let loss = r.read_bits(8)? as u8;
             let mut commands = [ZERO_QW; 3];
@@ -338,10 +372,22 @@ pub fn read_with_commands(
                 *command = delta::read_qw(&mut r, old)?;
                 old = *command;
             }
-            if checksum != checksum::qw_sequence_crc(&bytes[2..r.byte_position()], sequence) {
+            if checksum
+                != checksum::qw_sequence_crc(
+                    &bytes[checksum_index + 1..r.byte_position()],
+                    sequence,
+                )
+            {
                 return Err(Error::Checksum);
             }
-            Move::QuakeWorld { loss, commands }
+            if qw_opcode(&mut r, bytes.len(), &mut delta_request)?.is_some() {
+                return Err(Error::Opcode);
+            }
+            Move::QuakeWorld {
+                loss,
+                commands,
+                delta_request,
+            }
         }
         Protocol::Quake2_34 => {
             if r.read_bits(8)? != 2 {

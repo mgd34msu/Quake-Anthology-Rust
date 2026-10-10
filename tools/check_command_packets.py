@@ -55,22 +55,27 @@ static void Con_Printf(char *fmt,...) {(void)fmt;abort();}
     source += function(original, 'CL_SendMove')
     source += '\n#undef cl\n#undef cls\n#undef usercmd_t\n#undef clc_move\n'
     qw = (qsrc / 'quake/QW/client/cl_input.c').read_text()
-    qw_block = block(qw, '\tbuf.maxsize = 128;', '\t// request delta compression')
+    qw_block = block(qw, '\tbuf.maxsize = 128;', '\tif (cls.demorecording)\n\t\tCL_WriteDemoCmd')
     source += r'''
-static struct {struct {qwcmd_t cmd;} frames[64];} qwcl;
-static struct {struct {int outgoing_sequence;} netchan;} qwcls;
+static struct {struct {qwcmd_t cmd;int delta_sequence;} frames[64];int validsequence;} qwcl;
+static struct {struct {int outgoing_sequence;} netchan;int state,demorecording;} qwcls;
+static struct {float value;} qwnodelta;
 static int loss;
 static int CL_CalcNet(void) {return loss;}
 #define cl qwcl
 #define cls qwcls
 #define clc_move 3
+#define clc_delta 5
+#define ca_active 2
+#define cl_nodelta qwnodelta
 #define UPDATE_MASK 63
+#define UPDATE_BACKUP 64
 #define COM_BlockSequenceCRCByte QWSequence
 #define MSG_WriteDeltaUsercmd QW_WriteDeltaUsercmd
 static void qw_packet(int seq_hash) {msg_t buf;byte *data=wire;int i,lost,checksumIndex;qwcmd_t *cmd,*oldcmd,nullcmd={0};
 '''
     source += qw_block + '\nstream=buf;stream.bit=stream.cursize*8;}\n'
-    source += '\n#undef cl\n#undef cls\n#undef clc_move\n#undef COM_BlockSequenceCRCByte\n#undef MSG_WriteDeltaUsercmd\n'
+    source += '\n#undef cl\n#undef cls\n#undef clc_move\n#undef clc_delta\n#undef cl_nodelta\n#undef COM_BlockSequenceCRCByte\n#undef MSG_WriteDeltaUsercmd\n'
     q2 = (qsrc / 'quake-2/client/cl_input.c').read_text()
     q2_block = block(q2, '\t// begin a client move command', '\t// deliver the message')
     source += r'''
@@ -118,7 +123,7 @@ int main(void) {
   byte text[256]={0};if(fread(text,1,len,stdin)!=len)return 2;
   memset(wire,0,sizeof(wire));
   if(mode==0) {qwcmd_t c=qw(rows[2]);memcpy(q1cl.viewangles,c.angles,12);q1cl.mtime[0]=timestamp;q1cl.movemessages=3;in_attack.state=c.buttons&1;in_jump.state=(c.buttons&2)?1:0;in_impulse=c.impulse;CL_SendMove(&c);}
-  else if(mode==1) {qwcls.netchan.outgoing_sequence=sequence;for(int i=0;i<3;i++)qwcl.frames[(sequence-2+i)&63].cmd=qw(rows[i]);qw_packet(sequence);}
+  else if(mode==1) {qwcls.netchan.outgoing_sequence=sequence;qwcls.state=ca_active;qwcl.validsequence=context[1];for(int i=0;i<3;i++)qwcl.frames[(sequence-2+i)&63].cmd=qw(rows[i]);qw_packet(sequence);}
   else if(mode==2) {q2cls.netchan.outgoing_sequence=sequence;for(int i=0;i<3;i++)q2cl.cmds[(sequence-2+i)&63]=q2(rows[i]);q2_packet();}
   else if(mode==3) {cl.serverId=context[0];cl.cmdNumber=3;clc.serverMessageSequence=context[1];clc.serverCommandSequence=context[2];clc.challenge=context[3];clc.checksumFeed=context[4];memcpy(clc.serverCommands[context[2]&63],text,256);for(int i=0;i<3;i++)cl.cmds[i+1]=q3(rows[i]);q3_packet();}
   else return 2;
@@ -147,6 +152,10 @@ def fixture():
         for case in range(512):
             sequence = rand.randrange(2, 0x7fffffff)
             context = [rand.randrange(1, 10000), rand.randrange(1, 4096), case & 63, rand.getrandbits(32), rand.getrandbits(32)]
+            if mode == 1:
+                # Active native request, omitted request and age-63 reset. The
+                # fixture prefix carries the native full validsequence.
+                context[1] = sequence - (1 + case % 64) if case % 4 else 0
             data += struct.pack('<BI5IBf', mode, sequence, *context, rand.randrange(256), rand.uniform(0, 100))
             for command in range(3):
                 words = [0] * 11
@@ -183,7 +192,7 @@ def main():
         raise AssertionError(f'native packet bytes/decoded fields differ at output byte {at}')
     result = {'cases': 2048, 'protocols': [15,28,34,68], 'wire_bytes_exact': True, 'native_decoded_fields_exact': True,
               'original': 'Unchanged CL_SendMove, original QW/Q2/Q3 packet construction blocks, CRC, Com_HashKey, CL_Netchan_Encode, native command readers and MSG/Huff; cold struct/byte bindings',
-              'limits': 'Move-only packets; native command strings/handshake, NQ666/999 and rerelease transport remain open'}
+              'limits': 'Move packets with QW clc_delta suffix; control-only/service streams, native command strings/handshake, NQ666/999 and rerelease transport remain open'}
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))
 

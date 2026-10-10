@@ -610,3 +610,40 @@ cases remain exact at 8,039,745 bytes and decoded words. Existing Q2 connected
 common reduce/apply probe still passes 60+600 iterations with zero caller heap
 activity and command errors. No app/worker/OS/gameplay allocation claim, timing,
 game/window run or install.
+
+## THE-860: QuakeWorld move delta requests
+
+The existing native move codec now carries QW's optional clc_delta low byte.
+Its writer retains the CL_SendCmd checksum boundary before the suffix. One
+control parser accepts native nop and replacing delta requests before/after
+the move; the actual checksum index follows any prefix controls. A second
+move, unknown opcode or truncated request fails at the packet boundary.
+The connection resets its SERVER request at each message and retains the
+last admitted byte, independently of movement, geometry and channel ACKs.
+All existing Move constructors are migrated; no second codec or input history
+is introduced.
+
+The existing original-C packet oracle now includes CL_SendCmd's unchanged
+request and age-limit block. Its seeded QW cases cover active requests,
+omission and the native age-63 reset; NQ/Q2/Q3 packet cases remain exact.
+The focused connection test covers request zero/255, prefix/suffix replacement,
+omission, invalid checksum, truncation and a second move. Developer allocation
+brackets cover packet encode/decode and QW SERVER request application.
+
+All 692 workspace tests, unchanged checker, warning-denied Clippy and
+format/diff checks pass. The normal release app and codec examples built in
+35.12 s. All 2,048 original-C packet cases have exact bytes and decoded move
+fields. Across those cases the calling Rust thread has positive control 1
+and zero allocations/reallocations/requested bytes. The existing Q2 connected
+reduce/apply/channel probe also passes 60+600 iterations with zero caller heap
+activity and command errors. No timing, game/window or installation run;
+these probes do not measure workers, OS/driver or app-frame allocations.
+Evidence: `$HOME/.cache/qa-rust/THE-860-qw-move-request-20261010/`.
+
+This component handles messages containing a move. Control-only QW messages,
+CLIENT request/frame association, reply-sequence synchronization and connected
+playerinfo remain next under THE-860. The app still directly seeds/copies
+prediction at `app/src/lib.rs:201` and `app/src/host.rs:480`; native snapshot
+submission/application must remove those callers in its integration slice.
+Other native service streams, rerelease/666/999, live legacy connections and
+THE-3169 native/installed acceptance remain open.

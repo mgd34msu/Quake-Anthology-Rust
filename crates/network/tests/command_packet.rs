@@ -1,8 +1,124 @@
 use qa_core::primitives::Vec3;
 use qa_network::commands::{
     Q1Move,
+    connection::Commands,
     packet::{self, Acknowledgements, Error, Key, Move, Protocol, ZERO_Q2, ZERO_Q3, ZERO_QW},
 };
+
+#[test]
+fn qw_delta_requests_are_outside_crc_and_replace_per_message()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut bytes = [0; 128];
+    let movement = Move::QuakeWorld {
+        loss: 9,
+        commands: [
+            ZERO_QW,
+            ZERO_QW,
+            qa_network::commands::QwCmd {
+                msec: 16,
+                movement: [321, -123, 0],
+                ..ZERO_QW
+            },
+        ],
+        delta_request: Some(0),
+    };
+    let length = packet::write(&mut bytes, &movement, 17, Key::default())?;
+    assert_eq!(&bytes[length - 2..length], &[5, 0]);
+    assert_eq!(
+        packet::read(
+            Protocol::QuakeWorld28,
+            &mut bytes[..length],
+            17,
+            Key::default()
+        )?,
+        movement
+    );
+    // Changing only the request cannot change the checksum or move result.
+    bytes[length - 1] = 255;
+    let Move::QuakeWorld {
+        delta_request,
+        commands,
+        ..
+    } = packet::read(
+        Protocol::QuakeWorld28,
+        &mut bytes[..length],
+        17,
+        Key::default(),
+    )?
+    else {
+        return Err(Error::Opcode.into());
+    };
+    assert_eq!(delta_request, Some(255));
+    assert_eq!(commands[2].movement, [321, -123, 0]);
+
+    // Native controls may precede/follow the move; last delta byte wins.
+    let mut message = vec![1, 5, 7, 1];
+    message.extend_from_slice(&bytes[..length]);
+    message.extend_from_slice(&[1, 5, 19, 5, 23, 1]);
+    let mut channel = qa_network::channel::Channel::load(
+        qa_network::channel::QUAKEWORLD,
+        qa_core::loopback::Endpoint::Server,
+        8192,
+        8,
+    )?;
+    let mut connection = Commands::load(Protocol::QuakeWorld28);
+    let n = connection.stage(&message)?;
+    assert!(connection.decode(n, 17, 0, 0, &mut channel)?.is_some());
+    assert_eq!(connection.delta_request(), Some(23));
+    // The next message omits clc_delta and must not retain its predecessor.
+    let n = connection.stage(&bytes[..length - 2])?;
+    assert!(connection.decode(n, 17, 0, 0, &mut channel)?.is_some());
+    assert_eq!(connection.delta_request(), None);
+    let n = connection.stage(&message)?;
+    connection.decode(n, 17, 0, 0, &mut channel)?;
+    assert_eq!(connection.delta_request(), Some(23));
+    message.push(5);
+    let n = connection.stage(&message)?;
+    assert!(connection.decode(n, 17, 0, 0, &mut channel).is_err());
+    assert_eq!(connection.delta_request(), None);
+
+    for end in 0..length - 2 {
+        assert!(
+            packet::read(
+                Protocol::QuakeWorld28,
+                &mut bytes[..end],
+                17,
+                Key::default()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        packet::read(
+            Protocol::QuakeWorld28,
+            &mut bytes[..length - 1],
+            17,
+            Key::default()
+        )
+        .is_err()
+    );
+    bytes[length] = 3; // A second move is never admitted.
+    assert_eq!(
+        packet::read(
+            Protocol::QuakeWorld28,
+            &mut bytes[..length + 1],
+            17,
+            Key::default()
+        ),
+        Err(Error::Opcode)
+    );
+    bytes[2] ^= 1; // Actual move bytes remain protected by the sequence CRC.
+    assert_eq!(
+        packet::read(
+            Protocol::QuakeWorld28,
+            &mut bytes[..length],
+            17,
+            Key::default()
+        ),
+        Err(Error::Checksum)
+    );
+    Ok(())
+}
 
 #[test]
 fn netquake_15_uses_integer_angles_and_has_no_duration_field() -> Result<(), Error> {
@@ -34,6 +150,7 @@ fn netquake_15_uses_integer_angles_and_has_no_duration_field() -> Result<(), Err
 fn native_sequence_crc_rejects_corruption_and_wrong_packet_sequence() -> Result<(), Error> {
     let qw = Move::QuakeWorld {
         loss: 77,
+        delta_request: None,
         commands: [
             ZERO_QW,
             ZERO_QW,

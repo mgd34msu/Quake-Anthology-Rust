@@ -27,8 +27,8 @@ impl Commands {
             delta_request: None,
         }
     }
-    /// Native payload delta request. SERVER retains clc_move's request; Q2
-    /// CLIENT clears it whenever the current svc_frame is invalid.
+    /// Native payload delta request. QW SERVER retains clc_delta's low byte;
+    /// Q2 SERVER retains clc_move's frame, and CLIENT clears invalid frames.
     pub fn delta_request(&self) -> Option<u32> {
         self.delta_request
     }
@@ -48,6 +48,8 @@ impl Commands {
             Protocol::QuakeWorld28 => Move::QuakeWorld {
                 loss: 0,
                 commands: [ZERO_QW, ZERO_QW, to_qw_usercmd(command)],
+                // No QW CLIENT frame/request binding exists yet.
+                delta_request: None,
             },
             Protocol::Quake2_34 => Move::Quake2 {
                 last_frame: self
@@ -99,6 +101,10 @@ impl Commands {
         frame_ns: u64,
         channel: &mut Channel,
     ) -> Result<Option<UserCmd>, packet::Error> {
+        if self.protocol == Protocol::QuakeWorld28 {
+            // SV_ExecuteClientMessage starts each message with delta_sequence=-1.
+            self.delta_request = None;
+        }
         let scratch = &mut self.scratch[..length];
         // Keys borrow retained native strings. Scratch keeps that key stable
         // while optional incoming commands update the opposite direction.
@@ -136,10 +142,17 @@ impl Commands {
                 command.duration_ns = frame_ns;
                 command
             }
-            Move::QuakeWorld { commands, .. } => from_qw_usercmd(
-                commands[2],
-                self.previous_time.wrapping_add(i32::from(commands[2].msec)),
-            ),
+            Move::QuakeWorld {
+                commands,
+                delta_request,
+                ..
+            } => {
+                self.delta_request = delta_request.map(u32::from);
+                from_qw_usercmd(
+                    commands[2],
+                    self.previous_time.wrapping_add(i32::from(commands[2].msec)),
+                )
+            }
             Move::Quake2 {
                 last_frame,
                 commands,
