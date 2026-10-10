@@ -285,7 +285,7 @@ fn request(
             imports: &Q3_SERVER,
         },
         entries: vec![0],
-        frame: CallbackId(0),
+        frame: Export::clocked(CallbackId(0)),
         prepare: Vec::new(),
         initialize: None,
         api: None,
@@ -1788,7 +1788,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         assert_eq!(logs, 1);
         assert_eq!(prints, if rr { 3 } else { 0 });
-        game.vm.process.memory_mut().unwrap()[code_at] = 0xc3;
+        let frame_code = if rr {
+            &[0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b, 0xc3][..]
+        } else {
+            &[0xc3][..]
+        };
+        game.vm.process.memory_mut().unwrap()[code_at..code_at + frame_code.len()]
+            .copy_from_slice(frame_code);
         // A session-owned frame is still callable after the trap.
         let imports_table = game.imports;
         let mut request = request(
@@ -1799,7 +1805,16 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm,
         );
         request.entries = (0..1 + count as u32).collect();
-        request.frame = CallbackId(run);
+        request.frame = Export {
+            callback: CallbackId(run),
+            arguments: {
+                let mut arguments = [Argument::Word(0); 9];
+                if rr {
+                    arguments[0] = Argument::Word(1);
+                }
+                arguments
+            },
+        };
         if let Program::Native { imports, .. } = &mut request.program {
             *imports = imports_table;
         }
@@ -1875,7 +1890,7 @@ fn returned_native_tables_bind_once_and_isolate_bad_apis() {
             );
             request.entries = (0..4).collect();
             request.context.clock = ThinkTime::Seconds(0.0);
-            request.frame = CallbackId(first + 2);
+            request.frame = Export::clocked(CallbackId(first + 2));
             let export = |callback| Export {
                 callback: CallbackId(callback),
                 arguments: [Argument::Word(0); 9],

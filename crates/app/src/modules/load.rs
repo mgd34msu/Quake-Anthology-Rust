@@ -314,7 +314,7 @@ pub fn load_q3(
             anchor,
             program,
             entries,
-            frame: CallbackId(frame),
+            frame: Export::clocked(CallbackId(frame)),
             prepare,
             initialize: Some(Export {
                 callback: CallbackId(init),
@@ -395,7 +395,7 @@ pub fn load_quakec(
             anchor,
             program: Program::quakec(vm),
             entries,
-            frame: CallbackId(frame),
+            frame: Export::clocked(CallbackId(frame)),
             prepare: Vec::new(),
             initialize: None,
             api: None,

@@ -6,7 +6,7 @@ mod service_program;
 use qa_app::{
     Runtime,
     host::{FrameHost, FrameSource},
-    modules::{ModuleRequest, ModuleResult, Phase, Program},
+    modules::{Export, ModuleRequest, ModuleResult, Phase, Program},
 };
 use qa_compat::{
     abi::Q3_SERVER,
@@ -126,7 +126,7 @@ fn lifecycle_host_in(
                 imports: &Q3_SERVER,
             },
             entries: (0..=10).collect(),
-            frame: CallbackId(frame),
+            frame: Export::clocked(CallbackId(frame)),
             prepare: Vec::new(),
             initialize: Some(Export {
                 callback: CallbackId(initialize),
@@ -470,7 +470,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
                 imports: &Q3_SERVER,
             },
             entries: vec![8],
-            frame: CallbackId(0),
+            frame: Export::clocked(CallbackId(0)),
             prepare: Vec::new(),
             initialize: None,
             shutdown: Vec::new(),
@@ -496,7 +496,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             anchor: ids[1],
             program: Program::quakec(qc),
             entries: vec![1, 5],
-            frame: CallbackId(0),
+            frame: Export::clocked(CallbackId(0)),
             prepare: Vec::new(),
             initialize: None,
             shutdown: Vec::new(),

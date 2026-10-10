@@ -63,7 +63,7 @@ pub struct ModuleRequest {
     pub anchor: EntityId,
     pub program: Program,
     pub entries: Vec<u32>,
-    pub frame: CallbackId,
+    pub frame: Export,
     /// Load-selected callbacks, before version checks and game initialization.
     pub prepare: Vec<Export>,
     pub initialize: Option<Export>,
@@ -114,6 +114,16 @@ pub enum Argument {
 pub struct Export {
     pub callback: CallbackId,
     pub arguments: [Argument; 9],
+}
+impl Export {
+    pub const fn clocked(callback: CallbackId) -> Self {
+        let mut arguments = [Argument::Word(0); 9];
+        arguments[0] = Argument::ClockMilliseconds;
+        Self {
+            callback,
+            arguments,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -202,7 +212,7 @@ impl FrameHost {
                 .resolve(request.anchor)
                 .ok_or("stale module anchor")?;
             if host.runtime.server.entities.columns.owner[entity] != request.context.module
-                || request.frame.0 as usize >= request.entries.len()
+                || request.frame.callback.0 as usize >= request.entries.len()
                 || request
                     .prepare
                     .iter()
@@ -496,27 +506,8 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
     if row.state != State::Running {
         return;
     }
-    let entity = row.request.anchor;
-    let callback = row.request.frame;
-    if host
-        .runtime
-        .server
-        .entities
-        .resolve(entity)
-        .is_none_or(|slot| host.runtime.server.entities.columns.owner[slot] != module)
-    {
-        if let Some(row) = host
-            .modules
-            .as_mut()
-            .and_then(|m| m.rows[module.0 as usize].as_mut())
-        {
-            row.counts.rejected += 1;
-        }
-        return;
-    }
-    if host
-        .call_module(callback, CallbackCall::Think { entity, time })
-        .is_err()
+    let export = row.request.frame;
+    if host.call_module_export(module, export, time).is_err()
         && let Some(row) = host
             .modules
             .as_mut()
@@ -632,7 +623,8 @@ fn native_self(
     u32::try_from(offset).ok()
 }
 fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
-    let CallbackCall::Think { entity, time } = call else {
+    let (CallbackCall::Think { entity, time } | CallbackCall::Export { entity, time, .. }) = call
+    else {
         return false;
     };
     let Some(row) = host
