@@ -64,14 +64,23 @@ pub struct ModuleRequest {
     pub program: Program,
     pub entries: Vec<u32>,
     pub frame: CallbackId,
-    /// Load-selected binding export, before version checks and initialization.
-    pub prepare: Option<Export>,
+    /// Load-selected callbacks, before version checks and game initialization.
+    pub prepare: Vec<Export>,
     pub initialize: Option<Export>,
     pub api: Option<VersionCheck>,
-    pub shutdown: Option<Export>,
+    pub shutdown: Vec<Export>,
     pub instruction_budget: u64,
     pub configstrings: usize,
     pub files: usize,
+}
+impl ModuleRequest {
+    fn sequence(&self, shutdown: bool) -> &[Export] {
+        if shutdown {
+            &self.shutdown
+        } else {
+            &self.prepare
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -181,15 +190,14 @@ impl FrameHost {
                 .ok_or("stale module anchor")?;
             if host.runtime.server.entities.columns.owner[entity] != request.context.module
                 || request.frame.0 as usize >= request.entries.len()
-                || [
-                    request.prepare,
-                    request.initialize,
-                    request.shutdown,
-                    request.api.as_ref().map(|api| api.export),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|export| export.callback.0 as usize >= request.entries.len())
+                || request
+                    .prepare
+                    .iter()
+                    .chain(&request.shutdown)
+                    .copied()
+                    .chain(request.initialize)
+                    .chain(request.api.as_ref().map(|api| api.export))
+                    .any(|export| export.callback.0 as usize >= request.entries.len())
                 || request.instruction_budget == 0
             {
                 return Err("invalid module binding".into());
@@ -223,7 +231,7 @@ impl FrameHost {
                 request.files,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
-            let state = if request.prepare.is_some()
+            let state = if !request.prepare.is_empty()
                 || request.initialize.is_some()
                 || request.api.is_some()
             {
@@ -331,37 +339,31 @@ impl FrameHost {
                 .then_some(row.request.api.as_ref())
                 .flatten()
                 .map(|api| (api.export, api.accepted));
-            let prepare = (!shutdown).then_some(row.request.prepare).flatten();
-            let export = if shutdown {
-                row.request.shutdown
-            } else {
-                row.request.initialize
-            };
+            let initialize = row.request.initialize;
             let time = module_time(row.request.context.clock, self.time);
             let module = ModuleId(index as u16);
-            let result = prepare
-                .map_or(Ok(()), |export| {
-                    self.call_module_export(module, export, time)
+            let result = self.module_sequence(module, shutdown, time).and_then(|()| {
+                if shutdown {
+                    return Ok(());
+                }
+                api.map_or(Ok(()), |(export, accepted)| {
+                    self.call_module_export(module, export, time)?;
+                    let value = match self.module_counts(module).and_then(|c| c.last_result) {
+                        Some(ModuleResult::Qvm(value)) => Some(value),
+                        Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
+                        _ => None,
+                    };
+                    value
+                        .filter(|v| accepted.contains(v))
+                        .map(|_| ())
+                        .ok_or(CallError::Rejected)
                 })
                 .and_then(|()| {
-                    api.map_or(Ok(()), |(export, accepted)| {
-                        self.call_module_export(module, export, time)?;
-                        let value = match self.module_counts(module).and_then(|c| c.last_result) {
-                            Some(ModuleResult::Qvm(value)) => Some(value),
-                            Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
-                            _ => None,
-                        };
-                        value
-                            .filter(|v| accepted.contains(v))
-                            .map(|_| ())
-                            .ok_or(CallError::Rejected)
-                    })
-                })
-                .and_then(|()| {
-                    export.map_or(Ok(()), |export| {
+                    initialize.map_or(Ok(()), |export| {
                         self.call_module_export(module, export, time)
                     })
-                });
+                })
+            });
             if let Some(row) = self.modules.as_mut().and_then(|m| m.rows[index].as_mut()) {
                 if result.is_err() {
                     row.counts.rejected += 1;
@@ -375,6 +377,29 @@ impl FrameHost {
                 };
             }
         }
+    }
+    fn module_sequence(
+        &mut self,
+        module: ModuleId,
+        shutdown: bool,
+        time: ThinkTime,
+    ) -> Result<(), CallError> {
+        let count = self
+            .modules
+            .as_ref()
+            .and_then(|m| m.rows[module.0 as usize].as_ref())
+            .map_or(0, |row| row.request.sequence(shutdown).len());
+        for index in 0..count {
+            let export = self
+                .modules
+                .as_ref()
+                .and_then(|m| m.rows[module.0 as usize].as_ref())
+                .and_then(|row| row.request.sequence(shutdown).get(index))
+                .copied()
+                .ok_or(CallError::MissingModule)?;
+            self.call_module_export(module, export, time)?;
+        }
+        Ok(())
     }
     pub fn client_modules(&mut self) {
         self.initialize_modules(Phase::Client);

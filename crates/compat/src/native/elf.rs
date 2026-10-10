@@ -1,5 +1,7 @@
 //! Load-time ELF relocation arithmetic. Hardware resolvers belong to the child.
+mod lifecycle;
 use crate::memory::ModuleMemory;
+pub(super) use lifecycle::Lifecycle;
 use qa_formats::{
     FormatError,
     program::native::{Encoding, Image, Relocation, Symbol},

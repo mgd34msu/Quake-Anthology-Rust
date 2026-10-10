@@ -203,7 +203,7 @@ pub fn load_q3(
                 }),
             ),
         };
-        let (program, entries, prepare) =
+        let (program, entries, prepare, mut finalize) =
             if bytes.starts_with(b"MZ") || bytes.starts_with(b"\x7fELF") {
                 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 {
@@ -217,9 +217,6 @@ pub fn load_q3(
                     }
                     if !image.initializers.is_empty()
                         || (image.target.encoding == Encoding::Pe && image.entry != 0)
-                        || image.dynamic.iter().any(|&(tag, value)| {
-                            value != 0 && matches!(tag, 12 | 13 | 25 | 26 | 32)
-                        })
                     {
                         return Err("native initializer provider is not bound".into());
                     }
@@ -241,16 +238,31 @@ pub fn load_q3(
                         .map_err(|e| format!("native mapping: {e:?}"))?;
                     let mut arguments = [Argument::Word(0); 9];
                     arguments[0] = Argument::Word(vm.import_callback());
+                    let lifecycle = |call: &qa_compat::native::LifecycleCall| {
+                        let mut arguments = [Argument::Word(0); 9];
+                        for (to, &from) in arguments.iter_mut().zip(&call.arguments) {
+                            *to = Argument::Word(from);
+                        }
+                        Export {
+                            callback: CallbackId(call.ordinal),
+                            arguments,
+                        }
+                    };
+                    let mut prepare: Vec<_> = vm.initializers().iter().map(lifecycle).collect();
+                    prepare.push(Export {
+                        callback: CallbackId(11),
+                        arguments,
+                    });
+                    let finalize: Vec<_> = vm.finalizers().iter().map(lifecycle).collect();
+                    let count = 12 + vm.initializers().len() + vm.finalizers().len();
                     (
                         Program::Native {
                             vm: Box::new(vm),
                             imports,
                         },
-                        (0..=11).collect(),
-                        Some(Export {
-                            callback: CallbackId(11),
-                            arguments,
-                        }),
+                        (0..count as u32).collect(),
+                        prepare,
+                        finalize,
                     )
                 }
                 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
@@ -267,9 +279,17 @@ pub fn load_q3(
                         imports,
                     },
                     (0..=10).collect(),
-                    None,
+                    Vec::new(),
+                    Vec::new(),
                 )
             };
+        finalize.insert(
+            0,
+            Export {
+                callback: CallbackId(shutdown),
+                arguments: [Argument::Word(0); 9],
+            },
+        );
         requests.push(ModuleRequest {
             context: CallContext {
                 module,
@@ -304,10 +324,7 @@ pub fn load_q3(
                 callback: CallbackId(init),
                 arguments: initialize,
             }),
-            shutdown: Some(Export {
-                callback: CallbackId(shutdown),
-                arguments: [Argument::Word(0); 9],
-            }),
+            shutdown: finalize,
             api,
             instruction_budget: 10_000_000,
             configstrings: 1024,
@@ -383,10 +400,10 @@ pub fn load_quakec(
             program: Program::quakec(vm),
             entries,
             frame: CallbackId(frame),
-            prepare: None,
+            prepare: Vec::new(),
             initialize: None,
             api: None,
-            shutdown: None,
+            shutdown: Vec::new(),
             instruction_budget: 1_000_000,
             configstrings: 64,
             files: 32,

@@ -22,6 +22,11 @@ struct Export {
     /// receive only their native arguments.
     command: Option<u32>,
 }
+#[derive(Clone, Copy)]
+pub struct LifecycleCall {
+    pub ordinal: u32,
+    pub arguments: [u64; 3],
+}
 pub struct NamedExport<'a> {
     pub name: &'a [u8],
     pub command: Option<u32>,
@@ -40,6 +45,8 @@ pub struct Vm {
     abi: NativeAbi,
     exports: Box<[Export]>,
     heap: Option<Heap>,
+    initialize: Box<[LifecycleCall]>,
+    finalize: Box<[LifecycleCall]>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -63,10 +70,10 @@ impl Vm {
         if image.target.bits != 64 {
             return Err(Error::Process(NativeError::Unsupported));
         }
-        let (runtime_imports, heap) =
-            runtime::bind(&mut image, imports.len()).map_err(Error::Binding)?;
-        let imports: Vec<_> = imports.iter().copied().chain(runtime_imports).collect();
-        let targets = named
+        let source_bytes = image.bytes.len();
+        let runtime = runtime::bind(&mut image, imports.len()).map_err(Error::Binding)?;
+        let imports: Vec<_> = imports.iter().copied().chain(runtime.imports).collect();
+        let mut bindings = named
             .iter()
             .map(|entry| {
                 let symbol = image.symbol(entry.name).ok_or(Error::Export)?;
@@ -78,9 +85,44 @@ impl Vm {
                 {
                     return Err(Error::Export);
                 }
-                Ok(symbol.address)
+                Ok((
+                    symbol.address,
+                    entry.parameters,
+                    entry.result,
+                    entry.command,
+                ))
             })
-            .collect::<Result<Box<[_]>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let lifecycle = if image.target.encoding == Encoding::Elf {
+            elf::Lifecycle::load(&mut image, source_bytes)
+                .map_err(|e| Error::Binding(format!("native lifecycle: {e:?}")))?
+        } else {
+            elf::Lifecycle {
+                initialize: Vec::new(),
+                finalize: Vec::new(),
+            }
+        };
+        let mut initialize = Vec::new();
+        let mut finalize = Vec::new();
+        for (targets, calls, parameters, arguments) in [
+            (
+                lifecycle.initialize,
+                &mut initialize,
+                &[NativeScalar::I32, NativeScalar::Word, NativeScalar::Word][..],
+                [
+                    0,
+                    runtime.startup.unwrap_or(0),
+                    runtime.startup.unwrap_or(0) + 8,
+                ],
+            ),
+            (lifecycle.finalize, &mut finalize, &[][..], [0; 3]),
+        ] {
+            for address in targets {
+                let ordinal = u32::try_from(bindings.len()).map_err(|_| Error::Export)?;
+                bindings.push((address, parameters, NativeScalar::Void, None));
+                calls.push(LifecycleCall { ordinal, arguments });
+            }
+        }
         // Native ELF RELRO protects complete pages, rounding both ends down.
         // Split the one region table at those boundaries before mapping; the
         // same final table supplies OS rights and callable-entry checks.
@@ -161,18 +203,20 @@ impl Vm {
             timeout,
         })
         .map_err(Error::Process)?;
-        if targets.iter().any(|&address| !process.executable(address)) {
+        if bindings
+            .iter()
+            .any(|&(address, _, _, _)| !process.executable(address))
+        {
             return Err(Error::Export);
         }
-        let exports = named
-            .iter()
-            .zip(targets.iter())
-            .map(|(named, &address)| {
+        let exports = bindings
+            .into_iter()
+            .map(|(address, parameters, result, command)| {
                 Ok(Export {
                     entry: process
-                        .bind(address, abi, named.parameters, named.result)
+                        .bind(address, abi, parameters, result)
                         .map_err(Error::Process)?,
-                    command: named.command,
+                    command,
                 })
             })
             .collect::<Result<Box<[_]>, Error>>()?;
@@ -180,8 +224,16 @@ impl Vm {
             process,
             abi,
             exports,
-            heap,
+            heap: runtime.heap,
+            initialize: initialize.into_boxed_slice(),
+            finalize: finalize.into_boxed_slice(),
         })
+    }
+    pub fn initializers(&self) -> &[LifecycleCall] {
+        &self.initialize
+    }
+    pub fn finalizers(&self) -> &[LifecycleCall] {
+        &self.finalize
     }
     pub fn has_export(&self, ordinal: u32) -> bool {
         (ordinal as usize) < self.exports.len()

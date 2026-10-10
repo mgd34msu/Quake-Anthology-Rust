@@ -25,6 +25,13 @@ use std::time::Duration;
 mod native_image;
 use native_image::*;
 
+struct Files(std::path::PathBuf);
+impl Drop for Files {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn function_file(encoding: Encoding, code: &[u8]) -> Vec<u8> {
     match encoding {
         Encoding::Elf => {
@@ -226,7 +233,7 @@ fn module(
     assert_eq!(&memory[at..at + 8], &[0; 8]);
     memory[at + 16..at + 16 + text.len()].copy_from_slice(text);
     let mut request = request(runtime, id, rules, rate, vm);
-    request.prepare = Some(Export {
+    request.prepare = vec![Export {
         callback: CallbackId(1),
         arguments: [
             Argument::Word(pointer),
@@ -239,7 +246,7 @@ fn module(
             Argument::Word(0),
             Argument::Word(0),
         ],
-    });
+    }];
     request.entries.push(1);
     request
 }
@@ -278,10 +285,10 @@ fn request(
         },
         entries: vec![0],
         frame: CallbackId(0),
-        prepare: None,
+        prepare: Vec::new(),
         initialize: None,
         api: None,
-        shutdown: None,
+        shutdown: Vec::new(),
         instruction_budget: 100,
         configstrings: 0,
         files: 0,
@@ -480,12 +487,6 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
 
 fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
     use qa_app::modules::{Q3Spec, load_q3};
-    struct Files(std::path::PathBuf);
-    impl Drop for Files {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
     let files =
         Files(std::env::temp_dir().join(format!("qa-native-modules-{}", std::process::id())));
     std::fs::create_dir(&files.0).unwrap();
@@ -553,7 +554,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         assert!(matches!(request.program, Program::Native { .. }));
         assert_eq!(request.timing_rules, RuleSetId::Quake3);
         assert_eq!(request.phase, Phase::Server);
-        assert_eq!(request.prepare.unwrap().callback, CallbackId(11));
+        assert_eq!(request.prepare[0].callback, CallbackId(11));
     }
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
@@ -1025,6 +1026,200 @@ fn native_heap_imports_share_owned_memory_through_session_dispatch() {
     }
 }
 
+fn elf_lifecycle_file() -> Vec<u8> {
+    let mut file = function_file(Encoding::Elf, &[0xc3]);
+    put(&mut file, 64 + 3 * 56, 0, 4); // no TLS dependency
+    put(&mut file, 0x1400 + 24 + 8, 0x3600, 8); // game export code
+    file[0x1a80..0x1a90].fill(0); // trace and initialization count
+    fn append(file: &mut [u8], at: usize, digit: u8) {
+        let mut code = vec![0x8b, 0x05];
+        code.extend_from_slice(&((0x1a80i32 - (at + 6) as i32).to_le_bytes()));
+        code.extend_from_slice(&[0x6b, 0xc0, 10, 0x83, 0xc0, digit, 0x89, 0x05]);
+        code.extend_from_slice(&((0x1a80i32 - (at + 18) as i32).to_le_bytes()));
+        code.push(0xc3);
+        file[at..at + code.len()].copy_from_slice(&code);
+    }
+    for (at, digit) in [
+        (0x1700, 1),
+        (0x1740, 2),
+        (0x1780, 3),
+        (0x17c0, 6),
+        (0x1800, 7),
+        (0x1840, 8),
+    ] {
+        append(&mut file, at, digit);
+    }
+    // The final native callback traps unless the whole reached order is exact.
+    // This checks finalizer order without exposing raw module memory to app.
+    file[0x1852..0x185c].copy_from_slice(&[0x3d, 0xa8, 0x61, 0xbc, 0, 0x74, 2, 0x0f, 0x0b, 0xc3]);
+    // DT_INIT sees a native argc and separate valid, empty argv/envp vectors.
+    let checks = [
+        0x85, 0xff, 0x75, 16, 0x48, 0x83, 0x3e, 0, 0x75, 10, 0x48, 0x83, 0x3a, 0, 0x75, 4, 0xeb, 4,
+        0x0f, 0x0b, 0x0f, 0x0b,
+    ];
+    file[0x1700..0x1700 + checks.len()].copy_from_slice(&checks);
+    append(&mut file, 0x1700 + checks.len(), 1);
+    // dllEntry stores the shared syscall callback and appends digit 4.
+    file[0x1300..0x1307].copy_from_slice(&[0x48, 0x89, 0x3d, 0xb9, 7, 0, 0]);
+    append(&mut file, 0x1307, 4);
+    // Game command 1 is shutdown; all other commands return the reached trace.
+    file[0x1600..0x1605].copy_from_slice(&[0x83, 0xff, 1, 0x74, 7]);
+    file[0x1605..0x1607].copy_from_slice(&[0x8b, 0x05]);
+    put(&mut file, 0x1607, (0x1a80 - 0x160b) as u64, 4);
+    file[0x160b] = 0xc3;
+    append(&mut file, 0x160c, 5);
+    for (at, value) in [
+        (0x1a00, 0x3740),
+        (0x1a08, 0x3780),
+        (0x1a20, 0x37c0),
+        (0x1a28, 0x3800),
+    ] {
+        put(&mut file, at, value, 8);
+    }
+    for (index, (at, value)) in [
+        (0x3a00, 0x3740),
+        (0x3a08, 0x3780),
+        (0x3a20, 0x37c0),
+        (0x3a28, 0x3800),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        elf_relocation(&mut file, 64, 0x1b40 + index * 24, at, 8, 0, Some(value));
+    }
+    let (_, mut tags) = elf_symbol_fixture(64);
+    tags.extend([
+        (12, 0x3700),
+        (25, 0x3a00),
+        (27, 16),
+        (26, 0x3a20),
+        (28, 16),
+        (13, 0x3840),
+        (7, 0x3b40),
+        (8, 96),
+        (9, 24),
+        (32, u64::MAX),
+        (33, 8),
+    ]); // ignored shared-object preinit
+    elf_dynamic(&mut file, 64, &tags);
+    file
+}
+
+fn elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_module() {
+    use qa_app::modules::{Q3Spec, load_q3};
+    let files =
+        Files(std::env::temp_dir().join(format!("qa-native-lifecycle-{}", std::process::id())));
+    std::fs::create_dir(&files.0).unwrap();
+    let file = elf_lifecycle_file();
+    std::fs::write(files.0.join("good.so"), &file).unwrap();
+    let mut bad = file;
+    bad[0x1700..0x1702].copy_from_slice(&[0x0f, 0x0b]);
+    std::fs::write(files.0.join("bad.so"), &bad).unwrap();
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &[
+            Q3Spec::parse("game:bad.so").unwrap(),
+            Q3Spec::parse("game:good.so").unwrap(),
+        ],
+        &mut requests,
+        TickRate::fixed(50).unwrap(),
+    )
+    .unwrap();
+    for request in &requests {
+        assert_eq!(request.prepare.len(), 4);
+        assert_eq!(request.shutdown.len(), 4);
+    }
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    for tick in [0, 50, 100] {
+        source.time = EventTime(tick * 1_000_000);
+        host.frame(&mut source, true);
+        assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+        assert_eq!(
+            host.module_counts(ModuleId(2)).unwrap().last_result,
+            Some(ModuleResult::Native(1234))
+        );
+    }
+    let calls = host.module_counts(ModuleId(2)).unwrap().calls;
+    host.shutdown_modules();
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Stopped));
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, calls + 4);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    // Finalizers return void; the final callback asserts the shared trace is
+    // 12345768, otherwise the child traps and the count above fails.
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, calls + 4);
+}
+
+fn elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets() {
+    for kind in 0..4 {
+        let mut image =
+            Image::parse(&elf_lifecycle_file(), Some(0x20000000), LoadRole::Library).unwrap();
+        match kind {
+            0 => {
+                image
+                    .dynamic
+                    .iter_mut()
+                    .find(|(tag, _)| *tag == 27)
+                    .unwrap()
+                    .1 = 7
+            }
+            1 => {
+                image.dynamic = image
+                    .dynamic
+                    .iter()
+                    .copied()
+                    .filter(|&(tag, _)| tag != 27)
+                    .collect()
+            }
+            2 => {
+                image
+                    .dynamic
+                    .iter_mut()
+                    .find(|(tag, _)| *tag == 25)
+                    .unwrap()
+                    .1 = 0x100000
+            }
+            _ => {
+                image
+                    .dynamic
+                    .iter_mut()
+                    .find(|(tag, _)| *tag == 12)
+                    .unwrap()
+                    .1 = 0x100000
+            }
+        }
+        assert!(
+            Vm::map_image(
+                image,
+                &[NamedExport {
+                    name: b"vmMain",
+                    command: None,
+                    parameters: &[],
+                    result: NativeScalar::Word
+                }],
+                &[],
+                Duration::from_secs(3)
+            )
+            .is_err()
+        );
+    }
+}
+
 fn scalar_native_export_results_survive_session_dispatch() {
     use qa_platform::native::NativeScalar;
     for encoding in [Encoding::Elf, Encoding::Pe] {
@@ -1212,5 +1407,7 @@ pub fn run() {
     scalar_native_export_results_survive_session_dispatch();
     native_math_imports_execute_in_owned_children_through_session_dispatch();
     native_heap_imports_share_owned_memory_through_session_dispatch();
+    elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_module();
+    elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets();
     println!("native session dispatch checks passed");
 }

@@ -130,7 +130,7 @@ fn lifecycle_host_in(
             },
             entries: (0..=10).collect(),
             frame: CallbackId(frame),
-            prepare: None,
+            prepare: Vec::new(),
             initialize: Some(Export {
                 callback: CallbackId(initialize),
                 arguments: [
@@ -145,7 +145,7 @@ fn lifecycle_host_in(
                     Argument::Word(0),
                 ],
             }),
-            shutdown: Some(Export {
+            shutdown: vec![Export {
                 callback: CallbackId(shutdown),
                 arguments: [
                     Argument::Word(1),
@@ -158,7 +158,7 @@ fn lifecycle_host_in(
                     Argument::Word(0),
                     Argument::Word(0),
                 ],
-            }),
+            }],
             instruction_budget: budget,
             configstrings: 0,
             files: 0,
@@ -474,9 +474,9 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             },
             entries: vec![8],
             frame: CallbackId(0),
-            prepare: None,
+            prepare: Vec::new(),
             initialize: None,
-            shutdown: None,
+            shutdown: Vec::new(),
             instruction_budget: qvm_budget,
             configstrings: 0,
             files: 0,
@@ -500,9 +500,9 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             program: Program::quakec(qc),
             entries: vec![1, 5],
             frame: CallbackId(0),
-            prepare: None,
+            prepare: Vec::new(),
             initialize: None,
-            shutdown: None,
+            shutdown: Vec::new(),
             instruction_budget: 1000,
             configstrings: 0,
             files: 0,

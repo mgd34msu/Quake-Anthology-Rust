@@ -62,10 +62,12 @@ fn function(image: &Image, name: Option<NameId>) -> Option<&'static Function> {
         .iter()
         .find(|function| Some(function.name) == name)
 }
-pub(super) fn bind(
-    image: &mut Image,
-    prefix: usize,
-) -> Result<(Vec<NativeImport<'static>>, Option<Heap>), String> {
+pub(super) struct BoundRuntime {
+    pub imports: Vec<NativeImport<'static>>,
+    pub heap: Option<Heap>,
+    pub startup: Option<u64>,
+}
+pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, String> {
     let needs_heap = match image.target.encoding {
         Encoding::Pe => image
             .imports
@@ -81,34 +83,50 @@ pub(super) fn bind(
                     .is_some_and(|function| function.heap)
         }),
     };
-    let heap = if needs_heap {
+    let lifecycle = image.target.encoding == Encoding::Elf
+        && image
+            .dynamic
+            .iter()
+            .any(|&(tag, value)| value != 0 && matches!(tag, 12 | 13 | 25 | 26));
+    let (heap, startup) = if needs_heap || lifecycle {
         const BYTES: usize = 32 * 1024 * 1024;
-        let offset = image.bytes.len().div_ceil(qa_platform::native::PAGE_BYTES)
-            * qa_platform::native::PAGE_BYTES;
+        let page = qa_platform::native::PAGE_BYTES;
+        let offset = image.bytes.len().div_ceil(page) * page;
+        let bytes = page + if needs_heap { BYTES } else { 0 };
         let end = offset
-            .checked_add(BYTES)
+            .checked_add(bytes)
             .filter(|&n| n <= 512 * 1024 * 1024)
-            .ok_or("native heap extent")?;
+            .ok_or("native runtime extent")?;
         let base = image
             .base
             .checked_add(offset as u64)
-            .ok_or("native heap address")?;
-        let heap = Heap::load(base, BYTES, 65536).map_err(|_| "native heap reservation")?;
-        let mut bytes = std::mem::take(&mut image.bytes).into_vec();
-        bytes.resize(end, 0);
-        image.bytes = bytes.into_boxed_slice();
+            .ok_or("native runtime address")?;
+        base.checked_add(bytes as u64)
+            .ok_or("native runtime extent")?;
+        let heap = if needs_heap {
+            Some(
+                Heap::load(base + page as u64, BYTES, 65536)
+                    .map_err(|_| "native heap reservation")?,
+            )
+        } else {
+            None
+        };
+        let mut storage = std::mem::take(&mut image.bytes).into_vec();
+        storage.resize(end, 0);
+        image.bytes = storage.into_boxed_slice();
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(qa_formats::program::native::Region {
             offset,
-            length: BYTES,
+            length: bytes,
             read: true,
             write: true,
             execute: false,
         });
         image.regions = regions.into_boxed_slice();
-        Some(heap)
+        // argc is zero; argv and envp point to separate owned null terminators.
+        (heap, lifecycle.then_some(base))
     } else {
-        None
+        (None, None)
     };
     for &id in &image.needed {
         if !library(image, id, None) {
@@ -214,5 +232,9 @@ pub(super) fn bind(
                 .map_err(|_| "native import slot out of range")?;
         }
     }
-    Ok((imports, heap))
+    Ok(BoundRuntime {
+        imports,
+        heap,
+        startup,
+    })
 }
