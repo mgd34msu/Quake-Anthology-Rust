@@ -1,4 +1,4 @@
-//! Pinned developer timing of the shared primitive path, not a gameplay run.
+//! Developer allocation checks and pinned timing of shared movement primitives.
 use qa_core::{
     primitives::{
         Bounds, ClientId, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId,
@@ -97,6 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Stopwatch,
         allocations::{begin_frame, end_frame},
     };
+    let heap_only = std::env::args().any(|arg| arg == "--heap-only");
     let mut server = Server::load(64, 128, 1, 0, 0, 0).map_err(|e| format!("{e:?}"))?;
     server.area = AreaGrid::load(
         128,
@@ -148,6 +149,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("initial client link".into());
         }
     }
+    begin_frame();
+    let positive = Box::new(std::hint::black_box(1u64));
+    std::hint::black_box(&positive);
+    drop(positive);
+    if end_frame().allocations != 1 {
+        return Err("allocation positive control".into());
+    }
     let mut ns = [0u64; 600];
     let mut maximum_allocations = 0;
     let mut maximum_bytes = 0;
@@ -156,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let end = EventTime((frame + 1) * 11_764_705);
         let start = EventTime(frame * 11_764_705);
         begin_frame();
-        let timer = Stopwatch::start();
+        let timer = (!heap_only).then(Stopwatch::start);
         for (slot, prediction) in predictions.iter_mut().enumerate() {
             let client = &mut server.clients[slot];
             let intent = CommandIntent {
@@ -197,10 +205,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             prediction.advance(client.command, &mut trace);
         }
-        let elapsed = timer.elapsed().as_nanos() as u64;
+        let elapsed = timer.map(|timer| timer.elapsed().as_nanos() as u64);
         let counts = end_frame();
         if frame >= 60 {
-            ns[(frame - 60) as usize] = elapsed;
+            if let Some(elapsed) = elapsed {
+                ns[(frame - 60) as usize] = elapsed;
+            }
             steps += u64::from(count);
             maximum_allocations =
                 maximum_allocations.max(counts.allocations + counts.reallocations);
@@ -229,12 +239,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    ns.sort_unstable();
-    println!(
-        "{{\"scope\":\"64 mixed-rule clients with authoritative and prediction WorldTrace movement on loaded brush stairs/walls in 8x8 native-range rooms\",\"workload\":\"linked_scene_64_native_range_rooms\",\"matched_previous_workload\":false,\"warmup\":60,\"frames\":600,\"server_steps\":{steps},\"median_ns\":{},\"p99_ns\":{},\"maximum_allocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_bytes},\"state_match\":true}}",
-        (ns[299] + ns[300]) / 2,
-        ns[593]
-    );
+    if heap_only {
+        println!(
+            "{{\"scope\":\"caller Rust thread; 64 mixed-rule clients with server, bot and prediction WorldTrace movement; no native module or gameplay\",\"workload\":\"linked_scene_64_native_range_rooms\",\"warmup\":60,\"frames\":600,\"server_steps\":{steps},\"maximum_allocations_and_reallocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_bytes},\"state_match\":true,\"positive_control_allocations\":1,\"timing_run\":false}}"
+        );
+    } else {
+        ns.sort_unstable();
+        println!(
+            "{{\"scope\":\"64 mixed-rule clients with authoritative and prediction WorldTrace movement on loaded brush stairs/walls in 8x8 native-range rooms\",\"workload\":\"linked_scene_64_native_range_rooms\",\"matched_previous_workload\":false,\"warmup\":60,\"frames\":600,\"server_steps\":{steps},\"median_ns\":{},\"p99_ns\":{},\"maximum_allocations\":{maximum_allocations},\"maximum_requested_bytes\":{maximum_bytes},\"state_match\":true}}",
+            (ns[299] + ns[300]) / 2,
+            ns[593]
+        );
+    }
     if maximum_allocations != 0 || maximum_bytes != 0 {
         return Err("allocation gate".into());
     }

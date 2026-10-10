@@ -49,28 +49,19 @@ pub fn pmove(
 
 /// Spawn/stance initialization, independent of the module or map family.
 pub fn set_bounds(player: &mut PlayerState) {
-    let radius = if player.movement_rules == RuleSetId::Quake3 {
-        15.0
-    } else {
-        16.0
-    };
+    let parameters = Parameters::load(player.movement_rules, player);
+    let radius = parameters.radius;
     player.body.mins = Vec3([-radius, -radius, -24.0]);
     player.body.maxs = Vec3([radius, radius, 32.0]);
-    player.view_offset = Vec3([
-        0.0,
-        0.0,
-        if player.movement_rules == RuleSetId::Quake3 {
-            26.0
-        } else {
-            22.0
-        },
-    ]);
+    player.view_offset = Vec3([0.0, 0.0, parameters.view_height]);
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Parameters {
     pub rules: RuleSetId,
     pub trace_rules: TraceRules,
     pub entity_rules: EntityTracePolicy,
+    pub radius: f32,
+    pub view_height: f32,
     pub gravity: f32,
     pub speed: f32,
     pub friction: f32,
@@ -91,6 +82,8 @@ impl Parameters {
             rules,
             trace_rules,
             entity_rules,
+            radius: if arena { 15.0 } else { 16.0 },
+            view_height: if arena { 26.0 } else { 22.0 },
             gravity: t.gravity.unwrap_or(800.0) * t.gravity_multiplier,
             speed: t
                 .max_speed
@@ -321,10 +314,8 @@ impl Step<'_> {
             -16.0
         } else if self.player.movement.ducked {
             if self.arena() { 12.0 } else { -2.0 }
-        } else if self.arena() {
-            26.0
         } else {
-            22.0
+            self.parameters.view_height
         };
     }
     fn friction(&mut self) {
