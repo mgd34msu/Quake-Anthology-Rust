@@ -134,6 +134,7 @@ pub struct Channel {
     controls: PayloadQueue<Header>,
     transmit: transmit::Transmit,
     commands: Option<commands::CommandMessages>,
+    snapshots: Option<Box<crate::snapshots::Q3Ring>>,
 }
 
 impl Channel {
@@ -163,11 +164,25 @@ impl Channel {
             controls: PayloadQueue::load(controls, 1).map_err(|_| Error::Capacity)?,
             transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
             commands: policy.command_ack.then(commands::CommandMessages::load),
+            snapshots: if policy.command_ack && endpoint == Endpoint::Client {
+                Some(Box::new(
+                    crate::snapshots::Q3Ring::load(1023, 1024, 32, Some(2048 - 128))
+                        .map_err(|_| Error::Capacity)?,
+                ))
+            } else {
+                None
+            },
         })
     }
 
     pub fn state(&self) -> State {
         self.state
+    }
+    pub fn snapshot(&self, sequence: u32) -> Option<crate::snapshots::Q3Frame<'_>> {
+        self.snapshots.as_ref()?.frame(sequence)
+    }
+    pub fn snapshots_mut(&mut self) -> Option<&mut crate::snapshots::Q3Ring> {
+        self.snapshots.as_deref_mut()
     }
     pub fn endpoint(&self) -> Endpoint {
         match self.direction {

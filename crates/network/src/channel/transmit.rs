@@ -507,7 +507,7 @@ impl Channel {
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         let mut bytes = [0; 32768];
         let length = self
-            .encode_command_output(&mut bytes)
+            .encode_server_output(&mut bytes, |_| Ok(()))
             .map_err(|_| TransmitError::MessageTooLarge)?;
         let queued = self.command_state().map(|state| state.queued);
         self.prepare_inner(Some(&bytes[..length]), time, queued)

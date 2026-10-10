@@ -517,7 +517,7 @@ def layouts(msg):
     return result
 
 
-def compile_reference(qsrc, evidence):
+def reference_source(qsrc):
     msg = (qsrc / 'quake-iii-arena/code/qcommon/msg.c').read_text()
     shared = (qsrc / 'quake-iii-arena/code/game/q_shared.h').read_text()
     huff = re.sub(r'^#include.*$', '', (qsrc / 'quake-iii-arena/code/qcommon/huffman.c').read_text(), flags=re.M)
@@ -620,11 +620,16 @@ int main(void) {
  return ferror(stdin)?3:0;
 }
 '''
+    return source, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout()]
+
+
+def compile_reference(qsrc, evidence):
+    source, tables = reference_source(qsrc)
     code = evidence / 'original-state-delta.c'
     code.write_text(source)
     binary = evidence / 'original-state-delta'
     subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
-    return binary, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout()]
+    return binary, tables
 
 
 def fixture(tables):

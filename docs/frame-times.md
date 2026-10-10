@@ -4097,3 +4097,83 @@ chunk/band pixel/depth comparisons remain in `THE-2866-cache-20261009/`; the
 live residency attribution and map-budget proof remain in
 `THE-3171-live-cache-20261009/`. Installed authored-face/combined shader-pack
 screenshots and native acceptance remain on THE-3169. No install in this slice.
+
+### THE-860: typed snapshot ring and native Q3 message stream
+
+One load-sized typed 32-slot Ring stores native projection words, ordered
+entity numbers, area bytes and frame metadata. Baselines seal before the first
+frame. Full Q3 frames use the native zero player baseline; sorted delta merges
+use the existing field walker for changed/new/removed entities and copy implicit
+unchanged rows. Missing/stale deltas consume the whole body without publishing.
+Discarded rows still advance native retention age. Capacity overflow is counted
+and drops the frame, while the fixed MSG reader continues to the next opcode.
+Q3's reserved/out-of-width entity numbers and extra area bits are omitted at
+its boundary rather than adding wire fields or terminating play.
+
+The existing Channel server-message writer/reader now accepts a snapshot body
+in the same command/Huffman/XOR/EOF stream. Its command-only methods and all
+old callers are replaced in this slice. The opcode loop consumes bounded MSG
+bits rather than stopping before the EOF after a full 64-command window plus
+a snapshot. Packet ingress exposes a borrowed accepted frame; no intake point,
+receive thread, packet queue, input history or recording is introduced.
+
+`tools/check_snapshots.py` compiles unchanged qsrc SV_WriteSnapshotToClient,
+SV_EmitPacketEntities, CL_DeltaEntity, CL_ParsePacketEntities and
+CL_ParseSnapshot bodies with the existing original MSG/delta/Huffman functions.
+Private native structs/globals bind seeded fields and clocks; no native writer
+or parser arithmetic/removal statements are changed. The shared developer C
+source constructor is extracted from check_state_delta.py instead of copying
+its reader/compiler setup. C remains outside the shipped Rust engine.
+
+All 512 cases match: 571,602 wire bytes, 5,864 decoded entity rows, player/area
+words, native frame validity and read-bit positions. There are 488 accepted
+frames and 24 consumed/discarded missing-base frames. The comparison output is
+2,035,577 bytes including decoded fields and metadata; that total is not wire
+traffic. Existing 16,384 native state records still match 8,039,745 comparison
+bytes, and 512 reliable-command cases match 1,081,803 comparison bytes.
+
+Nine snapshot tests cover full/delta/baseline merges, recovery, overflow,
+retained-slot aging, gaps/wrap, connection isolation, truncation, native
+number/area omission and 64 reliable commands plus snapshot through actual
+Channel/Packet ingress. The unchanged checker, Clippy, formatting and 673
+workspace tests pass. These are component checks, not native signon or gameplay.
+
+Portable release, CPU23, 60 warm-up and 600 measured iterations, no debugger
+or overlapping owned build/test/C helper. The Q3 entity/player record probe
+uses two ABBA blocks against f2e3d1f5 with the same 4,096 original fixtures,
+16 records per iteration. Baseline sources were restored temporarily from that
+commit for its build; the saved working sources were restored byte-exactly
+before final verification. Both examples use the one workspace target directory.
+
+| Existing Q3 state workload | Before ns | After ns | Change |
+| --- | ---: | ---: | ---: |
+| Mean leg median | 16,080 | 15,771.25 | -1.920% |
+| Mean leg p99 | 31,052.5 | 30,672.5 | -1.224% |
+
+Every leg retains 10,560 checks including warm-up and 583,869 wire bytes,
+zero measured allocations/reallocations/requested bytes and one positive-control
+allocation. Small timing differences are not a general speedup claim.
+
+The new snapshot probe averages four release legs at 645,790.625 ns median /
+654,812.5 ns p99 per **16 snapshot pairs**, including optional full-base priming,
+storage/merge, encode/decode, serialized decoded words and original-C fidelity
+checks. Each leg completes 10,560 pair checks including warm-up and 33,360,360
+comparison-output bytes. There is no earlier comparable snapshot path. The
+sixteen sender/receiver pairs reserve 21,283,840 bytes of typed slot/baseline/
+scratch storage at load, with 64-entity fixture capacities. Production Q3 client
+channels reserve 1,023 entities per slot and 1,024 baselines; those larger
+capacities are not the timing workload. Cold storage is boxed only for its
+client endpoint, so other protocol Channel values do not embed those arrays.
+
+All four probes report zero measured calling-thread allocations, reallocations
+and requested bytes with a one-allocation control. No workers, transport,
+OS/SDL/native heaps, host loop or gameplay are measured by this probe.
+
+Evidence: `THE-860-snapshots-20261009/`, final-original/final-states/final-reliable
+comparison files and original C bindings, before/after developer executables,
+before-build-receipt.json, state-abba raw/summary, snapshot-timing raw/summary,
+release/checker/workspace/Clippy logs and focused test log. Common-state
+projection, SERVER emission, CLIENT/prediction migration, other protocols'
+snapshot framing, gamestate/signon and native/live/combined/installed acceptance
+remain THE-860/THE-3169. Direct SERVER-copy sites are recorded in
+[core-adoption.md](core-adoption.md). No install; THE-860 remains In Progress.

@@ -34,6 +34,7 @@ pub enum Incoming<'a> {
         sequence: u32,
         text: &'a [u8],
     },
+    Snapshot(crate::snapshots::Q3Frame<'a>),
     Command {
         command: qa_core::primitives::UserCmd,
         output: Option<OutputConsumerId>,
@@ -240,6 +241,8 @@ impl Connections {
                             .is_err()
                         {
                             self.command_errors += 1;
+                        } else if let Some(frame) = connection.channel.snapshot(sequence) {
+                            consume(client, endpoint, Incoming::Snapshot(frame));
                         }
                     } else {
                         consume(client, endpoint, Incoming::Payload(payload));

@@ -278,7 +278,11 @@ impl Channel {
 
     /// Original SV_UpdateServerCommandsToClient and SV_Netchan_Encode payload.
     /// The shared prepare/submitted path still owns headers and fragmentation.
-    pub fn encode_command_output(&self, out: &mut [u8]) -> Result<usize, packet::Error> {
+    pub fn encode_server_output(
+        &self,
+        out: &mut [u8],
+        body: impl FnOnce(&mut Writer<'_>) -> Result<(), packet::Error>,
+    ) -> Result<usize, packet::Error> {
         if self.endpoint() != Endpoint::Server {
             return Err(packet::Error::Context);
         }
@@ -286,6 +290,7 @@ impl Channel {
         let mut writer = Writer::new(out, Encoding::Q3);
         writer.write_bits(c.incoming.sequence, 32)?;
         self.write_command_records(&mut writer)?;
+        body(&mut writer)?;
         writer.write_bits(8, 8)?; // svc_EOF
         let n = writer.size();
         packet::xor(
@@ -296,9 +301,9 @@ impl Channel {
         );
         Ok(n)
     }
-    /// Complete native command-only server payload. Snapshot/gamestate readers
-    /// extend this same MSG stream later; unsupported opcodes remain explicit.
-    pub fn decode_command_output(
+    /// Native server commands and snapshots share this MSG stream. Gamestate
+    /// and download opcodes remain explicit until their adapters are present.
+    pub fn decode_server_output(
         &mut self,
         bytes: &mut [u8],
         sequence: u32,
@@ -327,7 +332,9 @@ impl Channel {
         let mut reader = Reader::new(bytes, Encoding::Q3);
         reader.read_bits(32)?;
         let mut text = [0; STRING_BYTES];
-        for _ in 0..=SLOTS {
+        // Each opcode consumes bits; the fixed MSG boundary bounds this loop.
+        // A full reliable window followed by a snapshot must still reach EOF.
+        loop {
             match reader.read_bits(8)? {
                 8 => {
                     c.message_acknowledged = sequence;
@@ -340,9 +347,18 @@ impl Channel {
                         consume(seq, text);
                     }
                 }
+                1 => {} // svc_nop
+                7 => {
+                    let snapshots = self.snapshots.as_mut().ok_or(packet::Error::Context)?;
+                    crate::snapshots::read_q3(
+                        &mut reader,
+                        snapshots,
+                        sequence,
+                        c.incoming.sequence,
+                    )?;
+                }
                 _ => return Err(packet::Error::Opcode),
             }
         }
-        Err(packet::Error::Count)
     }
 }

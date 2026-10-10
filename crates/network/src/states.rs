@@ -221,6 +221,14 @@ pub fn read_q3_entity(
     from: &[u32; ENTITY_WORDS],
 ) -> Result<Q3EntityDelta, Error> {
     let number = reader.read_bits(10)? as u16;
+    read_q3_entity_body(reader, number, from)
+}
+
+pub(crate) fn read_q3_entity_body(
+    reader: &mut Reader<'_>,
+    number: u16,
+    from: &[u32; ENTITY_WORDS],
+) -> Result<Q3EntityDelta, Error> {
     if reader.read_bits(1)? != 0 {
         return Ok(Q3EntityDelta {
             number,

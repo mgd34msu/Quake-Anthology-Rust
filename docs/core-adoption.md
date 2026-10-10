@@ -179,3 +179,49 @@ Engine scope is submitted for supervisor review. THE-3169 retains the installed
 authored-face animation/screenshots and combined shader-pack run required by
 THE-862, along with native-module and stock-HUD acceptance. No installation is
 claimed by this slice.
+
+## THE-860: connection snapshot storage and native Q3 stream
+
+`network/src/snapshots.rs:59` owns one typed 32-slot Ring implementation.
+Protocol field counts are const parameters, not separate game stores. Slots
+retain native projection words, ordered native entity numbers, area bytes and
+sequence/clock metadata; they do not own another gameplay PlayerState or
+EntityTable. Entity storage, baselines and decode scratch are allocated at
+connect. Baselines seal before the first frame. Missing/stale deltas are
+consumed without publication; bounded capacity overflow is counted and never
+publishes a partial frame. Q3 retention and delta-distance limits are policy
+data at that boundary.
+
+`network/src/snapshots.rs:213` and `:336` implement Q3 snapshot bodies using
+the existing entity/player field walker. Sorted merges preserve insertion,
+removal and implicit unchanged rows. New entities use the connection's baseline;
+full frames use the native zero player baseline. Reserved/out-of-width entity
+numbers and excess area bits are omitted at the Q3 boundary. Native frame
+requests are distinct from output ACK receipts.
+
+`network/src/channel/commands.rs:281` and `:306` extend the existing server MSG
+writer/reader in place. Commands, snapshots, Huffman, XOR, EOF and the existing
+Channel framing share that stream. All callers of the old command-only methods
+are migrated and those methods are deleted. A full 64-command window followed
+by a snapshot now reaches EOF; the former command-only opcode limit is removed.
+`network/src/ingress.rs:245` exposes a borrowed accepted Snapshot through the
+existing Packet event consumer. There is no new intake point, packet queue or
+receive thread. Cold snapshot storage is boxed only for the relevant client
+endpoint, rather than inflating every protocol's Channel with inline frames.
+
+Remaining adoption sites are explicit: `app/src/host.rs:369` still ignores
+CLIENT snapshot callbacks, `:480` copies SERVER state directly into prediction,
+and `app/src/lib.rs:201` seeds prediction from SERVER state. Common-state
+projection and SERVER snapshot emission are the next THE-860 step. Other
+protocols' snapshot framing, negotiated NQ666/999/rerelease fields, native
+gamestate/signon, captures/live/combined/installed proof remain THE-860/THE-3169.
+This slice does not claim those callers are migrated or legacy play is ready.
+
+The original Q3 snapshot writer/parser bodies match all 512 seeded cases:
+571,602 wire bytes, 5,864 decoded entity rows, player/area fields, native frame
+validity and read-bit positions. Accepted frames number 488; 24 missing-base
+frames are consumed and discarded. Existing 16,384 native state comparisons
+and 512 reliable-command comparisons still match. Nine focused snapshot tests,
+673 workspace tests, unchanged checker and Clippy pass. See
+[frame-times.md](frame-times.md) and `THE-860-snapshots-20261009/` for CPU23
+release timing, allocation gates and the exact measured scopes. No install.

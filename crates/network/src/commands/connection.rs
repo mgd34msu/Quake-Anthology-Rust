@@ -150,6 +150,6 @@ impl Commands {
         consume: impl FnMut(u32, &[u8]),
     ) -> Result<(), packet::Error> {
         let scratch = &mut self.scratch[..length];
-        channel.decode_command_output(scratch, sequence, consume)
+        channel.decode_server_output(scratch, sequence, consume)
     }
 }

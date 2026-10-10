@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..count {
             server.queue_reliable(&string(&mut input)?)?;
         }
-        let n = server.encode_command_output(&mut bytes)?;
+        let n = server.encode_server_output(&mut bytes, |_| Ok(()))?;
         output.write_all(&(n as u32).to_le_bytes())?;
         output.write_all(&bytes[..n])?;
         let mut parsed: Vec<(u32, Vec<u8>)> = Vec::new();
@@ -80,10 +80,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sequence = received.header.sequence;
             if let Delivery::Payload(body) = received.delivery {
                 let mut bytes = body.to_vec();
-                let result =
-                    client.decode_command_output(&mut bytes, sequence, |sequence, text| {
-                        parsed.push((sequence, text.to_vec()))
-                    });
+                let result = client.decode_server_output(&mut bytes, sequence, |sequence, text| {
+                    parsed.push((sequence, text.to_vec()))
+                });
                 match result {
                     Ok(()) => {}
                     Err(qa_network::commands::packet::Error::Opcode) => opcode = 0,
