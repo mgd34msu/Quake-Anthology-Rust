@@ -2,8 +2,8 @@
 use qa_network::{
     message::{Encoding, Reader, Writer},
     states::{
-        self, ENTITY_WORDS, NQ_ENTITY_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS, Q2_PLAYER_WORDS,
-        QW_ENTITY_WORDS,
+        self, ENTITY_WORDS, NQ_ENTITY_WORDS, NQ_PLAYER_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS,
+        Q2_PLAYER_WORDS, QW_ENTITY_WORDS,
     },
 };
 use qa_platform::{Stopwatch, allocations};
@@ -191,6 +191,17 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             if let Some(words) = decoded.words {
                 result.decoded[..NQ_ENTITY_WORDS].copy_from_slice(&words);
             }
+        }
+        6 => {
+            let to: &[u32; NQ_PLAYER_WORDS] = case.to[..NQ_PLAYER_WORDS]
+                .try_into()
+                .map_err(|_| "NQ player words")?;
+            states::write_nq_player(&mut writer, to).map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+            result.decoded[..NQ_PLAYER_WORDS].copy_from_slice(
+                &states::read_nq_player(&mut reader, case.flags & 4 != 0)
+                    .map_err(|e| e.to_string())?,
+            );
         }
         _ => return Err("state dialect".into()),
     }

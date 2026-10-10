@@ -8,6 +8,7 @@ pub(crate) enum ScaleRead {
     Unsigned,
     UnsignedDivide,
     SignedTenthsDelta,
+    SignedInverse,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Packed {
@@ -49,7 +50,7 @@ pub(crate) enum Value {
     Angle8 { integral: bool },
     Packed(Packed),
     Transient,
-    FloatByte,
+    FloatInt,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Field {
@@ -73,7 +74,7 @@ impl Field {
         to: u32,
     ) -> bool {
         match self.value {
-            Value::FloatByte if FLOAT_BYTES => (from as i32 as f32) == f32::from_bits(to),
+            Value::FloatInt if FLOAT_BYTES => (from as i32 as f32) == f32::from_bits(to),
             Value::Transient if PACKED => to == 0,
             Value::Angle16 => f32::from_bits(from) == f32::from_bits(to),
             Value::Angle8 { .. } if PREFIX => f32::from_bits(from) == f32::from_bits(to),
@@ -132,14 +133,24 @@ impl Field {
                     (f32::from_bits(word) * 256.0 / 360.0) as i32 as u32
                 }
             }
-            Value::FloatByte if FLOAT_BYTES => f32::from_bits(word) as i32 as u32,
-            Value::Scaled { factor, .. } if STATE => {
-                (f32::from_bits(word) * f32::from(factor)) as i32 as u32
+            Value::FloatInt if FLOAT_BYTES => f32::from_bits(word) as i32 as u32,
+            Value::Scaled { factor, read } if STATE => {
+                let value = f32::from_bits(word);
+                if FLOAT_BYTES && matches!(read, ScaleRead::SignedInverse) {
+                    (value / f32::from(factor)) as i32 as u32
+                } else {
+                    (value * f32::from(factor)) as i32 as u32
+                }
             }
             _ => word,
         }
     }
-    fn restore<const STATE: bool, const PREFIX: bool, const PACKED: bool>(
+    fn restore<
+        const STATE: bool,
+        const PREFIX: bool,
+        const PACKED: bool,
+        const FLOAT_BYTES: bool,
+    >(
         self,
         word: u32,
         bits: u8,
@@ -152,18 +163,24 @@ impl Field {
                     ((word << (32 - bits)) as i32 >> (32 - bits)) as u32
                 }
             }
+            Value::FloatInt if FLOAT_BYTES && bits != 8 => {
+                ((word << (32 - bits)) as i32 >> (32 - bits)) as u32
+            }
             Value::Signed => ((word << (32 - bits)) as i32 >> (32 - bits)) as u32,
             Value::Angle16 => ((word as i16 as f32) * (360.0 / 65536.0)).to_bits(),
             Value::Angle8 { .. } if PREFIX => ((word as i8 as f32) * (360.0 / 256.0)).to_bits(),
             Value::Scaled { factor, read } if STATE => {
                 let value = if matches!(read, ScaleRead::Signed)
                     || PREFIX && matches!(read, ScaleRead::SignedTenthsDelta)
+                    || FLOAT_BYTES && matches!(read, ScaleRead::SignedInverse)
                 {
                     ((word << (32 - bits)) as i32 >> (32 - bits)) as f32
                 } else {
                     word as f32
                 };
-                if matches!(read, ScaleRead::UnsignedDivide) {
+                if FLOAT_BYTES && matches!(read, ScaleRead::SignedInverse) {
+                    (value * f32::from(factor)).to_bits()
+                } else if matches!(read, ScaleRead::UnsignedDivide) {
                     (value / f32::from(factor)).to_bits()
                 } else {
                     (value * (1.0 / f32::from(factor))).to_bits()
@@ -462,7 +479,10 @@ pub(crate) fn read<
                     reader.read_bits(bits)?
                 }
             } else {
-                field.restore::<STATE, PREFIX, PACKED>(reader.read_bits(bits)? ^ field_key, bits)
+                field.restore::<STATE, PREFIX, PACKED, FLOAT_BYTES>(
+                    reader.read_bits(bits)? ^ field_key,
+                    bits,
+                )
             };
         }
     }

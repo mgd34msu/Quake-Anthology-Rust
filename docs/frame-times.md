@@ -3859,3 +3859,68 @@ Common-state projection, snapshot framing/32-slot rings, NQ client data,
 negotiated 666/999/rerelease coverage, captures/live/native/installed acceptance
 remain on THE-860/THE-3169. These state tables have no snapshot/gameplay caller
 yet; no install is claimed.
+
+
+### THE-860: NetQuake client-data fields
+
+Protocol-15 client data registers 21 native words on the same scalar walker.
+Absent view height defaults to 22; absent pitch, punch, velocity and optional
+statistics reset to zero. Signed character values preserve truncation and
+velocity division by 16 before encoding, with native multiplication on decode.
+The shared float-to-integer policy now covers signed short health as well as
+unsigned byte fields. Items, health, ammunition and active weapon are always
+sent; SU_ITEMS/SU_WEAPON and independent ground/water bits stay native.
+
+Packed items, resource model index and active-weapon byte are explicit ABI
+reductions. The receiver independently selects standard-byte or bit-mask active
+weapon semantics. These are temporary wire words, not another PlayerState or
+HUD store. No new scalar encoder, packet intake or checker rule is added.
+
+Unchanged SV_WriteClientdataToMessage and CL_ParseClientdata bodies extend the
+existing C oracle. All 14,336 records, 7,054,654 comparison bytes and decoded
+words match; 2,048 client-data records exercise all 14 defined native flags and
+both weapon conventions. Private bindings supply exact QC low item bits plus
+native serverflags, a supplied model index and pitch. items2/mod inventory
+reduction, native ideal-pitch computation, damage/setangle prefixes, resource
+lookup and HUD callbacks are not qualified. Earlier 3,072 command and 768
+MSG/Huff cases remain exact. The nine focused codec tests include defaults,
+char overflow, fractional optional values, signed short health, weapon bit 31
+and every truncated prefix. Unchanged checker, 662 workspace tests, formatting
+and all-target Clippy pass.
+
+CPU23 portable release, five ABBA blocks, 60 warm-up + 600 measured frames/leg,
+16 records/frame with original-C byte/word checks. Retained debbd46f baselines
+and fixtures. Final release-example rebuild Cargo 9.31 s.
+
+| Existing codec workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed usercmds | 3028 | 3034.5 | +0.215% | 4603 | 4404 |
+| QW usercmds | 1842.5 | 1751 | -4.966% | 2932 | 2902 |
+| Q2 usercmds | 1935 | 1916.5 | -0.956% | 3000 | 2930 |
+| Q3 usercmds | 3492.5 | 3494 | +0.043% | 4868 | 5051 |
+| Q3 entity/player records | 17232.1 | 17144 | -0.511% | 33186.1 | 34279 |
+| Q2 player records | 13052 | 12942.5 | -0.839% | 17258 | 17470 |
+| QW entity records | 2541 | 2611 | +2.755% | 3207 | 3185 |
+| Q2 entity records | 5282.5 | 5099.05 | -3.473% | 6670 | 6271 |
+| NQ entity records | 3608 | 3902 | +8.149% | 4849 | 5073 |
+
+Mixed/Q3-command/QW-entity/NQ-entity medians increase 0.215%/0.043%/2.755%/8.149%;
+other medians improve. Q3-command/Q3-state/Q2-player/NQ-entity tails increase;
+other tails improve. All meet the existing 10% median guard. The NQ entity
+conversion cost remains reported; inlining its fixed-record boundary did not
+remove it. This is not a general speedup claim. Every leg retains its byte
+total and 10,560 checks including warm-up. Measured allocations/reallocations/
+requested bytes are zero, with a one-allocation positive control.
+
+Four new NQ client-data runs average 4916.25 ns median / 6605 ns p99
+per 16 records, 258,312 wire bytes and 10,560 checks including warm-up,
+zero measured heap. No comparable prior path. Probes exclude host, transport,
+workers, native-module execution and gameplay.
+
+Evidence: `THE-860-nq-client-20261009/`, final-original/commands/message
+comparisons, nq-player-coverage.json, final-abba-summary.json and
+inline-nq-entity raw legs, final-nq-player-summary.json/four runs,
+checker/workspace/Clippy/build logs. Common-state projection, snapshot framing/
+32-slot rings, negotiated 666/999/rerelease coverage, signon/captures/live/native/
+combined/installed acceptance remain THE-860/THE-3169. These state tables have
+no snapshot/gameplay caller yet; no install is claimed.

@@ -745,11 +745,11 @@ pub const NQ_ENTITY_LAYOUT: [(&str, i8); 12] = [
 ];
 pub const NQ_ENTITY_WORDS: usize = NQ_ENTITY_LAYOUT.len();
 static NQ_ENTITY_FIELDS: [Field; 11] = [
-    Field::new(0, 8, 1 << 10, Value::FloatByte),
-    Field::new(1, 8, 1 << 6, Value::FloatByte),
-    Field::new(2, 8, 1 << 11, Value::FloatByte),
-    Field::new(3, 8, 1 << 12, Value::FloatByte),
-    Field::new(4, 8, 1 << 13, Value::FloatByte),
+    Field::new(0, 8, 1 << 10, Value::FloatInt),
+    Field::new(1, 8, 1 << 6, Value::FloatInt),
+    Field::new(2, 8, 1 << 11, Value::FloatInt),
+    Field::new(3, 8, 1 << 12, Value::FloatInt),
+    Field::new(4, 8, 1 << 13, Value::FloatInt),
     Field::new(
         5,
         16,
@@ -789,6 +789,7 @@ pub type NqEntityUpdate = EntityDelta<NQ_ENTITY_WORDS>;
 
 /// Always emits a visible entity, including unchanged signon-baseline values.
 /// Absence from a datagram is not a remove record or a new ACK requirement.
+#[inline(always)]
 pub fn write_nq_entity(
     writer: &mut Writer<'_>,
     number: u32,
@@ -821,6 +822,7 @@ pub fn write_nq_entity(
     delta::write(&NQ_ENTITY_GROUP, baseline, to, flags, writer)?;
     Ok(true)
 }
+#[inline(always)]
 pub fn read_nq_entity(
     reader: &mut Reader<'_>,
     baseline: &[u32; NQ_ENTITY_WORDS],
@@ -851,10 +853,211 @@ pub fn read_nq_entity(
     })
 }
 
+/// Native protocol-15 client data. View/punch/velocity and target statistic
+/// values retain QuakeC floats. Items, model index and active-weapon byte are
+/// already reduced at their ABI/resource boundary; flags are independent words.
+pub const NQ_PLAYER_LAYOUT: [(&str, i8); 21] = [
+    ("viewheight", -8),
+    ("idealpitch", -8),
+    ("punchangle[0]", -8),
+    ("velocity[0]", -8),
+    ("punchangle[1]", -8),
+    ("velocity[1]", -8),
+    ("punchangle[2]", -8),
+    ("velocity[2]", -8),
+    ("items", 32),
+    ("weaponframe", 8),
+    ("armor", 8),
+    ("weaponmodel", 8),
+    ("health", -16),
+    ("ammo", 8),
+    ("shells", 8),
+    ("nails", 8),
+    ("rockets", 8),
+    ("cells", 8),
+    ("activeweapon", 8),
+    ("onground", 0),
+    ("inwater", 0),
+];
+pub const NQ_PLAYER_WORDS: usize = NQ_PLAYER_LAYOUT.len();
+const NQ_PLAYER_DEFAULTS: [u32; NQ_PLAYER_WORDS] = {
+    let mut words = [0; NQ_PLAYER_WORDS];
+    words[0] = 22.0f32.to_bits();
+    words
+};
+static NQ_PLAYER_FIELDS: [Field; 19] = [
+    Field::new(
+        0,
+        8,
+        1 << 0,
+        Value::Scaled {
+            factor: 1,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        1,
+        8,
+        1 << 1,
+        Value::Scaled {
+            factor: 1,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        2,
+        8,
+        1 << 2,
+        Value::Scaled {
+            factor: 1,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        3,
+        8,
+        1 << 5,
+        Value::Scaled {
+            factor: 16,
+            read: ScaleRead::SignedInverse,
+        },
+    ),
+    Field::new(
+        4,
+        8,
+        1 << 3,
+        Value::Scaled {
+            factor: 1,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        5,
+        8,
+        1 << 6,
+        Value::Scaled {
+            factor: 16,
+            read: ScaleRead::SignedInverse,
+        },
+    ),
+    Field::new(
+        6,
+        8,
+        1 << 4,
+        Value::Scaled {
+            factor: 1,
+            read: ScaleRead::Signed,
+        },
+    ),
+    Field::new(
+        7,
+        8,
+        1 << 7,
+        Value::Scaled {
+            factor: 16,
+            read: ScaleRead::SignedInverse,
+        },
+    ),
+    Field::new(8, 32, 0, Value::Unsigned),
+    Field::new(9, 8, 1 << 12, Value::FloatInt),
+    Field::new(10, 8, 1 << 13, Value::FloatInt),
+    Field::new(11, 8, 1 << 14, Value::Unsigned),
+    Field::new(12, 16, 0, Value::FloatInt),
+    Field::new(13, 8, 0, Value::FloatInt),
+    Field::new(14, 8, 0, Value::FloatInt),
+    Field::new(15, 8, 0, Value::FloatInt),
+    Field::new(16, 8, 0, Value::FloatInt),
+    Field::new(17, 8, 0, Value::FloatInt),
+    Field::new(18, 8, 0, Value::Unsigned),
+];
+static NQ_PLAYER_GROUP: [Group<true, true, false, true>; 1] = [Group {
+    fields: &NQ_PLAYER_FIELDS,
+    presence: Presence::Fixed,
+}];
+pub fn write_nq_player(writer: &mut Writer<'_>, to: &[u32; NQ_PLAYER_WORDS]) -> Result<(), Error> {
+    let always =
+        (1 << 9) | (1 << 14) | (u32::from(to[19] != 0) << 10) | (u32::from(to[20] != 0) << 11);
+    let flags = delta::mask::<true, true, false, true>(
+        &NQ_PLAYER_FIELDS,
+        &NQ_PLAYER_DEFAULTS,
+        to,
+        always,
+        0,
+        0,
+    );
+    writer.write_bits(15, 8)?;
+    writer.write_bits(flags, 16)?;
+    delta::write(&NQ_PLAYER_GROUP, &NQ_PLAYER_DEFAULTS, to, flags, writer)
+}
+pub fn read_nq_player(
+    reader: &mut Reader<'_>,
+    active_weapon_is_mask: bool,
+) -> Result<[u32; NQ_PLAYER_WORDS], Error> {
+    if reader.read_bits(8)? != 15 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Symbol,
+        });
+    }
+    let flags = reader.read_bits(16)?;
+    let mut words = NQ_PLAYER_DEFAULTS;
+    words[19] = u32::from(flags & (1 << 10) != 0);
+    words[20] = u32::from(flags & (1 << 11) != 0);
+    delta::read(&NQ_PLAYER_GROUP, &mut words, flags, reader)?;
+    if active_weapon_is_mask {
+        words[18] = 1u32.wrapping_shl(words[18]);
+    }
+    Ok(words)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{Encoding, ErrorKind};
+
+    #[test]
+    fn nq_client_defaults_signed_values_and_weapon_mask() -> Result<(), Error> {
+        let mut to = NQ_PLAYER_DEFAULTS;
+        let mut bytes = [0xff; 128];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_nq_player(&mut writer, &to)?;
+        assert_eq!(
+            writer.bytes(),
+            &[15, 0, 0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        assert_eq!(read_nq_player(&mut reader, false)?, NQ_PLAYER_DEFAULTS);
+        to[0] = 129.5f32.to_bits();
+        to[1] = (-128.75f32).to_bits();
+        to[3] = (-2049.0f32).to_bits();
+        to[8] = 0x80000000;
+        to[9] = 0.25f32.to_bits();
+        to[12] = 40000.5f32.to_bits();
+        to[18] = 31;
+        to[19] = 1;
+        to[20] = 1;
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_nq_player(&mut writer, &to)?;
+        assert_ne!(writer.bytes()[2] & 0x10, 0);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let actual = read_nq_player(&mut reader, true)?;
+        assert_eq!(actual[0], (-127.0f32).to_bits());
+        assert_eq!(actual[1], (-128.0f32).to_bits());
+        assert_eq!(actual[3], (-2048.0f32).to_bits());
+        assert_eq!(actual[8], 0x80000000);
+        assert_eq!(actual[9], 0);
+        assert_eq!(actual[12], (-25536i32) as u32);
+        assert_eq!(actual[18], 0x80000000);
+        assert_eq!(&actual[19..], &[1, 1]);
+        for length in 0..writer.size() {
+            let mut reader = Reader::new(&writer.bytes()[..length], Encoding::Bytes);
+            assert_eq!(
+                read_nq_player(&mut reader, true).map_err(|e| e.kind),
+                Err(ErrorKind::Truncated)
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn nq_baseline_float_comparison_angle_truncation_and_number_width() -> Result<(), Error> {
