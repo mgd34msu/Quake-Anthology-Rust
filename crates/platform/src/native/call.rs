@@ -96,4 +96,19 @@ impl NativeEntry {
         }
         (integers, floats)
     }
+    pub(super) fn unpack(&self, integers: [u64; 13], floats: [u64; 8]) -> [u64; 13] {
+        let mut values = [0; 13];
+        for (value, location) in values
+            .iter_mut()
+            .zip(&self.locations[..self.argument_count()])
+        {
+            let bank = if location.floating {
+                &floats[..]
+            } else {
+                &integers[..]
+            };
+            *value = bank[location.slot as usize] & location.mask;
+        }
+        values
+    }
 }

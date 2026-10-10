@@ -7,7 +7,8 @@ use crate::{
 use qa_core::sys_events::EventTime;
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
-    NativeAbi, NativeEntry, NativeError, NativeImage, NativeProcess, NativeRegion, NativeScalar,
+    NativeAbi, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion,
+    NativeScalar,
 };
 use std::time::Duration;
 
@@ -53,6 +54,7 @@ impl Vm {
     pub fn map_image(
         mut image: Image,
         named: &[NamedExport<'_>],
+        imports: &[NativeImport<'_>],
         timeout: Duration,
     ) -> Result<Self, Error> {
         let targets = named
@@ -140,6 +142,7 @@ impl Vm {
             Encoding::Elf => NativeAbi::SystemV,
         };
         let process = NativeProcess::load(NativeImage {
+            imports,
             base: image.base,
             pointer_bytes: (image.target.bits / 8) as u8,
             bytes: &image.bytes,

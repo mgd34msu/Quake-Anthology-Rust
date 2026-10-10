@@ -15,7 +15,7 @@ use qa_core::{
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
 use qa_formats::program::native::{Encoding, Image, LoadRole};
-use qa_platform::native::NativeAbi;
+use qa_platform::native::{NativeAbi, NativeImport, NativeScalar};
 use qa_session::timing::TickRate;
 use qa_world::entities::{AllocationPolicy, EntityTime};
 use std::time::Duration;
@@ -65,14 +65,14 @@ fn function_image(encoding: Encoding, code: &[u8]) -> Image {
     .unwrap()
 }
 
-fn print_code(encoding: Encoding) -> Vec<u8> {
+fn print_code(encoding: Encoding, numbered: bool) -> Vec<u8> {
     // Copy the shared message to a native local buffer, then call Print with
     // its stack pointer. This exercises the same lifetime as qsrc G_Printf.
     let (reserve, local, number, argument) = match encoding {
         Encoding::Elf => (24, 0, 0xbf, 0x74),
         Encoding::Pe => (56, 32, 0xb9, 0x54),
     };
-    vec![
+    let mut code = vec![
         0x48,
         0x83,
         0xec,
@@ -125,7 +125,18 @@ fn print_code(encoding: Encoding) -> Vec<u8> {
         0xc4,
         reserve,
         0xc3,
-    ]
+    ];
+    if !numbered {
+        // A native function pointer takes the string as its first argument.
+        // Remove the Q3 ordinal setup and select rdi/rcx for the local buffer.
+        code[35..40].fill(0x90);
+        code[42] = if encoding == Encoding::Elf {
+            0x7c
+        } else {
+            0x4c
+        };
+    }
+    code
 }
 
 fn module(
@@ -135,8 +146,9 @@ fn module(
     rate: TickRate,
     text: &[u8],
     encoding: Encoding,
+    imports: &[NativeImport<'_>],
 ) -> ModuleRequest {
-    let code = print_code(encoding);
+    let code = print_code(encoding, imports.is_empty());
     let name = if encoding == Encoding::Elf {
         b"vmMain".as_slice()
     } else {
@@ -160,10 +172,17 @@ fn module(
                 command: None,
             },
         ],
+        imports,
         Duration::from_secs(3),
     )
     .unwrap();
-    let pointer = vm.import_callback();
+    let pointer = if imports.is_empty() {
+        vm.import_callback()
+    } else {
+        vm.process
+            .import_pointer(0)
+            .expect("registered native function")
+    };
     let memory = vm.process.memory_mut().expect("parked native backing");
     assert_eq!(&memory[at..at + 8], &[0; 8]);
     memory[at + 16..at + 16 + text.len()].copy_from_slice(text);
@@ -252,6 +271,7 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
         let vm = Vm::map_image(
             function_image(encoding, &code),
             &named,
+            &[],
             Duration::from_secs(3),
         )
         .unwrap();
@@ -291,6 +311,7 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
             Vm::map_image(
                 function_image(encoding, &code),
                 &missing,
+                &[],
                 Duration::from_secs(3)
             ),
             Err(qa_compat::native::Error::Export)
@@ -305,6 +326,7 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
                     name: &folded,
                     command: None
                 }],
+                &[],
                 Duration::from_secs(3)
             ),
             Err(qa_compat::native::Error::Export)
@@ -321,6 +343,7 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
                 name: b"vmMain",
                 command: None
             }],
+            &[],
             Duration::from_secs(3)
         ),
         Err(qa_compat::native::Error::Process(
@@ -343,6 +366,7 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
                 name: b"vmMain",
                 command: None
             }],
+            &[],
             Duration::from_secs(3)
         ),
         Err(qa_compat::native::Error::Export)
@@ -365,6 +389,7 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
             name: b"vmMain",
             command: None,
         }],
+        &[],
         Duration::from_secs(3),
     )
     .unwrap();
@@ -407,6 +432,7 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
                 name: b"vmMain",
                 command: None
             }],
+            &[],
             Duration::from_secs(3)
         ),
         Err(qa_compat::native::Error::Export)
@@ -429,7 +455,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         (Encoding::Elf, "qagame.so", b"ELF cold\n\0".as_slice()),
         (Encoding::Pe, "qagame.dll", b"PE cold\n\0".as_slice()),
     ] {
-        let code = print_code(encoding);
+        let code = print_code(encoding, true);
         let mut file = function_file(encoding, &code);
         match encoding {
             Encoding::Elf => {
@@ -546,6 +572,7 @@ fn scalar_native_export_results_survive_session_dispatch() {
                 parameters: &kinds,
                 result: NativeScalar::Double,
             }],
+            &[],
             Duration::from_secs(3),
         )
         .unwrap();
@@ -605,7 +632,19 @@ impl FrameSource for Source {
     fn present(&mut self) {}
 }
 
-fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
+fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions: bool) {
+    let system_v = [NativeImport {
+        number: 0,
+        abi: NativeAbi::SystemV,
+        parameters: &[NativeScalar::Word],
+        result: NativeScalar::Word,
+    }];
+    let microsoft = [NativeImport {
+        number: 0,
+        abi: NativeAbi::Microsoft,
+        parameters: &[NativeScalar::Word],
+        result: NativeScalar::Word,
+    }];
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let observer = runtime
         .server
@@ -619,6 +658,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
         TickRate::fixed(50).unwrap(),
         b"q3 native\n\0",
         Encoding::Elf,
+        if functions { &system_v } else { &[] },
     );
     let q2 = module(
         &mut runtime,
@@ -627,6 +667,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
         TickRate::fixed(100).unwrap(),
         b"q2 native\n\0",
         Encoding::Pe,
+        if functions { &microsoft } else { &[] },
     );
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
@@ -677,7 +718,9 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
 }
 
 pub fn run() {
-    two_native_modules_use_session_rates_and_the_same_calltable_output_ring();
+    for functions in [false, true] {
+        two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions);
+    }
     checked_exports_preserve_names_and_native_command_arguments();
     elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
     native_files_use_the_qvm_role_policy_and_vfs_loader();

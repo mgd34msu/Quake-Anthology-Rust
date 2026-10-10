@@ -269,7 +269,7 @@ pub fn load_q3(
                         name: b"dllEntry",
                         command: None,
                     });
-                    let vm = Vm::map_image(image, &named, std::time::Duration::from_secs(3))
+                    let vm = Vm::map_image(image, &named, &[], std::time::Duration::from_secs(3))
                         .map_err(|e| format!("native mapping: {e:?}"))?;
                     let mut arguments = [Argument::Word(0); 9];
                     arguments[0] = Argument::Word(vm.import_callback());

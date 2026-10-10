@@ -16,6 +16,10 @@ unsafe extern "sysv64" {
     pub(super) fn system_v_import();
     #[link_name = "qa_native_x64_microsoft_import"]
     pub(super) fn microsoft_import();
+    #[link_name = "qa_native_x64_system_v_function"]
+    pub(super) fn system_v_function();
+    #[link_name = "qa_native_x64_microsoft_function"]
+    pub(super) fn microsoft_function();
 }
 
 // The controller frame is private. Import capture contains raw guest words,
@@ -33,7 +37,7 @@ std::arch::global_asm!(
 .Lguest_top: .zero 8
     .balign 16
     // rsp, flags, rbx, rbp, rdi, rsi, r12-r15; 14 ABI words; FXSAVE.
-.Limport_state: .zero 704
+.Limport_state: .zero 720
     .popsection
 
     .pushsection .text
@@ -127,6 +131,7 @@ std::arch::global_asm!(
     .global {system_v_import}
     .hidden {system_v_import}
 {system_v_import}:
+    mov qword ptr [rip + .Limport_state + 704], 0
     mov [rip + .Limport_state + 80], rdi
     mov [rip + .Limport_state + 88], rsi
     mov [rip + .Limport_state + 96], rdx
@@ -139,12 +144,39 @@ std::arch::global_asm!(
     .global {microsoft_import}
     .hidden {microsoft_import}
 {microsoft_import}:
+    mov qword ptr [rip + .Limport_state + 704], 0
     mov [rip + .Limport_state + 80], rcx
     mov [rip + .Limport_state + 88], rdx
     mov [rip + .Limport_state + 96], r8
     mov [rip + .Limport_state + 104], r9
     lea r10, [rsp + 40]
     mov r11d, 4
+    jmp .Limport
+    .global {system_v_function}
+    .hidden {system_v_function}
+{system_v_function}:
+    mov qword ptr [rip + .Limport_state + 704], 1
+    mov [rip + .Limport_state + 80], r11
+    mov [rip + .Limport_state + 88], rdi
+    mov [rip + .Limport_state + 96], rsi
+    mov [rip + .Limport_state + 104], rdx
+    mov [rip + .Limport_state + 112], rcx
+    mov [rip + .Limport_state + 120], r8
+    mov [rip + .Limport_state + 128], r9
+    lea r10, [rsp + 8]
+    mov r11d, 7
+    jmp .Limport
+    .global {microsoft_function}
+    .hidden {microsoft_function}
+{microsoft_function}:
+    mov qword ptr [rip + .Limport_state + 704], 1
+    mov [rip + .Limport_state + 80], r11
+    mov [rip + .Limport_state + 88], rcx
+    mov [rip + .Limport_state + 96], rdx
+    mov [rip + .Limport_state + 104], r8
+    mov [rip + .Limport_state + 112], r9
+    lea r10, [rsp + 40]
+    mov r11d, 5
 .Limport:
     mov [rip + .Limport_state], rsp
     pushfq
@@ -180,8 +212,24 @@ std::arch::global_asm!(
     mov rsp, [rip + .Lcontroller_stack]
     fxrstor64 [rsp]
     lea rdi, [rip + .Limport_state + 80]
+    lea rsi, [rip + .Limport_state + 352]
+    mov rdx, [rip + .Limport_state + 704]
     call {import}
     fxrstor64 [rip + .Limport_state + 192]
+    cmp edx, 1
+    je .Limport_float
+    cmp edx, 2
+    je .Limport_double
+    cmp edx, 3
+    jne .Limport_result
+    xor eax, eax
+    jmp .Limport_result
+.Limport_float:
+    movd xmm0, eax
+    jmp .Limport_result
+.Limport_double:
+    movq xmm0, rax
+.Limport_result:
     mov rbx, [rip + .Limport_state + 16]
     mov rbp, [rip + .Limport_state + 24]
     mov rdi, [rip + .Limport_state + 32]
@@ -204,6 +252,8 @@ std::arch::global_asm!(
     call = sym call,
     system_v_import = sym system_v_import,
     microsoft_import = sym microsoft_import,
+    system_v_function = sym system_v_function,
+    microsoft_function = sym microsoft_function,
     import = sym import,
     stack_bytes = const super::STACK,
 );

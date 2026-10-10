@@ -1,5 +1,5 @@
 use super::{
-    NativeAbi, NativeError, NativeImage, NativeRegion, NativeScalar,
+    NativeAbi, NativeError, NativeImage, NativeImport, NativeRegion, NativeScalar,
     implementation::{NativeProcess, child_main, executable_offset},
 };
 use std::{os::unix::process::ExitStatusExt, process::Command, time::Duration};
@@ -28,12 +28,13 @@ fn child_entry() {
 fn child(code: &[u8], timeout: Duration) -> Result<NativeProcess, NativeError> {
     let mut bytes = vec![0; 8192];
     bytes[..code.len()].copy_from_slice(code);
-    image_child(&bytes, &REGIONS, timeout)
+    image_child(&bytes, &REGIONS, &[], timeout)
 }
 
 fn image_child(
     bytes: &[u8],
     regions: &[NativeRegion],
+    imports: &[NativeImport<'_>],
     timeout: Duration,
 ) -> Result<NativeProcess, NativeError> {
     let mut command = Command::new(std::env::current_exe()?);
@@ -43,6 +44,7 @@ fn image_child(
     NativeProcess::launch(
         command,
         NativeImage {
+            imports,
             base: BASE,
             pointer_bytes: 8,
             bytes,
@@ -80,7 +82,7 @@ fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
             permissions: 1,
         },
     ];
-    let mut process = image_child(&bytes, &regions, Duration::from_secs(3)).unwrap();
+    let mut process = image_child(&bytes, &regions, &[], Duration::from_secs(3)).unwrap();
     assert!(process.executable(BASE + 512));
     for offset in [0, 511, 519, 1000, 4096, 5000, 8191] {
         assert!(!process.executable(BASE + offset));
@@ -133,6 +135,7 @@ fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
                     length,
                     permissions
                 }],
+                &[],
                 Duration::from_secs(3)
             ),
             Err(NativeError::Extent)
@@ -829,6 +832,73 @@ fn scalar_results_preserve_float_bits_and_void_discards_register_garbage() {
 }
 
 #[test]
+fn typed_native_function_imports_decode_scalar_arguments_and_return_in_the_native_bank() {
+    let kinds = [
+        NativeScalar::Word,
+        NativeScalar::Float,
+        NativeScalar::Double,
+        NativeScalar::Word,
+    ];
+    let mut arguments = [0; 13];
+    arguments[..4].copy_from_slice(&[
+        0xfedc_ba98_7654_3210,
+        0x8000_0000,
+        0x7ff8_1234_5678_abcd,
+        0x0123_4567_89ab_cdef,
+    ]);
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        for result_kind in [
+            NativeScalar::Word,
+            NativeScalar::Float,
+            NativeScalar::Double,
+            NativeScalar::Void,
+        ] {
+            let reserve = if abi == NativeAbi::SystemV { 8 } else { 40 };
+            // Forward these four native arguments to the load-bound function
+            // pointer at BASE+4096; unlike Q3, there is no leading ordinal.
+            let code = [
+                0x48, 0x83, 0xec, reserve, 0x48, 0x8b, 0x05, 0xf5, 0x0f, 0, 0, 0xff, 0xd0, 0x48,
+                0x83, 0xc4, reserve, 0xc3,
+            ];
+            let mut bytes = vec![0; 8192];
+            bytes[..code.len()].copy_from_slice(&code);
+            let imports = [NativeImport {
+                number: 137,
+                abi,
+                parameters: &kinds,
+                result: result_kind,
+            }];
+            let mut process =
+                image_child(&bytes, &REGIONS, &imports, Duration::from_secs(3)).unwrap();
+            let pointer = process.import_pointer(0).unwrap();
+            assert!(process.import_pointer(1).is_none());
+            assert!(process.executable(pointer));
+            assert!(!process.executable(pointer + 24));
+            process.memory_mut().unwrap()[4096..4104].copy_from_slice(&pointer.to_le_bytes());
+            let entry = process.bind(BASE, abi, &kinds, result_kind).unwrap();
+            let mut calls = 0;
+            let result = process
+                .invoke(entry, arguments, |call, _, _| {
+                    calls += 1;
+                    assert_eq!(call.number, 137);
+                    assert_eq!(call.arguments, arguments);
+                    Ok(0x7ff8_5678_8000_0000)
+                })
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(
+                result,
+                match result_kind {
+                    NativeScalar::Word | NativeScalar::Double => 0x7ff8_5678_8000_0000,
+                    NativeScalar::Float => 0x8000_0000,
+                    NativeScalar::Void => 0,
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn native_code_cannot_spawn_an_uncontrolled_writer_or_change_page_rights() {
     // syscall clone with all-zero arguments: must fail with EPERM before a child exists.
     let mut process = standard(&[
@@ -879,7 +949,7 @@ fn native_code_cannot_spawn_an_uncontrolled_writer_or_change_page_rights() {
 
 #[test]
 fn nonexecutable_entry_and_callback_rejection_are_local() {
-    let mut process = standard(&[0xc3]);
+    let process = standard(&[0xc3]);
     assert!(matches!(
         process.bind(
             BASE + 4096,
@@ -892,6 +962,7 @@ fn nonexecutable_entry_and_callback_rejection_are_local() {
     assert_ne!(process.pid(), 0);
     assert!(matches!(
         NativeProcess::load(NativeImage {
+            imports: &[],
             base: BASE,
             pointer_bytes: 4,
             bytes: &[],

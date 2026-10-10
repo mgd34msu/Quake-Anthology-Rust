@@ -246,7 +246,8 @@ pub struct NativeProcess {
     regions: Box<[NativeRegion]>,
     parked: bool,
     sequence: u64,
-    callbacks: [u64; 2],
+    callbacks: [u64; 4],
+    imports: Box<[(u32, NativeEntry)]>,
     reaped: Option<std::process::ExitStatus>,
     timeout: Duration,
 }
@@ -268,11 +269,14 @@ impl NativeProcess {
             || image.base < PAGE as u64
             || image.base % PAGE as u64 != 0
             || image.timeout.is_zero()
-            || image.regions.len() > 65536
+            || image.regions.len() + image.imports.len() > 65536
+            || image.imports.len() > 4096
         {
             return Err(NativeError::Extent);
         }
-        let image_length = image.bytes.len().div_ceil(PAGE) * PAGE;
+        let thunk_offset = image.bytes.len().div_ceil(PAGE) * PAGE;
+        let thunk_bytes = image.imports.len() * 32;
+        let image_length = thunk_offset + thunk_bytes.div_ceil(PAGE) * PAGE;
         let length = image_length
             .checked_add(PAGE + STACK)
             .filter(|&n| n <= LIMIT)
@@ -280,6 +284,22 @@ impl NativeProcess {
         if image.base.checked_add(length as u64).is_none() {
             return Err(NativeError::Extent);
         }
+        let imports = image
+            .imports
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                Ok((
+                    entry.number,
+                    NativeEntry::bind(
+                        image.base + (thunk_offset + index * 32) as u64,
+                        entry.abi,
+                        entry.parameters,
+                        entry.result,
+                    )?,
+                ))
+            })
+            .collect::<Result<Box<[_]>, NativeError>>()?;
         let mut pages = vec![0u8; image_length / PAGE];
         let mut end = 0;
         for region in image.regions {
@@ -295,6 +315,7 @@ impl NativeProcess {
                 *rights |= region.permissions;
             }
         }
+        pages[thunk_offset / PAGE..].fill(5);
         let mut mapped = Vec::new();
         let mut at = 0;
         while at < pages.len() {
@@ -335,21 +356,39 @@ impl NativeProcess {
             .stdin(Stdio::from(OwnedFd::from(child_stream)))
             .stdout(Stdio::null())
             .stderr(Stdio::from(file));
+        let mut regions = image.regions.to_vec();
+        regions.extend(imports.iter().map(|(_, entry)| NativeRegion {
+            offset: (entry.address - image.base) as usize,
+            length: 12,
+            permissions: 5,
+        }));
         let child = command.spawn()?;
         let mut owner = Self {
             child: Some(child),
             stream,
             memory,
             base: image.base,
-            regions: image.regions.into(),
+            regions: regions.into_boxed_slice(),
             parked: false,
             sequence: 0,
-            callbacks: [0; 2],
+            callbacks: [0; 4],
+            imports,
             reaped: None,
             timeout: image.timeout,
         };
         if let Err(error) = owner.start(&mapped) {
             return Err(owner.failure(error));
+        }
+        // Patch each numeric import gateway only at the enforced load stop.
+        // The indirect jump preserves AL and all native parameter registers.
+        for (index, (_, entry)) in owner.imports.iter().enumerate() {
+            let at = (entry.address - owner.base) as usize;
+            let bytes = &mut owner.memory.bytes_mut()[at..at + 32];
+            bytes.fill(0xcc);
+            bytes[..2].copy_from_slice(&[0x41, 0xbb]); // mov r11d,index
+            bytes[2..6].copy_from_slice(&(index as u32).to_le_bytes());
+            bytes[6..12].copy_from_slice(&[0xff, 0x25, 12, 0, 0, 0]); // jmp [rip+12]
+            bytes[24..].copy_from_slice(&owner.callbacks[2 + entry.abi as usize].to_le_bytes());
         }
         Ok(owner)
     }
@@ -377,7 +416,7 @@ impl NativeProcess {
             return Err(NativeError::Protocol);
         }
         self.stop_boundary()?;
-        self.callbacks = [ready.arguments[3], ready.arguments[4]];
+        self.callbacks.copy_from_slice(&ready.arguments[3..7]);
         Ok(())
     }
     pub fn pid(&self) -> u32 {
@@ -388,6 +427,9 @@ impl NativeProcess {
     }
     pub fn callback(&self, abi: NativeAbi) -> u64 {
         self.callbacks[abi as usize]
+    }
+    pub fn import_pointer(&self, ordinal: usize) -> Option<u64> {
+        self.imports.get(ordinal).map(|(_, entry)| entry.address)
     }
     pub fn executable(&self, address: u64) -> bool {
         address
@@ -504,18 +546,33 @@ impl NativeProcess {
                 match packet.operation {
                     RETURN => return Ok(packet.value),
                     IMPORT => {
-                        let number =
-                            u32::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
+                        let (number, arguments, result_kind) = match packet.abi {
+                            0 => (
+                                u32::try_from(packet.address).map_err(|_| NativeError::Protocol)?,
+                                packet.arguments,
+                                0,
+                            ),
+                            1 => {
+                                let ordinal = usize::try_from(packet.address)
+                                    .map_err(|_| NativeError::Protocol)?;
+                                let &(number, entry) =
+                                    self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
+                                (
+                                    number,
+                                    entry.unpack(packet.arguments, packet.floats),
+                                    entry.control & 3,
+                                )
+                            }
+                            _ => return Err(NativeError::Protocol),
+                        };
                         let result = callback(
-                            NativeCall {
-                                number,
-                                arguments: packet.arguments,
-                            },
+                            NativeCall { number, arguments },
                             self.base,
                             self.memory.bytes_mut(),
                         )?;
                         let mut reply = Packet::new(REPLY, self.sequence);
                         reply.value = result;
+                        reply.address = result_kind;
                         reply.send_before(&mut self.stream, Some(deadline))?;
                         self.resume()?;
                     }
@@ -565,7 +622,12 @@ impl Drop for NativeProcess {
 // The fixed protocol carries call words, never per-entity field caches.
 static CHILD_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-extern "C" fn import(words: &[u64; 14]) -> u64 {
+#[repr(C)]
+struct ImportResult {
+    value: u64,
+    kind: u64,
+}
+extern "C" fn import(words: &[u64; 14], floats: &[[u64; 2]; 8], typed: u64) -> ImportResult {
     // The assembly gate supplies private, fully captured ABI words. No Rust
     // reference into the shared guest stack is retained while the parent borrows.
     let number = words[0];
@@ -577,11 +639,20 @@ extern "C" fn import(words: &[u64; 14]) -> u64 {
     let mut packet = Packet::new(IMPORT, sequence);
     packet.address = number;
     packet.arguments = arguments;
+    packet.abi = typed as u8;
+    packet.floats = std::array::from_fn(|i| floats[i][0]);
     if packet.send(&mut stream).is_err() {
         std::process::exit(125);
     }
     match Packet::receive(&mut stream) {
-        Ok(packet) if packet.operation == REPLY && packet.sequence == sequence => packet.value,
+        Ok(packet)
+            if packet.operation == REPLY && packet.sequence == sequence && packet.address <= 3 =>
+        {
+            ImportResult {
+                value: packet.value,
+                kind: packet.address,
+            }
+        }
         _ => std::process::exit(125),
     }
 }
@@ -683,12 +754,14 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     guard()?;
     let mut ready = Packet::new(READY, 0);
     ready.address = packet.address;
-    ready.arguments[..5].copy_from_slice(&[
+    ready.arguments[..7].copy_from_slice(&[
         length as u64,
         8,
         pid as u64,
         x64::system_v_import as *const () as usize as u64,
         x64::microsoft_import as *const () as usize as u64,
+        x64::system_v_function as *const () as usize as u64,
+        x64::microsoft_function as *const () as usize as u64,
     ]);
     ready.send(&mut stream)?;
     loop {

@@ -11,6 +11,13 @@ pub enum NativeAbi {
 mod call;
 pub use call::{NativeEntry, NativeScalar};
 
+pub struct NativeImport<'a> {
+    pub number: u32,
+    pub abi: NativeAbi,
+    pub parameters: &'a [NativeScalar],
+    pub result: NativeScalar,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRegion {
     pub offset: usize,
@@ -25,6 +32,7 @@ pub struct NativeImage<'a> {
     pub pointer_bytes: u8,
     pub bytes: &'a [u8],
     pub regions: &'a [NativeRegion],
+    pub imports: &'a [NativeImport<'a>],
     pub timeout: Duration,
 }
 
