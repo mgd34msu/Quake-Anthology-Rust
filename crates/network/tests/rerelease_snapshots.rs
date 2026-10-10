@@ -2,8 +2,8 @@ use qa_core::primitives::ThinkTime;
 use qa_network::{
     commands::packet::Error,
     message::{Encoding, Reader, Writer},
-    snapshots::{self, Entity, Frame, Q2Header, Q2KexContext, Q2KexRing},
-    states::{self, Q2_RERELEASE_ENTITY_WORDS, Q2KexPlayer},
+    snapshots::{self, Entity, Frame, Q2Header, Q2KexContext, Q2KexRing, Q2ReproRing},
+    states::{self, Q2_RERELEASE_ENTITY_WORDS, Q2KexPlayer, Q2ReproPlayer},
 };
 
 fn body(number: u32, origin: f32, beam: bool) -> Entity<Q2_RERELEASE_ENTITY_WORDS> {
@@ -54,14 +54,166 @@ fn wire(
 }
 
 fn receive(ring: &mut Q2KexRing, context: &mut Q2KexContext, bytes: &[u8]) -> Result<bool, Error> {
+    consume(bytes, |reader| {
+        snapshots::read_q2_kex(reader, ring, context, |n| {
+            ThinkTime::Milliseconds(i64::from(n) * 25)
+        })
+    })
+}
+
+fn consume(
+    bytes: &[u8],
+    read: impl FnOnce(&mut Reader<'_>) -> Result<bool, Error>,
+) -> Result<bool, Error> {
     let mut reader = Reader::new(bytes, Encoding::Bytes);
     assert_eq!(reader.read_bits(8)?, 20);
-    let accepted = snapshots::read_q2_kex(&mut reader, ring, context, |n| {
-        ThinkTime::Milliseconds(i64::from(n) * 25)
-    })?;
+    let accepted = read(&mut reader)?;
     assert_eq!(reader.read_bits(8)?, 1);
     assert_eq!(reader.byte_position(), bytes.len());
     Ok(accepted)
+}
+
+fn repro_wire(
+    sequence: u32,
+    delta: i32,
+    from: &Q2ReproPlayer,
+    to: &Q2ReproPlayer,
+    bytes: &mut [u8],
+    entities: impl FnOnce(&mut Writer<'_>) -> Result<(), qa_network::message::Error>,
+) -> Result<usize, Error> {
+    let mut player_bytes = [0; 1400];
+    let mut player = Writer::new(&mut player_bytes, Encoding::Bytes);
+    let player_flags = states::write_q2_repro_player(&mut player, from, to)?;
+    let mut writer = Writer::new(bytes, Encoding::Bytes);
+    Q2Header {
+        sequence,
+        delta,
+        flags: 0xf5,
+        player_flags,
+    }
+    .write::<true>(&mut writer, &[0x81, 0x42])?;
+    for &byte in player.bytes() {
+        writer.write_bits(u32::from(byte), 8)?;
+    }
+    entities(&mut writer)?;
+    writer.write_bits(0, 16)?;
+    writer.write_bits(1, 8)?;
+    Ok(writer.size())
+}
+
+fn receive_repro(ring: &mut Q2ReproRing, bytes: &[u8]) -> Result<bool, Error> {
+    consume(bytes, |reader| {
+        snapshots::read_q2_repro(reader, ring, |n| {
+            ThinkTime::Milliseconds(i64::from(n) * 100)
+        })
+    })
+}
+
+#[test]
+fn repro_frames_use_packed_prefix_extra_flags_and_the_shared_merge() -> Result<(), Error> {
+    let mut ring = Q2ReproRing::load(16, 8192, 32, Some(8192))?;
+    let mut first = body(1, 1.25, false);
+    first.words[11] = (-32768i32) as u32;
+    let beam = body(3, 3.125, true);
+    let baseline = body(8191, 7.25, false);
+    assert!(ring.set_baseline(8191, &baseline.words));
+    let mut player = Q2ReproPlayer::default();
+    player.words[1] = 12.75f32.to_bits();
+    player.words[8] = 0x8000;
+    player.words[10] = 90.0f32.to_bits();
+    player.words[16] = (-32768i32) as u32;
+    player.words[22] = 65535;
+    player.words[23] = 65535;
+    player.words[36] = 127;
+    player.words[39] = 255;
+    player.words[40] = 255;
+    player.words[41] = (-128i32) as u32;
+    player.words[42] = (-32768i32) as u32;
+    player.stats[63] = 32767;
+    let mut bytes = [0; 1400];
+    let size = repro_wire(
+        1,
+        -1,
+        &Q2ReproPlayer::default(),
+        &player,
+        &mut bytes,
+        |writer| {
+            for entity in [first, beam] {
+                states::write_q2_repro_entity(
+                    writer,
+                    entity.number as u16,
+                    &[0; 25],
+                    Some(&entity.words),
+                    true,
+                )?;
+            }
+            Ok(())
+        },
+    )?;
+    assert!(receive_repro(&mut ring, &bytes[..size])?);
+    let frame = ring.current().ok_or(Error::Context)?;
+    assert_eq!(frame.entities, [first, beam]);
+    assert_eq!(&frame.player[..43], player.words);
+    assert_eq!(&frame.player[43..], player.stats);
+    assert_eq!(frame.flags, 5);
+    assert_eq!(frame.time, ThinkTime::Milliseconds(100));
+    let mut next_player = player;
+    next_player.words[6] = (-1.125f32).to_bits();
+    next_player.words[39] = 0;
+    next_player.words[42] = 255;
+    next_player.stats[32] = (-32768i32) as u32;
+    let mut inserted = baseline;
+    inserted.words[0] = 60000;
+    let size = repro_wire(2, 1, &player, &next_player, &mut bytes, |writer| {
+        states::write_q2_repro_entity(writer, 1, &first.words, None, false)?;
+        states::write_q2_repro_entity(writer, 8191, &baseline.words, Some(&inserted.words), true)
+    })?;
+    assert!(receive_repro(&mut ring, &bytes[..size])?);
+    let mut retained_beam = beam;
+    retained_beam.words[18] = 0;
+    let frame = ring.current().ok_or(Error::Context)?;
+    assert_eq!(frame.entities, [retained_beam, inserted]);
+    assert_eq!(&frame.player[..43], next_player.words);
+    assert_eq!(&frame.player[43..], next_player.stats);
+    Ok(())
+}
+
+#[test]
+fn repro_invalid_bases_and_truncated_frames_do_not_publish() -> Result<(), Error> {
+    let player = Q2ReproPlayer::default();
+    let mut bytes = [0; 1400];
+    let size = repro_wire(2, 1, &player, &player, &mut bytes, |_| Ok(()))?;
+    let mut ring = Q2ReproRing::load(1, 8192, 32, Some(8192))?;
+    assert!(!receive_repro(&mut ring, &bytes[..size])?);
+    assert_eq!(ring.counts().missing_base, 1);
+    assert!(ring.current().is_none());
+    let size = repro_wire(3, -1, &player, &player, &mut bytes, |_| Ok(()))?;
+    assert!(receive_repro(&mut ring, &bytes[..size])?);
+    let size = repro_wire(3, 3, &player, &player, &mut bytes, |_| Ok(()))?;
+    assert!(!receive_repro(&mut ring, &bytes[..size])?);
+    let size = repro_wire(5, -1, &player, &player, &mut bytes, |writer| {
+        states::write_q2_repro_entity(
+            writer,
+            8191,
+            &[0; 25],
+            Some(&body(8191, 1.25, false).words),
+            true,
+        )
+    })?;
+    for cut in 0..size - 1 {
+        let mut reader = Reader::new(&bytes[..cut], Encoding::Bytes);
+        assert!(
+            (|| {
+                reader.read_bits(8)?;
+                snapshots::read_q2_repro(&mut reader, &mut ring, |_| ThinkTime::Milliseconds(123))
+            })()
+            .is_err()
+        );
+        assert!(ring.current().is_none());
+    }
+    assert!(receive_repro(&mut ring, &bytes[..size])?);
+    assert_eq!(ring.current().ok_or(Error::Context)?.sequence, 5);
+    Ok(())
 }
 
 #[test]

@@ -6,7 +6,10 @@ use crate::{
     states,
 };
 mod q2;
-pub use q2::{Q2Header, Q2KexContext, Q2KexFrame, Q2KexRing, read_q2_kex};
+pub use q2::{
+    Q2Header, Q2KexContext, Q2KexFrame, Q2KexRing, Q2ReproFrame, Q2ReproRing, read_q2_kex,
+    read_q2_repro,
+};
 
 pub const SLOTS: usize = 32;
 

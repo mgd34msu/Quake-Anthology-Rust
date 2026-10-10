@@ -7,8 +7,11 @@ use crate::{
 use qa_core::primitives::ThinkTime;
 
 const KEX_PLAYER: usize = 42 + states::Q2_RR_STATS;
+const REPRO_PLAYER: usize = 43 + states::Q2_RR_STATS;
 pub type Q2KexRing = Ring<KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 pub type Q2KexFrame<'a> = Frame<'a, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
+pub type Q2ReproRing = Ring<REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
+pub type Q2ReproFrame<'a> = Frame<'a, REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 
 /// Endpoint-owned KEX decoder metadata. Snapshot bases remain in Ring; these
 /// small native columns select wire widths and reset to registered baselines.
@@ -92,16 +95,10 @@ pub fn read_q2_kex(
             extended_header: true,
             valid_base: true,
         },
-        |reader, from, _| {
-            let mut old = states::Q2KexPlayer::default();
-            let fields = old.words.len();
-            old.words.copy_from_slice(&from[..fields]);
-            old.stats.copy_from_slice(&from[fields..]);
-            let decoded = states::read_q2_kex_player(reader, &old)?;
-            let mut words = [0; KEX_PLAYER];
-            words[..fields].copy_from_slice(&decoded.words);
-            words[fields..].copy_from_slice(&decoded.stats);
-            Ok(words)
+        |reader, from, flags| {
+            read_player(reader, from, flags, |reader, from, _| {
+                states::read_q2_kex_player(reader, from)
+            })
         },
         |reader, header, from| {
             let wire = context
@@ -120,6 +117,59 @@ pub fn read_q2_kex(
         |from| states::q2_unchanged_entity(from, true),
         time,
     )
+}
+
+/// Q2repro 1038 body after svc_frame. The packed prefix's extra flags belong
+/// to the player table; this format has no player/packetentities opcodes.
+pub fn read_q2_repro(
+    reader: &mut Reader<'_>,
+    ring: &mut Q2ReproRing,
+    time: impl FnOnce(u32) -> ThinkTime,
+) -> Result<bool, packet::Error> {
+    read_records::<true, REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
+        reader,
+        ring,
+        ReadRules {
+            area_limit: 255,
+            entity_limit: 8192,
+            entity_opcode: false,
+            extended_header: true,
+            valid_base: true,
+        },
+        |reader, from, flags| read_player(reader, from, flags, states::read_q2_repro_player),
+        |reader, header, from| {
+            Ok(states::read_q2_extended_entity_body::<false>(
+                reader,
+                header,
+                from,
+                false,
+                &mut states::Q2KexWire::default(),
+            )?
+            .words)
+        },
+        |from| states::q2_unchanged_entity(from, true),
+        time,
+    )
+}
+
+fn read_player<const F: usize, const P: usize>(
+    reader: &mut Reader<'_>,
+    from: &[u32; P],
+    flags: u8,
+    decode: impl FnOnce(
+        &mut Reader<'_>,
+        &states::Q2RereleasePlayer<F>,
+        u8,
+    ) -> Result<states::Q2RereleasePlayer<F>, crate::message::Error>,
+) -> Result<[u32; P], crate::message::Error> {
+    let mut old = states::Q2RereleasePlayer::default();
+    old.words.copy_from_slice(&from[..F]);
+    old.stats.copy_from_slice(&from[F..]);
+    let decoded = decode(reader, &old, flags)?;
+    let mut words = [0; P];
+    words[..F].copy_from_slice(&decoded.words);
+    words[F..].copy_from_slice(&decoded.stats);
+    Ok(words)
 }
 
 /// The one Q2 frame receive path. The scalar record tables and native boundary

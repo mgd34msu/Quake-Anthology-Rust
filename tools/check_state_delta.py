@@ -755,7 +755,7 @@ q2proto_error_t q2protoio_get_error(uintptr_t arg) {(void)arg;return Q2P_ERR_SUC
     source += function(original, 'kex_client_read_playerstate')
     # The fixture binds already projected words, not a module/game ABI.
     source += 'static float kex_float(uint32_t word) {float v;memcpy(&v,&word,4);return v;}\n'
-    source += 'static void kex_put(q2proto_svc_playerstate_t *p,uint32_t *w,bool reading) {\n'
+    source += 'static void enhanced_player_put(q2proto_svc_playerstate_t *p,uint32_t *w,bool reading,bool kex) {\n'
     scalars = {0:'pm_type',7:'pm_time',8:'pm_flags',9:'pm_gravity',23:'gunframe',34:'fov',35:'rdflags',40:'gunrate',41:'pm_viewheight'}
     for i, name in scalars.items():
         source += f' p->{name}=w[{i}];\n'
@@ -765,28 +765,36 @@ q2proto_error_t q2protoio_get_error(uintptr_t arg) {(void)arg;return Q2P_ERR_SUC
                (24,'gunoffset.values','small_offsets',False),(27,'gunangles.values','small_angles',False)]
     for start, name, kind, coords in vectors:
         target = f'(reading?&p->{name}.read.value.values:&p->{name}.write.current)' if coords else f'&p->{name}'
-        source += f' for(int i=0;i<3;i++)q2proto_var_{kind}_set_float_comp({target},i,kex_float(w[{start}+i]));\n'
+        if start in (16,24,27):
+            packed = {16:'q2proto_var_angles_set_short_comp',24:'q2proto_var_small_offsets_set_q2repro_gunoffset_comp',27:'q2proto_var_small_angles_set_q2repro_gunangles_comp'}[start]
+            source += f' for(int i=0;i<3;i++)if(kex)q2proto_var_{kind}_set_float_comp({target},i,kex_float(w[{start}+i]));else {packed}({target},i,(int16_t)w[{start}+i]);\n'
+        else:
+            source += f' for(int i=0;i<3;i++)q2proto_var_{kind}_set_float_comp({target},i,kex_float(w[{start}+i]));\n'
     for start,name,kind,scale in [(13,'viewoffset','small_offsets',16),(19,'kick_angles','small_angles',1024)]:
         source += f' for(int i=0;i<3;i++)q2proto_var_{kind}_set_float_comp(&p->{name},i,(int32_t)w[{start}+i]/{scale}.f);\n'
     for start,name in [(30,'blend.values'),(36,'damage_blend.values')]:
         source += f' for(int i=0;i<4;i++)q2proto_var_color_set_byte_comp(&p->{name},i,w[{start}+i]);\n'
-    source += ' for(int i=0;i<64;i++)p->stats[i]=w[42+i];\n}\n'
-    source += 'static void kex_get(q2proto_svc_playerstate_t *p,uint32_t *w) {\n'
+    source += ' if(!kex)p->clientnum=w[42];for(int i=0;i<64;i++)p->stats[i]=w[42+(!kex)+i];\n}\n'
+    source += 'static void enhanced_player_get(q2proto_svc_playerstate_t *p,uint32_t *from,uint32_t *w,bool kex) {\n memcpy(w,from,(106+(!kex))*4);\n'
     for i,name in scalars.items():
         source += f' w[{i}]=(int)p->{name};\n'
     source += ' w[22]=p->gunindex|(p->gunskin<<Q2PRO_GUNINDEX_BITS);\n'
     for start,name,kind,coords in vectors:
         target = f'&p->{name}.read.value.values' if coords else f'&p->{name}'
-        source += f' for(int i=0;i<3;i++){{float v=q2proto_var_{kind}_get_float_comp({target},i);memcpy(w+{start}+i,&v,4);}}\n'
+        if start in (16,24,27):
+            packed = {16:'q2proto_var_angles_get_short_comp',24:'q2proto_var_small_offsets_get_q2repro_gunoffset_comp',27:'q2proto_var_small_angles_get_q2repro_gunangles_comp'}[start]
+            source += f' for(int i=0;i<3;i++)if(kex){{float v=q2proto_var_{kind}_get_float_comp({target},i);memcpy(w+{start}+i,&v,4);}}else w[{start}+i]=(int){packed}({target},i);\n'
+        else:
+            source += f' for(int i=0;i<3;i++){{float v=q2proto_var_{kind}_get_float_comp({target},i);memcpy(w+{start}+i,&v,4);}}\n'
     for start,name,kind in [(13,'viewoffset','small_offsets'),(19,'kick_angles','small_angles')]:
         suffix = 'viewoffset' if start==13 else 'kick_angles'
         source += f' for(int i=0;i<3;i++)w[{start}+i]=(int)q2proto_var_{kind}_get_q2repro_{suffix}_comp(&p->{name},i);\n'
     for start,name in [(30,'blend.values'),(36,'damage_blend.values')]:
-        source += f' for(int i=0;i<4;i++)w[{start}+i]=q2proto_var_color_get_byte_comp(&p->{name},i);\n'
-    source += ' for(int i=0;i<64;i++)w[42+i]=(int)p->stats[i];\n}\n'
+        source += f' for(int i=0;i<4;i++)if(p->{name.removesuffix(".values")}.delta_bits&(1u<<i))w[{start}+i]=q2proto_var_color_get_byte_comp(&p->{name},i);\n'
+    source += ' if(!kex)w[42]=(int)p->clientnum;for(int i=0;i<64;i++)w[42+(!kex)+i]=(int)p->stats[i];\n}\n'
     source += r'''
-static q2proto_svc_playerstate_t kex_player_delta(uint32_t *from,uint32_t *to) {
- q2proto_svc_playerstate_t p={0};kex_put(&p,to,false);
+static q2proto_svc_playerstate_t enhanced_player_delta(uint32_t *from,uint32_t *to,bool kex) {
+ q2proto_svc_playerstate_t p={0};enhanced_player_put(&p,to,false,kex);
  for(int i=0;i<3;i++) {
   q2proto_var_coords_set_float_comp(&p.pm_origin.write.prev,i,kex_float(from[1+i]));
   q2proto_var_coords_set_float_comp(&p.pm_velocity.write.prev,i,kex_float(from[4+i]));
@@ -799,22 +807,23 @@ static q2proto_svc_playerstate_t kex_player_delta(uint32_t *from,uint32_t *to) {
         compare = f'kex_float(from[{start}+i])!=kex_float(to[{start}+i])' if floating else f'from[{start}+i]!=to[{start}+i]'
         source += f' for(int i=0;i<{count};i++)if({compare})p.delta_bits|=Q2P_PSD_{name};\n'
     for start,name,count,floating in [(16,'viewangles',3,True),(24,'gunoffset',3,True),(27,'gunangles',3,True),(30,'blend',4,False),(36,'damage_blend',4,False)]:
-        compare = f'kex_float(from[{start}+i])!=kex_float(to[{start}+i])' if floating else f'from[{start}+i]!=to[{start}+i]'
+        compare = f'(kex?kex_float(from[{start}+i])!=kex_float(to[{start}+i]):from[{start}+i]!=to[{start}+i])' if floating else f'from[{start}+i]!=to[{start}+i]'
         source += f' for(int i=0;i<{count};i++)if({compare})p.{name}.delta_bits|=1u<<i;\n'
     source += r'''
- for(int i=0;i<64;i++)if(from[42+i]!=to[42+i])p.statbits|=UINT64_C(1)<<i;
+ if(!kex&&from[42]!=to[42])p.delta_bits|=Q2P_PSD_CLIENTNUM;
+ for(int i=0;i<64;i++)if(from[42+(!kex)+i]!=to[42+(!kex)+i])p.statbits|=UINT64_C(1)<<i;
  return p;
 }
 uint32_t kex_player_encode(uint8_t *bytes,uint32_t *from,uint32_t *to) {
- kex_io_t io={.bytes=bytes};q2proto_svc_playerstate_t p=kex_player_delta(from,to);
+ kex_io_t io={.bytes=bytes};q2proto_svc_playerstate_t p=enhanced_player_delta(from,to,true);
  assert(kex_server_write_playerstate(NULL,(uintptr_t)&io,&p)==Q2P_ERR_SUCCESS);
  return io.size;
 }
 void kex_player_decode(uint8_t *bytes,uint32_t size,uint32_t *from,uint32_t *out) {
- kex_io_t io={.bytes=bytes,.size=size};q2proto_svc_playerstate_t p={0};kex_put(&p,from,true);
+ kex_io_t io={.bytes=bytes,.size=size};q2proto_svc_playerstate_t p={0};enhanced_player_put(&p,from,true,true);
  assert(q2protoio_read_u8((uintptr_t)&io)==svc_playerinfo);
  assert(kex_client_read_playerstate(NULL,(uintptr_t)&io,&p)==Q2P_ERR_SUCCESS);
- assert(io.pos==size);kex_get(&p,out);
+ assert(io.pos==size);enhanced_player_get(&p,from,out,true);
 }
 '''
     return source
