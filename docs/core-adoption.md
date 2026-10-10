@@ -131,3 +131,51 @@ scope; synthetic comparison results do not establish native gameplay parity.
 Supervisor review at 18:49 accepted `54708d5b`; it is pushed on main and its
 superseded adoption WIP branch is deleted. THE-3175 tracks the pre-existing
 Q3 float discrepancy for attribution after the current THE-860 step.
+
+## THE-862: materials, surface cache and view preparation
+
+All current world loaders and scene consumers use the shared material path.
+The remaining load-time bypass was Q1/Q2 faces ignoring matching authored
+`textures/<name>` scripts. `render/src/material/world_load.rs:449` now resolves
+those names through the existing catalog and compiler. Unmatched faces keep
+their generated native materials; each face retains its own lightmap binding,
+region and projection scale. The unconditional generated-material branch is
+deleted. Registration remains load-time work.
+
+References below are relative to `crates/`.
+
+| Capability | Implementation and current callers | Remaining bypass sites |
+| --- | --- | --- |
+| Material registration | `app/src/map.rs:315` calls `render/src/material/world_load.rs:167` for every map family. `render/src/material.rs:24` discovers scripts through the VFS. Authored, default and legacy-generated stages all register through `render/src/assets.rs:470`; worlds bind numeric material/image handles at `:562`. | None found among current loaders. Native module/media registration is not yet a caller. |
+| Stage semantics | `render/src/stage.rs:414` owns StageEvaluator. CPU world, model, polygon and 2D draws and GL stage draws consume the same material table and prepared stage state. Generated native flags are material data, not a second executor. | No current per-game material table or stage executor found. |
+| Visibility and surface records | `render/src/world.rs:52` owns the common World and per-view WorldView query. CPU and GL consume its geometry, bindings and shared world visibility traversal. Each view owns its mutable visibility scratch. | No backend-owned replacement PVS traversal found. |
+| Surface cache | `render/src/surface_cache.rs:859` and `:912` expose indexed and RGBA fills; both use `:991` prepare_slot and `:1073` rover allocation. Bands borrow one immutable SurfaceCatalog with private resident arenas and pins. | No separate per-family rover or invalidation implementation found. |
+| Load-sized budget | `render/src/cpu/world.rs:655` builds the shared catalog; `:677` selects the aligned map-mip sum, a 32 MiB floor and each band's mandatory surface minimum. A nonzero diagnostic override remains explicit. | No current fixed-default 32 MiB bypass remains. |
+| Per-surface lookup | `render/src/cpu/world/span_groups.rs:20` uses core StampSet to group each bounded scanner flush by surface/mip. `render/src/cpu/world.rs:2212` consumes those groups; indexed/product/factor paths borrow texels until the same rover batch ends. | The former per-span cache setup copies are deleted. |
+| Static and animated materials | `render/src/cpu/rgba.rs:343` admits static product/factor recipes, including bilinear lightmaps. Animated textures, changing tcMods and wave color/alpha use the shared stage executor rather than invalidating a whole static surface every frame. Cache stamps represent changed inputs. | No shader-clock field is added to static cache identity. Live module lighting still needs supplied changed inputs. |
+| Preparation and raster jobs | `render/src/cpu/world/jobs.rs:56` is the one CPU job entry; `:122` prepares bounded private chunks and merges in order. Small or capacity-limited work uses the same serial preparer. `app/src/renderer.rs:400` dispatches preparation and screen bands through the existing platform pool. | No renderer-owned worker pool or alternate preparation kernel found. |
+
+The audit found zero remaining current material/cache/preparation bypass sites.
+This count excludes missing consumers: native hosts, module-driven media,
+stock HUD drawing and guest/live lighting integration remain THE-3169 and their
+feature issues. It does not claim that those paths already exist or are migrated.
+
+The authored-material fixture covers both Q1 and Q2, a matching face and an
+unmatched face, native fallback without a script, folded catalog lookup,
+animated stage registration and preserved face lightmaps. The existing cache,
+native fill, stage, chunk/band, clipped-pixel and invalidation fixtures remain
+unchanged. The checker, Clippy and 664 workspace tests pass.
+
+Fresh normal-app evidence is retained under `THE-862-engine-20261009/`:
+fifteen private CPU/GL runs, 60 warm-up and 600 measured frames each, normal
+exit and zero measured Rust heap activity across the caller and CPU workers.
+Stock CPU time-zero RGBA matches before/after for e1m1, base1 and q3dm1.
+This is render integration, not installed gameplay or original-engine image
+parity. The live Q3 CPU median is 5.689 ms, 7.744% above this series' baseline;
+the prior frozen checkpoint is 5.837 ms. R12's under-4-ms target remains open.
+See [frame-times.md](frame-times.md) for raw scopes, cache bytes and host load.
+
+Engine scope is submitted for supervisor review. THE-3169 retains the installed
+authored-face animation/screenshots and combined shader-pack run required by
+THE-862, along with native-module and stock-HUD acceptance. No installation is
+claimed by this slice.

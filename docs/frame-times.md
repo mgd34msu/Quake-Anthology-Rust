@@ -4005,3 +4005,95 @@ workspace/Clippy logs. Common-state projection, 32-slot rings and packet framing
 negotiated NQ666/999/rerelease fields, native provider selection/clocks,
 signon/captures/live/combined/native/installed acceptance remain THE-860/THE-3169.
 These state tables still have no snapshot/gameplay caller. No install is claimed.
+
+### THE-862: engine material/cache adoption review
+
+The load-time authored-shader lookup now also applies to Q1/Q2
+`textures/<name>` faces through the existing compiler. Unmatched faces retain
+generated native materials and each face keeps its lightmap binding, region
+and projection scale. The former unconditional generated-material branch is
+deleted. Stage execution, cache recipes, invalidation, preparation and raster
+code are unchanged by this final adoption slice. No checker extension is added.
+
+Baseline: clean a87740aa. Candidate: a87740aa plus the recorded world_load
+diff; its build receipt correctly reports a dirty source tree. Both are
+portable release normal-app candidates with allocation tracking and proof
+input disabled. The candidate build took 38.2715 seconds. The authored Q1/Q2
+registration test, unchanged checker, Clippy and all 664 workspace tests pass.
+The ownership/adoption audit is in [core-adoption.md](core-adoption.md).
+
+Each map uses a CPU ABBA series of four private normal-app runs, 640x400,
+60 warm-up plus 600 measured host frames per leg. Automatic selection chooses
+eight bands and seven platform workers. Process affinity is 16-23; workers
+inherit that mask and are not individually pinned. The saved profile selects
+120-degree FOV. Copies of the candidate/profile, private HOME/runtime directory,
+owned Xvfb, forced X11 and dummy audio are used throughout. There is no walk
+input or native gameplay provider in this matrix. Draw times below pool the
+two 600-frame legs per variant.
+
+| Live CPU draw | Before median ms | After median ms | Change | Before p99 ms | After p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| e1m1 | 1.758566 | 1.048951 | -40.352% | 12.328789 | 1.719461 |
+| base1 | 1.568171 | 1.387686 | -11.509% | 2.680782 | 2.216971 |
+| q3dm1 | 5.280549 | 5.689459 | +7.744% | 6.379855 | 6.774455 |
+
+Q3's p99 also increases by 6.185%. These values are retained rather than
+reported as an across-the-board improvement. Unowned compilation was observed
+on the affinity cores; the first and last e1m1 baseline legs differ substantially.
+No owned build/test/profiler overlapped these runs. The load-only change does
+not explain a runtime speedup, and this series cannot establish a precise
+causal performance change under that host load. e1m1/base1 do not regress in
+the measured series. Live q3dm1 remains within 25% of the prior 5.837-ms frozen
+eight-band checkpoint; R12's under-4-ms target is still unmet. Prior profiling
+and THE-3171's measured residency fix remain recorded above.
+
+| Candidate CPU map | Allocated cache bytes | Final resident payload bytes | Startup/warm-up cold fills | Changed-state fills | Evicted payload bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| e1m1 | 73,270,528 | 610,120 | 200 | 0 | 0 |
+| base1 | 87,410,176 | 1,063,056 | 353 | 0 | 0 |
+| q3dm1 | 264,146,176 | 17,630,960 | 2,011 | 0 | 0 |
+
+The map-mip reservations are respectively 73,270,496, 87,410,120 and
+264,146,144 bytes; alignment accounts for the small budget difference.
+Largest mandatory surface reservations are 113,664, 190,464 and 2,454,928
+bytes. These conservative sums include all registered mips/optional recipes,
+not a promise that every duplicated band copy is resident simultaneously.
+Preparation storage is separately 39,042,200 / 49,170,076 / 89,544,700 bytes;
+span-group storage is 1,825,408 / 2,360,544 / 4,725,984 bytes. Coverage indices
+and mip metadata remain separately reported in the raw config events.
+
+Final q3dm1 frames record 1,892 RGBA cache hits, zero fills/evictions/rejects,
+18,378 RGBA spans and 212,046 cached writes. Animated-stage counts vary with
+the native live shader clock. base1's live cold-fill count is 354 in the first
+baseline leg versus 353 in the candidate legs; those live-time counters are
+not asserted identical. Stock time-zero screenshots decode to identical RGBA
+bytes across all four CPU legs for each map. Later animation phases are not
+treated as matched-time image comparisons. All six candidate CPU/GL world
+screenshots were visually inspected. No original-engine appearance parity or
+installed authored-face animation is claimed.
+
+One additional candidate GL run per map uses the same private environment,
+resolution and 60+600 frame scope. These are **Mesa software GL** measurements:
+llvmpipe (LLVM 22.1.8, 256 bits), GL 4.6 core, Mesa 26.2.2-arch1.1.
+
+| Software GL candidate | Draw median ms | Draw p99 ms |
+| --- | ---: | ---: |
+| e1m1 | 5.960204 | 7.780825 |
+| base1 | 7.288150 | 10.773568 |
+| q3dm1 | 10.205663 | 16.946672 |
+
+All fifteen runs exit zero, preserve candidate/original profile and leave no
+recorded owned PIDs. Every 600-frame gate reports zero allocations,
+reallocations and requested bytes: caller plus all seven CPU workers, or the
+GL caller. Foreign SDL/driver heaps are not measured. GL has no before/after
+image comparison in this series. These runs qualify the bounded engine slice,
+not installed gameplay, native modules, stock HUD or hardware GPU performance.
+
+Evidence: `THE-862-engine-20261009/`, before/after build receipts and normal
+candidates, source.patch, authored-test/workspace/checker/Clippy logs,
+matrix.py, matrix-raw.json, matrix-summary.json and fifteen private-run folders
+with runtime logs, measurements, results and screenshots. Earlier exact
+chunk/band pixel/depth comparisons remain in `THE-2866-cache-20261009/`; the
+live residency attribution and map-budget proof remain in
+`THE-3171-live-cache-20261009/`. Installed authored-face/combined shader-pack
+screenshots and native acceptance remain on THE-3169. No install in this slice.

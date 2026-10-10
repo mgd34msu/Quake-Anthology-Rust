@@ -446,26 +446,28 @@ pub fn load_world(
         if (family == 1 && name.starts_with('*')) || (family == 2 && flags & 8 != 0) {
             scale = [1.0 / 64.0; 2];
         }
-        let material = if family == 3 {
-            if let Some(definition) = catalog.find_canonical(&name).filter(|d| d.valid) {
-                compile_definition(definition, &mut images)?
-            } else {
-                if catalog.find_canonical(&name).is_some() {
-                    diagnostics.push(format!("native shader fallback: {name}"));
-                }
+        let legacy_shader_name = (family != 3).then(|| canonical_path(&format!("textures/{name}")));
+        let definition = catalog.find_canonical(legacy_shader_name.as_deref().unwrap_or(&name));
+        let material = if let Some(definition) = definition.filter(|d| d.valid) {
+            compile_definition(definition, &mut images)?
+        } else {
+            if definition.is_some() {
+                diagnostics.push(format!("native shader fallback: {name}"));
+            }
+            if family == 3 {
                 let image = images.raster(&name, ImageUse::default())?;
                 default_material(&name, image, surface.light_source, &mut images)?
+            } else {
+                legacy_material(
+                    &name,
+                    image,
+                    flags,
+                    family,
+                    surface.light_source,
+                    legacy_sky,
+                    &mut images,
+                )?
             }
-        } else {
-            legacy_material(
-                &name,
-                image,
-                flags,
-                family,
-                surface.light_source,
-                legacy_sky,
-                &mut images,
-            )?
         };
         bindings.push(SurfaceMaterial {
             material,
