@@ -85,7 +85,10 @@ fn byte_ranges_share_page_rights_without_expanding_callable_entries() {
     for offset in [0, 511, 519, 1000, 4096, 5000, 8191] {
         assert!(!process.executable(BASE + offset));
     }
-    assert_eq!(process.memory().unwrap().len(), 8192);
+    assert_eq!(
+        process.memory().unwrap().len(),
+        8192 + 4096 + 8 * 1024 * 1024
+    );
     assert!(process.memory().unwrap()[5000..].iter().all(|&b| b == 0));
     let mut words = [0; 13];
     words[0] = BASE + 1000;
@@ -203,6 +206,222 @@ fn native_import_stops_before_engine_access_and_resumes_with_the_reply() {
         &process.memory().expect("parked")[4096..4104],
         &123u64.to_le_bytes()
     );
+}
+
+#[test]
+fn all_thirteen_export_words_use_the_native_register_and_stack_locations() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        let mut process = standard(&[0xc3]);
+        let words = std::array::from_fn(|i| 0xfedc_ba98_7654_0000 + i as u64);
+        let registers: &[_] = if abi == NativeAbi::SystemV {
+            &[
+                [0x48, 0x89, 0xf8],
+                [0x48, 0x89, 0xf0],
+                [0x48, 0x89, 0xd0],
+                [0x48, 0x89, 0xc8],
+                [0x4c, 0x89, 0xc0],
+                [0x4c, 0x89, 0xc8],
+            ]
+        } else {
+            &[
+                [0x48, 0x89, 0xc8],
+                [0x48, 0x89, 0xd0],
+                [0x4c, 0x89, 0xc0],
+                [0x4c, 0x89, 0xc8],
+            ]
+        };
+        for (i, &wanted) in words.iter().enumerate() {
+            let mut code = if let Some(register) = registers.get(i) {
+                register.to_vec() // mov rax,<argument register>
+            } else {
+                let first = if abi == NativeAbi::SystemV { 8 } else { 40 };
+                vec![
+                    0x48,
+                    0x8b,
+                    0x44,
+                    0x24,
+                    first + (i - registers.len()) as u8 * 8,
+                ]
+            };
+            code.push(0xc3);
+            process.memory_mut().unwrap()[..code.len()].copy_from_slice(&code);
+            assert_eq!(
+                process
+                    .invoke(BASE, abi, words, |_, _, _| Err(NativeError::Callback))
+                    .unwrap(),
+                wanted,
+                "{abi:?} argument {i}"
+            );
+        }
+        process.memory_mut().unwrap()[..4].copy_from_slice(&[0x48, 0x89, 0xe0, 0xc3]);
+        let stack = process
+            .invoke(BASE, abi, words, |_, _, _| Err(NativeError::Callback))
+            .unwrap();
+        assert!(stack >= BASE + 8192 + 4096);
+        assert!(stack < BASE + process.memory().unwrap().len() as u64);
+        assert_eq!(stack % 16, 8);
+        assert!(!process.executable(stack));
+    }
+}
+
+#[test]
+fn raw_variadic_import_words_are_captured_without_a_rust_foreign_stack_frame() {
+    let wanted: [u64; 14] = std::array::from_fn(|i| {
+        if i == 0 {
+            37
+        } else {
+            0xfedc_0000_3f80_0000 + i as u64
+        }
+    });
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        let registers: &[_] = if abi == NativeAbi::SystemV {
+            &[
+                [0x48, 0xbf],
+                [0x48, 0xbe],
+                [0x48, 0xba],
+                [0x48, 0xb9],
+                [0x49, 0xb8],
+                [0x49, 0xb9],
+            ]
+        } else {
+            &[[0x48, 0xb9], [0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]]
+        };
+        let reserve = if abi == NativeAbi::SystemV { 72 } else { 120 };
+        let mut code = vec![
+            0x48,
+            0x89,
+            if abi == NativeAbi::SystemV {
+                0xf8
+            } else {
+                0xc8
+            }, // callback -> rax
+            0x48,
+            0x83,
+            0xec,
+            reserve,
+        ];
+        for (i, &word) in wanted.iter().enumerate() {
+            if let Some(register) = registers.get(i) {
+                code.extend_from_slice(register);
+                code.extend_from_slice(&word.to_le_bytes());
+            } else {
+                code.extend_from_slice(&[0x49, 0xba]); // mov r10,<word>
+                code.extend_from_slice(&word.to_le_bytes());
+                let first = if abi == NativeAbi::SystemV { 0 } else { 32 };
+                code.extend_from_slice(&[
+                    0x4c,
+                    0x89,
+                    0x54,
+                    0x24,
+                    first + (i - registers.len()) as u8 * 8,
+                ]);
+            }
+        }
+        code.extend_from_slice(&[0xff, 0xd0, 0x48, 0x83, 0xc4, reserve, 0xc3]);
+        let mut process = standard(&code);
+        let mut words = [0; 13];
+        words[0] = process.callback(abi);
+        let mut calls = 0;
+        assert_eq!(
+            process
+                .invoke(BASE, abi, words, |call, _, _| {
+                    calls += 1;
+                    assert_eq!(call.number, wanted[0] as u32);
+                    assert_eq!(call.arguments, wanted[1..]);
+                    Ok(0xabcde)
+                })
+                .unwrap(),
+            0xabcde
+        );
+        assert_eq!(calls, 1);
+    }
+}
+
+#[test]
+fn native_local_buffers_are_shared_and_live_across_the_import_reply() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        let (reserve, local, callback, number, argument) = if abi == NativeAbi::SystemV {
+            (24, 0, 0xf8, 0xbf, 0x74)
+        } else {
+            (56, 32, 0xc8, 0xb9, 0x54)
+        };
+        let mut code = vec![0x48, 0x89, callback, 0x48, 0x83, 0xec, reserve, 0x49, 0xba];
+        code.extend_from_slice(b"stack\0\0\0");
+        code.extend_from_slice(&[
+            0x4c, 0x89, 0x54, 0x24, local, // mov [rsp+local],r10
+            0x48, 0x8d, argument, 0x24, local, number, 37, 0, 0, 0, 0xff, 0xd0, 0x48, 0x8b, 0x44,
+            0x24, local, // read the parent's write to this local
+            0x48, 0x83, 0xc4, reserve, 0xc3,
+        ]);
+        let mut process = standard(&code);
+        let pid = process.pid();
+        let mut words = [0; 13];
+        words[0] = process.callback(abi);
+        let result = process
+            .invoke(BASE, abi, words, |call, base, memory| {
+                assert_eq!(call.number, 37);
+                let at = (call.arguments[0] - base) as usize;
+                assert!(at >= 8192 + 4096);
+                assert_eq!(&memory[at..at + 8], b"stack\0\0\0");
+                let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+                assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+                memory[at..at + 8].copy_from_slice(&123u64.to_le_bytes());
+                Ok(91)
+            })
+            .unwrap();
+        assert_eq!(result, 123);
+    }
+}
+
+#[test]
+fn shared_native_stack_guard_fault_is_local() {
+    // mov rsp,rdi; push rax: touching the guard below the stack must fault.
+    let mut process = standard(&[0x48, 0x89, 0xfc, 0x50, 0xc3]);
+    let mut words = [0; 13];
+    words[0] = BASE + 8192 + 4096;
+    let result = process.invoke(BASE, NativeAbi::SystemV, words, |_, _, _| {
+        Err(NativeError::Callback)
+    });
+    assert!(
+        matches!(result, Err(NativeError::Exited(status)) if status.signal() == Some(11)),
+        "{result:?}"
+    );
+    assert_eq!(process.pid(), 0);
+}
+
+#[test]
+fn native_import_restores_integer_simd_and_x87_state() {
+    // Save r12/xmm6; set r12 and xmm6, push integer 123 on the x87 stack;
+    // invoke import 37; sum all three afterward, restore the native callee
+    // registers and return. The same body uses the appropriate syscall ABI.
+    let template = [
+        0x41, 0x54, 0x48, 0x81, 0xec, 0x80, 0x00, 0x00, 0x00, 0x48, 0x89, 0xf8, 0xf3, 0x0f, 0x7f,
+        0x74, 0x24, 0x50, 0x49, 0xbc, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x49, 0xba,
+        0x67, 0x45, 0x23, 0x01, 0xef, 0xcd, 0xab, 0x89, 0x66, 0x49, 0x0f, 0x6e, 0xf2, 0xc7, 0x44,
+        0x24, 0x40, 0x7b, 0x00, 0x00, 0x00, 0xdb, 0x44, 0x24, 0x40, 0xbf, 0x25, 0x00, 0x00, 0x00,
+        0xff, 0xd0, 0xdb, 0x5c, 0x24, 0x40, 0x66, 0x48, 0x0f, 0x7e, 0xf0, 0x4c, 0x01, 0xe0, 0x8b,
+        0x54, 0x24, 0x40, 0x48, 0x01, 0xd0, 0xf3, 0x0f, 0x6f, 0x74, 0x24, 0x50, 0x48, 0x81, 0xc4,
+        0x80, 0x00, 0x00, 0x00, 0x41, 0x5c, 0xc3,
+    ];
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        let mut code = template;
+        if abi == NativeAbi::Microsoft {
+            code[11] = 0xc8; // callback from rcx
+            code[55] = 0xb9; // syscall number to ecx
+        }
+        let mut process = standard(&code);
+        let mut words = [0; 13];
+        words[0] = process.callback(abi);
+        assert_eq!(
+            process
+                .invoke(BASE, abi, words, |call, _, _| {
+                    assert_eq!(call.number, 37);
+                    Ok(0)
+                })
+                .unwrap(),
+            0x1122_3344_5566_7788 + 0x89ab_cdef_0123_4567 + 123
+        );
+    }
 }
 
 #[test]

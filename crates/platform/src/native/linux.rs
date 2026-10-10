@@ -14,6 +14,9 @@ use std::{
 
 const PAGE: usize = 4096;
 const LIMIT: usize = 512 * 1024 * 1024;
+const STACK: usize = 8 * 1024 * 1024;
+#[path = "x64.rs"]
+mod x64;
 const START: u8 = 1;
 const READY: u8 = 2;
 const INVOKE: u8 = 3;
@@ -205,11 +208,15 @@ impl NativeProcess {
         {
             return Err(NativeError::Extent);
         }
-        let length = image.bytes.len().div_ceil(PAGE) * PAGE;
+        let image_length = image.bytes.len().div_ceil(PAGE) * PAGE;
+        let length = image_length
+            .checked_add(PAGE + STACK)
+            .filter(|&n| n <= LIMIT)
+            .ok_or(NativeError::Extent)?;
         if image.base.checked_add(length as u64).is_none() {
             return Err(NativeError::Extent);
         }
-        let mut pages = vec![0u8; length / PAGE];
+        let mut pages = vec![0u8; image_length / PAGE];
         let mut end = 0;
         for region in image.regions {
             if region.offset < end || region.length == 0 || region.permissions > 7 {
@@ -478,7 +485,11 @@ impl Drop for NativeProcess {
 // The fixed protocol carries call words, never per-entity field caches.
 static CHILD_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn import(number: u64, arguments: [u64; 13]) -> u64 {
+extern "C" fn import(words: &[u64; 14]) -> u64 {
+    // The assembly gate supplies private, fully captured ABI words. No Rust
+    // reference into the shared guest stack is retained while the parent borrows.
+    let number = words[0];
+    let arguments = std::array::from_fn(|i| words[i + 1]);
     let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);
     // SAFETY: borrowed wrapper for inherited fd 0, never closed here. This
     // single-thread child alone uses the channel; clone/fork are not admitted.
@@ -494,16 +505,6 @@ fn import(number: u64, arguments: [u64; 13]) -> u64 {
         _ => std::process::exit(125),
     }
 }
-
-macro_rules! native_entry {
-    ($name:ident, $abi:literal) => {
-        extern $abi fn $name(n:u64,a:u64,b:u64,c:u64,d:u64,e:u64,f:u64,g:u64,h:u64,i:u64,j:u64,k:u64,l:u64,m:u64)->u64 {
-            import(n,[a,b,c,d,e,f,g,h,i,j,k,l,m])
-        }
-    };
-}
-native_entry!(system_v_import, "sysv64");
-native_entry!(microsoft_import, "win64");
 
 /// Bootstrap before console, SDL or application initialization.
 pub fn native_child_bootstrap() -> Option<i32> {
@@ -521,7 +522,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     let count = usize::try_from(packet.arguments[1]).map_err(|_| NativeError::Extent)?;
     if packet.operation != START
         || packet.sequence != 0
-        || length == 0
+        || length <= PAGE + STACK
         || length > LIMIT
         || length % PAGE != 0
         || count > 65536
@@ -532,6 +533,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     {
         return Err(NativeError::Extent);
     }
+    let image_length = length - PAGE - STACK;
     let memory = Mapping::map(&file, length, Some(packet.address))?;
     drop(file); // No transferable backing descriptor remains in the child.
     // SAFETY: actual child mapping; the controller has no borrowed view yet.
@@ -557,7 +559,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         }
         end = offset
             .checked_add(bytes)
-            .filter(|&n| n <= length)
+            .filter(|&n| n <= image_length)
             .ok_or(NativeError::Extent)?;
         // SAFETY: page-aligned, checked range of this child's mapping.
         if unsafe {
@@ -576,6 +578,18 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             permissions: rights as u8,
         });
     }
+    // SAFETY: final load-sized shared stack follows an inaccessible guard page.
+    // Native code uses this storage; controller Rust frames remain private.
+    if unsafe {
+        mprotect(
+            memory.address.as_ptr().add(image_length + PAGE).cast(),
+            STACK,
+            3,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
     // SAFETY: native identity and guard are child-local, before foreign code.
     let pid = unsafe { getpid() };
     for number in [4, 5, 7, 8, 11] {
@@ -593,8 +607,8 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         length as u64,
         8,
         pid as u64,
-        system_v_import as *const () as usize as u64,
-        microsoft_import as *const () as usize as u64,
+        x64::system_v_import as *const () as usize as u64,
+        x64::microsoft_import as *const () as usize as u64,
     ]);
     ready.send(&mut stream)?;
     loop {
@@ -614,47 +628,17 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             return Err(NativeError::Protocol);
         }
         CHILD_SEQUENCE.store(packet.sequence, Ordering::Relaxed);
-        let [a, b, c, d, e, f, g, h, i, j, k, l, m] = packet.arguments;
-        // SAFETY: foreign hardware execution is confined to this child. The
-        // loader supplies an executable entry and native integer/pointer ABI.
-        // No Rust reference into shared bytes spans this invocation. A source
-        // fault terminates only the child; the engine owns/reaps it separately.
+        // SAFETY: only the owned child invokes foreign instructions. The gate
+        // uses its bounded shared stack and switches to a private controller
+        // stack before Rust handles imports. No Rust reference into the guest
+        // mapping spans this call; faults terminate/reap only this child.
         let value = unsafe {
-            if packet.abi == NativeAbi::SystemV as u8 {
-                let entry: unsafe extern "sysv64" fn(
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                ) -> u64 = std::mem::transmute(packet.address as usize);
-                entry(a, b, c, d, e, f, g, h, i, j, k, l, m)
-            } else {
-                let entry: unsafe extern "win64" fn(
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                    u64,
-                ) -> u64 = std::mem::transmute(packet.address as usize);
-                entry(a, b, c, d, e, f, g, h, i, j, k, l, m)
-            }
+            x64::call(
+                packet.address,
+                u64::from(packet.abi),
+                &packet.arguments,
+                ready.address + length as u64,
+            )
         };
         let mut reply = Packet::new(RETURN, packet.sequence);
         reply.value = value;

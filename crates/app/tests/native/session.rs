@@ -65,21 +65,67 @@ fn function_image(encoding: Encoding, code: &[u8]) -> Image {
     .unwrap()
 }
 
-fn print_code(encoding: Encoding) -> [u8; 30] {
-    // Load syscall pointer from shared RAM, print its shared text, then return.
-    // SysV: sub rsp,8; mov rax,[rip+1781]; mov edi,0; lea rsi,[rip+1785]; call rax; add rsp,8; ret
-    // Microsoft: reserve the 32-byte shadow area too, and use rcx/rdx.
-    let mut code = [
-        0x48, 0x83, 0xec, 8, 0x48, 0x8b, 0x05, 0xf5, 0x06, 0, 0, 0xbf, 0, 0, 0, 0, 0x48, 0x8d,
-        0x35, 0xf9, 0x06, 0, 0, 0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3,
-    ];
-    if encoding == Encoding::Pe {
-        code[3] = 40;
-        code[11] = 0xb9;
-        code[18] = 0x15;
-        code[28] = 40;
-    }
-    code
+fn print_code(encoding: Encoding) -> Vec<u8> {
+    // Copy the shared message to a native local buffer, then call Print with
+    // its stack pointer. This exercises the same lifetime as qsrc G_Printf.
+    let (reserve, local, number, argument) = match encoding {
+        Encoding::Elf => (24, 0, 0xbf, 0x74),
+        Encoding::Pe => (56, 32, 0xb9, 0x54),
+    };
+    vec![
+        0x48,
+        0x83,
+        0xec,
+        reserve, // sub rsp,reserve (including MS shadow space)
+        0x48,
+        0x8b,
+        0x05,
+        0xf5,
+        0x06,
+        0,
+        0, // syscall slot at entry + 0x700
+        0x4c,
+        0x8d,
+        0x15,
+        0xfe,
+        0x06,
+        0,
+        0, // text at entry + 0x710
+        0x4d,
+        0x8b,
+        0x1a, // mov r11,[r10]
+        0x4c,
+        0x89,
+        0x5c,
+        0x24,
+        local, // mov [rsp+local],r11
+        0x4d,
+        0x8b,
+        0x5a,
+        8, // mov r11,[r10+8]
+        0x4c,
+        0x89,
+        0x5c,
+        0x24,
+        local + 8,
+        number,
+        0,
+        0,
+        0,
+        0,
+        0x48,
+        0x8d,
+        argument,
+        0x24,
+        local, // lea rsi/rdx,[rsp+local]
+        0xff,
+        0xd0,
+        0x48,
+        0x83,
+        0xc4,
+        reserve,
+        0xc3,
+    ]
 }
 
 fn module(
