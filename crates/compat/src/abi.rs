@@ -187,6 +187,7 @@ pub const Q2_CLASSIC: CallTable = {
     let mut table = CallTable {
         entries: [None; 256],
     };
+    table.entries[6] = Some(config_set);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -197,6 +198,7 @@ pub const Q2_RERELEASE: CallTable = {
         entries: [None; 256],
     };
     table.entries[1] = Some(print);
+    table.entries[7] = Some(config_set);
     table.entries[9] = Some(abort);
     table.entries[39] = Some(q2_cvar);
     table.entries[40] = Some(q2_cvar_set::<false>);
@@ -562,11 +564,16 @@ fn file_close(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(0)
 }
 fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let pointer = c.pointer(1)?;
     (ENGINE_CALLS.configstring)(
         c.services,
         c.context.module,
         c.length(0)?,
-        c.memory.cstring(c.pointer(1)?)?,
+        if pointer == 0 {
+            &[]
+        } else {
+            c.memory.cstring(pointer)?
+        },
     )?;
     Ok(0)
 }

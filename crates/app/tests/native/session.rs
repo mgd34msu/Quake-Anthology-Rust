@@ -1667,7 +1667,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .bind(OutputTarget::Module(ModuleId(7)))
             .unwrap();
         let mut console = Console::new(Context::default()).unwrap();
-        let mut storage = ServiceStorage::load(&[], 0).unwrap();
+        let mut storage = ServiceStorage::load(&[(ModuleId(1), 8)], 0).unwrap();
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(8).unwrap();
         let context = CallContext {
@@ -1893,6 +1893,16 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     &[1],
                 )
                 .unwrap();
+            if slot == if rr { 7 } else { 6 } {
+                assert_eq!(
+                    services.storage.configstring(ModuleId(1), 3).unwrap(),
+                    if a[1] == 0 {
+                        (&b""[..], 2)
+                    } else {
+                        (&b"_qa_child_cvar"[..], 1)
+                    }
+                );
+            }
             if slot == malloc_slot {
                 u64::from_le_bytes(
                     game.vm.process.memory_mut().unwrap()[0x1c30..0x1c38]
@@ -1931,6 +1941,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let whole = invoke_import(&mut game, malloc_slot, [32, 0]);
         assert_eq!(whole, first);
         invoke_import(&mut game, malloc_slot + 2, [0, 0]);
+        let config_slot = if rr { 7 } else { 6 };
+        invoke_import(&mut game, config_slot, [3, base + 0x1720]);
+        invoke_import(&mut game, config_slot, [3, base + 0x1720]);
+        invoke_import(&mut game, config_slot, [3, 0]);
         let frame_code = if rr {
             &[0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b, 0xc3][..]
         } else {

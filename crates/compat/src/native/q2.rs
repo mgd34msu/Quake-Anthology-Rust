@@ -365,6 +365,11 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Word,
                     ))
+                } else if ordinal == if layout.version == 2023 { 7 } else { 6 } {
+                    Some((
+                        &[NativeScalar::I32, NativeScalar::Word][..],
+                        NativeScalar::Void,
+                    ))
                 } else if layout.version == 2023 && matches!(ordinal, 1 | 9) {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else {
