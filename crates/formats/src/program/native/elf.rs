@@ -442,6 +442,18 @@ pub(super) fn parse(
         if s.kind == 0x6474e552 && s.memory_bytes != 0 {
             let count = usize::try_from(s.memory_bytes).map_err(|_| FormatError::InvalidRange)?;
             range(s.address, count)?;
+            let begin = s.address & !4095;
+            let end = s
+                .address
+                .checked_add(s.memory_bytes)
+                .ok_or(FormatError::InvalidRange)?
+                & !4095;
+            if end > begin {
+                range(
+                    begin,
+                    usize::try_from(end - begin).map_err(|_| FormatError::InvalidRange)?,
+                )?;
+            }
             relro.push((bias + s.address, count));
         }
     }

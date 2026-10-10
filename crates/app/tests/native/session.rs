@@ -272,6 +272,59 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
         Err(qa_compat::native::Error::Export)
     ));
 }
+
+fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
+    use std::os::unix::process::ExitStatusExt;
+    // mov [rdi],rsi; mov rax,rsi; ret
+    let code = [0x48, 0x89, 0x37, 0x48, 0x89, 0xf0, 0xc3];
+    let mut image = function_image(Encoding::Elf, &code);
+    let entry = image.symbol(b"vmMain").unwrap().address;
+    let base = image.base;
+    image.relro = Box::new([(base + 0x4180, 0xe80)]);
+    let mut vm = Vm::map_image(
+        image,
+        &[NamedExport {
+            name: b"vmMain",
+            command: None,
+        }],
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    let mut words = [0; 13];
+    words[0] = base + 0x3f00;
+    words[1] = 123;
+    assert_eq!(
+        vm.process
+            .invoke(entry, NativeAbi::SystemV, words, |_, _, _| Err(
+                qa_platform::native::NativeError::Callback
+            ))
+            .unwrap(),
+        123
+    );
+    words[0] = base + 0x4100;
+    let result = vm
+        .process
+        .invoke(entry, NativeAbi::SystemV, words, |_, _, _| {
+            Err(qa_platform::native::NativeError::Callback)
+        });
+    assert!(
+        matches!(result, Err(qa_platform::native::NativeError::Exited(status)) if status.signal() == Some(11)),
+        "{result:?}"
+    );
+    let mut image = function_image(Encoding::Elf, &code);
+    image.relro = Box::new([(image.base + 0x3000, 0x1000)]);
+    assert!(matches!(
+        Vm::map_image(
+            image,
+            &[NamedExport {
+                name: b"vmMain",
+                command: None
+            }],
+            Duration::from_secs(3)
+        ),
+        Err(qa_compat::native::Error::Export)
+    ));
+}
 struct Source {
     time: EventTime,
     polls: u32,
@@ -372,5 +425,6 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring() {
 pub fn run() {
     two_native_modules_use_session_rates_and_the_same_calltable_output_ring();
     checked_exports_preserve_names_and_native_command_arguments();
+    elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
     println!("native session dispatch checks passed");
 }

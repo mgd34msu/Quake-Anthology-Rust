@@ -44,9 +44,10 @@ pub struct NativeCalls<'a, 'engine> {
 impl Vm {
     /// Map a checked, bound image and register its ordinary exports. Import,
     /// TLS and initializer orchestration belongs to the owning image loader;
-    /// this step only transfers its bytes to the authoritative child backing.
+    /// this step transfers bytes to the authoritative child backing and applies
+    /// final RELRO page rights.
     pub fn map_image(
-        image: Image,
+        mut image: Image,
         named: &[NamedExport<'_>],
         timeout: Duration,
     ) -> Result<Self, Error> {
@@ -63,6 +64,61 @@ impl Vm {
                 })
             })
             .collect::<Result<Box<[_]>, _>>()?;
+        // Native ELF RELRO protects complete pages, rounding both ends down.
+        // Split the one region table at those boundaries before mapping; the
+        // same final table supplies OS rights and callable-entry checks.
+        for &(address, bytes) in &image.relro {
+            let begin = address & !4095;
+            let end = address
+                .checked_add(bytes as u64)
+                .ok_or(Error::Process(NativeError::Extent))?
+                & !4095;
+            if end <= begin {
+                continue;
+            }
+            let begin = usize::try_from(
+                begin
+                    .checked_sub(image.base)
+                    .ok_or(Error::Process(NativeError::Extent))?,
+            )
+            .map_err(|_| Error::Process(NativeError::Extent))?;
+            let end = usize::try_from(
+                end.checked_sub(image.base)
+                    .ok_or(Error::Process(NativeError::Extent))?,
+            )
+            .map_err(|_| Error::Process(NativeError::Extent))?;
+            let mut finalized = Vec::new();
+            for region in &image.regions {
+                let limit = region.offset + region.length;
+                if region.offset >= end || limit <= begin {
+                    finalized.push(*region);
+                    continue;
+                }
+                if region.offset < begin {
+                    finalized.push(qa_formats::program::native::Region {
+                        length: begin - region.offset,
+                        ..*region
+                    });
+                }
+                let start = region.offset.max(begin);
+                let stop = limit.min(end);
+                finalized.push(qa_formats::program::native::Region {
+                    offset: start,
+                    length: stop - start,
+                    read: true,
+                    write: false,
+                    execute: false,
+                });
+                if limit > end {
+                    finalized.push(qa_formats::program::native::Region {
+                        offset: end,
+                        length: limit - end,
+                        ..*region
+                    });
+                }
+            }
+            image.regions = finalized.into_boxed_slice();
+        }
         let regions = image
             .regions
             .iter()
