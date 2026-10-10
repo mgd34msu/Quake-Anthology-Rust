@@ -11,8 +11,8 @@ Verified native-reader main was `230ac80c`. Unfinished ELF work is pushed on
 installed `qfiles/qa-rust` is `a7ec14a2`, built 2026-10-09T22:19:17Z in 29.39 s.
 Its owner-authorized private start/base1/q3dm1 CPU/GL smoke passed at 300 frames
 per run with normal exits and movement through native local QW28 packets.
-Native hosts, snapshot delta tables, sign-on, stock HUD and gameplay remain
-unfinished. The development install does not qualify those deferred features.
+Native hosts, sign-on, stock HUD and gameplay remain unfinished. The shared
+snapshot delta tables and connected development channel are implemented. The development install does not qualify those deferred features.
 
 ## Primitive ownership and adoption
 
@@ -43,7 +43,7 @@ is unchanged.
 | THE-887 | `console/src/command_buffer.rs:13` is the single fixed command buffer; `console/src/commands.rs:222` borrows tokenizer argv; `:254` bare cvar write takes argv1. Platform ConsoleLine, binds and EngineServices append into that buffer. | No second current command buffer/tokenizer path found. Installed alias/wait/vstr/macro runs remain THE-3169. |
 | THE-888 | `input/src/lib.rs:528` dispatches queue events into per-seat bindings; `console/src/commands.rs:295` bind parsing and button commands use those same tables. Held-source reuse leaves original press time intact. | No alternate current bind/hold implementation found. Real-button installed gameplay remains THE-3169. |
 | THE-889 | `input/src/command.rs:9` owns UserCmdBuilder; `input/src/lib.rs:915` handles human intents, `session/src/clients.rs:210` builds bots in SERVER ticks. Rule data selects native scaling/narrowing; `network/src/commands.rs` owns protocol/ABI projection values. | No second current human/bot builder found. Guest ideal-pitch updates and original native channel delivery remain THE-3169. |
-| THE-697/THE-890 | `core/src/events.rs:83` owns the one ring, payload leases and per-client/module cursors; Server allocates it; app/output uses it once per CLIENT/quit frame. Module output consumes its own cursor at native ticks. `:383` accepts actual native ACK receipts, never a send watermark. | No destructive-drain ring, shared publication wait or frame-reset text ownership remains. `app/src/output.rs:123` still awaits the real native submission/ACK adapter; stock audio/particle/HUD consumers remain deferred. |
+| THE-697/THE-890 | `core/src/events.rs:83` owns the one ring, payload leases and per-client/module cursors; Server allocates it; app/output uses it once per CLIENT/quit frame. Module output consumes its own cursor at native ticks. `:383` accepts actual native ACK receipts, never a send watermark. | No destructive-drain ring, shared publication wait or frame-reset text ownership remains. The old submission/ACK adapters are deleted; native Channel receipts retire remote print delivery. Stock audio/particle/HUD consumers remain deferred. |
 
 The shared `session/src/events.rs` consumer helper also uses EventRing's
 batch/submit API; it has no queue, text store or independent retirement rule.
@@ -64,26 +64,9 @@ exclude native modules, foreign heaps, game audio and installed gameplay.
 The deferred native-path sites are concrete:
 
 * `app/src/main.rs:401` constructs the host with no native providers.
-* THE-860 removes the direct local usercmd submission.
-  `app/src/lib.rs:207` sends original NQ15/QW28/Q2 34/Q3 68 move packets;
-  `app/src/host.rs:391` submits only the decoded Packet event. The development
-  host explicitly defaults to QW28 independently of map/client/movement rules.
-  `--local-protocol` and `--seat-protocol` select native framing per connection.
-  This is a connected development host, not a native handshake or signon.
-* THE-860 replaces the counting-only PacketReceiver with load-sized endpoint
-  bindings in `network/src/ingress.rs`. `app/src/host.rs:369` dispatches queued
-  packets through the bound native Channel and `:381` retires actual channel
-  receipts against the binding's original output-consumer generation.
-  Move payload decoding and automatic local channel binding are now adopted.
-  Full native command strings/history and negotiated Q3 keys, NQ666/999,
-  rerelease transport, handshake, Q3 command reliability and sound/effect native transmission
-  remain unfinished. The native acceptance is retained on THE-860/THE-3169.
-* `app/src/output.rs` now encodes NQ/QW/Q2 remote print records, queues the
-  shared Channel's native receipt and transmits through `FrameSource::send_packet`.
-  The output/resync callback adapters are deleted. ACK receipts enter only
-  through Packet dispatch. Q3 command-window output and native sound/effect
-  mappings remain THE-860; local HUD consumers still use the in-process ring.
-  Bounded stalled-client disconnection is not native reconnect/sign-on proof.
+* THE-860's channel and projection callers are summarized below. Native
+  sign-on, entity providers, sound/effect wire mappings and installed acceptance
+  remain THE-3169 and the existing protocol feature issues.
 * `ui/src/hud.rs:46` implements projection, with stock layout drawing deferred.
 
 Engine review and native acceptance are separate. Linear remains the source of
@@ -180,52 +163,6 @@ authored-face animation/screenshots and combined shader-pack run required by
 THE-862, along with native-module and stock-HUD acceptance. No installation is
 claimed by this slice.
 
-## THE-860: connection snapshot storage and native Q3 stream
-
-`network/src/snapshots.rs:59` owns one typed 32-slot Ring implementation.
-Protocol field counts are const parameters, not separate game stores. Slots
-retain native projection words, ordered native entity numbers, area bytes and
-sequence/clock metadata; they do not own another gameplay PlayerState or
-EntityTable. Entity storage, baselines and decode scratch are allocated at
-connect. Baselines seal before the first frame. Missing/stale deltas are
-consumed without publication; bounded capacity overflow is counted and never
-publishes a partial frame. Q3 retention and delta-distance limits are policy
-data at that boundary.
-
-`network/src/snapshots.rs:213` and `:336` implement Q3 snapshot bodies using
-the existing entity/player field walker. Sorted merges preserve insertion,
-removal and implicit unchanged rows. New entities use the connection's baseline;
-full frames use the native zero player baseline. Reserved/out-of-width entity
-numbers and excess area bits are omitted at the Q3 boundary. Native frame
-requests are distinct from output ACK receipts.
-
-`network/src/channel/commands.rs:281` and `:306` extend the existing server MSG
-writer/reader in place. Commands, snapshots, Huffman, XOR, EOF and the existing
-Channel framing share that stream. All callers of the old command-only methods
-are migrated and those methods are deleted. A full 64-command window followed
-by a snapshot now reaches EOF; the former command-only opcode limit is removed.
-`network/src/ingress.rs:245` exposes a borrowed accepted Snapshot through the
-existing Packet event consumer. There is no new intake point, packet queue or
-receive thread. Cold snapshot storage is boxed only for the relevant client
-endpoint, rather than inflating every protocol's Channel with inline frames.
-
-Remaining adoption sites are explicit: `app/src/host.rs:369` still ignores
-CLIENT snapshot callbacks, `:480` copies SERVER state directly into prediction,
-and `app/src/lib.rs:201` seeds prediction from SERVER state. Common-state
-projection and SERVER snapshot emission are the next THE-860 step. Other
-protocols' snapshot framing, negotiated NQ666/999/rerelease fields, native
-gamestate/signon, captures/live/combined/installed proof remain THE-860/THE-3169.
-This slice does not claim those callers are migrated or legacy play is ready.
-
-The original Q3 snapshot writer/parser bodies match all 512 seeded cases:
-571,602 wire bytes, 5,864 decoded entity rows, player/area fields, native frame
-validity and read-bit positions. Accepted frames number 488; 24 missing-base
-frames are consumed and discarded. Existing 16,384 native state comparisons
-and 512 reliable-command comparisons still match. Nine focused snapshot tests,
-673 workspace tests, unchanged checker and Clippy pass. See
-[frame-times.md](frame-times.md) and `THE-860-snapshots-20261009/` for CPU23
-release timing, allocation gates and the exact measured scopes. No install.
-
 ## THE-3176: audited helper adoption
 
 | Implementation | Migrated callers and deleted copies |
@@ -251,374 +188,36 @@ Verification artifacts remain in the THE-3176-adoption, bsp-rules,
 projection-dot and plane-qw-zero directories under `$HOME/.cache/qa-rust/`.
 The issue's single Linear evidence comment retains results and commit ids.
 
-## THE-860: native snapshot delta request
+## THE-860: native channel, field tables and caller adoption
 
-`network/src/commands/connection.rs:58` now selects Q3's native `clc_move`
-only when the last acknowledged server-message sequence names an accepted
-snapshot in the existing channel ring. A command-only message or a discarded
-snapshot selects `clc_moveNoDelta`. This follows original
-`quake-iii-arena/code/client/cl_input.c:746-752`; no input history or new
-protocol field is added.
+References are relative to `crates/`; this is engine-scope review. Native and
+installed acceptance remains THE-3169, with protocol extensions on their
+existing feature issues.
 
-The same connection decoder stores the native message ACK as `delta_request`
-on `clc_move` and clears it on `clc_moveNoDelta`, before duplicate/stale usercmd
-filtering, matching `server/sv_client.c:1339-1343`. Snapshot writers consume
-this request, rather than a transmit watermark. The old unconditional no-delta
-selection and ignored move flag are removed. The existing native opcode writer,
-ACK/XOR handling, 32-slot ring and field-table delta encoder remain the only
-implementations.
+| Implementation | Migrated callers and deleted copies |
+| --- | --- |
+| `network/src/delta.rs` shared field walker | Usercmd, entity and player records use static NQ/QW/Q2/rerelease/Q3 tables in `states.rs`; native prefixes, widths, Huffman and XOR remain boundary policy. No per-game scalar delta implementation. |
+| `network/src/snapshots.rs:70` Ring | Channel owns each connection's 32-slot native projection ring, zero baseline and load-sized decode scratch. All connected snapshot writers/readers use this Ring and one ordered packet-entity merge. Standalone KEX2022/2023 codecs use the same implementation. |
+| `network/src/channel.rs:128` Channel | Sequence, ACK, reliable receipt, qport, native fragments, fixed packet storage and Q3 command window share one owner. Q3 SERVER command-output scratch is allocated at connect; the writer initializes only exposed bytes. |
+| `network/src/ingress.rs:81` Connections | Both Socket and Loopback Packet events route through the same channel admission. Local socket, native qport and endpoint policy select one client; ambiguous routes cannot acknowledge records. Counting-only PacketReceiver deleted. |
+| `app/src/lib.rs:227`, `:268`; `app/src/host.rs:341`; `app/src/snapshots.rs:154` | Local human/bot commands and SERVER snapshots use native framing, Channel, Loopback and SysEventQueue. CLIENT applies admitted fields before prediction. Direct local submit and SERVER-to-prediction copies deleted; native entity ordinals remain explicit boundary inputs. |
+| `app/src/output.rs:26`; `app/src/transport.rs` | Remote prints use Channel reliable delivery; Packet ingress retires only real native receipts. Best-effort retires on successful submission. ACK callback adapter and duplicated prepare/submit loops deleted. Stalled peers cannot block healthy peers or SERVER ticks. |
 
-Two connected-channel tests cover initial full requests, full and valid delta
-frames, a command-only server message, missing delta bases and stale usercmds.
-All 678 workspace tests and the unchanged checker pass; the normal release
-workspace build completed in 34.63 s. Evidence is in
-`$HOME/.cache/qa-rust/THE-860-delta-request-20261009/`. No timing, game/window,
-allocation measurement or installation was run.
+No remaining bypass was found among these current channel/delta callers.
+Connected development profiles are NQ15, QW28, Q234, Q2repro1038 and Q368;
+KEX2022/2023 frame codecs do not yet provide connected native profiles.
+NQ666/999 negotiation, native handshake/gamestate/signon, provider-driven entity
+snapshots and native sound/effect mappings still require their existing R11
+adapters. They are missing consumers, not completed interoperability.
+THE-3169 retains original captures, live reference client/server connections,
+installed three-map zero-allocation runs and mixed Q2/Q3 native clients.
 
-THE-860 remains In Progress. The app still copies SERVER player state directly
-into prediction at `app/src/host.rs:480` and initial local connect at
-`app/src/lib.rs:201`; its CLIENT packet callback still ignores Snapshot
-records. Common player projection, snapshot submission and migration of these
-callers are the next integration. Other protocols' snapshot framing,
-signon/native hosts and original-client/server interoperability remain required.
-
-## THE-860: common player projection
-
-`network/src/projection.rs` adds one field walker over the existing common
-PlayerState. Connection load selects static NQ15, QW28, Q2-34 or Q3-68 layout
-data. It writes the existing native codec words into caller-owned storage;
-there is no second engine player store or scalar delta encoder. Movement and
-trace RuleSetIds remain independent and unchanged.
-
-Native client, ground, weapon and weapon-model numbers, effective speed and
-gravity, QW visibility flags, command age and body yaw are explicit context.
-No common ClientId, EntityId or registry handle is cast to a native ordinal.
-QW body yaw is separate from command/view yaw, matching its corpse command
-path. Q2 movement uses signed eighth units, eight-millisecond timers and signed
-short delta angles. Q3 delta angles use unsigned 16-bit fields. Both use the
-original ANGLE2SHORT multiply-then-divide order through core math. The static
-flag data preserves simultaneous native timer flags; mode mapping drops modes
-the destination cannot carry to its native equivalent. Q2 stock health, armor
-and frags and Q3 health, armor and score use the common hot fields.
-
-Load-resolved ValueBindings provide native module fields from the existing
-common value bank, in registration order. A later binding overrides a default
-field. Out-of-layout destinations are omitted and counted at load; a missing
-common bank field retains the hot value or zero. A short output is rejected
-without partial mutation. Inventory ordinals, icons, animation and other
-module-specific fields still require their explicit bindings; zero defaults
-are not evidence of native gameplay integration.
-
-Four focused tests pass: native codec round trips for all four implemented
-layouts, independent roles, native ordinals/mode limits, module overrides,
-missing bindings, short output rejection and 4,096 seeded delta angles checked
-against the original macro order and signedness. NetQuake health/armor are
-QuakeC float inputs to its writer but native integer outputs from its decoder;
-the assertions check that distinction. Original field/flag sources are
-`quake/WinQuake/sv_main.c`, `quake/QW/server/sv_ents.c`,
-`quake-2/game/q_shared.h`, and `quake-iii-arena/code/game/q_shared.h` and
-`bg_public.h`. Existing codec implementations are unchanged.
-
-THE-860 remains In Progress. The projection has no app snapshot provider yet;
-the remaining direct prediction copies at `app/src/host.rs:480` and
-`app/src/lib.rs:201`, and ignored CLIENT Snapshot dispatch, still need
-migration. Q2 rerelease, negotiated NQ666/999, other snapshot streams, signon,
-native/combined/installed acceptance remain required. Evidence is in
-`$HOME/.cache/qa-rust/THE-860-player-projection-20261009/`; no timing,
-allocation measurement, game/window or installation run is claimed.
-All 682 workspace tests, the unchanged checker, formatting and diff checks
-pass. The final normal release workspace build completed in 30.72 s.
-
-## THE-860: shared packet-entity merge and Q2 frames
-
-`network/src/snapshots.rs:370,561` now owns one ordered read merge and one
-ordered write merge for native packet entities. Q3's separate loops were
-deleted; its existing snapshot/channel callers use these loops. Q2 frame
-codecs use the same loops and the same generic 32-slot Ring. Native prefixes,
-terminators, player layouts and unchanged-row policy select the data and codec
-entries; there is no second engine entity/player store or scalar encoder.
-
-The existing Q2 record reader at `states.rs:712` now delegates to its one
-prefix/body decoder. `states.rs:735` owns Q2's unchanged-row reset: old_origin
-receives the prior origin and event clears, including omitted prefix and
-trailing rows. Both packet and record callers use it. Q2 frame headers retain
-native frame/lastframe, suppression count, area bytes, playerinfo and
-packetentities. Frame time is the protocol's native frame * 100 milliseconds,
-independent of movement or map. The native client count is supplied explicitly
-for the player old-origin rule. Delta selection uses the actual requested
-frame and native 29-frame cutoff; unrepresentable entity numbers are omitted.
-
-The one ring publication path bounds capacity, counts missing bases/overflow
-and retains typed slot storage. Original Q2 CL_ParseFrame retains parsed
-invalid frames, then tests the addressed sequence/row age independently of
-old.valid on a later delta. The shared slot has that validity metadata;
-invalid frames remain unavailable through frame(). Q3 retains its existing
-discard behavior. Overflow never publishes a partial frame.
-
-The developer snapshot probe and original-C tool were extended rather than
-duplicated. Whole original Q2 SV_EmitPacketEntities/SV_WriteFrameToClient and
-CL_DeltaEntity/CL_ParsePacketEntities/CL_ParseFrame bodies run with private
-native state and stubbed presentation callbacks. All 512 Q2 cases match
-913,057 comparison bytes, decoded player/entities, flags, validity and cursors.
-All existing 512 Q3 cases still match 2,035,577 bytes. The existing 16,384
-native state cases match all 8,039,745 bytes and decoded words. These fixtures
-do not prove signon, native hosts or gameplay.
-
-The release snapshot probe records zero caller Rust allocations, reallocations
-and requested bytes across each protocol's 512 encode/decode cases, with a
-one-allocation positive control. This is a headless codec gate; it does not
-measure workers, driver/SDL or host frames. No timing runs were performed.
-Three new tests cover full/delta/removal, unchanged prefix/trailing resets,
-missing-base retention, overflow recovery and area limits. All 685 workspace
-tests, unchanged checker, warning-denied network/platform Clippy, formatting
-and diff checks pass. The normal release app and comparison binaries built in
-32.45 s. Evidence: `$HOME/.cache/qa-rust/THE-860-q2-frames-20261009/`.
-
-THE-860 remains In Progress. Q2's frame codec is not connected to ingress/app
-yet. Direct prediction copies remain `app/src/host.rs:480` and
-`app/src/lib.rs:201`; CLIENT Snapshot dispatch still ignores decoded Q3
-frames. QW/NQ frame streams, negotiated protocols/rerelease, native signon,
-common-state provider/client adoption and combined/installed proofs remain.
-No game/window run or installation is claimed.
-
-
-## THE-860: Q2 connected snapshot delivery
-
-`network/src/snapshots.rs` now supplies one load-selected native storage
-variant per CLIENT channel. Q2's 68/20-word records and Q3's 112/51-word
-records use the existing generic Ring implementation, not separate engine
-player/entity stores. Both remain 32-slot, with native parse-row retention
-limits and a zero baseline. Channel's previous Q3-only mutable-ring API is
-removed; its public borrowed snapshot view now carries the native record shape.
-
-`network/src/ingress.rs` configures native payload storage at connection bind,
-because QW and Q2 share channel header rules. Ordinary connected CLIENT Packet
-delivery now drains Q2 svc_frame and native prints through the same callback as
-Q3 commands/frames. The Q2 adapter borrows the existing Prints parser for layout,
-print priority/text and centerprint; no second print reader is introduced.
-Nop and byte-end termination follow CL_ParseServerMessage. Signon/configstrings,
-sounds/effects, inventory and stuffed commands still return explicit unsupported
-service errors; this is not a complete native server-message implementation.
-
-`network/src/commands/connection.rs` preserves Q2's payload frame number as
-clc_move lastframe, independently of channel sequence. The same per-connection
-delta-request value serves CLIENT's accepted current frame or SERVER's received
-native request. Missing, truncated or otherwise rejected current frame streams
-clear it so the next command requests a full frame; older ring bases remain
-available for native recovery. Q3 still selects clc_move/clc_moveNoDelta from
-its native acknowledged server-message snapshot. Existing production Packet
-routing and both output developer probes use the shared Incoming callback;
-there is no additional physical intake or packet queue.
-
-Two connected fixtures cover full/delta frames whose numbers differ from
-channel sequences, native old-origin advancement, prints before/after a frame,
-dropped packet/missing base/full recovery, truncated frames, bounded unsupported
-services, idempotent binding and same-header payload mismatch. Existing Q3
-connected fixtures remain. The developer snapshot example's --connected-heap
-mode brackets Q2 store/write, Channel delivery, CLIENT frame/print dispatch and
-native move feedback after load, without collecting timing samples.
-
-Current app bypasses remain `app/src/host.rs:480` and `app/src/lib.rs:201`
-(direct SERVER-to-prediction copies); app's CLIENT callback still does not
-apply decoded native snapshots. Common projection/inverse application,
-QW/NQ framing, rerelease/666/999, signon, captures/live legacy peers and
-THE-3169 native/combined/installed acceptance remain required. No app
-snapshot adoption, game run or installation is claimed for this component.
-Evidence: `$HOME/.cache/qa-rust/THE-860-q2-connected-20261009/`.
-
-All 687 workspace tests, the unchanged checker, warning-denied Clippy and
-format/diff checks pass. The normal release app and developer codec examples
-built in 33.20 s. Original-C comparison remains exact for 512 Q2 whole-frame
-cases (913,057 bytes), 512 Q3 cases (2,035,577 bytes) and 16,384 scalar-state
-cases (8,039,745 bytes and decoded words). The connected heap probe passes
-660 iterations, including 60 warm-up and 600 measured iterations: positive
-allocation control 1, zero caller allocations/reallocations/requested bytes
-and zero command errors. This counter covers the connected native codec path,
-not app frames, workers, OS/driver allocations or gameplay. No timing run.
-
-## THE-860: decoded player fields
-
-The existing `network/src/projection.rs` table now serves both SERVER reduction
-and CLIENT application. There is no second player store, scalar decoder or
-per-game import loop. Application consumes the existing decoder's words:
-NQ QC float stats have become native integers, Q2 position/velocity use signed
-eighth units and timers use 8-ms units, and Q2/Q3 delta angles retain their
-signed/unsigned short forms through core short_to_angle.
-
-Movement and trace RuleSetIds, absent hot fields, tuning, inventory arenas and
-foreign module tails remain owned by the recipient. A native mode that cannot
-distinguish existing common modes retains that choice; otherwise load-selected
-mode data supplies its common meaning. Simultaneous represented timer flags
-are restored without clearing a timer the protocol cannot express. NQ's water
-bit changes only the known below/above-two boundary. QW's writer-only body yaw
-placeholder never overwrites incoming context.
-
-Client, weapon/model and ground ordinals stay in explicit native context; a
-caller callback resolves Q3 ground into its own current lifetime namespace.
-Native none clears contact without calling the resolver, and native world may
-remain grounded without a common entity handle. No ordinal is cast to an
-EntityId or registry handle. Effective native gravity/speed stay in context
-until the movement adapter accounts for its chosen tuning/multipliers. Existing
-ValueBinding imports update the same load-sized ValueBank; missing bindings
-drop without allocating.
-
-The existing four-protocol codec test now applies each decoded record to a
-player with foreign movement/trace roles. Connected Q2/Q3 fixtures apply
-borrowed CLIENT frames; two focused tests cover lossy modes, timer flags,
-ground resolution/none, module tails, bindings and short-input rejection.
-The connected heap probe includes common reduction/application.
-
-App CLIENT application and the direct prediction copies at
-`app/src/host.rs:480` and `app/src/lib.rs:201` remain for the next integration
-slice. QW/NQ connected streams, rerelease/666/999, native signon, live legacy
-peers and THE-3169 native/installed acceptance remain open. This component
-does not claim native prediction, complete HUD/stat imports or gameplay.
-Evidence: `$HOME/.cache/qa-rust/THE-860-player-import-20261010/`.
-
-All 689 workspace tests, unchanged checker, warning-denied Clippy and
-format/diff checks pass. The normal release app and developer codec examples
-built in 33.77 s. Existing original-C codec comparisons remain exact for
-512 Q2 frame cases (913,057 bytes), 512 Q3 cases (2,035,577 bytes) and
-16,384 scalar-state cases (8,039,745 bytes and decoded words). These compare
-the native codecs, not a complete player ABI or prediction implementation.
-The connected caller-heap probe includes reduction and decoded application:
-60 warm-up plus 600 measured iterations, positive allocation control 1,
-zero allocations/reallocations/requested bytes and command errors. No worker,
-OS/driver or app-frame claim. No timing, game/window or installation run.
-
-## THE-860: QuakeWorld packet entities
-
-`network/src/snapshots.rs` now frames QW packet entities with the same generic
-Ring and ordered read/write merge used by Q2/Q3. QW playerinfo remains an
-independent native service, so these retained packet frames have no invented
-player payload. The existing QW scalar reader is split into one prefix and
-one body helper; both its public record entry and the packet merge call that
-body. The previous inline reader body is deleted.
-
-Native svc_packetentities/deltapacketentities, baseline/unchanged/remove ordering,
-zero terminator, 64-entity limit and 9-bit ordinals remain. Packet parsing keeps
-qsrc's unsigned-short header before CL_ParseDelta; the standalone scalar entry
-still retains its native signed-short input. The actual caller request selects
-the delta base, even when the advisory low-byte wire prefix differs. Request
-age uses outgoing sequence and the native 63-frame rejection boundary.
-
-The one engine ring retains 32 snapshots, compared with stock QW's 64 backups.
-An unavailable SERVER base selects QW's original full-response encoding. CLIENT
-consumes and rejects an unavailable or over-age base so its next request can
-resynchronize. This changes retention capacity, not wire fields; it does not
-claim live legacy interoperability. Tests cover baseline/unchanged/removal
-merges, advisory mismatch, age, missing bases, truncation, wrap/full recovery,
-capacity rejection and malformed full removal.
-
-The developer oracle adds unchanged SV_EmitPacketEntities, FlushEntityPacket
-and CL_ParsePacketEntities from qsrc/quake/QW. Its private bindings select the
-same full response when a request leaves the unified 32-slot retained window;
-QW's native parser still has 64 backups. This comparison covers packet entities,
-not playerinfo, a complete server message, signon, app or gameplay. Existing
-Q2/Q3/scalar regressions remain required.
-
-QW connected ingress/playerinfo and native request association are the next
-component, followed by all-protocol app submission/CLIENT application and
-deletion of `app/src/host.rs:480`/`app/src/lib.rs:201` direct copies. Other
-protocol streams, rerelease/666/999 and THE-3169 native/live/installed acceptance
-remain open. Evidence: `$HOME/.cache/qa-rust/THE-860-qw-packets-20261010/`.
-
-All 691 workspace tests, unchanged checker, warning-denied Clippy and
-format/diff checks pass. The normal release app and codec examples built in
-32.76 s. Whole original-C QW packet comparison: 512 cases, 593,264 bytes,
-decoded records and cursor positions exact, with the above retention policy.
-Its caller-heap probe has positive control 1 and zero allocations/reallocations
-or requested bytes across those 512 encode/decode cases. Original Q2/Q3
-comparisons remain exact at 913,057/2,035,577 bytes; all 16,384 scalar-state
-cases remain exact at 8,039,745 bytes and decoded words. Existing Q2 connected
-common reduce/apply probe still passes 60+600 iterations with zero caller heap
-activity and command errors. No app/worker/OS/gameplay allocation claim, timing,
-game/window run or install.
-
-## THE-860: QuakeWorld move delta requests
-
-The existing native move codec now carries QW's optional clc_delta low byte.
-Its writer retains the CL_SendCmd checksum boundary before the suffix. One
-control parser accepts native nop and replacing delta requests before/after
-the move; the actual checksum index follows any prefix controls. A second
-move, unknown opcode or truncated request fails at the packet boundary.
-The connection resets its SERVER request at each message and retains the
-last admitted byte, independently of movement, geometry and channel ACKs.
-All existing Move constructors are migrated; no second codec or input history
-is introduced.
-
-The existing original-C packet oracle now includes CL_SendCmd's unchanged
-request and age-limit block. Its seeded QW cases cover active requests,
-omission and the native age-63 reset; NQ/Q2/Q3 packet cases remain exact.
-The focused connection test covers request zero/255, prefix/suffix replacement,
-omission, invalid checksum, truncation and a second move. Developer allocation
-brackets cover packet encode/decode and QW SERVER request application.
-
-All 692 workspace tests, unchanged checker, warning-denied Clippy and
-format/diff checks pass. The normal release app and codec examples built in
-35.12 s. All 2,048 original-C packet cases have exact bytes and decoded move
-fields. Across those cases the calling Rust thread has positive control 1
-and zero allocations/reallocations/requested bytes. The existing Q2 connected
-reduce/apply/channel probe also passes 60+600 iterations with zero caller heap
-activity and command errors. No timing, game/window or installation run;
-these probes do not measure workers, OS/driver or app-frame allocations.
-Evidence: `$HOME/.cache/qa-rust/THE-860-qw-move-request-20261010/`.
-
-This component handles messages containing a move. Control-only QW messages,
-CLIENT request/frame association, reply-sequence synchronization and connected
-playerinfo remain next under THE-860. The app still directly seeds/copies
-prediction at `app/src/lib.rs:201` and `app/src/host.rs:480`; native snapshot
-submission/application must remove those callers in its integration slice.
-Other native service streams, rerelease/666/999, live legacy connections and
-THE-3169 native/installed acceptance remain open.
-
-## THE-860: connected QuakeWorld packet frames
-
-The load-selected CLIENT storage and ReceivedFrame now include QW using the
-same 32-slot Ring as Q2/Q3. Native packetentities and print/nop services pass
-through the existing connected Packet dispatcher. A delta without its submitted
-request/base is consumed without publishing a frame; CLIENT requests full
-recovery. Full replies remain usable without a delta association.
-
-Each existing slot holds the sequence/base scalars for its submitted move.
-The pending transmit retains that exact selection across rejected admission;
-submission publishes it, and received-frame replacement preserves it. The
-advisory byte never chooses a conveniently available base. Base 256 remains
-256 internally even when its native request byte is zero. These scalars retain
-protocol context, not input commands or a second snapshot implementation.
-One Commands selection entry serves both encoding and submission metadata;
-all prepare_move callers are migrated, including developer examples.
-
-The explicit QW parser selects qsrc SV_ExecuteClientMessage's reply alignment;
-the shared QW/Q2 header does not select it. A slipped reply is suppressed while
-its move still reaches SERVER. A new admitted request cancels an unsent old
-payload so the reply can be rebuilt, retaining its selected reliable flight and
-bit. Neither cancellation nor submission acknowledges reliable records.
-The connected fixture confirms actual native ACK retirement after replacement.
-
-Three new connected tests cover full/delta replies, prints around frames,
-advisory mismatch, dropped responses, rejected admission/exact retry, missing
-request/full recovery, skipped packet sequences, base-256 byte zero, and
-selected reliable data surviving cancellation until ACK. All 695 workspace
-tests, unchanged checker, warning-denied Clippy and format/diff checks pass.
-The normal release app and developer examples built in 31.46 s.
-Original-C QW/Q2/Q3 packet-frame comparisons remain exact: 512 cases each,
-593,264/913,057/2,035,577 bytes, decoded records and cursors. Original move
-packets remain exact for all 2,048 NQ/QW/Q2/Q3 cases. QW's prior documented
-32-slot retention/full-response policy still applies.
-
-The new connected QW caller-heap probe runs 60 warm-up plus 600 measured
-iterations through submitted moves, reply alignment, packet store/write,
-CLIENT ingress and print/frame callbacks: positive control 1, zero allocations,
-reallocations, requested bytes and command errors. Existing Q2 connected
-reduce/apply also passes 60+600 with zero caller heap/errors. These probes
-exclude playerinfo, app frames, workers and OS/driver heaps. No timing,
-game/window or install run. Evidence:
-`$HOME/.cache/qa-rust/THE-860-qw-connected-20261010/`.
-
-QW playerinfo/control-only services and SERVER conversion of the request byte
-to its retained native base remain next; full native service/signon binding is
-not claimed. App submission and decoded CLIENT player application must still
-replace `app/src/host.rs:480` and `app/src/lib.rs:201` direct prediction copies.
-NQ/negotiated 666/999/rerelease streams, live original peers and THE-3169
-native/installed acceptance remain open. THE-860 stays In Progress.
+At engine HEAD `a7275e01`, 754 workspace tests, Clippy, formatting and the
+unchanged checker passed. Thirteen native comparison commands and eleven
+heap-only commands passed; the latter produced thirteen reports with zero
+measured calling-thread Rust heap activity over 60 warm-up and 600 measured
+iterations and unchanged fixture counters. Evidence is in
+`THE-860-q3-scratch-20261010/` under the developer cache, including command,
+comparison and heap receipts. Earlier pinned scopes remain in
+[frame-times.md](frame-times.md). This submission adds no timing run or install;
+component oracles do not prove foreign heaps, live servers or gameplay.
