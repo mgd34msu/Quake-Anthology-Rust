@@ -447,10 +447,10 @@ fn elf_name(label: &[u8]) -> u64 {
 }
 fn elf_dynamic(file: &mut [u8], bits: usize, tags: &[(u64, u64)]) {
     let bytes = ((tags.len() + 1) * 2 * (bits / 8)) as u64;
-    elf_segment(file, bits, 2, 2, 0x1180, 0x3180, bytes, bytes);
+    elf_segment(file, bits, 2, 2, 0x1c00, 0x3c00, bytes, bytes);
     for (i, (tag, value)) in tags.iter().copied().chain([(0, 0)]).enumerate() {
-        put(file, 0x1180 + i * (bits / 8) * 2, tag, bits / 8);
-        put(file, 0x1180 + (i * 2 + 1) * (bits / 8), value, bits / 8);
+        put(file, 0x1c00 + i * (bits / 8) * 2, tag, bits / 8);
+        put(file, 0x1c00 + (i * 2 + 1) * (bits / 8), value, bits / 8);
     }
 }
 fn elf_symbol_fixture(bits: usize) -> (Vec<u8>, Vec<(u64, u64)>) {
@@ -700,4 +700,190 @@ fn elf_symbol_width_name_and_version_chains_fail_at_admission() {
         elf_dynamic(&mut file, bits, &bad);
         assert!(Image::parse(&file, None, LoadRole::Library).is_err());
     }
+}
+
+fn elf_relocation(
+    file: &mut [u8],
+    bits: usize,
+    at: usize,
+    address: u64,
+    kind: u32,
+    symbol: u32,
+    addend: Option<i64>,
+) {
+    let width = bits / 8;
+    let info = if bits == 64 {
+        (u64::from(symbol) << 32) | u64::from(kind)
+    } else {
+        (u64::from(symbol) << 8) | u64::from(kind)
+    };
+    put(file, at, address, width);
+    put(file, at + width, info, width);
+    if let Some(addend) = addend {
+        put(file, at + width * 2, addend as u64, width);
+    }
+}
+#[test]
+fn elf_rel_rela_and_plt_keep_order_width_and_signed_addends_without_patching() {
+    for bits in [32, 64] {
+        let (mut file, mut tags) = elf_symbol_fixture(bits);
+        let width = (bits / 8) as u64;
+        tags.extend([
+            (17, 0x3a00),
+            (18, width * 4),
+            (19, width * 2),
+            (7, 0x3a80),
+            (8, width * 6),
+            (9, width * 3),
+            (23, 0x3b00),
+            (2, width * 2),
+            (20, 17),
+        ]);
+        elf_relocation(&mut file, bits, 0x1a00, 0x33c0, 8, 0, None);
+        elf_relocation(
+            &mut file,
+            bits,
+            0x1a00 + (width * 2) as usize,
+            0x33c0 + width,
+            6,
+            3,
+            None,
+        );
+        elf_relocation(&mut file, bits, 0x1a80, 0x33e0, 1, 1, Some(-7));
+        elf_relocation(
+            &mut file,
+            bits,
+            0x1a80 + (width * 3) as usize,
+            0x33f0,
+            5,
+            4,
+            Some(0),
+        );
+        elf_relocation(&mut file, bits, 0x1b00, 0x33f8, 7, 3, None);
+        put(&mut file, 0x13c0, 0x1234, bits / 8);
+        elf_dynamic(&mut file, bits, &tags);
+        let image = Image::parse(&file, Some(0x200000), LoadRole::Library).unwrap();
+        let rows = &image.relocations;
+        assert_eq!(rows.len(), 5);
+        assert_eq!(
+            rows.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            vec![8, 6, 1, 5, 7]
+        );
+        assert_eq!(rows[0].address, 0x2033c0);
+        assert_eq!(rows[0].bytes, bits / 8);
+        assert_eq!(rows[0].addend, None);
+        assert_eq!(rows[2].addend, Some(-7));
+        assert_eq!(rows[2].symbol, Some(1));
+        assert_eq!(rows[3].bytes, 4);
+        assert_eq!(
+            &image.bytes[0x33c0..0x33c0 + bits / 8],
+            &0x1234u64.to_le_bytes()[..bits / 8]
+        );
+        *tags.iter_mut().find(|(tag, _)| *tag == 23).unwrap() = (23, 0x3a80);
+        *tags.iter_mut().find(|(tag, _)| *tag == 2).unwrap() = (2, width * 6);
+        *tags.iter_mut().find(|(tag, _)| *tag == 20).unwrap() = (20, 7);
+        elf_dynamic(&mut file, bits, &tags);
+        let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+        assert_eq!(image.relocations.len(), 4);
+    }
+}
+#[test]
+fn elf_relr_expands_native_bitmap_order_and_requires_a_base() {
+    for bits in [32, 64] {
+        let (mut file, mut tags) = elf_symbol_fixture(bits);
+        let width = bits / 8;
+        tags.extend([(36, 0x3a00), (35, (width * 3) as u64), (37, width as u64)]);
+        for (i, value) in [0x33c0, 0b1011, 0x33f0].into_iter().enumerate() {
+            put(&mut file, 0x1a00 + i * width, value, width);
+        }
+        elf_dynamic(&mut file, bits, &tags);
+        let image = Image::parse(&file, Some(0x200000), LoadRole::Library).unwrap();
+        assert_eq!(
+            image
+                .relocations
+                .iter()
+                .map(|r| r.address)
+                .collect::<Vec<_>>(),
+            vec![
+                0x2033c0,
+                0x2033c0 + width as u64,
+                0x2033c0 + width as u64 * 3,
+                0x2033f0
+            ]
+        );
+        assert!(
+            image.relocations.iter().all(|r| r.kind == 8
+                && r.symbol.is_none()
+                && r.addend.is_none()
+                && r.bytes == width)
+        );
+        put(&mut file, 0x1a00, 3, width);
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        put(&mut file, 0x1a00, u64::MAX - 1, width);
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+    }
+}
+#[test]
+fn elf_relocation_admission_rejects_bad_indices_fields_and_unpaired_tables() {
+    for bits in [32, 64] {
+        let (mut file, mut tags) = elf_symbol_fixture(bits);
+        let width = (bits / 8) as u64;
+        tags.extend([(7, 0x3a00), (8, width * 3), (9, width * 3)]);
+        elf_dynamic(&mut file, bits, &tags);
+        for (address, kind, symbol) in [
+            (0x2000, 1, 1),
+            (0x33c0, 1, 6),
+            (0x33c0, 8, 1),
+            (0x33c0, 5, 0),
+            (0x33c0, 4, 1),
+            (0x4180 - width + 1, 1, 1),
+        ] {
+            elf_relocation(&mut file, bits, 0x1a00, address, kind, symbol, Some(0));
+            assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        }
+        elf_relocation(&mut file, bits, 0x1a00, 0x33c0, 1, 1, Some(0));
+        assert!(Image::parse(&file, None, LoadRole::Library).is_ok());
+        for tag in [7, 8, 9] {
+            let mut bad = tags.clone();
+            bad.retain(|&(t, _)| t != tag);
+            elf_dynamic(&mut file, bits, &bad);
+            assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+        }
+        let mut bad = tags.clone();
+        *bad.iter_mut().find(|(tag, _)| *tag == 8).unwrap() = (8, width * 3 - 1);
+        elf_dynamic(&mut file, bits, &bad);
+        assert!(Image::parse(&file, None, LoadRole::Library).is_err());
+    }
+}
+#[test]
+fn elf_x64_narrow_relocation_fields_keep_their_native_width() {
+    let (mut file, mut tags) = elf_symbol_fixture(64);
+    let kinds = [2, 10, 11, 12, 13, 14, 15, 24];
+    tags.extend([(7, 0x3a00), (8, (kinds.len() * 24) as u64), (9, 24)]);
+    for (i, kind) in kinds.into_iter().enumerate() {
+        elf_relocation(
+            &mut file,
+            64,
+            0x1a00 + i * 24,
+            0x33c0 + i as u64 * 8,
+            kind,
+            1,
+            Some(-1),
+        );
+    }
+    elf_dynamic(&mut file, 64, &tags);
+    let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+    assert_eq!(
+        image
+            .relocations
+            .iter()
+            .map(|r| r.bytes)
+            .collect::<Vec<_>>(),
+        vec![4, 4, 4, 2, 2, 1, 1, 8]
+    );
+    assert!(image.relocations.iter().all(|r| r.addend == Some(-1)));
+    elf_relocation(&mut file, 64, 0x1a00, u64::MAX, 0, 0, Some(0));
+    let image = Image::parse(&file, Some(0x200000), LoadRole::Library).unwrap();
+    assert_eq!(image.relocations[0].bytes, 0);
+    assert_eq!(image.relocations[0].address, u64::MAX);
 }

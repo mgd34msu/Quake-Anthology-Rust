@@ -1,6 +1,7 @@
 use super::*;
 
 mod metadata;
+mod relocations;
 #[derive(Clone, Copy)]
 struct Segment {
     kind: u32,
@@ -414,6 +415,7 @@ pub(super) fn parse(
             })
         })
         .collect::<Result<Box<[_]>, FormatError>>()?;
+    let relocations = file_view.relocations(bits, bias, &dynamic, &symbols)?;
     let tls = tls_segment
         .map(|s| {
             if s.file_bytes != 0 {
@@ -456,7 +458,7 @@ pub(super) fn parse(
         names,
         symbols,
         imports: Box::new([]),
-        relocations: Box::new([]),
+        relocations: relocations.into_boxed_slice(),
         needed,
         tls,
         initializers: Box::new([]),

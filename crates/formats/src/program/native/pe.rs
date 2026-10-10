@@ -412,6 +412,7 @@ pub(super) fn parse(file: &[u8], requested_base: Option<u64>) -> Result<Image, F
                 patches.push((address as usize, width, patched));
                 relocations.push(Relocation {
                     address: base + address,
+                    bytes: width,
                     kind,
                     symbol: None,
                     addend: low,

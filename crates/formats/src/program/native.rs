@@ -76,6 +76,7 @@ pub struct Tls {
 #[derive(Clone, Copy, Debug)]
 pub struct Relocation {
     pub address: u64,
+    pub bytes: usize,
     pub kind: u32,
     pub symbol: Option<usize>,
     pub addend: Option<i64>,
