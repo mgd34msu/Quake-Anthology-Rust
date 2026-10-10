@@ -202,6 +202,16 @@ impl CollisionStore {
         })
     }
 
+    /// Cold native projections reserve rows for every currently loaded resource.
+    pub fn geometries(&self) -> impl Iterator<Item = GeometryId> + '_ {
+        self.slots.iter().enumerate().filter_map(|(slot, value)| {
+            value.resource.as_ref().map(|_| GeometryId {
+                slot: slot as u32,
+                generation: value.generation,
+            })
+        })
+    }
+
     pub fn surface(&self, id: SurfaceId) -> Option<SurfaceView<'_>> {
         match &self.resource(id.geometry)?.geometry {
             Geometry::Brushes(brushes) => brushes.surfaces.view(id.index),

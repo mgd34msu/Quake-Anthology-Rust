@@ -2049,7 +2049,7 @@ fn native_planes(
         camera.refdef.viewport.x as f32 + camera.refdef.viewport.width as f32 * 0.5 - 0.5,
         camera.refdef.viewport.y as f32 + camera.refdef.viewport.height as f32 * 0.5 - 0.5,
     ];
-    let right = qa_core::primitives::Vec3(camera.refdef.axes[1].0.map(|value| -value));
+    let right = -camera.refdef.axes[1];
     let inverse_distance = 1.0 / (plane.distance - plane.normal.dot(camera.refdef.origin));
     if !inverse_distance.is_finite() {
         return None;
@@ -2089,8 +2089,7 @@ fn native_planes(
         camera.refdef.origin.dot(camera.refdef.axes[2]),
         camera.refdef.origin.dot(camera.refdef.axes[0]),
     ]);
-    let scaled_origin =
-        qa_core::primitives::Vec3(transformed_origin.0.map(|value| value * mip_scale));
+    let scaled_origin = transformed_origin * mip_scale;
     let adjust = std::array::from_fn(|i| {
         let projection = surface.texture_projection[i];
         let camera_fixed = (scaled_origin.dot(axes[i]) * 65536.0 + 0.5) as i64;

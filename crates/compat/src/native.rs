@@ -91,6 +91,7 @@ pub struct Vm {
     cvars: Option<crate::cvars::NativeCvars>,
     resources: Option<[crate::services::ResourceRange; 3]>,
     entities: Option<EntityProjection>,
+    surfaces: Option<crate::surfaces::NativeSurfaces>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -300,6 +301,7 @@ impl Vm {
             cvars: None,
             resources: None,
             entities: None,
+            surfaces: None,
         })
     }
     pub fn unresolved_imports(&self) -> impl Iterator<Item = ImportTrapInfo<'_>> {
@@ -366,6 +368,7 @@ impl Vm {
                 .map_err(Error::Service)?;
         }
         let entities = &mut self.entities;
+        let surfaces = self.surfaces.as_ref();
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -380,6 +383,7 @@ impl Vm {
                     native_cvars: cvars.as_mut(),
                     native_resources: resources,
                     native_entities: entities.as_mut().zip(table_address),
+                    native_surfaces: surfaces,
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,

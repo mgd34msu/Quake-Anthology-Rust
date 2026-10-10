@@ -12,3 +12,4 @@ mod numbers;
 pub mod quakec;
 pub mod qvm;
 pub mod services;
+pub mod surfaces;

@@ -1653,7 +1653,63 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             execute: false,
         });
         image.regions = regions.into_boxed_slice();
-        let mut game = Game::map(image, rules, 25, Duration::from_secs(3)).unwrap();
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let bounds = qa_core::primitives::Bounds {
+            mins: qa_core::primitives::Vec3([-1000.0; 3]),
+            maxs: qa_core::primitives::Vec3([1000.0; 3]),
+        };
+        let geometry = runtime
+            .geometry
+            .load_brushes(
+                vec![],
+                vec![],
+                qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
+                qa_world::collision::brushes::BrushTree {
+                    planes: vec![],
+                    nodes: vec![],
+                    leaves: vec![qa_world::collision::brushes::CollisionLeaf {
+                        stored_contents: None,
+                        first_brush: 0,
+                        brush_count: 0,
+                    }],
+                    leaf_brushes: vec![],
+                    models: vec![qa_world::collision::brushes::ModelRoot::Leaf(0); 2],
+                },
+                vec![bounds; 2],
+            )
+            .unwrap();
+        let visibility = qa_world::visibility::VisibilityWorld::load(
+            vec![qa_core::primitives::Plane::oriented(
+                qa_core::primitives::Vec3([1.0, 0.0, 0.0]),
+                0.0,
+            )],
+            vec![qa_world::visibility::VisNode {
+                plane: 0,
+                children: [-1, -2],
+                bounds,
+                surfaces: qa_world::visibility::SurfaceSpan::default(),
+            }],
+            [7, 9]
+                .map(|area| qa_world::visibility::VisLeaf {
+                    selector: Some(5),
+                    area: Some(area),
+                    solid: false,
+                    bounds,
+                    surfaces: qa_world::visibility::SurfaceSpan::default(),
+                })
+                .to_vec(),
+            vec![],
+            0,
+            0,
+            qa_world::visibility::PvsRows::all_visible(6),
+        )
+        .unwrap();
+        runtime.collision = Some(
+            qa_app::WorldCollision::new(&runtime.geometry, geometry, 0)
+                .with_visibility(std::sync::Arc::new(visibility)),
+        );
+        let mut game =
+            Game::map(image, rules, 25, &runtime.geometry, Duration::from_secs(3)).unwrap();
         assert!(game.entities().is_err());
         let imports = game.imports_address;
         let base = game.vm.process.base();
@@ -1674,7 +1730,6 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             let at = first + header + slot * 8;
             assert_eq!(&memory[at..at + 8], &pointer.to_le_bytes());
         }
-        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
         let bound = runtime
             .server
             .entities
@@ -1932,60 +1987,6 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             memory.write_word(entity_address + 264, 2).unwrap();
         }
         drop(memory);
-        let bounds = qa_core::primitives::Bounds {
-            mins: qa_core::primitives::Vec3([-1000.0; 3]),
-            maxs: qa_core::primitives::Vec3([1000.0; 3]),
-        };
-        let geometry = runtime
-            .geometry
-            .load_brushes(
-                vec![],
-                vec![],
-                qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
-                qa_world::collision::brushes::BrushTree {
-                    planes: vec![],
-                    nodes: vec![],
-                    leaves: vec![qa_world::collision::brushes::CollisionLeaf {
-                        stored_contents: None,
-                        first_brush: 0,
-                        brush_count: 0,
-                    }],
-                    leaf_brushes: vec![],
-                    models: vec![qa_world::collision::brushes::ModelRoot::Leaf(0); 2],
-                },
-                vec![bounds; 2],
-            )
-            .unwrap();
-        let visibility = qa_world::visibility::VisibilityWorld::load(
-            vec![qa_core::primitives::Plane::oriented(
-                qa_core::primitives::Vec3([1.0, 0.0, 0.0]),
-                0.0,
-            )],
-            vec![qa_world::visibility::VisNode {
-                plane: 0,
-                children: [-1, -2],
-                bounds,
-                surfaces: qa_world::visibility::SurfaceSpan::default(),
-            }],
-            [7, 9]
-                .map(|area| qa_world::visibility::VisLeaf {
-                    selector: Some(5),
-                    area: Some(area),
-                    solid: false,
-                    bounds,
-                    surfaces: qa_world::visibility::SurfaceSpan::default(),
-                })
-                .to_vec(),
-            vec![],
-            0,
-            0,
-            qa_world::visibility::PvsRows::all_visible(6),
-        )
-        .unwrap();
-        runtime.collision = Some(
-            qa_app::WorldCollision::new(&runtime.geometry, geometry, 0)
-                .with_visibility(std::sync::Arc::new(visibility)),
-        );
         if rr {
             game.vm.process.memory_mut().unwrap()[(entity_address - base) as usize + 1377] = 1;
         }

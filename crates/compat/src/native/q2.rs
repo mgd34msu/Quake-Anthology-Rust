@@ -309,6 +309,7 @@ impl Game {
         mut image: Image,
         rules: RuleSetId,
         interval_ms: u32,
+        geometry: &qa_world::collision::CollisionStore,
         timeout: Duration,
     ) -> Result<Self, Error> {
         let layout = match rules {
@@ -357,8 +358,14 @@ impl Game {
             .ok_or(Error::Export)?
             .div_ceil(PAGE_BYTES)
             * PAGE_BYTES;
+        let surface_bytes =
+            crate::surfaces::NativeSurfaces::byte_length(geometry, layout.version == 2023)
+                .ok_or(Error::Export)?
+                .div_ceil(PAGE_BYTES)
+                .checked_mul(PAGE_BYTES)
+                .ok_or(Error::Export)?;
         let end = offset
-            .checked_add(PAGE_BYTES + cvar_bytes)
+            .checked_add(PAGE_BYTES + cvar_bytes + surface_bytes)
             .filter(|&n| n <= 512 * 1024 * 1024)
             .ok_or(Error::Export)?;
         let address = image.base.checked_add(offset as u64).ok_or(Error::Export)?;
@@ -378,7 +385,7 @@ impl Game {
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(Region {
             offset,
-            length: PAGE_BYTES + cvar_bytes,
+            length: PAGE_BYTES + cvar_bytes + surface_bytes,
             read: true,
             write: true,
             execute: false,
@@ -486,6 +493,19 @@ impl Game {
             layout.version == 2023,
         ));
         vm.resources = Some(layout.resources);
+        vm.surfaces = Some(
+            crate::surfaces::NativeSurfaces::load(
+                address + (PAGE_BYTES + cvar_bytes) as u64,
+                geometry,
+                layout.version == 2023,
+                &mut crate::memory::ModuleMemory::borrow(
+                    vm.process.base(),
+                    vm.process.memory_mut().map_err(Error::Process)?,
+                )
+                .map_err(|_| Error::Service(crate::services::CallError::Memory))?,
+            )
+            .map_err(Error::Service)?,
+        );
         vm.entities = Some(crate::entities::EntityProjection::load(
             layout.entity_offset,
             layout.wide_stride,
