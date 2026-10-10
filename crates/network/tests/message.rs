@@ -98,9 +98,18 @@ fn reused_dirty_buffers_match_clean_streams_including_padding() {
             assert_eq!(b.bit_position(), a.bit_position());
         }
         let used = b.size();
-        if encoding == Encoding::Bytes {
-            assert_eq!(&reused[used..], vec![0xa5; 512 - used]);
-        }
+        assert_eq!(&reused[used..], vec![0xa5; 512 - used]);
+    }
+}
+
+#[test]
+fn empty_bit_writer_leaves_load_sized_storage_untouched() {
+    for encoding in [Encoding::Bits, Encoding::Q3] {
+        let mut data = [0xa5; 32768];
+        let writer = Writer::new(&mut data, encoding);
+        assert!(writer.bytes().is_empty());
+        assert_eq!(writer.bit_position(), 0);
+        assert!(data.iter().all(|byte| *byte == 0xa5));
     }
 }
 

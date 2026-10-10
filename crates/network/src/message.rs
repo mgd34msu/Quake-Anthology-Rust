@@ -177,10 +177,6 @@ pub struct Writer<'a> {
 }
 impl<'a> Writer<'a> {
     pub fn new(data: &'a mut [u8], encoding: Encoding) -> Self {
-        // Byte streams overwrite every exposed byte; bit streams retain zero padding.
-        if encoding != Encoding::Bytes {
-            data.fill(0);
-        }
         Self {
             data,
             encoding,
@@ -258,6 +254,12 @@ impl<'a> Writer<'a> {
         };
         if bytes > self.data.len() {
             return Err(self.error(ErrorKind::Capacity));
+        }
+        // Initialize newly exposed bytes, including Q3's aligned padding byte.
+        // Previously written partial bytes retain their bits and zero padding.
+        if self.encoding != Encoding::Bytes {
+            let initialized = self.size();
+            self.data[initialized..bytes].fill(0);
         }
         if self.encoding != Encoding::Q3 {
             self.raw(value, width);

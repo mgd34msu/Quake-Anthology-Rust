@@ -90,6 +90,7 @@ pub(super) struct Transmit {
     started: bool,
     send_next: bool,
     message: Box<[u8]>,
+    command_output: Box<[u8]>,
     fragment_pending: bool,
     command_flight: Option<u32>,
     packet: [u8; PACKET_BYTES],
@@ -132,6 +133,15 @@ impl Transmit {
             started: false,
             send_next: false,
             message: vec![0; maximum].into_boxed_slice(),
+            command_output: vec![
+                0;
+                if policy.command_ack && endpoint == Endpoint::Server {
+                    32768
+                } else {
+                    0
+                }
+            ]
+            .into_boxed_slice(),
             fragment_pending: false,
             command_flight: None,
             packet: [0; PACKET_BYTES],
@@ -557,12 +567,18 @@ impl Channel {
         &mut self,
         time: EventTime,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
-        let mut bytes = [0; 32768];
-        let length = self
-            .encode_server_output(&mut bytes, |_, _| Ok(()))
-            .map_err(|_| TransmitError::MessageTooLarge)?;
-        let queued = self.command_state().map(|state| state.queued);
-        self.prepare_inner(Some(&bytes[..length]), time, queued, None)
+        let mut bytes = std::mem::take(&mut self.transmit.command_output);
+        let result = (|| {
+            let length = self
+                .encode_server_output(&mut bytes, |_, _| Ok(()))
+                .map_err(|_| TransmitError::MessageTooLarge)?;
+            let queued = self.command_state().map(|state| state.queued);
+            self.prepare_inner(Some(&bytes[..length]), time, queued, None)
+                .map(|_| ())
+        })();
+        self.transmit.command_output = bytes;
+        result?;
+        Ok(self.pending_packet())
     }
     pub fn prepare_output(
         &mut self,
