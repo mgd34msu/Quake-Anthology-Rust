@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod client_policy;
 pub mod host;
 pub mod map;
+pub mod modules;
 pub mod output;
 pub mod profile;
 pub mod render_settings;

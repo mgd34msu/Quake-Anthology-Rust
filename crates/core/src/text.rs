@@ -46,15 +46,18 @@ impl<const N: usize> FixedText<N> {
         self.len = text.len();
         Ok(())
     }
-}
-impl<const N: usize> Write for FixedText<N> {
-    fn write_str(&mut self, text: &str) -> fmt::Result {
-        let end = self.len + text.len();
+    pub fn append_bytes(&mut self, text: &[u8]) -> fmt::Result {
+        let end = self.len.checked_add(text.len()).ok_or(fmt::Error)?;
         if end > N {
             return Err(fmt::Error);
         }
-        self.bytes[self.len..end].copy_from_slice(text.as_bytes());
+        self.bytes[self.len..end].copy_from_slice(text);
         self.len = end;
         Ok(())
+    }
+}
+impl<const N: usize> Write for FixedText<N> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.append_bytes(text.as_bytes())
     }
 }

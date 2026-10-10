@@ -105,6 +105,7 @@ pub struct Provider {
     >,
 }
 pub struct FrameHost {
+    pub(crate) modules: Option<crate::modules::Modules>,
     pub console: Console<Runtime>,
     pub runtime: Runtime,
     pub queue: SysEventQueue,
@@ -184,6 +185,7 @@ impl FrameHost {
             })
             .collect::<Result<Box<[_]>, _>>()?;
         Ok(Self {
+            modules: None,
             console,
             runtime,
             queue: SysEventQueue::load(1024, 256 * 1024).map_err(|e| format!("{e:?}"))?,

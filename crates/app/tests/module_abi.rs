@@ -1,8 +1,9 @@
+#[path = "support/service_program.rs"]
+mod service_program;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, Invocation, Q3_CLIENT, Q3_SERVER, Q3_UI, QvmCalls, UnknownCalls},
     memory::ModuleMemory,
-    qvm::Vm,
     services::{CallContext, CallError, ServiceStorage},
 };
 use qa_console::{commands::Console, views::Context};
@@ -11,7 +12,6 @@ use qa_core::{
     primitives::{ModuleId, RuleSetId},
     sys_events::EventTime,
 };
-use qa_formats::program::qvm::{Image, Opcode};
 use qa_world::{
     area::LinkOrder,
     entities::{AllocationPolicy, EntityTime},
@@ -106,69 +106,7 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
 
 #[test]
 fn real_qvm_calls_write_cvars_print_and_append_into_the_existing_console() {
-    use Opcode::*;
-    let operations: [(Opcode, i32); 25] = [
-        (Enter, 64),
-        (Const, 16),
-        (Arg, 8),
-        (Const, 32),
-        (Arg, 12),
-        (Const, -6),
-        (Call, 0),
-        (Pop, 0),
-        (Const, 48),
-        (Arg, 8),
-        (Const, -1),
-        (Call, 0),
-        (Pop, 0),
-        (Const, 2),
-        (Arg, 8),
-        (Const, 80),
-        (Arg, 12),
-        (Const, -15),
-        (Call, 0),
-        (Pop, 0),
-        (Const, 16),
-        (Arg, 8),
-        (Const, -7),
-        (Call, 0),
-        (Leave, 64),
-    ];
-    let mut code = Vec::new();
-    for (op, arg) in operations {
-        code.push(op as u8);
-        match op.operand_bytes() {
-            1 => code.push(arg as u8),
-            4 => code.extend(arg.to_le_bytes()),
-            _ => {}
-        }
-    }
-    code.resize((code.len() + 3) & !3, 0);
-    let mut bytes = Vec::new();
-    for word in [
-        0x12721444,
-        operations.len() as i32,
-        32,
-        code.len() as i32,
-        32 + code.len() as i32,
-        128,
-        0,
-        65536 - 128,
-    ] {
-        bytes.extend(word.to_le_bytes());
-    }
-    bytes.extend(code);
-    let data = bytes.len();
-    bytes.resize(data + 128, 0);
-    for (offset, text) in [
-        (16, &b"fov\0"[..]),
-        (32, b"105\0"),
-        (48, b"module print\n\0"),
-        (80, b"sensitivity 7\n\0"),
-    ] {
-        bytes[data + offset..data + offset + text.len()].copy_from_slice(text);
-    }
-    let mut vm = Vm::load(Image::parse(&bytes).unwrap()).unwrap();
+    let mut vm = service_program::qvm();
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
     let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();

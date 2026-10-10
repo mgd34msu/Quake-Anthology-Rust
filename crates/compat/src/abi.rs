@@ -1,7 +1,7 @@
 //! Numbered boundary entries. QVM and native pointers share these handlers.
 use crate::{
     memory::ModuleMemory,
-    qvm,
+    quakec, qvm,
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
 use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
@@ -171,6 +171,98 @@ const fn ui() -> CallTable {
 pub const Q3_SERVER: CallTable = server();
 pub const Q3_CLIENT: CallTable = client();
 pub const Q3_UI: CallTable = ui();
+
+const fn quakec() -> CallTable {
+    let mut t = CallTable {
+        entries: [None; 256],
+    };
+    t.entries[25] = Some(qc_print);
+    t.entries[37] = Some(floor);
+    t.entries[38] = Some(ceil);
+    t.entries[43] = Some(absolute);
+    t.entries[45] = Some(cvar_number);
+    t.entries[72] = Some(cvar_set);
+    t
+}
+pub const QUAKEC: CallTable = quakec();
+
+pub struct QuakeCCalls<'a, 'engine> {
+    pub services: &'a mut EngineServices<'engine>,
+    pub table: &'a CallTable,
+    pub context: CallContext,
+    pub platform_time: EventTime,
+    pub developer: qa_core::primitives::CvarHandle,
+    pub unknown: &'a mut UnknownCalls,
+}
+impl quakec::Builtins for QuakeCCalls<'_, '_> {
+    fn call(&mut self, vm: &mut quakec::Vm, number: u32, argc: usize) -> Result<(), quakec::Trap> {
+        // Unsupported native builtins trap only when executed; they never
+        // inherit the Q3 convention of reporting an unknown import as zero.
+        if self
+            .table
+            .entries
+            .get(number as usize)
+            .is_none_or(Option::is_none)
+            || argc > 8
+        {
+            return Err(quakec::Trap::Builtin);
+        }
+        let expected = match number {
+            25 => argc,
+            72 => 2,
+            _ => 1,
+        };
+        if argc != expected {
+            return Err(quakec::Trap::Builtin);
+        }
+        let mut arguments = [0u64; 8];
+        for (index, to) in arguments[..argc].iter_mut().enumerate() {
+            let word = *vm
+                .image
+                .globals
+                .get(4 + index * 3)
+                .ok_or(quakec::Trap::Memory)?;
+            if matches!(number, 25 | 45 | 72) {
+                vm.string(word as i32)?;
+            }
+            *to = u64::from(word);
+        }
+        if number == 25 && self.services.cvars.value(self.developer) == 0.0 {
+            return Ok(());
+        }
+        let mut invocation = Invocation {
+            services: self.services,
+            memory: &mut vm.strings,
+            context: self.context,
+            platform_time: self.platform_time,
+            command: &[],
+            addresses: Addresses::Native,
+            arguments: &arguments[..argc],
+        };
+        let value = self
+            .table
+            .invoke(number, &mut invocation, self.unknown)
+            .map_err(|_| quakec::Trap::Builtin)?;
+        if !matches!(number, 25 | 72) {
+            *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
+        }
+        Ok(())
+    }
+}
+
+fn qc_print(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    let mut text = FixedText::<1024>::default();
+    for index in 0..c.arguments.len() {
+        let bytes = c.memory.cstring(c.pointer(index)?)?;
+        // QuakeC's VarString joins raw bytes rather than decoding UTF-8.
+        text.append_bytes(bytes).map_err(|_| CallError::Text)?;
+    }
+    (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text.as_bytes())?;
+    Ok(0)
+}
+fn absolute(c: &mut Invocation<'_, '_>) -> Result<u64, CallError> {
+    Ok(f32::from_bits(c.arg(0)? as u32).abs().to_bits() as u64)
+}
 
 pub struct QvmCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
