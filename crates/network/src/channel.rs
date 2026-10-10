@@ -13,7 +13,7 @@ pub use transmit::{Prepared, SendState, TransmitError, Unreliable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
-    format: Format,
+    pub(crate) format: Format,
     datagram: bool,
     toggle_ack: bool,
     early_ack: bool,

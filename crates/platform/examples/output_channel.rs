@@ -22,6 +22,10 @@ use std::time::Duration;
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
+const QPORTS: [u16; 16] = [
+    17, 23, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
+];
+
 fn protocol(slot: usize, q3: bool) -> Protocol {
     let protocols = [
         Protocol::NetQuake15,
@@ -165,6 +169,7 @@ fn native_position(text: &[u8]) -> Option<(usize, u64)> {
 }
 fn main() -> Result<(), String> {
     let q3 = std::env::args().any(|arg| arg == "--q3");
+    let heap_only = std::env::args().any(|arg| arg == "--heap-only");
     let mut runtime = Runtime::load(16, [])?;
     let mut consumers = [None; 16];
     for (slot, consumer) in consumers.iter_mut().enumerate() {
@@ -173,6 +178,9 @@ fn main() -> Result<(), String> {
             .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
             .ok_or("client")?;
         *consumer = runtime.server.clients[slot].output;
+        let mut channel = Channel::load(protocol(slot, q3).channel(), Endpoint::Server, 8192, 16)
+            .map_err(|e| e.to_string())?;
+        channel.set_qport(QPORTS[slot]);
         runtime
             .network
             .bind(
@@ -186,13 +194,7 @@ fn main() -> Result<(), String> {
                             2000 + slot as u16,
                         ))),
                     },
-                    channel: Channel::load(
-                        protocol(slot, q3).channel(),
-                        Endpoint::Server,
-                        8192,
-                        16,
-                    )
-                    .map_err(|e| e.to_string())?,
+                    channel,
                     output: *consumer,
                     commands: Some(Commands::load(protocol(slot, q3))),
                 },
@@ -207,7 +209,12 @@ fn main() -> Result<(), String> {
     )?;
     let mut source = Source {
         peers: (0..16)
-            .map(|slot| Channel::load(protocol(slot, q3).channel(), Endpoint::Client, 8192, 16))
+            .map(|slot| -> Result<Channel, qa_network::channel::Error> {
+                let mut channel =
+                    Channel::load(protocol(slot, q3).channel(), Endpoint::Client, 8192, 16)?;
+                channel.set_qport(QPORTS[slot]);
+                Ok(channel)
+            })
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?,
         commands: (0..16)
@@ -234,7 +241,7 @@ fn main() -> Result<(), String> {
     for frame in 0..660 {
         source.frame = frame;
         allocations::begin_frame();
-        let watch = Stopwatch::start();
+        let watch = (!heap_only).then(Stopwatch::start);
         for slot in 0..16 {
             host.runtime.print_event(
                 Some(ClientId(slot)),
@@ -243,7 +250,7 @@ fn main() -> Result<(), String> {
             );
         }
         let result = host.frame(&mut source, true);
-        let elapsed = watch.elapsed().as_nanos() as u64;
+        let elapsed = watch.map_or(0, |watch| watch.elapsed().as_nanos() as u64);
         let counts = allocations::end_frame();
         if source.bad
             || result.drains != 2
@@ -281,16 +288,27 @@ fn main() -> Result<(), String> {
         }
     }
     samples.sort_unstable();
+    let median = if heap_only {
+        "null".into()
+    } else {
+        ((samples[299] + samples[300]) / 2).to_string()
+    };
+    let p99 = if heap_only {
+        "null".into()
+    } else {
+        samples[593].to_string()
+    };
     println!(
-        "{{\"scope\":\"ordinary host output ring through sixteen native channels, peer print decode and real native ACK ingress; no game or socket syscall\",\"q3\":{q3},\"warmup\":60,\"frames\":600,\"measured_server_ticks\":{ticks},\"measured_output_packets\":{packets},\"prints\":{},\"native_receipts\":{},\"intake_calls\":{},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{}}}",
+        "{{\"scope\":\"ordinary host output ring through sixteen native channels, peer print decode and real native ACK ingress; no game or socket syscall\",\"q3\":{q3},\"warmup\":60,\"frames\":600,\"measured_server_ticks\":{ticks},\"measured_output_packets\":{packets},\"prints\":{},\"native_receipts\":{},\"intake_calls\":{},\"median_ns\":{},\"p99_ns\":{},\"allocations\":{},\"reallocations\":{},\"requested_bytes\":{},\"timing_run\":{}}}",
         source.prints,
         host.runtime.network.acknowledged,
         source.polls,
-        (samples[299] + samples[300]) / 2,
-        samples[593],
+        median,
+        p99,
         total.allocations,
         total.reallocations,
-        total.requested_bytes
+        total.requested_bytes,
+        !heap_only
     );
     if total.allocations + total.reallocations != 0 {
         return Err("Rust heap activity".into());

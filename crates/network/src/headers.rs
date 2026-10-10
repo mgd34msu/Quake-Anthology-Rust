@@ -140,12 +140,39 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Format {
-    fn port(self, direction: Direction) -> QPort {
+    pub(crate) fn port(self, direction: Direction) -> QPort {
         if direction == Direction::ToServer {
             self.qport
         } else {
             QPort::None
         }
+    }
+    fn read_port(
+        self,
+        direction: Direction,
+        reader: &mut Reader<'_>,
+    ) -> Result<Option<u16>, Error> {
+        let port = self.port(direction);
+        if port == QPort::None {
+            Ok(None)
+        } else {
+            Ok(Some(reader.read_bits((port.bytes() * 8) as u8)? as u16))
+        }
+    }
+    /// SERVER routing reads only the native prefix before channel admission;
+    /// a malformed fragment can still carry the original translated port.
+    pub(crate) fn server_qport(self, packet: &[u8]) -> Result<Option<u16>, Error> {
+        if self.port(Direction::ToServer) == QPort::None {
+            return Ok(None);
+        }
+        let mut reader = Reader::new(packet, Encoding::Bytes);
+        if reader.read_bits(32)? == u32::MAX {
+            return Err(Error::Connectionless);
+        }
+        if self.acknowledgement {
+            reader.read_bits(32)?;
+        }
+        self.read_port(Direction::ToServer, &mut reader)
     }
     pub fn size(self, direction: Direction, fragmented: bool) -> Result<usize, Error> {
         let extra = if fragmented {
@@ -277,10 +304,7 @@ pub fn decode(
         header.acknowledgement = acknowledgement & format.sequence_mask;
         header.reliable_ack = acknowledgement & format.reliable_bit != 0;
     }
-    let port = format.port(direction);
-    if port != QPort::None {
-        header.qport = reader.read_bits((port.bytes() * 8) as u8)? as u16;
-    }
+    header.qport = format.read_port(direction, &mut reader)?.unwrap_or(0);
     if sequence & format.fragment_bit != 0 {
         let offset = reader.read_bits(16)? as u16;
         let fragment = match format.fragments {

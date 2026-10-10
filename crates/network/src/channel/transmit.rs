@@ -227,6 +227,13 @@ impl Channel {
     pub fn set_qport(&mut self, qport: u16) {
         self.transmit.qport = qport;
     }
+    pub(crate) fn routing_qport(&self) -> Option<u16> {
+        match self.policy.format.port(self.direction) {
+            crate::headers::QPort::None => None,
+            crate::headers::QPort::Byte => Some(u16::from(self.transmit.qport as u8)),
+            crate::headers::QPort::Short => Some(self.transmit.qport),
+        }
+    }
     pub fn send_state(&self) -> SendState {
         self.transmit.state
     }

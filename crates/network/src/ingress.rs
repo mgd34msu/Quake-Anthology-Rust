@@ -21,6 +21,36 @@ pub struct Connection {
     pub output: Option<OutputConsumerId>,
     pub commands: Option<Commands>,
 }
+impl Connection {
+    fn matches_socket(&self, socket: u16, from: std::net::SocketAddr, bytes: &[u8]) -> bool {
+        let Peer::Socket(bound) = self.route.peer else {
+            return false;
+        };
+        if self.route.socket != socket {
+            return false;
+        }
+        if let Some(qport) = self.channel.routing_qport() {
+            bound.ip() == from.ip()
+                && self.channel.policy().format.server_qport(bytes) == Ok(Some(qport))
+        } else {
+            bound == from
+        }
+    }
+    fn conflicts(&self, other: &Self) -> bool {
+        if self.route.socket != other.route.socket {
+            return false;
+        }
+        match (self.route.peer, other.route.peer) {
+            (Peer::Socket(a), Peer::Socket(b)) => {
+                match (self.channel.routing_qport(), other.channel.routing_qport()) {
+                    (Some(a_port), Some(b_port)) => a.ip() == b.ip() && a_port == b_port,
+                    _ => a == b,
+                }
+            }
+            _ => self.route.peer == other.route.peer,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {
     Client,
@@ -56,6 +86,7 @@ pub struct Connections {
     pub last_from: Option<Peer>,
     pub last_socket: Option<u16>,
     pub unrouted: u64,
+    pub ambiguous_routes: u64,
     pub malformed: u64,
     pub delivered: u64,
     pub acknowledged: u64,
@@ -80,6 +111,7 @@ impl Connections {
             last_from: None,
             last_socket: None,
             unrouted: 0,
+            ambiguous_routes: 0,
             malformed: 0,
             delivered: 0,
             acknowledged: 0,
@@ -90,7 +122,7 @@ impl Connections {
         }
     }
     /// Handshake/load supplies the endpoint and negotiated Channel explicitly.
-    /// A socket route is unique; it cannot deliver an ACK to another client.
+    /// Native address/qport keys are unique; an ACK cannot reach another client.
     pub fn bind(
         &mut self,
         client: ClientId,
@@ -100,13 +132,6 @@ impl Connections {
         let slot = client.0 as usize;
         let current = self.clients.get(slot).ok_or(BindError::Client)?;
         if connection.channel.endpoint() != endpoint {
-            return Err(BindError::Route);
-        }
-        if connection
-            .commands
-            .as_ref()
-            .is_some_and(|c| c.protocol.channel() != connection.channel.policy())
-        {
             return Err(BindError::Route);
         }
         if current[index(endpoint)].is_some() {
@@ -122,7 +147,7 @@ impl Connections {
             .iter()
             .flatten()
             .flatten()
-            .any(|c| c.route == connection.route)
+            .any(|c| c.conflicts(&connection))
         {
             return Err(BindError::Route);
         }
@@ -130,7 +155,10 @@ impl Connections {
             connection
                 .channel
                 .configure_snapshots(commands.protocol)
-                .map_err(|_| BindError::Capacity)?;
+                .map_err(|error| match error {
+                    crate::commands::packet::Error::Context => BindError::Route,
+                    _ => BindError::Capacity,
+                })?;
         }
         self.clients[slot][index(endpoint)] = Some(connection);
         Ok(())
@@ -167,16 +195,38 @@ impl Connections {
                     .position(|c| c.as_ref().is_some_and(|c| c.route == route))
                     .map(|endpoint| (client.0 as usize, endpoint))
             }),
-            Peer::Socket(_) => self
-                .clients
-                .iter()
-                .enumerate()
-                .find_map(|(client, endpoints)| {
-                    endpoints
-                        .iter()
-                        .position(|c| c.as_ref().is_some_and(|c| c.route == route))
-                        .map(|endpoint| (client, endpoint))
-                }),
+            Peer::Socket(address) => {
+                let mut exact = None;
+                let mut translated = None;
+                let mut exact_count = 0;
+                let mut translated_count = 0;
+                for (client, endpoints) in self.clients.iter().enumerate() {
+                    for (endpoint, connection) in endpoints.iter().enumerate() {
+                        let Some(connection) = connection else {
+                            continue;
+                        };
+                        if !connection.matches_socket(socket, address, bytes) {
+                            continue;
+                        }
+                        if connection.route.peer == from {
+                            exact = Some((client, endpoint));
+                            exact_count += 1;
+                        } else {
+                            translated = Some((client, endpoint));
+                            translated_count += 1;
+                        }
+                    }
+                }
+                match (exact_count, translated_count) {
+                    (1, _) => exact,
+                    (0, 1) => translated,
+                    (0, 0) => None,
+                    _ => {
+                        self.ambiguous_routes += 1;
+                        None
+                    }
+                }
+            }
         };
         let Some((client, endpoint)) = located else {
             self.unrouted += 1;
@@ -185,6 +235,9 @@ impl Connections {
         let Some(connection) = &mut self.clients[client][endpoint] else {
             return;
         };
+        if let (Peer::Socket(bound), Peer::Socket(received)) = (&mut connection.route.peer, from) {
+            bound.set_port(received.port());
+        }
         let endpoint = if endpoint == 0 {
             Endpoint::Client
         } else {

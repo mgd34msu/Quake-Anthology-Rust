@@ -357,7 +357,15 @@ fn stalled_peer_progress(unsent: bool) {
         .unwrap();
     let stalled_cursor = runtime.server.clients[stalled.0 as usize].output.unwrap();
     let healthy_cursor = runtime.server.clients[healthy.0 as usize].output.unwrap();
-    for client in [stalled, healthy] {
+    for (client, qport) in [stalled, healthy].into_iter().zip([17, 23]) {
+        let mut channel = qa_network::channel::Channel::load(
+            qa_network::channel::QUAKEWORLD,
+            qa_core::loopback::Endpoint::Server,
+            8192,
+            16,
+        )
+        .unwrap();
+        channel.set_qport(qport);
         runtime
             .network
             .bind(
@@ -370,13 +378,7 @@ fn stalled_peer_progress(unsent: bool) {
                             format!("127.0.0.1:{}", 1000 + client.0).parse().unwrap(),
                         ),
                     },
-                    channel: qa_network::channel::Channel::load(
-                        qa_network::channel::QUAKEWORLD,
-                        qa_core::loopback::Endpoint::Server,
-                        8192,
-                        16,
-                    )
-                    .unwrap(),
+                    channel,
                     output: runtime.server.clients[client.0 as usize].output,
                     commands: Some(qa_network::commands::connection::Commands::load(
                         qa_network::commands::packet::Protocol::QuakeWorld28,
@@ -404,14 +406,16 @@ fn stalled_peer_progress(unsent: bool) {
     host.local_clients[0] = Some(local);
     let mut source = PeerSource {
         source: Source::default(),
-        peers: std::array::from_fn(|_| {
-            qa_network::channel::Channel::load(
+        peers: std::array::from_fn(|slot| {
+            let mut channel = qa_network::channel::Channel::load(
                 qa_network::channel::QUAKEWORLD,
                 qa_core::loopback::Endpoint::Client,
                 8192,
                 16,
             )
-            .unwrap()
+            .unwrap();
+            channel.set_qport([17, 23][slot]);
+            channel
         }),
         ack: [0; 1400],
         ack_length: 0,

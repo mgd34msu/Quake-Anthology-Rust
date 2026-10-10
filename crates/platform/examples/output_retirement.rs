@@ -171,7 +171,11 @@ fn consume(runtime: &mut Runtime, tick: Tick, record: OutputRecord) -> OutputSub
     player.health += 1;
     OutputSubmission::BestEffort
 }
-fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error>> {
+fn run(
+    unsent: bool,
+    protocol: Protocol,
+    heap_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = Runtime::load(64, std::iter::empty())?;
     runtime.server.events = EventRing::load(32, 8, 64, 256).map_err(|_| "events")?;
     runtime.server.presentation = runtime
@@ -188,6 +192,8 @@ fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error
     let stalled = runtime.server.clients[0].output.ok_or("stalled cursor")?;
     let healthy = runtime.server.clients[1].output.ok_or("healthy cursor")?;
     for slot in 0..2 {
+        let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)?;
+        channel.set_qport([101, 211][slot as usize]);
         runtime
             .network
             .bind(
@@ -198,8 +204,7 @@ fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error
                         socket: 0,
                         peer: Peer::Socket(SocketAddr::from(([127, 0, 0, 1], 1000 + slot as u16))),
                     },
-                    channel: Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
-                        .map_err(|_| "channel")?,
+                    channel,
                     output: runtime.server.clients[slot as usize].output,
                     commands: Some(Commands::load(protocol)),
                 },
@@ -226,8 +231,11 @@ fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error
         frame: 0,
         healthy: 0,
         stalled: 0,
-        peers: std::array::from_fn(|_| {
-            Channel::load(protocol.channel(), Endpoint::Client, 8192, 16).expect("channel load")
+        peers: std::array::from_fn(|slot| {
+            let mut channel = Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
+                .expect("channel load");
+            channel.set_qport([101, 211][slot]);
+            channel
         }),
         commands: std::array::from_fn(|_| Commands::load(protocol)),
         ack: [0; 1400],
@@ -254,9 +262,9 @@ fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error
         source.frame = frame;
         let healthy_before = source.healthy;
         begin_frame();
-        let timer = Stopwatch::start();
+        let timer = (!heap_only).then(Stopwatch::start);
         let result = host.frame(&mut source, true);
-        let elapsed = timer.elapsed().as_nanos() as u64;
+        let elapsed = timer.map_or(0, |timer| timer.elapsed().as_nanos() as u64);
         let counts = end_frame();
         disconnected += result.output.native_disconnected;
         overflow += result.output.native_overflow;
@@ -354,8 +362,18 @@ fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error
     let display_after_disconnect =
         leased_id.is_some_and(|id| host.runtime.server.events.texts.get(id).is_some());
     samples.sort_unstable();
+    let median = if heap_only {
+        "null".into()
+    } else {
+        ((samples[299] + samples[300]) as f64 * 0.5).to_string()
+    };
+    let p99 = if heap_only {
+        "null".into()
+    } else {
+        samples[593].to_string()
+    };
     println!(
-        "{{\"scope\":\"headless Com_Frame native print ACK retirement; no sign-on or gameplay\",\"protocol\":\"{protocol:?}\",\"stalled_delivery\":\"{}\",\"warmup\":60,\"frames\":600,\"continuous_healthy_and_server_frames\":{continuing_frames},\"disconnect_frame\":{},\"server_ticks\":{ticks},\"world_frame\":659,\"module_hz\":[10,20,40],\"module_deliveries\":{modules:?},\"healthy_prints\":{},\"healthy_native_acked_records\":{},\"stalled_attempts\":{},\"retired_on_resync\":{retired},\"stalled_overflow\":{overflow},\"disconnected\":{disconnected},\"healthy_overflow\":0,\"stale_texts\":0,\"payload_retained_for_slower_module_after_hud_disconnect\":{display_after_disconnect},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{bytes},\"median_ns\":{},\"p99_ns\":{}}}",
+        "{{\"scope\":\"headless Com_Frame native print ACK retirement; no sign-on or gameplay\",\"protocol\":\"{protocol:?}\",\"stalled_delivery\":\"{}\",\"warmup\":60,\"frames\":600,\"continuous_healthy_and_server_frames\":{continuing_frames},\"disconnect_frame\":{},\"server_ticks\":{ticks},\"world_frame\":659,\"module_hz\":[10,20,40],\"module_deliveries\":{modules:?},\"healthy_prints\":{},\"healthy_native_acked_records\":{},\"stalled_attempts\":{},\"retired_on_resync\":{retired},\"stalled_overflow\":{overflow},\"disconnected\":{disconnected},\"healthy_overflow\":0,\"stale_texts\":0,\"payload_retained_for_slower_module_after_hud_disconnect\":{display_after_disconnect},\"maximum_allocations\":{maximum},\"maximum_requested_bytes\":{bytes},\"median_ns\":{},\"p99_ns\":{},\"timing_run\":{}}}",
         if unsent {
             "unsent"
         } else {
@@ -365,20 +383,22 @@ fn run(unsent: bool, protocol: Protocol) -> Result<(), Box<dyn std::error::Error
         source.healthy,
         healthy_counters.acknowledged_records,
         source.stalled,
-        (samples[299] + samples[300]) as f64 * 0.5,
-        samples[593]
+        median,
+        p99,
+        !heap_only
     );
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let heap_only = std::env::args().any(|arg| arg == "--heap-only");
     let protocol = if std::env::args().any(|arg| arg == "--q3") {
         Protocol::Quake3_68
     } else {
         Protocol::QuakeWorld28
     };
     for unsent in [false, true] {
-        run(unsent, protocol)?;
+        run(unsent, protocol, heap_only)?;
     }
     Ok(())
 }
