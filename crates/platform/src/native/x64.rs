@@ -256,7 +256,13 @@ std::arch::global_asm!(
     lea rdi, [rip + .Limport_state + 80]
     lea rsi, [rip + .Limport_state + 352]
     mov rdx, [rip + .Limport_state + 704]
+    mov rcx, [rip + .Limport_state]
+    mov rcx, [rcx]
     call {import}
+    // A named trap returns through every private Rust callback frame before
+    // abandoning the foreign stack at this gate's ordinary restore point.
+    cmp edx, 4
+    je .Ltrapped
     fxrstor64 [rip + .Limport_state + 192]
     cmp edx, 1
     je .Limport_float
@@ -284,6 +290,9 @@ std::arch::global_asm!(
     popfq
     mov rsp, [rip + .Limport_state]
     ret
+.Ltrapped:
+    xor eax, eax
+    jmp .Lresult
 .Linvalid:
     mov eax, 231
     mov edi, 125

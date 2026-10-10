@@ -186,18 +186,24 @@ impl Memory {
 }
 struct Runtime {
     memory: Memory,
-    imports: Box<[Option<(&'static Function, NativeEntry)>]>,
+    imports: Box<[ImportBinding]>,
     heap: Mutex<Option<Heap>>,
     config: Option<RuntimeConfig>,
     kernel: Mutex<kernel::State>,
 }
 static CHILD: OnceLock<Runtime> = OnceLock::new();
 
+pub(super) enum ImportBinding {
+    Engine,
+    Runtime(&'static Function, NativeEntry),
+    Trap,
+}
+
 pub(super) fn initialize(
     base: u64,
     length: usize,
     regions: Box<[NativeRegion]>,
-    imports: Box<[Option<(&'static Function, NativeEntry)>]>,
+    imports: Box<[ImportBinding]>,
     config: Option<RuntimeConfig>,
 ) -> Result<(), NativeError> {
     let memory = Memory {
@@ -250,13 +256,15 @@ pub(super) fn invoke(
     floats: [u64; 8],
 ) -> Result<Option<ImportResult>, NativeError> {
     let runtime = CHILD.get().ok_or(NativeError::Protocol)?;
-    let Some(&(function, entry)) = runtime
-        .imports
-        .get(ordinal)
-        .ok_or(NativeError::Protocol)?
-        .as_ref()
-    else {
-        return Ok(None);
+    let (function, entry) = match runtime.imports.get(ordinal).ok_or(NativeError::Protocol)? {
+        ImportBinding::Engine => return Ok(None),
+        ImportBinding::Trap => {
+            return Err(NativeError::ImportTrap {
+                ordinal,
+                address: 0,
+            });
+        }
+        ImportBinding::Runtime(function, entry) => (*function, *entry),
     };
     let arguments = entry.unpack(words, floats);
     let value = runtime.call(function.operation, arguments, entry.abi)?;
@@ -316,9 +324,13 @@ impl Runtime {
         // SAFETY: checked executable target and load-selected scalar ABI. All
         // mapped-byte accessors and heap locks have ended before foreign code;
         // the gate saves/restores its private frame and outer import state.
-        Ok(entry.result(unsafe {
+        let value = entry.result(unsafe {
             super::x64::call(address, abi as u64, &words, top, &floats, entry.control)
-        }))
+        });
+        if let Some((ordinal, address)) = super::child_trap() {
+            return Err(NativeError::ImportTrap { ordinal, address });
+        }
+        Ok(value)
     }
     fn call(
         &self,

@@ -53,8 +53,17 @@ fn function(image: &Image, name: Option<NameId>) -> Option<&'static Function> {
 }
 pub(super) struct BoundRuntime {
     pub imports: Vec<NativeImport<'static>>,
+    pub traps: Vec<ImportTrap>,
     pub config: Option<RuntimeConfig>,
     pub startup: Option<u64>,
+}
+pub(super) struct ImportTrap {
+    pub ordinal: usize,
+    pub name: Option<NameId>,
+    pub provider: Option<NameId>,
+    pub version: Option<NameId>,
+    pub symbol_ordinal: Option<u16>,
+    pub calls: u64,
 }
 pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, String> {
     let needs_heap = match image.target.encoding {
@@ -204,7 +213,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         (None, None)
     };
     for &id in &image.needed {
-        if !library(image, id, None) {
+        if image.target.encoding == Encoding::Elf && !library(image, id, None) {
             return Err(format!(
                 "native provider not bound: {}",
                 String::from_utf8_lossy(image.names.get(id).unwrap_or_default())
@@ -216,23 +225,59 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         Encoding::Pe => NativeAbi::Microsoft,
     };
     let mut imports: Vec<NativeImport<'static>> = Vec::new();
+    let mut traps: Vec<ImportTrap> = Vec::new();
     let mut symbols = vec![None; image.symbols.len()];
     let mut slots = Vec::new();
     let mut resolve = |name: Option<NameId>,
                        provider: Option<NameId>,
-                       version: Option<NameId>|
+                       version: Option<NameId>,
+                       symbol_ordinal: Option<u16>,
+                       weak: bool|
      -> Result<u64, String> {
-        let function =
-            function(image, name).ok_or_else(|| import_error(image, name, provider, version))?;
-        let supported_version = version.is_none_or(|id| {
-            image
-                .names
-                .get(id)
-                .is_some_and(|version| function.versions.contains(&version))
+        let function = function(image, name).filter(|function| {
+            !provider.is_some_and(|id| !library(image, id, Some(function)))
+                && version.is_none_or(|id| {
+                    image
+                        .names
+                        .get(id)
+                        .is_some_and(|version| function.versions.contains(&version))
+                })
         });
-        if provider.is_some_and(|id| !library(image, id, Some(function))) || !supported_version {
-            return Err(import_error(image, name, provider, version));
-        }
+        let Some(function) = function else {
+            if weak || (image.target.encoding == Encoding::Elf && version.is_some()) {
+                return Err(import_error(image, name, provider, version));
+            }
+            let existing = traps
+                .iter()
+                .find(|trap| {
+                    trap.name == name
+                        && trap.provider == provider
+                        && trap.version == version
+                        && trap.symbol_ordinal == symbol_ordinal
+                })
+                .map(|trap| trap.ordinal);
+            let ordinal = existing.unwrap_or_else(|| {
+                let ordinal = prefix + imports.len();
+                imports.push(NativeImport {
+                    trap: true,
+                    number: 0,
+                    abi,
+                    parameters: &[],
+                    result: qa_platform::native::NativeScalar::Void,
+                });
+                traps.push(ImportTrap {
+                    ordinal,
+                    name,
+                    provider,
+                    version,
+                    symbol_ordinal,
+                    calls: 0,
+                });
+                ordinal
+            });
+            return NativeProcess::import_address(image.base, image.bytes.len(), ordinal)
+                .map_err(|e| format!("native import reservation: {e:?}"));
+        };
         if let Some(offset) = function.data_offset() {
             return config
                 .map(|config| config.base + offset as u64)
@@ -240,12 +285,13 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         }
         let ordinal = match imports
             .iter()
-            .position(|entry| entry.number == function.number)
+            .position(|entry| !entry.trap && entry.number == function.number)
         {
             Some(ordinal) => ordinal,
             None => {
                 let ordinal = imports.len();
                 imports.push(NativeImport {
+                    trap: false,
                     number: function.number,
                     abi,
                     parameters: function.parameters,
@@ -272,7 +318,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
                 }
                 let provider = symbol.version.and_then(|v| v.library);
                 let version = symbol.version.map(|v| v.name);
-                match resolve(symbol.name, provider, version) {
+                match resolve(symbol.name, provider, version, None, symbol.weak) {
                     Ok(address) => symbols[index] = Some(Definition::Address { address, bytes: 0 }),
                     Err(_) if symbol.weak => {}
                     Err(e) => return Err(e),
@@ -287,7 +333,10 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
                         import_error(image, import.name, import.library, None)
                     ));
                 }
-                slots.push((import.slot, resolve(import.name, import.library, None)?));
+                slots.push((
+                    import.slot,
+                    resolve(import.name, import.library, None, import.ordinal, false)?,
+                ));
             }
         }
     }
@@ -301,6 +350,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
         for function in FUNCTIONS.iter().filter(|f| f.windows_object()) {
             if !imports.iter().any(|i| i.number == function.number) {
                 imports.push(NativeImport {
+                    trap: false,
                     number: function.number,
                     abi,
                     parameters: function.parameters,
@@ -345,6 +395,7 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, Str
     }
     Ok(BoundRuntime {
         imports,
+        traps,
         config,
         startup,
     })

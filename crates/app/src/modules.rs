@@ -595,8 +595,10 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
             };
             vm.call(&mut calls, entry, &words)
                 .map(ModuleResult::Native)
-                .map_err(|_| {
-                    row.state = State::Failed;
+                .map_err(|error| {
+                    if !error.recoverable() {
+                        row.state = State::Failed;
+                    }
                 })
         }
         Program::QuakeC(_) => return false,

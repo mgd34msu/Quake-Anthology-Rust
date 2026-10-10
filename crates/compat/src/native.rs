@@ -2,15 +2,15 @@
 use crate::{
     abi::{Addresses, CallTable, Invocation, UnknownCalls},
     memory::ModuleMemory,
-    services::{CallContext, CallError, EngineServices},
+    services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
-use qa_core::sys_events::EventTime;
+use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
     NativeAbi, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion,
     NativeScalar, PAGE_BYTES,
 };
-use std::time::Duration;
+use std::{fmt::Write, time::Duration};
 
 pub mod elf;
 mod runtime;
@@ -65,6 +65,18 @@ pub enum Error {
     Process(NativeError),
     Binding(String),
 }
+impl Error {
+    pub fn recoverable(&self) -> bool {
+        matches!(self, Self::Process(NativeError::ImportTrap { .. }))
+    }
+}
+pub struct ImportTrapInfo<'a> {
+    pub library: Option<&'a [u8]>,
+    pub name: Option<&'a [u8]>,
+    pub version: Option<&'a [u8]>,
+    pub symbol_ordinal: Option<u16>,
+    pub calls: u64,
+}
 pub struct Vm {
     pub process: NativeProcess,
     abi: NativeAbi,
@@ -72,6 +84,8 @@ pub struct Vm {
     table: Option<table::Table>,
     initialize: Box<[LifecycleCall]>,
     finalize: Box<[LifecycleCall]>,
+    names: NameTable,
+    traps: Box<[runtime::ImportTrap]>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -276,6 +290,17 @@ impl Vm {
             table: None,
             initialize: initialize.into_boxed_slice(),
             finalize: finalize.into_boxed_slice(),
+            names: image.names,
+            traps: runtime.traps.into_boxed_slice(),
+        })
+    }
+    pub fn unresolved_imports(&self) -> impl Iterator<Item = ImportTrapInfo<'_>> {
+        self.traps.iter().map(|trap| ImportTrapInfo {
+            library: trap.provider.and_then(|id| self.names.get(id)),
+            name: trap.name.and_then(|id| self.names.get(id)),
+            version: trap.version.and_then(|id| self.names.get(id)),
+            symbol_ordinal: trap.symbol_ordinal,
+            calls: trap.calls,
         })
     }
     pub fn initializers(&self) -> &[LifecycleCall] {
@@ -344,6 +369,40 @@ impl Vm {
                         NativeError::Callback
                     })
             });
+        if let Err(NativeError::ImportTrap { ordinal, address }) = &result {
+            if let Some(trap) = self.traps.iter_mut().find(|trap| trap.ordinal == *ordinal) {
+                let first = trap.calls == 0;
+                trap.calls = trap.calls.saturating_add(1);
+                if first {
+                    let mut text = FixedText::<2048>::default();
+                    let format = (|| {
+                        write!(text, "module {}: native import ", calls.context.module.0)?;
+                        if let Some(provider) = trap.provider.and_then(|id| self.names.get(id)) {
+                            text.append_bytes(provider)?;
+                            text.append_bytes(b":")?;
+                        }
+                        if let Some(name) = trap.name.and_then(|id| self.names.get(id)) {
+                            text.append_bytes(name)?;
+                        } else if let Some(ordinal) = trap.symbol_ordinal {
+                            write!(text, "#{ordinal}")?;
+                        }
+                        if let Some(version) = trap.version.and_then(|id| self.names.get(id)) {
+                            text.append_bytes(b"@")?;
+                            text.append_bytes(version)?;
+                        }
+                        writeln!(text, " at {address:#x}")
+                    })();
+                    if format.is_ok() {
+                        let _ = (ENGINE_CALLS.print)(
+                            calls.services,
+                            None,
+                            PrintKind::Console,
+                            text.as_bytes(),
+                        );
+                    }
+                }
+            }
+        }
         let value =
             result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))?;
         if export.reject_zero && value == 0 {

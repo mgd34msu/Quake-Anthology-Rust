@@ -94,6 +94,102 @@ fn a_zero_budget_cannot_transfer_even_a_ready_packet() {
 }
 
 #[test]
+fn a_missing_import_aborts_the_call_and_keeps_the_owned_child() {
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        let imports = [NativeImport {
+            trap: true,
+            number: 0,
+            abi,
+            parameters: &[],
+            result: NativeScalar::Void,
+        }];
+        let mut bytes = vec![0; 8192];
+        let gate = NativeProcess::import_address(BASE, bytes.len(), 0).unwrap();
+        let mut code = vec![0x48, 0x83, 0xec, 40, 0x48, 0xb8];
+        code.extend(gate.to_le_bytes());
+        code.extend([0xff, 0xd0, 0x0f, 0x0b]); // call trap; ud2 must never run
+        bytes[..code.len()].copy_from_slice(&code);
+        bytes[64..70].copy_from_slice(&[0xb8, 77, 0, 0, 0, 0xc3]);
+        let mut child = image_child(&bytes, &REGIONS, &imports, Duration::from_secs(3)).unwrap();
+        let pid = child.pid();
+        let trapped = child.bind(BASE, abi, &[], NativeScalar::Word).unwrap();
+        let healthy = child.bind(BASE + 64, abi, &[], NativeScalar::Word).unwrap();
+        for _ in 0..3 {
+            let result = child.invoke(trapped, [0; 13], |_, _, _| {
+                panic!("untyped trap cannot become an engine callback")
+            });
+            assert!(
+                matches!(result, Err(NativeError::ImportTrap { ordinal: 0, address }) if address == BASE + 16),
+                "{result:?}"
+            );
+            assert_eq!(child.pid(), pid);
+            assert!(child.memory_mut().is_ok());
+            assert_eq!(
+                child
+                    .invoke(healthy, [0; 13], |_, _, _| panic!("no imports"))
+                    .unwrap(),
+                77
+            );
+        }
+    }
+}
+
+#[test]
+fn a_missing_import_in_a_runtime_callback_returns_through_rust_frames() {
+    let sort = super::runtime::function(super::runtime::FIRST + 311).unwrap();
+    let abi = NativeAbi::Microsoft;
+    let imports = [
+        NativeImport {
+            trap: false,
+            number: sort.number,
+            abi,
+            parameters: sort.parameters,
+            result: sort.result,
+        },
+        NativeImport {
+            trap: true,
+            number: 0,
+            abi,
+            parameters: &[],
+            result: NativeScalar::Void,
+        },
+    ];
+    let mut bytes = vec![0; 8192];
+    let trap = NativeProcess::import_address(BASE, bytes.len(), 1).unwrap();
+    let mut code = vec![0x48, 0x83, 0xec, 40, 0x48, 0xb8];
+    code.extend(trap.to_le_bytes());
+    code.extend([0xff, 0xd0, 0x0f, 0x0b]);
+    bytes[32..32 + code.len()].copy_from_slice(&code);
+    bytes[64..70].copy_from_slice(&[0xb8, 77, 0, 0, 0, 0xc3]);
+    bytes[4096..4104].copy_from_slice(&[2, 0, 0, 0, 1, 0, 0, 0]);
+    let mut child = image_child(&bytes, &REGIONS, &imports, Duration::from_secs(3)).unwrap();
+    let sort = child
+        .bind(
+            child.import_pointer(0).unwrap(),
+            abi,
+            sort.parameters,
+            sort.result,
+        )
+        .unwrap();
+    let healthy = child.bind(BASE + 64, abi, &[], NativeScalar::Word).unwrap();
+    let mut arguments = [0; 13];
+    arguments[..4].copy_from_slice(&[BASE + 4096, 2, 4, BASE + 32]);
+    for _ in 0..3 {
+        let result = child.invoke(sort, arguments, |_, _, _| panic!("child-local callback"));
+        assert!(
+            matches!(result, Err(NativeError::ImportTrap { ordinal: 1, address }) if address == BASE + 48),
+            "{result:?}"
+        );
+        assert_eq!(
+            child
+                .invoke(healthy, [0; 13], |_, _, _| panic!("no imports"))
+                .unwrap(),
+            77
+        );
+    }
+}
+
+#[test]
 fn child_entry() {
     if std::env::var_os("QA_NATIVE_TEST_CHILD").is_some() {
         std::process::exit(if child_main().is_ok() { 0 } else { 125 });
@@ -146,6 +242,7 @@ fn c_runtime_imports_execute_in_the_child_without_an_engine_round_trip() {
         let imports: Vec<_> = FUNCTIONS
             .iter()
             .map(|f| NativeImport {
+                trap: false,
                 number: f.number,
                 abi,
                 parameters: f.parameters,
@@ -292,6 +389,7 @@ fn c_runtime_scans_cross_region_boundaries_without_crossing_gaps() {
         .iter()
         .take(7)
         .map(|f| NativeImport {
+            trap: false,
             number: f.number,
             abi: NativeAbi::Microsoft,
             parameters: f.parameters,
@@ -386,6 +484,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         .iter()
         .filter(|f| f.windows_object())
         .map(|f| NativeImport {
+            trap: false,
             number: f.number,
             abi: NativeAbi::Microsoft,
             parameters: f.parameters,
@@ -393,6 +492,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         })
         .collect();
     imports.push(NativeImport {
+        trap: false,
         number: 7,
         abi: NativeAbi::Microsoft,
         parameters: &[NativeScalar::Word],
@@ -1328,6 +1428,7 @@ fn typed_native_function_imports_decode_scalar_arguments_and_return_in_the_nativ
             let mut bytes = vec![0; 8192];
             bytes[..code.len()].copy_from_slice(&code);
             let imports = [NativeImport {
+                trap: false,
                 number: 137,
                 abi,
                 parameters: &kinds,
@@ -1433,6 +1534,7 @@ fn native_integer_imports_apply_declared_widths_in_both_directions() {
             bytes[..code.len()].copy_from_slice(&code);
             let parameters = [kind];
             let imports = [NativeImport {
+                trap: false,
                 number: 141,
                 abi,
                 parameters: &parameters,

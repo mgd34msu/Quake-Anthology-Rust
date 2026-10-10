@@ -16,6 +16,9 @@ pub use call::{NativeEntry, NativeScalar};
 
 #[derive(Clone, Copy)]
 pub struct NativeImport<'a> {
+    /// Missing imports have no scalar argument descriptor and abort only the
+    /// current foreign call. Their names remain in the module's NameTable.
+    pub trap: bool,
     pub number: u32,
     pub abi: NativeAbi,
     pub parameters: &'a [NativeScalar],
@@ -58,6 +61,7 @@ pub enum NativeError {
     Exited(std::process::ExitStatus),
     Callback,
     RuntimeImport(&'static str),
+    ImportTrap { ordinal: usize, address: u64 },
 }
 impl From<io::Error> for NativeError {
     fn from(error: io::Error) -> Self {

@@ -613,7 +613,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
     );
 }
 
-fn runtime_binding_rejections_report_native_library_names_and_versions() {
+fn runtime_binding_respects_native_library_names_and_versions() {
     for encoding in [Encoding::Elf, Encoding::Pe] {
         for (versioned, wrong_provider) in [(false, false), (true, false), (false, true)] {
             let file = runtime_file(
@@ -685,7 +685,7 @@ fn runtime_binding_rejections_report_native_library_names_and_versions() {
                     image.imports[0].library = Some(provider);
                 }
             }
-            let error = Vm::map_image(
+            let result = Vm::map_image(
                 image,
                 &[NamedExport {
                     name: if encoding == Encoding::Elf {
@@ -699,9 +699,39 @@ fn runtime_binding_rejections_report_native_library_names_and_versions() {
                 }],
                 &[],
                 Duration::from_secs(3),
-            )
-            .err()
-            .expect("unsupported runtime binding");
+            );
+            if encoding == Encoding::Pe || (!versioned && !wrong_provider) {
+                let vm = result.unwrap();
+                let missing: Vec<_> = vm.unresolved_imports().collect();
+                assert_eq!(missing.len(), 1);
+                assert_eq!(missing[0].calls, 0);
+                assert_eq!(
+                    missing[0].name,
+                    Some(if versioned || wrong_provider {
+                        b"strlen".as_slice()
+                    } else {
+                        b"missing"
+                    })
+                );
+                assert_eq!(
+                    missing[0].library,
+                    if encoding == Encoding::Elf {
+                        None
+                    } else {
+                        Some(if wrong_provider {
+                            b"api-ms-win-crt-math-l1-1-0.dll".as_slice()
+                        } else if versioned {
+                            b"Alias"
+                        } else if encoding == Encoding::Pe {
+                            b"MSVCRT.dll".as_slice()
+                        } else {
+                            b"libc.so.6"
+                        })
+                    }
+                );
+                continue;
+            }
+            let error = result.err().expect("unsupported runtime binding");
             let qa_compat::native::Error::Binding(message) = error else {
                 panic!("unexpected binding error {error:?}");
             };
@@ -725,6 +755,120 @@ fn runtime_binding_rejections_report_native_library_names_and_versions() {
             );
         }
     }
+}
+
+fn missing_native_imports_log_once_and_preserve_session_dispatch() {
+    let mut runtime = Runtime::load(4, std::iter::empty()).unwrap();
+    let observer = runtime
+        .server
+        .events
+        .bind(OutputTarget::Module(ModuleId(4)))
+        .unwrap();
+    let mut requests = Vec::new();
+    for (encoding, id) in [(Encoding::Elf, ModuleId(1)), (Encoding::Pe, ModuleId(2))] {
+        let image = Image::parse(
+            &runtime_file(encoding, b"missing\0"),
+            (encoding == Encoding::Elf).then_some(0x2000_0000),
+            LoadRole::Library,
+        )
+        .unwrap();
+        let vm = Vm::map_image(
+            image,
+            &[NamedExport {
+                name: if encoding == Encoding::Elf {
+                    b"vmMain"
+                } else {
+                    b"GetGameAPI"
+                },
+                command: None,
+                parameters: &[],
+                result: NativeScalar::Word,
+            }],
+            &[],
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        requests.push(request(
+            &mut runtime,
+            id,
+            RuleSetId::Quake3,
+            TickRate::fixed(50).unwrap(),
+            vm,
+        ));
+    }
+    let vm = Vm::map_image(
+        function_image(Encoding::Elf, &[0xb8, 77, 0, 0, 0, 0xc3]),
+        &[NamedExport {
+            name: b"vmMain",
+            command: None,
+            parameters: &[],
+            result: NativeScalar::Word,
+        }],
+        &[],
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    requests.push(request(
+        &mut runtime,
+        ModuleId(3),
+        RuleSetId::Quake3,
+        TickRate::fixed(50).unwrap(),
+        vm,
+    ));
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    for frame in 0..4 {
+        source.time = EventTime(frame * 50_000_000);
+        host.frame(&mut source, true);
+    }
+    for id in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(host.module_state(id), Some(State::Running));
+        let counts = host.module_counts(id).unwrap();
+        assert_eq!((counts.calls, counts.traps), (3, 3));
+    }
+    assert_eq!(host.module_state(ModuleId(3)), Some(State::Running));
+    let counts = host.module_counts(ModuleId(3)).unwrap();
+    assert_eq!(
+        (counts.calls, counts.traps, counts.last_result),
+        (3, 0, Some(ModuleResult::Native(77)))
+    );
+    let mut batch = host.runtime.server.events.batch(observer).unwrap();
+    let mut messages = Vec::new();
+    while let Some(record) = host.runtime.server.events.next(&mut batch) {
+        if let FrameEvent::Print(p) = record.event {
+            messages.push(
+                host.runtime
+                    .server
+                    .events
+                    .texts
+                    .get(p.text)
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
+    }
+    assert_eq!(messages.len(), 2);
+    for (message, provider) in messages
+        .iter()
+        .zip([b"native import missing".as_slice(), b"MSVCRT.dll:missing"])
+    {
+        let message = std::str::from_utf8(message).unwrap();
+        assert!(
+            message.contains(std::str::from_utf8(provider).unwrap()),
+            "{message}"
+        );
+        assert!(message.contains(" at 0x"), "{message}");
+    }
+    host.shutdown_modules();
 }
 
 fn native_math_imports_execute_in_owned_children_through_session_dispatch() {
@@ -1584,12 +1728,14 @@ impl FrameSource for Source {
 
 fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions: bool) {
     let system_v = [NativeImport {
+        trap: false,
         number: 0,
         abi: NativeAbi::SystemV,
         parameters: &[NativeScalar::Word],
         result: NativeScalar::Word,
     }];
     let microsoft = [NativeImport {
+        trap: false,
         number: 0,
         abi: NativeAbi::Microsoft,
         parameters: &[NativeScalar::Word],
@@ -1792,7 +1938,8 @@ pub fn run() {
     checked_exports_preserve_names_and_native_command_arguments();
     elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
     native_files_use_the_qvm_role_policy_and_vfs_loader();
-    runtime_binding_rejections_report_native_library_names_and_versions();
+    runtime_binding_respects_native_library_names_and_versions();
+    missing_native_imports_log_once_and_preserve_session_dispatch();
     scalar_native_export_results_survive_session_dispatch();
     native_math_imports_execute_in_owned_children_through_session_dispatch();
     native_heap_imports_share_owned_memory_through_session_dispatch();

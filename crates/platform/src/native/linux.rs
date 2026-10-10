@@ -30,6 +30,7 @@ const REPLY: u8 = 6;
 const MAP: u8 = 7;
 const BIND: u8 = 8;
 const RUNTIME_ERROR: u8 = 9;
+const CALL_TRAP: u8 = 10;
 #[path = "runtime/child.rs"]
 mod runtime;
 const PACKET_BYTES: usize = 200;
@@ -314,7 +315,7 @@ pub struct NativeProcess {
     parked: bool,
     sequence: u64,
     callbacks: [u64; 4],
-    imports: Box<[(u32, NativeEntry)]>,
+    imports: Box<[(u32, NativeEntry, bool)]>,
     reaped: Option<std::process::ExitStatus>,
     timeout: Duration,
     runtime: Option<super::runtime::RuntimeConfig>,
@@ -359,6 +360,11 @@ impl NativeProcess {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
+                if entry.trap
+                    && (!entry.parameters.is_empty() || entry.result != NativeScalar::Void)
+                {
+                    return Err(NativeError::Extent);
+                }
                 Ok((
                     entry.number,
                     NativeEntry::bind(
@@ -367,6 +373,7 @@ impl NativeProcess {
                         entry.parameters,
                         entry.result,
                     )?,
+                    entry.trap,
                 ))
             })
             .collect::<Result<Box<[_]>, NativeError>>()?;
@@ -427,7 +434,7 @@ impl NativeProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::from(file));
         let mut regions = image.regions.to_vec();
-        regions.extend(imports.iter().map(|(_, entry)| NativeRegion {
+        regions.extend(imports.iter().map(|(_, entry, _)| NativeRegion {
             offset: (entry.address - image.base) as usize,
             length: 12,
             permissions: 5,
@@ -454,7 +461,7 @@ impl NativeProcess {
         owner.set_event_time(qa_core::sys_events::EventTime(0))?;
         // Patch each numeric import gateway only at the enforced load stop.
         // The indirect jump preserves AL and all native parameter registers.
-        for (index, (_, entry)) in owner.imports.iter().enumerate() {
+        for (index, (_, entry, _)) in owner.imports.iter().enumerate() {
             let at = (entry.address - owner.base) as usize;
             let bytes = &mut owner.memory.bytes_mut()[at..at + 32];
             bytes.fill(0xcc);
@@ -488,10 +495,11 @@ impl NativeProcess {
             packet.arguments[1] = region.permissions as u64;
             packet.send(&mut self.stream)?;
         }
-        for &(number, entry) in &self.imports {
+        for &(number, entry, trap) in &self.imports {
             let mut packet = Packet::new(BIND, 0);
             packet.address = u64::from(number);
             packet.abi = entry.abi as u8;
+            packet.value = u64::from(trap);
             packet.send(&mut self.stream)?;
         }
         let ready = Packet::receive(&mut self.stream)?;
@@ -518,7 +526,7 @@ impl NativeProcess {
         self.callbacks[abi as usize]
     }
     pub fn import_pointer(&self, ordinal: usize) -> Option<u64> {
-        self.imports.get(ordinal).map(|(_, entry)| entry.address)
+        self.imports.get(ordinal).map(|(_, entry, _)| entry.address)
     }
     /// Address reserved by load for a function import, used when binding an
     /// inert image's relocations before any child executes its code.
@@ -675,10 +683,27 @@ impl NativeProcess {
                 self.stop_boundary()?;
                 match packet.operation {
                     RETURN => return Ok(entry.result(packet.value)),
+                    CALL_TRAP => {
+                        let ordinal =
+                            usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
+                        let &(_, entry, trap) =
+                            self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
+                        if !trap {
+                            return Err(NativeError::Protocol);
+                        }
+                        // A tail call has no native return PC. Report its
+                        // native import gateway instead of a controller PC.
+                        let address = if self.executable(packet.value) {
+                            packet.value
+                        } else {
+                            entry.address
+                        };
+                        return Err(NativeError::ImportTrap { ordinal, address });
+                    }
                     RUNTIME_ERROR => {
                         let ordinal =
                             usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
-                        let &(number, _) =
+                        let &(number, _, _) =
                             self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
                         let function =
                             super::runtime::function(number).ok_or(NativeError::Protocol)?;
@@ -696,7 +721,7 @@ impl NativeProcess {
                             1 => {
                                 let ordinal = usize::try_from(packet.address)
                                     .map_err(|_| NativeError::Protocol)?;
-                                let &(number, entry) =
+                                let &(number, entry, _) =
                                     self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
                                 (
                                     number,
@@ -725,7 +750,10 @@ impl NativeProcess {
                 }
             }
         })();
-        run.map_err(|e| self.failure(e))
+        match run {
+            Err(error @ NativeError::ImportTrap { .. }) => Err(error),
+            result => result.map_err(|e| self.failure(e)),
+        }
     }
     fn failure(&mut self, error: NativeError) -> NativeError {
         let Some(mut child) = self.child.take() else {
@@ -766,6 +794,12 @@ impl Drop for NativeProcess {
 
 // The fixed protocol carries call words, never per-entity field caches.
 static CHILD_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CHILD_TRAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+static CHILD_TRAP_ADDRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn child_trap() -> Option<(usize, u64)> {
+    let ordinal = CHILD_TRAP.load(Ordering::Relaxed);
+    (ordinal != usize::MAX).then(|| (ordinal, CHILD_TRAP_ADDRESS.load(Ordering::Relaxed)))
+}
 
 #[repr(C)]
 struct ImportResult {
@@ -776,6 +810,7 @@ extern "C" fn import(
     words: *const [u64; 14],
     floats: *const [[u64; 2]; 8],
     typed: u64,
+    address: u64,
 ) -> ImportResult {
     // The assembly gate supplies private, fully captured ABI words. No Rust
     // reference into the shared guest stack is retained while the parent borrows.
@@ -794,6 +829,13 @@ extern "C" fn import(
         ) {
             Ok(Some(result)) => return result,
             Ok(None) => {}
+            Err(NativeError::ImportTrap { ordinal, .. }) => {
+                if child_trap().is_none() {
+                    CHILD_TRAP.store(ordinal, Ordering::Relaxed);
+                    CHILD_TRAP_ADDRESS.store(address, Ordering::Relaxed);
+                }
+                return ImportResult { value: 0, kind: 4 };
+            }
             Err(_) => {
                 // Publish only the load-declared ordinal. The parent enforces
                 // the same kernel stop, resolves its own static name and reaps
@@ -924,7 +966,11 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     let mut bindings = Vec::with_capacity(imports);
     for _ in 0..imports {
         let binding = Packet::receive(&mut stream)?;
-        if binding.operation != BIND || binding.sequence != 0 || binding.abi > 1 {
+        if binding.operation != BIND
+            || binding.sequence != 0
+            || binding.abi > 1
+            || binding.value > 1
+        {
             return Err(NativeError::Protocol);
         }
         let number = u32::try_from(binding.address).map_err(|_| NativeError::Protocol)?;
@@ -933,15 +979,18 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         } else {
             NativeAbi::Microsoft
         };
-        let entry = super::runtime::function(number)
-            .map(|function| {
-                NativeEntry::bind(0, abi, function.parameters, function.result)
-                    .map(|entry| (function, entry))
-            })
-            .transpose()?;
-        if number >= super::runtime::FIRST && entry.is_none() {
+        let entry = if binding.value == 1 {
+            runtime::ImportBinding::Trap
+        } else if let Some(function) = super::runtime::function(number) {
+            runtime::ImportBinding::Runtime(
+                function,
+                NativeEntry::bind(0, abi, function.parameters, function.result)?,
+            )
+        } else if number >= super::runtime::FIRST {
             return Err(NativeError::Unsupported);
-        }
+        } else {
+            runtime::ImportBinding::Engine
+        };
         bindings.push(entry);
     }
     let stack = NativeRegion {
@@ -1011,6 +1060,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             return Err(NativeError::Protocol);
         }
         CHILD_SEQUENCE.store(packet.sequence, Ordering::Relaxed);
+        CHILD_TRAP.store(usize::MAX, Ordering::Relaxed);
         // SAFETY: only the owned child invokes foreign instructions. The gate
         // uses its bounded shared stack and switches to a private controller
         // stack before Rust handles imports. No Rust reference into the guest
@@ -1026,7 +1076,13 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             )
         };
         let mut reply = Packet::new(RETURN, packet.sequence);
-        reply.value = value;
+        if let Some((ordinal, address)) = child_trap() {
+            reply.operation = CALL_TRAP;
+            reply.address = ordinal as u64;
+            reply.value = address;
+        } else {
+            reply.value = value;
+        }
         reply.send(&mut stream)?;
     }
 }
