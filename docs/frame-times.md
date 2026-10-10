@@ -3611,3 +3611,53 @@ or foreign heaps. Saved settings and the candidate stayed unchanged, and all
 owned helper PIDs were cleaned up. Evidence is retained under
 `THE-3175-q3-arithmetic-20261009/private-smoke-final/`. This is smoke evidence
 for that earlier candidate, not a new installation or full gameplay acceptance.
+
+### THE-860: native Q2 player state on the same field tables
+
+Q2 protocol 34 supplies 36 scalar columns and 32 signed-short stats to the
+existing delta walker. Its table presets the always-sent weapon-index flag and
+marks six gun offsets/angles as dependent on gunframe. Those dependent fields
+are sent when the frame flag is present, but do not raise it themselves.
+Scaled values retain signed quarter-unit offsets, short-angle conversion,
+byte FOV and blend-byte division by 255. Integer pmove words are already
+narrowed at the native connection boundary. Temporary wire words do not add
+another engine player-state array. The old fixed-size array-field constructor
+is replaced by one generic mask-field constructor serving Q3 and Q2.
+
+The unchanged Q2 SV_WritePlayerstateToClient and CL_ParsePlayerstate functions
+join the existing original Q3 oracle: all 6,144 records, 3,158,137 comparison
+bytes and decoded words match. Native struct/byte bindings stay in the
+developer-only C helper. The 3,072 QW/Q2/Q3 usercmd cases also remain exact.
+The focused dependency test covers an unchanged frame with changed offsets,
+the always-sent/truncated weapon index, signed offsets, angles, blend and stat
+31. The unchanged checker, 657 workspace tests and Clippy pass.
+
+CPU23, portable release, five ABBA blocks, 60 warm-up and 600 measured frames,
+sixteen records per frame with original-C bytes/words checked. Baselines are
+the saved f03c3d68 codec examples and their unchanged fixtures. The initial
+general trigger bitset raised the Q3 command median by 3.30%; the final compact
+dependent range removes that regression. No earlier slower design is retained.
+
+| Existing codec workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed usercmds | 3289 | 3238.5 | -1.535% | 6683 | 6694 |
+| QW usercmds | 1872.5 | 1824 | -2.590% | 2658 | 2747 |
+| Q2 usercmds | 2157.55 | 2082 | -3.502% | 3056 | 2893 |
+| Q3 usercmds | 5298.5 | 5203.5 | -1.793% | 6928 | 6817 |
+| Q3 entity/player records | 26509.55 | 25867 | -2.424% | 54275 | 52702 |
+
+All five medians improve. Mixed/QW p99 increase by 0.165% and 3.348%; other
+tails improve. Every leg retains its fixture checks and byte totals, with zero
+allocations, reallocations and requested bytes and a positive control. The new
+Q2 player workload has no prior engine path: four runs average 11,815 ns median
+and 15,722.5 ns p99 per sixteen encode/decode records; each performs 10,560
+fidelity checks and 447,317 wire bytes including warm-up, with zero measured
+heap activity. Timings exclude host, workers, sockets, rendering and gameplay.
+
+Evidence: `THE-860-q2-player-20261009/`, final-original/comparison.json,
+final-commands/comparison.json, final-abba-summary.json and range-dependency
+raw legs, final-q2-state-summary.json and its four runs, plus verification
+logs. The common-state projection, snapshot/channel integration, Q2 entity,
+QW/NQ/rerelease state tables and native/installed acceptance remain open on
+THE-860/THE-3169. This checkpoint is a record-codec proof, not complete network
+or gameplay acceptance.

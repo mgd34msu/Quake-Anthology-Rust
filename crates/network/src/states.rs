@@ -1,6 +1,6 @@
 //! Native state projections in protocol table order, not engine entity storage.
 use crate::{
-    delta::{self, Field, Group, Presence, Value},
+    delta::{self, Field, Group, Presence, ScaleRead, Value},
     message::{Error, Reader, Writer},
 };
 
@@ -150,29 +150,25 @@ static PLAYER_GROUP: [Group<true>; 1] = [Group {
     fields: &PLAYER_FIELDS,
     presence: Presence::LastChanged(8),
 }];
-const fn array_fields(array: usize) -> [Field; 16] {
+const fn mask_fields<const N: usize>(start: usize, bits: u8, value: Value) -> [Field; N] {
     let mut fields = [Field {
         word: 0,
-        bits: 16,
+        bits,
         flag: 0,
-        value: Value::Signed,
-    }; 16];
+        value,
+    }; N];
     let mut i = 0;
     while i < fields.len() {
-        fields[i].word = PLAYER_LAYOUT.len() + array * 16 + i;
+        fields[i].word = start + i;
         fields[i].flag = 1 << i;
-        if array == 3 {
-            fields[i].bits = 32;
-            fields[i].value = Value::Unsigned;
-        }
         i += 1;
     }
     fields
 }
-static STATS: [Field; 16] = array_fields(0);
-static PERSISTANT: [Field; 16] = array_fields(1);
-static AMMO: [Field; 16] = array_fields(2);
-static POWERUPS: [Field; 16] = array_fields(3);
+static STATS: [Field; 16] = mask_fields(48, 16, Value::Signed);
+static PERSISTANT: [Field; 16] = mask_fields(64, 16, Value::Signed);
+static AMMO: [Field; 16] = mask_fields(80, 16, Value::Signed);
+static POWERUPS: [Field; 16] = mask_fields(96, 32, Value::Unsigned);
 static PLAYER_ARRAYS: [Group<true>; 4] = [
     Group {
         fields: &STATS,
@@ -206,7 +202,7 @@ pub fn write_q3_entity(
     if number >= 1024 {
         return Ok(false);
     }
-    let count = to.map_or(0, |to| delta::changed(&ENTITY_FIELDS, from, to));
+    let count = to.map_or(0, |to| delta::changed::<true>(&ENTITY_FIELDS, from, to));
     if to.is_some() && count == 0 && !force {
         return Ok(false);
     }
@@ -258,7 +254,7 @@ pub fn write_q3_player(
     delta::write(&PLAYER_GROUP, from, to, 0, writer)?;
     let arrays = PLAYER_ARRAYS
         .iter()
-        .any(|group| delta::changed(group.fields, from, to) != 0);
+        .any(|group| delta::changed::<true>(group.fields, from, to) != 0);
     writer.write_bits(u32::from(arrays), 1)?;
     if arrays {
         delta::write(&PLAYER_ARRAYS, from, to, 0, writer)?;
@@ -277,10 +273,190 @@ pub fn read_q3_player(
     Ok(words)
 }
 
+/// Original Q2 player wire order; signed widths describe decoded scalars.
+pub const Q2_PLAYER_LAYOUT: [(&str, i8); 36] = [
+    ("pmove.pm_type", 8),
+    ("pmove.origin[0]", -16),
+    ("pmove.origin[1]", -16),
+    ("pmove.origin[2]", -16),
+    ("pmove.velocity[0]", -16),
+    ("pmove.velocity[1]", -16),
+    ("pmove.velocity[2]", -16),
+    ("pmove.pm_time", 8),
+    ("pmove.pm_flags", 8),
+    ("pmove.gravity", -16),
+    ("pmove.delta_angles[0]", -16),
+    ("pmove.delta_angles[1]", -16),
+    ("pmove.delta_angles[2]", -16),
+    ("viewoffset[0]", -8),
+    ("viewoffset[1]", -8),
+    ("viewoffset[2]", -8),
+    ("viewangles[0]", 16),
+    ("viewangles[1]", 16),
+    ("viewangles[2]", 16),
+    ("kick_angles[0]", -8),
+    ("kick_angles[1]", -8),
+    ("kick_angles[2]", -8),
+    ("gunindex", 8),
+    ("gunframe", 8),
+    ("gunoffset[0]", -8),
+    ("gunoffset[1]", -8),
+    ("gunoffset[2]", -8),
+    ("gunangles[0]", -8),
+    ("gunangles[1]", -8),
+    ("gunangles[2]", -8),
+    ("blend[0]", 8),
+    ("blend[1]", 8),
+    ("blend[2]", 8),
+    ("blend[3]", 8),
+    ("fov", 8),
+    ("rdflags", 8),
+];
+pub const Q2_PLAYER_WORDS: usize = Q2_PLAYER_LAYOUT.len() + 32;
+const fn q2_player_fields() -> [Field; 36] {
+    let mut fields = [Field {
+        word: 0,
+        bits: 8,
+        flag: 0,
+        value: Value::Unsigned,
+    }; 36];
+    let mut i = 0;
+    while i < fields.len() {
+        let (bit, value) = match i {
+            0 => (0, Value::Unsigned),
+            1..=3 => (1, Value::Signed),
+            4..=6 => (2, Value::Signed),
+            7 => (3, Value::Unsigned),
+            8 => (4, Value::Unsigned),
+            9 => (5, Value::Signed),
+            10..=12 => (6, Value::Signed),
+            13..=15 => (
+                7,
+                Value::Scaled {
+                    factor: 4,
+                    read: ScaleRead::Signed,
+                },
+            ),
+            16..=18 => (8, Value::Angle16),
+            19..=21 => (
+                9,
+                Value::Scaled {
+                    factor: 4,
+                    read: ScaleRead::Signed,
+                },
+            ),
+            22 => (12, Value::Unsigned),
+            23 => (13, Value::Unsigned),
+            24..=29 => (
+                13,
+                Value::Scaled {
+                    factor: 4,
+                    read: ScaleRead::Signed,
+                },
+            ),
+            30..=33 => (
+                10,
+                Value::Scaled {
+                    factor: 255,
+                    read: ScaleRead::UnsignedDivide,
+                },
+            ),
+            34 => (
+                11,
+                Value::Scaled {
+                    factor: 1,
+                    read: ScaleRead::Unsigned,
+                },
+            ),
+            _ => (14, Value::Unsigned),
+        };
+        fields[i] = Field {
+            word: i,
+            bits: Q2_PLAYER_LAYOUT[i].1.unsigned_abs(),
+            flag: 1 << bit,
+            value,
+        };
+        i += 1;
+    }
+    fields
+}
+static Q2_PLAYER_FIELDS: [Field; 36] = q2_player_fields();
+static Q2_STATS: [Field; 32] = mask_fields(36, 16, Value::Signed);
+static Q2_PLAYER_GROUPS: [Group<true>; 2] = [
+    Group {
+        fields: &Q2_PLAYER_FIELDS,
+        // Offsets/angles travel with gunframe, never trigger its flag themselves.
+        presence: Presence::MaskPreset {
+            bits: 16,
+            always: 1 << 12,
+            dependent_start: 24,
+            dependent_count: 6,
+        },
+    },
+    Group {
+        fields: &Q2_STATS,
+        presence: Presence::Mask(32),
+    },
+];
+
+/// Includes native svc_playerinfo. Pmove integer words are already narrowed at
+/// the connection ABI boundary; float columns retain their native bit patterns.
+pub fn write_q2_player(
+    writer: &mut Writer<'_>,
+    from: &[u32; Q2_PLAYER_WORDS],
+    to: &[u32; Q2_PLAYER_WORDS],
+) -> Result<(), Error> {
+    writer.write_bits(17, 8)?;
+    delta::write(&Q2_PLAYER_GROUPS, from, to, 0, writer)
+}
+pub fn read_q2_player(
+    reader: &mut Reader<'_>,
+    from: &[u32; Q2_PLAYER_WORDS],
+) -> Result<[u32; Q2_PLAYER_WORDS], Error> {
+    if reader.read_bits(8)? != 17 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Symbol,
+        });
+    }
+    let mut words = *from;
+    delta::read(&Q2_PLAYER_GROUPS, &mut words, 0, reader)?;
+    Ok(words)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{Encoding, ErrorKind};
+
+    #[test]
+    fn q2_gun_offsets_depend_on_frame_and_index_is_always_sent() -> Result<(), Error> {
+        let mut from = [0; Q2_PLAYER_WORDS];
+        from[22] = 1025;
+        let mut to = from;
+        to[24] = (-2.25f32).to_bits();
+        let mut bytes = [0; 1024];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_q2_player(&mut writer, &from, &to)?;
+        assert_eq!(writer.size(), 8);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let decoded = read_q2_player(&mut reader, &from)?;
+        assert_eq!(decoded[22], 1);
+        assert_eq!(decoded[24], 0);
+        to[23] = 1;
+        to[18] = (-450.0f32).to_bits();
+        to[33] = (254.0f32 / 255.0).to_bits();
+        to[67] = (-32768i32) as u32;
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        write_q2_player(&mut writer, &from, &to)?;
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let decoded = read_q2_player(&mut reader, &from)?;
+        assert_eq!(decoded[24], to[24]);
+        assert_eq!(decoded[18], (-90.0f32).to_bits());
+        assert_eq!(decoded[33], to[33]);
+        assert_eq!(decoded[67], to[67]);
+        Ok(())
+    }
 
     #[test]
     fn entity_control_bits_and_native_number_limit() -> Result<(), Error> {

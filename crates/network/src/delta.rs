@@ -3,6 +3,12 @@
 use crate::message::{Error, ErrorKind, Reader, Writer};
 
 #[derive(Clone, Copy)]
+pub(crate) enum ScaleRead {
+    Signed,
+    Unsigned,
+    UnsignedDivide,
+}
+#[derive(Clone, Copy)]
 pub(crate) enum Value {
     Unsigned,
     Signed,
@@ -10,6 +16,7 @@ pub(crate) enum Value {
     Time,
     ZeroUnsigned,
     Float { zero: bool },
+    Scaled { factor: u8, read: ScaleRead },
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Field {
@@ -19,22 +26,38 @@ pub(crate) struct Field {
     pub value: Value,
 }
 impl Field {
-    fn equal(self, from: u32, to: u32) -> bool {
+    fn equal<const STATE: bool>(self, from: u32, to: u32) -> bool {
         match self.value {
             Value::Angle16 => f32::from_bits(from) == f32::from_bits(to),
+            Value::Scaled { .. } if STATE => f32::from_bits(from) == f32::from_bits(to),
             _ => from == to,
         }
     }
-    fn project(self, word: u32) -> u32 {
+    fn project<const STATE: bool>(self, word: u32) -> u32 {
         match self.value {
             Value::Angle16 => (f32::from_bits(word) * 65536.0 / 360.0) as i32 as u32,
+            Value::Scaled { factor, .. } if STATE => {
+                (f32::from_bits(word) * f32::from(factor)) as i32 as u32
+            }
             _ => word,
         }
     }
-    fn restore(self, word: u32) -> u32 {
+    fn restore<const STATE: bool>(self, word: u32) -> u32 {
         match self.value {
             Value::Signed => ((word << (32 - self.bits)) as i32 >> (32 - self.bits)) as u32,
             Value::Angle16 => ((word as i16 as f32) * (360.0 / 65536.0)).to_bits(),
+            Value::Scaled { factor, read } if STATE => {
+                let value = if matches!(read, ScaleRead::Signed) {
+                    ((word << (32 - self.bits)) as i32 >> (32 - self.bits)) as f32
+                } else {
+                    word as f32
+                };
+                if matches!(read, ScaleRead::UnsignedDivide) {
+                    (value / f32::from(factor)).to_bits()
+                } else {
+                    (value * (1.0 / f32::from(factor))).to_bits()
+                }
+            }
             _ => word,
         }
     }
@@ -43,6 +66,12 @@ pub(crate) enum Presence {
     Fixed,
     Mask(u8),
     OptionalMask(u8),
+    MaskPreset {
+        bits: u8,
+        always: u32,
+        dependent_start: u8,
+        dependent_count: u8,
+    },
     LastChanged(u8),
     Changed {
         aggregate: bool,
@@ -56,10 +85,10 @@ pub(crate) struct Group<const STATE: bool = false> {
     pub fields: &'static [Field],
     pub presence: Presence,
 }
-pub(crate) fn changed(fields: &[Field], from: &[u32], to: &[u32]) -> usize {
+pub(crate) fn changed<const STATE: bool>(fields: &[Field], from: &[u32], to: &[u32]) -> usize {
     fields
         .iter()
-        .rposition(|f| !f.equal(from[f.word], to[f.word]))
+        .rposition(|f| !f.equal::<STATE>(from[f.word], to[f.word]))
         .map_or(0, |i| i + 1)
 }
 
@@ -76,7 +105,7 @@ pub(crate) fn write<const STATE: bool>(
     for group in groups {
         let masked = matches!(
             group.presence,
-            Presence::Mask(_) | Presence::OptionalMask(_)
+            Presence::Mask(_) | Presence::OptionalMask(_) | Presence::MaskPreset { .. }
         );
         let compare = matches!(group.presence, Presence::Changed { .. })
             || STATE && matches!(group.presence, Presence::LastChanged(_));
@@ -87,38 +116,54 @@ pub(crate) fn write<const STATE: bool>(
         };
         let mut mask = 0;
         let mut count = group.fields.len();
-        match group.presence {
-            Presence::Mask(bits) | Presence::OptionalMask(bits) => {
-                for field in group.fields {
-                    if !field.equal(from[field.word], to[field.word]) {
-                        mask |= field.flag;
-                    }
+        let mask_config = match group.presence {
+            Presence::Mask(bits) | Presence::OptionalMask(bits) => Some((bits, 0, 0, 0)),
+            Presence::MaskPreset {
+                bits,
+                always,
+                dependent_start,
+                dependent_count,
+            } if STATE => Some((bits, always, dependent_start, dependent_count)),
+            _ => None,
+        };
+        if let Some((bits, always, start, count)) = mask_config {
+            mask = always;
+            for (index, field) in group.fields.iter().enumerate() {
+                if (!STATE
+                    || !(usize::from(start)..usize::from(start) + usize::from(count))
+                        .contains(&index))
+                    && !field.equal::<STATE>(from[field.word], to[field.word])
+                {
+                    mask |= field.flag;
                 }
-                if matches!(group.presence, Presence::OptionalMask(_)) {
-                    writer.write_bits(u32::from(mask != 0), 1)?;
-                    if mask == 0 {
-                        continue;
-                    }
-                }
-                writer.write_bits(mask, bits)?;
             }
-            Presence::LastChanged(bits) if STATE => {
-                count = changed(group.fields, from, to);
-                writer.write_bits(count as u32, bits)?;
-            }
-            Presence::Changed {
-                aggregate: true, ..
-            } => {
-                let changed = group
-                    .fields
-                    .iter()
-                    .any(|f| !f.equal(from[f.word], to[f.word]));
-                writer.write_bits(u32::from(changed), 1)?;
-                if !changed {
+            if matches!(group.presence, Presence::OptionalMask(_)) {
+                writer.write_bits(u32::from(mask != 0), 1)?;
+                if mask == 0 {
                     continue;
                 }
             }
-            _ => {}
+            writer.write_bits(mask, bits)?;
+        } else {
+            match group.presence {
+                Presence::LastChanged(bits) if STATE => {
+                    count = changed::<STATE>(group.fields, from, to);
+                    writer.write_bits(count as u32, bits)?;
+                }
+                Presence::Changed {
+                    aggregate: true, ..
+                } => {
+                    let changed = group
+                        .fields
+                        .iter()
+                        .any(|f| !f.equal::<STATE>(from[f.word], to[f.word]));
+                    writer.write_bits(u32::from(changed), 1)?;
+                    if !changed {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
         }
         for field in &group.fields[..count] {
             let old = from[field.word];
@@ -127,7 +172,7 @@ pub(crate) fn write<const STATE: bool>(
                 continue;
             }
             if compare {
-                let changed = !field.equal(old, new);
+                let changed = !field.equal::<STATE>(old, new);
                 writer.write_bits(u32::from(changed), 1)?;
                 if !changed {
                     continue;
@@ -162,7 +207,7 @@ pub(crate) fn write<const STATE: bool>(
                     writer.write_bits(new, field.bits)?;
                 }
             } else {
-                writer.write_bits(field.project(new) ^ field_key, field.bits)?;
+                writer.write_bits(field.project::<STATE>(new) ^ field_key, field.bits)?;
             }
         }
     }
@@ -178,7 +223,7 @@ pub(crate) fn read<const STATE: bool>(
     for group in groups {
         let masked = matches!(
             group.presence,
-            Presence::Mask(_) | Presence::OptionalMask(_)
+            Presence::Mask(_) | Presence::OptionalMask(_) | Presence::MaskPreset { .. }
         );
         let compare = matches!(group.presence, Presence::Changed { .. })
             || STATE && matches!(group.presence, Presence::LastChanged(_));
@@ -191,6 +236,7 @@ pub(crate) fn read<const STATE: bool>(
         let mut count = group.fields.len();
         let mask = match group.presence {
             Presence::Mask(bits) => reader.read_bits(bits)?,
+            Presence::MaskPreset { bits, .. } if STATE => reader.read_bits(bits)?,
             Presence::OptionalMask(bits) => {
                 if reader.read_bits(1)? == 0 {
                     continue;
@@ -249,7 +295,7 @@ pub(crate) fn read<const STATE: bool>(
                     reader.read_bits(field.bits)?
                 }
             } else {
-                field.restore(reader.read_bits(field.bits)? ^ field_key)
+                field.restore::<STATE>(reader.read_bits(field.bits)? ^ field_key)
             };
         }
     }

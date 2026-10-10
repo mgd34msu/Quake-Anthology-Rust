@@ -1,7 +1,7 @@
 //! Developer-only original-C delta record fidelity and allocation/timing probe.
 use qa_network::{
     message::{Encoding, Reader, Writer},
-    states::{self, ENTITY_WORDS, PLAYER_WORDS},
+    states::{self, ENTITY_WORDS, PLAYER_WORDS, Q2_PLAYER_WORDS},
 };
 use qa_platform::{Stopwatch, allocations};
 use std::io::{Read, Write};
@@ -56,7 +56,12 @@ fn case(reader: &mut Reader<'_>) -> Result<Case, String> {
     })
 }
 fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
-    let mut writer = Writer::new(bytes, Encoding::Q3);
+    let encoding = if case.mode == 2 {
+        Encoding::Bytes
+    } else {
+        Encoding::Q3
+    };
+    let mut writer = Writer::new(bytes, encoding);
     let mut result = Encoded::default();
     match case.mode {
         0 => {
@@ -94,6 +99,20 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
             result.decoded =
                 states::read_q3_player(&mut reader, &case.from).map_err(|e| e.to_string())?;
+        }
+        2 => {
+            let from: &[u32; Q2_PLAYER_WORDS] = case.from[..Q2_PLAYER_WORDS]
+                .try_into()
+                .map_err(|_| "Q2 player words")?;
+            let to: &[u32; Q2_PLAYER_WORDS] = case.to[..Q2_PLAYER_WORDS]
+                .try_into()
+                .map_err(|_| "Q2 player words")?;
+            // These words already project the native short/byte pmove ABI.
+            states::write_q2_player(&mut writer, from, to).map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+            result.decoded[..Q2_PLAYER_WORDS].copy_from_slice(
+                &states::read_q2_player(&mut reader, from).map_err(|e| e.to_string())?,
+            );
         }
         _ => return Err("state dialect".into()),
     }
