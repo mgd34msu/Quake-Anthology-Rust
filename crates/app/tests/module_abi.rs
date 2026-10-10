@@ -7,20 +7,18 @@ use qa_compat::{
     services::{CallContext, CallError, ServiceStorage},
 };
 use qa_console::{commands::Console, views::Context};
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{ModuleId, RuleSetId},
     sys_events::EventTime,
 };
-use qa_world::{
-    area::LinkOrder,
-    entities::{AllocationPolicy, EntityTime},
-};
+use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 
 fn context() -> CallContext {
     CallContext {
         module: ModuleId(1),
-        clock: EntityTime::Milliseconds(17),
+        clock: ThinkTime::Milliseconds(17),
         console: Context::default(),
         allocation: AllocationPolicy::EDICT,
         link_order: LinkOrder::Head,

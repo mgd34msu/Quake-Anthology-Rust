@@ -1,3 +1,4 @@
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{
     CollisionOwner, CollisionShape, CollisionTags, EntityId, ModuleId, NativeEntity,
 };
@@ -34,7 +35,11 @@ fn collision_columns_start_empty_and_clear_on_free_and_reuse() {
         assert_collision_cleared(&table, slot);
     }
     let first = table
-        .allocate(10.0, ModuleId(2), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let owner = NativeEntity {
@@ -52,11 +57,15 @@ fn collision_columns_start_empty_and_clear_on_free_and_reuse() {
         table.columns.collision_contents[slot] & Contents::WINDOW.0,
         0
     );
-    assert!(table.release(first, 10.0));
+    assert!(table.release(first, ThinkTime::Seconds(10.0)));
     assert!(table.resolve(first).is_none());
     assert_collision_cleared(&table, slot);
     let current = table
-        .allocate(10.501, ModuleId(4), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.501),
+            ModuleId(4),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     assert_eq!(current.slot, first.slot);
@@ -69,17 +78,29 @@ fn collision_columns_start_empty_and_clear_on_free_and_reuse() {
 fn qw_displacement_clears_collision_data_before_the_new_lifetime_is_exposed() {
     let mut table = EntityTable::new(3, 1).unwrap();
     let first = table
-        .allocate(10.0, ModuleId(2), AllocationPolicy::QUAKEWORLD)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(2),
+            AllocationPolicy::QUAKEWORLD,
+        )
         .unwrap()
         .id;
     let last = table
-        .allocate(10.0, ModuleId(2), AllocationPolicy::QUAKEWORLD)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(2),
+            AllocationPolicy::QUAKEWORLD,
+        )
         .unwrap()
         .id;
     attach_collision(&mut table, first, CollisionOwner::Lifetime(last));
     attach_collision(&mut table, last, CollisionOwner::Lifetime(first));
     let replacement = table
-        .allocate(10.0, ModuleId(2), AllocationPolicy::QUAKEWORLD)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(2),
+            AllocationPolicy::QUAKEWORLD,
+        )
         .unwrap();
     assert_eq!(replacement.displaced, Some(last));
     assert_eq!(replacement.id.slot, last.slot);
@@ -111,7 +132,7 @@ fn client_reset_clears_collision_identity_without_releasing_its_reserved_slot() 
             slot: 1023,
         }),
     );
-    assert!(!table.release(client, 10.0));
+    assert!(!table.release(client, ThinkTime::Seconds(10.0)));
     assert_eq!(table.columns.collision_shape[1], CollisionShape::Box);
     let next = table.reset_client(client).unwrap();
     assert_eq!(next.slot, client.slot);
@@ -127,15 +148,27 @@ fn client_reset_clears_collision_identity_without_releasing_its_reserved_slot() 
 fn native_weak_owner_keeps_its_slot_across_target_lifetime_reuse() {
     let mut table = EntityTable::new(4, 1).unwrap();
     let target = table
-        .allocate(10.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let weak = table
-        .allocate(10.0, ModuleId(2), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let strong = table
-        .allocate(10.0, ModuleId(3), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(3),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let native_target = NativeEntity {
@@ -145,14 +178,18 @@ fn native_weak_owner_keeps_its_slot_across_target_lifetime_reuse() {
     table.columns.native_entity[target.slot as usize] = Some(native_target);
     attach_collision(&mut table, weak, CollisionOwner::Native(native_target));
     attach_collision(&mut table, strong, CollisionOwner::Lifetime(target));
-    assert!(table.release(target, 10.0));
+    assert!(table.release(target, ThinkTime::Seconds(10.0)));
     assert!(table.resolve(target).is_none());
     assert_eq!(
         table.columns.collision_owner[weak.slot as usize],
         CollisionOwner::Native(native_target)
     );
     let replacement = table
-        .allocate(10.501, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.501),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     assert_eq!(replacement.slot, target.slot);
@@ -185,7 +222,11 @@ fn native_weak_owner_keeps_its_slot_across_target_lifetime_reuse() {
 fn native_owner_sentinels_are_preserved_without_slot_or_lifetime_normalization() {
     let mut table = EntityTable::new(2, 1).unwrap();
     let entity = table
-        .allocate(10.0, ModuleId(8), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(10.0),
+            ModuleId(8),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let slot = entity.slot as usize;

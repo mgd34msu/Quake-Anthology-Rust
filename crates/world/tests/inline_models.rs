@@ -1,3 +1,4 @@
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{
     Axis, Body, Bounds, ClipNode, CollisionShape, EntityId, EntityPose, GeometryId, ModelRotation,
     ModelRules, ModuleId, Plane, RotatedLinkBounds, SurfaceFlags, Vec3,
@@ -164,7 +165,11 @@ fn model(
     rules: ModelRules,
 ) -> EntityId {
     let id = table
-        .allocate(0.0, ModuleId(7), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(7),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let bounds = store.model_bounds(geometry, 1).unwrap();
@@ -278,7 +283,11 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
         ModelRules::default(),
     );
     let box_entity = table
-        .allocate(0.0, ModuleId(9), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(9),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     table.columns.set_body(
@@ -692,9 +701,13 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
         Contents::EMPTY
     );
     area.unlink(target);
-    assert!(table.release(target, 1.0));
+    assert!(table.release(target, ThinkTime::Seconds(1.0)));
     let replacement = table
-        .allocate(1.1, ModuleId(8), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(1.1),
+            ModuleId(8),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     assert_eq!(replacement.slot, target.slot);
@@ -715,7 +728,11 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
     let world = empty(&mut store);
     let (mut table, mut area) = table();
     let target = table
-        .allocate(0.0, ModuleId(7), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(7),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let slot = target.slot as usize;

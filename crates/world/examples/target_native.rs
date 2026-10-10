@@ -1,6 +1,7 @@
 //! Developer-only target-index comparison. Build this example separately and
 //! run tools/check_targets.py. Native/common slot numbers coincide only inside
 //! these fixtures; no VM ABI, module namespace or live game is exercised.
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     names::{NameMatch, NameTable},
     primitives::{ModuleId, NameId},
@@ -161,7 +162,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 entities.id_at(0).ok_or("fixture world entity missing")?
             } else {
                 entities
-                    .allocate(1.0, ModuleId(1), AllocationPolicy::EDICT)
+                    .allocate(
+                        ThinkTime::Seconds(1.0),
+                        ModuleId(1),
+                        AllocationPolicy::EDICT,
+                    )
                     .ok_or("fixture native entity allocation rejected")?
                     .id
             };
@@ -177,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let id = entities
                     .id_at(slot)
                     .ok_or("fixture inactive row lifetime missing")?;
-                if !entities.release(id, 0.0) {
+                if !entities.release(id, ThinkTime::Seconds(0.0)) {
                     return Err("fixture inactive row release rejected".into());
                 }
             }

@@ -53,7 +53,7 @@ fn main() -> Result<(), &'static str> {
         let module = ModuleId(index % 5 + 1);
         let id = world
             .entities
-            .allocate(1.0, module, AllocationPolicy::EDICT)
+            .allocate(ThinkTime::Seconds(1.0), module, AllocationPolicy::EDICT)
             .ok_or("entity capacity")?
             .id;
         world.entities.columns.next_think[id.slot as usize] = Some(if module.0 <= 3 {

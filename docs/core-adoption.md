@@ -221,3 +221,13 @@ iterations and unchanged fixture counters. Evidence is in
 comparison and heap receipts. Earlier pinned scopes remain in
 [frame-times.md](frame-times.md). This submission adds no timing run or install;
 component oracles do not prove foreign heaps, live servers or gameplay.
+
+## THE-3180: native time and CPU projection
+
+`core/src/primitives.rs:221` ThinkTime now supplies entity reuse and module
+clocks. `world/src/entities.rs:242`, `:477` and `:546` store and accept it;
+`compat/src/services.rs:47` and every loader, test and example caller use it.
+EntityTime and its rounding conversion are deleted; `app/src/modules.rs:535`
+assigns the clock directly. Seconds-to-ms truncation remains in ThinkTime alone.
+`render/src/cpu/world.rs:1883` uses Vec3::dot for cached-surface projection,
+preserving addition, subtraction and division order. No audited copy remains.

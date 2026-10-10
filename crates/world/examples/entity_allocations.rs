@@ -1,4 +1,5 @@
 use qa_core::names::{NameMatch, NameTable};
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{Bounds, ModuleId, Vec3};
 use qa_world::area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder};
 use qa_world::entities::AllocationPolicy;
@@ -58,7 +59,11 @@ fn main() -> Result<(), &'static str> {
         let now = 10.0 + f64::from(step);
         for (index, entry) in ids.iter_mut().enumerate() {
             let id = table
-                .allocate(now, ModuleId(1), AllocationPolicy::EDICT)
+                .allocate(
+                    ThinkTime::Seconds(now),
+                    ModuleId(1),
+                    AllocationPolicy::EDICT,
+                )
                 .ok_or("full table")?
                 .id;
             table.set_targetname(id, Some(if index % 2 == 0 { door } else { exit }));
@@ -112,7 +117,7 @@ fn main() -> Result<(), &'static str> {
         }
         for entry in &mut ids {
             if let Some(id) = entry.take()
-                && (!grid.unlink(id) || !table.release(id, now))
+                && (!grid.unlink(id) || !table.release(id, ThinkTime::Seconds(now)))
             {
                 return Err("stale handle");
             }

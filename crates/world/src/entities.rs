@@ -5,36 +5,6 @@ use qa_core::primitives::{
 
 pub const MAX_ENTITIES: usize = 8192;
 
-/// Native level time at the module boundary. Q3 keeps integer milliseconds;
-/// Q1/QW/Q2 retain their original seconds and freetime precision.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum EntityTime {
-    Seconds(f64),
-    Milliseconds(i64),
-}
-
-impl From<f64> for EntityTime {
-    fn from(value: f64) -> Self {
-        Self::Seconds(value)
-    }
-}
-
-impl EntityTime {
-    fn seconds(self) -> f64 {
-        match self {
-            Self::Seconds(value) => value,
-            Self::Milliseconds(value) => value as f64 / 1000.0,
-        }
-    }
-
-    fn milliseconds(self) -> i64 {
-        match self {
-            Self::Milliseconds(value) => value,
-            Self::Seconds(value) => (value * 1000.0).round() as i64,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReuseDelay {
     Seconds { seconds: f64, grace_end: f64 },
@@ -54,7 +24,7 @@ impl ReuseDelay {
         }
     }
 
-    fn eligible(self, now: EntityTime, freed: Option<EntityTime>) -> bool {
+    fn eligible(self, now: ThinkTime, freed: Option<ThinkTime>) -> bool {
         let Some(freed) = freed else { return true };
         match self {
             Self::Seconds { seconds, grace_end } => {
@@ -70,11 +40,11 @@ impl ReuseDelay {
         }
     }
 
-    fn freetime(self, now: EntityTime) -> EntityTime {
+    fn freetime(self, now: ThinkTime) -> ThinkTime {
         match self {
             // Q1/QW/Q2 edict freetime is binary32, even when sv.time is double.
-            Self::Seconds { .. } => EntityTime::Seconds(now.seconds() as f32 as f64),
-            Self::Milliseconds { .. } => EntityTime::Milliseconds(now.milliseconds()),
+            Self::Seconds { .. } => ThinkTime::Seconds(now.seconds() as f32 as f64),
+            Self::Milliseconds { .. } => ThinkTime::Milliseconds(now.milliseconds()),
         }
     }
 }
@@ -269,7 +239,7 @@ impl EntityColumns {
 pub struct EntityTable {
     pub columns: EntityColumns,
     generations: Box<[u32]>,
-    freed_at: Box<[Option<EntityTime>]>,
+    freed_at: Box<[Option<ThinkTime>]>,
     reuse: Box<[ReuseDelay]>,
     last_owner: Box<[ModuleId]>,
     never_free: Box<[bool]>,
@@ -506,11 +476,10 @@ impl EntityTable {
     )]
     pub fn allocate(
         &mut self,
-        now: impl Into<EntityTime>,
+        now: ThinkTime,
         owner: ModuleId,
         policy: AllocationPolicy,
     ) -> Option<Allocation> {
-        let now = now.into();
         let mut start = self.reserved;
         while let Some(slot) = next_bit(&self.free_bits, start, self.capacity(), false) {
             start = slot + 1;
@@ -574,7 +543,7 @@ impl EntityTable {
         true
     }
 
-    pub fn release(&mut self, id: EntityId, now: impl Into<EntityTime>) -> bool {
+    pub fn release(&mut self, id: EntityId, now: ThinkTime) -> bool {
         let Some(slot) = self.resolve(id) else {
             return false;
         };
@@ -583,7 +552,7 @@ impl EntityTable {
         }
         self.free_bits[slot / 64] |= 1 << (slot % 64);
         self.live_count -= 1;
-        self.freed_at[slot] = Some(self.reuse[slot].freetime(now.into()));
+        self.freed_at[slot] = Some(self.reuse[slot].freetime(now));
         self.clear_columns(slot);
         self.generations[slot] += 1;
         true
@@ -599,11 +568,19 @@ mod tests {
     {
         let mut table = EntityTable::new(3, 1).map_err(|_| "table")?;
         let first = table
-            .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+            .allocate(
+                ThinkTime::Seconds(3.0),
+                ModuleId(1),
+                AllocationPolicy::QUAKEWORLD,
+            )
             .ok_or("first")?
             .id;
         let last = table
-            .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+            .allocate(
+                ThinkTime::Seconds(3.0),
+                ModuleId(1),
+                AllocationPolicy::QUAKEWORLD,
+            )
             .ok_or("last")?
             .id;
         table.generations[last.slot as usize] = u32::MAX - 1;
@@ -624,13 +601,17 @@ mod tests {
             crate::area::LinkIntent::Explicit,
         ));
         let replacement = table
-            .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+            .allocate(
+                ThinkTime::Seconds(3.0),
+                ModuleId(1),
+                AllocationPolicy::QUAKEWORLD,
+            )
             .ok_or("replacement")?;
         assert_eq!(replacement.displaced, Some(first));
         assert!(table.resolve(dying).is_some());
         assert_eq!(table.len(), 3);
         assert!(area.unlink(dying));
-        assert!(table.release(dying, 3.0));
+        assert!(table.release(dying, ThinkTime::Seconds(3.0)));
         assert_eq!(table.generations[last.slot as usize], u32::MAX);
         assert_ne!(
             table.free_bits[last.slot as usize / 64] & (1 << (last.slot % 64)),
@@ -638,9 +619,13 @@ mod tests {
         );
         assert!(table.id_at(last.slot as usize).is_none());
         assert!(table.active().all(|id| id.slot != last.slot));
-        assert!(table.release(replacement.id, 3.0));
+        assert!(table.release(replacement.id, ThinkTime::Seconds(3.0)));
         let current = table
-            .allocate(4.0, ModuleId(1), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(4.0),
+                ModuleId(1),
+                AllocationPolicy::EDICT,
+            )
             .ok_or("current")?
             .id;
         assert_eq!(current.slot, first.slot);
@@ -652,7 +637,11 @@ mod tests {
     {
         let mut table = EntityTable::new(2, 1).map_err(|_| "table")?;
         let id = table
-            .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+            .allocate(
+                ThinkTime::Seconds(3.0),
+                ModuleId(1),
+                AllocationPolicy::QUAKEWORLD,
+            )
             .ok_or("entity")?
             .id;
         table.generations[id.slot as usize] = u32::MAX - 1;
@@ -660,7 +649,11 @@ mod tests {
         let body = table.columns.body(current.slot as usize);
         assert!(
             table
-                .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+                .allocate(
+                    ThinkTime::Seconds(3.0),
+                    ModuleId(1),
+                    AllocationPolicy::QUAKEWORLD
+                )
                 .is_none()
         );
         assert!(table.resolve(current).is_some());
@@ -685,7 +678,11 @@ mod tests {
         assert_eq!(table.active().map(|id| id.slot).collect::<Vec<_>>(), [0]);
         assert!(
             table
-                .allocate(5.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+                .allocate(
+                    ThinkTime::Seconds(5.0),
+                    ModuleId(1),
+                    AllocationPolicy::QUAKEWORLD
+                )
                 .is_none()
         );
         assert_eq!(table.len(), 1);

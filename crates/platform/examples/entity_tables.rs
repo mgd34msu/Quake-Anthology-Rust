@@ -70,7 +70,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Cold population keeps exactly 64 widely separated live rows.
     for slot in 1..capacity {
         let id = entities
-            .allocate(10.0, ModuleId(1), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(10.0),
+                ModuleId(1),
+                AllocationPolicy::EDICT,
+            )
             .ok_or("cold allocation")?
             .id;
         if id.slot as usize != slot {
@@ -88,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for slot in 1..capacity {
         if !ids.iter().any(|id| id.slot as usize == slot) {
             let id = entities.id_at(slot).ok_or("cold entity")?;
-            if !entities.release(id, 10.0) {
+            if !entities.release(id, ThinkTime::Seconds(10.0)) {
                 return Err("cold release".into());
             }
         }
@@ -136,11 +140,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let total = Stopwatch::start();
         let transient = world
             .entities
-            .allocate(now, ModuleId(1), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(now),
+                ModuleId(1),
+                AllocationPolicy::EDICT,
+            )
             .ok_or("transient allocation")?
             .id;
         let claimed_refresh = targets.refresh(&mut world.entities, &names);
-        if !world.entities.release(transient, now) {
+        if !world.entities.release(transient, ThinkTime::Seconds(now)) {
             return Err("transient release".into());
         }
         let released_refresh = targets.refresh(&mut world.entities, &names);

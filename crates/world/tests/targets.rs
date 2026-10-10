@@ -1,3 +1,4 @@
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     names::{NameMatch, NameTable},
     primitives::{ModuleId, NameId},
@@ -11,15 +12,27 @@ fn target_iteration_preserves_edict_order_and_rejects_freed_lifetimes() {
     let mut table = EntityTable::new(8, 1).unwrap();
     let names = NameTable::load([b"a".as_slice(), b"b", b"door", b"exit"]).unwrap();
     let first = table
-        .allocate(0.0, ModuleId(0), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(0),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let other = table
-        .allocate(0.0, ModuleId(0), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(0),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let last = table
-        .allocate(0.0, ModuleId(0), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(0),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     table.set_targetname(first, Some(NameId(3)));
@@ -34,7 +47,7 @@ fn target_iteration_preserves_edict_order_and_rejects_freed_lifetimes() {
             .collect::<Vec<_>>(),
         [first, last]
     );
-    table.release(first, 0.0);
+    table.release(first, ThinkTime::Seconds(0.0));
     assert!(targets.refresh(&mut table, &names));
     assert_eq!(
         targets
@@ -43,7 +56,11 @@ fn target_iteration_preserves_edict_order_and_rejects_freed_lifetimes() {
         [last]
     );
     let reused = table
-        .allocate(0.0, ModuleId(0), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(0),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     table.set_targetname(reused, Some(NameId(3)));
@@ -72,7 +89,11 @@ fn caller_selects_exact_or_folded_matches_over_one_entity_table() {
     let mut ids = Vec::new();
     for (module, text) in [(1, b"Door".as_slice()), (2, b"door"), (3, b"DOOR")] {
         let id = table
-            .allocate(0.0, ModuleId(module), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(module),
+                AllocationPolicy::EDICT,
+            )
             .unwrap()
             .id;
         table.set_targetname(id, names.find(text));
@@ -114,11 +135,19 @@ fn empty_target_strings_are_distinct_from_missing_fields() {
     let names = NameTable::load(std::iter::empty()).unwrap();
     let mut table = EntityTable::new(8, 1).unwrap();
     let missing = table
-        .allocate(0.0, ModuleId(2), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let empty = table
-        .allocate(0.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     assert_eq!(table.columns.targetname(missing.slot as usize), None);
@@ -147,7 +176,11 @@ fn unnamed_churn_leaves_named_rows_and_refresh_counters_unchanged() -> Result<()
     let door = names.find(b"door").ok_or("door")?;
     let mut table = EntityTable::new(130, 2).map_err(|_| "table")?;
     let named = table
-        .allocate(0.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .ok_or("named")?
         .id;
     assert!(table.set_targetname(named, Some(door)));
@@ -156,12 +189,16 @@ fn unnamed_churn_leaves_named_rows_and_refresh_counters_unchanged() -> Result<()
     let before = index.stats();
     for _ in 0..600 {
         let rocket = table
-            .allocate(0.0, ModuleId(2), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(2),
+                AllocationPolicy::EDICT,
+            )
             .ok_or("rocket")?
             .id;
         assert!(table.set_targetname(rocket, None));
         assert!(!index.refresh(&mut table, &names));
-        assert!(table.release(rocket, 0.0));
+        assert!(table.release(rocket, ThinkTime::Seconds(0.0)));
         assert!(!index.refresh(&mut table, &names));
     }
     assert_eq!(index.stats(), before);
@@ -199,7 +236,11 @@ fn coalesced_names_and_lifetimes_cross_dirty_words_without_stale_rows() -> Resul
     for _ in 1..130 {
         ids.push(
             table
-                .allocate(0.0, ModuleId(1), AllocationPolicy::EDICT)
+                .allocate(
+                    ThinkTime::Seconds(0.0),
+                    ModuleId(1),
+                    AllocationPolicy::EDICT,
+                )
                 .ok_or("entity")?
                 .id,
         );
@@ -223,16 +264,20 @@ fn coalesced_names_and_lifetimes_cross_dirty_words_without_stale_rows() -> Resul
             .collect::<Vec<_>>(),
         [middle, last]
     );
-    assert!(table.release(middle, 0.0));
+    assert!(table.release(middle, ThinkTime::Seconds(0.0)));
     let reused = table
-        .allocate(0.0, ModuleId(2), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
         .ok_or("reuse")?
         .id;
     assert_eq!(reused.slot, middle.slot);
     assert_ne!(reused.generation, middle.generation);
     assert!(table.set_targetname(reused, Some(exit)));
     assert!(table.set_targetname(reused, Some(lower)));
-    assert!(table.release(last, 0.0));
+    assert!(table.release(last, ThinkTime::Seconds(0.0)));
     let changes = index.stats().changed_slots;
     assert!(index.refresh(&mut table, &names));
     assert_eq!(index.stats().changed_slots, changes + 2);
@@ -263,7 +308,11 @@ fn named_client_reset_and_full_table_overwrite_remove_old_generations() -> Resul
     let world = table.id_at(0).ok_or("world")?;
     let client = table.id_at(1).ok_or("client")?;
     let entity = table
-        .allocate(0.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::QUAKEWORLD,
+        )
         .ok_or("entity")?
         .id;
     for id in [world, client, entity] {
@@ -279,7 +328,11 @@ fn named_client_reset_and_full_table_overwrite_remove_old_generations() -> Resul
     );
     let reset = table.reset_client(client).ok_or("reset")?;
     let replacement = table
-        .allocate(0.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::QUAKEWORLD,
+        )
         .ok_or("overwrite")?;
     assert_eq!(replacement.displaced, Some(entity));
     assert_eq!(replacement.id.slot, entity.slot);
@@ -302,10 +355,14 @@ fn named_client_reset_and_full_table_overwrite_remove_old_generations() -> Resul
     );
     let before = index.stats();
     assert!(table.set_never_free(replacement.id, true));
-    assert!(!table.release(replacement.id, 0.0));
+    assert!(!table.release(replacement.id, ThinkTime::Seconds(0.0)));
     assert!(
         table
-            .allocate(0.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+            .allocate(
+                ThinkTime::Seconds(0.0),
+                ModuleId(1),
+                AllocationPolicy::QUAKEWORLD
+            )
             .is_none()
     );
     assert!(!index.refresh(&mut table, &names));

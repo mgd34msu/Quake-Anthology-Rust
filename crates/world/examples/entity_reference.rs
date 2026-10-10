@@ -1,7 +1,8 @@
 //! Headless schedules compared with extracted original C by the developer tool.
 //! Generation observations describe this engine's handles, not a native C ABI.
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{EntityId, ModuleId};
-use qa_world::entities::{AllocationPolicy, EntityTable, EntityTime, MAX_ENTITIES};
+use qa_world::entities::{AllocationPolicy, EntityTable, MAX_ENTITIES};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -59,12 +60,12 @@ impl Family {
         }
     }
 
-    fn time(self, text: &str) -> Result<EntityTime, Box<dyn std::error::Error>> {
+    fn time(self, text: &str) -> Result<ThinkTime, Box<dyn std::error::Error>> {
         Ok(match self {
-            Self::Q3 => EntityTime::Milliseconds(text.parse()?),
+            Self::Q3 => ThinkTime::Milliseconds(text.parse()?),
             // Q2's level.time is float, whereas Q1/QW's sv.time is double.
-            Self::Q2 => EntityTime::Seconds(text.parse::<f32>()? as f64),
-            Self::Q1 | Self::Qw => EntityTime::Seconds(text.parse()?),
+            Self::Q2 => ThinkTime::Seconds(text.parse::<f32>()? as f64),
+            Self::Q1 | Self::Qw => ThinkTime::Seconds(text.parse()?),
         })
     }
 
@@ -125,7 +126,7 @@ impl<'a> Case<'a> {
         self.step += 1;
     }
 
-    fn allocate(&mut self, now: EntityTime) -> Result<(), &'static str> {
+    fn allocate(&mut self, now: ThinkTime) -> Result<(), &'static str> {
         let result = self.table.allocate(now, ModuleId(1), self.policy);
         if let Some(result) = result {
             let slot = result.id.slot as usize;
@@ -153,7 +154,7 @@ impl<'a> Case<'a> {
         Ok(())
     }
 
-    fn release(&mut self, now: EntityTime, slot: usize) -> Result<(), &'static str> {
+    fn release(&mut self, now: ThinkTime, slot: usize) -> Result<(), &'static str> {
         let id = self
             .handles
             .get(slot)
@@ -275,7 +276,11 @@ fn churn_cycle(
 ) -> Result<(), &'static str> {
     for (slot, entry) in handles.iter_mut().enumerate().skip(1) {
         let allocation = table
-            .allocate(now, ModuleId(1), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(now),
+                ModuleId(1),
+                AllocationPolicy::EDICT,
+            )
             .ok_or("churn table unexpectedly full")?;
         if allocation.id.slot as usize != slot || allocation.displaced.is_some() {
             return Err("churn ascending allocation differs");
@@ -284,14 +289,18 @@ fn churn_cycle(
     }
     if table.len() != MAX_ENTITIES
         || table
-            .allocate(now, ModuleId(1), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(now),
+                ModuleId(1),
+                AllocationPolicy::EDICT,
+            )
             .is_some()
     {
         return Err("churn full-table boundary differs");
     }
     for entry in handles.iter_mut().skip(1) {
         let id = entry.take().ok_or("missing churn handle")?;
-        if !table.release(id, now) || table.resolve(id).is_some() {
+        if !table.release(id, ThinkTime::Seconds(now)) || table.resolve(id).is_some() {
             return Err("churn stale generation remains valid");
         }
         black_box(id);

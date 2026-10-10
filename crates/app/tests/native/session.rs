@@ -9,6 +9,7 @@ use qa_compat::{
     services::CallContext,
 };
 use qa_console::{commands::Console, views::Context};
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::{FrameEvent, OutputTarget},
     primitives::{CallbackId, ModuleId, RuleSetId},
@@ -17,7 +18,7 @@ use qa_core::{
 use qa_formats::program::native::{Encoding, Image, LoadRole};
 use qa_platform::native::{NativeAbi, NativeImport, NativeScalar};
 use qa_session::timing::TickRate;
-use qa_world::entities::{AllocationPolicy, EntityTime};
+use qa_world::entities::AllocationPolicy;
 use std::time::Duration;
 
 #[path = "../../../formats/tests/support/native_image.rs"]
@@ -261,13 +262,13 @@ fn request(
     let anchor = runtime
         .server
         .entities
-        .allocate(EntityTime::Milliseconds(0), id, AllocationPolicy::EDICT)
+        .allocate(ThinkTime::Milliseconds(0), id, AllocationPolicy::EDICT)
         .unwrap()
         .id;
     ModuleRequest {
         context: CallContext {
             module: id,
-            clock: EntityTime::Milliseconds(0),
+            clock: ThinkTime::Milliseconds(0),
             console: Context {
                 source: rules,
                 ..Context::default()
@@ -1516,7 +1517,7 @@ fn returned_native_tables_bind_once_and_isolate_bad_apis() {
                 vm,
             );
             request.entries = (0..4).collect();
-            request.context.clock = EntityTime::Seconds(0.0);
+            request.context.clock = ThinkTime::Seconds(0.0);
             request.frame = CallbackId(first + 2);
             let export = |callback| Export {
                 callback: CallbackId(callback),

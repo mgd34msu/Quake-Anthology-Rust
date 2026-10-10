@@ -1,3 +1,4 @@
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{BodyAttachment, BodyFollow, Bounds, EntityId, ModuleId, Vec3};
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
@@ -19,7 +20,11 @@ fn setup(capacity: usize, reserved: usize) -> (EntityTable, AreaGrid) {
 }
 fn spawn(table: &mut EntityTable) -> EntityId {
     table
-        .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+        .allocate(
+            ThinkTime::Seconds(3.0),
+            ModuleId(1),
+            AllocationPolicy::QUAKEWORLD,
+        )
         .unwrap()
         .id
 }
@@ -184,9 +189,13 @@ fn release_reset_and_qw_displacement_detach_only_direct_children() {
         let old = root;
         let new = match action {
             0 => {
-                assert!(table.release(root, 3.0));
+                assert!(table.release(root, ThinkTime::Seconds(3.0)));
                 table
-                    .allocate(4.0, ModuleId(1), AllocationPolicy::EDICT)
+                    .allocate(
+                        ThinkTime::Seconds(4.0),
+                        ModuleId(1),
+                        AllocationPolicy::EDICT,
+                    )
                     .unwrap()
                     .id
             }
@@ -202,7 +211,11 @@ fn release_reset_and_qw_displacement_detach_only_direct_children() {
                 table.set_never_free(a, true);
                 table.set_never_free(b, true);
                 let replacement = table
-                    .allocate(3.0, ModuleId(1), AllocationPolicy::QUAKEWORLD)
+                    .allocate(
+                        ThinkTime::Seconds(3.0),
+                        ModuleId(1),
+                        AllocationPolicy::QUAKEWORLD,
+                    )
                     .unwrap();
                 assert_eq!(replacement.displaced, Some(last));
                 assert!(table.resolve(last).is_none());

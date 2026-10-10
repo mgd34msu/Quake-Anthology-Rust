@@ -1,3 +1,4 @@
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{
     Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, GeometryId, ModuleId,
     NativeEntity, Plane, SurfaceFlags, Vec3,
@@ -68,7 +69,11 @@ fn body(
     maxs: Vec3,
 ) -> EntityId {
     let id = table
-        .allocate(0.0, ModuleId(2), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let slot = id.slot as usize;

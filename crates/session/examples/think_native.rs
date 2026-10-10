@@ -90,7 +90,7 @@ fn callback(world: &mut World, _: ModuleId, function: u32, call: CallbackCall) -
         3 => {
             // This fixture removes the current lifetime and never reuses the
             // slot during run_think. Native teardown uses the same clear rule.
-            if !world.entities.release(entity, 0.0) {
+            if !world.entities.release(entity, ThinkTime::Seconds(0.0)) {
                 world.invalid = true;
                 return false;
             }
@@ -190,7 +190,7 @@ fn input(data: &mut &[u8], timing: RuleSetId) -> Result<Input, &'static str> {
 fn reset(world: &mut World, case: &Case) -> Result<[EntityId; ENTITIES], &'static str> {
     for slot in 1..=ENTITIES {
         if let Some(id) = world.entities.id_at(slot) {
-            if !world.entities.release(id, 0.0) {
+            if !world.entities.release(id, ThinkTime::Seconds(0.0)) {
                 return Err("fixture lifetime reset rejected");
             }
         }
@@ -209,7 +209,11 @@ fn reset(world: &mut World, case: &Case) -> Result<[EntityId; ENTITIES], &'stati
         // period. Allocation is a fixture boundary, not the module clock.
         *id = world
             .entities
-            .allocate(1.0, ModuleId((index + 1) as u16), AllocationPolicy::EDICT)
+            .allocate(
+                ThinkTime::Seconds(1.0),
+                ModuleId((index + 1) as u16),
+                AllocationPolicy::EDICT,
+            )
             .ok_or("fixture entity allocation rejected")?
             .id;
         if id.slot as usize != index + 1 {

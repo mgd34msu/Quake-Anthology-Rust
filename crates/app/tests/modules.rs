@@ -17,10 +17,7 @@ use qa_console::{commands::Console, views::Context};
 use qa_core::{events::FrameEvent, primitives::*, sys_events::*};
 use qa_formats::program::quakec::{Image, Opcode::*};
 use qa_session::{dispatch::CallError, timing::TickRate};
-use qa_world::{
-    area::LinkOrder,
-    entities::{AllocationPolicy, EntityTime},
-};
+use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 use std::time::Duration;
 
 #[test]
@@ -73,7 +70,7 @@ fn lifecycle_host_in(
         .server
         .entities
         .allocate(
-            EntityTime::Milliseconds(0),
+            ThinkTime::Milliseconds(0),
             ModuleId(1),
             AllocationPolicy::q3(0),
         )
@@ -114,7 +111,7 @@ fn lifecycle_host_in(
         vec![ModuleRequest {
             context: CallContext {
                 module: ModuleId(1),
-                clock: EntityTime::Milliseconds(0),
+                clock: ThinkTime::Milliseconds(0),
                 console: Context::default(),
                 allocation: AllocationPolicy::q3(0),
                 link_order: LinkOrder::Head,
@@ -406,7 +403,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         runtime
             .server
             .entities
-            .allocate(EntityTime::Seconds(0.0), id, AllocationPolicy::EDICT)
+            .allocate(ThinkTime::Seconds(0.0), id, AllocationPolicy::EDICT)
             .unwrap()
             .id
     });
@@ -458,7 +455,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         ModuleRequest {
             context: CallContext {
                 module: ModuleId(1),
-                clock: EntityTime::Milliseconds(0),
+                clock: ThinkTime::Milliseconds(0),
                 console: Context::default(),
                 allocation: AllocationPolicy::EDICT,
                 link_order: LinkOrder::Head,
@@ -484,7 +481,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         ModuleRequest {
             context: CallContext {
                 module: ModuleId(2),
-                clock: EntityTime::Seconds(0.0),
+                clock: ThinkTime::Seconds(0.0),
                 console: Context {
                     source: RuleSetId::Quake,
                     ..Context::default()
@@ -655,7 +652,7 @@ fn a_budget_trap_and_a_stale_anchor_do_not_stop_other_providers() {
         host.runtime
             .server
             .entities
-            .release(ids[0], EntityTime::Milliseconds(150))
+            .release(ids[0], ThinkTime::Milliseconds(150))
     );
     source.time = EventTime(250_000_000);
     host.frame(&mut source, true);

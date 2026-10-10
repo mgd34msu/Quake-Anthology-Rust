@@ -5,6 +5,7 @@ use qa_console::{
     views::Context,
 };
 use qa_content::vfs::{FileRef, Vfs};
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{
@@ -18,7 +19,7 @@ use qa_world::{
     collision::{
         CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceScratch, WorldTrace,
     },
-    entities::{AllocationPolicy, EntityTime},
+    entities::AllocationPolicy,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +44,7 @@ impl From<crate::memory::MemoryError> for CallError {
 #[derive(Clone, Copy)]
 pub struct CallContext {
     pub module: ModuleId,
-    pub clock: EntityTime,
+    pub clock: ThinkTime,
     pub console: Context,
     pub allocation: AllocationPolicy,
     pub link_order: LinkOrder,

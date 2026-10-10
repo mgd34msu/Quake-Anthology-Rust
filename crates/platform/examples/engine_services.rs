@@ -2,6 +2,7 @@
 use qa_app::Runtime;
 use qa_compat::services::{CallContext, ENGINE_CALLS, ServiceStorage};
 use qa_console::{commands::Console, views::Context};
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::OutputSubmission,
     primitives::{ModuleId, PrintKind},
@@ -13,7 +14,7 @@ use qa_platform::{
 };
 use qa_world::{
     area::{LinkFlags, LinkOrder},
-    entities::{AllocationPolicy, EntityTime},
+    entities::AllocationPolicy,
 };
 use std::hint::black_box;
 
@@ -50,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for i in 0..64 {
                 let context = CallContext {
                     module: ModuleId(1 + i % 2),
-                    clock: EntityTime::Seconds(2.0 + frame as f64 + i as f64 / 64.0),
+                    clock: ThinkTime::Seconds(2.0 + frame as f64 + i as f64 / 64.0),
                     console: Context {
                         event_time: Some(EventTime(frame * 1_000_000)),
                         ..Context::default()

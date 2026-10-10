@@ -11,11 +11,12 @@ use qa_console::{
     catalog::Scope,
     views::{Context, Role},
 };
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{CallbackId, ModuleId, NativeEntity, RuleSetId};
 use qa_core::{loopback::Endpoint, sys_events::SeatId};
 use qa_formats::{archive::ArchiveReader, program::quakec::Image};
 use qa_session::timing::TickRate;
-use qa_world::entities::{AllocationPolicy, EntityTime};
+use qa_world::entities::AllocationPolicy;
 
 pub struct QuakeCSpec {
     pub rules: RuleSetId,
@@ -118,7 +119,7 @@ pub fn load_q3(
         let module = ModuleId(u16::try_from(requests.len() + 1).map_err(|_| "too many modules")?);
         let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
         let allocation = AllocationPolicy::q3(0);
-        let clock = EntityTime::Milliseconds(0);
+        let clock = ThinkTime::Milliseconds(0);
         let anchor = runtime
             .server
             .entities
@@ -365,7 +366,7 @@ pub fn load_quakec(
         } else {
             AllocationPolicy::EDICT
         };
-        let clock = EntityTime::Seconds(0.0);
+        let clock = ThinkTime::Seconds(0.0);
         let anchor = runtime
             .server
             .entities

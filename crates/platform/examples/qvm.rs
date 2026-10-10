@@ -1,5 +1,6 @@
 //! Original-interpreter comparison and pinned VM allocation/timing probe.
 use qa_compat::qvm::{SystemCalls, Trap, Vm};
+use qa_core::primitives::ThinkTime;
 use qa_formats::program::qvm::Image;
 use qa_platform::{
     Stopwatch,
@@ -133,10 +134,7 @@ fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         services::{CallContext, ServiceStorage},
     };
     use qa_core::{events::OutputSubmission, primitives::ModuleId, sys_events::EventTime};
-    use qa_world::{
-        area::LinkOrder,
-        entities::{AllocationPolicy, EntityTime},
-    };
+    use qa_world::{area::LinkOrder, entities::AllocationPolicy};
     let mut vm = Vm::load(Image::parse(bytes).map_err(|e| format!("{e:?}"))?)
         .map_err(|e| format!("{e:?}"))?;
     let mut runtime = qa_app::Runtime::load(4, std::iter::empty())?;
@@ -163,7 +161,7 @@ fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             let context = CallContext {
                 module: ModuleId(1),
-                clock: EntityTime::Milliseconds(frame),
+                clock: ThinkTime::Milliseconds(frame),
                 console: qa_console::views::Context::default(),
                 allocation: AllocationPolicy::EDICT,
                 link_order: LinkOrder::Head,

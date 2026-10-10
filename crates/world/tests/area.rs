@@ -1,3 +1,4 @@
+use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{Bounds, EntityId, ModuleId, Vec3};
 use qa_world::entities::AllocationPolicy;
 use qa_world::{
@@ -14,11 +15,19 @@ fn unchanged_internal_commits_keep_links_and_queries_borrow_live_columns() {
     let mut grid = AreaGrid::load(64, bounds).unwrap();
     let mut table = EntityTable::new(64, 1).unwrap();
     let solid = table
-        .allocate(3.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(3.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     let trigger = table
-        .allocate(3.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(3.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     table.columns.mins[solid.slot as usize] = Vec3([-16.0; 3]);
@@ -67,9 +76,13 @@ fn unchanged_internal_commits_keep_links_and_queries_borrow_live_columns() {
         0
     );
     assert!(grid.unlink(solid));
-    table.release(solid, 3.0);
+    table.release(solid, ThinkTime::Seconds(3.0));
     let replacement = table
-        .allocate(4.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(4.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     assert!(grid.link(
@@ -105,7 +118,11 @@ fn setup() -> (EntityTable, AreaGrid) {
 
 fn allocate(table: &mut EntityTable) -> EntityId {
     table
-        .allocate(3.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(3.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id
 }
@@ -291,10 +308,14 @@ fn stale_lifetime_cannot_unlink_or_republish_a_replacement() {
         LinkOrder::Tail,
         LinkIntent::Explicit
     ));
-    assert!(table.release(stale, 3.0));
+    assert!(table.release(stale, ThinkTime::Seconds(3.0)));
     assert_eq!(ids(&grid, &table, LinkFlags::LINKED), [neighbor]);
     let replacement = table
-        .allocate(4.0, ModuleId(2), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(4.0),
+            ModuleId(2),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id;
     assert_eq!(replacement.slot, stale.slot);

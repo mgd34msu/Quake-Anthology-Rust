@@ -1,19 +1,20 @@
 use qa_app::Runtime;
 use qa_compat::services::{CallContext, CallError, ENGINE_CALLS, ServiceStorage};
 use qa_console::{commands::Console, views::Context};
+use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{ModuleId, PrintKind, RuleSetId},
 };
 use qa_world::{
     area::{LinkFlags, LinkOrder},
-    entities::{AllocationPolicy, EntityTime},
+    entities::AllocationPolicy,
 };
 
 fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
     CallContext {
         module: ModuleId(module),
-        clock: EntityTime::Seconds(2.0),
+        clock: ThinkTime::Seconds(2.0),
         console: Context {
             source: rules,
             ..Context::default()

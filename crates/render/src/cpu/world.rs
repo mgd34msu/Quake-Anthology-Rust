@@ -1880,10 +1880,11 @@ impl SurfacePrepare {
             if primitive.cache_image.is_some() {
                 vertex.texcoord = std::array::from_fn(|axis| {
                     let projection = surface.texture_projection[axis];
-                    (vertex.position.0[0] * projection[0]
-                        + vertex.position.0[1] * projection[1]
-                        + vertex.position.0[2] * projection[2]
-                        + projection[3]
+                    (vertex.position.dot(qa_core::primitives::Vec3([
+                        projection[0],
+                        projection[1],
+                        projection[2],
+                    ])) + projection[3]
                         - surface.texture_minima[axis] as f32)
                         / (1u32 << primitive.mip) as f32
                 });

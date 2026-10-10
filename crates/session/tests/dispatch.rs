@@ -1,6 +1,6 @@
 use qa_core::primitives::*;
 use qa_session::dispatch::*;
-use qa_world::entities::{AllocationPolicy, EntityTable, EntityTime};
+use qa_world::entities::{AllocationPolicy, EntityTable};
 
 struct World {
     entities: EntityTable,
@@ -30,7 +30,11 @@ fn world(capacity: usize) -> World {
 fn entity(world: &mut World, module: u16) -> EntityId {
     world
         .entities
-        .allocate(1.0, ModuleId(module), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(1.0),
+            ModuleId(module),
+            AllocationPolicy::EDICT,
+        )
         .unwrap()
         .id
 }
@@ -72,8 +76,8 @@ fn record(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -
     world.calls.push((entity.slot, module.0, entry, time));
     if let Some(remove) = world.remove.take() {
         let now = match time {
-            ThinkTime::Seconds(value) => EntityTime::Seconds(value),
-            ThinkTime::Milliseconds(value) => EntityTime::Milliseconds(value),
+            ThinkTime::Seconds(value) => ThinkTime::Seconds(value),
+            ThinkTime::Milliseconds(value) => ThinkTime::Milliseconds(value),
         };
         assert!(world.entities.release(remove, now));
     }
@@ -675,10 +679,10 @@ fn quakeworld_removal_and_slot_reuse_stop_the_old_generation() {
     fn replace(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
         assert!(record(world, module, entry, call));
         let id = call.entity();
-        assert!(world.entities.release(id, 1.0));
+        assert!(world.entities.release(id, ThinkTime::Seconds(1.0)));
         let replacement = world
             .entities
-            .allocate(2.0, module, AllocationPolicy::EDICT)
+            .allocate(ThinkTime::Seconds(2.0), module, AllocationPolicy::EDICT)
             .unwrap()
             .id;
         assert_eq!(replacement.slot, id.slot);
@@ -778,7 +782,7 @@ fn all_entity_reactions_share_one_numeric_function_table() {
     assert_eq!(world.calls, [(id.slot, 2, 77, ThinkTime::Seconds(0.0)); 5]);
     world.entities.columns.pain[id.slot as usize] = Some(CallbackId(0));
     world.entities.columns.die[id.slot as usize] = Some(CallbackId(0));
-    assert!(world.entities.release(id, 1.0));
+    assert!(world.entities.release(id, ThinkTime::Seconds(1.0)));
     assert!(world.entities.columns.pain[id.slot as usize].is_none());
     assert!(world.entities.columns.die[id.slot as usize].is_none());
 }
@@ -824,7 +828,7 @@ fn stale_binding_cannot_change_a_reused_lifetime() {
     install(&mut world, &table);
     let old = entity(&mut world, 1);
     assert!(table.bind_think(&mut world.entities, old, Some(CallbackId(0))));
-    assert!(world.entities.release(old, 0.0));
+    assert!(world.entities.release(old, ThinkTime::Seconds(0.0)));
     let current = entity(&mut world, 1);
     assert_eq!(old.slot, current.slot);
     assert_ne!(old.generation, current.generation);
@@ -915,7 +919,7 @@ fn mutate_active_slots(
     };
     let (now, policy) = match mutation {
         ActiveMutation::RemoveFuture(future) => {
-            if !world.entities.release(future, 10.0) {
+            if !world.entities.release(future, ThinkTime::Seconds(10.0)) {
                 return false;
             }
             // The native freetime delay keeps the deleted future slot empty;
@@ -925,7 +929,10 @@ fn mutate_active_slots(
         ActiveMutation::SpawnLower => (0.0, AllocationPolicy::EDICT),
         ActiveMutation::OverwriteLast => (0.0, AllocationPolicy::QUAKEWORLD),
     };
-    let Some(allocation) = world.entities.allocate(now, module, policy) else {
+    let Some(allocation) = world
+        .entities
+        .allocate(ThinkTime::Seconds(now), module, policy)
+    else {
         return false;
     };
     let slot = allocation.id.slot as usize;
@@ -962,7 +969,11 @@ fn install_mutation(world: &mut ActiveMutationWorld, table: &FunctionTable<Activ
 fn mutation_entity(world: &mut ActiveMutationWorld) -> Result<EntityId, &'static str> {
     let id = world
         .entities
-        .allocate(0.0, ModuleId(1), AllocationPolicy::EDICT)
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
         .ok_or("entity")?
         .id;
     world.entities.columns.next_think[id.slot as usize] = Some(ThinkTime::Seconds(0.5));
@@ -1012,7 +1023,7 @@ fn ascending_thinks_do_not_revisit_new_lower_slots() -> Result<(), &'static str>
     let lower = mutation_entity(&mut world)?;
     let first = mutation_entity(&mut world)?;
     let kept = mutation_entity(&mut world)?;
-    assert!(world.entities.release(lower, 0.0));
+    assert!(world.entities.release(lower, ThinkTime::Seconds(0.0)));
     world.mutation = Some(ActiveMutation::SpawnLower);
     let table = mutation_table(RuleSetId::Quake)?;
     install_mutation(&mut world, &table);

@@ -13,7 +13,7 @@ use qa_session::{
     dispatch::{CallError, FunctionBinding, FunctionTable, ThinkWorld},
     timing::{Tick, TickRate},
 };
-use qa_world::entities::EntityTime;
+
 use std::sync::Arc;
 
 mod load;
@@ -526,17 +526,14 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
     }
 }
 
-fn module_time(clock: EntityTime, time: qa_core::sys_events::EventTime) -> ThinkTime {
+fn module_time(clock: ThinkTime, time: qa_core::sys_events::EventTime) -> ThinkTime {
     match clock {
-        EntityTime::Seconds(_) => ThinkTime::Seconds(time.seconds()),
-        EntityTime::Milliseconds(_) => ThinkTime::Milliseconds(time.milliseconds() as i64),
+        ThinkTime::Seconds(_) => ThinkTime::Seconds(time.seconds()),
+        ThinkTime::Milliseconds(_) => ThinkTime::Milliseconds(time.milliseconds() as i64),
     }
 }
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
-    context.clock = match time {
-        ThinkTime::Seconds(s) => EntityTime::Seconds(s),
-        ThinkTime::Milliseconds(ms) => EntityTime::Milliseconds(ms),
-    };
+    context.clock = time;
     context
 }
 fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
