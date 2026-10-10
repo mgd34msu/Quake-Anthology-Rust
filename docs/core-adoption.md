@@ -281,3 +281,34 @@ snapshot cases (2,035,577 comparison bytes). Q2 and Q3 movement each retain all
 0.0000112, with exact flags/timers. These are analytic fixtures, not gameplay.
 No timing run, game/window run, allocation measurement or installation was
 performed for this adoption slice, per the owner's cadence ruling.
+
+## THE-860: native snapshot delta request
+
+`network/src/commands/connection.rs:58` now selects Q3's native `clc_move`
+only when the last acknowledged server-message sequence names an accepted
+snapshot in the existing channel ring. A command-only message or a discarded
+snapshot selects `clc_moveNoDelta`. This follows original
+`quake-iii-arena/code/client/cl_input.c:746-752`; no input history or new
+protocol field is added.
+
+The same connection decoder stores the native message ACK as `delta_request`
+on `clc_move` and clears it on `clc_moveNoDelta`, before duplicate/stale usercmd
+filtering, matching `server/sv_client.c:1339-1343`. Snapshot writers consume
+this request, rather than a transmit watermark. The old unconditional no-delta
+selection and ignored move flag are removed. The existing native opcode writer,
+ACK/XOR handling, 32-slot ring and field-table delta encoder remain the only
+implementations.
+
+Two connected-channel tests cover initial full requests, full and valid delta
+frames, a command-only server message, missing delta bases and stale usercmds.
+All 678 workspace tests and the unchanged checker pass; the normal release
+workspace build completed in 34.63 s. Evidence is in
+`$HOME/.cache/qa-rust/THE-860-delta-request-20261009/`. No timing, game/window,
+allocation measurement or installation was run.
+
+THE-860 remains In Progress. The app still copies SERVER player state directly
+into prediction at `app/src/host.rs:480` and initial local connect at
+`app/src/lib.rs:201`; its CLIENT packet callback still ignores Snapshot
+records. Common player projection, snapshot submission and migration of these
+callers are the next integration. Other protocols' snapshot framing,
+signon/native hosts and original-client/server interoperability remain required.

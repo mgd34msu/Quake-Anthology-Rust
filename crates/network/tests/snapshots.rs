@@ -300,3 +300,150 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
     assert_eq!(connections.command_errors, 0);
     Ok(())
 }
+
+fn deliver_server_message(
+    server: &mut Channel,
+    client: &mut Channel,
+    client_commands: &mut Commands,
+    snapshot: Option<(&Q3Ring, Option<u32>)>,
+) -> Result<(), Error> {
+    let sequence = server.send_state().sequence;
+    let mut payload = [0; 1400];
+    let n = server.encode_server_output(&mut payload, |writer| {
+        if let Some((ring, from)) = snapshot {
+            snapshots::write_q3(writer, ring, sequence, from)?;
+        }
+        Ok(())
+    })?;
+    let mut bytes = [0; 1400];
+    let packet = server
+        .prepare_move(&payload[..n], EventTime(1))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let n = packet.bytes.len();
+    bytes[..n].copy_from_slice(packet.bytes);
+    server.submitted(EventTime(1)).map_err(|_| Error::Context)?;
+    let received = client
+        .receive(&bytes[..n], EventTime(2))
+        .map_err(|_| Error::Context)?;
+    let qa_network::channel::Delivery::Payload(payload) = received.delivery else {
+        return Err(Error::Context);
+    };
+    let n = client_commands.stage(payload)?;
+    client_commands.decode_output(n, sequence, client, |_, _| {})
+}
+
+fn deliver_client_move(
+    client: &Channel,
+    client_commands: &Commands,
+    server: &mut Channel,
+    server_commands: &mut Commands,
+    time: i32,
+) -> Result<(bool, bool), Error> {
+    let mut bytes = [0; 1400];
+    let command = qa_core::primitives::UserCmd {
+        server_time_ms: time,
+        ..Default::default()
+    };
+    let n = client_commands.encode(&command, client, &mut bytes)?;
+    let staged = server_commands.stage(&bytes[..n])?;
+    let ack = qa_network::commands::packet::acknowledgements(&bytes[..n])?;
+    let key = server.command_key(Some(ack))?;
+    let movement = qa_network::commands::packet::read(
+        Protocol::Quake3_68,
+        &mut bytes[..n],
+        client.send_state().sequence,
+        key,
+    )?;
+    let qa_network::commands::packet::Move::Quake3 { delta, .. } = movement else {
+        return Err(Error::Context);
+    };
+    let accepted = server_commands
+        .decode(staged, client.send_state().sequence, time, 0, server)?
+        .is_some();
+    Ok((delta, accepted))
+}
+
+#[test]
+fn native_snapshot_request_tracks_message_ack_before_stale_command_filtering() -> Result<(), Error>
+{
+    let mut server =
+        Channel::load(QUAKE3, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
+    let mut client =
+        Channel::load(QUAKE3, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
+    let mut incoming = Commands::load(Protocol::Quake3_68);
+    let outgoing = Commands::load(Protocol::Quake3_68);
+    let mut client_output = Commands::load(Protocol::Quake3_68);
+    let mut ring = Q3Ring::load(8, 1024, 32, None)?;
+    assert_eq!(
+        deliver_client_move(&client, &outgoing, &mut server, &mut incoming, 20)?,
+        (false, true)
+    );
+    assert_eq!(incoming.delta_request(), None);
+    store(&mut ring, 1, &[entity(1, 2.)])?;
+    deliver_server_message(
+        &mut server,
+        &mut client,
+        &mut client_output,
+        Some((&ring, None)),
+    )?;
+    assert_eq!(
+        deliver_client_move(&client, &outgoing, &mut server, &mut incoming, 40)?,
+        (true, true)
+    );
+    assert_eq!(incoming.delta_request(), Some(1));
+    // A newer native server message with no snapshot must request a full frame.
+    deliver_server_message(&mut server, &mut client, &mut client_output, None)?;
+    assert_eq!(
+        deliver_client_move(&client, &outgoing, &mut server, &mut incoming, 40)?,
+        (false, false)
+    );
+    assert_eq!(incoming.delta_request(), None);
+    store(&mut ring, 3, &[entity(1, 3.)])?;
+    deliver_server_message(
+        &mut server,
+        &mut client,
+        &mut client_output,
+        Some((&ring, Some(1))),
+    )?;
+    assert_eq!(
+        deliver_client_move(&client, &outgoing, &mut server, &mut incoming, 40)?,
+        (true, false)
+    );
+    assert_eq!(incoming.delta_request(), Some(3));
+    Ok(())
+}
+
+#[test]
+fn missing_snapshot_base_requests_full_without_acknowledging_an_invalid_frame() -> Result<(), Error>
+{
+    let mut server =
+        Channel::load(QUAKE3, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
+    let mut client =
+        Channel::load(QUAKE3, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
+    let mut incoming = Commands::load(Protocol::Quake3_68);
+    let outgoing = Commands::load(Protocol::Quake3_68);
+    let mut client_output = Commands::load(Protocol::Quake3_68);
+    let mut ring = Q3Ring::load(8, 1024, 32, None)?;
+    // First native message is consumed but contains no accepted snapshot.
+    deliver_server_message(&mut server, &mut client, &mut client_output, None)?;
+    store(&mut ring, 1, &[entity(1, 2.)])?;
+    store(&mut ring, 2, &[entity(1, 3.)])?;
+    deliver_server_message(
+        &mut server,
+        &mut client,
+        &mut client_output,
+        Some((&ring, Some(1))),
+    )?;
+    assert!(client.snapshot(2).is_none());
+    assert_eq!(
+        client.command_state().map(|s| s.message_acknowledged),
+        Some(2)
+    );
+    assert_eq!(
+        deliver_client_move(&client, &outgoing, &mut server, &mut incoming, 20)?,
+        (false, true)
+    );
+    assert_eq!(incoming.delta_request(), None);
+    Ok(())
+}

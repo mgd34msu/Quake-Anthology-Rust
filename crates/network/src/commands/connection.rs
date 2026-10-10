@@ -11,6 +11,7 @@ pub struct Commands {
     pub protocol: Protocol,
     scratch: Box<[u8]>,
     previous_time: i32,
+    delta_request: Option<u32>,
 }
 impl Commands {
     pub fn load(protocol: Protocol) -> Self {
@@ -18,7 +19,12 @@ impl Commands {
             protocol,
             scratch: vec![0; 8192].into_boxed_slice(),
             previous_time: 0,
+            delta_request: None,
         }
+    }
+    /// SV_UserMove's deltaMessage, supplied by native message ACK and opcode.
+    pub fn delta_request(&self) -> Option<u32> {
+        self.delta_request
     }
     /// Native packet redundancy is caller-supplied. The development host has
     /// one current command and no input history, so its older entries are zero.
@@ -49,7 +55,9 @@ impl Commands {
                 Move::Quake3 {
                     commands,
                     count: 1,
-                    delta: false,
+                    delta: channel.command_state().is_some_and(|state| {
+                        channel.snapshot(state.message_acknowledged).is_some()
+                    }),
                 }
             }
         };
@@ -86,8 +94,10 @@ impl Commands {
         // Keys borrow retained native strings. Scratch keeps that key stable
         // while optional incoming commands update the opposite direction.
         let mut command_text = [0; 1024];
+        let mut message_acknowledged = 0;
         let key = if self.protocol == Protocol::Quake3_68 {
             let ack = packet::acknowledgements(scratch)?;
+            message_acknowledged = ack.message as u32;
             let key = channel.command_key(Some(ack))?;
             let n = key.server_command.len();
             command_text[..n].copy_from_slice(key.server_command);
@@ -126,8 +136,12 @@ impl Commands {
                 self.previous_time.wrapping_add(i32::from(commands[2].msec)),
             ),
             Move::Quake3 {
-                commands, count, ..
+                commands,
+                count,
+                delta,
             } => {
+                // This precedes old-command filtering in native SV_UserMove.
+                self.delta_request = delta.then_some(message_acknowledged);
                 let native = commands[usize::from(count) - 1];
                 if native.server_time <= self.previous_time {
                     return Ok(None);
