@@ -1698,6 +1698,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             order,
             qa_world::area::LinkIntent::Explicit
         ));
+        if rr {
+            assert!(runtime.server.navigation.register(bound));
+        }
         let observer = runtime
             .server
             .events
@@ -1949,6 +1952,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     }
                 );
             }
+            if rr && slot == 49 {
+                assert!(!services.server.navigation.contains(bound));
+            }
             if slot == unlink_slot && a[1] == 1 {
                 assert!(!services.server.area.unlink(bound));
                 assert!(
@@ -2029,6 +2035,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
             assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
             assert_eq!(invoke_import(&mut game, slot, [0, 0]), 0);
+        }
+        if rr {
+            invoke_import(&mut game, 49, [entity_address, 0]);
+            invoke_import(&mut game, 49, [entity_address, 0]);
+            invoke_import(&mut game, 49, [0, 0]);
+            invoke_import(&mut game, 49, [entity_address + stride, 0]);
         }
         invoke_import(&mut game, unlink_slot, [entity_address, 0]);
         invoke_import(&mut game, unlink_slot, [entity_address, 1]);

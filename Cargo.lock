@@ -307,6 +307,7 @@ dependencies = [
  "qa-core",
  "qa-input",
  "qa-movement",
+ "qa-navigation",
  "qa-world",
 ]
 

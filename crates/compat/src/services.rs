@@ -242,6 +242,8 @@ pub struct EngineCallTable {
     pub link:
         fn(&mut EngineServices<'_>, CallContext, EntityId, LinkFlags) -> Result<bool, CallError>,
     pub unlink: fn(&mut EngineServices<'_>, EntityId) -> Result<(), CallError>,
+    pub bot_registration:
+        fn(&mut EngineServices<'_>, Option<EntityId>, bool) -> Result<(), CallError>,
     pub spawn: fn(&mut EngineServices<'_>, CallContext) -> Result<EntityId, CallError>,
     pub free: fn(&mut EngineServices<'_>, CallContext, EntityId) -> Result<(), CallError>,
     pub cvar_register: CvarRegisterCall,
@@ -264,6 +266,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     trace: |s, q| s.trace(q),
     link: |s, c, e, f| s.link(c, e, f),
     unlink: |s, e| s.unlink(e),
+    bot_registration: |s, e, registered| s.bot_registration(e, registered),
     spawn: |s, c| s.spawn(c),
     free: |s, c, e| s.free(c, e),
     cvar_register: |s, c, n, d, f| s.cvar_register(c, n, d, f),
@@ -366,6 +369,30 @@ impl EngineServices<'_> {
             self.server.area.unlink(old);
         }
         Ok(allocation.id)
+    }
+    pub fn bot_registration(
+        &mut self,
+        entity: Option<EntityId>,
+        registered: bool,
+    ) -> Result<(), CallError> {
+        let Some(entity) = entity else {
+            return if registered {
+                Err(CallError::Entity)
+            } else {
+                Ok(())
+            };
+        };
+        if self.server.entities.resolve(entity).is_none() {
+            return Err(CallError::Entity);
+        }
+        if registered {
+            if !self.server.navigation.register(entity) {
+                return Err(CallError::Capacity);
+            }
+        } else {
+            self.server.navigation.unregister(entity);
+        }
+        Ok(())
     }
     pub fn free(&mut self, context: CallContext, entity: EntityId) -> Result<(), CallError> {
         self.unlink(entity)?;

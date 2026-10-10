@@ -385,7 +385,9 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Word,
                     ))
-                } else if ordinal == if layout.version == 2023 { 22 } else { 19 } {
+                } else if ordinal == if layout.version == 2023 { 22 } else { 19 }
+                    || (layout.version == 2023 && ordinal == 49)
+                {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else if (if layout.version == 2023 {
                     10..13

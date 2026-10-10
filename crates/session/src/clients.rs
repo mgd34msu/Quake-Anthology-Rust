@@ -36,6 +36,7 @@ pub struct Client {
 pub struct Server {
     pub entities: EntityTable,
     pub area: AreaGrid,
+    pub navigation: qa_navigation::Observers,
     pub clients: Box<[Client]>,
     pub events: EventRing,
     pub presentation: OutputConsumerId,
@@ -124,6 +125,7 @@ impl Server {
             presentation,
             entities,
             area,
+            navigation: qa_navigation::Observers::load(entity_capacity),
             clients,
             world_time: EventTime::default(),
             world_frame: 0,

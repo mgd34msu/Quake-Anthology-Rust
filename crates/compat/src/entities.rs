@@ -114,14 +114,14 @@ impl EntityProjection {
             server_flags,
         })
     }
-    pub fn unlink(
+    fn entity(
         &mut self,
         services: &mut EngineServices<'_>,
         memory: &mut ModuleMemory<'_>,
         context: CallContext,
         table: u64,
         address: u64,
-    ) -> Result<(), CallError> {
+    ) -> Result<(Entities, usize, Option<EntityId>), CallError> {
         let entities = self.read(memory, table)?;
         let offset = address
             .checked_sub(entities.address)
@@ -137,6 +137,29 @@ impl EntityProjection {
         if slot >= entities.capacity as usize || self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
+        let native = NativeEntity {
+            module: context.module,
+            slot: slot as i32,
+        };
+        let bound = self.bindings[slot].filter(|&entity| {
+            services.server.entities.resolve(entity).is_some()
+                && services.server.entities.columns.native_entity[entity.slot as usize]
+                    == Some(native)
+        });
+        if bound.is_none() {
+            self.bindings[slot] = None;
+        }
+        Ok((entities, slot, bound))
+    }
+    pub fn unlink(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<(), CallError> {
+        let (entities, slot, bound) = self.entity(services, memory, context, table, address)?;
         let linked_address = self
             .linked
             .filter(|_| slot != 0)
@@ -147,27 +170,31 @@ impl EntityProjection {
                 address.checked_add(linked as u64).ok_or(CallError::Memory)
             })
             .transpose()?;
-        let native = NativeEntity {
-            module: context.module,
-            slot: slot as i32,
-        };
-        if let Some(entity) = self.bindings[slot] {
-            if services.server.entities.resolve(entity).is_some()
-                && services.server.entities.columns.native_entity[entity.slot as usize]
-                    == Some(native)
-            {
-                // Native world slot zero is not an area-index entity.
-                if slot != 0 {
-                    (ENGINE_CALLS.unlink)(services, entity)?;
-                }
-            } else {
-                self.bindings[slot] = None;
-            }
+        // Native world slot zero is not an area-index entity.
+        if slot != 0
+            && let Some(entity) = bound
+        {
+            (ENGINE_CALLS.unlink)(services, entity)?;
         }
         // API2023 publishes a linked byte; classic linkage remains engine-owned.
         if let Some(address) = linked_address {
             memory.write(address, &[0])?;
         }
         Ok(())
+    }
+    pub fn forget_observer(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<(), CallError> {
+        let bound = if address == 0 {
+            None
+        } else {
+            self.entity(services, memory, context, table, address)?.2
+        };
+        (ENGINE_CALLS.bot_registration)(services, bound, false)
     }
 }
