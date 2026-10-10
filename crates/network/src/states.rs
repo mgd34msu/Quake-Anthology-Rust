@@ -871,6 +871,10 @@ pub fn read_nq_entity(
     reader: &mut Reader<'_>,
     baseline: &[u32; NQ_ENTITY_WORDS],
 ) -> Result<NqEntityUpdate, Error> {
+    let header = read_nq_entity_header(reader)?;
+    read_nq_entity_body(reader, header, baseline)
+}
+pub(crate) fn read_nq_entity_header(reader: &mut Reader<'_>) -> Result<EntityHeader, Error> {
     let mut flags = reader.read_bits(8)?;
     if flags & 128 == 0 {
         return Err(Error {
@@ -888,11 +892,22 @@ pub fn read_nq_entity(
             kind: crate::message::ErrorKind::Symbol,
         });
     }
+    Ok(EntityHeader {
+        number: number as u16,
+        flags,
+    })
+}
+pub(crate) fn read_nq_entity_body(
+    reader: &mut Reader<'_>,
+    header: EntityHeader,
+    baseline: &[u32; NQ_ENTITY_WORDS],
+) -> Result<NqEntityUpdate, Error> {
+    let EntityHeader { number, flags } = header;
     let mut words = *baseline;
     words[11] = u32::from(flags & (1 << 5) != 0);
     delta::read(&NQ_ENTITY_GROUP, &mut words, flags, reader)?;
     Ok(NqEntityUpdate {
-        number: number as u16,
+        number,
         words: Some(words),
     })
 }

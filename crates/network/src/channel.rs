@@ -165,11 +165,13 @@ impl Channel {
             transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
             commands: policy.command_ack.then(commands::CommandMessages::load),
             snapshots: if policy.command_ack && endpoint == Endpoint::Client {
-                crate::snapshots::Storage::load(
-                    crate::commands::packet::Protocol::Quake3_68,
-                    endpoint,
+                Some(
+                    crate::snapshots::Storage::load(
+                        crate::commands::packet::Protocol::Quake3_68,
+                        endpoint,
+                    )
+                    .map_err(|_| Error::Capacity)?,
                 )
-                .map_err(|_| Error::Capacity)?
             } else {
                 None
             },
@@ -200,8 +202,43 @@ impl Channel {
                 Err(Error::Context)
             };
         }
-        self.snapshots = crate::snapshots::Storage::load(protocol, self.endpoint())?;
+        self.snapshots = Some(crate::snapshots::Storage::load(protocol, self.endpoint())?);
         Ok(())
+    }
+    /// Baselines are registered before ordinary snapshots at the native
+    /// gamestate/signon boundary. Words already have that protocol's layout.
+    pub fn set_snapshot_baseline(&mut self, number: u32, words: &[u32]) -> bool {
+        match &mut self.snapshots {
+            Some(crate::snapshots::Storage::NetQuake(storage)) => words
+                .try_into()
+                .is_ok_and(|words| storage.ring.set_baseline(number, words)),
+            Some(crate::snapshots::Storage::QuakeWorld { ring, .. }) => words
+                .try_into()
+                .is_ok_and(|words| ring.set_baseline(number, words)),
+            Some(crate::snapshots::Storage::Quake2(ring)) => words
+                .try_into()
+                .is_ok_and(|words| ring.set_baseline(number, words)),
+            Some(crate::snapshots::Storage::Quake3(ring)) => words
+                .try_into()
+                .is_ok_and(|words| ring.set_baseline(number, words)),
+            None => false,
+        }
+    }
+    pub fn set_nq_weapon_mask(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), crate::commands::packet::Error> {
+        let Some(crate::snapshots::Storage::NetQuake(storage)) = &mut self.snapshots else {
+            return Err(crate::commands::packet::Error::Context);
+        };
+        storage.weapon_is_mask = enabled;
+        Ok(())
+    }
+    pub(crate) fn nq_state_mut(&mut self) -> Option<&mut crate::snapshots::NqStorage> {
+        match self.snapshots.as_mut()? {
+            crate::snapshots::Storage::NetQuake(storage) => Some(storage),
+            _ => None,
+        }
     }
     pub fn publish_snapshot(
         &mut self,

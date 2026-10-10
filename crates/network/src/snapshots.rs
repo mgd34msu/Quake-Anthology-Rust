@@ -20,7 +20,7 @@ struct Slot<const P: usize> {
     request_sequence: Option<u32>,
     requested_base: Option<u32>,
     valid: bool,
-    time: i32,
+    time: qa_core::primitives::ThinkTime,
     command: u32,
     flags: u8,
     area_bytes: usize,
@@ -34,7 +34,7 @@ impl<const P: usize> Slot<P> {
         request_sequence: None,
         requested_base: None,
         valid: false,
-        time: 0,
+        time: qa_core::primitives::ThinkTime::Milliseconds(0),
         command: 0,
         flags: 0,
         area_bytes: 0,
@@ -47,7 +47,7 @@ impl<const P: usize> Slot<P> {
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a, const P: usize, const E: usize> {
     pub sequence: u32,
-    pub time: i32,
+    pub time: qa_core::primitives::ThinkTime,
     pub command: u32,
     pub flags: u8,
     pub areas: &'a [u8],
@@ -270,11 +270,140 @@ pub type Q2Frame<'a> = Frame<'a, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTIT
 /// QW playerinfo is an independent native service, not part of packetentities.
 pub type QwRing = Ring<0, { states::QW_ENTITY_WORDS }>;
 pub type QwFrame<'a> = Frame<'a, 0, { states::QW_ENTITY_WORDS }>;
+pub type NqRing = Ring<{ states::NQ_PLAYER_WORDS }, { states::NQ_ENTITY_WORDS }>;
+pub type NqFrame<'a> = Frame<'a, { states::NQ_PLAYER_WORDS }, { states::NQ_ENTITY_WORDS }>;
+
+pub(crate) struct NqStorage {
+    pub ring: NqRing,
+    pub weapon_is_mask: bool,
+    marks: qa_core::stamps::StampSet,
+    indices: Box<[usize]>,
+    times: Box<[f64]>,
+}
+pub(crate) struct NqPacket {
+    pub time: qa_core::primitives::ThinkTime,
+    pub player: [u32; states::NQ_PLAYER_WORDS],
+    pub changed: bool,
+    count: usize,
+    overflow: bool,
+}
+impl NqStorage {
+    fn load(endpoint: qa_core::loopback::Endpoint) -> Result<Self, packet::Error> {
+        // Protocol 15 stock CL_EntityNum uses MAX_EDICTS=600. Raised native
+        // limits belong to explicit later protocol/capability negotiation.
+        let scratch = if endpoint == qa_core::loopback::Endpoint::Client {
+            600
+        } else {
+            0
+        };
+        Ok(Self {
+            ring: NqRing::load(600, 600, 0, None)?,
+            weapon_is_mask: false,
+            marks: qa_core::stamps::StampSet::new(scratch),
+            indices: vec![0; scratch].into_boxed_slice(),
+            times: vec![0.0; scratch].into_boxed_slice(),
+        })
+    }
+    pub fn begin(&mut self) -> NqPacket {
+        self.marks.begin();
+        let old = self
+            .ring
+            .latest
+            .map(|n| self.ring.slots[n as usize & (SLOTS - 1)]);
+        let mut packet = NqPacket {
+            time: old.map_or(qa_core::primitives::ThinkTime::Seconds(0.0), |slot| {
+                slot.time
+            }),
+            player: old.map_or([0; states::NQ_PLAYER_WORDS], |slot| slot.player),
+            changed: false,
+            count: 0,
+            overflow: false,
+        };
+        if let Some(old) = old {
+            let start = old.sequence.map_or(0, |n| n as usize & (SLOTS - 1)) * self.ring.capacity;
+            self.ring.scratch[..old.count]
+                .copy_from_slice(&self.ring.entities[start..start + old.count]);
+            packet.count = old.count;
+            let seconds = old.time.seconds();
+            for (index, entity) in self.ring.scratch[..old.count].iter().enumerate() {
+                self.marks.mark(entity.number as usize);
+                self.indices[entity.number as usize] = index;
+                self.times[index] = seconds;
+            }
+        }
+        packet
+    }
+    pub fn entity(
+        &mut self,
+        reader: &mut Reader<'_>,
+        packet: &mut NqPacket,
+    ) -> Result<(), packet::Error> {
+        let header = states::read_nq_entity_header(reader)?;
+        let number = usize::from(header.number);
+        let baseline = self
+            .ring
+            .baselines
+            .get(number)
+            .ok_or(packet::Error::Count)?;
+        let decoded = states::read_nq_entity_body(reader, header, baseline)?;
+        let words = decoded.words.ok_or(packet::Error::Context)?;
+        let index = if self.marks.test_and_set(number) {
+            self.indices[number]
+        } else {
+            let index = packet.count;
+            packet.count += 1;
+            self.indices[number] = index;
+            index
+        };
+        if let Some(slot) = self.ring.scratch.get_mut(index) {
+            *slot = Entity {
+                number: number as u32,
+                words,
+            };
+            self.times[index] = packet.time.seconds();
+        } else {
+            packet.overflow = true;
+        }
+        packet.changed = true;
+        Ok(())
+    }
+    pub fn finish(&mut self, sequence: u32, packet: NqPacket) -> Option<u32> {
+        if !packet.changed {
+            return None;
+        }
+        let seconds = packet.time.seconds();
+        let mut count = 0;
+        // CL_RelinkEntities hides records whose msgtime differs from cl.mtime[0].
+        // Preserve untouched entities only when the native server time is equal.
+        for index in 0..packet.count.min(self.ring.scratch.len()) {
+            if self.times[index] == seconds {
+                self.ring.scratch[count] = self.ring.scratch[index];
+                count += 1;
+            }
+        }
+        self.ring.scratch[..count].sort_unstable_by_key(|entity| entity.number);
+        self.ring
+            .publish_received(
+                Slot {
+                    sequence: Some(sequence),
+                    time: packet.time,
+                    player: packet.player,
+                    count,
+                    ..Slot::ZERO
+                },
+                true,
+                packet.overflow,
+                false,
+            )
+            .then_some(sequence)
+    }
+}
 
 /// Native record widths are protocol data; all variants borrow the same Ring
 /// implementation and never contain another engine player/entity store.
 #[derive(Clone, Copy, Debug)]
 pub enum ReceivedFrame<'a> {
+    NetQuake(NqFrame<'a>),
     QuakeWorld(QwFrame<'a>),
     Quake2(Q2Frame<'a>),
     Quake3(Q3Frame<'a>),
@@ -282,6 +411,7 @@ pub enum ReceivedFrame<'a> {
 impl ReceivedFrame<'_> {
     pub fn sequence(self) -> u32 {
         match self {
+            Self::NetQuake(frame) => frame.sequence,
             Self::QuakeWorld(frame) => frame.sequence,
             Self::Quake2(frame) => frame.sequence,
             Self::Quake3(frame) => frame.sequence,
@@ -290,6 +420,7 @@ impl ReceivedFrame<'_> {
 }
 
 pub(crate) enum Storage {
+    NetQuake(Box<NqStorage>),
     QuakeWorld {
         ring: Box<QwRing>,
         // CL_ParsePlayerinfo preserves an omitted PF_COMMAND in its native
@@ -305,9 +436,10 @@ impl Storage {
     pub(crate) fn load(
         protocol: packet::Protocol,
         endpoint: qa_core::loopback::Endpoint,
-    ) -> Result<Option<Self>, packet::Error> {
+    ) -> Result<Self, packet::Error> {
         Ok(match protocol {
-            packet::Protocol::QuakeWorld28 => Some(Self::QuakeWorld {
+            packet::Protocol::NetQuake15 => Self::NetQuake(Box::new(NqStorage::load(endpoint)?)),
+            packet::Protocol::QuakeWorld28 => Self::QuakeWorld {
                 ring: Box::new(QwRing::load(64, 512, 0, None)?),
                 player_commands: vec![
                     [packet::ZERO_QW; 32];
@@ -319,24 +451,18 @@ impl Storage {
                 ]
                 .into_boxed_slice(),
                 player_model: 0,
-            }),
-            packet::Protocol::Quake2_34 => Some(Self::Quake2(Box::new(Q2Ring::load(
-                1023,
-                1024,
-                32,
-                Some(1024 - 128),
-            )?))),
-            packet::Protocol::Quake3_68 => Some(Self::Quake3(Box::new(Q3Ring::load(
-                1023,
-                1024,
-                32,
-                Some(2048 - 128),
-            )?))),
-            _ => None,
+            },
+            packet::Protocol::Quake2_34 => {
+                Self::Quake2(Box::new(Q2Ring::load(1023, 1024, 32, Some(1024 - 128))?))
+            }
+            packet::Protocol::Quake3_68 => {
+                Self::Quake3(Box::new(Q3Ring::load(1023, 1024, 32, Some(2048 - 128))?))
+            }
         })
     }
     pub(crate) fn protocol(&self) -> packet::Protocol {
         match self {
+            Self::NetQuake(_) => packet::Protocol::NetQuake15,
             Self::QuakeWorld { .. } => packet::Protocol::QuakeWorld28,
             Self::Quake2(_) => packet::Protocol::Quake2_34,
             Self::Quake3(_) => packet::Protocol::Quake3_68,
@@ -344,6 +470,7 @@ impl Storage {
     }
     pub(crate) fn frame(&self, sequence: u32) -> Option<ReceivedFrame<'_>> {
         match self {
+            Self::NetQuake(storage) => storage.ring.frame(sequence).map(ReceivedFrame::NetQuake),
             Self::QuakeWorld { ring, .. } => ring.frame(sequence).map(ReceivedFrame::QuakeWorld),
             Self::Quake2(ring) => ring.frame(sequence).map(ReceivedFrame::Quake2),
             Self::Quake3(ring) => ring.frame(sequence).map(ReceivedFrame::Quake3),
@@ -352,11 +479,12 @@ impl Storage {
     pub(crate) fn record_request(&mut self, sequence: u32, base: Option<u32>) {
         match self {
             Self::QuakeWorld { ring, .. } => ring.record_request(sequence, base),
-            Self::Quake2(_) | Self::Quake3(_) => {}
+            Self::NetQuake(_) | Self::Quake2(_) | Self::Quake3(_) => {}
         }
     }
     pub(crate) fn store(&mut self, frame: ReceivedFrame<'_>) -> Result<(), packet::Error> {
         match (self, frame) {
+            (Self::NetQuake(storage), ReceivedFrame::NetQuake(frame)) => storage.ring.store(frame),
             (Self::QuakeWorld { ring, .. }, ReceivedFrame::QuakeWorld(frame)) => ring.store(frame),
             (Self::Quake2(ring), ReceivedFrame::Quake2(frame)) => ring.store(frame),
             (Self::Quake3(ring), ReceivedFrame::Quake3(frame)) => ring.store(frame),
@@ -371,6 +499,7 @@ impl Storage {
         native_clients: u32,
     ) -> Result<(), packet::Error> {
         match self {
+            Self::NetQuake(storage) => write_nq(writer, &storage.ring, sequence),
             Self::QuakeWorld { ring, .. } => {
                 // SV_EmitPacketEntities selects delta_sequence & UPDATE_MASK,
                 // not an assumed full frame number made from the request byte.
@@ -396,7 +525,8 @@ pub fn read_q3(
     sequence: u32,
     command: u32,
 ) -> Result<bool, packet::Error> {
-    let time = reader.read_bits(32)? as i32;
+    let time =
+        qa_core::primitives::ThinkTime::Milliseconds(i64::from(reader.read_bits(32)? as i32));
     let distance = reader.read_bits(8)?;
     let base_sequence = sequence.saturating_sub(distance);
     let full = distance == 0 || base_sequence == 0;
@@ -491,7 +621,9 @@ pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packe
         Slot {
             sequence: Some(sequence),
             valid: false,
-            time: (sequence as i32).wrapping_mul(100),
+            time: qa_core::primitives::ThinkTime::Milliseconds(i64::from(
+                (sequence as i32).wrapping_mul(100),
+            )),
             command: 0,
             flags,
             area_bytes,
@@ -696,7 +828,8 @@ pub fn write_q3(
     let entities = native_entities(to.entities, 0, 1023);
     let from = delta_frame(ring, sequence, delta_request);
     writer.write_bits(7, 8)?;
-    writer.write_bits(to.time as u32, 32)?;
+    let time = to.time.milliseconds() as u32;
+    writer.write_bits(time, 32)?;
     writer.write_bits(from.map_or(0, |f| sequence - f.sequence), 8)?;
     writer.write_bits(u32::from(to.flags), 8)?;
     writer.write_bits(areas.len() as u32, 8)?;
@@ -790,6 +923,28 @@ pub fn write_qw(
         states::write_qw_entity,
     )?;
     writer.write_bits(0, 16)?;
+    Ok(())
+}
+
+pub fn write_nq(
+    writer: &mut Writer<'_>,
+    ring: &NqRing,
+    sequence: u32,
+) -> Result<(), packet::Error> {
+    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let seconds = to.time.seconds() as f32;
+    writer.write_bits(4, 8)?;
+    writer.write_bits(seconds.to_bits(), 32)?;
+    states::write_nq_player(writer, to.player)?;
+    for entity in native_entities(to.entities, 1, 600) {
+        states::write_nq_entity(
+            writer,
+            entity.number,
+            &ring.baselines[entity.number as usize],
+            &entity.words,
+            entity.words[11] != 0,
+        )?;
+    }
     Ok(())
 }
 

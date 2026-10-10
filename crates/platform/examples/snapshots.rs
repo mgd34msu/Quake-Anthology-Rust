@@ -1,4 +1,5 @@
 //! Developer-only native snapshot byte/word comparison and heap/timing probe.
+use qa_core::primitives::ThinkTime;
 use qa_network::{
     message::{Encoding, Reader, Writer},
     snapshots::{self, Entity, Frame, Ring},
@@ -148,7 +149,7 @@ fn run<const P: usize, const E: usize>(
     case.server
         .store(Frame {
             sequence: base,
-            time: 100,
+            time: ThinkTime::Milliseconds(100),
             command: 12,
             flags: case.flags,
             areas: &case.areas,
@@ -175,7 +176,7 @@ fn run<const P: usize, const E: usize>(
     case.server
         .store(Frame {
             sequence,
-            time: 300,
+            time: ThinkTime::Milliseconds(300),
             command: 12,
             flags: case.flags,
             areas: &case.areas,
@@ -226,7 +227,10 @@ fn run<const P: usize, const E: usize>(
     if accepted {
         let frame = case.client.frame(sequence).ok_or("accepted snapshot")?;
         for value in [
-            frame.time as u32,
+            match frame.time {
+                ThinkTime::Milliseconds(time) => time as u32,
+                ThinkTime::Seconds(_) => return Err("native comparison milliseconds".into()),
+            },
             frame.command,
             u32::from(frame.flags),
             frame.areas.len() as u32,
@@ -318,6 +322,9 @@ fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
 }
 fn main() -> Result<(), String> {
     let args = std::env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|a| a == "--connected-nq-heap") {
+        return connected_nq_heap();
+    }
     if args.get(1).is_some_and(|a| a == "--connected-qw-heap") {
         return connected_qw_heap();
     }
@@ -456,7 +463,7 @@ fn connected_heap() -> Result<(), String> {
             }
             server.publish_snapshot(ReceivedFrame::Quake2(Frame {
                 sequence: frame,
-                time: 0,
+                time: ThinkTime::Milliseconds(0),
                 command: 0,
                 flags: 0,
                 areas: &[0x81],
@@ -683,7 +690,7 @@ fn connected_qw_heap() -> Result<(), String> {
             words[5] = x.to_bits();
             server.publish_snapshot(ReceivedFrame::QuakeWorld(Frame {
                 sequence,
-                time: 0,
+                time: ThinkTime::Milliseconds(0),
                 command: 0,
                 flags: 0,
                 areas: &[],
@@ -774,6 +781,161 @@ fn connected_qw_heap() -> Result<(), String> {
     }
     println!(
         "{{\"scope\":\"QW submitted move/request association, native reply alignment, playerinfo/common projection, packet frame store/write, connected CLIENT ingress and print dispatch; caller Rust heap, no app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
+    );
+    Ok(())
+}
+
+fn connected_nq_heap() -> Result<(), String> {
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{ClientId, PlayerState, RuleSetId},
+        sys_events::{EventTime, Peer},
+    };
+    use qa_network::{
+        channel::Channel,
+        commands::{
+            connection::Commands,
+            packet::{Error, Protocol},
+        },
+        ingress::{Connection, Connections, Incoming, Route},
+        projection::{PlayerContext, PlayerProjection},
+        snapshots::ReceivedFrame,
+        states,
+    };
+    check_heap_counter()?;
+    let protocol = Protocol::NetQuake15;
+    let mut server =
+        Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).map_err(|e| e.to_string())?;
+    server
+        .configure_snapshots(protocol)
+        .map_err(|e| e.to_string())?;
+    let mut connections = Connections::load(1);
+    connections
+        .bind(
+            ClientId(0),
+            Endpoint::Client,
+            Connection {
+                route: Route {
+                    socket: Endpoint::Client.socket(),
+                    peer: Peer::Loopback(ClientId(0)),
+                },
+                channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
+                    .map_err(|e| e.to_string())?,
+                commands: Some(Commands::load(protocol)),
+                output: None,
+            },
+        )
+        .map_err(|e| format!("NQ bind {e:?}"))?;
+    let projection = PlayerProjection::load(protocol, &[]);
+    let mut source = PlayerState {
+        health: 100,
+        ..Default::default()
+    };
+    source.body.velocity.0[0] = -32.;
+    source.view_offset.0[2] = 22.;
+    let mut imported = PlayerState {
+        movement_rules: RuleSetId::Quake3,
+        trace_rules: RuleSetId::Quake2,
+        ..Default::default()
+    };
+    let mut context = PlayerContext {
+        client_number: None,
+        ground_number: None,
+        weapon_number: None,
+        weapon_model: None,
+        gravity: 0.,
+        speed: 0.,
+        player_info_flags: 0,
+        command_age_ms: 0,
+        body_yaw: 0.,
+    };
+    let mut measured = allocations::Counts::default();
+    let mut checks = 0;
+    for iteration in 0..660u32 {
+        let sequence = server.send_state().datagram_sequence;
+        let seconds = iteration as f32 * 0.0625;
+        let x = iteration as f32 * 0.125;
+        allocations::begin_frame();
+        let result = (|| -> Result<(), Error> {
+            let mut player = [0; states::NQ_PLAYER_WORDS];
+            if !projection.reduce(&source, &context, &mut player) {
+                return Err(Error::Context);
+            }
+            let mut entity = Entity {
+                number: 1,
+                words: [0; states::NQ_ENTITY_WORDS],
+            };
+            entity.words[0] = 1.0f32.to_bits();
+            entity.words[5] = x.to_bits();
+            server.publish_snapshot(ReceivedFrame::NetQuake(Frame {
+                sequence,
+                time: ThinkTime::Seconds(f64::from(seconds)),
+                command: 0,
+                flags: 0,
+                areas: &[],
+                player: &player,
+                entities: &[entity],
+            }))?;
+            let mut payload = [0; 1400];
+            let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+            server.write_snapshot(&mut writer, sequence, None, 0)?;
+            writer.write_bits(26, 8)?;
+            writer.write_data(b"connected\0")?;
+            let packet = server
+                .prepare_move(writer.bytes(), EventTime(1), None)
+                .map_err(|_| Error::Context)?
+                .ok_or(Error::Context)?;
+            let mut bytes = [0; 1400];
+            let length = packet.bytes.len();
+            bytes[..length].copy_from_slice(packet.bytes);
+            server.submitted(EventTime(1)).map_err(|_| Error::Context)?;
+            let mut count = 0;
+            let mut invalid = false;
+            connections.receive(
+                Endpoint::Client.socket(),
+                Peer::Loopback(ClientId(0)),
+                &bytes[..length],
+                EventTime(2),
+                |_, _, incoming| match incoming {
+                    Incoming::Snapshot(ReceivedFrame::NetQuake(frame)) => {
+                        invalid |= frame.sequence != sequence
+                            || frame.time != ThinkTime::Seconds(f64::from(seconds))
+                            || frame.entities.len() != 1
+                            || frame.entities[0].words[5] != x.to_bits()
+                            || !projection
+                                .apply(frame.player, &mut imported, &mut context, |_| None)
+                            || imported.health != 100
+                            || imported.body.velocity.0[0] != -32.
+                            || imported.movement_rules != RuleSetId::Quake3
+                            || imported.trace_rules != RuleSetId::Quake2;
+                        count += 1;
+                    }
+                    Incoming::Print(print) => {
+                        invalid |= print.text != b"connected";
+                        count += 1;
+                    }
+                    _ => invalid = true,
+                },
+            );
+            if invalid || count != 2 {
+                return Err(Error::Context);
+            }
+            Ok(())
+        })();
+        let heap = allocations::end_frame();
+        result.map_err(|e| e.to_string())?;
+        checks += 1;
+        if iteration >= 60 {
+            measured.allocations += heap.allocations;
+            measured.reallocations += heap.reallocations;
+            measured.requested_bytes += heap.requested_bytes;
+        }
+    }
+    if measured != allocations::Counts::default() || connections.command_errors != 0 {
+        return Err(format!("NQ heap gate {measured:?}"));
+    }
+    println!(
+        "{{\"scope\":\"NQ native time, clientdata, baseline entity store/write, connected CLIENT ingress, common player import and print; caller Rust heap, no app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
     );
     Ok(())
 }

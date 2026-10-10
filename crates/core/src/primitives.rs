@@ -222,6 +222,20 @@ pub enum ThinkTime {
     Seconds(f64),
     Milliseconds(i64),
 }
+impl ThinkTime {
+    pub fn seconds(self) -> f64 {
+        match self {
+            Self::Seconds(value) => value,
+            Self::Milliseconds(value) => value as f64 / 1000.0,
+        }
+    }
+    pub fn milliseconds(self) -> i64 {
+        match self {
+            Self::Seconds(value) => (value * 1000.0) as i64,
+            Self::Milliseconds(value) => value,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum CallbackCall {

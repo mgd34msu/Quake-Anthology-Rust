@@ -1,6 +1,6 @@
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, PlayerState, RuleSetId},
+    primitives::{ClientId, PlayerState, RuleSetId, ThinkTime},
     sys_events::{EventTime, Peer},
 };
 use qa_network::{
@@ -43,7 +43,7 @@ fn store(ring: &mut Q3Ring, sequence: u32, entities: &[Entity<ENTITY_WORDS>]) ->
     player[48] = 100;
     ring.store(Frame {
         sequence,
-        time: sequence as i32 * 50,
+        time: ThinkTime::Milliseconds(i64::from(sequence as i32 * 50)),
         command: sequence,
         flags: 4,
         areas: &[0xaa, 0x55],
@@ -162,7 +162,7 @@ fn generic_ring_wrap_gaps_row_retention_and_connection_isolation() -> Result<(),
     for sequence in [1, 2, 4, 34] {
         a.store(Frame {
             sequence,
-            time: 0,
+            time: ThinkTime::Milliseconds(i64::from(0)),
             command: 0,
             flags: 0,
             areas: &[0],
@@ -178,7 +178,7 @@ fn generic_ring_wrap_gaps_row_retention_and_connection_isolation() -> Result<(),
     for sequence in 35..40 {
         a.store(Frame {
             sequence,
-            time: 0,
+            time: ThinkTime::Milliseconds(i64::from(0)),
             command: 0,
             flags: 0,
             areas: &[],
@@ -212,7 +212,7 @@ fn native_snapshot_boundary_omits_reserved_numbers_and_extra_area_bits() -> Resu
     let rows = [entity(1, 2.), entity(1023, 3.), entity(1500, 4.)];
     server.store(Frame {
         sequence: 1,
-        time: 0,
+        time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
         areas: &[0x55; 64],
@@ -496,7 +496,7 @@ fn q2_store(
     player[1] = sequence;
     ring.store(Frame {
         sequence,
-        time: sequence as i32 * 100,
+        time: ThinkTime::Milliseconds(i64::from(sequence as i32 * 100)),
         command: 0,
         flags: 7,
         player: &player,
@@ -544,7 +544,7 @@ fn q2_frames_share_the_ring_and_reset_unchanged_rows() -> Result<(), Error> {
     )?;
     assert!(q2_send(&server, &mut client, 2, Some(1))?);
     let frame = client.frame(2).ok_or(Error::Context)?;
-    assert_eq!(frame.time, 200);
+    assert_eq!(frame.time, ThinkTime::Milliseconds(200));
     assert_eq!(frame.flags, 7);
     assert_eq!(frame.areas, &[0x81, 0x42]);
     assert_eq!(frame.player[1], 2);
@@ -742,7 +742,10 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
                     Incoming::Snapshot(snapshots::ReceivedFrame::Quake2(snapshot)) => {
                         assert!(valid);
                         assert_eq!(snapshot.sequence, frame);
-                        assert_eq!(snapshot.time, frame as i32 * 100);
+                        assert_eq!(
+                            snapshot.time,
+                            ThinkTime::Milliseconds(i64::from(frame as i32 * 100))
+                        );
                         assert!(projection.apply(
                             snapshot.player,
                             &mut imported,
@@ -846,7 +849,7 @@ fn qw_store(
 ) -> Result<(), Error> {
     ring.store(Frame {
         sequence,
-        time: 0,
+        time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
         areas: &[],
@@ -1070,7 +1073,7 @@ fn qw_reply(
     Ok(())
 }
 
-fn qw_connection() -> Result<(Channel, Commands, Connections), Error> {
+fn byte_connection(protocol: Protocol) -> Result<(Channel, Commands, Connections), Error> {
     let mut connections = Connections::load(1);
     connections
         .bind(
@@ -1081,28 +1084,23 @@ fn qw_connection() -> Result<(Channel, Commands, Connections), Error> {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),
                 },
-                channel: Channel::load(
-                    Protocol::QuakeWorld28.channel(),
-                    Endpoint::Client,
-                    8192,
-                    16,
-                )
-                .map_err(|_| Error::Context)?,
+                channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
+                    .map_err(|_| Error::Context)?,
                 output: None,
-                commands: Some(Commands::load(Protocol::QuakeWorld28)),
+                commands: Some(Commands::load(protocol)),
             },
         )
         .map_err(|_| Error::Context)?;
-    let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
+    let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
         .map_err(|_| Error::Context)?;
-    server.configure_snapshots(Protocol::QuakeWorld28)?;
-    Ok((server, Commands::load(Protocol::QuakeWorld28), connections))
+    server.configure_snapshots(protocol)?;
+    Ok((server, Commands::load(protocol), connections))
 }
 
 #[test]
 fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() -> Result<(), Error>
 {
-    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     let mut ring = snapshots::QwRing::load(64, 512, 0, None)?;
     let mut frames = Vec::new();
     let mut prints = Vec::new();
@@ -1228,7 +1226,7 @@ fn qw_connected_frames_use_submitted_requests_and_recover_after_slipped_reply() 
 
 #[test]
 fn qw_connected_request_byte_zero_retains_full_sequence_after_a_gap() -> Result<(), Error> {
-    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     for _ in 1..256 {
         qw_move(&mut connections, &mut server, &mut commands, false)?;
     }
@@ -1273,7 +1271,7 @@ fn qw_connected_request_byte_zero_retains_full_sequence_after_a_gap() -> Result<
 #[test]
 fn qw_reply_alignment_rebuilds_unsent_payload_without_retiring_reliable_data() -> Result<(), Error>
 {
-    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     qw_move(&mut connections, &mut server, &mut commands, true)?;
     let print = b"\x08\x02retained\0";
     let receipt = server.queue_reliable(print).map_err(|_| Error::Context)?;
@@ -1330,7 +1328,7 @@ fn qw_reply_alignment_rebuilds_unsent_payload_without_retiring_reliable_data() -
     Ok(())
 }
 
-fn qw_player_payload(
+fn server_payload(
     server: &mut Channel,
     connections: &mut Connections,
     payload: &[u8],
@@ -1359,7 +1357,7 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
 -> Result<(), Error> {
     use qa_core::primitives::Vec3;
     use qa_network::commands::{QwCmd, packet::ZERO_QW};
-    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     connections
         .get_mut(ClientId(0), Endpoint::Client)
         .ok_or(Error::Context)?
@@ -1420,7 +1418,7 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
         writer.write_bits(26, 8)?;
         writer.write_data(b"playerinfo\0")?;
         let mut records = 0;
-        qw_player_payload(
+        server_payload(
             &mut server,
             &mut connections,
             writer.bytes(),
@@ -1482,7 +1480,7 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
 #[test]
 fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() -> Result<(), Error> {
     use qa_network::commands::{QwCmd, packet::ZERO_QW};
-    let (mut server, mut commands, mut connections) = qw_connection()?;
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     let mut seen = 0;
     for sequence in 1..=67 {
         qw_move(&mut connections, &mut server, &mut commands, true)?;
@@ -1515,7 +1513,7 @@ fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() ->
                 writer.size() - usize::from(sequence == 3)
             }
         };
-        qw_player_payload(
+        server_payload(
             &mut server,
             &mut connections,
             &payload[..length],
@@ -1538,7 +1536,7 @@ fn qw_playerinfo_rejects_bad_numbers_and_does_not_commit_truncated_commands() ->
 fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() -> Result<(), Error>
 {
     use qa_network::commands::packet::ZERO_QW;
-    let (mut server, _, mut connections) = qw_connection()?;
+    let (mut server, _, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
     assert!(server.set_qw_player_model(7).is_err());
     let mut other = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Client, 8192, 16)
         .map_err(|_| Error::Context)?;
@@ -1599,7 +1597,7 @@ fn channel_qw_server_selects_native_slots_and_preserves_the_request_byte() -> Re
     ] {
         server.publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(Frame {
             sequence,
-            time: 0,
+            time: ThinkTime::Milliseconds(i64::from(0)),
             command: 0,
             flags: 0,
             areas: &[],
@@ -1627,7 +1625,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
     let entities = [qw_entity(3, 1.)];
     let frame = Frame {
         sequence: 1,
-        time: 0,
+        time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
         areas: &[],
@@ -1668,7 +1666,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
     }))?;
     let foreign = snapshots::ReceivedFrame::Quake2(Frame {
         sequence: 3,
-        time: 0,
+        time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
         areas: &[],
@@ -1706,7 +1704,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                 Protocol::Quake2_34 => {
                     let frame = Frame {
                         sequence,
-                        time: 123,
+                        time: ThinkTime::Milliseconds(i64::from(123)),
                         command: 0,
                         flags: 1,
                         areas: &[0x81],
@@ -1719,7 +1717,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                 Protocol::Quake3_68 => {
                     let frame = Frame {
                         sequence,
-                        time: 123,
+                        time: ThinkTime::Milliseconds(i64::from(123)),
                         command: 0,
                         flags: 1,
                         areas: &[0x81],
@@ -1758,5 +1756,299 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_import()
+-> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut baseline = [0; states::NQ_ENTITY_WORDS];
+    baseline[0] = 7;
+    baseline[2] = 1;
+    baseline[5] = 12.25f32.to_bits();
+    assert!(server.set_snapshot_baseline(256, &baseline));
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    assert!(client.channel.set_snapshot_baseline(256, &baseline));
+    client.channel.set_nq_weapon_mask(true)?;
+    let projection = PlayerProjection::load(Protocol::NetQuake15, &[]);
+    let mut imported = PlayerState {
+        movement_rules: RuleSetId::Quake3,
+        trace_rules: RuleSetId::Quake2,
+        ..Default::default()
+    };
+    let mut source = PlayerState {
+        health: -17,
+        armor: 55,
+        ..Default::default()
+    };
+    source.body.velocity.0[0] = -32.;
+    source.view_offset.0[2] = 22.;
+    let mut context = native_player_context();
+    let mut player = [0; states::NQ_PLAYER_WORDS];
+    assert!(projection.reduce(&source, &context, &mut player));
+    player[18] = 3;
+    let mut entities = [snapshots::Entity {
+        number: 256,
+        words: baseline,
+    }];
+    entities[0].words[0] = 7.0f32.to_bits();
+    entities[0].words[2] = 1.0f32.to_bits();
+    entities[0].words[11] = 1;
+    let seconds = 1.234567f32;
+    let sequence = server.send_state().datagram_sequence;
+    server.publish_snapshot(snapshots::ReceivedFrame::NetQuake(Frame {
+        sequence,
+        time: ThinkTime::Seconds(f64::from(seconds)),
+        command: 0,
+        flags: 0,
+        areas: &[],
+        player: &player,
+        entities: &entities,
+    }))?;
+    let mut payload = [0; 1400];
+    let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+    server.write_snapshot(&mut writer, sequence, None, 0)?;
+    writer.write_bits(26, 8)?;
+    writer.write_data(b"NetQuake\0")?;
+    assert_eq!(
+        &writer.bytes()[..5],
+        &[
+            4,
+            seconds.to_bits() as u8,
+            (seconds.to_bits() >> 8) as u8,
+            (seconds.to_bits() >> 16) as u8,
+            (seconds.to_bits() >> 24) as u8
+        ]
+    );
+    let mut snapshots = 0;
+    let mut prints = 0;
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| match incoming {
+            Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                assert_eq!(frame.sequence, sequence);
+                assert_eq!(frame.time, ThinkTime::Seconds(f64::from(seconds)));
+                assert_eq!(frame.entities.len(), 1);
+                assert_eq!(frame.entities[0].number, 256);
+                assert_eq!(frame.entities[0].words[0], 7);
+                assert_eq!(frame.entities[0].words[2], 1);
+                assert_eq!(frame.entities[0].words[5], baseline[5]);
+                assert_eq!(frame.entities[0].words[11], 1);
+                assert_eq!(frame.player[18], 8);
+                assert!(projection.apply(frame.player, &mut imported, &mut context, |_| None));
+                assert_eq!((imported.health, imported.armor), (-17, 55));
+                assert_eq!(imported.body.velocity.0[0], -32.);
+                assert_eq!(imported.movement_rules, RuleSetId::Quake3);
+                assert_eq!(imported.trace_rules, RuleSetId::Quake2);
+                snapshots += 1;
+            }
+            Incoming::Print(print) => {
+                assert_eq!(print.text, b"NetQuake");
+                prints += 1;
+            }
+            _ => panic!("NQ snapshot/print stream"),
+        },
+    )?;
+    assert_eq!((snapshots, prints, connections.command_errors), (1, 1, 0));
+    assert!(!server.set_snapshot_baseline(256, &baseline));
+    Ok(())
+}
+
+#[test]
+fn nq_reliable_service_stream_waits_for_native_ack_after_client_publication() -> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut payload = [0; 1400];
+    let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+    writer.write_bits(4, 8)?;
+    writer.write_bits(1.0625f32.to_bits(), 32)?;
+    let mut player = [0; states::NQ_PLAYER_WORDS];
+    player[0] = 22.0f32.to_bits();
+    player[12] = (-17.0f32).to_bits();
+    states::write_nq_player(&mut writer, &player)?;
+    writer.write_bits(8, 8)?;
+    writer.write_data(b"reliable\0")?;
+    let receipt = server
+        .queue_reliable(writer.bytes())
+        .map_err(|_| Error::Context)?;
+    let packet = server
+        .prepare_output(EventTime(1))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let mut bytes = [0; 1400];
+    let length = packet.bytes.len();
+    bytes[..length].copy_from_slice(packet.bytes);
+    server.submitted(EventTime(1)).map_err(|_| Error::Context)?;
+    assert!(server.reliable_receipts().is_empty());
+    let mut seen = 0;
+    connections.receive(
+        Endpoint::Client.socket(),
+        Peer::Loopback(ClientId(0)),
+        &bytes[..length],
+        EventTime(2),
+        |_, _, incoming| match incoming {
+            Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                assert_eq!(frame.time, ThinkTime::Seconds(1.0625));
+                assert_eq!(frame.player[12] as i32, -17);
+                seen += 1;
+            }
+            Incoming::Print(print) => {
+                assert_eq!(print.text, b"reliable");
+                seen += 1;
+            }
+            _ => panic!("NQ reliable service stream"),
+        },
+    );
+    assert_eq!((seen, connections.command_errors), (2, 0));
+    assert!(server.reliable_receipts().is_empty());
+    let client = connections
+        .get_mut(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let ack = client
+        .channel
+        .prepare_output(EventTime(3))
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let length = ack.bytes.len();
+    bytes[..length].copy_from_slice(ack.bytes);
+    client
+        .channel
+        .submitted(EventTime(3))
+        .map_err(|_| Error::Context)?;
+    server
+        .receive(&bytes[..length], EventTime(4))
+        .map_err(|_| Error::Context)?;
+    assert_eq!(server.reliable_receipts(), &[receipt]);
+    assert_eq!(server.send_state().reliable_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_native_entity_order_duplicates_and_message_times_use_the_shared_stamp_set()
+-> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut entity = [0; states::NQ_ENTITY_WORDS];
+    entity[0] = 1.0f32.to_bits();
+    let zero = [0; states::NQ_ENTITY_WORDS];
+    for packet in 0..4 {
+        let mut payload = [0; 1400];
+        let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+        if packet == 0 {
+            writer.write_bits(4, 8)?;
+            writer.write_bits(1.5f32.to_bits(), 32)?;
+            entity[5] = 10.0f32.to_bits();
+            states::write_nq_entity(&mut writer, 5, &zero, &entity, false)?;
+            states::write_nq_entity(&mut writer, 2, &zero, &entity, false)?;
+            entity[5] = 20.0f32.to_bits();
+            states::write_nq_entity(&mut writer, 5, &zero, &entity, false)?;
+        } else if packet == 1 {
+            writer.write_bits(1, 8)?;
+            // Without a changed native time, unmentioned visible entities persist.
+            states::write_nq_entity(&mut writer, 2, &zero, &entity, false)?;
+        } else if packet == 2 {
+            // Updates preceding a new svc_time still have the old msgtime.
+            states::write_nq_entity(&mut writer, 5, &zero, &entity, false)?;
+            writer.write_bits(4, 8)?;
+            writer.write_bits(2.25f32.to_bits(), 32)?;
+            states::write_nq_entity(&mut writer, 7, &zero, &entity, true)?;
+        } else {
+            writer.write_bits(26, 8)?;
+            writer.write_data(b"print only\0")?;
+        }
+        let mut seen = 0;
+        server_payload(
+            &mut server,
+            &mut connections,
+            writer.bytes(),
+            |_, _, incoming| {
+                if let Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) = incoming {
+                    if packet < 2 {
+                        assert_eq!(
+                            frame.entities.iter().map(|e| e.number).collect::<Vec<_>>(),
+                            [2, 5]
+                        );
+                        assert_eq!(frame.entities[1].words[5], 20.0f32.to_bits());
+                        assert_eq!(frame.time, ThinkTime::Seconds(1.5));
+                    } else {
+                        assert_eq!(frame.entities.len(), 1);
+                        assert_eq!(frame.entities[0].number, 7);
+                        assert_eq!(frame.entities[0].words[11], 1);
+                        assert_eq!(frame.time, ThinkTime::Seconds(2.25));
+                    }
+                    seen += 1;
+                }
+            },
+        )?;
+        assert_eq!(seen, usize::from(packet != 3));
+    }
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn nq_truncated_and_invalid_streams_do_not_publish_or_replace_an_accepted_frame()
+-> Result<(), Error> {
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(4, 8)?;
+    writer.write_bits(1.25f32.to_bits(), 32)?;
+    let mut entity = [0; states::NQ_ENTITY_WORDS];
+    entity[0] = 1.0f32.to_bits();
+    entity[5] = 12.0f32.to_bits();
+    states::write_nq_entity(
+        &mut writer,
+        1,
+        &[0; states::NQ_ENTITY_WORDS],
+        &entity,
+        false,
+    )?;
+    let valid = writer.bytes().to_vec();
+    server_payload(&mut server, &mut connections, &valid, |_, _, _| {})?;
+    let mut rejected = 0;
+    for end in 1..valid.len() {
+        if end == 5 {
+            continue;
+        } // A complete standalone svc_time is native-valid.
+        server_payload(
+            &mut server,
+            &mut connections,
+            &valid[..end],
+            |_, _, incoming| {
+                assert!(!matches!(incoming, Incoming::Snapshot(_)));
+            },
+        )?;
+        rejected += 1;
+    }
+    let mut invalid = [0; 1400];
+    let mut writer = Writer::new(&mut invalid, Encoding::Bytes);
+    states::write_nq_entity(
+        &mut writer,
+        600,
+        &[0; states::NQ_ENTITY_WORDS],
+        &entity,
+        false,
+    )?;
+    server_payload(
+        &mut server,
+        &mut connections,
+        writer.bytes(),
+        |_, _, incoming| {
+            assert!(!matches!(incoming, Incoming::Snapshot(_)));
+        },
+    )?;
+    assert_eq!(connections.command_errors, rejected + 1);
+    let client = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?;
+    let Some(snapshots::ReceivedFrame::NetQuake(frame)) = client.channel.snapshot(0) else {
+        panic!("retained NQ frame")
+    };
+    assert_eq!(frame.time, ThinkTime::Seconds(1.25));
+    assert_eq!(frame.entities[0].words[5], 12.0f32.to_bits());
     Ok(())
 }

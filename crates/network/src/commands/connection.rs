@@ -209,19 +209,59 @@ impl Commands {
             })?;
             return Ok(channel.snapshot(sequence).map(|frame| frame.sequence()));
         }
-        if !matches!(self.protocol, Protocol::QuakeWorld28 | Protocol::Quake2_34)
-            || channel.endpoint() != qa_core::loopback::Endpoint::Client
+        if !matches!(
+            self.protocol,
+            Protocol::NetQuake15 | Protocol::QuakeWorld28 | Protocol::Quake2_34
+        ) || channel.endpoint() != qa_core::loopback::Endpoint::Client
         {
             return Err(packet::Error::Context);
         }
         let result = (|| {
             let mut at = 0;
             let mut snapshot = None;
+            let mut nq = if self.protocol == Protocol::NetQuake15 {
+                Some(
+                    channel
+                        .nq_state_mut()
+                        .ok_or(packet::Error::Context)?
+                        .begin(),
+                )
+            } else {
+                None
+            };
             // Native CL_ParseServerMessage ends at the byte boundary, with no EOF
             // opcode. Each accepted service consumes bytes from fixed scratch.
             while at < scratch.len() {
                 match (self.protocol, scratch[at]) {
-                    (Protocol::QuakeWorld28, 1) | (Protocol::Quake2_34, 6) => at += 1,
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
+                    | (Protocol::Quake2_34, 6) => at += 1,
+                    (Protocol::NetQuake15, 4) => {
+                        let packet = nq.as_mut().ok_or(packet::Error::Context)?;
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        packet.time = qa_core::primitives::ThinkTime::Seconds(f64::from(
+                            f32::from_bits(reader.read_bits(32)?),
+                        ));
+                        packet.changed = true;
+                        at += 1 + reader.byte_position();
+                    }
+                    (Protocol::NetQuake15, 15) => {
+                        let packet = nq.as_mut().ok_or(packet::Error::Context)?;
+                        let storage = channel.nq_state_mut().ok_or(packet::Error::Context)?;
+                        let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
+                        packet.player =
+                            crate::states::read_nq_player(&mut reader, storage.weapon_is_mask)?;
+                        packet.changed = true;
+                        at += reader.byte_position();
+                    }
+                    (Protocol::NetQuake15, opcode) if opcode & 128 != 0 => {
+                        let packet = nq.as_mut().ok_or(packet::Error::Context)?;
+                        let mut reader = Reader::new(&scratch[at..], Encoding::Bytes);
+                        channel
+                            .nq_state_mut()
+                            .ok_or(packet::Error::Context)?
+                            .entity(&mut reader, packet)?;
+                        at += reader.byte_position();
+                    }
                     (Protocol::QuakeWorld28, 42) => {
                         let (prior, model) = channel
                             .qw_player_context(sequence)
@@ -269,7 +309,8 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    (Protocol::QuakeWorld28, 8 | 26) | (Protocol::Quake2_34, 4 | 10 | 15) => {
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26)
+                    | (Protocol::Quake2_34, 4 | 10 | 15) => {
                         let mut prints = Prints::new(self.protocol, &scratch[at..]);
                         let print = prints
                             .next()
@@ -282,6 +323,12 @@ impl Commands {
                     // stuffed commands require their own service bindings later.
                     _ => return Err(packet::Error::Opcode),
                 }
+            }
+            if let Some(packet) = nq {
+                snapshot = channel
+                    .nq_state_mut()
+                    .ok_or(packet::Error::Context)?
+                    .finish(sequence, packet);
             }
             Ok(snapshot)
         })();

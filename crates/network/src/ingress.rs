@@ -231,6 +231,7 @@ impl Connections {
                         && matches!(
                             commands.protocol,
                             crate::commands::packet::Protocol::Quake3_68
+                                | crate::commands::packet::Protocol::NetQuake15
                                 | crate::commands::packet::Protocol::Quake2_34
                                 | crate::commands::packet::Protocol::QuakeWorld28
                         )
