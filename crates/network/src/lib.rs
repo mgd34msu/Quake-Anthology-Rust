@@ -5,5 +5,6 @@ pub mod headers;
 pub mod ingress;
 pub mod message;
 pub mod outputs;
+pub mod projection;
 pub mod snapshots;
 pub mod states;

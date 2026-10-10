@@ -312,3 +312,50 @@ into prediction at `app/src/host.rs:480` and initial local connect at
 records. Common player projection, snapshot submission and migration of these
 callers are the next integration. Other protocols' snapshot framing,
 signon/native hosts and original-client/server interoperability remain required.
+
+## THE-860: common player projection
+
+`network/src/projection.rs` adds one field walker over the existing common
+PlayerState. Connection load selects static NQ15, QW28, Q2-34 or Q3-68 layout
+data. It writes the existing native codec words into caller-owned storage;
+there is no second engine player store or scalar delta encoder. Movement and
+trace RuleSetIds remain independent and unchanged.
+
+Native client, ground, weapon and weapon-model numbers, effective speed and
+gravity, QW visibility flags, command age and body yaw are explicit context.
+No common ClientId, EntityId or registry handle is cast to a native ordinal.
+QW body yaw is separate from command/view yaw, matching its corpse command
+path. Q2 movement uses signed eighth units, eight-millisecond timers and signed
+short delta angles. Q3 delta angles use unsigned 16-bit fields. Both use the
+original ANGLE2SHORT multiply-then-divide order through core math. The static
+flag data preserves simultaneous native timer flags; mode mapping drops modes
+the destination cannot carry to its native equivalent. Q2 stock health, armor
+and frags and Q3 health, armor and score use the common hot fields.
+
+Load-resolved ValueBindings provide native module fields from the existing
+common value bank, in registration order. A later binding overrides a default
+field. Out-of-layout destinations are omitted and counted at load; a missing
+common bank field retains the hot value or zero. A short output is rejected
+without partial mutation. Inventory ordinals, icons, animation and other
+module-specific fields still require their explicit bindings; zero defaults
+are not evidence of native gameplay integration.
+
+Four focused tests pass: native codec round trips for all four implemented
+layouts, independent roles, native ordinals/mode limits, module overrides,
+missing bindings, short output rejection and 4,096 seeded delta angles checked
+against the original macro order and signedness. NetQuake health/armor are
+QuakeC float inputs to its writer but native integer outputs from its decoder;
+the assertions check that distinction. Original field/flag sources are
+`quake/WinQuake/sv_main.c`, `quake/QW/server/sv_ents.c`,
+`quake-2/game/q_shared.h`, and `quake-iii-arena/code/game/q_shared.h` and
+`bg_public.h`. Existing codec implementations are unchanged.
+
+THE-860 remains In Progress. The projection has no app snapshot provider yet;
+the remaining direct prediction copies at `app/src/host.rs:480` and
+`app/src/lib.rs:201`, and ignored CLIENT Snapshot dispatch, still need
+migration. Q2 rerelease, negotiated NQ666/999, other snapshot streams, signon,
+native/combined/installed acceptance remain required. Evidence is in
+`$HOME/.cache/qa-rust/THE-860-player-projection-20261009/`; no timing,
+allocation measurement, game/window or installation run is claimed.
+All 682 workspace tests, the unchanged checker, formatting and diff checks
+pass. The final normal release workspace build completed in 30.72 s.
