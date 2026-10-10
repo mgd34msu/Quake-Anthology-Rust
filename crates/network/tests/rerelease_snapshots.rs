@@ -65,6 +65,48 @@ fn receive(ring: &mut Q2KexRing, context: &mut Q2KexContext, bytes: &[u8]) -> Re
 }
 
 #[test]
+fn unmatched_remove_advances_the_native_q2_old_cursor() -> Result<(), Error> {
+    for demo in [false, true] {
+        let mut ring = Q2KexRing::load(16, 8192, 32, Some(8192))?;
+        let mut context = Q2KexContext::load(&ring, demo)?;
+        let entities = [body(1, 1.0, false), body(3, 3.0, false), body(5, 5.0, true)];
+        ring.store(Frame {
+            sequence: 1,
+            time: ThinkTime::Milliseconds(25),
+            command: 0,
+            flags: 0,
+            areas: &[],
+            player: &[0; 106],
+            entities: &entities,
+        })?;
+        let mut bytes = [0; 1400];
+        let player = Q2KexPlayer::default();
+        let size = wire(2, 1, &player, &player, demo, &mut bytes, |writer| {
+            states::write_q2_kex_entity(
+                writer,
+                2,
+                &[0; Q2_RERELEASE_ENTITY_WORDS],
+                None,
+                false,
+                demo,
+                &mut states::Q2KexWire::default(),
+            )
+        })?;
+        assert!(receive(&mut ring, &mut context, &bytes[..size])?);
+        let mut first = entities[0];
+        first.words[18] = 0;
+        first.words[14..17].copy_from_slice(&entities[0].words[8..11]);
+        let mut last = entities[2];
+        last.words[18] = 0;
+        assert_eq!(
+            ring.current().ok_or(Error::Context)?.entities,
+            [first, last]
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Result<(), Error> {
     for demo in [false, true] {
         let mut ring = Q2KexRing::load(16, 8192, 32, Some(8192))?;

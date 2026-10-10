@@ -1,4 +1,4 @@
-use super::{Frame, Ring, SLOTS, Slot, read_areas, read_entities};
+use super::{Frame, MergeRules, Ring, SLOTS, Slot, read_areas, read_entities};
 use crate::{
     commands::packet,
     message::{Reader, Writer},
@@ -166,7 +166,10 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
         &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
         &ring.baselines,
         &mut ring.scratch,
-        0,
+        MergeRules {
+            terminator: 0,
+            remove_advances_old: true,
+        },
         |reader| {
             let header = states::read_q2_entity_prefix(reader, rules.extended_header)?;
             if usize::from(header.number) >= rules.entity_limit {

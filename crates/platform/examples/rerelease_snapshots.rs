@@ -7,11 +7,21 @@ use qa_network::{
     states::{self, Q2_RERELEASE_ENTITY_WORDS, Q2KexPlayer},
 };
 use qa_platform::allocations;
+use std::io::{Read, Write};
 
 #[global_allocator]
 static ALLOCATOR: allocations::CountingAllocator = allocations::CountingAllocator;
 
 fn main() -> Result<(), String> {
+    let args: Vec<_> = std::env::args().collect();
+    if let [_, option, path] = &args[..]
+        && option == "--compare"
+    {
+        return compare(path).map_err(|e| e.to_string());
+    }
+    if args.len() != 1 {
+        return Err("usage: rerelease_snapshots [--compare fixture]".into());
+    }
     allocations::begin_frame();
     let positive = Box::new(std::hint::black_box(1u64));
     std::hint::black_box(&positive);
@@ -116,6 +126,81 @@ fn main() -> Result<(), String> {
     }
     println!(
         "{{\"scope\":\"KEX2023/2022 full-frame reception, Ring and entity merge; caller heap only, no channel/OS/app/native host/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"positive_control_allocations\":1,\"timing_run\":false}}"
+    );
+    Ok(())
+}
+
+fn compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+    let mut input = Reader::new(&bytes, Encoding::Bytes);
+    let cases = input.read_bits(32)?;
+    let mut output = Vec::new();
+    let mut frames = 0;
+    let mut total = allocations::Counts::default();
+    for _ in 0..cases {
+        let demo = input.read_bits(8)? != 0;
+        let bases = input.read_bits(16)?;
+        let mut ring = Q2KexRing::load(64, 8192, 255, Some(8192))?;
+        let mut context = Q2KexContext::load(&ring, demo)?;
+        for _ in 0..bases {
+            let number = input.read_bits(16)?;
+            let mut words = [0; Q2_RERELEASE_ENTITY_WORDS];
+            for word in &mut words {
+                *word = input.read_bits(32)?;
+            }
+            if !context.set_baseline(&mut ring, number, &words) {
+                return Err("fixture baseline rejected".into());
+            }
+        }
+        let count = input.read_bits(8)?;
+        for _ in 0..count {
+            let size = input.read_bits(16)? as usize;
+            let mut packet = [0; 1400];
+            for byte in packet.get_mut(..size).ok_or("fixture packet too large")? {
+                *byte = input.read_bits(8)? as u8;
+            }
+            let mut reader = Reader::new(&packet[..size], Encoding::Bytes);
+            allocations::begin_frame();
+            let result = (|| {
+                if reader.read_bits(8)? != 20 {
+                    return Err(Error::Opcode);
+                }
+                snapshots::read_q2_kex(&mut reader, &mut ring, &mut context, |n| {
+                    ThinkTime::Milliseconds(i64::from(n) * 25)
+                })
+            })();
+            let heap = allocations::end_frame();
+            total.allocations += heap.allocations;
+            total.reallocations += heap.reallocations;
+            total.requested_bytes += heap.requested_bytes;
+            if !result? || reader.byte_position() != size {
+                return Err("fixture frame rejected or not consumed".into());
+            }
+            let frame = ring.current().ok_or("missing frame")?;
+            output.extend_from_slice(&(reader.byte_position() as u16).to_le_bytes());
+            output.extend_from_slice(&frame.sequence.to_le_bytes());
+            output.extend_from_slice(&[frame.flags, frame.areas.len() as u8]);
+            output.extend_from_slice(frame.areas);
+            for word in frame.player {
+                output.extend_from_slice(&word.to_le_bytes());
+            }
+            output.extend_from_slice(&(frame.entities.len() as u16).to_le_bytes());
+            for entity in frame.entities {
+                output.extend_from_slice(&(entity.number as u16).to_le_bytes());
+                for word in &entity.words {
+                    output.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+            frames += 1;
+        }
+    }
+    if input.byte_position() != bytes.len() || total != allocations::Counts::default() {
+        return Err(format!("fixture input/heap failure: {total:?}").into());
+    }
+    std::io::stdout().write_all(&output)?;
+    eprintln!(
+        "{{\"scope\":\"KEX native frame receive comparison; caller Rust heap only, no channel/OS/app/native ABI\",\"cases\":{cases},\"frames\":{frames},\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"timing_run\":false}}"
     );
     Ok(())
 }

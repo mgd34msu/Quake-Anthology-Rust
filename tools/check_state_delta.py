@@ -785,8 +785,8 @@ q2proto_error_t q2protoio_get_error(uintptr_t arg) {(void)arg;return Q2P_ERR_SUC
         source += f' for(int i=0;i<4;i++)w[{start}+i]=q2proto_var_color_get_byte_comp(&p->{name},i);\n'
     source += ' for(int i=0;i<64;i++)w[42+i]=(int)p->stats[i];\n}\n'
     source += r'''
-uint32_t kex_player_encode(uint8_t *bytes,uint32_t *from,uint32_t *to) {
- kex_io_t io={.bytes=bytes};q2proto_svc_playerstate_t p={0};kex_put(&p,to,false);
+static q2proto_svc_playerstate_t kex_player_delta(uint32_t *from,uint32_t *to) {
+ q2proto_svc_playerstate_t p={0};kex_put(&p,to,false);
  for(int i=0;i<3;i++) {
   q2proto_var_coords_set_float_comp(&p.pm_origin.write.prev,i,kex_float(from[1+i]));
   q2proto_var_coords_set_float_comp(&p.pm_velocity.write.prev,i,kex_float(from[4+i]));
@@ -803,6 +803,10 @@ uint32_t kex_player_encode(uint8_t *bytes,uint32_t *from,uint32_t *to) {
         source += f' for(int i=0;i<{count};i++)if({compare})p.{name}.delta_bits|=1u<<i;\n'
     source += r'''
  for(int i=0;i<64;i++)if(from[42+i]!=to[42+i])p.statbits|=UINT64_C(1)<<i;
+ return p;
+}
+uint32_t kex_player_encode(uint8_t *bytes,uint32_t *from,uint32_t *to) {
+ kex_io_t io={.bytes=bytes};q2proto_svc_playerstate_t p=kex_player_delta(from,to);
  assert(kex_server_write_playerstate(NULL,(uintptr_t)&io,&p)==Q2P_ERR_SUCCESS);
  return io.size;
 }

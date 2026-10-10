@@ -566,7 +566,10 @@ pub fn read_q3(
         &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
         &ring.baselines,
         &mut ring.scratch,
-        1023,
+        MergeRules {
+            terminator: 1023,
+            remove_advances_old: false,
+        },
         |reader| {
             Ok(states::EntityHeader {
                 number: reader.read_bits(10)? as u16,
@@ -650,7 +653,10 @@ pub fn read_qw(
         &ring.entities[index * ring.capacity..index * ring.capacity + count],
         &ring.baselines,
         &mut ring.scratch,
-        0,
+        MergeRules {
+            terminator: 0,
+            remove_advances_old: false,
+        },
         |reader| {
             let mut header = states::read_qw_entity_header(reader)?;
             // CL_ParsePacketEntities casts MSG_ReadShort to unsigned short
@@ -682,6 +688,11 @@ pub fn read_qw(
 
 // The prefix and unchanged-row policy are native format data. The ordered
 // entity/baseline/removal merge is shared by every packet-frame decoder.
+struct MergeRules {
+    terminator: u16,
+    remove_advances_old: bool,
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Typed native codec entries keep the one hot merge monomorphized"
@@ -691,7 +702,7 @@ fn read_entities<const E: usize>(
     old: &[Entity<E>],
     baselines: &[[u32; E]],
     scratch: &mut [Entity<E>],
-    terminator: u16,
+    rules: MergeRules,
     mut header: impl FnMut(&mut Reader<'_>) -> Result<states::EntityHeader, packet::Error>,
     mut body: impl FnMut(
         &mut Reader<'_>,
@@ -707,7 +718,7 @@ fn read_entities<const E: usize>(
     loop {
         let prefix = header(reader)?;
         let number = prefix.number;
-        if number == terminator {
+        if number == rules.terminator {
             break;
         }
         if previous.is_some_and(|n| number <= n) {
@@ -723,8 +734,8 @@ fn read_entities<const E: usize>(
             append(scratch, entity, &mut count, &mut overflow);
             old_index += 1;
         }
-        let old_entity = old.get(old_index);
-        let from = if let Some(e) = old_entity.filter(|e| e.number == u32::from(number)) {
+        let matched = old.get(old_index).filter(|e| e.number == u32::from(number));
+        let from = if let Some(e) = matched {
             old_index += 1;
             e.words
         } else {
@@ -740,6 +751,10 @@ fn read_entities<const E: usize>(
                 &mut count,
                 &mut overflow,
             );
+        } else if rules.remove_advances_old && matched.is_none() {
+            // Native Q2 advances the old cursor on every U_REMOVE, including
+            // an unmatched number; QW/Q3 keep their own removal behaviour.
+            old_index += 1;
         }
     }
     while old_index < old.len() {
