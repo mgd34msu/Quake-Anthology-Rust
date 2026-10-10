@@ -1,6 +1,6 @@
 use super::{
     NativeAbi, NativeError, NativeImage, NativeRegion,
-    implementation::{NativeProcess, child_main},
+    implementation::{NativeProcess, child_main, executable_offset},
 };
 use std::{os::unix::process::ExitStatusExt, process::Command, time::Duration};
 
@@ -203,6 +203,61 @@ fn native_import_stops_before_engine_access_and_resumes_with_the_reply() {
         &process.memory().expect("parked")[4096..4104],
         &123u64.to_le_bytes()
     );
+}
+
+#[test]
+fn region_lookup_handles_the_full_sorted_table_and_gaps() {
+    let regions: Vec<_> = (0..65536)
+        .map(|i| NativeRegion {
+            offset: 8 + i * 16,
+            length: 8,
+            permissions: if i % 2 == 0 { 5 } else { 3 },
+        })
+        .collect();
+    assert!(!executable_offset(&regions, 0));
+    for (i, region) in regions.iter().enumerate() {
+        assert_eq!(executable_offset(&regions, region.offset), i % 2 == 0);
+        assert_eq!(executable_offset(&regions, region.offset + 7), i % 2 == 0);
+        assert!(!executable_offset(&regions, region.offset + 8));
+    }
+    assert!(!executable_offset(&regions, usize::MAX));
+}
+
+#[test]
+fn a_publication_without_self_stop_is_parked_before_engine_access() {
+    // Send an IMPORT packet directly, then loop without entering the trusted
+    // child callback. The controller must impose the stop before borrowing.
+    // mov rsi,rdi; mov eax,1; xor edi,edi; mov edx,136; syscall; jmp $
+    let mut process = child(
+        &[
+            0x48, 0x89, 0xfe, 0xb8, 1, 0, 0, 0, 0x31, 0xff, 0xba, 136, 0, 0, 0, 0x0f, 0x05, 0xeb,
+            0xfe,
+        ],
+        Duration::from_millis(200),
+    )
+    .unwrap();
+    let memory = process.memory_mut().unwrap();
+    let packet = &mut memory[4096..4096 + 136];
+    packet[..4].copy_from_slice(b"QARN");
+    packet[4] = 1;
+    packet[5] = 4;
+    packet[8..16].copy_from_slice(&1u64.to_le_bytes());
+    packet[16..24].copy_from_slice(&37u64.to_le_bytes());
+    let mut arguments = [0; 13];
+    arguments[0] = BASE + 4096;
+    let pid = process.pid();
+    let mut calls = 0;
+    let result = process.invoke(BASE, NativeAbi::SystemV, arguments, |call, _, memory| {
+        calls += 1;
+        assert_eq!(call.number, 37);
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+        memory[5000] = 9;
+        Ok(0)
+    });
+    assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
+    assert_eq!(calls, 1);
+    assert_eq!(process.pid(), 0);
 }
 
 #[test]

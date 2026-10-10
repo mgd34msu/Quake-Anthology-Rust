@@ -4,6 +4,7 @@ use crate::{
     hooks::Hooks,
     memory::{MemoryError, ModuleMemory},
 };
+use qa_core::primitives::Vec3;
 use qa_formats::program::quakec::{Image, Opcode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -400,7 +401,7 @@ impl Vm {
                         [0, 1, 2].map(|i| f32::from_bits(self.image.globals[b + i]))
                     };
                     self.image.globals[c] = (match op {
-                        MulV => av[0] * bv[0] + av[1] * bv[1] + av[2] * bv[2],
+                        MulV => Vec3(av).dot(Vec3(bv)),
                         EqV => boolean(av == bv),
                         NeV => boolean(av != bv),
                         _ => boolean(av == [0.0; 3]),

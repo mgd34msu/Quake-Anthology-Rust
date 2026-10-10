@@ -24,6 +24,37 @@ impl Builtins for Reject {
 }
 
 #[test]
+fn vector_dot_keeps_binary32_order_and_vector_add_keeps_overlap_order() {
+    use Opcode::*;
+    let bytes = program(&[(MulV, 28, 31, 30), (Return, 30, 0, 0)], &[0, 1]);
+    let mut vm = load(&bytes);
+    for (a, b) in [
+        ([1.0e20f32, 1.0, -1.0e20], [1.0, 1.0, 1.0]),
+        ([-0.0f32, -0.0, -0.0], [1.0, 2.0, 3.0]),
+        (
+            [f32::from_bits(1), f32::from_bits(2), 0.0],
+            [2.0, -1.0, 1.0],
+        ),
+        ([1.25f32, -2.5, 7.75], [0.1, 0.2, -0.3]),
+    ] {
+        vm.image.globals[28..31].copy_from_slice(&a.map(f32::to_bits));
+        vm.image.globals[31..34].copy_from_slice(&b.map(f32::to_bits));
+        let expected = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        assert_eq!(
+            vm.call(&mut Reject, 1, 100, false).unwrap()[0],
+            expected.to_bits()
+        );
+    }
+    let bytes = program(&[(AddV, 28, 31, 29), (Return, 29, 0, 0)], &[0, 1]);
+    let mut vm = load(&bytes);
+    vm.image.globals[28..34].copy_from_slice(&[1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0].map(f32::to_bits));
+    assert_eq!(
+        vm.call(&mut Reject, 1, 100, false).unwrap(),
+        [5.0f32, 10.0, 16.0].map(f32::to_bits)
+    );
+}
+
+#[test]
 fn bad_operands_load_but_only_executed_statements_trap_and_the_next_call_still_works() {
     use Opcode::*;
     let bytes = program(

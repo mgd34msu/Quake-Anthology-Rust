@@ -9,8 +9,7 @@ use std::{
     },
     process::{Child, Command, Stdio},
     ptr::NonNull,
-    sync::atomic::{AtomicI32, Ordering, compiler_fence},
-    time::{Duration, Instant},
+    sync::atomic::{Ordering, compiler_fence},
 };
 
 const PAGE: usize = 4096;
@@ -24,6 +23,14 @@ const REPLY: u8 = 6;
 const MAP: u8 = 7;
 const SIGSTOP: i32 = 19;
 const SIGCONT: i32 = 18;
+
+pub(super) fn executable_offset(regions: &[NativeRegion], offset: usize) -> bool {
+    regions
+        .partition_point(|r| r.offset <= offset)
+        .checked_sub(1)
+        .and_then(|index| regions.get(index))
+        .is_some_and(|r| r.permissions & 4 != 0 && offset - r.offset < r.length)
+}
 
 unsafe extern "C" {
     fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
@@ -174,7 +181,6 @@ pub struct NativeProcess {
     parked: bool,
     sequence: u64,
     callbacks: [u64; 2],
-    timeout: Duration,
     reaped: Option<std::process::ExitStatus>,
 }
 impl NativeProcess {
@@ -268,7 +274,6 @@ impl NativeProcess {
             parked: false,
             sequence: 0,
             callbacks: [0; 2],
-            timeout: image.timeout,
             reaped: None,
         };
         if let Err(error) = owner.start(&mapped) {
@@ -316,11 +321,7 @@ impl NativeProcess {
         address
             .checked_sub(self.base)
             .and_then(|o| usize::try_from(o).ok())
-            .is_some_and(|offset| {
-                self.regions.iter().any(|r| {
-                    r.permissions & 4 != 0 && offset >= r.offset && offset - r.offset < r.length
-                })
-            })
+            .is_some_and(|offset| executable_offset(&self.regions, offset))
     }
     pub fn memory(&self) -> Result<&[u8], NativeError> {
         if !self.parked {
@@ -346,13 +347,29 @@ impl NativeProcess {
         Ok(())
     }
     fn stop_boundary(&mut self) -> Result<(), NativeError> {
-        let start = Instant::now();
+        // The existing channel blocks until a publication or its timeout.
+        // Enforce the stop ourselves, rather than race a child's self-stop
+        // after publication. Even a forged packet cannot leave a writer running
+        // while the controller borrows shared bytes. No extra helper is needed.
+        // SAFETY: this unreaped PID belongs to the retained Child. ESRCH can
+        // mean it exited after publication; waitpid still collects that status.
+        if unsafe { kill(self.pid() as i32, SIGSTOP) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(3) {
+                return Err(error.into());
+            }
+        }
         loop {
             let mut status = 0;
-            // SAFETY: retained PID. WNOHANG|WUNTRACED bounds a missing stop.
-            let result = unsafe { waitpid(self.pid() as i32, &mut status, 1 | 2) };
+            // SAFETY: retained PID. WUNTRACED blocks on the kernel stop/exit
+            // notification following the controller's unmaskable SIGSTOP.
+            let result = unsafe { waitpid(self.pid() as i32, &mut status, 2) };
             if result < 0 {
-                return Err(io::Error::last_os_error().into());
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error.into());
             }
             if result != 0 {
                 if status & 255 == 127 && (status >> 8) & 255 == SIGSTOP {
@@ -368,10 +385,6 @@ impl NativeProcess {
                 }
                 return Err(NativeError::Protocol);
             }
-            if start.elapsed() >= self.timeout {
-                return Err(NativeError::Timeout);
-            }
-            std::thread::sleep(Duration::from_micros(50));
         }
     }
     pub fn invoke(
@@ -433,21 +446,13 @@ impl NativeProcess {
             self.parked = true;
             return NativeError::Exited(status);
         }
-        // The kernel may close the child's channel just before its exit status
-        // becomes waitable. Preserve that actual fault instead of racing it
-        // with our cleanup SIGKILL. A source cannot close/export this channel
-        // through the admitted syscall surface.
+        // A source cannot close/export the channel through the admitted
+        // syscall surface. EOF means the child is exiting; block for the real
+        // status rather than poll or race it with our cleanup SIGKILL.
         if matches!(&error, NativeError::Io(e) if e.kind() == io::ErrorKind::UnexpectedEof) {
-            let start = Instant::now();
-            loop {
-                if let Some(status) = child.try_wait().ok().flatten() {
-                    self.parked = true;
-                    return NativeError::Exited(status);
-                }
-                if start.elapsed() >= self.timeout {
-                    break;
-                }
-                std::thread::sleep(Duration::from_micros(50));
+            if let Ok(status) = child.wait() {
+                self.parked = true;
+                return NativeError::Exited(status);
             }
         }
         if let Some(status) = child.try_wait().ok().flatten() {
@@ -471,18 +476,7 @@ impl Drop for NativeProcess {
 }
 
 // The fixed protocol carries call words, never per-entity field caches.
-static CHILD_PID: AtomicI32 = AtomicI32::new(0);
 static CHILD_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn park() -> Result<(), NativeError> {
-    compiler_fence(Ordering::Release);
-    // SAFETY: self stop after publishing; waitpid enforces controller access.
-    if unsafe { kill(CHILD_PID.load(Ordering::Relaxed), SIGSTOP) } < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    compiler_fence(Ordering::Acquire);
-    Ok(())
-}
 
 fn import(number: u64, arguments: [u64; 13]) -> u64 {
     let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);
@@ -492,7 +486,7 @@ fn import(number: u64, arguments: [u64; 13]) -> u64 {
     let mut packet = Packet::new(IMPORT, sequence);
     packet.address = number;
     packet.arguments = arguments;
-    if packet.send(&mut stream).is_err() || park().is_err() {
+    if packet.send(&mut stream).is_err() {
         std::process::exit(125);
     }
     match Packet::receive(&mut stream) {
@@ -545,7 +539,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         return Err(io::Error::last_os_error().into());
     }
     let mut end = 0;
-    let mut executable = Vec::with_capacity(count);
+    let mut regions = Vec::with_capacity(count);
     for _ in 0..count {
         let region = Packet::receive(&mut stream)?;
         let offset = usize::try_from(region.address).map_err(|_| NativeError::Extent)?;
@@ -576,13 +570,14 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         {
             return Err(io::Error::last_os_error().into());
         }
-        if rights & 4 != 0 {
-            executable.push(offset..end);
-        }
+        regions.push(NativeRegion {
+            offset,
+            length: bytes,
+            permissions: rights as u8,
+        });
     }
     // SAFETY: native identity and guard are child-local, before foreign code.
     let pid = unsafe { getpid() };
-    CHILD_PID.store(pid, Ordering::Relaxed);
     for number in [4, 5, 7, 8, 11] {
         // SAFETY: reset the Rust runtime's stack-fault handlers in this child
         // before restricting syscalls. A native fault must terminate it rather
@@ -591,7 +586,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             return Err(io::Error::last_os_error().into());
         }
     }
-    guard(pid)?;
+    guard()?;
     let mut ready = Packet::new(READY, 0);
     ready.address = packet.address;
     ready.arguments[..5].copy_from_slice(&[
@@ -602,7 +597,6 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         microsoft_import as *const () as usize as u64,
     ]);
     ready.send(&mut stream)?;
-    park()?;
     loop {
         let packet = Packet::receive(&mut stream)?;
         let offset = usize::try_from(
@@ -615,7 +609,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         if packet.operation != INVOKE
             || packet.sequence == 0
             || packet.abi > 1
-            || !executable.iter().any(|r| r.contains(&offset))
+            || !executable_offset(&regions, offset)
         {
             return Err(NativeError::Protocol);
         }
@@ -665,7 +659,6 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         let mut reply = Packet::new(RETURN, packet.sequence);
         reply.value = value;
         reply.send(&mut stream)?;
-        park()?;
     }
 }
 
@@ -681,7 +674,7 @@ struct FilterProgram {
     length: u16,
     filters: *const Filter,
 }
-fn guard(pid: i32) -> Result<(), NativeError> {
+fn guard() -> Result<(), NativeError> {
     let load = |offset| Filter {
         code: 0x20,
         yes: 0,
@@ -706,7 +699,7 @@ fn guard(pid: i32) -> Result<(), NativeError> {
         no: 0,
         value: 0x00050000 | 1,
     };
-    // No native OS provider is enabled yet: admit only channel I/O, self stop,
+    // No native OS provider is enabled yet: admit only channel I/O,
     // signal return and exit. Fork/clone, descriptor export and remapping may
     // not leave a writer running while the engine borrows authoritative bytes.
     let filters = [
@@ -743,13 +736,6 @@ fn guard(pid: i32) -> Result<(), NativeError> {
         equal(45, 3),
         load(16),
         equal(0, 1),
-        allow(),
-        load(0),
-        equal(62, 5),
-        load(16),
-        equal(pid as u32, 3),
-        load(24),
-        equal(SIGSTOP as u32, 1),
         allow(),
         load(0),
         equal(60, 1),
