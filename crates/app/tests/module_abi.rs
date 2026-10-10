@@ -42,6 +42,7 @@ fn native_c_memory_calls_share_operations_and_keep_full_size_t_width() {
     let mut call = Invocation {
         services: &mut services,
         memory: &mut memory,
+        heap: None,
         context: context(),
         platform_time: EventTime(0),
         command: &[],
@@ -105,6 +106,50 @@ fn native_c_memory_calls_share_operations_and_keep_full_size_t_width() {
 }
 
 #[test]
+fn native_heap_calls_preserve_data_zero_calloc_and_keep_failed_realloc_live() {
+    use qa_compat::{abi::runtime::FIRST, memory::Heap};
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let base = 1 << 40;
+    let mut memory = ModuleMemory::load(base, 256, &[0xff; 256]).unwrap();
+    let mut heap = Heap::load(base, 256, 32).unwrap();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let mut invoke = |number, arguments: &[u64]| {
+        let mut call = Invocation {
+            services: &mut services,
+            memory: &mut memory,
+            heap: Some(&mut heap),
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            addresses: Addresses::NativeFunction,
+            arguments,
+        };
+        Q3_SERVER.invoke(number, &mut call, &mut unknown)
+    };
+    let first = invoke(FIRST + 14, &[17]).unwrap();
+    assert_eq!(first, base);
+    let zero = invoke(FIRST + 15, &[3, 16]).unwrap();
+    assert_eq!(zero, base + 32);
+    assert_eq!(invoke(FIRST + 1, &[first, 0xab, 17]), Ok(first));
+    assert_eq!(invoke(FIRST + 15, &[u64::MAX, 2]), Ok(0));
+    assert_eq!(invoke(FIRST + 16, &[first, 300]), Ok(0));
+    assert_eq!(invoke(FIRST + 17, &[first + 1]), Err(CallError::Memory));
+    assert_eq!(invoke(FIRST + 17, &[0]), Ok(0));
+    let moved = invoke(FIRST + 16, &[first, 96]).unwrap();
+    assert_ne!(moved, first);
+    assert_eq!(invoke(FIRST + 17, &[zero]), Ok(0));
+    assert_eq!(invoke(FIRST + 17, &[moved]), Ok(0));
+    assert_eq!(invoke(FIRST + 14, &[256]), Ok(base));
+    assert_eq!(memory.read(zero, 48).unwrap(), &[0; 48]);
+    assert_eq!(memory.read(moved, 17).unwrap(), &[0xab; 17]);
+    assert_eq!(unknown.calls, 0);
+}
+
+#[test]
 fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
     use qa_compat::abi::{QUAKEC, runtime::FIRST};
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
@@ -118,6 +163,7 @@ fn native_double_math_and_original_float_calls_keep_their_declared_bits() {
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
+            heap: None,
             context: context(),
             platform_time: EventTime(0),
             command: &[],
@@ -216,6 +262,7 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
+            heap: None,
             context: context(),
             platform_time: EventTime((u64::from(u32::MAX) + 8) * 1_000_000),
             command: &[b"native", b"arg"],
@@ -331,6 +378,7 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
         let mut call = Invocation {
             services: &mut services,
             memory: &mut memory,
+            heap: None,
             context: context(),
             platform_time: EventTime(0),
             command: &[],

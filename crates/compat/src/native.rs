@@ -1,7 +1,7 @@
 //! Native module exports and imports over the one owned-child backend.
 use crate::{
     abi::{Addresses, CallTable, Invocation, UnknownCalls},
-    memory::ModuleMemory,
+    memory::{Heap, ModuleMemory},
     services::{CallContext, CallError, EngineServices},
 };
 use qa_core::sys_events::EventTime;
@@ -39,6 +39,7 @@ pub struct Vm {
     pub process: NativeProcess,
     abi: NativeAbi,
     exports: Box<[Export]>,
+    heap: Option<Heap>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -62,7 +63,8 @@ impl Vm {
         if image.target.bits != 64 {
             return Err(Error::Process(NativeError::Unsupported));
         }
-        let runtime_imports = runtime::bind(&mut image, imports.len()).map_err(Error::Binding)?;
+        let (runtime_imports, heap) =
+            runtime::bind(&mut image, imports.len()).map_err(Error::Binding)?;
         let imports: Vec<_> = imports.iter().copied().chain(runtime_imports).collect();
         let targets = named
             .iter()
@@ -178,6 +180,7 @@ impl Vm {
             process,
             abi,
             exports,
+            heap,
         })
     }
     pub fn has_export(&self, ordinal: u32) -> bool {
@@ -214,6 +217,7 @@ impl Vm {
                 let mut invocation = Invocation {
                     services: calls.services,
                     memory: &mut memory,
+                    heap: self.heap.as_mut(),
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,

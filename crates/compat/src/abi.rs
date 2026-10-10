@@ -1,6 +1,6 @@
 //! Numbered boundary entries. QVM and native pointers share these handlers.
 use crate::{
-    memory::ModuleMemory,
+    memory::{Heap, ModuleMemory},
     quakec, qvm,
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
@@ -21,6 +21,7 @@ pub enum Addresses {
 pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
     pub memory: &'a mut ModuleMemory<'memory>,
+    pub heap: Option<&'a mut Heap>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -251,6 +252,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         let mut invocation = Invocation {
             services: self.services,
             memory: &mut vm.strings,
+            heap: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -309,6 +311,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
         let mut call = Invocation {
             services: self.services,
             memory: &mut vm.memory,
+            heap: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,

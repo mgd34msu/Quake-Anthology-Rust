@@ -1,4 +1,6 @@
 //! One module byte view over owned VM storage or stopped native backing.
+mod heap;
+pub use heap::Heap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemoryError;
 

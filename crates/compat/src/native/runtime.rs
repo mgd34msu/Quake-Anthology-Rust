@@ -2,7 +2,7 @@
 use super::elf::{self, Bindings, Definition, Pass};
 use crate::{
     abi::runtime::{FUNCTIONS, Function},
-    memory::ModuleMemory,
+    memory::{Heap, ModuleMemory},
 };
 use qa_core::{names::compare_folded, primitives::NameId};
 use qa_formats::program::native::{Encoding, Image};
@@ -27,6 +27,7 @@ fn library(image: &Image, id: NameId, function: Option<&Function>) -> bool {
                         b"libc.so.6".as_slice(),
                     ),
                     (b"api-ms-win-crt-memory-l1-1-0.dll", b"libc.so.6"),
+                    (b"api-ms-win-crt-heap-l1-1-0.dll", b"libc.so.6"),
                     (b"api-ms-win-crt-math-l1-1-0.dll", b"libm.so.6"),
                 ]
                 .iter()
@@ -55,7 +56,60 @@ fn import_error(
             .unwrap_or_default()
     )
 }
-pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<Vec<NativeImport<'static>>, String> {
+fn function(image: &Image, name: Option<NameId>) -> Option<&'static Function> {
+    let name = name.and_then(|id| image.names.get(id));
+    FUNCTIONS
+        .iter()
+        .find(|function| Some(function.name) == name)
+}
+pub(super) fn bind(
+    image: &mut Image,
+    prefix: usize,
+) -> Result<(Vec<NativeImport<'static>>, Option<Heap>), String> {
+    let needs_heap = match image.target.encoding {
+        Encoding::Pe => image
+            .imports
+            .iter()
+            .any(|import| function(image, import.name).is_some_and(|function| function.heap)),
+        Encoding::Elf => image.relocations.iter().any(|relocation| {
+            relocation.kind != 0
+                && relocation
+                    .symbol
+                    .and_then(|index| image.symbols.get(index))
+                    .filter(|symbol| !symbol.defined)
+                    .and_then(|symbol| function(image, symbol.name))
+                    .is_some_and(|function| function.heap)
+        }),
+    };
+    let heap = if needs_heap {
+        const BYTES: usize = 32 * 1024 * 1024;
+        let offset = image.bytes.len().div_ceil(qa_platform::native::PAGE_BYTES)
+            * qa_platform::native::PAGE_BYTES;
+        let end = offset
+            .checked_add(BYTES)
+            .filter(|&n| n <= 512 * 1024 * 1024)
+            .ok_or("native heap extent")?;
+        let base = image
+            .base
+            .checked_add(offset as u64)
+            .ok_or("native heap address")?;
+        let heap = Heap::load(base, BYTES, 65536).map_err(|_| "native heap reservation")?;
+        let mut bytes = std::mem::take(&mut image.bytes).into_vec();
+        bytes.resize(end, 0);
+        image.bytes = bytes.into_boxed_slice();
+        let mut regions = std::mem::take(&mut image.regions).into_vec();
+        regions.push(qa_formats::program::native::Region {
+            offset,
+            length: BYTES,
+            read: true,
+            write: true,
+            execute: false,
+        });
+        image.regions = regions.into_boxed_slice();
+        Some(heap)
+    } else {
+        None
+    };
     for &id in &image.needed {
         if !library(image, id, None) {
             return Err(format!(
@@ -75,11 +129,8 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<Vec<NativeImport<
                        provider: Option<NameId>,
                        version: Option<NameId>|
      -> Result<u64, String> {
-        let raw_name = name.and_then(|id| image.names.get(id));
-        let function = FUNCTIONS
-            .iter()
-            .find(|f| Some(f.name) == raw_name)
-            .ok_or_else(|| import_error(image, name, provider, version))?;
+        let function =
+            function(image, name).ok_or_else(|| import_error(image, name, provider, version))?;
         let supported_version = version.is_none_or(|id| {
             image
                 .names
@@ -163,5 +214,5 @@ pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<Vec<NativeImport<
                 .map_err(|_| "native import slot out of range")?;
         }
     }
-    Ok(imports)
+    Ok((imports, heap))
 }
