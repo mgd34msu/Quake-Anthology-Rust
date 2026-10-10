@@ -1124,12 +1124,97 @@ def fixture(tables):
     return output
 
 
+def compare_entity_headers(qsrc, evidence, probe):
+    """Cold IO bindings around the unchanged native entity-header functions."""
+    common = (qsrc / 'q2repro/q2proto/src/q2proto_internal_common.c').read_text()
+    protocol = (qsrc / 'q2repro/inc/common/protocol.h').read_text()
+    source = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+typedef int q2proto_error_t;
+#define BIT_ULL(n) (UINT64_C(1) << (n))
+#define Q2P_ERR_SUCCESS 0
+typedef struct {uint8_t bytes[7];uint32_t size,pos;} header_io_t;
+static void header_u8_write(uintptr_t arg,uint8_t value) {
+ header_io_t *io=(void*)arg;assert(io->size<7);io->bytes[io->size++]=value;
+}
+static void header_u16_write(uintptr_t arg,uint16_t value) {
+ header_u8_write(arg,value);header_u8_write(arg,value>>8);
+}
+static uint8_t header_u8_read(uintptr_t arg) {
+ header_io_t *io=(void*)arg;assert(io->pos<io->size);return io->bytes[io->pos++];
+}
+static uint16_t header_u16_read(uintptr_t arg) {
+ uint16_t lo=header_u8_read(arg);return lo|((uint16_t)header_u8_read(arg)<<8);
+}
+#define READ_CHECKED(scope,arg,dest,type) ((dest)=header_##type##_read(arg))
+#define WRITE_CHECKED(scope,arg,type,value) header_##type##_write(arg,value)
+static int bitcounts[32];
+#define MSG_ReadByte(m) header_u8_read((uintptr_t)m)
+#define MSG_ReadShort(m) ((int16_t)header_u16_read((uintptr_t)m))
+static header_io_t net_message;
+'''
+    source += '\n'.join(re.findall(r'^#define\s+U_[A-Z0-9_]+\s+.*$', protocol, re.M)) + '\n'
+    source += function(common, 'q2proto_common_server_write_entity_bits')
+    source += function(common, 'q2proto_common_client_read_entity_bits')
+    source += function((qsrc / 'quake-2/client/cl_ents.c').read_text(), 'CL_ParseEntityBits')
+    source += r'''
+int main(void) {
+ uint8_t mode;uint16_t number;uint64_t flags;
+ while(fread(&mode,1,1,stdin)==1) {
+  if(mode>1||fread(&number,2,1,stdin)!=1||fread(&flags,8,1,stdin)!=1)return 2;
+  header_io_t io={0};
+  assert(q2proto_common_server_write_entity_bits((uintptr_t)&io,flags,number)==0);
+  uint64_t decoded;uint16_t decoded_number;
+  if(mode)assert(q2proto_common_client_read_entity_bits((uintptr_t)&io,&decoded,&decoded_number)==0);
+  else {net_message=io;unsigned legacy_flags;decoded_number=CL_ParseEntityBits(&legacy_flags);decoded=legacy_flags;io.pos=net_message.pos;}
+  assert(io.pos==io.size);
+  fwrite(&io.size,4,1,stdout);fwrite(io.bytes,1,io.size,stdout);
+  fwrite(&decoded,8,1,stdout);fwrite(&decoded_number,2,1,stdout);
+ }
+ return ferror(stdin)?3:0;
+}
+'''
+    code = evidence / 'original-entity-headers.c'
+    code.write_text(source)
+    binary = evidence / 'original-entity-headers'
+    subprocess.run(['cc', '-O2', '-std=c11', str(code), '-o', str(binary)], check=True)
+    rng = random.Random(8601640)
+    data = bytearray()
+    continuations = sum(1 << bit for bit in (7, 15, 23, 31))
+    for mode in range(2):
+        for case in range(2048):
+            number = [0, 1, 255, 256, 1023, 8191, 65535][case % 7]
+            width = 40 if mode else 31
+            flags = ((1 << (case % width)) if case < width else rng.getrandbits(width)) & ~continuations
+            if case == 0:
+                flags = 0
+            data += struct.pack('<BHQ', mode, number, flags)
+    expected = subprocess.check_output([binary], input=data)
+    actual = subprocess.check_output([probe], input=data)
+    for name, contents in [('fixture.bin', data), ('original.bin', expected), ('rust.bin', actual)]:
+        (evidence / name).write_bytes(contents)
+    if actual != expected:
+        at = next((i for i, (a,b) in enumerate(zip(actual,expected)) if a != b), min(len(actual),len(expected)))
+        raise AssertionError(f'entity-prefix bytes/flags/numbers differ at output byte {at}')
+    result = dict(result='PASS', cases=4096, byte_exact=True, flags_and_numbers_exact=True,
+                  original='Unchanged q2proto common entity-bits writer/reader; unchanged original Q2 CL_ParseEntityBits on legacy masks; private bounded IO bindings and native constants',
+                  limits='Entity prefixes only; legacy masks omit its undefined bit31/fifth-byte extension. No entity bodies, frames, channel, protocol selection, module ABI or live/installed acceptance')
+    (evidence / 'comparison.json').write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(result))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--qsrc', type=Path, default=ROOT.parent / 'qsrc')
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--probe', type=Path, required=True)
+    parser.add_argument('--entity-headers', action='store_true', help='compare the shared four/five-byte entity prefix only')
     args = parser.parse_args(); args.evidence.mkdir(parents=True, exist_ok=True)
+    if args.entity_headers:
+        compare_entity_headers(args.qsrc, args.evidence, args.probe)
+        return
     binary, tables = compile_reference(args.qsrc, args.evidence)
     # Match the production table data against qsrc, rather than letting two copied lists agree.
     rust = (ROOT / 'crates/network/src/states.rs').read_text()

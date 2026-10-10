@@ -625,7 +625,7 @@ pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packe
         &mut ring.scratch,
         0,
         |reader| {
-            let header = states::read_q2_entity_header(reader)?;
+            let header = states::read_q2_entity_prefix(reader, false)?;
             if header.number >= 1024 {
                 return Err(packet::Error::Count);
             }

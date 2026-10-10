@@ -834,7 +834,10 @@ pub(crate) fn read_qw_entity_header(reader: &mut Reader<'_>) -> Result<EntityHea
     if flags & (1 << 14) == 0 && flags & (1 << 15) != 0 {
         flags |= reader.read_bits(8)?;
     }
-    Ok(EntityHeader { number, flags })
+    Ok(EntityHeader {
+        number,
+        flags: u64::from(flags),
+    })
 }
 pub(crate) fn read_qw_entity_body(
     reader: &mut Reader<'_>,
@@ -848,13 +851,8 @@ pub(crate) fn read_qw_entity_body(
         });
     }
     let mut words = *from;
-    words[11] = header.flags;
-    delta::read(
-        &QW_ENTITY_GROUP,
-        &mut words,
-        u64::from(header.flags),
-        reader,
-    )?;
+    words[11] = header.flags as u32;
+    delta::read(&QW_ENTITY_GROUP, &mut words, header.flags, reader)?;
     Ok(QwEntityDelta {
         number: header.number,
         words: Some(words),
@@ -886,10 +884,10 @@ pub const Q2_ENTITY_LAYOUT: [(&str, i8); 20] = [
 ];
 pub const Q2_ENTITY_WORDS: usize = Q2_ENTITY_LAYOUT.len();
 pub type Q2EntityDelta = EntityDelta<Q2_ENTITY_WORDS>;
-#[derive(Clone, Copy)]
-pub(crate) struct EntityHeader {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityHeader {
     pub number: u16,
-    pub flags: u32,
+    pub flags: u64,
 }
 static Q2_ENTITY_FIELDS: [Field; 21] = [
     Field::new(0, 8, 1 << 11, Value::Unsigned),
@@ -977,34 +975,42 @@ static Q2_ENTITY_GROUP: [Group<true, true, true>; 1] = [Group {
     fields: &Q2_ENTITY_FIELDS,
     presence: Presence::Fixed,
 }];
-const Q2_NUMBER16: u32 = 1 << 8;
-const Q2_REMOVE: u32 = 1 << 6;
-const Q2_MORE1: u32 = 1 << 7;
-const Q2_MORE2: u32 = 1 << 15;
-const Q2_MORE3: u32 = 1 << 23;
-fn write_q2_entity_prefix(
+const Q2_NUMBER16: u64 = 1 << 8;
+const Q2_REMOVE: u64 = 1 << 6;
+/// Native entity header shared by Q2-34 and the extended rerelease dialects.
+/// `extended` selects the fifth flags byte at the negotiated protocol boundary.
+/// Entity-number admission remains the connection's independent native limit.
+pub fn write_q2_entity_prefix(
     writer: &mut Writer<'_>,
-    number: u32,
-    mut flags: u32,
-) -> Result<u32, Error> {
-    if flags & 0xff00_0000 != 0 {
-        flags |= Q2_MORE1 | Q2_MORE2 | Q2_MORE3;
-    } else if flags & 0x00ff_0000 != 0 {
-        flags |= Q2_MORE1 | Q2_MORE2;
-    } else if flags & 0x0000_ff00 != 0 {
-        flags |= Q2_MORE1;
+    number: u16,
+    mut flags: u64,
+    extended: bool,
+) -> Result<u64, Error> {
+    let octets = if extended { 5 } else { 4 };
+    if flags >> (octets * 8) != 0 {
+        return Err(Error {
+            byte: writer.size(),
+            kind: crate::message::ErrorKind::Width,
+        });
     }
-    writer.write_bits(flags, 8)?;
-    if flags & Q2_MORE1 != 0 {
-        writer.write_bits(flags >> 8, 8)?;
+    if number >= 256 {
+        flags |= Q2_NUMBER16;
     }
-    if flags & Q2_MORE2 != 0 {
-        writer.write_bits(flags >> 16, 8)?;
+    for byte in 1..octets {
+        if flags >> (byte * 8) != 0 {
+            flags |= 1 << (byte * 8 - 1);
+        }
     }
-    if flags & Q2_MORE3 != 0 {
-        writer.write_bits(flags >> 24, 8)?;
+    writer.write_bits(flags as u32, 8)?;
+    for byte in 1..octets {
+        if flags & (1 << (byte * 8 - 1)) != 0 {
+            writer.write_bits((flags >> (byte * 8)) as u32, 8)?;
+        }
     }
-    writer.write_bits(number, if flags & Q2_NUMBER16 != 0 { 16 } else { 8 })?;
+    writer.write_bits(
+        u32::from(number),
+        if flags & Q2_NUMBER16 != 0 { 16 } else { 8 },
+    )?;
     Ok(flags)
 }
 pub fn write_q2_entity(
@@ -1020,17 +1026,11 @@ pub fn write_q2_entity(
     }
     let number_flag = if number >= 256 { Q2_NUMBER16 } else { 0 };
     let Some(to) = to else {
-        write_q2_entity_prefix(writer, number, Q2_REMOVE | number_flag)?;
+        write_q2_entity_prefix(writer, number as u16, Q2_REMOVE | number_flag, false)?;
         return Ok(true);
     };
-    let mut flags = delta::mask::<true, true, true, false>(
-        &Q2_ENTITY_FIELDS,
-        from,
-        to,
-        u64::from(number_flag),
-        15,
-        3,
-    ) as u32;
+    let mut flags =
+        delta::mask::<true, true, true, false>(&Q2_ENTITY_FIELDS, from, to, number_flag, 15, 3);
     if new_entity || to[7] & 128 != 0 {
         flags |= 1 << 24;
     }
@@ -1038,28 +1038,27 @@ pub fn write_q2_entity(
     if flags == 0 && !force {
         return Ok(false);
     }
-    let flags = write_q2_entity_prefix(writer, number, flags)?;
-    delta::write(&Q2_ENTITY_GROUP, from, to, u64::from(flags), writer)?;
+    let flags = write_q2_entity_prefix(writer, number as u16, flags, false)?;
+    delta::write(&Q2_ENTITY_GROUP, from, to, flags, writer)?;
     Ok(true)
 }
 pub fn read_q2_entity(
     reader: &mut Reader<'_>,
     from: &[u32; Q2_ENTITY_WORDS],
 ) -> Result<Q2EntityDelta, Error> {
-    let header = read_q2_entity_header(reader)?;
+    let header = read_q2_entity_prefix(reader, false)?;
     read_q2_entity_body(reader, header, from)
 }
 
-pub(crate) fn read_q2_entity_header(reader: &mut Reader<'_>) -> Result<EntityHeader, Error> {
-    let mut flags = reader.read_bits(8)?;
-    if flags & Q2_MORE1 != 0 {
-        flags |= reader.read_bits(8)? << 8;
-    }
-    if flags & Q2_MORE2 != 0 {
-        flags |= reader.read_bits(8)? << 16;
-    }
-    if flags & Q2_MORE3 != 0 {
-        flags |= reader.read_bits(8)? << 24;
+pub fn read_q2_entity_prefix(
+    reader: &mut Reader<'_>,
+    extended: bool,
+) -> Result<EntityHeader, Error> {
+    let mut flags = u64::from(reader.read_bits(8)?);
+    for byte in 1..if extended { 5 } else { 4 } {
+        if flags & (1 << (byte * 8 - 1)) != 0 {
+            flags |= u64::from(reader.read_bits(8)?) << (byte * 8);
+        }
     }
     let number = reader.read_bits(if flags & Q2_NUMBER16 != 0 { 16 } else { 8 })? as u16;
     Ok(EntityHeader { number, flags })
@@ -1085,7 +1084,7 @@ pub(crate) fn read_q2_entity_body(
         });
     }
     let mut words = q2_unchanged_entity(from);
-    delta::read(&Q2_ENTITY_GROUP, &mut words, u64::from(flags), reader)?;
+    delta::read(&Q2_ENTITY_GROUP, &mut words, flags, reader)?;
     Ok(Q2EntityDelta {
         number,
         words: Some(words),
@@ -1216,7 +1215,7 @@ pub(crate) fn read_nq_entity_header(reader: &mut Reader<'_>) -> Result<EntityHea
     }
     Ok(EntityHeader {
         number: number as u16,
-        flags,
+        flags: u64::from(flags),
     })
 }
 pub(crate) fn read_nq_entity_body(
@@ -1227,7 +1226,7 @@ pub(crate) fn read_nq_entity_body(
     let EntityHeader { number, flags } = header;
     let mut words = *baseline;
     words[11] = u32::from(flags & (1 << 5) != 0);
-    delta::read(&NQ_ENTITY_GROUP, &mut words, u64::from(flags), reader)?;
+    delta::read(&NQ_ENTITY_GROUP, &mut words, flags, reader)?;
     Ok(NqEntityUpdate {
         number,
         words: Some(words),
