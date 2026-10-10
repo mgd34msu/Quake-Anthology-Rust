@@ -51,7 +51,7 @@ impl Default for SurfaceMaterial {
 
 pub struct World {
     pub(crate) geometry: geometry::WorldGeometry,
-    pub(crate) visibility: VisibilityWorld,
+    pub(crate) visibility: std::sync::Arc<VisibilityWorld>,
     pub(crate) mesh: ModelId,
     pub(crate) bindings: Box<[SurfaceBinding]>,
 }
@@ -61,6 +61,10 @@ impl World {
     }
     pub fn visibility(&self) -> &VisibilityWorld {
         &self.visibility
+    }
+    /// Cold sharing keeps module queries on the same immutable loaded tree.
+    pub fn shared_visibility(&self) -> std::sync::Arc<VisibilityWorld> {
+        self.visibility.clone()
     }
     pub fn mesh(&self) -> ModelId {
         self.mesh

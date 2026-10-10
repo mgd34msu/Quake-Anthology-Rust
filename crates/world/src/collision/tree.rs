@@ -68,6 +68,7 @@ struct Frame {
 /// All mutable query state belongs to this caller, never to loaded geometry.
 pub(super) struct BrushScratch {
     frames: Box<[Frame]>,
+    leaf_walk: crate::leaves::LeafScratch,
     stamps: StampSet,
     position_leaves: Box<[u32]>,
 }
@@ -76,6 +77,7 @@ impl BrushScratch {
     pub(crate) fn new(depth: usize, brushes: usize, position_capacity: usize) -> Self {
         Self {
             frames: vec![Frame::default(); depth].into_boxed_slice(),
+            leaf_walk: crate::leaves::LeafScratch::new(depth),
             stamps: StampSet::new(brushes),
             position_leaves: vec![0; position_capacity].into_boxed_slice(),
         }
@@ -348,30 +350,18 @@ impl Topology {
         limit: usize,
         scratch: &mut BrushScratch,
     ) -> usize {
-        let mut top = 1;
-        let mut count = 0;
-        scratch.frames[0].node = root;
-        while top != 0 && count < limit {
-            top -= 1;
-            let child = scratch.frames[top].node;
-            if child < 0 {
-                scratch.position_leaves[count] = leaf_index(child) as u32;
-                count += 1;
-                continue;
-            }
-            let node = self.nodes[child as usize];
-            let sides = box_sides(bounds, self.planes[node.plane as usize]);
-            // Native position collection visits front0 before back1.
-            if sides & 2 != 0 {
-                scratch.frames[top].node = node.children[1];
-                top += 1;
-            }
-            if sides & 1 != 0 {
-                scratch.frames[top].node = node.children[0];
-                top += 1;
-            }
-        }
-        count
+        scratch
+            .leaf_walk
+            .query(
+                root,
+                bounds,
+                &mut scratch.position_leaves[..limit],
+                |child| {
+                    let node = self.nodes[child as usize];
+                    (self.planes[node.plane as usize], node.children)
+                },
+            )
+            .map_or(0, |result| result.count)
     }
 
     fn sweep(
@@ -497,35 +487,6 @@ fn unit_fraction(mut fraction: f32) -> f32 {
         fraction = 1.0;
     }
     fraction
-}
-
-fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
-    if let Some(axis) = plane.axis {
-        let axis = axis_index(axis);
-        if plane.distance <= bounds.mins.0[axis] {
-            return 1;
-        }
-        if plane.distance >= bounds.maxs.0[axis] {
-            return 2;
-        }
-        return 3;
-    }
-    let far = Vec3(std::array::from_fn(|axis| {
-        if plane.normal.0[axis] < 0.0 {
-            bounds.mins.0[axis]
-        } else {
-            bounds.maxs.0[axis]
-        }
-    }));
-    let near = Vec3(std::array::from_fn(|axis| {
-        if plane.normal.0[axis] < 0.0 {
-            bounds.maxs.0[axis]
-        } else {
-            bounds.mins.0[axis]
-        }
-    }));
-    u8::from(plane.normal.dot(far) >= plane.distance)
-        | (u8::from(plane.normal.dot(near) < plane.distance) << 1)
 }
 
 #[cfg(test)]

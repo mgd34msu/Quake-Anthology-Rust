@@ -58,6 +58,20 @@ fn two_leaves(pvs: PvsRows) -> VisibilityWorld {
 }
 
 #[test]
+fn box_queries_use_the_loaded_visibility_leaf_metadata() {
+    let world = two_leaves(PvsRows::all_visible(2));
+    let mut scratch = qa_world::leaves::LeafScratch::new(world.node_count() + 1);
+    let mut leaves = [u32::MAX; 2];
+    let result = world
+        .box_leaves(whole(), &mut leaves, &mut scratch)
+        .unwrap();
+    assert_eq!((result.count, result.top_node), (2, 0));
+    assert_eq!(leaves, [0, 1]);
+    assert_eq!(world.leaf(leaves[0]).unwrap().selector, Some(0));
+    assert_eq!(world.leaf(leaves[1]).unwrap().selector, Some(1));
+}
+
+#[test]
 fn rows_use_native_zero_runs_and_missing_rows_are_all_visible() {
     let rows = PvsRows::load(vec![Some(0); 16], vec![0, 2]).unwrap();
     let mut destination = [99; 2];

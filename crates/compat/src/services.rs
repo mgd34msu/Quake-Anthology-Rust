@@ -10,7 +10,8 @@ use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{
-        ClientId, EffectEvent, EntityId, GeometryId, ModuleId, NameId, PrintKind, SoundEvent, Vec3,
+        Bounds, ClientId, EffectEvent, EntityId, GeometryId, ModuleId, NameId, PrintKind,
+        SoundEvent, Vec3,
     },
     text::FixedText,
 };
@@ -221,6 +222,10 @@ pub struct EngineServices<'a> {
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
     pub world: Option<(GeometryId, u32)>,
+    pub visibility: Option<(
+        &'a qa_world::visibility::VisibilityWorld,
+        &'a mut qa_world::leaves::LeafScratch,
+    )>,
     pub scratch: &'a mut TraceScratch,
 }
 
@@ -235,6 +240,11 @@ pub type CvarRegisterCall =
 pub type ResourceIndexCall =
     fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
 pub struct EngineCallTable {
+    pub box_leaves: fn(
+        &mut EngineServices<'_>,
+        Bounds,
+        &mut [u32],
+    ) -> Result<qa_world::leaves::BoxLeaves, CallError>,
     pub print: PrintCall,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
@@ -260,6 +270,12 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    box_leaves: |s, bounds, output| {
+        let (world, scratch) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
+        world
+            .box_leaves(bounds, output, scratch)
+            .ok_or(CallError::Capacity)
+    },
     print: |s, c, k, t| s.print(c, k, t),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),

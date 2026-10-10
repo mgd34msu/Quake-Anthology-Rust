@@ -210,11 +210,7 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
             }],
         )
         .unwrap();
-    runtime.collision = Some(WorldCollision {
-        geometry,
-        index: 0,
-        scratch: runtime.geometry.scratch(),
-    });
+    runtime.collision = Some(WorldCollision::new(&runtime.geometry, geometry, 0));
     let mut local = [None; SeatId::COUNT];
     for (seat, rules, y) in [
         (SeatId::FIRST, RuleSetId::Quake3, 0.0),

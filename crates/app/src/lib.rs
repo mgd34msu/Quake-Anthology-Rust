@@ -45,6 +45,8 @@ pub struct WorldCollision {
     pub geometry: GeometryId,
     pub index: u32,
     pub scratch: qa_world::collision::TraceScratch,
+    pub visibility: Option<std::sync::Arc<qa_world::visibility::VisibilityWorld>>,
+    pub leaves: qa_world::leaves::LeafScratch,
 }
 
 impl WorldCollision {
@@ -58,7 +60,17 @@ impl WorldCollision {
             geometry,
             index,
             scratch,
+            visibility: None,
+            leaves: qa_world::leaves::LeafScratch::new(1),
         }
+    }
+    pub fn with_visibility(
+        mut self,
+        world: std::sync::Arc<qa_world::visibility::VisibilityWorld>,
+    ) -> Self {
+        self.leaves = qa_world::leaves::LeafScratch::new(world.node_count() + 1);
+        self.visibility = Some(world);
+        self
     }
 }
 
@@ -70,6 +82,7 @@ impl Runtime {
         scratch: &'a mut qa_world::collision::TraceScratch,
     ) -> qa_compat::services::EngineServices<'a> {
         let (cvars, commands) = console.module_parts();
+        let world = self.collision.as_mut();
         qa_compat::services::EngineServices {
             server: &mut self.server,
             cvars,
@@ -77,10 +90,13 @@ impl Runtime {
             vfs: &self.vfs,
             storage,
             geometry: &self.geometry,
-            world: self
-                .collision
-                .as_ref()
-                .map(|world| (world.geometry, world.index)),
+            world: world.as_ref().map(|world| (world.geometry, world.index)),
+            visibility: world.and_then(|world| {
+                world
+                    .visibility
+                    .as_deref()
+                    .map(|visibility| (visibility, &mut world.leaves))
+            }),
             scratch,
         }
     }

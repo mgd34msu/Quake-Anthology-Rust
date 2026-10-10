@@ -405,11 +405,14 @@ fn run() -> Result<(), String> {
             loaded.collision_bounds,
         )
         .map_err(|e| format!("world area: {e:?}"))?;
-        runtime.collision = Some(qa_app::WorldCollision::new(
-            &runtime.geometry,
-            loaded.collision,
-            0,
-        ));
+        runtime.collision = Some(
+            qa_app::WorldCollision::new(&runtime.geometry, loaded.collision, 0).with_visibility(
+                assets
+                    .world(loaded.render.world)
+                    .ok_or("missing loaded world")?
+                    .shared_visibility(),
+            ),
+        );
         if loaded.spawns.len() < seat_count {
             return Err(format!(
                 "map has {} distinct spawn anchors for {seat_count} local seats",

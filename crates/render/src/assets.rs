@@ -626,7 +626,7 @@ impl Assets {
         let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
         self.worlds.push(World {
             geometry,
-            visibility,
+            visibility: visibility.into(),
             mesh,
             bindings: bindings.into_boxed_slice(),
         });

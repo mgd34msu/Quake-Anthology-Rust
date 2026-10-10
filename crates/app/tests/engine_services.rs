@@ -125,6 +125,81 @@ fn duplicate_module_config_ranges_are_rejected_at_load() {
 }
 
 #[test]
+fn module_leaf_queries_share_the_immutable_world_and_reject_missing_geometry() {
+    use qa_core::primitives::{Bounds, Vec3};
+    use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[], 0).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let bounds = Bounds {
+        mins: Vec3([-8.0; 3]),
+        maxs: Vec3([8.0; 3]),
+    };
+    let mut output = [u32::MAX; 1];
+    {
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        assert_eq!(
+            (ENGINE_CALLS.box_leaves)(&mut services, bounds, &mut output),
+            Err(CallError::Geometry)
+        );
+    }
+    let shared = std::sync::Arc::new(
+        VisibilityWorld::load(
+            vec![],
+            vec![],
+            vec![VisLeaf {
+                selector: Some(0),
+                area: Some(7),
+                solid: false,
+                bounds,
+                surfaces: SurfaceSpan::default(),
+            }],
+            vec![],
+            0,
+            -1,
+            PvsRows::all_visible(1),
+        )
+        .unwrap(),
+    );
+    runtime.collision = Some(
+        qa_app::WorldCollision::new(
+            &runtime.geometry,
+            qa_core::primitives::GeometryId {
+                slot: 0,
+                generation: 1,
+            },
+            0,
+        )
+        .with_visibility(shared.clone()),
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &shared,
+        runtime
+            .collision
+            .as_ref()
+            .unwrap()
+            .visibility
+            .as_ref()
+            .unwrap()
+    ));
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let result = (ENGINE_CALLS.box_leaves)(&mut services, bounds, &mut output).unwrap();
+    assert_eq!((result.count, result.top_node, output[0]), (1, -1, 0));
+    assert_eq!(
+        services
+            .visibility
+            .as_ref()
+            .unwrap()
+            .0
+            .leaf(output[0])
+            .unwrap()
+            .area,
+        Some(7)
+    );
+}
+
+#[test]
 fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();

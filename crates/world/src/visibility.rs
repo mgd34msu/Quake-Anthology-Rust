@@ -165,6 +165,18 @@ pub struct VisibilityWorld {
 }
 
 impl VisibilityWorld {
+    pub fn box_leaves(
+        &self,
+        bounds: Bounds,
+        output: &mut [u32],
+        scratch: &mut crate::leaves::LeafScratch,
+    ) -> Option<crate::leaves::BoxLeaves> {
+        scratch.query(self.root, bounds, output, |child| {
+            let node = self.nodes[child as usize];
+            (self.planes[node.plane as usize], node.children)
+        })
+    }
+
     pub fn point_in_leaf(&self, point: Vec3) -> Option<u32> {
         if point.0.iter().any(|value| !value.is_finite()) {
             return None;
