@@ -10,6 +10,7 @@ allocation-tracking = ["qa-platform/allocation-tracking", "qa-console/lookup-tra
 
 [dependencies]
 qa-core = { path = "../core" }
+qa-audio = { path = "../audio" }
 qa-compat = { path = "../compat" }
 qa-platform = { path = "../platform" }
 qa-console = { path = "../console" }

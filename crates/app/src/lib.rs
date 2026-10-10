@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod catalog;
 pub mod client_policy;
 pub mod host;
@@ -17,6 +18,7 @@ use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
 
 pub struct Runtime {
+    pub sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     pub catalog: catalog::GameplayCatalog,
     pub vfs: Vfs,
     /// Exact map entity sources in load order, retained for native module import.
@@ -115,6 +117,7 @@ impl Runtime {
         ))
         .map_err(|e| format!("loopback: {e:?}"))?;
         Ok(Self {
+            sound_bank: None,
             catalog,
             vfs: Vfs::default(),
             entity_sources: Vec::new(),

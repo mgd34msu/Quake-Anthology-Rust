@@ -2,6 +2,9 @@
 use qa_core::primitives::Pcm;
 use std::num::NonZeroU32;
 
+mod mixer;
+pub use mixer::{Bank, Listener, MixCounts, Mixer};
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {
     InvalidPcm,

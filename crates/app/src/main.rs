@@ -53,12 +53,16 @@ fn run() -> Result<(), String> {
     let mut console_source_explicit = false;
     let mut content_priority = 0i32;
     let mut startup_sets = Vec::new();
+    let mut precache_sounds = Vec::new();
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--precache-sound" => {
+                precache_sounds.push(args.next().ok_or("--precache-sound needs a virtual path")?);
+            }
             "+set" => {
                 let cvars = &mut console.cvars;
                 let name = args.next().ok_or("+set needs a cvar name")?;
@@ -436,6 +440,13 @@ fn run() -> Result<(), String> {
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
     let mut host = FrameHost::load(console, runtime, world_rate, Vec::new())?;
+    let bank = qa_app::audio::load_bank(
+        &host.runtime.vfs,
+        &precache_sounds,
+        client_module.unwrap_or(host.console.cvars.context().source),
+    )?;
+    host.runtime.sound_bank = Some(std::sync::Arc::clone(&bank));
+    let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
     for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {
         *world = client.and(render_world);
@@ -533,6 +544,7 @@ fn run() -> Result<(), String> {
                 pump: &mut pump,
                 window: &mut window,
                 renderer: &mut renderer,
+                audio: &mut audio,
             },
             uncapped,
         );
@@ -763,6 +775,16 @@ fn run() -> Result<(), String> {
     println!(
         "{{\"event\":\"normal_exit\",\"frames\":{completed},\"key_downs\":{},\"key_repeats\":{}}}",
         host.key_downs, host.key_repeats
+    );
+    println!(
+        "{{\"event\":\"audio_output\",\"started\":{},\"stopped\":{},\"invalid\":{},\"full\":{},\"mixed_frames\":{},\"submissions\":{},\"blocked\":{}}}",
+        audio.mixer.counts.started,
+        audio.mixer.counts.stopped,
+        audio.mixer.counts.invalid,
+        audio.mixer.counts.full,
+        audio.mixer.counts.frames,
+        audio.submissions,
+        audio.blocked,
     );
     Ok(())
 }

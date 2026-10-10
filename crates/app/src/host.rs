@@ -36,6 +36,13 @@ pub trait FrameSource {
     fn sound(&mut self, _event: SoundEvent) -> bool {
         false
     }
+    fn listeners(
+        &mut self,
+        _listeners: &[Option<qa_audio::Listener>; SeatId::COUNT],
+        _volume: f32,
+    ) {
+    }
+    fn mix_audio(&mut self) {}
     fn effect(&mut self, _event: EffectEvent) -> bool {
         false
     }
@@ -49,8 +56,18 @@ pub struct LiveFrame<'a> {
     pub pump: &'a mut EventPump,
     pub window: &'a mut Window,
     pub renderer: &'a mut crate::renderer::Renderer,
+    pub audio: &'a mut crate::audio::Output,
 }
 impl FrameSource for LiveFrame<'_> {
+    fn sound(&mut self, event: SoundEvent) -> bool {
+        self.audio.mixer.sound(event)
+    }
+    fn listeners(&mut self, listeners: &[Option<qa_audio::Listener>; SeatId::COUNT], volume: f32) {
+        self.audio.mixer.listen(listeners, volume);
+    }
+    fn mix_audio(&mut self) {
+        self.audio.submit();
+    }
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
         self.pump.send_udp(socket, to, bytes).is_ok()
     }
@@ -98,6 +115,7 @@ pub struct FrameHost {
     input_handles: crate::profile::InputHandles,
     notify_time: CvarHandle,
     center_time: CvarHandle,
+    volume: CvarHandle,
     previous: Option<EventTime>,
     timeline: Timeline,
     providers: Box<[Provider]>,
@@ -120,11 +138,13 @@ pub struct FrameResult {
 
 impl FrameHost {
     pub fn load(
-        console: Console<Runtime>,
+        mut console: Console<Runtime>,
         mut runtime: Runtime,
         world_rate: TickRate,
         mut providers: Vec<Provider>,
     ) -> Result<Self, String> {
+        console.register("play", crate::audio::play);
+        let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
         let maxfps = console
             .cvars
@@ -173,6 +193,7 @@ impl FrameHost {
             input_handles,
             notify_time,
             center_time,
+            volume,
             previous: None,
             timeline,
             providers: providers.into_boxed_slice(),
@@ -327,6 +348,19 @@ impl FrameHost {
     }
 
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
+        let listeners = std::array::from_fn(|seat| {
+            let client = self.local_clients[seat]?;
+            let row = self.runtime.server.clients.get(client.0 as usize)?;
+            row.connection?;
+            let player = &self.runtime.prediction[seat].player;
+            Some(qa_audio::Listener {
+                client,
+                entity: Some(row.entity),
+                origin: player.body.position + player.view_offset,
+                right: qa_core::math::angle_vectors(player.view_angles).right,
+            })
+        });
+        source.listeners(&listeners, self.console.cvars.value(self.volume));
         result.output = crate::output::dispatch(
             &mut self.runtime,
             source,
@@ -336,6 +370,7 @@ impl FrameHost {
             f64::from(self.console.cvars.value(self.center_time)),
         );
         result.output_drains += 1;
+        source.mix_audio();
     }
 
     pub fn drain(&mut self, result: &mut FrameResult) {
