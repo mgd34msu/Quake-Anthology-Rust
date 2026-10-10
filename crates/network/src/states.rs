@@ -1094,10 +1094,29 @@ pub fn read_q2_entity_prefix(
     Ok(EntityHeader { number, flags })
 }
 
-pub(crate) fn q2_unchanged_entity<const N: usize>(from: &[u32; N]) -> [u32; N] {
+fn q2_entity_base<const N: usize>(from: &[u32; N]) -> [u32; N] {
     let mut words = *from;
-    words[14..17].copy_from_slice(&from[8..11]);
     words[18] = 0;
+    words
+}
+fn q2_entity_origin<const N: usize>(
+    from: &[u32; N],
+    words: &mut [u32; N],
+    flags: u64,
+    beam_origin: bool,
+) {
+    if flags & (1 << 24) == 0 {
+        let origin = if beam_origin && words[7] & 128 != 0 {
+            &from[14..17]
+        } else {
+            &from[8..11]
+        };
+        words[14..17].copy_from_slice(origin);
+    }
+}
+pub(crate) fn q2_unchanged_entity<const N: usize>(from: &[u32; N], beam_origin: bool) -> [u32; N] {
+    let mut words = q2_entity_base(from);
+    q2_entity_origin(from, &mut words, 0, beam_origin);
     words
 }
 
@@ -1113,8 +1132,9 @@ pub(crate) fn read_q2_entity_body(
             words: None,
         });
     }
-    let mut words = q2_unchanged_entity(from);
+    let mut words = q2_entity_base(from);
     delta::read(&Q2_ENTITY_GROUP, &mut words, flags, reader)?;
+    q2_entity_origin(from, &mut words, flags, false);
     Ok(Q2EntityDelta {
         number,
         words: Some(words),
@@ -1442,14 +1462,23 @@ fn read_q2_extended_entity<const KEX: bool>(
     from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
     demo: bool,
 ) -> Result<Q2RereleaseEntityDelta, Error> {
-    let EntityHeader { number, flags } = read_q2_entity_prefix(reader, true)?;
+    let header = read_q2_entity_prefix(reader, true)?;
+    read_q2_extended_entity_body::<KEX>(reader, header, from, demo)
+}
+pub(crate) fn read_q2_extended_entity_body<const KEX: bool>(
+    reader: &mut Reader<'_>,
+    header: EntityHeader,
+    from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
+    demo: bool,
+) -> Result<Q2RereleaseEntityDelta, Error> {
+    let EntityHeader { number, flags } = header;
     if flags & Q2_REMOVE != 0 {
         return Ok(Q2RereleaseEntityDelta {
             number,
             words: None,
         });
     }
-    let mut words = q2_unchanged_entity(from);
+    let mut words = q2_entity_base(from);
     if KEX {
         delta::read(&Q2_KEX_ENTITY_START, &mut words, flags, reader)?;
         delta::read(kex_effects(flags), &mut words, flags, reader)?;
@@ -1475,9 +1504,7 @@ fn read_q2_extended_entity<const KEX: bool>(
         flags,
         reader,
     )?;
-    if flags & (1 << 24) == 0 && words[7] & 128 != 0 {
-        words[14..17].copy_from_slice(&from[14..17]);
-    }
+    q2_entity_origin(from, &mut words, flags, true);
     Ok(Q2RereleaseEntityDelta {
         number,
         words: Some(words),

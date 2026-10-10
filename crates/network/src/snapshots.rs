@@ -6,7 +6,7 @@ use crate::{
     states,
 };
 mod q2;
-pub use q2::Q2Header;
+pub use q2::{Q2Header, Q2KexFrame, Q2KexRing, read_q2_kex};
 
 pub const SLOTS: usize = 32;
 
@@ -598,66 +598,25 @@ pub fn read_q3(
 /// Protocol-34 svc_frame body. Unlike Q3, its frame number is carried in the
 /// payload and its native server time is frame * 100 milliseconds.
 pub fn read_q2(reader: &mut Reader<'_>, ring: &mut Q2Ring) -> Result<bool, packet::Error> {
-    let (header, area_bytes) = Q2Header::read::<false>(reader, &mut ring.scratch_areas, 32)?;
-    let Q2Header {
-        sequence,
-        delta,
-        flags,
-        ..
-    } = header;
-    let base_index = delta as usize & (SLOTS - 1);
-    let full = delta <= 0;
-    let old = if full {
-        Slot::ZERO
-    } else {
-        ring.slots[base_index]
-    };
-    // Original CL_ParseFrame tests sequence and parsed-row age independently
-    // of old.valid. Invalid frames are retained but never exposed to callers.
-    let base_valid = full
-        || (old.sequence == Some(delta as u32)
-            && !ring
-                .retained_rows
-                .is_some_and(|n| ring.parsed_rows.saturating_sub(old.first_entity) > n));
-    let player = states::read_q2_player(reader, &old.player)?;
-    if reader.read_bits(8)? != 18 {
-        return Err(packet::Error::Opcode);
-    }
-    let (count, overflow) = read_entities(
+    q2::read_records::<false, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>(
         reader,
-        &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
-        &ring.baselines,
-        &mut ring.scratch,
-        0,
-        |reader| {
-            let header = states::read_q2_entity_prefix(reader, false)?;
-            if header.number >= 1024 {
-                return Err(packet::Error::Count);
-            }
-            Ok(header)
+        ring,
+        q2::ReadRules {
+            area_limit: 32,
+            entity_limit: 1024,
+            entity_opcode: true,
+            extended_header: false,
+            valid_base: false,
         },
+        |reader, from, _| states::read_q2_player(reader, from),
         |reader, header, from| Ok(states::read_q2_entity_body(reader, header, from)?.words),
-        states::q2_unchanged_entity,
-    )?;
-    Ok(ring.publish_received(
-        Slot {
-            sequence: Some(sequence),
-            valid: false,
-            time: qa_core::primitives::ThinkTime::Milliseconds(i64::from(
+        |from| states::q2_unchanged_entity(from, false),
+        |sequence| {
+            qa_core::primitives::ThinkTime::Milliseconds(i64::from(
                 (sequence as i32).wrapping_mul(100),
-            )),
-            command: 0,
-            flags,
-            area_bytes,
-            count,
-            first_entity: 0,
-            player,
-            ..Slot::ZERO
+            ))
         },
-        base_valid,
-        overflow,
-        true,
-    ))
+    )
 }
 
 /// Body after svc_packetentities (delta=false) or svc_deltapacketentities.

@@ -1,8 +1,14 @@
-use super::read_areas;
+use super::{Frame, Ring, SLOTS, Slot, read_areas, read_entities};
 use crate::{
     commands::packet,
     message::{Reader, Writer},
+    states,
 };
+use qa_core::primitives::ThinkTime;
+
+const KEX_PLAYER: usize = 42 + states::Q2_RR_STATS;
+pub type Q2KexRing = Ring<KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
+pub type Q2KexFrame<'a> = Frame<'a, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 
 /// Native svc_frame prefix. Protocol 34 and KEX retain full frame numbers;
 /// protocol 1038 packs a 27-bit frame and a five-bit delta offset. These are
@@ -13,6 +19,123 @@ pub struct Q2Header {
     pub delta: i32,
     pub flags: u8,
     pub player_flags: u8,
+}
+
+pub(super) struct ReadRules {
+    pub area_limit: usize,
+    pub entity_limit: usize,
+    pub entity_opcode: bool,
+    pub extended_header: bool,
+    pub valid_base: bool,
+}
+
+/// Retail KEX 2023 frame after svc_frame; `demo` selects the 2022 coordinate
+/// table. Native clock conversion is supplied by the connection, independently
+/// of map format or movement. No alternate player or entity store is created.
+pub fn read_q2_kex(
+    reader: &mut Reader<'_>,
+    ring: &mut Q2KexRing,
+    demo: bool,
+    time: impl FnOnce(u32) -> ThinkTime,
+) -> Result<bool, packet::Error> {
+    read_records::<false, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
+        reader,
+        ring,
+        ReadRules {
+            area_limit: 255,
+            entity_limit: 8192,
+            entity_opcode: true,
+            extended_header: true,
+            valid_base: true,
+        },
+        |reader, from, _| {
+            let mut old = states::Q2KexPlayer::default();
+            let fields = old.words.len();
+            old.words.copy_from_slice(&from[..fields]);
+            old.stats.copy_from_slice(&from[fields..]);
+            let decoded = states::read_q2_kex_player(reader, &old)?;
+            let mut words = [0; KEX_PLAYER];
+            words[..fields].copy_from_slice(&decoded.words);
+            words[fields..].copy_from_slice(&decoded.stats);
+            Ok(words)
+        },
+        |reader, header, from| {
+            Ok(states::read_q2_extended_entity_body::<true>(reader, header, from, demo)?.words)
+        },
+        |from| states::q2_unchanged_entity(from, true),
+        time,
+    )
+}
+
+/// The one Q2 frame receive path. The scalar record tables and native boundary
+/// rules vary; base validation, retention, merging and publication do not.
+pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
+    reader: &mut Reader<'_>,
+    ring: &mut Ring<P, E>,
+    rules: ReadRules,
+    player: impl FnOnce(&mut Reader<'_>, &[u32; P], u8) -> Result<[u32; P], crate::message::Error>,
+    body: impl Fn(
+        &mut Reader<'_>,
+        states::EntityHeader,
+        &[u32; E],
+    ) -> Result<Option<[u32; E]>, packet::Error>,
+    unchanged: impl Fn(&[u32; E]) -> [u32; E],
+    time: impl FnOnce(u32) -> ThinkTime,
+) -> Result<bool, packet::Error> {
+    let (header, area_bytes) =
+        Q2Header::read::<PACKED>(reader, &mut ring.scratch_areas, rules.area_limit)?;
+    if rules.valid_base && (header.sequence as i32) < 0 {
+        return Err(packet::Error::Count);
+    }
+    let base_index = header.delta as usize & (SLOTS - 1);
+    let full = header.delta <= 0;
+    let old = if full {
+        Slot::ZERO
+    } else {
+        ring.slots[base_index]
+    };
+    // Classic CL_ParseFrame ignores old.valid; the enhanced client also
+    // rejects an invalid base and a delta from the current frame.
+    let base_valid = full
+        || (old.sequence == Some(header.delta as u32)
+            && (!rules.valid_base || (old.valid && header.delta as u32 != header.sequence))
+            && !ring
+                .retained_rows
+                .is_some_and(|n| ring.parsed_rows.saturating_sub(old.first_entity) > n));
+    let player = player(reader, &old.player, header.player_flags)?;
+    if rules.entity_opcode && reader.read_bits(8)? != 18 {
+        return Err(packet::Error::Opcode);
+    }
+    let (count, overflow) = read_entities(
+        reader,
+        &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
+        &ring.baselines,
+        &mut ring.scratch,
+        0,
+        |reader| {
+            let header = states::read_q2_entity_prefix(reader, rules.extended_header)?;
+            if usize::from(header.number) >= rules.entity_limit {
+                return Err(packet::Error::Count);
+            }
+            Ok(header)
+        },
+        body,
+        unchanged,
+    )?;
+    Ok(ring.publish_received(
+        Slot {
+            sequence: Some(header.sequence),
+            time: time(header.sequence),
+            flags: header.flags,
+            area_bytes,
+            count,
+            player,
+            ..Slot::ZERO
+        },
+        base_valid,
+        overflow,
+        true,
+    ))
 }
 
 impl Q2Header {
