@@ -64,7 +64,7 @@ fn lifecycle_host(budget: u64) -> FrameHost {
 fn lifecycle_host_in(
     budget: u64,
     phase: Phase,
-    api: Option<qa_app::modules::VersionCheck>,
+    api: Option<qa_app::modules::ApiCheck>,
 ) -> FrameHost {
     use qa_app::modules::{Argument, Export};
     use qa_formats::program::qvm::Opcode::*;
@@ -247,9 +247,9 @@ fn client_exports_run_once_per_client_frame_instead_of_catching_up_server_ticks(
 
 #[test]
 fn ui_api_version_is_checked_before_initialization_and_failure_stops_client_calls() {
-    use qa_app::modules::{Argument, Export, State, VersionCheck};
+    use qa_app::modules::{ApiCheck, Argument, Export, State};
     for (accepted, running, expected_calls) in [(&[4, 6][..], true, 3), (&[4][..], false, 1)] {
-        let api = VersionCheck {
+        let api = ApiCheck::Version {
             export: Export {
                 callback: CallbackId(0),
                 arguments: [Argument::Word(0); 9],

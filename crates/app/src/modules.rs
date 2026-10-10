@@ -67,7 +67,7 @@ pub struct ModuleRequest {
     /// Load-selected callbacks, before version checks and game initialization.
     pub prepare: Vec<Export>,
     pub initialize: Option<Export>,
-    pub api: Option<VersionCheck>,
+    pub api: Option<ApiCheck>,
     pub shutdown: Vec<Export>,
     pub instruction_budget: u64,
     pub configstrings: usize,
@@ -87,9 +87,22 @@ pub enum Phase {
     Server,
     Client,
 }
-pub struct VersionCheck {
-    pub export: Export,
-    pub accepted: &'static [i32],
+#[derive(Clone, Copy)]
+pub enum ApiCheck {
+    Version {
+        export: Export,
+        accepted: &'static [i32],
+    },
+    NativeTable {
+        export: Export,
+    },
+}
+impl ApiCheck {
+    fn export(self) -> Export {
+        match self {
+            Self::Version { export, .. } | Self::NativeTable { export } => export,
+        }
+    }
 }
 #[derive(Clone, Copy)]
 pub enum Argument {
@@ -196,7 +209,7 @@ impl FrameHost {
                     .chain(&request.shutdown)
                     .copied()
                     .chain(request.initialize)
-                    .chain(request.api.as_ref().map(|api| api.export))
+                    .chain(request.api.map(ApiCheck::export))
                     .any(|export| export.callback.0 as usize >= request.entries.len())
                 || request.instruction_budget == 0
             {
@@ -222,7 +235,10 @@ impl FrameHost {
             }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &request.program
-                && request.entries.iter().any(|&entry| !vm.has_export(entry))
+                && request
+                    .entries
+                    .iter()
+                    .any(|&entry| !vm.declares_export(entry))
             {
                 return Err("invalid native export".into());
             }
@@ -335,10 +351,7 @@ impl FrameHost {
             if phase.is_some_and(|phase| row.request.phase != phase) {
                 continue;
             }
-            let api = (!shutdown)
-                .then_some(row.request.api.as_ref())
-                .flatten()
-                .map(|api| (api.export, api.accepted));
+            let api = (!shutdown).then_some(row.request.api).flatten();
             let initialize = row.request.initialize;
             let time = module_time(row.request.context.clock, self.time);
             let module = ModuleId(index as u16);
@@ -346,23 +359,12 @@ impl FrameHost {
                 if shutdown {
                     return Ok(());
                 }
-                api.map_or(Ok(()), |(export, accepted)| {
-                    self.call_module_export(module, export, time)?;
-                    let value = match self.module_counts(module).and_then(|c| c.last_result) {
-                        Some(ModuleResult::Qvm(value)) => Some(value),
-                        Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
-                        _ => None,
-                    };
-                    value
-                        .filter(|v| accepted.contains(v))
-                        .map(|_| ())
-                        .ok_or(CallError::Rejected)
-                })
-                .and_then(|()| {
-                    initialize.map_or(Ok(()), |export| {
-                        self.call_module_export(module, export, time)
+                api.map_or(Ok(()), |api| self.check_module_api(module, api, time))
+                    .and_then(|()| {
+                        initialize.map_or(Ok(()), |export| {
+                            self.call_module_export(module, export, time)
+                        })
                     })
-                })
             });
             if let Some(row) = self.modules.as_mut().and_then(|m| m.rows[index].as_mut()) {
                 if result.is_err() {
@@ -375,6 +377,41 @@ impl FrameHost {
                 } else {
                     State::Failed
                 };
+            }
+        }
+    }
+    fn check_module_api(
+        &mut self,
+        module: ModuleId,
+        api: ApiCheck,
+        time: ThinkTime,
+    ) -> Result<(), CallError> {
+        self.call_module_export(module, api.export(), time)?;
+        let row = self
+            .modules
+            .as_mut()
+            .and_then(|modules| modules.rows[module.0 as usize].as_mut())
+            .ok_or(CallError::MissingModule)?;
+        match api {
+            ApiCheck::Version { accepted, .. } => {
+                let value = match row.counts.last_result {
+                    Some(ModuleResult::Qvm(value)) => Some(value),
+                    Some(ModuleResult::Native(value)) => Some(value as u32 as i32),
+                    _ => None,
+                };
+                value
+                    .filter(|value| accepted.contains(value))
+                    .map(|_| ())
+                    .ok_or(CallError::Rejected)
+            }
+            ApiCheck::NativeTable { .. } => {
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                if let (Program::Native { vm, .. }, Some(ModuleResult::Native(address))) =
+                    (&mut row.request.program, row.counts.last_result)
+                {
+                    return vm.bind_table(address).map_err(|_| CallError::Rejected);
+                }
+                Err(CallError::Rejected)
             }
         }
     }

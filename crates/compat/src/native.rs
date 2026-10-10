@@ -14,6 +14,8 @@ use std::time::Duration;
 
 pub mod elf;
 mod runtime;
+mod table;
+pub use table::{ReturnedTable, TableFunction};
 
 #[derive(Clone, Copy)]
 struct Export {
@@ -21,6 +23,26 @@ struct Export {
     /// vmMain command selectors are declared at binding; ordinary exports
     /// receive only their native arguments.
     command: Option<u32>,
+}
+impl Export {
+    fn bind(
+        process: &NativeProcess,
+        abi: NativeAbi,
+        address: u64,
+        parameters: &[NativeScalar],
+        result: NativeScalar,
+        command: Option<u32>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            entry: process
+                .bind(address, abi, parameters, result)
+                .map_err(|error| match error {
+                    NativeError::Extent => Error::Export,
+                    error => Error::Process(error),
+                })?,
+            command,
+        })
+    }
 }
 #[derive(Clone, Copy)]
 pub struct LifecycleCall {
@@ -43,7 +65,8 @@ pub enum Error {
 pub struct Vm {
     pub process: NativeProcess,
     abi: NativeAbi,
-    exports: Box<[Export]>,
+    exports: Box<[Option<Export>]>,
+    table: Option<table::Table>,
     heap: Option<Heap>,
     initialize: Box<[LifecycleCall]>,
     finalize: Box<[LifecycleCall]>,
@@ -203,27 +226,17 @@ impl Vm {
             timeout,
         })
         .map_err(Error::Process)?;
-        if bindings
-            .iter()
-            .any(|&(address, _, _, _)| !process.executable(address))
-        {
-            return Err(Error::Export);
-        }
         let exports = bindings
             .into_iter()
             .map(|(address, parameters, result, command)| {
-                Ok(Export {
-                    entry: process
-                        .bind(address, abi, parameters, result)
-                        .map_err(Error::Process)?,
-                    command,
-                })
+                Export::bind(&process, abi, address, parameters, result, command).map(Some)
             })
             .collect::<Result<Box<[_]>, Error>>()?;
         Ok(Self {
             process,
             abi,
             exports,
+            table: None,
             heap: runtime.heap,
             initialize: initialize.into_boxed_slice(),
             finalize: finalize.into_boxed_slice(),
@@ -235,7 +248,7 @@ impl Vm {
     pub fn finalizers(&self) -> &[LifecycleCall] {
         &self.finalize
     }
-    pub fn has_export(&self, ordinal: u32) -> bool {
+    pub fn declares_export(&self, ordinal: u32) -> bool {
         (ordinal as usize) < self.exports.len()
     }
     pub fn import_callback(&self) -> u64 {
@@ -247,7 +260,12 @@ impl Vm {
         ordinal: u32,
         arguments: &[u64],
     ) -> Result<u64, Error> {
-        let export = *self.exports.get(ordinal as usize).ok_or(Error::Export)?;
+        let export = self
+            .exports
+            .get(ordinal as usize)
+            .copied()
+            .flatten()
+            .ok_or(Error::Export)?;
         let first = usize::from(export.command.is_some());
         // Session dispatch supplies a fixed-capacity common payload. The
         // load-selected native entry admits only its declared argument slots;

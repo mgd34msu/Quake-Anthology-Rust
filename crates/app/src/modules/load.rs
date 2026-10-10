@@ -1,5 +1,5 @@
 //! Cold module-file conversion; map and player roles do not select it.
-use super::{Argument, Export, ModuleRequest, Phase, Program, VersionCheck};
+use super::{ApiCheck, Argument, Export, ModuleRequest, Phase, Program};
 use crate::Runtime;
 use qa_compat::{
     abi::{Q3_CLIENT, Q3_SERVER, Q3_UI},
@@ -194,7 +194,7 @@ pub fn load_q3(
                 1,
                 5,
                 2,
-                Some(VersionCheck {
+                Some(ApiCheck::Version {
                     export: Export {
                         callback: CallbackId(0),
                         arguments: [Argument::Word(0); 9],

@@ -1285,6 +1285,134 @@ fn scalar_native_export_results_survive_session_dispatch() {
         );
     }
 }
+
+fn q2_table_file() -> Vec<u8> {
+    // API 3 x86-64 layout from quake-2/game/game.h: version at 0,
+    // Init/Shutdown at 8/16, RunFrame at 112, edict metadata through 148.
+    let mut file = function_file(Encoding::Pe, &[0x48, 0x8d, 0x05, 0x79, 7, 0, 0, 0xc3]);
+    file.resize(4608, 0);
+    put(&mut file, 392 + 16, 4096, 4);
+    pe_rva(&mut file, 0x1800, 3, 4);
+    for (offset, target) in [(8, 0x1400), (16, 0x1440), (112, 0x1480)] {
+        pe_rva(&mut file, 0x1800 + offset, 0x180000000 + target, 8);
+    }
+    // Init writes 1; RunFrame adds 2 and clears its original table pointer.
+    // The second frame must still use the cached checked entry.
+    pe_text(
+        &mut file,
+        0x1400,
+        &[0xc7, 0x05, 0xf6, 4, 0, 0, 1, 0, 0, 0, 0xc3],
+    );
+    pe_text(
+        &mut file,
+        0x1480,
+        &[
+            0x83, 0x05, 0x79, 4, 0, 0, 2, 0x48, 0xc7, 0x05, 0xde, 3, 0, 0, 0, 0, 0, 0, 0xc3,
+        ],
+    );
+    // Shutdown requires Init + two frames = 5, otherwise UD2 traps.
+    pe_text(
+        &mut file,
+        0x1440,
+        &[0x83, 0x3d, 0xb9, 4, 0, 0, 5, 0x74, 2, 0x0f, 0x0b, 0xc3],
+    );
+    file
+}
+
+fn returned_native_tables_bind_once_and_isolate_bad_apis() {
+    use qa_app::modules::ApiCheck;
+    use qa_compat::native::{ReturnedTable, TableFunction};
+    for bad in 0..5 {
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let mut requests = Vec::new();
+        for id in [ModuleId(1), ModuleId(2)] {
+            let mut file = q2_table_file();
+            if id == ModuleId(1) {
+                match bad {
+                    0 => pe_rva(&mut file, 0x1800, 99, 4),
+                    1 => pe_rva(&mut file, 0x1800 + 112, 0, 8),
+                    2 => pe_rva(&mut file, 0x1800 + 112, 0x180000080, 8),
+                    // Return a table that extends beyond the image, or an
+                    // unaligned address. Both reject before initialization.
+                    3 => pe_rva(&mut file, 0x1083, 0xf69, 4),
+                    _ => pe_rva(&mut file, 0x1083, 0x77a, 4),
+                }
+            }
+            let image = Image::parse(&file, None, LoadRole::Library).unwrap();
+            let mut vm = Vm::map_image(
+                image,
+                &[NamedExport {
+                    name: b"GetGameAPI",
+                    command: None,
+                    parameters: &[NativeScalar::Word],
+                    result: NativeScalar::Word,
+                }],
+                &[],
+                Duration::from_secs(3),
+            )
+            .unwrap();
+            let first = vm
+                .declare_table(ReturnedTable {
+                    version: 3,
+                    bytes: 152,
+                    functions: [8, 16, 112]
+                        .map(|offset| TableFunction {
+                            offset,
+                            parameters: &[],
+                            result: NativeScalar::Void,
+                        })
+                        .into(),
+                })
+                .unwrap();
+            assert_eq!(first, 1);
+            assert_eq!(vm.table_address(), None);
+            let mut request = request(
+                &mut runtime,
+                id,
+                RuleSetId::Quake2,
+                TickRate::fixed(100).unwrap(),
+                vm,
+            );
+            request.entries = (0..4).collect();
+            request.context.clock = EntityTime::Seconds(0.0);
+            request.frame = CallbackId(first + 2);
+            let export = |callback| Export {
+                callback: CallbackId(callback),
+                arguments: [Argument::Word(0); 9],
+            };
+            request.api = Some(ApiCheck::NativeTable { export: export(0) });
+            request.initialize = Some(export(first));
+            request.shutdown = vec![export(first + 1)];
+            requests.push(request);
+        }
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            requests,
+        )
+        .unwrap();
+        let mut source = Source {
+            time: EventTime(0),
+            polls: 0,
+        };
+        for (tick, calls) in [(0, 2), (100, 3), (200, 4)] {
+            source.time = EventTime(tick * 1_000_000);
+            host.frame(&mut source, true);
+            assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
+            assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+            assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, calls);
+            assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+        }
+        host.shutdown_modules();
+        assert_eq!(host.module_state(ModuleId(2)), Some(State::Stopped));
+        assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 5);
+        assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+        host.shutdown_modules();
+        assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 5);
+    }
+}
 struct Source {
     time: EventTime,
     polls: u32,
@@ -1409,5 +1537,6 @@ pub fn run() {
     native_heap_imports_share_owned_memory_through_session_dispatch();
     elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_module();
     elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets();
+    returned_native_tables_bind_once_and_isolate_bad_apis();
     println!("native session dispatch checks passed");
 }
