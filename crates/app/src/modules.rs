@@ -17,7 +17,7 @@ use qa_world::entities::EntityTime;
 use std::sync::Arc;
 
 mod load;
-pub use load::{QuakeCSpec, QvmRole, QvmSpec, load_quakec, load_qvm};
+pub use load::{Q3Role, Q3Spec, QuakeCSpec, load_q3, load_quakec};
 
 pub enum Program {
     Qvm {

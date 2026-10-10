@@ -154,6 +154,9 @@ impl Vm {
     pub fn has_export(&self, ordinal: u32) -> bool {
         (ordinal as usize) < self.exports.len()
     }
+    pub fn import_callback(&self) -> u64 {
+        self.process.callback(self.abi)
+    }
     pub fn call(
         &mut self,
         calls: &mut NativeCalls<'_, '_>,

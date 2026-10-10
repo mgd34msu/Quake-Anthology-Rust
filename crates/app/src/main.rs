@@ -55,18 +55,18 @@ fn run() -> Result<(), String> {
     let mut startup_sets = Vec::new();
     let mut precache_sounds = Vec::new();
     let mut quakec_modules = Vec::new();
-    let mut qvm_modules = Vec::new();
+    let mut q3_modules = Vec::new();
     #[cfg(feature = "proof")]
     let mut script = None;
     let mut pump = EventPump::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--qvm-module" => {
-                qvm_modules.push(qa_app::modules::QvmSpec::parse(
+            "--qvm-module" | "--q3-module" => {
+                q3_modules.push(qa_app::modules::Q3Spec::parse(
                     &args
                         .next()
-                        .ok_or("--qvm-module needs game:path, cgame:seat:path or ui:path")?,
+                        .ok_or("Q3 module needs game:path, cgame:seat:path or ui:path")?,
                 )?);
             }
             "--quakec-module" => {
@@ -456,9 +456,9 @@ fn run() -> Result<(), String> {
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
     let mut module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
-    if !qvm_modules.is_empty() {
+    if !q3_modules.is_empty() {
         let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
-        qa_app::modules::load_qvm(&mut runtime, &qvm_modules, &mut module_requests, rate)?;
+        qa_app::modules::load_q3(&mut runtime, &q3_modules, &mut module_requests, rate)?;
     }
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
     for (index, spec) in quakec_modules.iter().enumerate() {
@@ -469,7 +469,7 @@ fn run() -> Result<(), String> {
             spec.rules.name()
         );
     }
-    for (index, spec) in qvm_modules.iter().enumerate() {
+    for (index, spec) in q3_modules.iter().enumerate() {
         println!(
             "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"q3\",\"role\":\"{:?}\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
             quakec_modules.len() + index + 1,
@@ -747,7 +747,7 @@ fn run() -> Result<(), String> {
         }
     }
     host.shutdown_modules();
-    for index in 0..quakec_modules.len() + qvm_modules.len() {
+    for index in 0..quakec_modules.len() + q3_modules.len() {
         if let Some(counts) = host.module_counts(qa_core::primitives::ModuleId((index + 1) as u16))
         {
             println!(

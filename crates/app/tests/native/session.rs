@@ -25,7 +25,7 @@ use std::time::Duration;
 mod native_image;
 use native_image::*;
 
-fn function_image(encoding: Encoding, code: &[u8]) -> Image {
+fn function_file(encoding: Encoding, code: &[u8]) -> Vec<u8> {
     match encoding {
         Encoding::Elf => {
             let (mut file, tags) = elf_symbol_fixture(64);
@@ -38,7 +38,7 @@ fn function_image(encoding: Encoding, code: &[u8]) -> Image {
             file[0x1ac0..0x1ac8].fill(0);
             file[0x1300..0x1308].copy_from_slice(&[0x48, 0x89, 0x3d, 0xb9, 0x07, 0, 0, 0xc3]);
             elf_dynamic(&mut file, 64, &tags);
-            Image::parse(&file, Some(0x2000_0000), LoadRole::Library).unwrap()
+            file
         }
         Encoding::Pe => {
             let mut file = pe_export_fixture(64);
@@ -50,9 +50,36 @@ fn function_image(encoding: Encoding, code: &[u8]) -> Image {
             pe_rva(&mut file, 0x1164, 1, 2);
             pe_text(&mut file, 0x11b0, b"dllEntry\0");
             file[704..712].copy_from_slice(&[0x48, 0x89, 0x0d, 0xb9, 0x06, 0, 0, 0xc3]);
-            Image::parse(&file, None, LoadRole::Library).unwrap()
+            file
         }
     }
+}
+
+fn function_image(encoding: Encoding, code: &[u8]) -> Image {
+    let file = function_file(encoding, code);
+    Image::parse(
+        &file,
+        (encoding == Encoding::Elf).then_some(0x2000_0000),
+        LoadRole::Library,
+    )
+    .unwrap()
+}
+
+fn print_code(encoding: Encoding) -> [u8; 30] {
+    // Load syscall pointer from shared RAM, print its shared text, then return.
+    // SysV: sub rsp,8; mov rax,[rip+1781]; mov edi,0; lea rsi,[rip+1785]; call rax; add rsp,8; ret
+    // Microsoft: reserve the 32-byte shadow area too, and use rcx/rdx.
+    let mut code = [
+        0x48, 0x83, 0xec, 8, 0x48, 0x8b, 0x05, 0xf5, 0x06, 0, 0, 0xbf, 0, 0, 0, 0, 0x48, 0x8d,
+        0x35, 0xf9, 0x06, 0, 0, 0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3,
+    ];
+    if encoding == Encoding::Pe {
+        code[3] = 40;
+        code[11] = 0xb9;
+        code[18] = 0x15;
+        code[28] = 40;
+    }
+    code
 }
 
 fn module(
@@ -63,22 +90,11 @@ fn module(
     text: &[u8],
     encoding: Encoding,
 ) -> ModuleRequest {
-    // Load syscall pointer from shared RAM, print its shared text, then return.
-    // SysV: sub rsp,8; mov rax,[rip+1781]; mov edi,0; lea rsi,[rip+1785]; call rax; add rsp,8; ret
-    // Microsoft: reserve the 32-byte shadow area too, and use rcx/rdx.
-    let mut code = [
-        0x48, 0x83, 0xec, 8, 0x48, 0x8b, 0x05, 0xf5, 0x06, 0, 0, 0xbf, 0, 0, 0, 0, 0x48, 0x8d,
-        0x35, 0xf9, 0x06, 0, 0, 0xff, 0xd0, 0x48, 0x83, 0xc4, 8, 0xc3,
-    ];
-    let (name, abi) = match encoding {
-        Encoding::Elf => (b"vmMain".as_slice(), NativeAbi::SystemV),
-        Encoding::Pe => {
-            code[3] = 40;
-            code[11] = 0xb9;
-            code[18] = 0x15;
-            code[28] = 40;
-            (b"GetGameAPI".as_slice(), NativeAbi::Microsoft)
-        }
+    let code = print_code(encoding);
+    let name = if encoding == Encoding::Elf {
+        b"vmMain".as_slice()
+    } else {
+        b"GetGameAPI".as_slice()
     };
     let image = function_image(encoding, &code);
     let at = (image.symbol(name).unwrap().address - image.base) as usize + 0x700;
@@ -97,7 +113,7 @@ fn module(
         Duration::from_secs(3),
     )
     .unwrap();
-    let pointer = vm.process.callback(abi);
+    let pointer = vm.import_callback();
     let memory = vm.process.memory_mut().expect("parked native backing");
     assert_eq!(&memory[at..at + 8], &[0; 8]);
     memory[at + 16..at + 16 + text.len()].copy_from_slice(text);
@@ -325,6 +341,108 @@ fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
         Err(qa_compat::native::Error::Export)
     ));
 }
+
+fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
+    use qa_app::modules::{Q3Spec, load_q3};
+    struct Files(std::path::PathBuf);
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let files =
+        Files(std::env::temp_dir().join(format!("qa-native-modules-{}", std::process::id())));
+    std::fs::create_dir(&files.0).unwrap();
+    let mut specs = Vec::new();
+    for (encoding, file_name, message) in [
+        (Encoding::Elf, "qagame.so", b"ELF cold\n\0".as_slice()),
+        (Encoding::Pe, "qagame.dll", b"PE cold\n\0".as_slice()),
+    ] {
+        let code = print_code(encoding);
+        let mut file = function_file(encoding, &code);
+        match encoding {
+            Encoding::Elf => {
+                put(&mut file, 64 + 3 * 56, 0, 4); // no native TLS dependency
+                file[0x1ad0..0x1ad0 + message.len()].copy_from_slice(message);
+            }
+            Encoding::Pe => {
+                put(&mut file, 168, 0, 4); // no DllMain/CRT initializer
+                put(&mut file, 392 + 16, 4096, 4);
+                file.resize(4608, 0);
+                pe_text(&mut file, 0x1190, b"vmMain\0");
+                pe_text(&mut file, 0x1790, message);
+            }
+        }
+        std::fs::write(files.0.join(file_name), &file).unwrap();
+        specs.push(Q3Spec::parse(&format!("game:{file_name}")).unwrap());
+    }
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    let observer = runtime
+        .server
+        .events
+        .bind(OutputTarget::Module(ModuleId(7)))
+        .unwrap();
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &specs,
+        &mut requests,
+        TickRate::fixed(50).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert!(matches!(request.program, Program::Native { .. }));
+        assert_eq!(request.timing_rules, RuleSetId::Quake3);
+        assert_eq!(request.phase, Phase::Server);
+        assert_eq!(request.prepare.unwrap().callback, CallbackId(11));
+    }
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    source.time = EventTime(50_000_000);
+    host.frame(&mut source, true);
+    host.shutdown_modules();
+    for id in [ModuleId(1), ModuleId(2)] {
+        assert_eq!(host.module_state(id), Some(State::Stopped));
+        assert_eq!(
+            (
+                host.module_counts(id).unwrap().calls,
+                host.module_counts(id).unwrap().traps
+            ),
+            (4, 0)
+        );
+    }
+    let mut batch = host.runtime.server.events.batch(observer).unwrap();
+    let mut messages = Vec::new();
+    while let Some(record) = host.runtime.server.events.next(&mut batch) {
+        if let FrameEvent::Print(p) = record.event {
+            messages.push(
+                host.runtime
+                    .server
+                    .events
+                    .texts
+                    .get(p.text)
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
+    }
+    assert_eq!(
+        messages.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+        [b"ELF cold\n".as_slice(), b"PE cold\n".as_slice()].repeat(3)
+    );
+}
 struct Source {
     time: EventTime,
     polls: u32,
@@ -426,5 +544,6 @@ pub fn run() {
     two_native_modules_use_session_rates_and_the_same_calltable_output_ring();
     checked_exports_preserve_names_and_native_command_arguments();
     elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable();
+    native_files_use_the_qvm_role_policy_and_vfs_loader();
     println!("native session dispatch checks passed");
 }

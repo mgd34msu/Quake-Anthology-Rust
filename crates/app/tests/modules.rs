@@ -36,15 +36,15 @@ fn quakec_presets_are_explicit_and_do_not_inherit_map_or_player_rules() {
 
 #[test]
 fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
-    use qa_app::modules::{QvmRole, QvmSpec};
+    use qa_app::modules::{Q3Role, Q3Spec};
     assert_eq!(
-        QvmSpec::parse("game:vm/qagame.qvm").unwrap().path,
+        Q3Spec::parse("game:vm/qagame.qvm").unwrap().path,
         "vm/qagame.qvm"
     );
-    assert_eq!(QvmSpec::parse("ui:vm/ui.qvm").unwrap().role, QvmRole::Ui);
+    assert_eq!(Q3Spec::parse("ui:vm/ui.qvm").unwrap().role, Q3Role::Ui);
     assert_eq!(
-        QvmSpec::parse("cgame:1:vm/cgame.qvm").unwrap().role,
-        QvmRole::Cgame(SeatId::new(1).unwrap())
+        Q3Spec::parse("cgame:1:vm/cgame.qvm").unwrap().role,
+        Q3Role::Cgame(SeatId::new(1).unwrap())
     );
     for input in [
         "vm/qagame.qvm",
@@ -54,7 +54,7 @@ fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
         "cgame:0:",
         "ui:",
     ] {
-        assert!(QvmSpec::parse(input).is_err());
+        assert!(Q3Spec::parse(input).is_err());
     }
 }
 

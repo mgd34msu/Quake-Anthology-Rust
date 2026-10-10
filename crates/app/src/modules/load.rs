@@ -38,23 +38,23 @@ impl QuakeCSpec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QvmRole {
+pub enum Q3Role {
     Game,
     Cgame(SeatId),
     Ui,
 }
-pub struct QvmSpec {
-    pub role: QvmRole,
+pub struct Q3Spec {
+    pub role: Q3Role,
     pub path: String,
 }
-impl QvmSpec {
+impl Q3Spec {
     pub fn parse(value: &str) -> Result<Self, &'static str> {
         let (kind, rest) = value
             .split_once(':')
-            .ok_or("qvm-module needs game:path, cgame:seat:path or ui:path")?;
+            .ok_or("q3-module needs game:path, cgame:seat:path or ui:path")?;
         let (role, path) = match kind {
-            "game" => (QvmRole::Game, rest),
-            "ui" => (QvmRole::Ui, rest),
+            "game" => (Q3Role::Game, rest),
+            "ui" => (Q3Role::Ui, rest),
             "cgame" => {
                 let (seat, path) = rest.split_once(':').ok_or("cgame module needs seat:path")?;
                 let seat = seat
@@ -62,12 +62,12 @@ impl QvmSpec {
                     .ok()
                     .and_then(SeatId::new)
                     .ok_or("cgame seat needs 0..4")?;
-                (QvmRole::Cgame(seat), path)
+                (Q3Role::Cgame(seat), path)
             }
-            _ => return Err("unknown QVM module role"),
+            _ => return Err("unknown Q3 module role"),
         };
         if path.is_empty() {
-            return Err("QVM module needs a virtual file");
+            return Err("Q3 module needs a virtual file");
         }
         Ok(Self {
             role,
@@ -107,9 +107,9 @@ fn module_bytes(
     Ok(bytes)
 }
 
-pub fn load_qvm(
+pub fn load_q3(
     runtime: &mut Runtime,
-    specs: &[QvmSpec],
+    specs: &[Q3Spec],
     requests: &mut Vec<ModuleRequest>,
     rate: TickRate,
 ) -> Result<(), String> {
@@ -117,9 +117,6 @@ pub fn load_qvm(
     for spec in specs {
         let module = ModuleId(u16::try_from(requests.len() + 1).map_err(|_| "too many modules")?);
         let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
-        let image = qa_formats::program::qvm::Image::parse(&bytes)
-            .map_err(|e| format!("QVM module: {e:?}"))?;
-        let vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
         let allocation = AllocationPolicy::q3(0);
         let clock = EntityTime::Milliseconds(0);
         let anchor = runtime
@@ -132,7 +129,7 @@ pub fn load_qvm(
         // and ui/ui_public.h. Each role selects its own import table and phase.
         let mut initialize = [Argument::Word(0); 9];
         let (phase, side, role, imports, init, frame, shutdown, api) = match spec.role {
-            QvmRole::Game => {
+            Q3Role::Game => {
                 initialize[0] = Argument::ClockMilliseconds;
                 initialize[1] = Argument::PlatformMilliseconds;
                 (
@@ -146,7 +143,7 @@ pub fn load_qvm(
                     None,
                 )
             }
-            QvmRole::Cgame(seat) => {
+            Q3Role::Cgame(seat) => {
                 let (index, binding) = runtime
                     .local_snapshots
                     .iter()
@@ -189,7 +186,7 @@ pub fn load_qvm(
                     None,
                 )
             }
-            QvmRole::Ui => (
+            Q3Role::Ui => (
                 Phase::Client,
                 Scope::Client,
                 Role::Engine,
@@ -206,6 +203,101 @@ pub fn load_qvm(
                 }),
             ),
         };
+        let (program, entries, prepare) =
+            if bytes.starts_with(b"MZ") || bytes.starts_with(b"\x7fELF") {
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                {
+                    use qa_compat::native::{
+                        NamedExport, Vm,
+                        elf::{Bindings, Pass, bind},
+                    };
+                    use qa_formats::program::native::{Encoding, Image, LoadRole};
+                    let base = bytes.starts_with(b"\x7fELF").then_some(0x2000_0000);
+                    let mut image = Image::parse(&bytes, base, LoadRole::Library)
+                        .map_err(|e| format!("native module: {e:?}"))?;
+                    if let Some(library) = image.needed.first() {
+                        return Err(format!(
+                            "native provider not bound: {}",
+                            String::from_utf8_lossy(image.names.get(*library).unwrap_or_default())
+                        ));
+                    }
+                    if let Some(import) = image.imports.first() {
+                        return Err(format!(
+                            "native import not bound: {}",
+                            String::from_utf8_lossy(
+                                import
+                                    .name
+                                    .and_then(|name| image.names.get(name))
+                                    .unwrap_or(b"<ordinal>")
+                            )
+                        ));
+                    }
+                    if image.tls.is_some() {
+                        return Err("native TLS provider is not bound".into());
+                    }
+                    if !image.initializers.is_empty()
+                        || (image.target.encoding == Encoding::Pe && image.entry != 0)
+                        || image.dynamic.iter().any(|&(tag, value)| {
+                            value != 0 && matches!(tag, 12 | 13 | 25 | 26 | 32)
+                        })
+                    {
+                        return Err("native initializer provider is not bound".into());
+                    }
+                    if image.target.encoding == Encoding::Elf {
+                        let symbols = vec![None; image.symbols.len()];
+                        let indirect = vec![None; image.relocations.len()];
+                        let bindings = Bindings {
+                            symbols: &symbols,
+                            local_tls: None,
+                            indirect: &indirect,
+                        };
+                        bind(&mut image, &bindings, Pass::Regular)
+                            .and_then(|()| bind(&mut image, &bindings, Pass::Indirect))
+                            .map_err(|e| format!("native binding: {e:?}"))?;
+                    }
+                    let mut named: Vec<_> = (0..=10)
+                        .map(|command| NamedExport {
+                            name: b"vmMain",
+                            command: Some(command),
+                        })
+                        .collect();
+                    named.push(NamedExport {
+                        name: b"dllEntry",
+                        command: None,
+                    });
+                    let vm = Vm::map_image(image, &named, std::time::Duration::from_secs(3))
+                        .map_err(|e| format!("native mapping: {e:?}"))?;
+                    let mut arguments = [Argument::Word(0); 9];
+                    arguments[0] = Argument::Word(vm.import_callback());
+                    (
+                        Program::Native {
+                            vm: Box::new(vm),
+                            imports,
+                        },
+                        (0..=11).collect(),
+                        Some(Export {
+                            callback: CallbackId(11),
+                            arguments,
+                        }),
+                    )
+                }
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                {
+                    return Err("native child backend unsupported on this host".into());
+                }
+            } else {
+                let image = qa_formats::program::qvm::Image::parse(&bytes)
+                    .map_err(|e| format!("QVM module: {e:?}"))?;
+                let vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
+                (
+                    Program::Qvm {
+                        vm: Box::new(vm),
+                        imports,
+                    },
+                    (0..=10).collect(),
+                    None,
+                )
+            };
         requests.push(ModuleRequest {
             context: CallContext {
                 module,
@@ -214,7 +306,7 @@ pub fn load_qvm(
                     source: RuleSetId::Quake3,
                     side,
                     role,
-                    seat: if let QvmRole::Cgame(seat) = spec.role {
+                    seat: if let Q3Role::Cgame(seat) = spec.role {
                         seat
                     } else {
                         SeatId::FIRST
@@ -232,13 +324,10 @@ pub fn load_qvm(
                 TickRate::FrameDriven
             },
             anchor,
-            program: Program::Qvm {
-                vm: Box::new(vm),
-                imports,
-            },
-            entries: (0..=10).collect(),
+            program,
+            entries,
             frame: CallbackId(frame),
-            prepare: None,
+            prepare,
             initialize: Some(Export {
                 callback: CallbackId(init),
                 arguments: initialize,
