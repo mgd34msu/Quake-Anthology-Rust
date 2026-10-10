@@ -112,7 +112,7 @@ impl Vm {
             return Err(Error::Process(NativeError::Unsupported));
         }
         let source_bytes = image.bytes.len();
-        let runtime = runtime::bind(&mut image, imports.len()).map_err(Error::Binding)?;
+        let runtime = runtime::bind(&mut image, imports).map_err(Error::Binding)?;
         let imports: Vec<_> = imports.iter().copied().chain(runtime.imports).collect();
         let mut bindings = named
             .iter()

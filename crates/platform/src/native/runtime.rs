@@ -2,6 +2,10 @@
 use super::NativeScalar;
 
 pub const FIRST: u32 = 0x8000_0000;
+pub const TAG_MALLOC32: u32 = FIRST + 450;
+pub const TAG_MALLOC64: u32 = FIRST + 451;
+pub const TAG_FREE: u32 = FIRST + 452;
+pub const FREE_TAGS: u32 = FIRST + 453;
 pub struct Function {
     pub name: &'static [u8],
     pub number: u32,
@@ -16,6 +20,7 @@ use NativeScalar::{Double, I32, U32, Void, Word};
 const LIBC: &[u8] = b"libc.so.6";
 const LIBM: &[u8] = b"libm.so.6";
 const BASE_VERSION: &[&[u8]] = &[b"GLIBC_2.2.5"];
+const ENGINE_ABI: &[u8] = b"qa-engine";
 pub const FUNCTIONS: &[Function] = &[
     Function {
         name: b"memcpy",
@@ -333,7 +338,30 @@ pub const FUNCTIONS: &[Function] = &[
     windows(FIRST + 424, b"kernel32.dll", b"GetSystemTimeAsFileTime", Operation::Kernel(Kernel::Time(Time::File)), &[Word], Void),
     windows(FIRST + 339, b"msvcp140.dll", b"_Xtime_get_ticks", Operation::Crt(Crt::Ticks), &[], Word),
     windows(FIRST + 340, b"api-ms-win-crt-time-l1-1-0.dll", b"_time64", Operation::Crt(Crt::Time), &[Word], Word),
+    tagged(TAG_MALLOC32, b"TagMalloc", Operation::TagMalloc, &[U32, I32], Word),
+    tagged(TAG_MALLOC64, b"TagMalloc", Operation::TagMalloc, &[Word, I32], Word),
+    tagged(TAG_FREE, b"TagFree", Operation::Free, &[Word], Void),
+    tagged(FREE_TAGS, b"FreeTags", Operation::FreeTags, &[I32], Void),
 ];
+
+const fn tagged(
+    number: u32,
+    name: &'static [u8],
+    operation: Operation,
+    parameters: &'static [NativeScalar],
+    result: NativeScalar,
+) -> Function {
+    Function {
+        number,
+        name,
+        operation,
+        parameters,
+        result,
+        heap: true,
+        provider: ENGINE_ABI,
+        versions: &[],
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -350,6 +378,8 @@ pub(crate) enum Operation {
     Calloc,
     Realloc,
     Free,
+    TagMalloc,
+    FreeTags,
     Msvc(Msvc),
     Data(usize),
 }
@@ -438,6 +468,9 @@ pub fn function(number: u32) -> Option<&'static Function> {
 }
 impl Function {
     pub fn windows_provider(&self, name: &[u8]) -> bool {
+        if self.provider == ENGINE_ABI {
+            return false;
+        }
         use qa_core::names::compare_folded;
         let equal = |expected| compare_folded(name, expected).is_eq();
         if equal(b"msvcrt.dll") || equal(b"ucrtbase.dll") {

@@ -65,8 +65,14 @@ pub(super) struct ImportTrap {
     pub symbol_ordinal: Option<u16>,
     pub calls: u64,
 }
-pub(super) fn bind(image: &mut Image, prefix: usize) -> Result<BoundRuntime, String> {
-    let needs_heap = match image.target.encoding {
+pub(super) fn bind(
+    image: &mut Image,
+    explicit: &[NativeImport<'_>],
+) -> Result<BoundRuntime, String> {
+    let prefix = explicit.len();
+    let needs_heap = explicit.iter().any(|import| {
+        qa_platform::native::runtime::function(import.number).is_some_and(|function| function.heap)
+    }) || match image.target.encoding {
         Encoding::Pe => image
             .imports
             .iter()

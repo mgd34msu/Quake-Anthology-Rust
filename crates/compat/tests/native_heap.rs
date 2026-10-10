@@ -1,5 +1,44 @@
 use qa_compat::memory::{Heap, MemoryError, ModuleMemory};
 #[test]
+fn native_tags_share_blocks_keep_crt_allocations_and_survive_reallocation() {
+    let base = 4096;
+    let mut heap = Heap::load(base, 512, 32).unwrap();
+    let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+    let crt = heap.allocate(16).unwrap();
+    let zero = heap.allocate_tagged(16, 0).unwrap();
+    let game = heap.allocate_tagged(16, 765).unwrap();
+    let level = heap.allocate_tagged(16, -9).unwrap();
+    memory.write(game, b"preserved").unwrap();
+    let game = heap
+        .reallocate(|to, from, bytes| memory.copy(to, from, bytes), game, 64)
+        .unwrap();
+    assert_eq!(memory.read(game, 9).unwrap(), b"preserved");
+    assert_eq!(heap.free_tag(0), 1);
+    assert_eq!(heap.free(zero), Err(MemoryError));
+    assert_eq!(heap.free_tag(765), 1);
+    assert_eq!(heap.free(game), Err(MemoryError));
+    assert_eq!(heap.free_tag(765), 0);
+    heap.free(crt).unwrap();
+    heap.free(level).unwrap();
+    assert_eq!(heap.allocate(512), Some(base));
+}
+#[test]
+fn bulk_tag_free_coalesces_in_one_pass_around_live_allocations() {
+    let base = 4096;
+    let mut heap = Heap::load(base, 1024, 64).unwrap();
+    let allocations = (0..32)
+        .map(|i| heap.allocate_tagged(16, i % 2).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(heap.free_tag(1), 16);
+    for (index, &address) in allocations.iter().enumerate() {
+        if index % 2 == 1 {
+            assert_eq!(heap.free(address), Err(MemoryError));
+        }
+    }
+    assert_eq!(heap.free_tag(0), 16);
+    assert_eq!(heap.allocate(1024), Some(base));
+}
+#[test]
 fn bounded_blocks_align_reuse_coalesce_and_reject_non_allocations() {
     let mut heap = Heap::load(0x1000, 128, 8).unwrap();
     let first = heap.allocate(17).unwrap();

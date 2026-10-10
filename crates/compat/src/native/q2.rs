@@ -331,6 +331,30 @@ impl Game {
             .enumerate()
             .map(|(ordinal, _)| {
                 let cvar = if layout.version == 2023 { 39 } else { 36 };
+                let local = if ordinal == cvar - 3 {
+                    Some(if layout.version == 2023 {
+                        qa_platform::native::runtime::TAG_MALLOC64
+                    } else {
+                        qa_platform::native::runtime::TAG_MALLOC32
+                    })
+                } else if ordinal == cvar - 2 {
+                    Some(qa_platform::native::runtime::TAG_FREE)
+                } else if ordinal == cvar - 1 {
+                    Some(qa_platform::native::runtime::FREE_TAGS)
+                } else {
+                    None
+                };
+                if let Some(number) = local {
+                    let function =
+                        qa_platform::native::runtime::function(number).ok_or(Error::Export)?;
+                    return Ok(NativeImport {
+                        trap: false,
+                        number,
+                        abi,
+                        parameters: function.parameters,
+                        result: function.result,
+                    });
+                }
                 let signature = if ordinal == cvar {
                     Some((
                         &[NativeScalar::Word, NativeScalar::Word, NativeScalar::U32][..],
@@ -346,15 +370,15 @@ impl Game {
                 } else {
                     None
                 };
-                NativeImport {
+                Ok(NativeImport {
                     trap: signature.is_none(),
                     number: ordinal as u32,
                     abi,
                     parameters: signature.map_or(&[], |s| s.0),
                     result: signature.map_or(NativeScalar::Void, |s| s.1),
-                }
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, Error>>()?;
         let mut vm = Vm::map_image(
             image,
             &[NamedExport {

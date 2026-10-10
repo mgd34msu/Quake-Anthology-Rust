@@ -430,11 +430,24 @@ impl Runtime {
                 }
                 result
             }
-            Operation::Malloc | Operation::Calloc | Operation::Realloc | Operation::Free => {
+            Operation::Malloc
+            | Operation::Calloc
+            | Operation::Realloc
+            | Operation::Free
+            | Operation::TagMalloc
+            | Operation::FreeTags => {
                 let mut guard = self.heap.lock().map_err(|_| NativeError::Protocol)?;
                 let heap = guard.as_mut().ok_or(NativeError::Extent)?;
                 match operation {
                     Operation::Malloc => heap.allocate(size(a[0])?).unwrap_or(0),
+                    Operation::TagMalloc => {
+                        let bytes = size(a[0])?;
+                        let address = heap
+                            .allocate_tagged(bytes, a[1] as i32)
+                            .ok_or(NativeError::Extent)?;
+                        m.fill(address, 0, bytes)?;
+                        address
+                    }
                     Operation::Calloc => {
                         if let Some(bytes) = size(a[0])?.checked_mul(size(a[1])?) {
                             let address = heap.allocate(bytes).unwrap_or(0);
@@ -455,6 +468,10 @@ impl Runtime {
                         .map_err(|_| NativeError::Extent)?,
                     Operation::Free => {
                         heap.free(a[0]).map_err(|_| NativeError::Extent)?;
+                        0
+                    }
+                    Operation::FreeTags => {
+                        heap.free_tag(a[0] as i32);
                         0
                     }
                     _ => return Err(NativeError::Protocol),
