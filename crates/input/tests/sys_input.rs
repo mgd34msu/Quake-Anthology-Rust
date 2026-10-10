@@ -22,11 +22,22 @@ impl Target for Sink {
     }
 }
 fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repeat: bool) {
+    device_key(input, sink, DeviceId::Keyboard, ms, code, down, repeat);
+}
+fn device_key(
+    input: &mut Input,
+    sink: &mut impl Target,
+    device: DeviceId,
+    ms: u64,
+    code: u16,
+    down: bool,
+    repeat: bool,
+) {
     input.dispatch(
         SysEvent {
             time: EventTime(ms * 1_000_000),
             kind: EventKind::Key {
-                device: DeviceId::Keyboard,
+                device,
                 code,
                 symbol: 0,
                 down,
@@ -35,6 +46,158 @@ fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repea
         },
         sink,
     );
+}
+
+#[test]
+fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
+    struct Consuming;
+    impl Target for Consuming {
+        fn key(&mut self, _: SeatId, _: u16, _: bool, _: bool) -> bool {
+            true
+        }
+        fn character(&mut self, _: SeatId, _: char) {}
+        fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    }
+    let mut input = Input::load();
+    input.seed(EventTime(0));
+    let mut sink = Consuming;
+    for code in 0..1024 {
+        device_key(
+            &mut input,
+            &mut sink,
+            DeviceId::Keyboard,
+            1,
+            code,
+            true,
+            false,
+        );
+        device_key(
+            &mut input,
+            &mut sink,
+            DeviceId::Keyboard,
+            2,
+            code,
+            true,
+            true,
+        );
+    }
+    assert!(!input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert_eq!(frame(&mut input, 3)[0].buttons, buttons::ANY);
+    for code in 0..1023 {
+        device_key(
+            &mut input,
+            &mut sink,
+            DeviceId::Keyboard,
+            4,
+            code,
+            false,
+            false,
+        );
+        device_key(
+            &mut input,
+            &mut sink,
+            DeviceId::Keyboard,
+            5,
+            code,
+            false,
+            false,
+        );
+    }
+    assert_eq!(frame(&mut input, 6)[0].buttons, buttons::ANY);
+    device_key(
+        &mut input,
+        &mut sink,
+        DeviceId::Keyboard,
+        7,
+        1024,
+        true,
+        false,
+    );
+    device_key(
+        &mut input,
+        &mut sink,
+        DeviceId::Keyboard,
+        7,
+        1023,
+        false,
+        false,
+    );
+    assert_eq!(frame(&mut input, 8)[0].buttons, 0);
+    assert!(input.assign(DeviceId::Keyboard, SeatId::FIRST));
+}
+
+#[test]
+fn rebind_keeps_both_modifier_holds_until_their_physical_releases() {
+    let mut input = Input::load();
+    input.seed(EventTime(0));
+    let mut sink = Sink::default();
+    for code in [224, 228] {
+        key(&mut input, &mut sink, 1, code, true, false);
+    }
+    assert_eq!(
+        frame(&mut input, 2)[0].buttons,
+        buttons::ANY | buttons::CROUCH
+    );
+    assert!(input.bind(224, None, EventTime(2_000_000), &mut sink));
+    key(&mut input, &mut sink, 3, 224, true, true);
+    key(&mut input, &mut sink, 3, 228, true, true);
+    assert!(!input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert_eq!(frame(&mut input, 4)[0].buttons, buttons::ANY);
+    key(&mut input, &mut sink, 5, 224, false, false);
+    assert_eq!(frame(&mut input, 6)[0].buttons, buttons::ANY);
+    key(&mut input, &mut sink, 7, 228, false, false);
+    assert_eq!(frame(&mut input, 8)[0].buttons, 0);
+    assert!(input.assign(DeviceId::Keyboard, SeatId::FIRST));
+}
+
+#[test]
+fn removing_one_held_device_preserves_other_seats_and_focus_clears_all() {
+    let mut input = Input::load();
+    input.seed(EventTime(0));
+    let mut sink = Sink::default();
+    let second = SeatId::new(1).unwrap();
+    assert!(input.assign(DeviceId::Controller(42), second));
+    for device in [DeviceId::Keyboard, DeviceId::Controller(42)] {
+        device_key(&mut input, &mut sink, device, 1, 1023, true, false);
+    }
+    assert!(!input.assign(DeviceId::Controller(42), second));
+    let commands = frame(&mut input, 2);
+    assert_eq!(commands[0].buttons, buttons::ANY);
+    assert_eq!(commands[1].buttons, buttons::ANY);
+    input.dispatch(
+        SysEvent {
+            time: EventTime(3_000_000),
+            kind: EventKind::DeviceRemoved(DeviceId::Controller(42)),
+        },
+        &mut sink,
+    );
+    let commands = frame(&mut input, 4);
+    assert_eq!(commands[0].buttons, buttons::ANY);
+    assert_eq!(commands[1].buttons, 0);
+    assert!(input.assign(DeviceId::Controller(42), second));
+    device_key(
+        &mut input,
+        &mut sink,
+        DeviceId::Controller(42),
+        5,
+        1023,
+        true,
+        false,
+    );
+    input.dispatch(
+        SysEvent {
+            time: EventTime(6_000_000),
+            kind: EventKind::Focus(false),
+        },
+        &mut sink,
+    );
+    assert!(
+        frame(&mut input, 7)
+            .iter()
+            .all(|command| command.buttons == 0)
+    );
+    assert!(input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert!(input.assign(DeviceId::Controller(42), second));
 }
 fn frame(input: &mut Input, ms: u64) -> [qa_core::primitives::UserCmd; 4] {
     input.build_frame(EventTime(ms * 1_000_000), [200; 3], [0.022; 2])

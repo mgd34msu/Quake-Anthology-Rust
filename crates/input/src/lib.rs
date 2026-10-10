@@ -268,6 +268,7 @@ struct Device {
     id: Option<DeviceId>,
     seat: Option<SeatId>,
     held: [bool; CONTROLS],
+    held_count: u16,
     acquired: [bool; CONTROLS],
     axes: [i16; 6],
 }
@@ -277,9 +278,25 @@ impl Default for Device {
             id: None,
             seat: None,
             held: [false; CONTROLS],
+            held_count: 0,
             acquired: [false; CONTROLS],
             axes: [0; 6],
         }
+    }
+}
+
+impl Device {
+    fn set_held(&mut self, control: u16, down: bool) -> Option<bool> {
+        let held = self.held.get_mut(usize::from(control))?;
+        let previous = std::mem::replace(held, down);
+        if previous != down {
+            if down {
+                self.held_count += 1;
+            } else {
+                self.held_count -= 1;
+            }
+        }
+        Some(previous)
     }
 }
 
@@ -327,7 +344,7 @@ impl Input {
     /// Assignment is a load/menu operation; release held controls first.
     pub fn assign(&mut self, id: DeviceId, seat: SeatId) -> bool {
         if let Some(index) = self.devices.iter().position(|device| device.id == Some(id)) {
-            if self.devices[index].held.iter().any(|held| *held) {
+            if self.devices[index].held_count != 0 {
                 return false;
             }
             self.remove(id, self.previous.unwrap_or_default());
@@ -465,7 +482,7 @@ impl Input {
                     && let Some(id) = self.devices[index].id
                 {
                     self.key(id, physical, false, false, time, target);
-                    self.devices[index].held[usize::from(physical)] = true;
+                    self.devices[index].set_held(physical, true);
                 }
             }
         }
@@ -612,7 +629,6 @@ impl Input {
                     seat.mouse_previous = [0.0; 2];
                 }
                 for device in &mut self.devices {
-                    device.held.fill(false);
                     device.axes.fill(0);
                 }
             }
@@ -655,11 +671,9 @@ impl Input {
         let Some(seat) = device.seat else {
             return;
         };
-        let Some(held) = device.held.get_mut(usize::from(control)) else {
+        let Some(was_held) = device.set_held(control, down) else {
             return;
         };
-        let was_held = *held;
-        *held = down;
         // Editing receives repeats. Held actions acquire/release only once.
         let consumed = target.key(seat, control, down, repeat);
         if was_held == down {
@@ -905,8 +919,7 @@ impl Input {
                 }
             }
             if self.devices.iter().any(|device| {
-                device.seat.is_some_and(|seat| seat.index() == index)
-                    && device.held.iter().any(|held| *held)
+                device.seat.is_some_and(|seat| seat.index() == index) && device.held_count != 0
             }) {
                 mask |= buttons::ANY;
             }

@@ -688,18 +688,9 @@ impl Step<'_> {
         if !self.classic() {
             return;
         }
-        self.player.body.velocity.0 = self
-            .player
-            .body
-            .velocity
-            .0
-            .map(|v| f32::from((v * 8.0) as i32 as i16) * 0.125);
+        self.player.body.velocity.0 = self.player.body.velocity.0.map(eighth);
         let position = self.player.body.position;
-        let base = Vec3(
-            position
-                .0
-                .map(|v| f32::from((v * 8.0) as i32 as i16) * 0.125),
-        );
+        let base = Vec3(position.0.map(eighth));
         let signs =
             std::array::from_fn::<_, 3, _>(|i| if position.0[i] >= 0.0 { 1.0 } else { -1.0 });
         for bits in [0, 4, 1, 2, 3, 5, 6, 7] {

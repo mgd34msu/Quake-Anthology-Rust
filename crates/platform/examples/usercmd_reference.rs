@@ -35,6 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if arg == "bench-view" {
         return bench_view();
     }
+    if arg == "heap-input" {
+        return heap_input();
+    }
     if arg == "view-q1" || arg == "view-qw" {
         return view(arg == "view-qw");
     }
@@ -58,6 +61,142 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     Ok(())
+}
+
+#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
+fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
+    use qa_core::{
+        primitives::buttons,
+        sys_events::{DeviceId, EventKind, SeatId, SysEvent},
+    };
+    use qa_input::{Input, Target};
+    use qa_platform::allocations::{begin_frame, end_frame};
+    struct Sink;
+    impl Target for Sink {
+        fn key(&mut self, _: SeatId, control: u16, _: bool, _: bool) -> bool {
+            control == 900
+        }
+        fn character(&mut self, _: SeatId, _: char) {}
+        fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+    }
+    let mut input = Input::load();
+    input.seed(EventTime(0));
+    let mut sink = Sink;
+    let devices = [
+        DeviceId::Keyboard,
+        DeviceId::Controller(1),
+        DeviceId::Controller(2),
+        DeviceId::Controller(3),
+    ];
+    let seats = [
+        SeatId::FIRST,
+        SeatId::new(1).ok_or("seat")?,
+        SeatId::new(2).ok_or("seat")?,
+        SeatId::new(3).ok_or("seat")?,
+    ];
+    for (&device, &seat) in devices.iter().zip(&seats) {
+        if !input.assign(device, seat) {
+            return Err("input device assignment".into());
+        }
+    }
+    let policies = [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake3,
+    ]
+    .map(InputPolicy::native);
+    begin_frame();
+    let control = black_box(vec![0u8; 128]);
+    let positive = end_frame();
+    drop(control);
+    if positive.allocations != 1 {
+        return Err("allocation positive control".into());
+    }
+    let mut allocations = 0;
+    let mut reallocations = 0;
+    let mut bytes = 0;
+    let mut checked_commands = 0;
+    for frame in 0..660 {
+        let time = EventTime((frame + 1) * 16_666_667);
+        begin_frame();
+        let phase = frame % 8;
+        for &device in &devices {
+            let edges: &[(u16, bool, bool)] = match phase {
+                0 => &[(1023, true, false), (1023, true, true), (1023, true, false)],
+                1 => &[(900, true, false)],
+                2 => &[(1023, false, false), (1023, false, false)],
+                4 => &[(900, false, false)],
+                5 => &[(224, true, false), (228, true, false)],
+                6 => &[(224, false, false)],
+                _ => &[],
+            };
+            for &(code, down, repeat) in edges {
+                input.dispatch(
+                    SysEvent {
+                        time,
+                        kind: EventKind::Key {
+                            device,
+                            code,
+                            symbol: 0,
+                            down,
+                            repeat,
+                        },
+                    },
+                    &mut sink,
+                );
+            }
+        }
+        if phase == 3 {
+            input.dispatch(
+                SysEvent {
+                    time,
+                    kind: EventKind::DeviceRemoved(devices[1]),
+                },
+                &mut sink,
+            );
+            if !input.assign(devices[1], seats[1]) {
+                return Err("removed device assignment".into());
+            }
+        }
+        if phase == 6 && !input.bind(224, None, time, &mut sink) {
+            return Err("held modifier replacement".into());
+        }
+        if phase == 7 {
+            input.dispatch(
+                SysEvent {
+                    time,
+                    kind: EventKind::Focus(false),
+                },
+                &mut sink,
+            );
+        }
+        let commands = black_box(input.build_frame_with_policy(time, &policies));
+        for (seat, command) in commands.iter().enumerate() {
+            let expected = !matches!(phase, 4 | 7) && !(phase == 3 && seat == 1);
+            if (command.buttons & buttons::ANY != 0) != expected {
+                return Err("physical held-key state".into());
+            }
+        }
+        let counts = end_frame();
+        if frame >= 60 {
+            allocations += counts.allocations;
+            reallocations += counts.reallocations;
+            bytes += counts.requested_bytes;
+            checked_commands += commands.len();
+        }
+    }
+    if allocations != 0 || reallocations != 0 || bytes != 0 {
+        return Err("held input allocation gate".into());
+    }
+    println!(
+        "{{\"scope\":\"four-seat physical key transitions and native command construction; no OS input or gameplay\",\"warmup\":60,\"frames\":600,\"checked_commands\":{checked_commands},\"allocations\":{allocations},\"reallocations\":{reallocations},\"requested_bytes\":{bytes},\"allocation_positive_control\":1}}"
+    );
+    Ok(())
+}
+#[cfg(not(any(debug_assertions, feature = "allocation-tracking")))]
+fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
+    Err("heap-input requires allocation-tracking".into())
 }
 fn view(qw: bool) -> Result<(), Box<dyn std::error::Error>> {
     use qa_core::{
