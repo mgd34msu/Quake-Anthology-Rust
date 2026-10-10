@@ -3483,3 +3483,65 @@ Evidence is retained in `THE-860-q3-host-20261009/`: original/comparison.json,
 abba-summary.json and twenty raw legs per existing workload, q3-output rows,
 retirement-summary.json, and checker/workspace/Clippy/build logs. No checker
 rule, input history, journal or replay is introduced.
+
+### THE-3175: Q3 float discrepancy attributed and native angle/order fixes
+
+The unchanged original-C fixture at f800e2c1 reproduces 544 different Q3 float
+components over 1,152 rows (maximum absolute difference 0.0000112), with exact
+flags/timers. First differing binary32 position: scenario 2, frame 98. Decimal
+formatting differences are ignored; comparison uses float bits.
+
+Two engine defects are corrected in the shared movement entry. Original
+bg_pmove.c PM_UpdateViewAngles (:1811-1822) narrows every combined command/delta
+angle to signed short before SHORT2ANGLE, and clamps pitch to +/-16000 units
+while adjusting delta_angles. The old Q3 path retained 180/270 degree yaw as
+positive angles and clamped pitch to +/-89 degrees. The existing short-angle
+conversion now serves Q2 and Q3, with their own pitch policy and no second
+movement implementation. PM_WaterMove (:512-514) multiplies scale into each
+basis before command components and their sum; factoring scale outside that
+sum changed binary32 rounding. The shared wish calculation retains native
+water ordering. Other rule sets keep their previous arithmetic.
+
+The remaining native-C difference is fully isolated to PM_CmdScale (:308):
+`(float)pm->ps->speed * max / (127.0 * total)`. GCC 16.2.1, x86_64-pc-linux-gnu,
+`-O2 -ffp-contract=off -fno-strict-aliasing` emits double MULSD/DIVSD followed by
+CVTSD2SS for the unsuffixed denominator. The diagnostic changes only `127.0`
+to `127.0f`; its 1,152 rows and all 6,912 float components match corrected Rust
+exactly, including flags/timers. The unchanged native oracle remains visible:
+324 differing components, maximum 0.0000112. No tolerance was increased.
+
+Original Q3 lcc, compiled as a 32-bit host, emits CNSTF4 127.0, MULF4 and DIVF4
+for the unchanged original PM_CmdScale body. Its bytecode target declares
+float/double/long double as four bytes (lcc/src/bytecode.c:328-330); interpreter
+OP_MULF/OP_DIVF operate on float (vm_interpreted.c:854-860). THE-711 requires
+Q3's binary32/QVM arithmetic, so the engine retains that path rather than
+introducing a native-C numeric profile. This proves the scale-expression
+attribution and diagnostic C rows, not execution of a complete QVM or the
+installed 30-second strafe-jump gate. No x87 arithmetic or fused multiply-add
+instructions were found in the native reference disassembly. The earlier
+64-bit lcc helper crashed in its declaration parser; its failed diagnostic is
+retained, and no bytecode result from that process is used.
+
+Focused angle tests cover signed yaw/roll wrap, native pitch limits, the
+wire-unsigned command angle used for delta adjustment, and repeated-command
+stability. Q2's 1,152 original-C rows remain exact. The unchanged checker,
+workspace tests and Clippy are recorded with the final evidence.
+
+CPU23, portable release, three ABBA blocks, 60 warm-up plus 600 measured frames
+per leg: the existing 64 mixed-rule clients/server-and-prediction trace fixture
+measured 2,988,837.83 -> 2,978,536.17 ns median (-0.345%) and 4,249,764.67 ->
+4,123,766.33 ns p99. Both sides execute 38,400 SERVER steps; server/prediction
+state matches throughout each run, with zero measured allocations/bytes. This
+workload is held constant between these two builds; its generic
+matched_previous_workload flag refers to older unrelated fixture revisions.
+Corrected native view/order results are intentional, not claimed byte-identical
+to the buggy engine. No worker, foreign heap, renderer or gameplay time is measured.
+
+Reproduce with tools/check_movement.py --q3-attribution; optionally pass the
+original 32-bit lcc rcc through --q3-rcc to emit its scale bytecode. The native
+C oracle is still compiled without source changes; the single-literal variant
+is explicitly diagnostic. Evidence is in `THE-3175-q3-arithmetic-20261009/`:
+final/result.json, native disassembly and QVM scale assembly, baseline and
+intermediate row files, movement-abba.json, twelve final raw timing legs and
+verification/build logs. Remaining native/QVM gameplay acceptance stays on
+THE-891/THE-3169.

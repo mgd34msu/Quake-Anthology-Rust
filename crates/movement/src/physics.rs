@@ -502,6 +502,23 @@ impl Step<'_> {
         if self.command.buttons & buttons::CROUCH != 0 {
             move_axes[2] = move_axes[2].min(if self.arena() { -127.0 } else { -200.0 });
         }
+        let total = math::length(Vec3(move_axes));
+        let maximum = move_axes[0]
+            .abs()
+            .max(move_axes[1].abs())
+            .max(move_axes[2].abs());
+        let scale = if total > 0.0 {
+            self.parameters.speed * maximum / (127.0 * total)
+        } else {
+            0.0
+        };
+        // PM_WaterMove scales each basis before multiplying by its command
+        // component. Factoring scale out of the sum changes binary32 results.
+        if self.arena() && water && scale != 0.0 {
+            basis.forward = basis.forward * scale;
+            basis.right = basis.right * scale;
+            move_axes[2] *= scale;
+        }
         let mut wish = basis.forward * move_axes[0] + basis.right * move_axes[1];
         if water
             || matches!(
@@ -515,19 +532,6 @@ impl Step<'_> {
             }
         } else {
             wish.0[2] = 0.0;
-        }
-        let total = math::length(Vec3(move_axes));
-        let maximum = move_axes[0]
-            .abs()
-            .max(move_axes[1].abs())
-            .max(move_axes[2].abs());
-        let scale = if total > 0.0 {
-            self.parameters.speed * maximum / (127.0 * total)
-        } else {
-            0.0
-        };
-        if self.arena() && water && scale != 0.0 {
-            wish = wish * scale;
         }
         let length = math::normalize(&mut wish);
         let max = if self.player.movement.ducked {
@@ -718,25 +722,36 @@ impl Step<'_> {
         self.result.steps += 1;
         let previous = self.player.body.position;
         self.player.view_angles = self.command.view_angles + self.player.movement.delta_angles;
-        if self.classic() {
+        if self.classic() || self.arena() {
             for i in 0..3 {
                 let to_short = |v: f32| (v * (65536.0 / 360.0)) as i32 as i16;
-                let angle = to_short(self.command.view_angles.0[i])
+                let mut angle = to_short(self.command.view_angles.0[i])
                     .wrapping_add(to_short(self.player.movement.delta_angles.0[i]));
+                if self.arena() && i == 0 {
+                    let clamped = angle.clamp(-16000, 16000);
+                    if clamped != angle {
+                        let command_angle =
+                            (self.command.view_angles.0[i] * (65536.0 / 360.0)) as i32 as u16;
+                        self.player.movement.delta_angles.0[i] =
+                            (i32::from(clamped) - i32::from(command_angle)) as f32
+                                * (360.0 / 65536.0);
+                        angle = clamped;
+                    }
+                }
                 self.player.view_angles.0[i] = f32::from(angle) * (360.0 / 65536.0);
             }
-            let pitch = &mut self.player.view_angles.0[0];
-            if *pitch > 89.0 && *pitch < 180.0 {
-                *pitch = 89.0;
-            } else if *pitch < 271.0 && *pitch >= 180.0 {
-                *pitch = 271.0;
+            if self.classic() {
+                let pitch = &mut self.player.view_angles.0[0];
+                if *pitch > 89.0 && *pitch < 180.0 {
+                    *pitch = 89.0;
+                } else if *pitch < 271.0 && *pitch >= 180.0 {
+                    *pitch = 271.0;
+                }
+                if self.player.movement.timer.contains(MovementTimer::TELEPORT) {
+                    self.player.view_angles.0[0] = 0.0;
+                    self.player.view_angles.0[2] = 0.0;
+                }
             }
-            if self.player.movement.timer.contains(MovementTimer::TELEPORT) {
-                self.player.view_angles.0[0] = 0.0;
-                self.player.view_angles.0[2] = 0.0;
-            }
-        } else if self.arena() {
-            self.player.view_angles.0[0] = self.player.view_angles.0[0].clamp(-89.0, 89.0);
         }
         if self.player.movement.mode == MovementMode::Frozen {
             return;

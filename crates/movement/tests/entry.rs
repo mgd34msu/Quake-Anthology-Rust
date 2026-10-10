@@ -14,6 +14,38 @@ fn player(rules: RuleSetId) -> PlayerState {
     state
 }
 #[test]
+fn q3_view_angles_use_native_signed_shorts_and_pitch_delta_clamp() {
+    use qa_core::primitives::MovementMode;
+    let mut world = support::FixtureWorld::default();
+    for (pitch, yaw, roll, expected, delta) in [
+        (0., 180., 270., [0., -180., -90.], 0.),
+        (0., 450., -450., [0., 90., -90.], 0.),
+        (90., 0., 0., [16000. * (360. / 65536.), 0., 0.], -384.),
+        (-90., 0., 0., [-16000. * (360. / 65536.), 0., 0.], -65152.),
+    ] {
+        let mut state = player(RuleSetId::Quake3);
+        state.movement.mode = MovementMode::Frozen;
+        let command = UserCmd {
+            server_time_ms: 16,
+            view_angles: Vec3([pitch, yaw, roll]),
+            ..Default::default()
+        };
+        pmove(command, &mut state, &mut world);
+        assert_eq!(state.view_angles, Vec3(expected));
+        assert_eq!(state.movement.delta_angles.0[0], delta * (360. / 65536.));
+        // Native clamping adjusts delta_angles; the same command remains stable.
+        pmove(
+            UserCmd {
+                server_time_ms: 32,
+                ..command
+            },
+            &mut state,
+            &mut world,
+        );
+        assert_eq!(state.view_angles, Vec3(expected));
+    }
+}
+#[test]
 fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
     let mut world = support::FixtureWorld::default();
     let mut qw = player(RuleSetId::QuakeWorld);
