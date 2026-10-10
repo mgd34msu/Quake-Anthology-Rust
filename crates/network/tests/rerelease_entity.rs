@@ -181,8 +181,19 @@ fn kex_effects_replace_both_halves_and_keep_native_unsigned_width_flags() -> Res
         to[7] = 65535;
         let mut bytes = [0; 1400];
         let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-        states::write_q2_kex_entity(&mut writer, 8191, &from, Some(&to), false, false)
-            .map_err(|e| e.to_string())?;
+        states::write_q2_kex_entity(
+            &mut writer,
+            8191,
+            &from,
+            Some(&to),
+            false,
+            false,
+            &mut states::Q2KexWire {
+                nonzero_solid: (&from)[19] != 0,
+                baseline_solid: false,
+            },
+        )
+        .map_err(|e| e.to_string())?;
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
         let header = states::read_q2_entity_prefix(&mut reader, true).map_err(|e| e.to_string())?;
         assert_eq!(
@@ -195,8 +206,16 @@ fn kex_effects_replace_both_halves_and_keep_native_unsigned_width_flags() -> Res
         );
         assert_eq!(header.flags & (1 << 29) != 0, high != 0);
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-        let decoded =
-            states::read_q2_kex_entity(&mut reader, &from, false).map_err(|e| e.to_string())?;
+        let decoded = states::read_q2_kex_entity(
+            &mut reader,
+            &from,
+            false,
+            &mut states::Q2KexWire {
+                nonzero_solid: (&from)[19] != 0,
+                baseline_solid: false,
+            },
+        )
+        .map_err(|e| e.to_string())?;
         assert_eq!(decoded.number, 8191);
         assert_eq!(decoded.words, Some(to));
         assert_eq!(reader.byte_position(), writer.size());
@@ -223,13 +242,32 @@ fn kex_demo_coordinate_precision_follows_the_new_solid_value() -> Result<(), Str
         to[19] = new_solid;
         let mut bytes = [0; 1400];
         let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-        states::write_q2_kex_entity(&mut writer, 1, &from, Some(&to), true, demo)
-            .map_err(|e| e.to_string())?;
+        states::write_q2_kex_entity(
+            &mut writer,
+            1,
+            &from,
+            Some(&to),
+            true,
+            demo,
+            &mut states::Q2KexWire {
+                nonzero_solid: (&from)[19] != 0,
+                baseline_solid: false,
+            },
+        )
+        .map_err(|e| e.to_string())?;
         let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
-        let out = states::read_q2_kex_entity(&mut reader, &from, demo)
-            .map_err(|e| e.to_string())?
-            .words
-            .ok_or("missing entity")?;
+        let out = states::read_q2_kex_entity(
+            &mut reader,
+            &from,
+            demo,
+            &mut states::Q2KexWire {
+                nonzero_solid: (&from)[19] != 0,
+                baseline_solid: false,
+            },
+        )
+        .map_err(|e| e.to_string())?
+        .words
+        .ok_or("missing entity")?;
         assert_eq!(
             out[8],
             if demo && new_solid == 0 {
@@ -262,8 +300,19 @@ fn kex_high_flags_emit_native_padding_and_incoming_reserved_values_are_ignored()
     to[22] = 255;
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    states::write_q2_kex_entity(&mut writer, 256, &from, Some(&to), false, false)
-        .map_err(|e| e.to_string())?;
+    states::write_q2_kex_entity(
+        &mut writer,
+        256,
+        &from,
+        Some(&to),
+        false,
+        false,
+        &mut states::Q2KexWire {
+            nonzero_solid: (&from)[19] != 0,
+            baseline_solid: false,
+        },
+    )
+    .map_err(|e| e.to_string())?;
     let size = writer.size();
     assert_eq!(&writer.bytes()[size - 6..], [255, 0, 0, 0, 0, 0]);
     let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
@@ -272,20 +321,48 @@ fn kex_high_flags_emit_native_padding_and_incoming_reserved_values_are_ignored()
     for prefix in 0..size {
         let mut reader = Reader::new(&bytes[..prefix], Encoding::Bytes);
         assert_eq!(
-            states::read_q2_kex_entity(&mut reader, &from, false).map_err(|e| e.kind),
+            states::read_q2_kex_entity(
+                &mut reader,
+                &from,
+                false,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&from)[19] != 0,
+                    baseline_solid: false
+                }
+            )
+            .map_err(|e| e.kind),
             Err(ErrorKind::Truncated)
         );
         let mut writer = Writer::new(&mut bytes[..prefix], Encoding::Bytes);
         assert_eq!(
-            states::write_q2_kex_entity(&mut writer, 256, &from, Some(&to), false, false)
-                .map_err(|e| e.kind),
+            states::write_q2_kex_entity(
+                &mut writer,
+                256,
+                &from,
+                Some(&to),
+                false,
+                false,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&from)[19] != 0,
+                    baseline_solid: false
+                }
+            )
+            .map_err(|e| e.kind),
             Err(ErrorKind::Capacity)
         );
     }
     bytes[size - 5..size].copy_from_slice(&[255, 0x34, 0x12, 0x78, 0x56]);
     let mut reader = Reader::new(&bytes[..size], Encoding::Bytes);
-    let decoded =
-        states::read_q2_kex_entity(&mut reader, &from, false).map_err(|e| e.to_string())?;
+    let decoded = states::read_q2_kex_entity(
+        &mut reader,
+        &from,
+        false,
+        &mut states::Q2KexWire {
+            nonzero_solid: (&from)[19] != 0,
+            baseline_solid: false,
+        },
+    )
+    .map_err(|e| e.to_string())?;
     assert_eq!(decoded.number, 256);
     assert_eq!(decoded.words, Some(to));
     assert_eq!(reader.byte_position(), size);

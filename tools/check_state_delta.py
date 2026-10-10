@@ -871,18 +871,18 @@ uint32_t kex_entity_encode(uint8_t *bytes,uint32_t *from,uint32_t *to,uint16_t n
  else {
   q2proto_entity_state_delta_t d;
   kex_server_make_entity_state_delta(&context,&a,&b,(flags&4)!=0,&d);
-  assert(kex_server_write_entity_state_delta(&context,(uintptr_t)&io,number,&d,from[19]!=0)==Q2P_ERR_SUCCESS);
+  assert(kex_server_write_entity_state_delta(&context,(uintptr_t)&io,number,&d,(flags&8)?true:(flags&16)?false:from[19]!=0)==Q2P_ERR_SUCCESS);
  }
  return io.size;
 }
-void kex_entity_decode(uint8_t *bytes,uint32_t size,uint32_t *from,uint32_t *out,uint32_t *number,uint8_t *removed,bool demo) {
+void kex_entity_decode(uint8_t *bytes,uint32_t size,uint32_t *from,uint32_t *out,uint32_t *number,uint8_t *removed,bool demo,uint8_t flags) {
  kex_io_t io={.bytes=bytes,.size=size};uint64_t bits;uint16_t entnum;
  assert(q2proto_common_client_read_entity_bits((uintptr_t)&io,&bits,&entnum)==Q2P_ERR_SUCCESS);
  *number=entnum;*removed=(bits&U_REMOVE)!=0;
  if(*removed){assert(io.pos==size);return;}
  q2proto_clientcontext_t context={0};context.server_protocol=demo?Q2P_PROTOCOL_KEX_DEMOS:Q2P_PROTOCOL_KEX;
  q2proto_entity_state_delta_t d={0};
- assert(kex_client_read_entity_delta(&context,(uintptr_t)&io,bits,entnum,&d,from[19]!=0)==Q2P_ERR_SUCCESS);
+ assert(kex_client_read_entity_delta(&context,(uintptr_t)&io,bits,entnum,&d,(flags&8)?true:(flags&16)?false:from[19]!=0)==Q2P_ERR_SUCCESS);
  assert(io.pos==size);enhanced_entity_get(&d,from,out,true);
 }
 static void enhanced_entity_get(q2proto_entity_state_delta_t *p,uint32_t *from,uint32_t *out,bool floating_angles) {
@@ -1023,7 +1023,7 @@ int main(void) {
   else if(mode==10) {kex_stats_decode(&m,from,decoded);}
   else if(mode==11) {kex_player_decode(data,m.cursize,from,decoded);}
   else if(mode==12) {repro_entity_decode(data,m.cursize,from,decoded,&wire_number,&removed);}
-  else {kex_entity_decode(data,m.cursize,from,decoded,&wire_number,&removed,mode==14);}
+  else {kex_entity_decode(data,m.cursize,from,decoded,&wire_number,&removed,mode==14,flags);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
@@ -1038,7 +1038,7 @@ def compile_reference(qsrc, evidence):
     source, tables = reference_source(qsrc)
     declarations = 'extern uint32_t kex_player_encode(uint8_t*,uint32_t*,uint32_t*);\nextern void kex_player_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*);\n'
     declarations += 'extern uint32_t repro_entity_encode(uint8_t*,uint32_t*,uint32_t*,uint16_t,uint8_t);\nextern void repro_entity_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*,uint32_t*,uint8_t*);\n'
-    declarations += 'extern uint32_t kex_entity_encode(uint8_t*,uint32_t*,uint32_t*,uint16_t,uint8_t,_Bool);\nextern void kex_entity_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*,uint32_t*,uint8_t*,_Bool);\n'
+    declarations += 'extern uint32_t kex_entity_encode(uint8_t*,uint32_t*,uint32_t*,uint16_t,uint8_t,_Bool);\nextern void kex_entity_decode(uint8_t*,uint32_t,uint32_t*,uint32_t*,uint32_t*,uint8_t*,_Bool,uint8_t);\n'
     source = source.replace('int main(void)',declarations+'int main(void)',1)
     code = evidence / 'original-state-delta.c'
     code.write_text(source)
@@ -1285,6 +1285,15 @@ def fixture(tables):
                     if case>=100: new=old.copy();new[18]=0
             number = 1 + case%511 if mode==3 else 1+case%1023 if mode==4 else case%1023
             output += struct.pack('<BBH224I', mode, flags, number, *old, *new)
+    for case in range(512):
+        old, new = [0] * 112, [0] * 112
+        old[19] = new[19] = 0 if case % 2 else 1
+        old[8] = struct.unpack('<I', struct.pack('<f', 3.125))[0]
+        new[8] = struct.unpack('<I', struct.pack('<f', -1.01 - case * 0.125))[0]
+        new[14] = struct.unpack('<I', struct.pack('<f', 5.03 + case * 0.125))[0]
+        flags = 4 | (8 if case % 2 else 16)
+        output += struct.pack('<BBH224I', 14, flags, 1 + case % 8191, *old, *new)
+
     return output
 
 

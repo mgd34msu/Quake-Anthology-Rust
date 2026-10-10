@@ -3,7 +3,7 @@ use qa_core::primitives::ThinkTime;
 use qa_network::{
     commands::packet::Error,
     message::{Encoding, Reader, Writer},
-    snapshots::{self, Q2Header, Q2KexRing},
+    snapshots::{self, Q2Header, Q2KexContext, Q2KexRing},
     states::{self, Q2_RERELEASE_ENTITY_WORDS, Q2KexPlayer},
 };
 use qa_platform::allocations;
@@ -22,6 +22,10 @@ fn main() -> Result<(), String> {
     let mut rings = [
         Q2KexRing::load(16, 8192, 32, Some(8192)).map_err(|e| e.to_string())?,
         Q2KexRing::load(16, 8192, 32, Some(8192)).map_err(|e| e.to_string())?,
+    ];
+    let mut contexts = [
+        Q2KexContext::load(&rings[0], false).map_err(|e| e.to_string())?,
+        Q2KexContext::load(&rings[1], true).map_err(|e| e.to_string())?,
     ];
     let mut packets = [[0; 1400]; 2];
     let mut lengths = [0; 2];
@@ -56,6 +60,10 @@ fn main() -> Result<(), String> {
             Some(&entity),
             true,
             mode == 1,
+            &mut states::Q2KexWire {
+                nonzero_solid: (&[0; Q2_RERELEASE_ENTITY_WORDS])[19] != 0,
+                baseline_solid: false,
+            },
         )
         .map_err(|e| e.to_string())?;
         writer.write_bits(0, 16).map_err(|e| e.to_string())?;
@@ -71,9 +79,12 @@ fn main() -> Result<(), String> {
                 if reader.read_bits(8)? != 20 {
                     return Err(Error::Opcode);
                 }
-                if !snapshots::read_q2_kex(&mut reader, &mut rings[mode], mode == 1, |n| {
-                    ThinkTime::Milliseconds(i64::from(n) * 25)
-                })? {
+                if !snapshots::read_q2_kex(
+                    &mut reader,
+                    &mut rings[mode],
+                    &mut contexts[mode],
+                    |n| ThinkTime::Milliseconds(i64::from(n) * 25),
+                )? {
                     return Err(Error::Context);
                 }
                 let current = rings[mode].frame(5).ok_or(Error::Context)?;

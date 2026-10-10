@@ -10,6 +10,50 @@ const KEX_PLAYER: usize = 42 + states::Q2_RR_STATS;
 pub type Q2KexRing = Ring<KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 pub type Q2KexFrame<'a> = Frame<'a, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>;
 
+/// Endpoint-owned KEX decoder metadata. Snapshot bases remain in Ring; these
+/// small native columns select wire widths and reset to registered baselines.
+pub struct Q2KexContext {
+    demo: bool,
+    entities: Box<[states::Q2KexWire]>,
+}
+impl Q2KexContext {
+    pub fn load(ring: &Q2KexRing, demo: bool) -> Result<Self, packet::Error> {
+        if ring.baselines.len() > 8192 {
+            return Err(packet::Error::Count);
+        }
+        Ok(Self {
+            demo,
+            entities: ring
+                .baselines
+                .iter()
+                .map(|words| states::Q2KexWire {
+                    nonzero_solid: words[19] != 0,
+                    baseline_solid: words[19] != 0,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        })
+    }
+    pub fn set_baseline(
+        &mut self,
+        ring: &mut Q2KexRing,
+        number: u32,
+        words: &[u32; states::Q2_RERELEASE_ENTITY_WORDS],
+    ) -> bool {
+        let Some(wire) = self.entities.get_mut(number as usize) else {
+            return false;
+        };
+        if !ring.set_baseline(number, words) {
+            return false;
+        }
+        *wire = states::Q2KexWire {
+            nonzero_solid: words[19] != 0,
+            baseline_solid: words[19] != 0,
+        };
+        true
+    }
+}
+
 /// Native svc_frame prefix. Protocol 34 and KEX retain full frame numbers;
 /// protocol 1038 packs a 27-bit frame and a five-bit delta offset. These are
 /// wire columns, independent of the engine's timeline and player storage.
@@ -29,13 +73,13 @@ pub(super) struct ReadRules {
     pub valid_base: bool,
 }
 
-/// Retail KEX 2023 frame after svc_frame; `demo` selects the 2022 coordinate
-/// table. Native clock conversion is supplied by the connection, independently
+/// KEX frame after svc_frame; the context selects retail 2023 or demo 2022
+/// coordinates. Native clock conversion is supplied by the connection, independently
 /// of map format or movement. No alternate player or entity store is created.
 pub fn read_q2_kex(
     reader: &mut Reader<'_>,
     ring: &mut Q2KexRing,
-    demo: bool,
+    context: &mut Q2KexContext,
     time: impl FnOnce(u32) -> ThinkTime,
 ) -> Result<bool, packet::Error> {
     read_records::<false, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
@@ -60,7 +104,18 @@ pub fn read_q2_kex(
             Ok(words)
         },
         |reader, header, from| {
-            Ok(states::read_q2_extended_entity_body::<true>(reader, header, from, demo)?.words)
+            let wire = context
+                .entities
+                .get_mut(usize::from(header.number))
+                .ok_or(packet::Error::Count)?;
+            Ok(states::read_q2_extended_entity_body::<true>(
+                reader,
+                header,
+                from,
+                context.demo,
+                wire,
+            )?
+            .words)
         },
         |from| states::q2_unchanged_entity(from, true),
         time,
@@ -74,7 +129,7 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
     ring: &mut Ring<P, E>,
     rules: ReadRules,
     player: impl FnOnce(&mut Reader<'_>, &[u32; P], u8) -> Result<[u32; P], crate::message::Error>,
-    body: impl Fn(
+    body: impl FnMut(
         &mut Reader<'_>,
         states::EntityHeader,
         &[u32; E],

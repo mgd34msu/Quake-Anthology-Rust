@@ -2,7 +2,7 @@ use qa_core::primitives::ThinkTime;
 use qa_network::{
     commands::packet::Error,
     message::{Encoding, Reader, Writer},
-    snapshots::{self, Entity, Frame, Q2Header, Q2KexRing},
+    snapshots::{self, Entity, Frame, Q2Header, Q2KexContext, Q2KexRing},
     states::{self, Q2_RERELEASE_ENTITY_WORDS, Q2KexPlayer},
 };
 
@@ -53,10 +53,10 @@ fn wire(
     Ok(writer.size())
 }
 
-fn receive(ring: &mut Q2KexRing, demo: bool, bytes: &[u8]) -> Result<bool, Error> {
+fn receive(ring: &mut Q2KexRing, context: &mut Q2KexContext, bytes: &[u8]) -> Result<bool, Error> {
     let mut reader = Reader::new(bytes, Encoding::Bytes);
     assert_eq!(reader.read_bits(8)?, 20);
-    let accepted = snapshots::read_q2_kex(&mut reader, ring, demo, |n| {
+    let accepted = snapshots::read_q2_kex(&mut reader, ring, context, |n| {
         ThinkTime::Milliseconds(i64::from(n) * 25)
     })?;
     assert_eq!(reader.read_bits(8)?, 1);
@@ -72,7 +72,8 @@ fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Resu
         let regular = body(3, 3.125, false);
         let removed = body(5, 5.25, false);
         let baseline = body(7, 7.125, false);
-        assert!(ring.set_baseline(7, &baseline.words));
+        let mut context = Q2KexContext::load(&ring, demo)?;
+        assert!(context.set_baseline(&mut ring, 7, &baseline.words));
         let player = player();
         let mut bytes = [0; 1400];
         let n = wire(
@@ -91,12 +92,16 @@ fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Resu
                         Some(&entity.words),
                         true,
                         demo,
+                        &mut states::Q2KexWire {
+                            nonzero_solid: (&[0; Q2_RERELEASE_ENTITY_WORDS])[19] != 0,
+                            baseline_solid: false,
+                        },
                     )?;
                 }
                 Ok(())
             },
         )?;
-        assert!(receive(&mut ring, demo, &bytes[..n])?);
+        assert!(receive(&mut ring, &mut context, &bytes[..n])?);
         let old = ring.frame(1).ok_or(Error::Context)?;
         assert_eq!(old.entities, [beam, regular, removed]);
         let mut expected_player = player.words;
@@ -122,8 +127,23 @@ fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Resu
                 Some(&changed.words),
                 false,
                 demo,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&regular.words)[19] != 0,
+                    baseline_solid: false,
+                },
             )?;
-            states::write_q2_kex_entity(writer, 5, &removed.words, None, false, demo)?;
+            states::write_q2_kex_entity(
+                writer,
+                5,
+                &removed.words,
+                None,
+                false,
+                demo,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&removed.words)[19] != 0,
+                    baseline_solid: false,
+                },
+            )?;
             states::write_q2_kex_entity(
                 writer,
                 7,
@@ -131,9 +151,13 @@ fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Resu
                 Some(&inserted.words),
                 false,
                 demo,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&baseline.words)[19] != 0,
+                    baseline_solid: false,
+                },
             )
         })?;
-        assert!(receive(&mut ring, demo, &bytes[..n])?);
+        assert!(receive(&mut ring, &mut context, &bytes[..n])?);
         let mut unchanged_beam = beam;
         unchanged_beam.words[18] = 0;
         changed.words[14..17].copy_from_slice(&regular.words[8..11]);
@@ -152,6 +176,7 @@ fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Resu
 #[test]
 fn missing_invalid_and_current_bases_are_consumed_without_publication() -> Result<(), Error> {
     let mut ring = Q2KexRing::load(8, 8192, 32, None)?;
+    let mut context = Q2KexContext::load(&ring, false)?;
     let player = player();
     let mut bytes = [0; 1400];
     for (sequence, delta) in [(2, 1), (3, 2)] {
@@ -164,7 +189,7 @@ fn missing_invalid_and_current_bases_are_consumed_without_publication() -> Resul
             &mut bytes,
             |_| Ok(()),
         )?;
-        assert!(!receive(&mut ring, false, &bytes[..n])?);
+        assert!(!receive(&mut ring, &mut context, &bytes[..n])?);
         assert!(ring.frame(sequence).is_none());
     }
     assert_eq!(ring.counts().missing_base, 2);
@@ -177,9 +202,9 @@ fn missing_invalid_and_current_bases_are_consumed_without_publication() -> Resul
         &mut bytes,
         |_| Ok(()),
     )?;
-    assert!(receive(&mut ring, false, &bytes[..n])?);
+    assert!(receive(&mut ring, &mut context, &bytes[..n])?);
     let n = wire(4, 4, &player, &player, false, &mut bytes, |_| Ok(()))?;
-    assert!(!receive(&mut ring, false, &bytes[..n])?);
+    assert!(!receive(&mut ring, &mut context, &bytes[..n])?);
     assert!(ring.frame(4).is_none());
     Ok(())
 }
@@ -187,6 +212,7 @@ fn missing_invalid_and_current_bases_are_consumed_without_publication() -> Resul
 #[test]
 fn frame_failures_preserve_published_state_and_overflow_is_bounded() -> Result<(), Error> {
     let mut ring = Q2KexRing::load(1, 8192, 32, None)?;
+    let mut context = Q2KexContext::load(&ring, true)?;
     let old_player = [0; 106];
     let old = body(1, 1.25, false);
     ring.store(Frame {
@@ -217,6 +243,10 @@ fn frame_failures_preserve_published_state_and_overflow_is_bounded() -> Result<(
                     Some(&to.words),
                     true,
                     true,
+                    &mut states::Q2KexWire {
+                        nonzero_solid: (&[0; Q2_RERELEASE_ENTITY_WORDS])[19] != 0,
+                        baseline_solid: false,
+                    },
                 )?;
             }
             Ok(())
@@ -226,20 +256,21 @@ fn frame_failures_preserve_published_state_and_overflow_is_bounded() -> Result<(
     for size in 1..n - 1 {
         let mut reader = Reader::new(&bytes[1..size], Encoding::Bytes);
         assert!(
-            snapshots::read_q2_kex(&mut reader, &mut ring, true, |_| ThinkTime::Milliseconds(
-                50
-            ))
+            snapshots::read_q2_kex(&mut reader, &mut ring, &mut context, |_| {
+                ThinkTime::Milliseconds(50)
+            })
             .is_err()
         );
         assert_eq!(ring.frame(1).ok_or(Error::Context)?.entities, [old]);
         assert!(ring.frame(2).is_none());
     }
-    assert!(!receive(&mut ring, true, &bytes[..n])?);
+    assert!(!receive(&mut ring, &mut context, &bytes[..n])?);
     assert_eq!(ring.counts().overflow, 1);
     assert_eq!(ring.frame(1).ok_or(Error::Context)?.entities, [old]);
     assert!(ring.frame(2).is_none());
     // Demo non-solid coordinates use the native signed eighth-unit field.
     let mut complete = Q2KexRing::load(2, 8192, 32, None)?;
+    let mut complete_context = Q2KexContext::load(&complete, true)?;
     let to = body(1, -1.01, false);
     let n = wire(
         3,
@@ -256,10 +287,14 @@ fn frame_failures_preserve_published_state_and_overflow_is_bounded() -> Result<(
                 Some(&to.words),
                 true,
                 true,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&[0; Q2_RERELEASE_ENTITY_WORDS])[19] != 0,
+                    baseline_solid: false,
+                },
             )
         },
     )?;
-    assert!(receive(&mut complete, true, &bytes[..n])?);
+    assert!(receive(&mut complete, &mut complete_context, &bytes[..n])?);
     assert_eq!(
         complete.frame(3).ok_or(Error::Context)?.entities[0].words[8],
         (-1.0f32).to_bits()
@@ -270,6 +305,7 @@ fn frame_failures_preserve_published_state_and_overflow_is_bounded() -> Result<(
 #[test]
 fn enhanced_native_frame_and_entity_numbers_reject_out_of_range_fields() -> Result<(), Error> {
     let mut ring = Q2KexRing::load(2, 8192, 32, None)?;
+    let mut context = Q2KexContext::load(&ring, false)?;
     let player = player();
     let mut bytes = [0; 1400];
     let n = wire(
@@ -285,7 +321,7 @@ fn enhanced_native_frame_and_entity_numbers_reject_out_of_range_fields() -> Resu
         snapshots::read_q2_kex(
             &mut Reader::new(&bytes[1..n], Encoding::Bytes),
             &mut ring,
-            false,
+            &mut context,
             |_| ThinkTime::Milliseconds(0)
         ),
         Err(Error::Count)
@@ -305,6 +341,10 @@ fn enhanced_native_frame_and_entity_numbers_reject_out_of_range_fields() -> Resu
                 Some(&[0; Q2_RERELEASE_ENTITY_WORDS]),
                 true,
                 false,
+                &mut states::Q2KexWire {
+                    nonzero_solid: (&[0; Q2_RERELEASE_ENTITY_WORDS])[19] != 0,
+                    baseline_solid: false,
+                },
             )
         },
     )?;
@@ -312,11 +352,94 @@ fn enhanced_native_frame_and_entity_numbers_reject_out_of_range_fields() -> Resu
         snapshots::read_q2_kex(
             &mut Reader::new(&bytes[1..n], Encoding::Bytes),
             &mut ring,
-            false,
+            &mut context,
             |_| ThinkTime::Milliseconds(0)
         ),
         Err(Error::Count)
     );
     assert_eq!(ring.counts().accepted, 0);
+    Ok(())
+}
+
+#[test]
+fn demo_wire_precision_survives_an_older_snapshot_base_and_resets_on_remove() -> Result<(), Error> {
+    let mut ring = Q2KexRing::load(4, 8192, 32, None)?;
+    let mut context = Q2KexContext::load(&ring, true)?;
+    let player = Q2KexPlayer::default();
+    let mut transmit = states::Q2KexWire::default();
+    let mut bytes = [0; 1400];
+    let mut first = body(1, 1.25, false);
+    first.words[18] = 0;
+    let n = wire(1, -1, &player, &player, true, &mut bytes, |writer| {
+        states::write_q2_kex_entity(
+            writer,
+            1,
+            &[0; Q2_RERELEASE_ENTITY_WORDS],
+            Some(&first.words),
+            true,
+            true,
+            &mut transmit,
+        )
+    })?;
+    assert!(receive(&mut ring, &mut context, &bytes[..n])?);
+    let mut second = first;
+    second.words[19] = 1;
+    second.words[8] = 3.125f32.to_bits();
+    let n = wire(2, 1, &player, &player, true, &mut bytes, |writer| {
+        states::write_q2_kex_entity(
+            writer,
+            1,
+            &first.words,
+            Some(&second.words),
+            false,
+            true,
+            &mut transmit,
+        )
+    })?;
+    assert!(receive(&mut ring, &mut context, &bytes[..n])?);
+    let mut third = first;
+    third.words[8] = 7.03125f32.to_bits();
+    // No solid delta against frame one, while the last wire solid is nonzero.
+    let n = wire(3, 1, &player, &player, true, &mut bytes, |writer| {
+        states::write_q2_kex_entity(
+            writer,
+            1,
+            &first.words,
+            Some(&third.words),
+            false,
+            true,
+            &mut transmit,
+        )
+    })?;
+    assert!(receive(&mut ring, &mut context, &bytes[..n])?);
+    let decoded = ring.frame(3).ok_or(Error::Context)?;
+    assert_eq!(decoded.entities[0].words[8], third.words[8]);
+    assert_eq!(decoded.entities[0].words[19], 0);
+    assert!(transmit.nonzero_solid);
+    let n = wire(4, 3, &player, &player, true, &mut bytes, |writer| {
+        states::write_q2_kex_entity(writer, 1, &third.words, None, false, true, &mut transmit)
+    })?;
+    assert!(receive(&mut ring, &mut context, &bytes[..n])?);
+    assert!(ring.frame(4).ok_or(Error::Context)?.entities.is_empty());
+    assert!(!transmit.nonzero_solid);
+    // Insert from zero baseline after removal: native demo precision is low.
+    let mut inserted = third;
+    inserted.words[8] = (-1.01f32).to_bits();
+    let n = wire(5, 4, &player, &player, true, &mut bytes, |writer| {
+        states::write_q2_kex_entity(
+            writer,
+            1,
+            &[0; Q2_RERELEASE_ENTITY_WORDS],
+            Some(&inserted.words),
+            true,
+            true,
+            &mut transmit,
+        )
+    })?;
+    assert!(receive(&mut ring, &mut context, &bytes[..n])?);
+    assert_eq!(
+        ring.frame(5).ok_or(Error::Context)?.entities[0].words[8],
+        (-1.0f32).to_bits()
+    );
     Ok(())
 }

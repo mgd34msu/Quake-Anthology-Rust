@@ -6,7 +6,7 @@ use crate::{
     states,
 };
 mod q2;
-pub use q2::{Q2Header, Q2KexFrame, Q2KexRing, read_q2_kex};
+pub use q2::{Q2Header, Q2KexContext, Q2KexFrame, Q2KexRing, read_q2_kex};
 
 pub const SLOTS: usize = 32;
 
@@ -693,7 +693,7 @@ fn read_entities<const E: usize>(
     scratch: &mut [Entity<E>],
     terminator: u16,
     mut header: impl FnMut(&mut Reader<'_>) -> Result<states::EntityHeader, packet::Error>,
-    body: impl Fn(
+    mut body: impl FnMut(
         &mut Reader<'_>,
         states::EntityHeader,
         &[u32; E],

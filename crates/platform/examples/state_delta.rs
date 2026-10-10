@@ -296,13 +296,26 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             result.decoded[42..106].copy_from_slice(&decoded.stats);
         }
         12..=14 => {
-            let from = case.from[..states::Q2_RERELEASE_ENTITY_WORDS]
+            let from: &[u32; states::Q2_RERELEASE_ENTITY_WORDS] = case.from
+                [..states::Q2_RERELEASE_ENTITY_WORDS]
                 .try_into()
                 .map_err(|_| "repro entity words")?;
             let to = case.to[..states::Q2_RERELEASE_ENTITY_WORDS]
                 .try_into()
                 .map_err(|_| "repro entity words")?;
             let to = if case.flags & 2 != 0 { None } else { Some(to) };
+            let initial_wire = states::Q2KexWire {
+                nonzero_solid: if case.flags & 8 != 0 {
+                    true
+                } else if case.flags & 16 != 0 {
+                    false
+                } else {
+                    from[19] != 0
+                },
+                baseline_solid: false,
+            };
+            let mut transmit_wire = initial_wire;
+            let mut receive_wire = initial_wire;
             if case.mode == 12 {
                 states::write_q2_repro_entity(
                     &mut writer,
@@ -319,6 +332,7 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
                     to,
                     case.flags & 4 != 0,
                     case.mode == 14,
+                    &mut transmit_wire,
                 )
             }
             .map_err(|e| e.to_string())?;
@@ -326,7 +340,7 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
             let decoded = if case.mode == 12 {
                 states::read_q2_repro_entity(&mut reader, from)
             } else {
-                states::read_q2_kex_entity(&mut reader, from, case.mode == 14)
+                states::read_q2_kex_entity(&mut reader, from, case.mode == 14, &mut receive_wire)
             }
             .map_err(|e| e.to_string())?;
             if reader.byte_position() != writer.size() {

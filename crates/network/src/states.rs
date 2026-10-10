@@ -1147,6 +1147,13 @@ pub(crate) fn read_q2_entity_body(
 /// conversion is later.
 pub const Q2_RERELEASE_ENTITY_WORDS: usize = 25;
 pub type Q2RereleaseEntityDelta = EntityDelta<Q2_RERELEASE_ENTITY_WORDS>;
+/// Native coordinate-decoder metadata, independent of retained entity words.
+/// KEX 2022 selects precision from the last wire solid, not the delta base.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Q2KexWire {
+    pub nonzero_solid: bool,
+    pub baseline_solid: bool,
+}
 const fn q2_enhanced_entity_fields<const KEX: bool>() -> [Field; Q2_RERELEASE_ENTITY_WORDS] {
     let mut fields = [Field::new(0, 8, 0, Value::Unsigned); Q2_RERELEASE_ENTITY_WORDS];
     let mut i = 0;
@@ -1353,7 +1360,15 @@ pub fn write_q2_repro_entity(
     to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
     write_old_origin: bool,
 ) -> Result<(), Error> {
-    write_q2_extended_entity::<false>(writer, number, from, to, write_old_origin, false)
+    write_q2_extended_entity::<false>(
+        writer,
+        number,
+        from,
+        to,
+        write_old_origin,
+        false,
+        &mut Q2KexWire::default(),
+    )
 }
 /// Retail KEX 2023; `demo` selects 2022's solid-dependent coordinate precision.
 pub fn write_q2_kex_entity(
@@ -1363,8 +1378,9 @@ pub fn write_q2_kex_entity(
     to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
     write_old_origin: bool,
     demo: bool,
+    wire: &mut Q2KexWire,
 ) -> Result<(), Error> {
-    write_q2_extended_entity::<true>(writer, number, from, to, write_old_origin, demo)
+    write_q2_extended_entity::<true>(writer, number, from, to, write_old_origin, demo, wire)
 }
 fn write_q2_extended_entity<const KEX: bool>(
     writer: &mut Writer<'_>,
@@ -1373,9 +1389,13 @@ fn write_q2_extended_entity<const KEX: bool>(
     to: Option<&[u32; Q2_RERELEASE_ENTITY_WORDS]>,
     write_old_origin: bool,
     demo: bool,
+    wire: &mut Q2KexWire,
 ) -> Result<(), Error> {
     let Some(to) = to else {
         write_q2_entity_prefix(writer, number, Q2_REMOVE, true)?;
+        if KEX {
+            wire.nonzero_solid = wire.baseline_solid;
+        }
         return Ok(());
     };
     let fields = if KEX {
@@ -1409,7 +1429,16 @@ fn write_q2_extended_entity<const KEX: bool>(
         delta::write(&Q2_KEX_ENTITY_START, from, to, flags, writer)?;
         delta::write(kex_effects(flags), from, to, flags, writer)?;
         delta::write(&Q2_KEX_ENTITY_MIDDLE, from, to, flags, writer)?;
-        delta::write(kex_coords(demo, to[19]), from, to, flags, writer)?;
+        if flags & (1 << 27) != 0 {
+            wire.nonzero_solid = to[19] != 0;
+        }
+        delta::write(
+            kex_coords(demo, u32::from(wire.nonzero_solid)),
+            from,
+            to,
+            flags,
+            writer,
+        )?;
     } else {
         delta::write(&Q2_REPRO_ENTITY_PREFIX, from, to, flags, writer)?;
     }
@@ -1434,14 +1463,15 @@ pub fn read_q2_repro_entity(
     reader: &mut Reader<'_>,
     from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
 ) -> Result<Q2RereleaseEntityDelta, Error> {
-    read_q2_extended_entity::<false>(reader, from, false)
+    read_q2_extended_entity::<false>(reader, from, false, &mut Q2KexWire::default())
 }
 pub fn read_q2_kex_entity(
     reader: &mut Reader<'_>,
     from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
     demo: bool,
+    wire: &mut Q2KexWire,
 ) -> Result<Q2RereleaseEntityDelta, Error> {
-    read_q2_extended_entity::<true>(reader, from, demo)
+    read_q2_extended_entity::<true>(reader, from, demo, wire)
 }
 fn kex_effects(flags: u64) -> &'static [Group<true, true, true>] {
     if flags & (1 << 29) != 0 {
@@ -1461,18 +1491,23 @@ fn read_q2_extended_entity<const KEX: bool>(
     reader: &mut Reader<'_>,
     from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
     demo: bool,
+    wire: &mut Q2KexWire,
 ) -> Result<Q2RereleaseEntityDelta, Error> {
     let header = read_q2_entity_prefix(reader, true)?;
-    read_q2_extended_entity_body::<KEX>(reader, header, from, demo)
+    read_q2_extended_entity_body::<KEX>(reader, header, from, demo, wire)
 }
 pub(crate) fn read_q2_extended_entity_body<const KEX: bool>(
     reader: &mut Reader<'_>,
     header: EntityHeader,
     from: &[u32; Q2_RERELEASE_ENTITY_WORDS],
     demo: bool,
+    wire: &mut Q2KexWire,
 ) -> Result<Q2RereleaseEntityDelta, Error> {
     let EntityHeader { number, flags } = header;
     if flags & Q2_REMOVE != 0 {
+        if KEX {
+            wire.nonzero_solid = wire.baseline_solid;
+        }
         return Ok(Q2RereleaseEntityDelta {
             number,
             words: None,
@@ -1486,7 +1521,10 @@ pub(crate) fn read_q2_extended_entity_body<const KEX: bool>(
             words[20] = 0;
         }
         delta::read(&Q2_KEX_ENTITY_MIDDLE, &mut words, flags, reader)?;
-        let groups = kex_coords(demo, words[19]);
+        if flags & (1 << 27) != 0 {
+            wire.nonzero_solid = words[19] != 0;
+        }
+        let groups = kex_coords(demo, u32::from(wire.nonzero_solid));
         delta::read(groups, &mut words, flags, reader)?;
     } else {
         delta::read(&Q2_REPRO_ENTITY_PREFIX, &mut words, flags, reader)?;
