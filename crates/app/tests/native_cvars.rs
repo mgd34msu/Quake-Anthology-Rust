@@ -227,6 +227,40 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
             0
         );
         assert_eq!(services.cvars.entries().count(), count);
+        // The catalog's rerelease maxentities default is unresolved. Native
+        // Cvar_Get supplies the module's value in the same existing row.
+        memory.write(base + 16, b"maxentities\0").unwrap();
+        memory.write(base + 64, b"8192\0").unwrap();
+        let query = invoke(
+            &mut native,
+            &mut memory,
+            &mut services,
+            get,
+            &[base + 16, 0, 16],
+        );
+        let edicts = invoke(
+            &mut native,
+            &mut memory,
+            &mut services,
+            get,
+            &[base + 16, base + 64, 16],
+        );
+        assert_eq!(query, edicts);
+        assert_eq!(
+            memory.cstring(pointer(&memory, edicts + 8)).unwrap(),
+            if rr { &b"8192"[..] } else { &b"1024"[..] }
+        );
+        assert_eq!(
+            memory.read_word(edicts + 32).unwrap() as u32,
+            if rr {
+                8192f32.to_bits()
+            } else {
+                1024f32.to_bits()
+            }
+        );
+        if rr {
+            assert_eq!(memory.read_word(edicts + 48).unwrap(), 8192);
+        }
         assert_eq!(unknown.calls, 0);
     }
 }
@@ -261,7 +295,7 @@ fn native_bindings_keep_alias_projections_distinct_in_the_one_registry() {
             .is_err()
     );
     assert_eq!(native.capacity_drops, 1);
-    cvars.register("s_khz", "22", 32, context).unwrap();
+    cvars.register("s_khz", Some("22"), 32, context).unwrap();
     cvars.server_active = true;
     cvars.write(first, "44").unwrap();
     assert_eq!(cvars.latched(first).unwrap().unwrap().as_str(), "44");

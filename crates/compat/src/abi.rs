@@ -378,14 +378,10 @@ fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let default_address = c.pointer(1)?;
     let flags = c.arg(2)? as u32;
     let name = std::str::from_utf8(c.memory.cstring(name_address)?).map_err(|_| CallError::Text)?;
-    let existing = c.services.cvars.bind(name, c.context.console);
-    if default_address == 0 && existing.is_none() {
-        return Ok(0);
-    }
-    let default = if existing.is_some() || default_address == 0 {
-        ""
+    let default = if default_address == 0 {
+        None
     } else {
-        std::str::from_utf8(c.memory.cstring(default_address)?).map_err(|_| CallError::Text)?
+        Some(std::str::from_utf8(c.memory.cstring(default_address)?).map_err(|_| CallError::Text)?)
     };
     let view = match (ENGINE_CALLS.cvar_register)(
         c.services,
@@ -406,7 +402,7 @@ fn q2_cvar_set<const FORCE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
     let name = std::str::from_utf8(c.memory.cstring(name_address)?).map_err(|_| CallError::Text)?;
     let value =
         std::str::from_utf8(c.memory.cstring(value_address)?).map_err(|_| CallError::Text)?;
-    let view = (ENGINE_CALLS.cvar_register)(c.services, c.context.console, name, value, 0)?;
+    let view = (ENGINE_CALLS.cvar_register)(c.services, c.context.console, name, Some(value), 0)?;
     let flags = c.services.cvars.flags(view);
     // Q2 NOSET applies even before the console's command-line INIT boundary.
     let result = if FORCE {

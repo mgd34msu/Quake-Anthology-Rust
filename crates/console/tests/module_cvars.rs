@@ -12,13 +12,57 @@ fn context(source: RuleSetId) -> Context {
 }
 
 #[test]
+fn native_registration_fills_an_unresolved_source_default_without_overwriting_values() {
+    let mut cvars = Cvars::new().unwrap();
+    let rr = context(RuleSetId::Quake2Rerelease);
+    let classic = context(RuleSetId::Quake2);
+    let unresolved = cvars.bind("maxentities", rr).unwrap();
+    assert!(!cvars.default_available(unresolved.canonical(), rr.source));
+    let query = cvars.register("maxentities", None, 32, rr).unwrap();
+    assert_eq!(query.canonical(), unresolved.canonical());
+    assert!(!cvars.default_available(query.canonical(), rr.source));
+    assert!(matches!(
+        cvars.register("_qa_missing_default", None, 0, rr),
+        Err(WriteError::MissingDefault)
+    ));
+    let old_count = cvars.entries().count();
+    let view = cvars.register("maxentities", Some("8192"), 32, rr).unwrap();
+    assert_eq!(view.canonical(), unresolved.canonical());
+    assert_eq!(cvars.entries().count(), old_count);
+    assert_eq!(cvars.read(view).unwrap().as_str(), "8192");
+    assert_eq!(cvars.numeric(view).unwrap(), 8192.0);
+    assert!(cvars.native_default_available(view.canonical(), rr.source));
+    let other = cvars.bind("maxentities", classic).unwrap();
+    assert_eq!(cvars.read(other).unwrap().as_str(), "1024");
+    let generation = cvars.view_generation(view);
+    cvars.register("MAXENTITIES", Some("4096"), 32, rr).unwrap();
+    assert_eq!(cvars.view_generation(view), generation);
+    assert_eq!(cvars.read(view).unwrap().as_str(), "8192");
+    cvars.force_write(view, "2048").unwrap();
+    cvars.reset(view.canonical());
+    assert_eq!(cvars.read(view).unwrap().as_str(), "8192");
+    let mut cvars = Cvars::new().unwrap();
+    let user = cvars.bind("maxentities", rr).unwrap();
+    cvars.force_write(user, "4096").unwrap();
+    cvars.register("maxentities", Some("8192"), 32, rr).unwrap();
+    assert_eq!(cvars.read(user).unwrap().as_str(), "4096");
+    cvars.reset(user.canonical());
+    assert_eq!(cvars.read(user).unwrap().as_str(), "8192");
+    let empty = cvars
+        .register("_qa_explicit_empty", Some(""), 0, rr)
+        .unwrap();
+    assert!(cvars.default_available(empty.canonical(), rr.source));
+    assert_eq!(cvars.read(empty).unwrap().as_str(), "");
+}
+
+#[test]
 fn module_names_share_handles_and_listing_in_every_source() {
     let mut cvars = Cvars::new().unwrap();
     let count = cvars.entries().count();
     let first = cvars
         .register(
             "_QA_ModuleSpeed",
-            "12.5",
+            Some("12.5"),
             0,
             context(RuleSetId::Quake2Rerelease),
         )
@@ -55,18 +99,18 @@ fn registration_preserves_catalog_aliases_defaults_and_written_values() {
     let context = context(RuleSetId::Quake2);
     let before = cvars.bind("fov", context).unwrap();
     let initial = cvars.read(before).unwrap().as_str().to_owned();
-    let view = cvars.register("FOV", "13", 0, context).unwrap();
+    let view = cvars.register("FOV", Some("13"), 0, context).unwrap();
     assert_eq!(view.canonical(), before.canonical());
     assert_eq!(cvars.read(view).unwrap().as_str(), initial);
     cvars.write(view, "117").unwrap();
     let generation = cvars.view_generation(view);
-    let after = cvars.register("fov", "14", 0, context).unwrap();
+    let after = cvars.register("fov", Some("14"), 0, context).unwrap();
     assert_eq!(cvars.read(after).unwrap().as_str(), "117");
     assert_eq!(cvars.view_generation(after), generation);
     let count = cvars.entries().count();
     assert_eq!(
         cvars
-            .register("cg_fov", "90", 0, context)
+            .register("cg_fov", Some("90"), 0, context)
             .unwrap()
             .canonical(),
         view.canonical()
@@ -78,7 +122,9 @@ fn registration_preserves_catalog_aliases_defaults_and_written_values() {
 fn module_values_use_the_existing_latch_flag_and_reset_paths() {
     let mut cvars = Cvars::new().unwrap();
     let context = context(RuleSetId::Quake3);
-    let view = cvars.register("_qa_latched", "10", 32, context).unwrap();
+    let view = cvars
+        .register("_qa_latched", Some("10"), 32, context)
+        .unwrap();
     let generation = cvars.view_generation(view);
     cvars.server_active = true;
     cvars.write(view, "20").unwrap();
@@ -92,12 +138,16 @@ fn module_values_use_the_existing_latch_flag_and_reset_paths() {
     cvars.full_set(view, "30", 64).unwrap();
     assert_eq!(cvars.write(view, "40"), Err(WriteError::ReadOnly));
     let generation = cvars.view_generation(view);
-    let merged = cvars.register("_QA_LATCHED", "99", 1, context).unwrap();
+    let merged = cvars
+        .register("_QA_LATCHED", Some("99"), 1, context)
+        .unwrap();
     assert_eq!(cvars.flags(merged), 65);
     assert_eq!(cvars.read(merged).unwrap().as_str(), "30");
     assert!(cvars.view_generation(merged) > generation);
     let generation = cvars.view_generation(merged);
-    cvars.register("_qa_latched", "88", 1, context).unwrap();
+    cvars
+        .register("_qa_latched", Some("88"), 1, context)
+        .unwrap();
     assert_eq!(cvars.view_generation(merged), generation);
     cvars.full_set(view, "50", 0).unwrap();
     cvars.write(view, "60").unwrap();
@@ -110,24 +160,26 @@ fn bad_info_and_capacity_failures_keep_live_rows_and_existing_bindings() {
     let context = context(RuleSetId::QuakeWorld);
     let initial = cvars.entries().count();
     for (name, default) in [("", "1"), ("bad;name", "1"), ("_qa_bad", "bad\\info")] {
-        assert!(cvars.register(name, default, 6, context).is_err());
+        assert!(cvars.register(name, Some(default), 6, context).is_err());
         assert_eq!(cvars.entries().count(), initial);
     }
-    let first = cvars.register("_qa_module_0", "7", 0, context).unwrap();
+    let first = cvars
+        .register("_qa_module_0", Some("7"), 0, context)
+        .unwrap();
     for index in 1..1024 {
         cvars
-            .register(&format!("_qa_module_{index}"), "0", 0, context)
+            .register(&format!("_qa_module_{index}"), Some("0"), 0, context)
             .unwrap();
     }
     assert!(matches!(
-        cvars.register("_qa_capacity", "0", 0, context),
+        cvars.register("_qa_capacity", Some("0"), 0, context),
         Err(WriteError::Capacity)
     ));
     assert_eq!(cvars.entries().count(), initial + 1024);
     assert!(cvars.bind("_qa_capacity", context).is_none());
     assert_eq!(
         cvars
-            .register("_QA_MODULE_0", "9", 0, context)
+            .register("_QA_MODULE_0", Some("9"), 0, context)
             .unwrap()
             .canonical(),
         first.canonical()

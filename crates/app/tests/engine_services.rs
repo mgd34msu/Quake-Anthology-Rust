@@ -57,17 +57,27 @@ fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
         (ENGINE_CALLS.cvar_set)(&mut services, view, "103").unwrap();
         let alias = services.cvars.bind("cg_fov", q1.console).unwrap();
         assert_eq!(services.cvars.numeric(alias).unwrap(), 103.0);
-        let registered =
-            (ENGINE_CALLS.cvar_register)(&mut services, q1.console, "_qa_shared_module", "12", 0)
-                .unwrap();
-        let other =
-            (ENGINE_CALLS.cvar_register)(&mut services, q3.console, "_QA_SHARED_MODULE", "19", 0)
-                .unwrap();
+        let registered = (ENGINE_CALLS.cvar_register)(
+            &mut services,
+            q1.console,
+            "_qa_shared_module",
+            Some("12"),
+            0,
+        )
+        .unwrap();
+        let other = (ENGINE_CALLS.cvar_register)(
+            &mut services,
+            q3.console,
+            "_QA_SHARED_MODULE",
+            Some("19"),
+            0,
+        )
+        .unwrap();
         assert_eq!(registered.canonical(), other.canonical());
         (ENGINE_CALLS.cvar_set)(&mut services, registered, "27").unwrap();
         assert_eq!(services.cvars.numeric(other).unwrap(), 27.0);
         assert_eq!(
-            (ENGINE_CALLS.cvar_register)(&mut services, q3.console, "", "0", 0).unwrap_err(),
+            (ENGINE_CALLS.cvar_register)(&mut services, q3.console, "", Some("0"), 0).unwrap_err(),
             CallError::Cvar
         );
         (ENGINE_CALLS.command)(&mut services, q3.console, "sensitivity 5 extra\n").unwrap();

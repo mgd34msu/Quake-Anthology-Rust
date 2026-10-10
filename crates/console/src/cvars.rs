@@ -46,6 +46,7 @@ pub enum WriteError {
     InitOnly,
     Cheats,
     InvalidInfo,
+    MissingDefault,
 }
 impl From<conversion::Error> for WriteError {
     fn from(e: conversion::Error) -> Self {
@@ -53,7 +54,7 @@ impl From<conversion::Error> for WriteError {
     }
 }
 struct Value {
-    module_default: Option<NameId>,
+    module_defaults: [Option<NameId>; 5],
     row: usize,
     seat: u8,
     explicit: bool,
@@ -205,7 +206,7 @@ impl Cvars {
                 let name = binding.map_or(definition.name, |b| b.name);
                 values.push(Value {
                     name_id: names.find(name.as_bytes()).ok_or(NamesError::Capacity)?,
-                    module_default: None,
+                    module_defaults: [None; 5],
                     row,
                     seat,
                     explicit: false,
@@ -387,26 +388,60 @@ impl Cvars {
     pub fn register(
         &mut self,
         name: &str,
-        default: &str,
+        default: Option<&str>,
         flags: u32,
         context: Context,
     ) -> Result<View, WriteError> {
-        if name.is_empty() || (flags & 6 != 0 && (!info_text(name) || !info_text(default))) {
+        if name.is_empty()
+            || (flags & 6 != 0
+                && (!info_text(name) || default.is_some_and(|text| !info_text(text))))
+        {
             return Err(WriteError::InvalidInfo);
         }
-        if default.len() > MAX_TEXT {
+        if default.is_some_and(|text| text.len() > MAX_TEXT) {
             return Err(conversion::Error::TextTooLong.into());
         }
         if let Some(view) = self.bind(name, context) {
+            // The catalog reserves names even when a source's audited default
+            // is unresolved. Native Cvar_Get supplies that missing default;
+            // an explicit user value and other sources keep their own values.
+            if let Some(default) = default
+                && !self.default_available(view.handle, context.source)
+            {
+                let (changes, _) = self.prepare_write(view, default, false)?;
+                for (handle, text) in changes
+                    .first
+                    .iter()
+                    .map(|(handle, text)| (*handle, text.as_str()))
+                    .chain(
+                        changes
+                            .changes
+                            .iter()
+                            .flatten()
+                            .map(|(handle, text)| (*handle, text.as_str())),
+                    )
+                {
+                    if !self.default_available(handle, context.source) {
+                        let id = self
+                            .names
+                            .intern(text.as_bytes())
+                            .map_err(|_| WriteError::Capacity)?;
+                        self.values[handle.0 as usize].module_defaults[context.source as usize] =
+                            Some(id);
+                        self.mark_change(handle);
+                    }
+                }
+            }
             let merged = self.flags(view) | flags;
             if merged != self.flags(view) {
                 self.values[view.handle.0 as usize].command_flags[context.source as usize] =
                     Some(merged);
                 self.mark_change(view.handle);
-                self.refresh_changes();
             }
+            self.refresh_changes();
             return Ok(view);
         }
+        let default = default.ok_or(WriteError::MissingDefault)?;
         let module_index = self.values.len() - self.catalog_values;
         if module_index >= MODULE_CVARS {
             return Err(WriteError::Capacity);
@@ -424,7 +459,7 @@ impl Cvars {
         let folded = self.names.folded(name_id).ok_or(WriteError::Capacity)?;
         let handle = CvarHandle(self.values.len() as u32);
         self.values.push(Value {
-            module_default: Some(default_id),
+            module_defaults: [Some(default_id); 5],
             row: DEFINITIONS.len(),
             seat: 0,
             explicit: false,
@@ -460,7 +495,7 @@ impl Cvars {
         let value = &self.values[handle.0 as usize];
         if value.explicit {
             self.texts[handle.0 as usize].as_str()
-        } else if let Some(default) = value.module_default {
+        } else if let Some(default) = value.module_defaults[source as usize] {
             self.name_text(default)
         } else {
             self.defaults[value.row][source as usize]
@@ -530,7 +565,7 @@ impl Cvars {
         self.values[handle.0 as usize].explicit
     }
     pub fn default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
-        if self.values[handle.0 as usize].module_default.is_some() {
+        if self.values[handle.0 as usize].module_defaults[source as usize].is_some() {
             return true;
         }
         self.defaults[self.values[handle.0 as usize].row][source as usize].is_some()
@@ -538,7 +573,7 @@ impl Cvars {
     /// Load-time consumers may retain native behavior for settings that the
     /// unified catalog accepts but the selected engine never registered.
     pub fn native_default_available(&self, handle: CvarHandle, source: RuleSetId) -> bool {
-        if self.values[handle.0 as usize].module_default.is_some() {
+        if self.values[handle.0 as usize].module_defaults[source as usize].is_some() {
             return true;
         }
         let row = self.values[handle.0 as usize].row;
@@ -729,7 +764,12 @@ impl Cvars {
     pub fn force_write(&mut self, view: View, text: &str) -> Result<(), WriteError> {
         self.write_inner(view, text, false)
     }
-    fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
+    fn prepare_write(
+        &self,
+        view: View,
+        text: &str,
+        enforce: bool,
+    ) -> Result<(PendingWrite, bool), WriteError> {
         if enforce {
             self.check_write(view, text)?;
         }
@@ -808,6 +848,10 @@ impl Cvars {
             text,
             modified: detail_modified,
         });
+        Ok((changes, pending))
+    }
+    fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
+        let (changes, pending) = self.prepare_write(view, text, enforce)?;
         self.remove_pending(|old| old.handles().any(|h| changes.handles().any(|new| h == new)));
         if pending {
             self.mark_pending(&changes);

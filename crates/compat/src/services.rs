@@ -231,7 +231,7 @@ pub type PrintCall =
 pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
 pub type CvarRegisterCall =
-    fn(&mut EngineServices<'_>, Context, &str, &str, u32) -> Result<View, CallError>;
+    fn(&mut EngineServices<'_>, Context, &str, Option<&str>, u32) -> Result<View, CallError>;
 pub type ResourceIndexCall =
     fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
 pub struct EngineCallTable {
@@ -378,7 +378,7 @@ impl EngineServices<'_> {
         &mut self,
         context: Context,
         name: &str,
-        default: &str,
+        default: Option<&str>,
         flags: u32,
     ) -> Result<View, CallError> {
         self.cvars
