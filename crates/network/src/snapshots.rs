@@ -302,11 +302,22 @@ pub(crate) enum Storage {
     Quake3(Box<Q3Ring>),
 }
 impl Storage {
-    pub(crate) fn load(protocol: packet::Protocol) -> Result<Option<Self>, packet::Error> {
+    pub(crate) fn load(
+        protocol: packet::Protocol,
+        endpoint: qa_core::loopback::Endpoint,
+    ) -> Result<Option<Self>, packet::Error> {
         Ok(match protocol {
             packet::Protocol::QuakeWorld28 => Some(Self::QuakeWorld {
                 ring: Box::new(QwRing::load(64, 512, 0, None)?),
-                player_commands: vec![[packet::ZERO_QW; 32]; 64].into_boxed_slice(),
+                player_commands: vec![
+                    [packet::ZERO_QW; 32];
+                    if endpoint == qa_core::loopback::Endpoint::Client {
+                        64
+                    } else {
+                        0
+                    }
+                ]
+                .into_boxed_slice(),
                 player_model: 0,
             }),
             packet::Protocol::Quake2_34 => Some(Self::Quake2(Box::new(Q2Ring::load(
@@ -342,6 +353,37 @@ impl Storage {
         match self {
             Self::QuakeWorld { ring, .. } => ring.record_request(sequence, base),
             Self::Quake2(_) | Self::Quake3(_) => {}
+        }
+    }
+    pub(crate) fn store(&mut self, frame: ReceivedFrame<'_>) -> Result<(), packet::Error> {
+        match (self, frame) {
+            (Self::QuakeWorld { ring, .. }, ReceivedFrame::QuakeWorld(frame)) => ring.store(frame),
+            (Self::Quake2(ring), ReceivedFrame::Quake2(frame)) => ring.store(frame),
+            (Self::Quake3(ring), ReceivedFrame::Quake3(frame)) => ring.store(frame),
+            _ => Err(packet::Error::Context),
+        }
+    }
+    pub(crate) fn write(
+        &self,
+        writer: &mut Writer<'_>,
+        sequence: u32,
+        request: Option<u32>,
+        native_clients: u32,
+    ) -> Result<(), packet::Error> {
+        match self {
+            Self::QuakeWorld { ring, .. } => {
+                // SV_EmitPacketEntities selects delta_sequence & UPDATE_MASK,
+                // not an assumed full frame number made from the request byte.
+                let request = request.and_then(|request| {
+                    let slot = ring.slots[request as usize & (SLOTS - 1)];
+                    let base = slot.sequence?;
+                    (base & 63 == request & 63 && ring.frame(base).is_some())
+                        .then_some((base, request as u8))
+                });
+                write_qw(writer, ring, sequence, request)
+            }
+            Self::Quake2(ring) => write_q2(writer, ring, sequence, request, native_clients),
+            Self::Quake3(ring) => write_q3(writer, ring, sequence, request),
         }
     }
 }
@@ -728,17 +770,17 @@ pub fn write_qw(
     writer: &mut Writer<'_>,
     ring: &QwRing,
     sequence: u32,
-    delta_request: Option<u32>,
+    delta_request: Option<(u32, u8)>,
 ) -> Result<(), packet::Error> {
     let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
-    let from = delta_request.and_then(|n| ring.frame(n));
+    let from = delta_request.and_then(|(n, byte)| ring.frame(n).map(|frame| (frame, byte)));
     writer.write_bits(if from.is_some() { 48 } else { 47 }, 8)?;
-    if let Some(from) = from {
-        writer.write_bits(from.sequence, 8)?;
+    if let Some((_, byte)) = from {
+        writer.write_bits(u32::from(byte), 8)?;
     }
     let entities = native_entities(to.entities, 1, 512);
     let entities = &entities[..entities.len().min(64)];
-    let old = from.map_or(&[][..], |f| native_entities(f.entities, 1, 512));
+    let old = from.map_or(&[][..], |(f, _)| native_entities(f.entities, 1, 512));
     let old = &old[..old.len().min(64)];
     write_entities(
         writer,

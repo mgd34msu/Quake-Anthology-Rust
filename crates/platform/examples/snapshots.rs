@@ -65,7 +65,7 @@ const QW: Codec<0, { qa_network::states::QW_ENTITY_WORDS }> = Codec {
     encoding: Encoding::Bytes,
     opcodes: [47, 48],
     end: 6,
-    write: snapshots::write_qw,
+    write: |w, r, n, d| snapshots::write_qw(w, r, n, d.map(|base| (base, base as u8))),
     read: |r, s, n, _, opcode, request| snapshots::read_qw(r, s, n, opcode == 48, request, n + 1),
 };
 fn words<const N: usize>(reader: &mut Reader<'_>) -> Result<[u32; N], String> {
@@ -390,11 +390,15 @@ fn connected_heap() -> Result<(), String> {
         commands::{connection::Commands, packet::Protocol},
         ingress::{Connection, Connections, Incoming, Route},
         projection::{PlayerContext, PlayerProjection},
+        snapshots::ReceivedFrame,
         states,
     };
     let protocol = Protocol::Quake2_34;
     let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
         .map_err(|e| format!("{e:?}"))?;
+    server
+        .configure_snapshots(protocol)
+        .map_err(|e| e.to_string())?;
     let mut server_commands = Commands::load(protocol);
     let mut connections = Connections::load(1);
     connections
@@ -413,7 +417,6 @@ fn connected_heap() -> Result<(), String> {
             },
         )
         .map_err(|e| format!("{e:?}"))?;
-    let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None).map_err(|e| e.to_string())?;
     let projection = PlayerProjection::load(protocol, &[]);
     let mut source = PlayerState::with_capacity(2, 2, 4);
     source.health = 100;
@@ -451,7 +454,7 @@ fn connected_heap() -> Result<(), String> {
             if !projection.reduce(&source, &context, &mut player) {
                 return Err(qa_network::commands::packet::Error::Context);
             }
-            ring.store(Frame {
+            server.publish_snapshot(ReceivedFrame::Quake2(Frame {
                 sequence: frame,
                 time: 0,
                 command: 0,
@@ -459,10 +462,10 @@ fn connected_heap() -> Result<(), String> {
                 areas: &[0x81],
                 player: &player,
                 entities: &[entity],
-            })?;
+            }))?;
             let mut payload = [0; 1400];
             let mut writer = Writer::new(&mut payload, Encoding::Bytes);
-            snapshots::write_q2(&mut writer, &ring, frame, delta, 16)?;
+            server.write_snapshot(&mut writer, frame, delta, 16)?;
             writer.write_data(&[10, 2, b'x', 0])?;
             let packet = server
                 .prepare_move(writer.bytes(), EventTime(1), None)
@@ -575,6 +578,9 @@ fn connected_qw_heap() -> Result<(), String> {
     check_heap_counter()?;
     let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
         .map_err(|e| e.to_string())?;
+    server
+        .configure_snapshots(Protocol::QuakeWorld28)
+        .map_err(|e| e.to_string())?;
     let mut server_commands = Commands::load(Protocol::QuakeWorld28);
     let mut connections = Connections::load(1);
     connections
@@ -623,7 +629,6 @@ fn connected_qw_heap() -> Result<(), String> {
         command_age_ms: 17,
         body_yaw: 0.,
     };
-    let mut ring = snapshots::QwRing::load(64, 512, 0, None).map_err(|e| e.to_string())?;
     let mut measured = allocations::Counts::default();
     let mut checks = 0;
     for iteration in 0..660 {
@@ -676,7 +681,7 @@ fn connected_qw_heap() -> Result<(), String> {
             let mut words = [0; states::QW_ENTITY_WORDS];
             words[0] = 1;
             words[5] = x.to_bits();
-            ring.store(Frame {
+            server.publish_snapshot(ReceivedFrame::QuakeWorld(Frame {
                 sequence,
                 time: 0,
                 command: 0,
@@ -684,7 +689,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 areas: &[],
                 player: &[],
                 entities: &[Entity { number: 3, words }],
-            })?;
+            }))?;
             let mut writer = Writer::new(&mut payload, Encoding::Bytes);
             source.body.position.0[0] = x;
             source.body.velocity.0[0] = 300.;
@@ -700,7 +705,7 @@ fn connected_qw_heap() -> Result<(), String> {
             )? {
                 return Err(Error::Context);
             }
-            snapshots::write_qw(&mut writer, &ring, sequence, base)?;
+            server.write_snapshot(&mut writer, sequence, server_commands.delta_request(), 0)?;
             writer.write_bits(8, 8)?;
             writer.write_bits(2, 8)?;
             writer.write_data(b"connected\0")?;

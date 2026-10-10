@@ -793,7 +793,7 @@ fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Re
     let policy = Protocol::Quake2_34.channel();
     let mut client =
         Channel::load(policy, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
-    client.configure_client_snapshots(Protocol::Quake2_34)?;
+    client.configure_snapshots(Protocol::Quake2_34)?;
     let mut commands = Commands::load(Protocol::Quake2_34);
     let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None)?;
     q2_store(&mut ring, 41, &[q2_entity(30, 7., 0)])?;
@@ -827,12 +827,8 @@ fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Re
     assert_eq!(commands.decode_output(n, 4, &mut client, |_| {})?, Some(42));
     // Idempotent binding preserves received frames; a different native payload
     // cannot reuse their storage just because its channel header is identical.
-    client.configure_client_snapshots(Protocol::Quake2_34)?;
-    assert!(
-        client
-            .configure_client_snapshots(Protocol::QuakeWorld28)
-            .is_err()
-    );
+    client.configure_snapshots(Protocol::Quake2_34)?;
+    assert!(client.configure_snapshots(Protocol::QuakeWorld28).is_err());
     assert!(client.snapshot(42).is_some());
     Ok(())
 }
@@ -865,7 +861,12 @@ fn qw_encode(
     bytes: &mut [u8],
 ) -> Result<usize, Error> {
     let mut writer = Writer::new(bytes, Encoding::Bytes);
-    snapshots::write_qw(&mut writer, ring, sequence, request)?;
+    snapshots::write_qw(
+        &mut writer,
+        ring,
+        sequence,
+        request.map(|base| (base, base as u8)),
+    )?;
     writer.write_bits(6, 8)?;
     Ok(writer.size())
 }
@@ -1027,13 +1028,21 @@ fn qw_reply(
     consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
 ) -> Result<(), Error> {
     assert_eq!(server.send_state().sequence, sequence);
+    server.publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(
+        ring.frame(sequence).ok_or(Error::Context)?,
+    ))?;
     let mut payload = [0; 1400];
     let mut writer = Writer::new(&mut payload, Encoding::Bytes);
     writer.write_bits(8, 8)?;
     writer.write_bits(2, 8)?;
     writer.write_data(b"before\0")?;
     let start = writer.size();
-    snapshots::write_qw(&mut writer, ring, sequence, request.map(|(base, _)| base))?;
+    server.write_snapshot(
+        &mut writer,
+        sequence,
+        request.map(|(base, _)| u32::from(base as u8)),
+        0,
+    )?;
     writer.write_bits(1, 8)?;
     writer.write_bits(26, 8)?;
     writer.write_data(b"after\0")?;
@@ -1084,12 +1093,10 @@ fn qw_connection() -> Result<(Channel, Commands, Connections), Error> {
             },
         )
         .map_err(|_| Error::Context)?;
-    Ok((
-        Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
-            .map_err(|_| Error::Context)?,
-        Commands::load(Protocol::QuakeWorld28),
-        connections,
-    ))
+    let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
+        .map_err(|_| Error::Context)?;
+    server.configure_snapshots(Protocol::QuakeWorld28)?;
+    Ok((server, Commands::load(Protocol::QuakeWorld28), connections))
 }
 
 #[test]
@@ -1535,7 +1542,7 @@ fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() 
     assert!(server.set_qw_player_model(7).is_err());
     let mut other = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Client, 8192, 16)
         .map_err(|_| Error::Context)?;
-    other.configure_client_snapshots(Protocol::QuakeWorld28)?;
+    other.configure_snapshots(Protocol::QuakeWorld28)?;
     let client = connections
         .get_mut(ClientId(0), Endpoint::Client)
         .ok_or(Error::Context)?;
@@ -1565,6 +1572,191 @@ fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() 
             None
         );
         assert_eq!(count, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn channel_qw_server_selects_native_slots_and_preserves_the_request_byte() -> Result<(), Error> {
+    let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
+        .map_err(|_| Error::Context)?;
+    server.configure_snapshots(Protocol::QuakeWorld28)?;
+    let mut bytes = [0; 1400];
+    for (sequence, requests) in [
+        (256, &[][..]),
+        (
+            257,
+            &[
+                (Some(0), Some(0)),
+                (Some(64), Some(64)),
+                (Some(192), Some(192)),
+                (Some(32), None),
+                (None, None),
+            ][..],
+        ),
+        (288, &[][..]),
+        (289, &[(Some(0), None), (Some(32), Some(32))][..]),
+    ] {
+        server.publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(Frame {
+            sequence,
+            time: 0,
+            command: 0,
+            flags: 0,
+            areas: &[],
+            player: &[],
+            entities: &[qw_entity(3, sequence as f32)],
+        }))?;
+        for &(request, advisory) in requests {
+            let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+            server.write_snapshot(&mut writer, sequence, request, 0)?;
+            assert_eq!(writer.bytes()[0], if advisory.is_some() { 48 } else { 47 });
+            if let Some(advisory) = advisory {
+                assert_eq!(writer.bytes()[1], advisory);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protocols()
+-> Result<(), Error> {
+    let mut server = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Server, 8192, 16)
+        .map_err(|_| Error::Context)?;
+    server.configure_snapshots(Protocol::QuakeWorld28)?;
+    let entities = [qw_entity(3, 1.)];
+    let frame = Frame {
+        sequence: 1,
+        time: 0,
+        command: 0,
+        flags: 0,
+        areas: &[],
+        player: &[],
+        entities: &entities,
+    };
+    server.publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(frame))?;
+    let mut bytes = [0; 1400];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    server.write_snapshot(&mut writer, 1, None, 0)?;
+    let packet = server
+        .prepare_move(writer.bytes(), EventTime(1), None)
+        .map_err(|_| Error::Context)?
+        .ok_or(Error::Context)?;
+    let pending = packet.bytes.to_vec();
+    let changed = [qw_entity(3, 999.)];
+    assert!(
+        server
+            .publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(Frame {
+                entities: &changed,
+                ..frame
+            }))
+            .is_err()
+    );
+    let Some(snapshots::ReceivedFrame::QuakeWorld(retained)) = server.snapshot(1) else {
+        panic!("retained frame")
+    };
+    assert_eq!(retained.entities, &entities);
+    assert_eq!(
+        server.pending_packet().ok_or(Error::Context)?.bytes,
+        pending
+    );
+    server.submitted(EventTime(2)).map_err(|_| Error::Context)?;
+    server.publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(Frame {
+        sequence: 2,
+        entities: &changed,
+        ..frame
+    }))?;
+    let foreign = snapshots::ReceivedFrame::Quake2(Frame {
+        sequence: 3,
+        time: 0,
+        command: 0,
+        flags: 0,
+        areas: &[],
+        player: &[0; states::Q2_PLAYER_WORDS],
+        entities: &[],
+    });
+    assert!(server.publish_snapshot(foreign).is_err());
+    assert!(server.snapshot(3).is_none());
+    assert!(server.configure_snapshots(Protocol::Quake2_34).is_err());
+    let mut client = Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Client, 8192, 16)
+        .map_err(|_| Error::Context)?;
+    client.configure_snapshots(Protocol::QuakeWorld28)?;
+    assert!(
+        client
+            .publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(frame))
+            .is_err()
+    );
+    assert!(client.write_snapshot(&mut writer, 1, None, 0).is_err());
+    assert!(client.snapshot(1).is_none());
+    Ok(())
+}
+
+#[test]
+fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<(), Error> {
+    for protocol in [Protocol::Quake2_34, Protocol::Quake3_68] {
+        let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
+            .map_err(|_| Error::Context)?;
+        server.configure_snapshots(protocol)?;
+        let q2_player = [0; states::Q2_PLAYER_WORDS];
+        let q3_player = [0; PLAYER_WORDS];
+        let mut q2 = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+        let mut q3 = snapshots::Q3Ring::load(8, 1024, 32, None)?;
+        for sequence in [1, 2] {
+            let frame = match protocol {
+                Protocol::Quake2_34 => {
+                    let frame = Frame {
+                        sequence,
+                        time: 123,
+                        command: 0,
+                        flags: 1,
+                        areas: &[0x81],
+                        player: &q2_player,
+                        entities: &[],
+                    };
+                    q2.store(frame)?;
+                    snapshots::ReceivedFrame::Quake2(frame)
+                }
+                Protocol::Quake3_68 => {
+                    let frame = Frame {
+                        sequence,
+                        time: 123,
+                        command: 0,
+                        flags: 1,
+                        areas: &[0x81],
+                        player: &q3_player,
+                        entities: &[],
+                    };
+                    q3.store(frame)?;
+                    snapshots::ReceivedFrame::Quake3(frame)
+                }
+                _ => unreachable!("Q2/Q3 fixture"),
+            };
+            server.publish_snapshot(frame)?;
+            let encoding = if protocol == Protocol::Quake3_68 {
+                Encoding::Q3
+            } else {
+                Encoding::Bytes
+            };
+            let mut actual = [0; 1400];
+            let mut expected = [0; 1400];
+            let mut writer = Writer::new(&mut actual, encoding);
+            let mut reference = Writer::new(&mut expected, encoding);
+            let request = (sequence == 2).then_some(1);
+            server.write_snapshot(&mut writer, sequence, request, 16)?;
+            match protocol {
+                Protocol::Quake2_34 => {
+                    snapshots::write_q2(&mut reference, &q2, sequence, request, 16)?
+                }
+                Protocol::Quake3_68 => snapshots::write_q3(&mut reference, &q3, sequence, request)?,
+                _ => unreachable!("Q2/Q3 fixture"),
+            }
+            assert_eq!(writer.bit_position(), reference.bit_position());
+            assert_eq!(writer.bytes(), reference.bytes());
+            assert_eq!(
+                server.snapshot(sequence).ok_or(Error::Context)?.sequence(),
+                sequence
+            );
+        }
     }
     Ok(())
 }

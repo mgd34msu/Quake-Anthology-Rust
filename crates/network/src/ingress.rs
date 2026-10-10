@@ -126,12 +126,10 @@ impl Connections {
         {
             return Err(BindError::Route);
         }
-        if endpoint == Endpoint::Client
-            && let Some(commands) = &connection.commands
-        {
+        if let Some(commands) = &connection.commands {
             connection
                 .channel
-                .configure_client_snapshots(commands.protocol)
+                .configure_snapshots(commands.protocol)
                 .map_err(|_| BindError::Capacity)?;
         }
         self.clients[slot][index(endpoint)] = Some(connection);

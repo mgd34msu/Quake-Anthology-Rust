@@ -165,8 +165,11 @@ impl Channel {
             transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
             commands: policy.command_ack.then(commands::CommandMessages::load),
             snapshots: if policy.command_ack && endpoint == Endpoint::Client {
-                crate::snapshots::Storage::load(crate::commands::packet::Protocol::Quake3_68)
-                    .map_err(|_| Error::Capacity)?
+                crate::snapshots::Storage::load(
+                    crate::commands::packet::Protocol::Quake3_68,
+                    endpoint,
+                )
+                .map_err(|_| Error::Capacity)?
             } else {
                 None
             },
@@ -182,12 +185,12 @@ impl Channel {
     /// Called at connection binding, never while decoding an ordinary frame.
     /// Classic QW and Q2 have the same channel header, so the native payload
     /// protocol is supplied explicitly rather than inferred from that header.
-    pub fn configure_client_snapshots(
+    pub fn configure_snapshots(
         &mut self,
         protocol: crate::commands::packet::Protocol,
     ) -> Result<(), crate::commands::packet::Error> {
         use crate::commands::packet::Error;
-        if self.endpoint() != Endpoint::Client || protocol.channel() != self.policy {
+        if protocol.channel() != self.policy {
             return Err(Error::Context);
         }
         if let Some(storage) = &self.snapshots {
@@ -197,8 +200,36 @@ impl Channel {
                 Err(Error::Context)
             };
         }
-        self.snapshots = crate::snapshots::Storage::load(protocol)?;
+        self.snapshots = crate::snapshots::Storage::load(protocol, self.endpoint())?;
         Ok(())
+    }
+    pub fn publish_snapshot(
+        &mut self,
+        frame: crate::snapshots::ReceivedFrame<'_>,
+    ) -> Result<(), crate::commands::packet::Error> {
+        use crate::commands::packet::Error;
+        if self.endpoint() != Endpoint::Server || self.pending_packet().is_some() {
+            return Err(Error::Context);
+        }
+        self.snapshots.as_mut().ok_or(Error::Context)?.store(frame)
+    }
+    pub fn write_snapshot(
+        &self,
+        writer: &mut crate::message::Writer<'_>,
+        sequence: u32,
+        request: Option<u32>,
+        native_clients: u32,
+    ) -> Result<(), crate::commands::packet::Error> {
+        use crate::commands::packet::Error;
+        if self.endpoint() != Endpoint::Server {
+            return Err(Error::Context);
+        }
+        self.snapshots.as_ref().ok_or(Error::Context)?.write(
+            writer,
+            sequence,
+            request,
+            native_clients,
+        )
     }
     pub(crate) fn q2_snapshots_mut(&mut self) -> Option<&mut crate::snapshots::Q2Ring> {
         match self.snapshots.as_mut()? {
@@ -218,6 +249,9 @@ impl Channel {
         &mut self,
         model: u32,
     ) -> Result<(), crate::commands::packet::Error> {
+        if self.endpoint() != Endpoint::Client {
+            return Err(crate::commands::packet::Error::Context);
+        }
         let Some(crate::snapshots::Storage::QuakeWorld { player_model, .. }) = &mut self.snapshots
         else {
             return Err(crate::commands::packet::Error::Context);
@@ -237,7 +271,10 @@ impl Channel {
         else {
             return None;
         };
-        Some((&mut player_commands[sequence as usize & 63], *player_model))
+        Some((
+            player_commands.get_mut(sequence as usize & 63)?,
+            *player_model,
+        ))
     }
     pub fn endpoint(&self) -> Endpoint {
         match self.direction {
