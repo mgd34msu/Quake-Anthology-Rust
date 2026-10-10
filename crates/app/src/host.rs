@@ -453,8 +453,8 @@ impl FrameHost {
     }
 
     fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {
-        let mut commands = if self.native_input_policy_active() {
-            let policies = std::array::from_fn(|seat| {
+        let policies = self.native_input_policy_active().then(|| {
+            std::array::from_fn(|seat| {
                 let rules = self.local_clients[seat]
                     .map_or(qa_core::primitives::RuleSetId::default(), |_| {
                         self.runtime.prediction[seat].player.movement_rules
@@ -465,10 +465,12 @@ impl FrameHost {
                         self.runtime.prediction[seat].player.movement.delta_angles.0[0];
                 }
                 policy
-            });
+            })
+        });
+        let mut commands = if let Some(policies) = &policies {
             self.runtime
                 .input
-                .build_frame_with_policy(self.time, &policies)
+                .build_frame_with_policy(self.time, policies)
         } else {
             self.runtime
                 .input
@@ -502,19 +504,16 @@ impl FrameHost {
                         prediction.player.movement_rules,
                         qa_core::primitives::RuleSetId::Quake
                             | qa_core::primitives::RuleSetId::QuakeWorld
-                    ) {
-                        let policy = self
-                            .input_handles
-                            .policy(&self.console.cvars, prediction.player.movement_rules);
-                        if let Some(seat_id) = SeatId::new(seat as u8) {
-                            prediction.player.view_angles = self.runtime.input.drift_view(
-                                seat_id,
-                                self.time,
-                                policy,
-                                &prediction.player,
-                                commands[seat].movement[0],
-                            );
-                        }
+                    ) && let Some(policies) = &policies
+                        && let Some(seat_id) = SeatId::new(seat as u8)
+                    {
+                        prediction.player.view_angles = self.runtime.input.drift_view(
+                            seat_id,
+                            self.time,
+                            policies[seat],
+                            &prediction.player,
+                            commands[seat].movement[0],
+                        );
                     }
                 }
             }

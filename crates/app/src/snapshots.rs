@@ -73,7 +73,7 @@ impl LocalSnapshot {
         bytes: &mut [u8],
     ) -> Result<usize, Error> {
         let time = if self.protocol == Protocol::NetQuake15 {
-            ThinkTime::Seconds(time.0 as f64 / 1_000_000_000.0)
+            ThinkTime::Seconds(time.seconds())
         } else {
             ThinkTime::Milliseconds(time.milliseconds() as i64)
         };

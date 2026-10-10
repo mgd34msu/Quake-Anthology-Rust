@@ -7,6 +7,7 @@ pub mod profile;
 pub mod render_settings;
 pub mod renderer;
 pub mod snapshots;
+mod transport;
 
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
@@ -142,14 +143,17 @@ impl Runtime {
         protocol: qa_network::commands::packet::Protocol,
         native_client: u32,
     ) -> Result<ClientId, String> {
+        use qa_network::commands::packet::Protocol;
+        let tail = match protocol {
+            Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
+                attack_finished: 0.0,
+            },
+            Protocol::Quake2_34 => PlayerTail::Q2 { weapon_frame: 0 },
+            Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
+        };
         let id = self
             .server
-            .connect(
-                Connection::Local,
-                ModuleId::default(),
-                PlayerTail::None,
-                None,
-            )
+            .connect(Connection::Local, ModuleId::default(), tail, None)
             .ok_or("no local client slot")?;
         self.network.unbind(id);
         self.loopback.clear_client(id);
@@ -189,6 +193,7 @@ impl Runtime {
             &mut self.prediction[seat.index()].player,
         ] {
             player.reset();
+            player.tail = tail;
             player.movement_rules = policy.movement;
             player.trace_rules = policy.trace;
             qa_movement::set_bounds(player);
@@ -239,30 +244,23 @@ impl Runtime {
             return false;
         };
         let snapshot_request = commands.snapshot_request(&connection.channel);
-        // At most the load-sized control ring followed by this current move.
-        // A rejected transport keeps the exact prepared packet for retry.
-        for _ in 0..17 {
-            if connection.channel.pending_packet().is_none() {
-                let Ok(Some(_)) =
-                    connection
-                        .channel
-                        .prepare_move(&bytes[..length], time, snapshot_request)
-                else {
-                    return false;
-                };
-            }
-            let Ok(Some(disposition)) = connection.channel.submit_with(time, |bytes| {
+        transport::send(
+            &mut connection.channel,
+            time,
+            &mut (),
+            |channel, ()| {
+                channel
+                    .prepare_move(&bytes[..length], time, snapshot_request)
+                    .is_ok_and(|packet| packet.is_some())
+            },
+            |bytes| {
                 self.loopback
                     .send(qa_core::loopback::Endpoint::Client, id, bytes)
                     .is_ok()
-            }) else {
-                return false;
-            };
-            if disposition != qa_network::channel::Unreliable::Deferred {
-                return true;
-            }
-        }
-        false
+            },
+            |_, (), disposition| disposition != qa_network::channel::Unreliable::Deferred,
+        )
+        .complete
     }
 
     /// SERVER snapshots use the same native framing/loopback/Packet path as
@@ -285,58 +283,52 @@ impl Runtime {
             return false;
         };
         let mut bytes = [0; 1400];
-        for _ in 0..17 {
-            if connection.channel.pending_packet().is_none() {
-                if connection.channel.pending_controls() != 0
-                    || connection.channel.pending_fragments()
-                {
-                    let Ok(Some(_)) = connection.channel.prepare_output(time) else {
-                        return false;
-                    };
+        transport::send(
+            &mut connection.channel,
+            time,
+            binding,
+            |channel, binding| {
+                if channel.pending_controls() != 0 || channel.pending_fragments() {
+                    channel
+                        .prepare_output(time)
+                        .is_ok_and(|packet| packet.is_some())
                 } else {
-                    let sequence = binding.sequence(&connection.channel, time);
-                    if !binding.needs_send(&connection.channel, sequence) {
+                    let sequence = binding.sequence(channel, time);
+                    if !binding.needs_send(channel, sequence) {
                         return false;
                     }
                     let delta = connection
                         .commands
                         .as_ref()
                         .and_then(|commands| commands.delta_request());
-                    let Ok(length) = binding.encode(
-                        &mut connection.channel,
-                        &client.player,
-                        sequence,
-                        time,
-                        delta,
-                        &mut bytes,
-                    ) else {
+                    let Ok(length) =
+                        binding.encode(channel, &client.player, sequence, time, delta, &mut bytes)
+                    else {
                         return false;
                     };
-                    let Ok(Some(packet)) =
-                        connection
-                            .channel
-                            .prepare_move(&bytes[..length], time, None)
+                    let Ok(Some(packet)) = channel.prepare_move(&bytes[..length], time, None)
                     else {
                         return false;
                     };
                     if packet.unreliable != Unreliable::Deferred {
                         binding.pending = Some(sequence);
                     }
+                    true
                 }
-            }
-            let Ok(Some(disposition)) = connection.channel.submit_with(time, |bytes| {
-                self.loopback.send(Endpoint::Server, id, bytes).is_ok()
-            }) else {
-                return false;
-            };
-            if disposition != Unreliable::Deferred
-                && let Some(sequence) = binding.pending.take()
-            {
-                binding.submitted(sequence);
-                return true;
-            }
-        }
-        false
+            },
+            |bytes| self.loopback.send(Endpoint::Server, id, bytes).is_ok(),
+            |_, binding, disposition| {
+                if disposition != Unreliable::Deferred
+                    && let Some(sequence) = binding.pending.take()
+                {
+                    binding.submitted(sequence);
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+        .complete
     }
 
     /// Shared print service for console and gameplay/module callers.

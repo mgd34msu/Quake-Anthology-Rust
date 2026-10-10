@@ -1,4 +1,31 @@
 use qa_core::sys_events::{EventKind, EventTime, QueueError, SysEvent, SysEventQueue};
+
+#[test]
+fn seconds_preserve_the_native_duration_division() {
+    for ns in [
+        0,
+        1,
+        999_999_999,
+        (1 << 53) - 1,
+        1 << 53,
+        (1 << 53) + 1,
+        u64::MAX,
+    ] {
+        assert_eq!(
+            EventTime(ns).seconds().to_bits(),
+            (ns as f64 / 1e9).to_bits()
+        );
+    }
+    let mut ns = 0x7f00_a715_39ce_4b8d_u64;
+    for _ in 0..65_536 {
+        ns = ns.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        assert_eq!(
+            EventTime(ns).seconds().to_bits(),
+            (ns as f64 / 1e9).to_bits()
+        );
+    }
+}
+
 fn line(time: u64, text: &str) -> SysEvent<'_> {
     SysEvent {
         time: EventTime(time),

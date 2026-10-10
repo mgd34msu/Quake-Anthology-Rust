@@ -4,6 +4,7 @@ use qa_core::{
         EntityId, MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, UserCmd, Vec3,
         buttons,
     },
+    sys_events::EventTime,
 };
 use qa_world::collision::{
     Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, WorldTrace, trace_policy,
@@ -827,7 +828,7 @@ fn run_step(
     result: &mut MovementResult,
 ) {
     let exact_dt = if parameters.rules == RuleSetId::Quake {
-        command.duration_ns as f64 / 1e9
+        EventTime(command.duration_ns).seconds()
     } else {
         f64::from(command.duration_ms) * 0.001
     };

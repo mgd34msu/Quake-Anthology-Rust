@@ -236,7 +236,7 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
 #[test]
 fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_roles()
 -> Result<(), String> {
-    use qa_core::primitives::{RuleSetId, Vec3};
+    use qa_core::primitives::{PlayerTail, RuleSetId, Vec3};
     use qa_network::commands::packet::Protocol;
     for protocol in [
         Protocol::NetQuake15,
@@ -245,7 +245,22 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         Protocol::Quake3_68,
     ] {
         let (mut host, client) = local_host(protocol)?;
+        let initial_tail = match protocol {
+            Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
+                attack_finished: 0.,
+            },
+            Protocol::Quake2_34 => PlayerTail::Q2 { weapon_frame: 0 },
+            Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
+        };
+        assert_eq!(host.runtime.server.clients[0].player.tail, initial_tail);
+        assert_eq!(host.runtime.prediction[0].player.tail, initial_tail);
+        let received_tail = match protocol {
+            Protocol::Quake2_34 => PlayerTail::Q2 { weapon_frame: 173 },
+            Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: -197 },
+            _ => initial_tail,
+        };
         let player = &mut host.runtime.server.clients[0].player;
+        player.tail = received_tail;
         player.body.position = Vec3([12.375, -24.625, 48.125]);
         player.body.velocity = Vec3([32., -48., 64.]);
         player.health = -17;
@@ -277,6 +292,7 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         let frame = host.frame(&mut clock, true);
         assert_eq!((frame.drains, clock.polls), (2, 2));
         let predicted = &host.runtime.prediction[0].player;
+        assert_eq!(predicted.tail, received_tail);
         assert_eq!(
             (predicted.movement_rules, predicted.trace_rules),
             (RuleSetId::Quake3, RuleSetId::Quake2)

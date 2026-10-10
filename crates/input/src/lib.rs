@@ -377,7 +377,7 @@ impl Input {
         if policy.rules.is_some() && policy.command_rules().pitch_drift {
             state.angles.0[0] = state.drift.advance(
                 time,
-                self.frame_ns as f64 * 1e-9,
+                EventTime(self.frame_ns).seconds(),
                 state.angles.0[0],
                 view::DriftInput {
                     grounded: player.movement.grounded,

@@ -32,7 +32,7 @@ pub fn dispatch(
     center_time: f64,
 ) -> OutputCounts {
     let server = &mut runtime.server;
-    let now = time.0 as f64 * 1e-9;
+    let now = time.seconds();
     let mut counts = OutputCounts::default();
     // In-process presentation resynchronization needs no native channel reset.
     if server.events.needs_resync(server.presentation)
@@ -179,40 +179,31 @@ pub fn dispatch(
                 .network
                 .get_mut(client_id, qa_core::loopback::Endpoint::Server)
         {
-            // Controls/queued fragments are bounded at load. No physical intake
-            // occurs here; rejected bytes retain their prepared channel state.
-            for _ in 0..17 {
-                if !connection.channel.has_output() {
-                    break;
-                }
-                if connection.channel.pending_packet().is_none() {
-                    let Ok(Some(_)) = connection.channel.prepare_output(time) else {
-                        break;
-                    };
-                }
-                let Ok(Some(_)) =
-                    connection
-                        .channel
-                        .submit_with(time, |bytes| match connection.route.peer {
-                            qa_core::sys_events::Peer::Loopback(client) => runtime
-                                .loopback
-                                .send(qa_core::loopback::Endpoint::Server, client, bytes)
-                                .is_ok(),
-                            qa_core::sys_events::Peer::Socket(to) => {
-                                source.send_packet(connection.route.socket, to, bytes)
-                            }
-                        })
-                else {
-                    counts.native_blocked += 1;
-                    break;
-                };
-                counts.native_packets += 1;
+            let submitted = crate::transport::send(
+                &mut connection.channel,
+                time,
+                &mut (),
+                |channel, ()| {
+                    channel.has_output()
+                        && channel
+                            .prepare_output(time)
+                            .is_ok_and(|packet| packet.is_some())
+                },
+                |bytes| match connection.route.peer {
+                    qa_core::sys_events::Peer::Loopback(client) => runtime
+                        .loopback
+                        .send(qa_core::loopback::Endpoint::Server, client, bytes)
+                        .is_ok(),
+                    qa_core::sys_events::Peer::Socket(to) => {
+                        source.send_packet(connection.route.socket, to, bytes)
+                    }
+                },
                 // One ordinary channel send per CLIENT output pass. Additional
                 // sends here are only the already-queued native control records.
-                if connection.channel.pending_controls() == 0 {
-                    break;
-                }
-            }
+                |channel, (), _| channel.pending_controls() == 0,
+            );
+            counts.native_blocked += u64::from(submitted.blocked);
+            counts.native_packets += submitted.packets;
         }
     }
     counts

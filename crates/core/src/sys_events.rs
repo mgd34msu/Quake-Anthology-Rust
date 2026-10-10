@@ -23,6 +23,10 @@ impl EventTime {
     pub fn milliseconds(self) -> u64 {
         self.0 / 1_000_000
     }
+    #[inline]
+    pub fn seconds(self) -> f64 {
+        self.0 as f64 / 1_000_000_000.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
