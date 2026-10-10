@@ -20,6 +20,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
     pub memory: &'a mut ModuleMemory<'memory>,
     pub native_cvars: Option<&'a mut crate::cvars::NativeCvars>,
+    pub native_resources: Option<&'a [crate::services::ResourceRange; 3]>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -188,6 +189,9 @@ pub const Q2_CLASSIC: CallTable = {
         entries: [None; 256],
     };
     table.entries[6] = Some(config_set);
+    table.entries[8] = Some(resource_index::<0>);
+    table.entries[9] = Some(resource_index::<1>);
+    table.entries[10] = Some(resource_index::<2>);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -199,6 +203,9 @@ pub const Q2_RERELEASE: CallTable = {
     };
     table.entries[1] = Some(print);
     table.entries[7] = Some(config_set);
+    table.entries[10] = Some(resource_index::<0>);
+    table.entries[11] = Some(resource_index::<1>);
+    table.entries[12] = Some(resource_index::<2>);
     table.entries[9] = Some(abort);
     table.entries[39] = Some(q2_cvar);
     table.entries[40] = Some(q2_cvar_set::<false>);
@@ -268,6 +275,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             services: self.services,
             memory: &mut vm.strings,
             native_cvars: None,
+            native_resources: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -327,6 +335,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             services: self.services,
             memory: &mut vm.memory,
             native_cvars: None,
+            native_resources: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
@@ -562,6 +571,16 @@ fn file_read(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn file_close(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.file_close)(c.services, c.context.module, c.arg(0)? as u32)?;
     Ok(0)
+}
+fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let pointer = c.pointer(0)?;
+    let range = c.native_resources.ok_or(CallError::ConfigString)?[KIND];
+    let name = if pointer == 0 {
+        &[]
+    } else {
+        c.memory.cstring(pointer)?
+    };
+    (ENGINE_CALLS.resource_index)(c.services, c.context.module, range, name).map(u64::from)
 }
 fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let pointer = c.pointer(1)?;

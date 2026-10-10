@@ -62,6 +62,7 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
                         services,
                         memory,
                         native_cvars: Some(native),
+                        native_resources: None,
                         context,
                         platform_time: EventTime(0),
                         command: &[],

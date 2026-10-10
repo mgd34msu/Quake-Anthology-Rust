@@ -5,11 +5,12 @@ use qa_console::{
     views::Context,
 };
 use qa_content::vfs::{FileRef, Vfs};
+use qa_core::names::NameTable;
 use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{
-        ClientId, EffectEvent, EntityId, GeometryId, ModuleId, PrintKind, SoundEvent, Vec3,
+        ClientId, EffectEvent, EntityId, GeometryId, ModuleId, NameId, PrintKind, SoundEvent, Vec3,
     },
     text::FixedText,
 };
@@ -58,6 +59,13 @@ struct OpenFile {
 struct ConfigString {
     text: FixedText<8192>,
     revision: u64,
+    resource_name: Option<NameId>,
+}
+/// Native ordinals are relative to a caller-selected configuration range.
+#[derive(Clone, Copy)]
+pub struct ResourceRange {
+    pub first: usize,
+    pub count: usize,
 }
 struct ConfigRange {
     module: ModuleId,
@@ -71,6 +79,7 @@ pub struct ServiceStorage {
     files: Box<[Option<OpenFile>]>,
     configs: Box<[ConfigString]>,
     ranges: Box<[ConfigRange]>,
+    resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
 }
 
@@ -97,10 +106,13 @@ impl ServiceStorage {
             configs: std::iter::repeat_with(|| ConfigString {
                 text: FixedText::default(),
                 revision: 0,
+                resource_name: None,
             })
             .take(total)
             .collect(),
             ranges: ranges.into_boxed_slice(),
+            resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
+                .map_err(|_| CallError::Capacity)?,
             reader: qa_formats::archive::ArchiveReader::default(),
         })
     }
@@ -122,6 +134,80 @@ impl ServiceStorage {
     ) -> Result<(&[u8], u64), CallError> {
         let row = &self.configs[self.config(module, ordinal)?];
         Ok((row.text.as_bytes(), row.revision))
+    }
+    fn set_configstring(
+        &mut self,
+        module: ModuleId,
+        ordinal: usize,
+        text: &[u8],
+    ) -> Result<(), CallError> {
+        let index = self.config(module, ordinal)?;
+        if text.len() > 8192 {
+            return Err(CallError::Text);
+        }
+        let row = &mut self.configs[index];
+        if row.text.as_bytes() != text {
+            let name = if row.resource_name.is_some() && !text.is_empty() {
+                Some(
+                    self.resource_names
+                        .intern(text)
+                        .map_err(|_| CallError::Capacity)?,
+                )
+            } else {
+                None
+            };
+            row.text.set_bytes(text).map_err(|_| CallError::Text)?;
+            row.resource_name = name;
+            row.revision = row.revision.wrapping_add(1);
+        }
+        Ok(())
+    }
+    fn resource_index(
+        &mut self,
+        module: ModuleId,
+        range: ResourceRange,
+        name: &[u8],
+    ) -> Result<u32, CallError> {
+        if name.is_empty() {
+            return Ok(0);
+        }
+        let end = range
+            .first
+            .checked_add(range.count)
+            .ok_or(CallError::ConfigString)?;
+        if range.count < 2 || name.len() > 8192 {
+            return Err(CallError::ConfigString);
+        }
+        let first = self.config(module, range.first)?;
+        self.config(module, end - 1)?;
+        let name_id = self
+            .resource_names
+            .intern(name)
+            .map_err(|_| CallError::Capacity)?;
+        // SV_FindIndex stops at the first empty slot. Keep that native order,
+        // including a gap made by a module's direct configstring update.
+        for ordinal in 1..range.count {
+            let row = &mut self.configs[first + ordinal];
+            if row.text.as_bytes().is_empty() {
+                self.set_configstring(module, range.first + ordinal, name)?;
+                self.configs[first + ordinal].resource_name = Some(name_id);
+                return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
+            }
+            let stored = if let Some(id) = row.resource_name {
+                id
+            } else {
+                let id = self
+                    .resource_names
+                    .intern(row.text.as_bytes())
+                    .map_err(|_| CallError::Capacity)?;
+                row.resource_name = Some(id);
+                id
+            };
+            if stored == name_id {
+                return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
+            }
+        }
+        Err(CallError::Capacity)
     }
 }
 
@@ -146,6 +232,8 @@ pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
 pub type CvarRegisterCall =
     fn(&mut EngineServices<'_>, Context, &str, &str, u32) -> Result<View, CallError>;
+pub type ResourceIndexCall =
+    fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
 pub struct EngineCallTable {
     pub print: PrintCall,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
@@ -161,6 +249,7 @@ pub struct EngineCallTable {
     pub cvar_force: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
+    pub resource_index: ResourceIndexCall,
     pub file_open: FileOpenCall,
     pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
     pub file_read:
@@ -182,6 +271,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     cvar_force: |s, v, t| s.cvar_force(v, t),
     command: |s, c, t| s.command(c, t),
     configstring: |s, m, i, t| s.configstring(m, i, t),
+    resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
     file_open: |s, m, p| s.file_open(m, p),
     file_length: |s, p| s.file_length(p),
     file_read: |s, m, h, b| s.file_read(m, h, b),
@@ -320,13 +410,7 @@ impl EngineServices<'_> {
         ordinal: usize,
         text: &[u8],
     ) -> Result<(), CallError> {
-        let index = self.storage.config(module, ordinal)?;
-        let row = &mut self.storage.configs[index];
-        if row.text.as_bytes() != text {
-            row.text.set_bytes(text).map_err(|_| CallError::Text)?;
-            row.revision = row.revision.wrapping_add(1);
-        }
-        Ok(())
+        self.storage.set_configstring(module, ordinal, text)
     }
     pub fn file_open(&mut self, owner: ModuleId, path: &[u8]) -> Result<(u32, u64), CallError> {
         let reference = self.vfs.open(path).ok_or(CallError::File)?;

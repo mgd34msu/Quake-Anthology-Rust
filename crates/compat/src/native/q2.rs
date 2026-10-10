@@ -3,6 +3,7 @@ use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::Impor
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
 use crate::cvars::NativeCvars;
 use crate::memory::ModuleMemory;
+use crate::services::ResourceRange;
 use qa_core::{
     names::NameTable,
     primitives::{NameId, RuleSetId},
@@ -30,6 +31,7 @@ struct Layout {
     import_header: usize,
     imports: &'static [&'static [u8]],
     functions: &'static [Function],
+    resources: [ResourceRange; 3],
 }
 const CLASSIC_IMPORTS: &[&[u8]] = &[
     b"bprintf",
@@ -211,6 +213,20 @@ const CLASSIC: Layout = Layout {
     import_header: 0,
     imports: CLASSIC_IMPORTS,
     functions: CLASSIC_FUNCTIONS,
+    resources: [
+        ResourceRange {
+            first: 32,
+            count: 256,
+        },
+        ResourceRange {
+            first: 288,
+            count: 256,
+        },
+        ResourceRange {
+            first: 544,
+            count: 256,
+        },
+    ],
 };
 const RERELEASE: Layout = Layout {
     version: 2023,
@@ -220,6 +236,20 @@ const RERELEASE: Layout = Layout {
     import_header: 16,
     imports: RERELEASE_IMPORTS,
     functions: RERELEASE_FUNCTIONS,
+    resources: [
+        ResourceRange {
+            first: 62,
+            count: 8192,
+        },
+        ResourceRange {
+            first: 8254,
+            count: 2048,
+        },
+        ResourceRange {
+            first: 10302,
+            count: 512,
+        },
+    ],
 };
 
 /// Published native entity memory. These values are read from the stopped
@@ -365,6 +395,14 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Word,
                     ))
+                } else if (if layout.version == 2023 {
+                    10..13
+                } else {
+                    8..11
+                })
+                .contains(&ordinal)
+                {
+                    Some((&[NativeScalar::Word][..], NativeScalar::I32))
                 } else if ordinal == if layout.version == 2023 { 7 } else { 6 } {
                     Some((
                         &[NativeScalar::I32, NativeScalar::Word][..],
@@ -400,6 +438,7 @@ impl Game {
             cvar_capacity,
             layout.version == 2023,
         ));
+        vm.resources = Some(layout.resources);
         let pointers = (0..imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))
             .collect::<Result<Vec<_>, _>>()?;

@@ -1667,7 +1667,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .bind(OutputTarget::Module(ModuleId(7)))
             .unwrap();
         let mut console = Console::new(Context::default()).unwrap();
-        let mut storage = ServiceStorage::load(&[(ModuleId(1), 8)], 0).unwrap();
+        let mut storage =
+            ServiceStorage::load(&[(ModuleId(1), if rr { 10814 } else { 800 })], 0).unwrap();
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(8).unwrap();
         let context = CallContext {
@@ -1862,7 +1863,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             }
         }
         let malloc_slot = if rr { 36 } else { 33 };
+        let index_slot = if rr { 10 } else { 8 };
         let mut invoke_import = |game: &mut Game, slot: usize, a: [u64; 2]| {
+            let returns_value = slot == malloc_slot || (index_slot..index_slot + 3).contains(&slot);
             let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
             code.extend(a[0].to_le_bytes());
             code.extend([0x48, 0xba]);
@@ -1870,7 +1873,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             code.extend([0x48, 0xb8]);
             code.extend(pointers[slot].to_le_bytes());
             code.extend([0xff, 0xd0]);
-            if slot == malloc_slot {
+            if returns_value {
                 code.extend([0x48, 0xb9]);
                 code.extend((base + 0x1c30).to_le_bytes());
                 code.extend([0x48, 0x89, 1]);
@@ -1903,7 +1906,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     }
                 );
             }
-            if slot == malloc_slot {
+            if returns_value {
                 u64::from_le_bytes(
                     game.vm.process.memory_mut().unwrap()[0x1c30..0x1c38]
                         .try_into()
@@ -1945,6 +1948,22 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         invoke_import(&mut game, config_slot, [3, base + 0x1720]);
         invoke_import(&mut game, config_slot, [3, base + 0x1720]);
         invoke_import(&mut game, config_slot, [3, 0]);
+        for slot in index_slot..index_slot + 3 {
+            assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
+            assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
+            assert_eq!(invoke_import(&mut game, slot, [0, 0]), 0);
+        }
+        drop(invoke_import);
+        for first in if rr {
+            [62, 8254, 10302]
+        } else {
+            [32, 288, 544]
+        } {
+            assert_eq!(
+                storage.configstring(ModuleId(1), first + 1).unwrap(),
+                (&b"_qa_child_cvar"[..], 1)
+            );
+        }
         let frame_code = if rr {
             &[0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b, 0xc3][..]
         } else {

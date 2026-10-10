@@ -1,5 +1,5 @@
 use qa_app::Runtime;
-use qa_compat::services::{CallContext, CallError, ENGINE_CALLS, ServiceStorage};
+use qa_compat::services::{CallContext, CallError, ENGINE_CALLS, ResourceRange, ServiceStorage};
 use qa_console::{commands::Console, views::Context};
 use qa_core::primitives::ThinkTime;
 use qa_core::{
@@ -112,6 +112,110 @@ fn duplicate_module_config_ranges_are_rejected_at_load() {
         ServiceStorage::load(&[(ModuleId(1), 2), (ModuleId(1), 3)], 4),
         Err(CallError::ConfigString)
     ));
+}
+
+#[test]
+fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() {
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 12), (ModuleId(2), 12)], 0).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let models = ResourceRange { first: 1, count: 5 };
+    let sounds = ResourceRange { first: 6, count: 5 };
+    let index = ENGINE_CALLS.resource_index;
+    let set = ENGINE_CALLS.configstring;
+    assert_eq!(index(&mut services, ModuleId(1), models, b"").unwrap(), 0);
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"\x80Wall").unwrap(),
+        1
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"\x80Wall").unwrap(),
+        1
+    );
+    assert_eq!(
+        services.storage.configstring(ModuleId(1), 2).unwrap(),
+        (&b"\x80Wall"[..], 1)
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"\x80wall").unwrap(),
+        2
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(1), sounds, b"\x80Wall").unwrap(),
+        1
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(2), models, b"\x80Wall").unwrap(),
+        1
+    );
+    assert_eq!(
+        services.storage.configstring(ModuleId(1), 1).unwrap(),
+        (&b""[..], 0)
+    );
+    // A direct native configstring update changes the cached numeric binding.
+    set(&mut services, ModuleId(1), 2, b"replaced").unwrap();
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"replaced").unwrap(),
+        1
+    );
+    // SV_FindIndex fills the first hole even when a later slot has that name.
+    set(&mut services, ModuleId(1), 3, b"").unwrap();
+    set(&mut services, ModuleId(1), 4, b"beyond-gap").unwrap();
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"beyond-gap").unwrap(),
+        2
+    );
+    assert_eq!(
+        services.storage.configstring(ModuleId(1), 3).unwrap(),
+        (&b"beyond-gap"[..], 3)
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"last").unwrap(),
+        4
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(1), models, b"full"),
+        Err(CallError::Capacity)
+    );
+    assert_eq!(
+        index(&mut services, ModuleId(3), models, b"bad"),
+        Err(CallError::ConfigString)
+    );
+    assert_eq!(
+        index(
+            &mut services,
+            ModuleId(1),
+            ResourceRange {
+                first: 11,
+                count: 2
+            },
+            b"bad"
+        ),
+        Err(CallError::ConfigString)
+    );
+    assert_eq!(
+        index(
+            &mut services,
+            ModuleId(1),
+            ResourceRange {
+                first: usize::MAX,
+                count: 2
+            },
+            b"bad"
+        ),
+        Err(CallError::ConfigString)
+    );
+    assert_eq!(
+        index(
+            &mut services,
+            ModuleId(1),
+            ResourceRange { first: 0, count: 1 },
+            b"bad"
+        ),
+        Err(CallError::ConfigString)
+    );
 }
 
 #[test]

@@ -88,6 +88,7 @@ pub struct Vm {
     names: NameTable,
     traps: Box<[runtime::ImportTrap]>,
     cvars: Option<crate::cvars::NativeCvars>,
+    resources: Option<[crate::services::ResourceRange; 3]>,
 }
 pub struct NativeCalls<'a, 'engine> {
     pub services: &'a mut EngineServices<'engine>,
@@ -295,6 +296,7 @@ impl Vm {
             names: image.names,
             traps: runtime.traps.into_boxed_slice(),
             cvars: None,
+            resources: None,
         })
     }
     pub fn unresolved_imports(&self) -> impl Iterator<Item = ImportTrapInfo<'_>> {
@@ -353,6 +355,7 @@ impl Vm {
                 .map_err(Error::Service)?;
         }
         let cvars = &mut self.cvars;
+        let resources = self.resources.as_ref();
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -365,6 +368,7 @@ impl Vm {
                     services: calls.services,
                     memory: &mut memory,
                     native_cvars: cvars.as_mut(),
+                    native_resources: resources,
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,
