@@ -1,5 +1,6 @@
 //! Native state projections in protocol table order, not engine entity storage.
 use crate::{
+    commands::{QwCmd, delta as command_delta},
     delta::{self, Field, Group, Packed, Presence, ScaleRead, Value},
     message::{Error, Reader, Writer},
 };
@@ -974,6 +975,7 @@ static NQ_PLAYER_GROUP: [Group<true, true, false, true>; 1] = [Group {
     fields: &NQ_PLAYER_FIELDS,
     presence: Presence::Fixed,
 }];
+#[inline(always)]
 pub fn write_nq_player(writer: &mut Writer<'_>, to: &[u32; NQ_PLAYER_WORDS]) -> Result<(), Error> {
     let always =
         (1 << 9) | (1 << 14) | (u32::from(to[19] != 0) << 10) | (u32::from(to[20] != 0) << 11);
@@ -989,6 +991,7 @@ pub fn write_nq_player(writer: &mut Writer<'_>, to: &[u32; NQ_PLAYER_WORDS]) -> 
     writer.write_bits(flags, 16)?;
     delta::write(&NQ_PLAYER_GROUP, &NQ_PLAYER_DEFAULTS, to, flags, writer)
 }
+#[inline(always)]
 pub fn read_nq_player(
     reader: &mut Reader<'_>,
     active_weapon_is_mask: bool,
@@ -1010,10 +1013,231 @@ pub fn read_nq_player(
     Ok(words)
 }
 
+/// Protocol-28 player information. Scalars preserve QC floats until write;
+/// flags/msec are native integers. Body yaw is input metadata for corpse commands.
+pub const QW_PLAYER_LAYOUT: [(&str, i8); 14] = [
+    ("origin[0]", -16),
+    ("origin[1]", -16),
+    ("origin[2]", -16),
+    ("frame", 8),
+    ("msec", 8),
+    ("velocity[0]", -16),
+    ("velocity[1]", -16),
+    ("velocity[2]", -16),
+    ("modelindex", 8),
+    ("skinnum", 8),
+    ("effects", 8),
+    ("weaponframe", 8),
+    ("flags", -16),
+    ("body_yaw_input", 0),
+];
+pub const QW_PLAYER_WORDS: usize = QW_PLAYER_LAYOUT.len();
+static QW_PLAYER_PREFIX: [Group<true, true, false, true>; 1] = [Group {
+    fields: &[
+        Field::new(
+            0,
+            16,
+            0,
+            Value::Scaled {
+                factor: 8,
+                read: ScaleRead::Signed,
+            },
+        ),
+        Field::new(
+            1,
+            16,
+            0,
+            Value::Scaled {
+                factor: 8,
+                read: ScaleRead::Signed,
+            },
+        ),
+        Field::new(
+            2,
+            16,
+            0,
+            Value::Scaled {
+                factor: 8,
+                read: ScaleRead::Signed,
+            },
+        ),
+        Field::new(3, 8, 0, Value::FloatInt),
+        Field::new(4, 8, 1 << 0, Value::Unsigned),
+    ],
+    presence: Presence::Fixed,
+}];
+static QW_PLAYER_SUFFIX: [Group<true, true, false, true>; 1] = [Group {
+    fields: &[
+        Field::new(
+            5,
+            16,
+            1 << 2,
+            Value::Scaled {
+                factor: 1,
+                read: ScaleRead::Signed,
+            },
+        ),
+        Field::new(
+            6,
+            16,
+            1 << 3,
+            Value::Scaled {
+                factor: 1,
+                read: ScaleRead::Signed,
+            },
+        ),
+        Field::new(
+            7,
+            16,
+            1 << 4,
+            Value::Scaled {
+                factor: 1,
+                read: ScaleRead::Signed,
+            },
+        ),
+        Field::new(8, 8, 1 << 5, Value::FloatInt),
+        Field::new(9, 8, 1 << 6, Value::FloatInt),
+        Field::new(10, 8, 1 << 7, Value::FloatInt),
+        Field::new(11, 8, 1 << 8, Value::FloatInt),
+    ],
+    presence: Presence::Fixed,
+}];
+const NULL_QW_COMMAND: QwCmd = QwCmd {
+    msec: 0,
+    view_angles: qa_core::primitives::Vec3([0.0; 3]),
+    movement: [0; 3],
+    buttons: 0,
+    impulse: 0,
+};
+pub struct QwPlayerInfo {
+    pub number: u8,
+    pub words: [u32; QW_PLAYER_WORDS],
+    pub command: QwCmd,
+}
+/// The provider supplies native self/spectator/tracked-player flags after its
+/// visibility selection. The command is sanitized at this native wire boundary.
+pub fn write_qw_player(
+    writer: &mut Writer<'_>,
+    number: u32,
+    to: &[u32; QW_PLAYER_WORDS],
+    mut command: QwCmd,
+) -> Result<bool, Error> {
+    if number >= 32 {
+        return Ok(false);
+    }
+    let flags = to[12];
+    let mut words = *to;
+    if words[4] as i32 > 255 {
+        words[4] = 255;
+    }
+    writer.write_bits(42, 8)?;
+    writer.write_bits(number, 8)?;
+    writer.write_bits(flags, 16)?;
+    delta::write(&QW_PLAYER_PREFIX, &words, &words, flags, writer)?;
+    if flags & (1 << 1) != 0 {
+        if flags & (1 << 9) != 0 {
+            // qsrc resets pitch twice; its roll remains the supplied command.
+            command.view_angles.0[0] = 0.0;
+            command.view_angles.0[1] = f32::from_bits(to[13]);
+        }
+        command.buttons = 0;
+        command.impulse = 0;
+        command_delta::write_qw(writer, NULL_QW_COMMAND, command)?;
+    }
+    delta::write(&QW_PLAYER_SUFFIX, &words, &words, flags, writer)?;
+    Ok(true)
+}
+pub fn read_qw_player(
+    reader: &mut Reader<'_>,
+    default_model: u32,
+    prior_slot_command: QwCmd,
+) -> Result<QwPlayerInfo, Error> {
+    if reader.read_bits(8)? != 42 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Symbol,
+        });
+    }
+    let number = reader.read_bits(8)?;
+    if number >= 32 {
+        return Err(Error {
+            byte: reader.byte_position(),
+            kind: crate::message::ErrorKind::Symbol,
+        });
+    }
+    let flags = reader.read_bits(16)?;
+    let mut words = [0; QW_PLAYER_WORDS];
+    words[8] = default_model;
+    words[12] = flags as i16 as i32 as u32;
+    delta::read(&QW_PLAYER_PREFIX, &mut words, flags, reader)?;
+    let command = if flags & (1 << 1) != 0 {
+        command_delta::read_qw(reader, NULL_QW_COMMAND)?
+    } else {
+        prior_slot_command
+    };
+    delta::read(&QW_PLAYER_SUFFIX, &mut words, flags, reader)?;
+    Ok(QwPlayerInfo {
+        number: number as u8,
+        words,
+        command,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::message::{Encoding, ErrorKind};
+
+    #[test]
+    fn qw_player_retains_slot_command_and_native_corpse_roll() -> Result<(), Error> {
+        let prior = QwCmd {
+            view_angles: qa_core::primitives::Vec3([10.0, 20.0, 30.0]),
+            movement: [17, -18, 19],
+            msec: 20,
+            buttons: 3,
+            impulse: 4,
+        };
+        let mut to = [0; QW_PLAYER_WORDS];
+        to[0] = 1.125f32.to_bits();
+        to[3] = 7.5f32.to_bits();
+        let mut bytes = [0xff; 128];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        assert!(write_qw_player(&mut writer, 0, &to, NULL_QW_COMMAND)?);
+        assert_eq!(writer.size(), 11);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let decoded = read_qw_player(&mut reader, 44, prior)?;
+        assert_eq!(decoded.number, 0);
+        assert_eq!(decoded.command, prior);
+        assert_eq!(decoded.words[3], 7);
+        assert_eq!(decoded.words[8], 44);
+        assert_eq!(&decoded.words[5..8], &[0; 3]);
+        to[4] = 1000;
+        to[5] = (-300.5f32).to_bits();
+        to[12] = 3 | (1 << 2) | (1 << 9);
+        to[13] = 90.0f32.to_bits();
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        assert!(write_qw_player(&mut writer, 31, &to, prior)?);
+        let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+        let decoded = read_qw_player(&mut reader, 44, NULL_QW_COMMAND)?;
+        assert_eq!(decoded.words[4], 255);
+        assert_eq!(decoded.words[5], (-300.0f32).to_bits());
+        assert_eq!(decoded.command.buttons, 0);
+        assert_eq!(decoded.command.impulse, 0);
+        assert_eq!(decoded.command.view_angles.0[0], 0.0);
+        assert_eq!(decoded.command.view_angles.0[1], 90.0);
+        assert_eq!(decoded.command.view_angles.0[2], 5461.0 * (360.0 / 65536.0));
+        for length in 0..writer.size() {
+            let mut reader = Reader::new(&writer.bytes()[..length], Encoding::Bytes);
+            assert_eq!(
+                read_qw_player(&mut reader, 44, prior)
+                    .map_err(|e| e.kind)
+                    .err(),
+                Some(ErrorKind::Truncated)
+            );
+        }
+        assert!(!write_qw_player(&mut writer, 32, &to, prior)?);
+        Ok(())
+    }
 
     #[test]
     fn nq_client_defaults_signed_values_and_weapon_mask() -> Result<(), Error> {

@@ -410,6 +410,104 @@ static void nq_player_decode(msg_t *m,uint32_t *out) {
     return source
 
 
+def qw_player_layout():
+    rust = (ROOT / 'crates/network/src/states.rs').read_text()
+    block = re.search(r'pub const QW_PLAYER_LAYOUT.*?=\s*\[(.*?)\n\];', rust, re.S).group(1)
+    return [(name, int(width)) for name, width in re.findall(r'\("([^"]+)",\s*(-?\d+)\)', block)]
+
+
+def qw_player_reference(qsrc):
+    folder = qsrc / 'quake/QW'
+    protocol = (folder/'client/protocol.h').read_text()
+    common = (folder/'client/common.c').read_text()
+    header = (folder/'client/client.h').read_text()
+    source = r'''
+#define usercmd_t qw_player_command_t
+#define player_state_t qw_player_state_t
+#define player_info_t qw_player_info_t
+#define cl qw_player_client
+'''
+    end = protocol.index('} usercmd_t;') + len('} usercmd_t;')
+    source += protocol[protocol.rfind('typedef struct',0,end):end] + '\n'
+    end = header.index('} player_state_t;') + len('} player_state_t;')
+    source += header[header.rfind('typedef struct',0,end):end] + '\n'
+    source += '\n#undef svc_playerinfo\n'
+    source += '\n'.join(re.findall(r'^#define\s+(?:PF_[A-Z0-9_]+|CM_[A-Z0-9_]+|MAX_CLIENTS|svc_playerinfo)\s+.*$',protocol,re.M)) + '\n'
+    source += r'''
+typedef struct {int unused;} player_info_t;
+static struct {player_info_t players[MAX_CLIENTS];
+ struct {player_state_t playerstate[MAX_CLIENTS];} frames[1];int parsecount;} cl;
+static int parsecountmod,cl_playerindex;static double parsecounttime=1.0;
+static usercmd_t nullcmd;
+#define MSG_WriteByte(m,v) q2_write(m,v,8)
+#define MSG_WriteShort(m,v) q2_write(m,v,16)
+#define MSG_ReadByte() q2_read(&net_message,8,0)
+#define MSG_ReadShort() q2_read(&net_message,16,1)
+#define MSG_WriteCoord QW_WriteCoord
+#define MSG_ReadCoord QW_ReadCoord
+#define MSG_WriteAngle16 QW_Player_WriteAngle16
+#define MSG_ReadAngle16 QW_Player_ReadAngle16
+#define MSG_WriteDeltaUsercmd QW_Player_WriteCommand
+#define MSG_ReadDeltaUsercmd QW_Player_ReadCommand
+'''
+    for name in ['MSG_WriteAngle16','MSG_ReadAngle16','MSG_WriteDeltaUsercmd','MSG_ReadDeltaUsercmd']:
+        source += function(common,name)
+    source += function((folder/'client/cl_ents.c').read_text(),'CL_ParsePlayerinfo')
+    original = function((folder/'server/sv_ents.c').read_text(),'SV_WritePlayersToClient')
+    start = original.index('\t\tMSG_WriteByte (msg, svc_playerinfo);')
+    end = original.rindex('\n\t}\n}')
+    block = original[start:end]
+    source += r'''
+static usercmd_t qw_player_cmd(uint32_t *v) {
+ usercmd_t c={0};memcpy(c.angles,v,12);c.forwardmove=v[3];c.sidemove=v[4];c.upmove=v[5];
+ c.buttons=v[6];c.impulse=v[7];c.msec=v[8];return c;
+}
+static void qw_player_encode(msg_t *msg,uint32_t *to,int j) {
+ typedef struct {vec3_t origin,velocity,angles;float frame,health,modelindex,skin,effects,weaponframe;} vars_t;
+ struct {vars_t v;} object={0},*ent=&object;
+ struct {double localtime;usercmd_t lastcmd;} binding={0},*cl=&binding;
+ struct {double time;} sv={.time=1};
+ int pflags=to[12],i,msec;usercmd_t cmd;
+ memcpy(ent->v.origin,to,12);memcpy(&ent->v.frame,to+3,4);memcpy(ent->v.velocity,to+5,12);
+ memcpy(&ent->v.modelindex,to+8,4);memcpy(&ent->v.skin,to+9,4);memcpy(&ent->v.effects,to+10,4);
+ memcpy(&ent->v.weaponframe,to+11,4);memcpy(ent->v.angles+1,to+13,4);
+ ent->v.health=(pflags&PF_DEAD)?-1:100;cl->lastcmd=qw_player_cmd(to+14);
+ // Bind an interval inside the supplied native integer age, avoiding a second
+ // copy of the native timestamp-to-integer expression under comparison.
+ cl->localtime=1-((int32_t)to[4]+((int32_t)to[4]<0?-0.25:0.25))/1000.0;
+'''
+    source += block + '\n}\n'
+    source += r'''
+static void qw_player_decode(msg_t *m,uint32_t *from,uint32_t *out,uint32_t *number) {
+ net_message=*m;if(MSG_ReadByte()!=svc_playerinfo)abort();*number=m->data[1];
+ player_state_t *p=&cl.frames[0].playerstate[*number];memset(p,0,sizeof(*p));
+ p->command=qw_player_cmd(from+14);cl_playerindex=from[8];CL_ParsePlayerinfo();
+ memcpy(out,p->origin,12);out[3]=p->frame;
+ if(p->flags&PF_MSEC)out[4]=m->data[11];
+ memcpy(out+5,p->velocity,12);out[8]=p->modelindex;out[9]=p->skinnum;
+ out[10]=p->effects;out[11]=p->weaponframe;out[12]=p->flags;
+ memcpy(out+14,p->command.angles,12);out[17]=(int)p->command.forwardmove;
+ out[18]=(int)p->command.sidemove;out[19]=(int)p->command.upmove;
+ out[20]=p->command.buttons;out[21]=p->command.impulse;out[22]=p->command.msec;
+}
+#undef usercmd_t
+#undef player_state_t
+#undef player_info_t
+#undef cl
+#undef MSG_WriteByte
+#undef MSG_WriteShort
+#undef MSG_ReadByte
+#undef MSG_ReadShort
+#undef MSG_WriteCoord
+#undef MSG_ReadCoord
+#undef MSG_WriteAngle16
+#undef MSG_ReadAngle16
+#undef MSG_WriteDeltaUsercmd
+#undef MSG_ReadDeltaUsercmd
+'''
+    return source
+
+
 def layouts(msg):
     result = []
     for name, macro in [('entityStateFields', 'NETF'), ('playerStateFields', 'PSF')]:
@@ -463,6 +561,7 @@ typedef struct {char *name;int offset,bits;} netField_t;
     source += qw_reference(qsrc)
     source += q2_entity_reference(qsrc)
     source += nq_reference(qsrc)
+    source += qw_player_reference(qsrc)
     source += r'''
 static void put(void *record,netField_t *fields,int count,uint32_t *words) {
  for(int i=0;i<count;i++)memcpy((byte*)record+fields[i].offset,&words[i],4);
@@ -486,7 +585,7 @@ int main(void) {
  msgHuff.decompressor=msgHuff.compressor;msgHuff.decompressor.tree=msgHuff.compressor.tree;
  byte mode,flags;uint16_t number;uint32_t from[112],to[112];
  while(fread(&mode,1,1,stdin)==1) {
-  if(mode>6||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
+  if(mode>7||fread(&flags,1,1,stdin)!=1||fread(&number,2,1,stdin)!=1||fread(from,4,112,stdin)!=112||fread(to,4,112,stdin)!=112)return 2;
   byte data[1400]={0};msg_t m={.data=data,.maxsize=sizeof(data)};
   entityState_t a={.number=number},b={.number=number},c={0};playerState_t p={0},q={0},r={0};
   if(mode==0) {
@@ -500,7 +599,8 @@ int main(void) {
   } else if(mode==3) {qw_encode(&m,from,to,number,flags);
   } else if(mode==4) {q2_entity_encode(&m,from,to,number,flags);
   } else if(mode==5) {nq_encode(&m,from,to,number,flags);
-  } else {nq_player_encode(&m,to,flags);
+  } else if(mode==6) {nq_player_encode(&m,to,flags);
+  } else {qw_player_encode(&m,to,number);
   }
   uint32_t header[2]={m.bit,m.cursize};fwrite(header,4,2,stdout);fwrite(data,1,m.cursize,stdout);
   uint32_t decoded[112]={0},wire_number=(mode==0||mode>=3)?number:0;byte removed=0;m.bit=m.readcount=0;
@@ -513,7 +613,8 @@ int main(void) {
   else if(mode==3) {qw_decode(&m,from,decoded,&wire_number,&removed);}
   else if(mode==4) {q2_entity_decode(&m,from,decoded,&wire_number,&removed);}
   else if(mode==5) {nq_decode(&m,from,decoded,&wire_number);}
-  else {nq_player_decode(&m,decoded);}
+  else if(mode==6) {nq_player_decode(&m,decoded);}
+  else {qw_player_decode(&m,from,decoded,&wire_number);}
   fwrite(decoded,4,112,stdout);fwrite(&wire_number,4,1,stdout);fwrite(&removed,1,1,stdout);
  }
  return ferror(stdin)?3:0;
@@ -523,7 +624,7 @@ int main(void) {
     code.write_text(source)
     binary = evidence / 'original-state-delta'
     subprocess.run(['cc', '-O2', '-std=c11', '-fno-strict-aliasing', '-ffp-contract=off', str(code), '-o', str(binary)], check=True)
-    return binary, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout()]
+    return binary, layouts(msg) + [q2_layout(), qw_layout(), q2_entity_layout(), nq_layout(), nq_player_layout(), qw_player_layout()]
 
 
 def fixture(tables):
@@ -532,6 +633,22 @@ def fixture(tables):
     floats = [-0.0, 0.0, -4096.0, -4097.0, 4095.0, 4096.0, 0.125, -0.125, 123456.75]
     for mode, table in enumerate(tables):
         for case in range(2048):
+            if mode == 7:
+                old,new=[0]*112,[0]*112;old[8]=case%256
+                for i in list(range(4))+list(range(5,12))+[13,14,15,16]:
+                    new[i]=struct.unpack('<I',struct.pack('<f',rng.uniform(-4096,4096)))[0]
+                new[4]=rng.randrange(-128,1024)&0xffffffff
+                # Native local/spectator rows have no command/msec; remote rows
+                # carry both. Other flags include all defined prediction bits.
+                new[12]=(case|((case&1)<<11))&~3
+                if case%3==0: new[12]|=3
+                if case%3==1: new[12]&=0x1c
+                for i in range(14,17):old[i]=struct.unpack('<I',struct.pack('<f',rng.uniform(-4096,4096)))[0]
+                for i in range(17,20):
+                    old[i]=rng.randrange(-32768,32768)&0xffffffff;new[i]=rng.randrange(-32768,32768)&0xffffffff
+                for i in range(20,23):old[i]=rng.randrange(256);new[i]=rng.randrange(256)
+                output += struct.pack('<BBH224I',mode,0,case%32,*old,*new)
+                continue
             if mode == 6:
                 old,new=[0]*112,[0]*112
                 for i in list(range(8))+[9,10]+list(range(12,18)):
@@ -652,8 +769,8 @@ def main():
     if actual != expected:
         at = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b), min(len(actual), len(expected)))
         raise AssertionError(f'native state bytes/decoded fields differ at output byte {at}; lengths {len(actual)}/{len(expected)}')
-    result = dict(result='PASS', cases=14336, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
-                  original='Q3 MSG entity/player, Q2 server player writer/client parser and QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ SV_WriteEntitiesToClient/CL_ParseUpdate and SV_WriteClientdataToMessage/CL_ParseClientdata unchanged; original removal statements, offsetof and private bindings only',
+    result = dict(result='PASS', cases=16384, entity_fields=51, player_fields=48, player_arrays=64, q2_player_fields=36, q2_stats=32, qw_entity_words=12, q2_entity_words=20, q2_dual_frame_flag_parser=True, nq_entity_words=12, nq_player_words=21, qw_player_words=14, bytes=len(actual), byte_exact=True, decoded_words_exact=True,
+                  original='Q3 MSG entity/player, Q2 server player writer/client parser, QW SV_WriteDelta/CL_ParseDelta, Q2 entity writer/bits/parser, NQ entity/client-data functions unchanged; QW player writing block, CL_ParsePlayerinfo and usercmd helpers unchanged; original removal statements, offsetof and private bindings only',
                   limits='Seeded native delta records; no snapshot framing, common-state ABI projection, sign-on, captures, live or installed acceptance')
     (args.evidence / 'comparison.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))

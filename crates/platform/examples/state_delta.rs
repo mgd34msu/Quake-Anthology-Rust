@@ -1,9 +1,10 @@
 //! Developer-only original-C delta record fidelity and allocation/timing probe.
 use qa_network::{
+    commands::delta as command_delta,
     message::{Encoding, Reader, Writer},
     states::{
         self, ENTITY_WORDS, NQ_ENTITY_WORDS, NQ_PLAYER_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS,
-        Q2_PLAYER_WORDS, QW_ENTITY_WORDS,
+        Q2_PLAYER_WORDS, QW_ENTITY_WORDS, QW_PLAYER_WORDS,
     },
 };
 use qa_platform::{Stopwatch, allocations};
@@ -202,6 +203,34 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
                 &states::read_nq_player(&mut reader, case.flags & 4 != 0)
                     .map_err(|e| e.to_string())?,
             );
+        }
+        7 => {
+            let to: &[u32; QW_PLAYER_WORDS] = case.to[..QW_PLAYER_WORDS]
+                .try_into()
+                .map_err(|_| "QW player words")?;
+            let old_command: &[u32; 11] = case.from[14..25]
+                .try_into()
+                .map_err(|_| "QW prior command")?;
+            let new_command: &[u32; 11] = case.to[14..25]
+                .try_into()
+                .map_err(|_| "QW player command")?;
+            states::write_qw_player(
+                &mut writer,
+                case.number,
+                to,
+                command_delta::qw_from_words(new_command),
+            )
+            .map_err(|e| e.to_string())?;
+            let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+            let decoded = states::read_qw_player(
+                &mut reader,
+                case.from[8],
+                command_delta::qw_from_words(old_command),
+            )
+            .map_err(|e| e.to_string())?;
+            result.number = u32::from(decoded.number);
+            result.decoded[..QW_PLAYER_WORDS].copy_from_slice(&decoded.words);
+            result.decoded[14..25].copy_from_slice(&command_delta::qw_words(decoded.command));
         }
         _ => return Err("state dialect".into()),
     }

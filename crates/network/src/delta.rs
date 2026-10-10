@@ -262,7 +262,7 @@ pub(crate) fn mask<
 
 /// Static engine tables consume the fixed records supplied by the projections.
 /// A malformed wire message affects only the caller's temporary decoded record.
-#[inline]
+#[inline(always)]
 pub(crate) fn write<
     const STATE: bool,
     const PREFIX: bool,

@@ -3924,3 +3924,84 @@ checker/workspace/Clippy/build logs. Common-state projection, snapshot framing/
 32-slot rings, negotiated 666/999/rerelease coverage, signon/captures/live/native/
 combined/installed acceptance remain THE-860/THE-3169. These state tables have
 no snapshot/gameplay caller yet; no install is claimed.
+
+### THE-860: QuakeWorld player-info records
+
+Protocol-28 player information uses the same scalar field walker and existing
+QW command delta codec. Its 14-word projection retains QC floats until their
+native coordinate/byte conversions. Provider-supplied flags select the command,
+age, velocities and optional model/skin/effect/weapon fields. Absent model uses
+the connection's player model; other absent scalar fields reset to zero. An
+absent command retains the caller's existing native frame-slot command. This
+codec owns no snapshot history, player array or input recording.
+
+Native corpse commands clear pitch, replace yaw from body yaw and retain roll:
+qsrc assigns pitch twice. Buttons and impulse are cleared on the wire. Age
+clamps above 255 only, while negative native integers wrap through the byte.
+The fixed QW command word projection is reused; its former constructor body is
+moved into that one conversion function and the old copy is deleted.
+
+The developer oracle compiles the unchanged packet-writing block from
+QW/server/sv_ents.c SV_WritePlayersToClient, unchanged CL_ParsePlayerinfo from
+QW/client/cl_ents.c and original QW common.c command/angle helpers. Private
+native structs, globals and timestamps bind seeded records to those bodies.
+The earlier negative-age fixture timestamp landed in the wrong integer interval;
+the private binding was corrected without altering the extracted writing block.
+The original writer's PVS, player-role selection and flag-construction code is
+outside this record comparison. Supplied masks include self/spectator-style
+omissions and all twelve defined flag bits; 683 records carry command/age and
+1,365 retain the prior native frame-slot command.
+
+All 16,384 mixed state records match 8,039,745 bytes and decoded words exactly,
+including the unchanged earlier fixtures and 2,048 new QW player records. The
+3,072 original command and 768 message comparisons also match. Ten focused
+state tests and 663 workspace tests pass, alongside the unchanged checker,
+Clippy and formatting. Truncated player records fail at the message boundary;
+client numbers outside 0..31 are rejected or omitted, independently of common
+ClientId width.
+
+The first candidate increased the NQ client-data median by 11.3-12.6%. Forcing
+only its boundary inline did not recover that cost. The retained scalar writer
+hint permits static table specialization, while Q3 command boundaries use the
+ordinary inline hint. There remains one source walker, with no arithmetic or
+wire-policy changes. The broad-inlining and earlier boundary trials are retained
+as diagnostics and do not qualify the final matrix.
+
+CPU23 portable release, five ABBA blocks, 60 warm-up + 600 measured frames per
+leg, 16 checked records per frame. Baseline is verified 0667cd65. No owned build,
+test or C helper overlapped the final series. Unowned clang++ compilation was
+observed on CPU23 and other cores; these are matched measurements under that
+host load, not uncontended latency or a precision claim for small percentages.
+The source-only hint changes do not establish a general gameplay speedup.
+
+| Existing codec workload | Before median ns | After median ns | Change | Before p99 ns | After p99 ns |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Mixed usercmds | 4913.5 | 4161 | -15.315% | 9247 | 8980 |
+| QW usercmds | 4019.5 | 3150 | -21.632% | 5468 | 4307 |
+| Q2 usercmds | 4228 | 3600.5 | -14.842% | 8300 | 6138 |
+| Q3 usercmds | 6164 | 6313.5 | +2.425% | 15834 | 17479 |
+| Q3 entity/player records | 33489.6 | 31430.1 | -6.150% | 1.49902e+06 | 1.15797e+06 |
+| Q2 player records | 26157.5 | 25662.5 | -1.892% | 1.51758e+06 | 1.61389e+06 |
+| QW entity records | 6395.5 | 5988 | -6.372% | 10500.1 | 9874 |
+| Q2 entity records | 11243 | 10959.5 | -2.521% | 36626 | 19173.1 |
+| NQ entity records | 8554 | 8578.5 | +0.286% | 13199 | 15836 |
+| NQ client-data records | 11652.5 | 12155.5 | +4.317% | 21883 | 26630 |
+
+Q3-command, NQ-entity and NQ-client medians increase; the other medians improve.
+Q3-command, Q2-player, NQ-entity and NQ-client p99 values increase. All median
+rows meet the existing 10% guard in this bounded series. Each leg retains its
+wire total and 10,560 checks including warm-up, with zero measured Rust
+allocations/reallocations/requested bytes and one positive-control allocation.
+
+Four new QW-player runs average 4081.25 ns median / 4602.5 ns p99
+per 16 records, 211,220 wire bytes and 10,560 checks including warm-up,
+zero measured heap. There is no comparable earlier path. This probe excludes
+host, workers, native-module execution, transport and gameplay.
+
+Evidence: `THE-860-qw-player-20261009/`, final-original/commands/message
+comparisons, qw-player-coverage.json, final-abba-summary.json and final raw legs,
+final-qw-player-summary.json/four runs, final-unowned-load.txt and build/checker/
+workspace/Clippy logs. Common-state projection, 32-slot rings and packet framing,
+negotiated NQ666/999/rerelease fields, native provider selection/clocks,
+signon/captures/live/combined/native/installed acceptance remain THE-860/THE-3169.
+These state tables still have no snapshot/gameplay caller. No install is claimed.

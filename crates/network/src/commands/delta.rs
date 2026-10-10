@@ -57,7 +57,7 @@ const Q3: [Group; 1] = [Group {
         Field::new(7, 8, 0, Value::Unsigned),
     ],
 }];
-fn qw_words(c: QwCmd) -> [u32; 11] {
+pub fn qw_words(c: QwCmd) -> [u32; 11] {
     let mut v = [0; 11];
     v[..3].copy_from_slice(&c.view_angles.0.map(f32::to_bits));
     v[3..6].copy_from_slice(&c.movement.map(|v| v as u32));
@@ -91,13 +91,16 @@ pub fn write_qw(writer: &mut Writer<'_>, from: QwCmd, to: QwCmd) -> Result<(), E
 pub fn read_qw(reader: &mut Reader<'_>, from: QwCmd) -> Result<QwCmd, Error> {
     let mut v = qw_words(from);
     delta::read(&QW, &mut v, 0, reader)?;
-    Ok(QwCmd {
+    Ok(qw_from_words(&v))
+}
+pub fn qw_from_words(v: &[u32; 11]) -> QwCmd {
+    QwCmd {
         msec: v[8] as u8,
         view_angles: Vec3(std::array::from_fn(|i| f32::from_bits(v[i]))),
         movement: std::array::from_fn(|i| v[3 + i] as i16),
         buttons: v[6] as u8,
         impulse: v[7] as u8,
-    })
+    }
 }
 pub fn write_q2(writer: &mut Writer<'_>, from: Q2Cmd, to: Q2Cmd) -> Result<(), Error> {
     delta::write(&Q2, &q2_words(from), &q2_words(to), 0, writer)
@@ -114,14 +117,14 @@ pub fn read_q2(reader: &mut Reader<'_>, from: Q2Cmd) -> Result<Q2Cmd, Error> {
         light_level: v[9] as u8,
     })
 }
-#[inline(always)]
+#[inline]
 pub fn write_q3(writer: &mut Writer<'_>, from: Q3Cmd, to: Q3Cmd, key: u32) -> Result<(), Error> {
     let from = q3_words(from);
     let to = q3_words(to);
     delta::write(&Q3_TIME, &from, &to, 0, writer)?;
     delta::write(&Q3, &from, &to, key ^ to[10], writer)
 }
-#[inline(always)]
+#[inline]
 pub fn read_q3(reader: &mut Reader<'_>, from: Q3Cmd, key: u32) -> Result<Q3Cmd, Error> {
     let mut v = q3_words(from);
     delta::read(&Q3_TIME, &mut v, 0, reader)?;
