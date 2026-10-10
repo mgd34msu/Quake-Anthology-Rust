@@ -184,6 +184,9 @@ impl Channel {
     pub fn snapshot(&self, sequence: u32) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.frame(sequence)
     }
+    pub fn current_snapshot(&self) -> Option<crate::snapshots::ReceivedFrame<'_>> {
+        self.snapshots.as_ref()?.current()
+    }
     /// Called at connection binding, never while decoding an ordinary frame.
     /// Classic QW and Q2 have the same channel header, so the native payload
     /// protocol is supplied explicitly rather than inferred from that header.

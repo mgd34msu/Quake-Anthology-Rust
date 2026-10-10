@@ -58,7 +58,9 @@ impl Commands {
         let request = self.snapshot_request(channel);
         let movement = match self.protocol {
             Protocol::NetQuake15 => Move::NetQuake {
-                timestamp: 0.,
+                timestamp: channel
+                    .current_snapshot()
+                    .map_or(0., |frame| frame.time().seconds() as f32),
                 command: to_q1_move(command),
             },
             Protocol::QuakeWorld28 => Move::QuakeWorld {

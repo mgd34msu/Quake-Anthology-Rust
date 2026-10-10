@@ -409,6 +409,14 @@ pub enum ReceivedFrame<'a> {
     Quake3(Q3Frame<'a>),
 }
 impl ReceivedFrame<'_> {
+    pub fn time(self) -> qa_core::primitives::ThinkTime {
+        match self {
+            Self::NetQuake(frame) => frame.time,
+            Self::QuakeWorld(frame) => frame.time,
+            Self::Quake2(frame) => frame.time,
+            Self::Quake3(frame) => frame.time,
+        }
+    }
     pub fn sequence(self) -> u32 {
         match self {
             Self::NetQuake(frame) => frame.sequence,
@@ -481,6 +489,15 @@ impl Storage {
             Self::QuakeWorld { ring, .. } => ring.record_request(sequence, base),
             Self::NetQuake(_) | Self::Quake2(_) | Self::Quake3(_) => {}
         }
+    }
+    pub(crate) fn current(&self) -> Option<ReceivedFrame<'_>> {
+        let sequence = match self {
+            Self::NetQuake(storage) => storage.ring.latest,
+            Self::QuakeWorld { ring, .. } => ring.latest,
+            Self::Quake2(ring) => ring.latest,
+            Self::Quake3(ring) => ring.latest,
+        }?;
+        self.frame(sequence)
     }
     pub(crate) fn store(&mut self, frame: ReceivedFrame<'_>) -> Result<(), packet::Error> {
         match (self, frame) {

@@ -1819,6 +1819,9 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                 server.snapshot(sequence).ok_or(Error::Context)?.sequence(),
                 sequence
             );
+            let current = server.current_snapshot().ok_or(Error::Context)?;
+            assert_eq!(current.sequence(), sequence);
+            assert_eq!(current.time(), ThinkTime::Milliseconds(123));
         }
     }
     Ok(())
@@ -1921,6 +1924,87 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
     )?;
     assert_eq!((snapshots, prints, connections.command_errors), (1, 1, 0));
     assert!(!server.set_snapshot_baseline(256, &baseline));
+    Ok(())
+}
+
+#[test]
+fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duration()
+-> Result<(), Error> {
+    use qa_core::primitives::UserCmd;
+    use qa_network::commands::packet::{self, Key, Move};
+    fn check(connections: &Connections, expected: f32) -> Result<(), Error> {
+        let client = connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?;
+        let commands = client.commands.as_ref().ok_or(Error::Context)?;
+        let mut bytes = [0; 1400];
+        let length = commands.encode(
+            &UserCmd {
+                duration_ms: 16,
+                duration_ns: 16_000_123,
+                ..Default::default()
+            },
+            &client.channel,
+            &mut bytes,
+        )?;
+        assert_eq!(bytes[0], 3); // clc_move
+        assert_eq!(&bytes[1..5], &expected.to_bits().to_le_bytes());
+        let Some(Move::NetQuake { timestamp, .. }) = packet::read_with_commands(
+            Protocol::NetQuake15,
+            &mut bytes[..length],
+            0,
+            Key::default(),
+            |_, _| Ok(()),
+        )?
+        else {
+            return Err(Error::Context);
+        };
+        assert_eq!(timestamp.to_bits(), expected.to_bits());
+        let mut server_commands = Commands::load(Protocol::NetQuake15);
+        let mut server_channel =
+            Channel::load(Protocol::NetQuake15.channel(), Endpoint::Server, 8192, 16)
+                .map_err(|_| Error::Context)?;
+        let length = server_commands.stage(&bytes[..length])?;
+        let decoded = server_commands
+            .decode(length, 0, 4321, 50_000_321, &mut server_channel)?
+            .ok_or(Error::Context)?;
+        assert_eq!(decoded.duration_ns, 50_000_321);
+        assert_eq!(decoded.duration_ms, 50);
+        assert_eq!(decoded.server_time_ms, 4321);
+        Ok(())
+    }
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    check(&connections, 0.)?;
+    let mut bytes = [0; 64];
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(4, 8)?;
+    writer.write_bits(1.234567f32.to_bits(), 32)?;
+    server_payload(&mut server, &mut connections, writer.bytes(), |_, _, _| {})?;
+    check(&connections, 1.234567)?;
+    server_payload(&mut server, &mut connections, b"\x1aprint\0", |_, _, _| {})?;
+    check(&connections, 1.234567)?;
+    server_payload(&mut server, &mut connections, &[4, 0, 0, 0], |_, _, _| {})?;
+    check(&connections, 1.234567)?;
+    assert_eq!(connections.command_errors, 1);
+    let channel = &connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel;
+    assert_eq!(
+        channel.current_snapshot().ok_or(Error::Context)?.sequence(),
+        0
+    );
+    assert_eq!(channel.state().next_datagram, 3);
+    let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+    writer.write_bits(4, 8)?;
+    writer.write_bits((-0.0f32).to_bits(), 32)?;
+    server
+        .queue_reliable(writer.bytes())
+        .map_err(|_| Error::Context)?;
+    server_payload(&mut server, &mut connections, &[], |_, _, _| {})?;
+    check(&connections, -0.)?;
+    server_payload(&mut server, &mut connections, b"\x1aprint\0", |_, _, _| {})?;
+    check(&connections, -0.)?;
     Ok(())
 }
 

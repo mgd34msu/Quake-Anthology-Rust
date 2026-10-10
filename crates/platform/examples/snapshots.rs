@@ -920,6 +920,15 @@ fn connected_nq_heap() -> Result<(), String> {
             if invalid || count != 2 {
                 return Err(Error::Context);
             }
+            let client = connections
+                .get(ClientId(0), Endpoint::Client)
+                .ok_or(Error::Context)?;
+            let commands = client.commands.as_ref().ok_or(Error::Context)?;
+            let mut move_bytes = [0; 1400];
+            let length = commands.encode(&Default::default(), &client.channel, &mut move_bytes)?;
+            if move_bytes[1..5] != seconds.to_bits().to_le_bytes() || length != 16 {
+                return Err(Error::Context);
+            }
             Ok(())
         })();
         let heap = allocations::end_frame();
@@ -935,7 +944,7 @@ fn connected_nq_heap() -> Result<(), String> {
         return Err(format!("NQ heap gate {measured:?}"));
     }
     println!(
-        "{{\"scope\":\"NQ native time, clientdata, baseline entity store/write, connected CLIENT ingress, common player import and print; caller Rust heap, no app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
+        "{{\"scope\":\"NQ native time, clientdata, baseline entity store/write, connected CLIENT ingress, common player import, print and CL_SendMove ping timestamp; caller Rust heap, no app/workers/OS/gameplay\",\"warmup\":60,\"measured_iterations\":600,\"checks_including_warmup\":{checks},\"positive_control_allocations\":1,\"allocations\":0,\"reallocations\":0,\"requested_bytes\":0,\"command_errors\":0,\"timing_run\":false}}"
     );
     Ok(())
 }
