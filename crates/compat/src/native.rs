@@ -7,6 +7,8 @@ use crate::{
 use qa_core::sys_events::EventTime;
 use qa_platform::native::{NativeAbi, NativeError, NativeProcess};
 
+pub mod elf;
+
 #[derive(Clone, Copy)]
 pub struct Export {
     pub address: u64,
