@@ -176,9 +176,7 @@ fn main() -> Result<(), String> {
         let heap = allocations::end_frame();
         result.map_err(|e| e.to_string())?;
         if frame >= 60 {
-            total.allocations += heap.allocations;
-            total.reallocations += heap.reallocations;
-            total.requested_bytes += heap.requested_bytes;
+            total += heap;
         }
     }
     if total != allocations::Counts::default() {
@@ -219,9 +217,7 @@ fn compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err("fixture format".into()),
         };
         frames += result.0;
-        total.allocations += result.1.allocations;
-        total.reallocations += result.1.reallocations;
-        total.requested_bytes += result.1.requested_bytes;
+        total += result.1;
     }
     if input.byte_position() != bytes.len() || total != allocations::Counts::default() {
         return Err(format!("fixture input/heap failure: {total:?}").into());
@@ -290,9 +286,7 @@ fn compare_transmit(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err("fixture format".into()),
         };
         frames += result.0;
-        total.allocations += result.1.allocations;
-        total.reallocations += result.1.reallocations;
-        total.requested_bytes += result.1.requested_bytes;
+        total += result.1;
     }
     if input.byte_position() != bytes.len() || total != allocations::Counts::default() {
         return Err(format!("transmit fixture input/heap failure: {total:?}").into());
@@ -363,9 +357,7 @@ fn transmit_frames<const P: usize>(
         })();
         let heap = allocations::end_frame();
         let size = result?;
-        total.allocations += heap.allocations;
-        total.reallocations += heap.reallocations;
-        total.requested_bytes += heap.requested_bytes;
+        total += heap;
         output.extend_from_slice(&(size as u16).to_le_bytes());
         output.extend_from_slice(&bytes[..size]);
     }
@@ -416,9 +408,7 @@ fn compare_frames<const P: usize>(
             receive(&mut reader, ring)
         })();
         let heap = allocations::end_frame();
-        total.allocations += heap.allocations;
-        total.reallocations += heap.reallocations;
-        total.requested_bytes += heap.requested_bytes;
+        total += heap;
         if !result? || reader.byte_position() != size {
             return Err("fixture frame rejected or not consumed".into());
         }

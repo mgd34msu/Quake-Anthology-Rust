@@ -23,14 +23,7 @@ pub use q2::{Q2Spec, load_q2};
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_export(call: &qa_compat::native::LifecycleCall) -> Export {
-    let mut arguments = [Argument::Word(0); 9];
-    for (to, &from) in arguments.iter_mut().zip(&call.arguments) {
-        *to = Argument::Word(from);
-    }
-    Export {
-        callback: CallbackId(call.ordinal),
-        arguments,
-    }
+    Export::words(CallbackId(call.ordinal), &call.arguments)
 }
 
 pub struct QuakeCSpec {

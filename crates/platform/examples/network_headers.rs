@@ -284,9 +284,7 @@ fn timing() -> Result<(), String> {
         }
         if frame >= 60 {
             samples[frame - 60] = elapsed;
-            counts.allocations += current.allocations;
-            counts.reallocations += current.reallocations;
-            counts.requested_bytes += current.requested_bytes;
+            counts += current;
         }
     }
     samples.sort_unstable();

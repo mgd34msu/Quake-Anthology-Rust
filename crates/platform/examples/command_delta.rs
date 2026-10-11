@@ -195,9 +195,7 @@ fn timing(fixture: &str, original: &str, heap_only: bool) -> Result<(), String> 
             if let Some(elapsed) = elapsed {
                 samples[frame - 60] = elapsed;
             }
-            counts.allocations += actual.allocations;
-            counts.reallocations += actual.reallocations;
-            counts.requested_bytes += actual.requested_bytes;
+            counts += actual;
         }
     }
     if counts != allocations::Counts::default() || checks != 10560 {

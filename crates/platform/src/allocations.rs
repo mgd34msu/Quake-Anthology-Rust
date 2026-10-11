@@ -11,6 +11,14 @@ pub struct Counts {
     pub requested_bytes: u64,
 }
 
+impl std::ops::AddAssign for Counts {
+    fn add_assign(&mut self, other: Self) {
+        self.allocations = self.allocations.saturating_add(other.allocations);
+        self.reallocations = self.reallocations.saturating_add(other.reallocations);
+        self.requested_bytes = self.requested_bytes.saturating_add(other.requested_bytes);
+    }
+}
+
 thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
     static COUNTS: Cell<Counts> = const { Cell::new(Counts {

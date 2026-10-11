@@ -861,7 +861,7 @@ impl<'t> Parser<'t, '_, '_> {
         let (source_factor, destination_factor) = match source.text.to_ascii_lowercase().as_str() {
             "add" => (BlendFactor::One, BlendFactor::One),
             "filter" => (BlendFactor::DestinationColor, BlendFactor::Zero),
-            "blend" => (BlendFactor::SourceAlpha, BlendFactor::OneMinusSourceAlpha),
+            "blend" => (StageBlend::ALPHA.source, StageBlend::ALPHA.destination),
             _ => {
                 let destination = self.argument("blendFunc", line)?;
                 (

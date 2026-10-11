@@ -16,13 +16,11 @@ use qa_platform::allocations::Counts;
 use qa_render::cpu::MAX_BANDS;
 
 pub fn parse_cpu_bands(value: &str) -> Result<RasterBands, &'static str> {
-    match value {
-        "1" => Ok(RasterBands::One),
-        "2" => Ok(RasterBands::Two),
-        "4" => Ok(RasterBands::Four),
-        "8" => Ok(RasterBands::Eight),
-        _ => Err("CPU bands must be 1, 2, 4 or 8"),
-    }
+    value
+        .parse()
+        .ok()
+        .and_then(RasterBands::from_count)
+        .ok_or("CPU bands must be 1, 2, 4 or 8")
 }
 
 /// Resolve once at renderer load. A benchmark override takes precedence over
@@ -37,11 +35,12 @@ pub fn cpu_band_setting(
     } else {
         match cvars.integer(handle) {
             0 => None,
-            1 => Some(RasterBands::One),
-            2 => Some(RasterBands::Two),
-            4 => Some(RasterBands::Four),
-            8 => Some(RasterBands::Eight),
-            _ => return Err("r_cpuBands must be 0, 1, 2, 4 or 8"),
+            value => Some(
+                usize::try_from(value)
+                    .ok()
+                    .and_then(RasterBands::from_count)
+                    .ok_or("r_cpuBands must be 0, 1, 2, 4 or 8")?,
+            ),
         }
     };
     Ok((handle, selected))
@@ -92,7 +91,7 @@ impl CpuDispatch {
             let count_result = self.workers.allocation_counts(counts);
             if count_result.is_ok() {
                 for count in counts {
-                    add_counts(&mut self.pending, *count);
+                    self.pending += *count;
                 }
             }
             result.and(count_result)
@@ -107,16 +106,9 @@ impl CpuDispatch {
     /// Inline jobs already belong to the caller's thread-local counts.
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     pub fn merge_counts(&mut self, mut caller: Counts) -> Counts {
-        add_counts(&mut caller, std::mem::take(&mut self.pending));
+        caller += std::mem::take(&mut self.pending);
         caller
     }
-}
-
-#[cfg(any(debug_assertions, feature = "allocation-tracking"))]
-fn add_counts(total: &mut Counts, counts: Counts) {
-    total.allocations = total.allocations.saturating_add(counts.allocations);
-    total.reallocations = total.reallocations.saturating_add(counts.reallocations);
-    total.requested_bytes = total.requested_bytes.saturating_add(counts.requested_bytes);
 }
 
 /// Cache sizes describe the backend's load-time reservation, across all bands.

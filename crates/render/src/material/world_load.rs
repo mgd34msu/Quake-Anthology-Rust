@@ -817,7 +817,10 @@ fn load_indexed_box(
     images: &mut Images<'_>,
 ) -> Result<[ImageId; 6], WorldMaterialError> {
     let mut result = [ImageId(0); 6];
-    for (slot, suffix) in result.iter_mut().zip(["rt", "lf", "bk", "ft", "up", "dn"]) {
+    for (slot, suffix) in result
+        .iter_mut()
+        .zip(crate::sky::CubeFace::ALL.map(crate::sky::CubeFace::suffix))
+    {
         let base = format!(
             "env/{}{suffix}",
             environment
@@ -850,7 +853,10 @@ fn load_box_with_suffix(
 ) -> Result<Option<[ImageId; 6]>, WorldMaterialError> {
     let Some(name) = name else { return Ok(None) };
     let mut result = [ImageId(0); 6];
-    for (slot, suffix) in result.iter_mut().zip(["rt", "lf", "bk", "ft", "up", "dn"]) {
+    for (slot, suffix) in result
+        .iter_mut()
+        .zip(crate::sky::CubeFace::ALL.map(crate::sky::CubeFace::suffix))
+    {
         *slot = images
             .raster(
                 &format!("{name}{separator}{suffix}.tga"),
@@ -902,10 +908,7 @@ fn legacy_material(
                     blend: if i == 0 {
                         None
                     } else {
-                        Some(StageBlend {
-                            source: BlendFactor::SourceAlpha,
-                            destination: BlendFactor::OneMinusSourceAlpha,
-                        })
+                        Some(StageBlend::ALPHA)
                     },
                     depth_write: i == 0,
                     sampler: Sampler {
@@ -967,10 +970,7 @@ fn legacy_material(
     let mut settings = MaterialSettings::default();
     if let Some(alpha) = alpha {
         base.alpha_gen = AlphaGen::Const(alpha);
-        base.blend = Some(StageBlend {
-            source: BlendFactor::SourceAlpha,
-            destination: BlendFactor::OneMinusSourceAlpha,
-        });
+        base.blend = Some(StageBlend::ALPHA);
         base.depth_write = false;
         settings.sort = 9.0;
     }
@@ -1013,7 +1013,7 @@ fn load_layered_sky(
         .assets
         .palette(palette)
         .ok_or(WorldMaterialError::Boundary("missing sky palette"))?;
-    let palette_colors = std::array::from_fn(|index| colors.color(index as u8).to_le_bytes());
+    let palette_colors = colors.rgba_table();
     let layers =
         split_layered_sky(mip.levels[0], &palette_colors).map_err(WorldMaterialError::Boundary)?;
     let corrected = split_layered_sky(mip.levels[0], &images.corrected_palette(palette)?)

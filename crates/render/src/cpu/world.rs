@@ -46,6 +46,15 @@ impl RasterBands {
             Self::One
         }
     }
+    pub const fn from_count(count: usize) -> Option<Self> {
+        match count {
+            1 => Some(Self::One),
+            2 => Some(Self::Two),
+            4 => Some(Self::Four),
+            8 => Some(Self::Eight),
+            _ => None,
+        }
+    }
     pub const fn count(self) -> usize {
         match self {
             Self::One => 1,
@@ -1541,8 +1550,7 @@ impl SurfacePrepare {
         self.reject_n(stats, 1);
     }
     fn reject_n(&mut self, stats: &mut crate::BackendStats, count: usize) {
-        self.stats.rejected = self.stats.rejected.saturating_add(count as u64);
-        stats.rejected = stats.rejected.saturating_add(count as u32);
+        reject_n(&mut self.stats, stats, count);
     }
     #[expect(
         clippy::too_many_arguments,
@@ -2648,8 +2656,12 @@ mod tests {
 }
 
 fn reject(world: &mut WorldStats, backend: &mut crate::BackendStats) {
-    world.rejected = world.rejected.saturating_add(1);
-    backend.rejected = backend.rejected.saturating_add(1);
+    reject_n(world, backend, 1);
+}
+
+fn reject_n(world: &mut WorldStats, backend: &mut crate::BackendStats, count: usize) {
+    world.rejected = world.rejected.saturating_add(count as u64);
+    backend.rejected = backend.rejected.saturating_add(count as u32);
 }
 
 enum RgbaInput<'a> {

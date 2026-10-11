@@ -9,24 +9,14 @@
 //! metadata does not bypass that table. Only explicit fence cutouts skip it.
 
 use qa_core::stamps::StampSet;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 const COLORMAP_BYTES: usize = 64 * 256;
 const ALPHAMAP_BYTES: usize = 256 * 256;
 const MAX_DIMENSION: u32 = 8192;
-static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
 
 fn allocation_bytes(bytes: usize) -> Option<usize> {
     Some(bytes.checked_add(7)? & !7)
-}
-
-fn resource_id() -> Result<u64, &'static str> {
-    NEXT_RESOURCE
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-        .map_err(|_| "surface resource ids exhausted")
 }
 
 /// Palette presentation is selected independently of map and movement rules.
@@ -60,7 +50,7 @@ impl PaletteLighting {
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Ok(Self {
-            id: resource_id()?,
+            id: crate::next_owner_id().map_err(|_| "surface resource ids exhausted")?,
             colors,
             colormap: colormap.into(),
             translucency: translucency.map(Into::into),
@@ -70,6 +60,10 @@ impl PaletteLighting {
 
     pub fn color(&self, index: u8) -> u32 {
         self.colors[index as usize]
+    }
+
+    pub fn rgba_table(&self) -> [[u8; 4]; 256] {
+        std::array::from_fn(|index| self.color(index as u8).to_le_bytes())
     }
 
     pub fn colormap(&self) -> &[u8] {
@@ -132,7 +126,7 @@ impl IndexedTexture {
             }
         }
         Ok(Self {
-            id: resource_id()?,
+            id: crate::next_owner_id().map_err(|_| "surface resource ids exhausted")?,
             mips: std::array::from_fn(|mip| {
                 Some(IndexedMip {
                     width: (width >> mip).max(1),
@@ -160,7 +154,7 @@ impl IndexedTexture {
             return Err("invalid indexed base image dimensions");
         }
         Ok(Self {
-            id: resource_id()?,
+            id: crate::next_owner_id().map_err(|_| "surface resource ids exhausted")?,
             mips: [
                 Some(IndexedMip {
                     width,
@@ -831,7 +825,7 @@ impl SurfaceCache {
         let slots = vec![Slot::default(); catalog.slots.len()].into_boxed_slice();
         let light_scratch = vec![0; catalog.scratch_cells].into_boxed_slice();
         Ok(Self {
-            id: resource_id()?,
+            id: crate::next_owner_id().map_err(|_| "surface resource ids exhausted")?,
             catalog,
             slots,
             arena: vec![0; arena_bytes].into_boxed_slice(),

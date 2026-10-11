@@ -6,7 +6,7 @@ use crate::BackendStats;
 use crate::assets::{
     Assets, DepthFunc, Filter, Image, Material, Sampler, TextureIntensity, Vertex, Wrap,
 };
-use crate::shader::{BlendFactor, Cull, StageBlend};
+use crate::shader::{Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
 mod rgba;
 mod sky;
@@ -941,7 +941,7 @@ impl CpuBackend {
                             evaluated.color.map(|c| c as f32 / 255.0),
                         );
                         if alpha_pass(stage.alpha_test, source[3]) {
-                            let blend = stage.blend.or(Some(ALPHA_BLEND));
+                            let blend = stage.blend.or(Some(StageBlend::ALPHA));
                             self.pixels[index] = composite(self.pixels[index], source, blend);
                             self.palettes[index] = u32::MAX;
                         }
@@ -993,7 +993,7 @@ impl CpuBackend {
             let start = y as usize * self.width as usize + viewport.x as usize;
             for pixel in &mut self.pixels[start..start + viewport.width as usize] {
                 let alpha = *pixel & 0xff00_0000;
-                *pixel = composite(*pixel, source, Some(ALPHA_BLEND));
+                *pixel = composite(*pixel, source, Some(StageBlend::ALPHA));
                 if preserve_alpha {
                     *pixel = (*pixel & 0x00ff_ffff) | alpha;
                 }
@@ -1107,10 +1107,6 @@ fn pixel_bounds(coordinates: [f32; 3], low: u32, high: u32) -> (u32, u32) {
     )
 }
 
-const ALPHA_BLEND: StageBlend = StageBlend {
-    source: BlendFactor::SourceAlpha,
-    destination: BlendFactor::OneMinusSourceAlpha,
-};
 fn texel(coordinate: f32, size: u32, wrap: Wrap) -> usize {
     let coordinate = match wrap {
         Wrap::Repeat => coordinate.rem_euclid(1.0),

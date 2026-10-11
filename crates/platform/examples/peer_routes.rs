@@ -211,9 +211,7 @@ fn heap() -> Result<(), String> {
         }
         let counts = allocations::end_frame();
         if frame >= 60 {
-            totals.allocations += counts.allocations;
-            totals.reallocations += counts.reallocations;
-            totals.requested_bytes += counts.requested_bytes;
+            totals += counts;
         }
     }
     if totals.allocations != 0 || totals.reallocations != 0 || totals.requested_bytes != 0 {

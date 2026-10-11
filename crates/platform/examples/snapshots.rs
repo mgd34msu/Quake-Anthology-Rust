@@ -301,9 +301,7 @@ fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
         let actual = allocations::end_frame();
         if frame >= 60 {
             samples[frame - 60] = elapsed;
-            counts.allocations += actual.allocations;
-            counts.reallocations += actual.reallocations;
-            counts.requested_bytes += actual.requested_bytes;
+            counts += actual;
         }
     }
     if counts != allocations::Counts::default() || checks != 10560 {
@@ -552,9 +550,7 @@ fn connected_heap() -> Result<(), String> {
         result.map_err(|e| e.to_string())?;
         checks += 1;
         if iteration >= 60 {
-            measured.allocations += heap.allocations;
-            measured.reallocations += heap.reallocations;
-            measured.requested_bytes += heap.requested_bytes;
+            measured += heap;
         }
     }
     if measured != allocations::Counts::default() || connections.command_errors != 0 {
@@ -773,9 +769,7 @@ fn connected_qw_heap() -> Result<(), String> {
         result.map_err(|e| e.to_string())?;
         checks += 1;
         if iteration >= 60 {
-            measured.allocations += heap.allocations;
-            measured.reallocations += heap.reallocations;
-            measured.requested_bytes += heap.requested_bytes;
+            measured += heap;
         }
     }
     if measured != allocations::Counts::default() || connections.command_errors != 0 {
@@ -938,9 +932,7 @@ fn connected_nq_heap() -> Result<(), String> {
         result.map_err(|e| e.to_string())?;
         checks += 1;
         if iteration >= 60 {
-            measured.allocations += heap.allocations;
-            measured.reallocations += heap.reallocations;
-            measured.requested_bytes += heap.requested_bytes;
+            measured += heap;
         }
     }
     if measured != allocations::Counts::default() || connections.command_errors != 0 {

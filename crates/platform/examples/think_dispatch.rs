@@ -122,9 +122,7 @@ fn main() -> Result<(), String> {
         }
         if frame > 60 {
             samples[frame as usize - 61] = elapsed;
-            allocated.allocations += counts.allocations;
-            allocated.reallocations += counts.reallocations;
-            allocated.requested_bytes += counts.requested_bytes;
+            allocated += counts;
         }
     }
     for (rule, &expected) in expected_per_rule.iter().enumerate() {

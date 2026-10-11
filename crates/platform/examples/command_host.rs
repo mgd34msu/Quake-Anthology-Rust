@@ -137,9 +137,7 @@ fn main() -> Result<(), String> {
         if frame >= 60 {
             samples[(frame - 60) as usize] = elapsed;
             ticks += result.server_ticks;
-            totals.allocations += counts.allocations;
-            totals.reallocations += counts.reallocations;
-            totals.requested_bytes += counts.requested_bytes;
+            totals += counts;
             for client in &host.runtime.server.clients {
                 if client.command.duration_ms != 16 || client.command.movement[0] <= 0. {
                     return Err("native movement fields".into());

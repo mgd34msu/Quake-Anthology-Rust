@@ -9,7 +9,7 @@ use crate::assets::{
 use crate::scene::{
     BlendPhase, Command, CommandList, Draw2d, DrawKind, Refdef, SceneEntity, Span, Viewport,
 };
-use crate::shader::{AlphaGen, BlendFactor, RgbGen, StageBlend};
+use crate::shader::{AlphaGen, RgbGen, StageBlend};
 use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyClip};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
 use qa_core::primitives::Vec3;
@@ -1391,10 +1391,7 @@ impl GlBackend {
         self.bind_vao(self.dynamic.vao);
         self.set_depth_hack(false);
         let stage = Stage {
-            blend: Some(StageBlend {
-                source: BlendFactor::SourceAlpha,
-                destination: BlendFactor::OneMinusSourceAlpha,
-            }),
+            blend: Some(StageBlend::ALPHA),
             ..Stage::default()
         };
         let projection = orthographic(self.width, self.height);
@@ -1447,10 +1444,7 @@ impl GlBackend {
             return false;
         };
         let blend = if force_alpha && stage.blend.is_none() {
-            Some(StageBlend {
-                source: BlendFactor::SourceAlpha,
-                destination: BlendFactor::OneMinusSourceAlpha,
-            })
+            Some(StageBlend::ALPHA)
         } else {
             stage.blend
         };

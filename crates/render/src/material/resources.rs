@@ -406,8 +406,8 @@ impl<'a> Images<'a> {
             .assets
             .palette(palette)
             .ok_or(ResourceError::Asset("missing image palette"))?;
-        Ok(std::array::from_fn(|index| {
-            let mut color = colors.color(index as u8).to_le_bytes();
+        let mut table = colors.rgba_table();
+        for (index, color) in table.iter_mut().enumerate() {
             for channel in &mut color[..3] {
                 *channel = self.recipes.light.rgb_lut.0[*channel as usize];
             }
@@ -415,9 +415,10 @@ impl<'a> Images<'a> {
             if index == 255 {
                 color[3] = 0;
             }
-            color
-        }))
+        }
+        Ok(table)
     }
+
     pub fn embedded(
         &mut self,
         mip: &MipTexture<'_>,
@@ -434,7 +435,7 @@ impl<'a> Images<'a> {
                 .assets
                 .palette(palette)
                 .ok_or(ResourceError::Asset("missing image palette"))?;
-            let rgba = std::array::from_fn(|index| colors.color(index as u8).to_le_bytes());
+            let rgba = colors.rgba_table();
             Some(upload::expand_indexed(
                 mip.levels[0],
                 mip.width,
@@ -536,7 +537,7 @@ impl<'a> Images<'a> {
                 .assets
                 .palette(palette)
                 .ok_or(ResourceError::Asset("missing image palette"))?;
-            let rgba = std::array::from_fn(|index| colors.color(index as u8).to_le_bytes());
+            let rgba = colors.rgba_table();
             gl_pixels = Some(upload::expand_indexed(
                 &decoded.indices,
                 decoded.width,

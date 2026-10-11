@@ -69,14 +69,10 @@ pub fn load_q2(
             )
             .map_err(|e| format!("Q2 native mapping: {e:?}"))?;
             let export = |name: &[u8], words: &[u64]| -> Result<Export, String> {
-                let mut arguments = [Argument::Word(0); 9];
-                for (to, &from) in arguments.iter_mut().zip(words) {
-                    *to = Argument::Word(from);
-                }
-                Ok(Export {
-                    callback: CallbackId(game.entry(name).ok_or("missing Q2 lifecycle export")?),
-                    arguments,
-                })
+                Ok(Export::words(
+                    CallbackId(game.entry(name).ok_or("missing Q2 lifecycle export")?),
+                    words,
+                ))
             };
             let mut initialize = Vec::new();
             if spec.rules == RuleSetId::Quake2Rerelease {

@@ -219,9 +219,7 @@ fn timing() -> Result<(), String> {
         let current = allocations::end_frame();
         if frame >= 60 {
             samples[frame - 60] = elapsed;
-            counts.allocations += current.allocations;
-            counts.reallocations += current.reallocations;
-            counts.requested_bytes += current.requested_bytes;
+            counts += current;
         }
     }
     if deliveries != 10560 || receipts != 9240 || delivered_bytes != 15079680 {

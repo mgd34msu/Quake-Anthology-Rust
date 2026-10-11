@@ -178,9 +178,7 @@ fn main() -> Result<(), String> {
         }
         if frame >= 60 {
             samples[frame - 60] = elapsed;
-            counts.allocations += actual.allocations;
-            counts.reallocations += actual.reallocations;
-            counts.requested_bytes += actual.requested_bytes;
+            counts += actual;
         }
     }
     if (

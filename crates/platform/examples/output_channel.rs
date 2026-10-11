@@ -266,9 +266,7 @@ fn main() -> Result<(), String> {
             samples[frame as usize - 60] = elapsed;
             packets += result.output.native_packets;
             ticks += result.server_ticks;
-            total.allocations += counts.allocations;
-            total.reallocations += counts.reallocations;
-            total.requested_bytes += counts.requested_bytes;
+            total += counts;
         }
     }
     if source.prints != 660 * 16

@@ -127,6 +127,12 @@ pub struct StageBlend {
     pub source: BlendFactor,
     pub destination: BlendFactor,
 }
+impl StageBlend {
+    pub const ALPHA: Self = Self {
+        source: BlendFactor::SourceAlpha,
+        destination: BlendFactor::OneMinusSourceAlpha,
+    };
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum BlendFactor {

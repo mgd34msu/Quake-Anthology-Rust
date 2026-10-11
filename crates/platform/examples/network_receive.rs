@@ -222,9 +222,7 @@ fn timing() -> Result<(), String> {
         let counts = allocations::end_frame();
         if frame >= 60 {
             samples[frame - 60] = elapsed;
-            total_counts.allocations += counts.allocations;
-            total_counts.reallocations += counts.reallocations;
-            total_counts.requested_bytes += counts.requested_bytes;
+            total_counts += counts;
         }
     }
     if channels

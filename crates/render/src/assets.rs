@@ -429,19 +429,7 @@ impl Assets {
         id: ImageId,
         params: upload::UploadParams,
     ) -> Result<(), &'static str> {
-        let image = self
-            .images
-            .get_mut(id.0 as usize)
-            .ok_or("invalid image handle")?;
-        let prepared = upload::prepare_rgba(image.width, image.height, &image.rgba, params)
-            .map_err(|_| "invalid image preparation")?;
-        let revision = image
-            .preparation_revision
-            .checked_add(1)
-            .ok_or("image preparation revision exhausted")?;
-        image.prepared = Some(prepared);
-        image.preparation_revision = revision;
-        Ok(())
+        self.install_prepared(id, None, params)
     }
     /// Prepare a separate native GL expansion (palette correction or alpha
     /// fringe repair), retaining the raw RGBA and original software indices.
@@ -452,12 +440,25 @@ impl Assets {
         rgba: &[u8],
         params: upload::UploadParams,
     ) -> Result<(), &'static str> {
+        self.install_prepared(id, Some(rgba), params)
+    }
+    fn install_prepared(
+        &mut self,
+        id: ImageId,
+        rgba: Option<&[u8]>,
+        params: upload::UploadParams,
+    ) -> Result<(), &'static str> {
         let image = self
             .images
             .get_mut(id.0 as usize)
             .ok_or("invalid image handle")?;
-        let prepared = upload::prepare_rgba(image.width, image.height, rgba, params)
-            .map_err(|_| "invalid image preparation")?;
+        let prepared = upload::prepare_rgba(
+            image.width,
+            image.height,
+            rgba.unwrap_or(&image.rgba),
+            params,
+        )
+        .map_err(|_| "invalid image preparation")?;
         let revision = image
             .preparation_revision
             .checked_add(1)

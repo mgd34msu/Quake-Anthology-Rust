@@ -336,7 +336,8 @@ fn run() -> Result<(), String> {
         }
         println!(
             "{{\"event\":\"device_assignment\",\"device\":{},\"seat\":{}}}",
-            json_string(&format!("{device:?}")),
+            serde_json::to_string(&format!("{device:?}"))
+                .map_err(|e| format!("JSON report: {e}"))?,
             seat.index()
         );
     }
@@ -447,7 +448,8 @@ fn run() -> Result<(), String> {
             let player = &runtime.server.clients[client.0 as usize].player;
             println!(
                 "{{\"event\":\"map_loaded\",\"scope\":\"retail_map_walk_integration\",\"gameplay\":false,\"map\":{},\"movement\":\"{}\",\"trace_rules\":\"{}\",\"world\":{},\"client\":{},\"parsed_entities\":{},\"seat\":{index},\"spawned_clients\":{seat_count},\"module_entities_spawned\":0,\"collision_brushes\":{},\"spawn_entity\":{},\"spawn_fixture_fallback\":{},\"position\":{:?},\"angles\":{:?},\"mins\":{:?},\"maxs\":{:?},\"foreign_q1_box_limitation\":{},\"profile_consumed\":{},\"native_input_policy\":false}}",
-                json_string(&loaded.virtual_path),
+                serde_json::to_string(&loaded.virtual_path)
+                    .map_err(|e| format!("JSON report: {e}"))?,
                 rules.name(),
                 traces.name(),
                 loaded.render.world.0,
@@ -495,7 +497,7 @@ fn run() -> Result<(), String> {
         println!(
             "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"entry\":\"StartFrame\",\"scope\":\"frame_entries_only\",\"gameplay\":false}}",
             index + 1,
-            json_string(&spec.path),
+            serde_json::to_string(&spec.path).map_err(|e| format!("JSON report: {e}"))?,
             spec.rules.name()
         );
     }
@@ -503,7 +505,7 @@ fn run() -> Result<(), String> {
         println!(
             "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"q3\",\"role\":\"{:?}\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
             quakec_modules.len() + q2_modules.len() + index + 1,
-            json_string(&spec.path),
+            serde_json::to_string(&spec.path).map_err(|e| format!("JSON report: {e}"))?,
             spec.role,
         );
     }
@@ -511,7 +513,7 @@ fn run() -> Result<(), String> {
         println!(
             "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"role\":\"game\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
             quakec_modules.len() + index + 1,
-            json_string(&spec.path),
+            serde_json::to_string(&spec.path).map_err(|e| format!("JSON report: {e}"))?,
             spec.rules.name(),
         );
     }
@@ -566,7 +568,7 @@ fn run() -> Result<(), String> {
     if let Some(path) = &map_path {
         println!(
             "{{\"event\":\"world_frame_presented\",\"gameplay\":false,\"map\":{},\"renderer\":\"{}\",\"client_connected\":{},\"views\":{},\"visible_surfaces\":{},\"surfaces\":{},\"triangles\":{},\"rejected\":{},\"profile_consumed\":{},\"native_input_policy\":{}}}",
-            json_string(path),
+            serde_json::to_string(path).map_err(|e| format!("JSON report: {e}"))?,
             renderer_kind.name(),
             local_clients[0].is_some(),
             renderer.sample.stats.views,
@@ -881,27 +883,6 @@ fn run() -> Result<(), String> {
         audio.blocked,
     );
     Ok(())
-}
-
-fn json_string(value: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c <= '\u{1f}' => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 fn main() {

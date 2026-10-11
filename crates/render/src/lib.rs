@@ -30,3 +30,10 @@ pub struct BackendStats {
     /// Scene lighting awaits THE-862 world/material preparation.
     pub pending_lights: u32,
 }
+
+fn next_owner_id() -> Result<u64, &'static str> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| "render owner ids exhausted")
+}

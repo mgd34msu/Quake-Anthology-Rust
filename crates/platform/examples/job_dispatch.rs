@@ -70,9 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let caller = end_frame();
         workers.allocation_counts(&mut worker_counts)?;
         for counts in std::iter::once(caller).chain(worker_counts.iter().copied()) {
-            total.allocations += counts.allocations;
-            total.reallocations += counts.reallocations;
-            total.requested_bytes += counts.requested_bytes;
+            total += counts;
         }
     }
     if total != Counts::default() || jobs.iter().any(|job| job.calls != 660) {

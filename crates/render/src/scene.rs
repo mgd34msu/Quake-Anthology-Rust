@@ -5,8 +5,6 @@ use crate::world::{VisibleSurface, WorldId};
 use qa_core::primitives::Vec3;
 use std::cmp::Ordering as SortOrdering;
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
-static NEXT_FRONTEND: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
@@ -454,9 +452,7 @@ impl FrontEnd {
         {
             return Err("invalid scene capacity");
         }
-        let owner = NEXT_FRONTEND
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-            .map_err(|_| "scene owner ids exhausted")?;
+        let owner = crate::next_owner_id().map_err(|_| "scene owner ids exhausted")?;
         Ok(Self {
             lists: [
                 Some(CommandList::load(limits, owner, 0)),

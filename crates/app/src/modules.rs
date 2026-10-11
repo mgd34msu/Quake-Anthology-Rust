@@ -125,6 +125,17 @@ pub struct Export {
     pub arguments: [Argument; 9],
 }
 impl Export {
+    pub fn words(callback: CallbackId, words: &[u64]) -> Self {
+        let mut arguments = [Argument::Word(0); 9];
+        for (to, &from) in arguments.iter_mut().zip(words) {
+            *to = Argument::Word(from);
+        }
+        Self {
+            callback,
+            arguments,
+        }
+    }
+
     pub const fn clocked(callback: CallbackId) -> Self {
         let mut arguments = [Argument::Word(0); 9];
         arguments[0] = Argument::ClockMilliseconds;

@@ -14,9 +14,7 @@ impl Gate {
         }
         self.frames += 1;
         self.failed_frames += u64::from(counts.allocations != 0 || counts.reallocations != 0);
-        self.counts.allocations += counts.allocations;
-        self.counts.reallocations += counts.reallocations;
-        self.counts.requested_bytes += counts.requested_bytes;
+        self.counts += counts;
     }
 
     pub fn finish(self, scope: &str, worker_threads: usize) -> Result<(), String> {
