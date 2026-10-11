@@ -118,8 +118,8 @@ int main(int argc, char **argv) {
             cases.append(state >> 24)
     (args.output / "mips.bin").write_bytes(cases)
     run([args.output / "original-images", "mips", args.output / "mips.bin", args.output / "mips.raw"], "mips.log")
-    run(["cargo", "run", "--release", "-p", "qa-formats", "--example", "image_reference", "--", args.output], "rust-reference.log")
-    report = {"scope": "32 native indexed PCX fixtures and 100 seeded RGBA images, two mip filters; no renderer", "references": ["quake-2/ref_gl/gl_image.c:LoadPCX,GL_MipMap", "quake-iii-arena/code/renderer/tr_image.c:R_MipMap2"], "results": results}
+    run(["cargo", "run", "--release", "-p", "qa-render", "--example", "image_reference", "--", args.output], "rust-reference.log")
+    report = {"scope": "32 native indexed PCX fixtures and 100 seeded RGBA images, two production renderer mip filters", "references": ["quake-2/ref_gl/gl_image.c:LoadPCX,GL_MipMap", "quake-iii-arena/code/renderer/tr_image.c:R_MipMap2"], "results": results}
     (args.output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"output": str(args.output), "comparisons": 232, "passed": True}))
 

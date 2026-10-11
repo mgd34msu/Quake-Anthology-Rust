@@ -104,6 +104,7 @@ fn original_index_controls_cutouts_before_translation_and_fullbright_split() {
         fullbright: Some(224..=255),
         translation: Some(&translation),
         layer: PaletteLayer::Combined,
+        ..PaletteOptions::default()
     };
     let rgba = image.expand(&palette, &options).unwrap();
     assert_eq!(rgba.pixels, [19, 0, 0, 0, 240, 0, 0, 255, 18, 0, 0, 255]);
@@ -127,6 +128,31 @@ fn original_index_controls_cutouts_before_translation_and_fullbright_split() {
     assert_eq!(map.rows.len(), 64);
     assert_eq!(map.first_fullbright, 224);
 }
+#[test]
+fn native_fringe_uses_translated_neighbors_without_changing_layer_alpha() {
+    let image = IndexedImage {
+        width: 3,
+        height: 1,
+        indices: Cow::Borrowed(&[255, 17, 240]),
+        palette: None,
+    };
+    let palette = Palette(Box::new(std::array::from_fn(|i| [i as u8, 0, 0, 255])));
+    let mut translation = std::array::from_fn(|i| i as u8);
+    translation[255] = 19;
+    translation[17] = 230;
+    let options = PaletteOptions {
+        transparent_index: Some(255),
+        fullbright: Some(224..=255),
+        translation: Some(&translation),
+        layer: PaletteLayer::Ordinary,
+        fringe: AlphaFringe::NativeNeighbors,
+    };
+    assert_eq!(
+        image.expand(&palette, &options).unwrap().pixels,
+        [230, 0, 0, 0, 230, 0, 0, 0, 240, 0, 0, 0]
+    );
+}
+
 #[test]
 fn tga_orientation_and_rle_policy_follow_native_boundary_options() {
     let b = tga();
@@ -214,26 +240,6 @@ fn native_mip_levels_borrow_their_indices_and_preserve_palette_alpha() {
             .unwrap();
         assert_eq!(rgba.pixels[3], if i % 2 == 0 { 0 } else { 255 });
     }
-    let mut image = RgbaImage {
-        width: 8,
-        height: 8,
-        pixels: vec![255; 8 * 8 * 4],
-    };
-    for y in 0..8 {
-        for x in 0..4 {
-            image.pixels[(y * 8 + x) * 4 + 3] = 0;
-        }
-    }
-    let chain = image.mip_chain(MipFilter::Box, true).unwrap();
-    assert_eq!(
-        chain
-            .iter()
-            .map(|m| (m.width, m.height))
-            .collect::<Vec<_>>(),
-        [(4, 4), (2, 2)]
-    );
-    assert!(chain.iter().all(RgbaImage::mixed_cutout_mask));
-    assert_eq!(image.mip_chain(MipFilter::Box, false).unwrap().len(), 3);
 }
 #[test]
 fn wad_qpic_and_font_views_keep_the_source_alive_without_lump_copies() {

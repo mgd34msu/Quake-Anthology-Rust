@@ -6,7 +6,8 @@ use qa_core::primitives::{NameId, RuleSetId};
 use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
-    Colormap, DecodedImage, ImageFormat, MipTexture, Palette, PaletteOptions, decode,
+    AlphaFringe, Colormap, DecodedImage, ImageFormat, IndexedImage, MipTexture, Palette,
+    PaletteOptions, decode,
 };
 
 #[derive(Debug)]
@@ -430,15 +431,22 @@ impl<'a> Images<'a> {
                 .assets
                 .palette(palette)
                 .ok_or(ResourceError::Asset("missing image palette"))?;
-            let rgba = colors.rgba_table();
-            Some(upload::expand_indexed(
-                mip.levels[0],
-                mip.width,
-                mip.height,
-                &rgba,
-                Some(255),
-                upload::AlphaFringe::NativeNeighbors,
-            )?)
+            let image = IndexedImage {
+                width: mip.width,
+                height: mip.height,
+                indices: std::borrow::Cow::Borrowed(mip.levels[0]),
+                palette: None,
+            };
+            let rgba = image.expand(
+                &Palette(Box::new(colors.rgba_table())),
+                &PaletteOptions {
+                    transparent_index: Some(255),
+                    fringe: AlphaFringe::NativeNeighbors,
+                    ..PaletteOptions::default()
+                },
+            )?;
+            upload::validate_dimensions(rgba.width, rgba.height)?;
+            Some(rgba.pixels)
         } else {
             None
         };
@@ -531,15 +539,16 @@ impl<'a> Images<'a> {
                 .assets
                 .palette(palette)
                 .ok_or(ResourceError::Asset("missing image palette"))?;
-            let rgba = colors.rgba_table();
-            gl_pixels = Some(upload::expand_indexed(
-                &decoded.indices,
-                decoded.width,
-                decoded.height,
-                &rgba,
-                Some(255),
-                upload::AlphaFringe::NativeNeighbors,
-            )?);
+            let rgba = decoded.expand(
+                &Palette(Box::new(colors.rgba_table())),
+                &PaletteOptions {
+                    transparent_index: Some(255),
+                    fringe: AlphaFringe::NativeNeighbors,
+                    ..PaletteOptions::default()
+                },
+            )?;
+            upload::validate_dimensions(rgba.width, rgba.height)?;
+            gl_pixels = Some(rgba.pixels);
             self.assets.register_indexed_image(texture, palette)
         }
         .map_err(ResourceError::Asset)?;

@@ -1,5 +1,6 @@
 //! Headless comparison against extracted, unchanged original image routines.
-use qa_formats::image::{self, DecodedImage, ImageFormat, Lineage, MipFilter, RgbaImage};
+use qa_formats::image::{self, DecodedImage, ImageFormat, Lineage};
+use qa_render::assets::upload::{MipmapBuild, UploadParams, prepare_rgba};
 use std::{fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,15 +41,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let height = u32::from_le_bytes(input[at + 4..at + 8].try_into()?);
         at += 8;
         let len = (width * height * 4) as usize;
-        let image = RgbaImage {
-            width,
-            height,
-            pixels: input[at..at + len].to_vec(),
-        };
+        let pixels = &input[at..at + len];
         at += len;
-        for filter in [MipFilter::Box, MipFilter::Quake3Weighted] {
-            let result = image.mip(filter).map_err(|e| format!("{cases}: {e:?}"))?;
-            assert_eq!(result.pixels, expected[out..out + len / 4]);
+        for mipmaps in [MipmapBuild::LegacyBox, MipmapBuild::Weighted] {
+            let result = prepare_rgba(
+                width,
+                height,
+                pixels,
+                UploadParams {
+                    mipmaps,
+                    ..UploadParams::default()
+                },
+            )
+            .map_err(|e| format!("{cases}: {e:?}"))?;
+            assert_eq!(&*result.levels[1].rgba, &expected[out..out + len / 4]);
             out += len / 4;
         }
         cases += 1;

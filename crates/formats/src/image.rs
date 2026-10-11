@@ -1,13 +1,11 @@
 //! One decoded image path for world textures, models, HUD and menus.
 mod codecs;
 mod indexed;
-mod mip;
 mod raster;
 mod wad;
 
 use crate::{FormatError, read::Reader};
 pub use indexed::{Colormap, MipFormat, MipTexture};
-pub use mip::MipFilter;
 use std::{borrow::Cow, ops::RangeInclusive};
 pub use wad::{Wad, WadImage, WadLump};
 
@@ -103,12 +101,21 @@ pub enum PaletteLayer {
     Ordinary,
     Fullbright,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlphaFringe {
+    #[default]
+    KeepPalette,
+    /// GL_Upload8 priority/bounds, including cross-row left/right neighbors.
+    NativeNeighbors,
+}
+
 #[derive(Default)]
 pub struct PaletteOptions<'a> {
     pub transparent_index: Option<u8>,
     pub fullbright: Option<RangeInclusive<u8>>,
     pub translation: Option<&'a [u8; 256]>,
     pub layer: PaletteLayer,
+    pub fringe: AlphaFringe,
 }
 impl IndexedImage<'_> {
     pub fn expand(
@@ -121,10 +128,14 @@ impl IndexedImage<'_> {
             return Err(FormatError::InvalidRecordSize);
         }
         let mut pixels = Vec::with_capacity(count * 4);
-        for &original in self.indices.iter() {
-            let index = options
+        let translated = |original| {
+            options
                 .translation
-                .map_or(original, |map| map[usize::from(original)]);
+                .map_or(original, |map| map[usize::from(original)])
+        };
+        let width = self.width as usize;
+        for (i, &original) in self.indices.iter().enumerate() {
+            let index = translated(original);
             let full = options
                 .fullbright
                 .as_ref()
@@ -138,6 +149,23 @@ impl IndexedImage<'_> {
             let mut rgba = palette.0[usize::from(index)];
             if !visible {
                 rgba[3] = 0;
+            }
+            if options.transparent_index == Some(original)
+                && options.fringe == AlphaFringe::NativeNeighbors
+            {
+                let transparent = options.transparent_index;
+                let neighbor = if i > width && transparent != Some(self.indices[i - width]) {
+                    self.indices[i - width]
+                } else if i < count - width && transparent != Some(self.indices[i + width]) {
+                    self.indices[i + width]
+                } else if i > 0 && transparent != Some(self.indices[i - 1]) {
+                    self.indices[i - 1]
+                } else if i < count - 1 && transparent != Some(self.indices[i + 1]) {
+                    self.indices[i + 1]
+                } else {
+                    0
+                };
+                rgba[..3].copy_from_slice(&palette.0[usize::from(translated(neighbor))][..3]);
             }
             pixels.extend_from_slice(&rgba);
         }

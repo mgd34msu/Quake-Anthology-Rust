@@ -78,54 +78,6 @@ pub enum GammaCurve {
     BytePower,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AlphaFringe {
-    KeepPalette,
-    /// GL_Upload8 priority/bounds, including cross-row left/right neighbors.
-    NativeNeighbors,
-}
-
-/// Expand a GL palette independently of the original CPU transparency choice.
-/// GL_Upload8 performs this repair before resize, light scaling and mips.
-pub fn expand_indexed(
-    indices: &[u8],
-    width: u32,
-    height: u32,
-    palette: &[[u8; 4]; 256],
-    transparent: Option<u8>,
-    fringe: AlphaFringe,
-) -> Result<Box<[u8]>, UploadError> {
-    let bytes = byte_count(width, height)?;
-    let count = bytes / 4;
-    if indices.len() != count {
-        return Err(UploadError::PixelCount);
-    }
-    let width = width as usize;
-    let mut pixels = vec![0; bytes];
-    for (i, &index) in indices.iter().enumerate() {
-        let mut color = palette[index as usize];
-        if transparent == Some(index) {
-            color[3] = 0;
-            if fringe == AlphaFringe::NativeNeighbors {
-                let index = if i > width && transparent != Some(indices[i - width]) {
-                    indices[i - width]
-                } else if i < count - width && transparent != Some(indices[i + width]) {
-                    indices[i + width]
-                } else if i > 0 && transparent != Some(indices[i - 1]) {
-                    indices[i - 1]
-                } else if i < count - 1 && transparent != Some(indices[i + 1]) {
-                    indices[i + 1]
-                } else {
-                    0
-                };
-                color[..3].copy_from_slice(&palette[index as usize][..3]);
-            }
-        }
-        pixels[i * 4..i * 4 + 4].copy_from_slice(&color);
-    }
-    Ok(pixels.into_boxed_slice())
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightScale {
     pub rgb_lut: RgbLut,
@@ -331,10 +283,15 @@ pub fn prepare_rgba(
     })
 }
 
-fn byte_count(width: u32, height: u32) -> Result<usize, UploadError> {
+pub(crate) fn validate_dimensions(width: u32, height: u32) -> Result<(), UploadError> {
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err(UploadError::Dimensions);
     }
+    Ok(())
+}
+
+fn byte_count(width: u32, height: u32) -> Result<usize, UploadError> {
+    validate_dimensions(width, height)?;
     Ok(width as usize * height as usize * 4)
 }
 

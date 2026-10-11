@@ -1,7 +1,34 @@
+use qa_formats::image::{AlphaFringe, IndexedImage, Palette, PaletteOptions};
 use qa_render::assets::upload::{
-    AlphaFringe, ColorOrder, ExtentRound, GammaCurve, MipmapBuild, ResizeFilter, RgbLut,
-    UploadError, UploadExtent, UploadParams, expand_indexed, gamma_lut, light_scale, prepare_rgba,
+    ColorOrder, ExtentRound, GammaCurve, MipmapBuild, ResizeFilter, RgbLut, UploadError,
+    UploadExtent, UploadParams, gamma_lut, light_scale, prepare_rgba,
 };
+use std::borrow::Cow;
+
+fn expand_palette(
+    indices: &[u8],
+    width: u32,
+    height: u32,
+    palette: &[[u8; 4]; 256],
+    transparent_index: Option<u8>,
+    fringe: AlphaFringe,
+) -> Result<Vec<u8>, qa_formats::FormatError> {
+    IndexedImage {
+        width,
+        height,
+        indices: Cow::Borrowed(indices),
+        palette: None,
+    }
+    .expand(
+        &Palette(Box::new(*palette)),
+        &PaletteOptions {
+            transparent_index,
+            fringe,
+            ..PaletteOptions::default()
+        },
+    )
+    .map(|image| image.pixels)
+}
 
 fn gray(values: &[u8]) -> Vec<u8> {
     values.iter().flat_map(|&v| [v, v, v, 255]).collect()
@@ -39,7 +66,7 @@ fn indexed_native_neighbor_order_and_row_boundary_quirks() {
         (1, 1, vec![255], vec![0]),
     ] {
         let original = source.clone();
-        let pixels = expand_indexed(
+        let pixels = expand_palette(
             &source,
             width,
             height,
@@ -54,10 +81,10 @@ fn indexed_native_neighbor_order_and_row_boundary_quirks() {
         }
         assert_eq!(source, original);
     }
-    let keep = expand_indexed(&[255], 1, 1, &palette, Some(255), AlphaFringe::KeepPalette).unwrap();
+    let keep = expand_palette(&[255], 1, 1, &palette, Some(255), AlphaFringe::KeepPalette).unwrap();
     assert_eq!(&*keep, [255, 255, 255, 0]);
     let opaque =
-        expand_indexed(&[255], 1, 1, &palette, None, AlphaFringe::NativeNeighbors).unwrap();
+        expand_palette(&[255], 1, 1, &palette, None, AlphaFringe::NativeNeighbors).unwrap();
     assert_eq!(&*opaque, [255; 4]);
 }
 
@@ -764,7 +791,7 @@ fn original_image_upload_fixture_export() {
                     input.extend_from_slice(&color);
                 }
                 input.extend_from_slice(&indices);
-                let pixels = expand_indexed(
+                let pixels = expand_palette(
                     &indices,
                     width,
                     height,
