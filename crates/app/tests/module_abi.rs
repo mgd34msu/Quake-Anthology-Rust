@@ -1049,6 +1049,127 @@ fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
 }
 
 #[test]
+fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
+    use qa_formats::program::qvm::Opcode::*;
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 255 }),
+        (
+            1 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
+        (
+            1 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::Microsoft,
+            },
+        ),
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let view = console
+            .cvars
+            .register("_qa_module_number", Some("1"), 0, context().console)
+            .unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut memory = ModuleMemory::load(base, 256, &[]).unwrap();
+        memory
+            .write_string(base + 16, 64, b"_qa_module_number")
+            .unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        for (text, integer, float) in [
+            ("3.75", 3i32, 3.75f32),
+            ("-7.5", -7, -7.5),
+            ("1e3", 1, 1000.0),
+            ("no digits", 0, 0.0),
+            (" \t-42tail", -42, -42.0),
+            ("2147483647", i32::MAX, 2147483648.0),
+            ("-2147483648", i32::MIN, -2147483648.0),
+        ] {
+            console.cvars.force_write(view, text).unwrap();
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let arguments = [base + 16];
+            let mut call = Invocation {
+                services: &mut services,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                context: context(),
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments: &arguments,
+            };
+            assert_eq!(
+                Q3_SERVER.invoke(6, &mut call, &mut unknown),
+                Ok(integer as i64 as u64)
+            );
+            assert_eq!(
+                Q3_UI.invoke(4, &mut call, &mut unknown),
+                Ok(u64::from(float.to_bits()))
+            );
+            if base == 0 {
+                let mut vm = service_program::program(
+                    &[
+                        (Enter, 64),
+                        (Const, 16),
+                        (Arg, 8),
+                        (Const, -7),
+                        (Call, 0),
+                        (Leave, 64),
+                    ],
+                    memory.read(base, 80).unwrap(),
+                );
+                let mut calls = QvmCalls {
+                    services: &mut services,
+                    table: &Q3_SERVER,
+                    context: context(),
+                    platform_time: EventTime(0),
+                    command: &[],
+                    unknown: &mut unknown,
+                };
+                assert_eq!(vm.call(&mut calls, [0; 10], 128, false), Ok(integer));
+            }
+        }
+        memory
+            .write_string(base + 16, 64, b"_qa_missing_number")
+            .unwrap();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        let arguments = [base + 16];
+        let mut call = Invocation {
+            services: &mut services,
+            memory: &mut memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            addresses,
+            arguments: &arguments,
+        };
+        assert_eq!(Q3_SERVER.invoke(6, &mut call, &mut unknown), Ok(0));
+        assert!(
+            services
+                .cvars
+                .bind("_qa_missing_number", context().console)
+                .is_none()
+        );
+        assert_eq!(unknown.calls, 0);
+        assert!(runtime.server.events.is_empty());
+    }
+}
+
+#[test]
 fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
     for (base, addresses) in [
         (0, Addresses::Qvm { mask: 511 }),

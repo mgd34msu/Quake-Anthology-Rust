@@ -405,6 +405,8 @@ pub struct EngineCallTable {
     pub cvar_set: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub cvar_force: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub cvar_reset: fn(&mut EngineServices<'_>, View, bool) -> Result<(), CallError>,
+    pub cvar_number: fn(&EngineServices<'_>, View) -> Result<f32, CallError>,
+    pub cvar_integer: fn(&EngineServices<'_>, View) -> Result<i32, CallError>,
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub command_insert: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
@@ -515,6 +517,13 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     cvar_set: |s, v, t| s.cvar_set(v, t),
     cvar_force: |s, v, t| s.cvar_force(v, t),
     cvar_reset: |s, v, force| s.cvar_reset(v, force),
+    cvar_number: |s, view| s.cvars.numeric(view).map_err(|_| CallError::Cvar),
+    cvar_integer: |s, view| {
+        s.cvars
+            .read(view)
+            .map(|text| qa_console::numbers::integer(text.as_str()))
+            .map_err(|_| CallError::Cvar)
+    },
     command: |s, c, t| s.command(c, t),
     command_insert: |s, c, t| s.commands.insert(t, c).map_err(|_| CallError::Text),
     configstring: |s, m, i, t| s.configstring(m, i, t),

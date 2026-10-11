@@ -255,7 +255,7 @@ const fn server() -> CallTable {
     t.entries[3] = scalar!(q3_cvar_register);
     t.entries[4] = scalar!(q3_cvar_update);
     t.entries[5] = scalar!(cvar_set::<true, true>);
-    t.entries[6] = scalar!(cvar_integer);
+    t.entries[6] = scalar!(cvar_number::<true>);
     t.entries[7] = scalar!(cvar_string);
     t.entries[8] = scalar!(argc);
     t.entries[9] = scalar!(argv);
@@ -301,7 +301,7 @@ const fn ui() -> CallTable {
     t.entries[1] = scalar!(print);
     t.entries[2] = scalar!(milliseconds);
     t.entries[3] = scalar!(cvar_set::<true, true>);
-    t.entries[4] = scalar!(cvar_number);
+    t.entries[4] = scalar!(cvar_number::<false>);
     t.entries[5] = scalar!(cvar_string);
     t.entries[6] = scalar!(cvar_set_value);
     t.entries[7] = scalar!(cvar_reset);
@@ -476,7 +476,7 @@ const fn quakec() -> CallTable {
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
     t.entries[41] = scalar!(qc_point_contents, Some(vector));
     t.entries[43] = scalar!(absolute::<false>, Some(scalar));
-    t.entries[45] = scalar!(cvar_number, Some(strings));
+    t.entries[45] = scalar!(cvar_number::<false>, Some(strings));
     t.entries[46] = scalar!(command_append, Some(strings.void()));
     t.entries[51] = vector!(vector_angles, vector);
     t.entries[72] = scalar!(
@@ -1035,13 +1035,6 @@ fn publish_cvar(
         result => result,
     }
 }
-fn cvar_integer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {
-        return Ok(0);
-    };
-    let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
-    Ok(qa_console::numbers::integer(text.as_str()) as u32 as u64)
-}
 fn snap_vector(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     if c.null_pointer(0)? {
         return Err(CallError::Memory);
@@ -1058,15 +1051,15 @@ fn snap_vector(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     c.memory.write_vec3(address, vector)?;
     Ok(0)
 }
-fn cvar_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn cvar_number<const INTEGER: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {
         return Ok(0);
     };
-    Ok(c.services
-        .cvars
-        .numeric(view)
-        .map_err(|_| CallError::Cvar)?
-        .to_bits() as u64)
+    Ok(if INTEGER {
+        (ENGINE_CALLS.cvar_integer)(c.services, view)? as i64 as u64
+    } else {
+        (ENGINE_CALLS.cvar_number)(c.services, view)?.to_bits() as u64
+    })
 }
 fn cvar_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(1)?;

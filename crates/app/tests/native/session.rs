@@ -653,7 +653,10 @@ fn native_area_connection_uses_shared_topology_through_session_dispatch() {
         let Program::Native { vm, .. } = &mut request.program else {
             panic!()
         };
-        vm.process.memory_mut().unwrap()[at..at + code.len()].copy_from_slice(&code);
+        let cvar_name = image.base + 0x1700;
+        let memory = vm.process.memory_mut().unwrap();
+        memory[at..at + code.len()].copy_from_slice(&code);
+        memory[0x1700..0x1712].copy_from_slice(b"_qa_module_number\0");
         let mut host = FrameHost::load_modules(
             Console::new(Context::default()).unwrap(),
             runtime,
@@ -673,6 +676,37 @@ fn native_area_connection_uses_shared_topology_through_session_dispatch() {
                 },
             )
             .unwrap();
+        let number = host
+            .console
+            .cvars
+            .register(
+                "_qa_module_number",
+                Some("1"),
+                0,
+                Context {
+                    source: RuleSetId::Quake3,
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        for (text, expected) in [
+            ("-7.5", -7i32),
+            ("2147483647", i32::MAX),
+            ("-2147483648", i32::MIN),
+            ("1e3", 1),
+        ] {
+            host.console.cvars.force_write(number, text).unwrap();
+            let mut export = Export::clocked(CallbackId(0));
+            export.arguments[0] = Argument::Word(6);
+            export.arguments[1] = Argument::Word(cvar_name);
+            host.call_module_export(ModuleId(7), export, ThinkTime::Milliseconds(0))
+                .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(7)).unwrap().last_result,
+                Some(ModuleResult::Native(expected as i64 as u64))
+            );
+            assert_eq!(host.module_counts(ModuleId(7)).unwrap().traps, 0);
+        }
         let live_before = host.runtime.server.entities.len();
         for (open, ignore, first, second, expected) in [
             (false, "0", 0, 1, 0),
