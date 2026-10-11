@@ -72,8 +72,8 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     server.clients[0].player.powerup_until[15] = 100.0;
     server.clients[0].hud.item_counts[4] = 25;
     server.clients[0].hud.powerup_until[15] = 100.0;
-    server.clients[0].hud.owned_weapons[0] = 1 << 7;
-    assert_eq!(server.clients[0].hud.owned_weapons.len(), 1);
+    server.clients[0].hud.owned_weapons.insert(7);
+    assert_eq!(server.clients[0].hud.owned_weapons.words().len(), 1);
     server.clients[1].player.weapon = WeaponId(3);
     assert_eq!(server.clients[1].player.inventory[4], 0);
     assert_eq!(server.clients[0].player.weapon, WeaponId(0));
@@ -84,7 +84,7 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     );
     let memory = server.clients[0].player.inventory.as_ptr();
     let timers = server.clients[0].player.powerup_until.as_ptr();
-    let hud_weapons = server.clients[0].hud.owned_weapons.as_ptr();
+    let hud_weapons = server.clients[0].hud.owned_weapons.words().as_ptr();
     let old_entity = server.clients[0].entity;
     assert!(server.disconnect(first));
     assert_eq!(
@@ -96,8 +96,11 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     assert_eq!(server.clients[0].player.powerup_until.as_ptr(), timers);
     assert_eq!(server.clients[0].player.item_acquired_at[4], 0.0);
     assert_eq!(server.clients[0].player.powerup_until[15], 0.0);
-    assert_eq!(server.clients[0].hud.owned_weapons.as_ptr(), hud_weapons);
-    assert_eq!(server.clients[0].hud.owned_weapons[0], 0);
+    assert_eq!(
+        server.clients[0].hud.owned_weapons.words().as_ptr(),
+        hud_weapons
+    );
+    assert!(server.clients[0].hud.owned_weapons.next_set(0).is_none());
     assert_eq!(server.clients[0].hud.item_counts[4], 0);
     assert_eq!(server.clients[0].hud.powerup_until[15], 0.0);
     assert_ne!(server.clients[0].entity, old_entity);

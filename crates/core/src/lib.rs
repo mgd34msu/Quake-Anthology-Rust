@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod bits;
 pub mod checksum;
 pub mod events;
 pub mod heap;

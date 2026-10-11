@@ -1,3 +1,4 @@
+use qa_core::bits::BitSet;
 use qa_core::primitives::{
     Body, BodyAttachment, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId,
     EntityPose, ModelRules, ModuleId, NameId, NativeEntity, ThinkTime, Vec3,
@@ -244,32 +245,14 @@ pub struct EntityTable {
     last_owner: Box<[ModuleId]>,
     never_free: Box<[bool]>,
     /// One means dead, including generation-retired slots and unused tail bits.
-    free_bits: Box<[u64]>,
-    target_dirty: Box<[u64]>,
+    free_bits: BitSet,
+    target_dirty: BitSet,
     target_dirty_count: usize,
     reserved: usize,
     live_count: usize,
     /// Fixed load capacity, ordered by first attachment insertion. Updating an
     /// attachment retains its position; detach and reattach moves it to the end.
     attachment_order: Vec<EntityId>,
-}
-
-fn next_bit(words: &[u64], start: usize, capacity: usize, inverse: bool) -> Option<usize> {
-    if start >= capacity {
-        return None;
-    }
-    let mut word = start / 64;
-    let mut mask = u64::MAX << (start % 64);
-    while word < words.len() {
-        let bits = if inverse { !words[word] } else { words[word] } & mask;
-        if bits != 0 {
-            let slot = word * 64 + bits.trailing_zeros() as usize;
-            return (slot < capacity).then_some(slot);
-        }
-        word += 1;
-        mask = u64::MAX;
-    }
-    None
 }
 
 impl EntityTable {
@@ -281,9 +264,9 @@ impl EntityTable {
         if reserved > capacity {
             return Err(TableError::ReservedSlots);
         }
-        let mut free_bits = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
+        let mut free_bits = BitSet::filled(capacity);
         for slot in 0..reserved {
-            free_bits[slot / 64] &= !(1 << (slot % 64));
+            free_bits.remove(slot);
         }
         Ok(Self {
             columns: EntityColumns::new(capacity),
@@ -293,7 +276,7 @@ impl EntityTable {
             last_owner: vec![ModuleId::default(); capacity].into_boxed_slice(),
             never_free: vec![false; capacity].into_boxed_slice(),
             free_bits,
-            target_dirty: vec![0; capacity.div_ceil(64)].into_boxed_slice(),
+            target_dirty: BitSet::empty(capacity),
             target_dirty_count: 0,
             reserved,
             live_count: reserved,
@@ -314,10 +297,7 @@ impl EntityTable {
     }
 
     fn mark_target_dirty(&mut self, slot: usize) {
-        let word = slot / 64;
-        let bit = 1 << (slot % 64);
-        if self.target_dirty[word] & bit == 0 {
-            self.target_dirty[word] |= bit;
+        if self.target_dirty.insert(slot) {
             self.target_dirty_count += 1;
         }
     }
@@ -326,8 +306,8 @@ impl EntityTable {
         if self.target_dirty_count == 0 {
             return None;
         }
-        let slot = next_bit(&self.target_dirty, start, self.capacity(), false)?;
-        self.target_dirty[slot / 64] &= !(1 << (slot % 64));
+        let slot = self.target_dirty.next_set(start)?;
+        self.target_dirty.remove(slot);
         self.target_dirty_count -= 1;
         Some(slot)
     }
@@ -420,7 +400,7 @@ impl EntityTable {
 
     pub fn id_at(&self, slot: usize) -> Option<EntityId> {
         let generation = *self.generations.get(slot)?;
-        (self.free_bits[slot / 64] & (1 << (slot % 64)) == 0).then_some(EntityId {
+        (!self.free_bits.contains(slot)).then_some(EntityId {
             slot: slot as u32,
             generation,
         })
@@ -437,7 +417,7 @@ impl EntityTable {
     /// Inclusive source-slot cursor. The returned handle owns no table borrow,
     /// so a callback can mutate lifetimes before the next ascending query.
     pub fn next_active(&self, start: usize) -> Option<EntityId> {
-        let slot = next_bit(&self.free_bits, start, self.capacity(), true)?;
+        let slot = self.free_bits.next_clear(start)?;
         Some(EntityId {
             slot: slot as u32,
             generation: self.generations[slot],
@@ -461,7 +441,7 @@ impl EntityTable {
         self.clear_columns(slot);
         self.generations[slot] += 1;
         if self.generations[slot] == u32::MAX {
-            self.free_bits[slot / 64] |= 1 << (slot % 64);
+            self.free_bits.insert(slot);
             self.live_count -= 1;
             return None;
         }
@@ -481,7 +461,7 @@ impl EntityTable {
         policy: AllocationPolicy,
     ) -> Option<Allocation> {
         let mut start = self.reserved;
-        while let Some(slot) = next_bit(&self.free_bits, start, self.capacity(), false) {
+        while let Some(slot) = self.free_bits.next_set(start) {
             start = slot + 1;
             if self.generations[slot] == u32::MAX
                 || !self.reuse[slot].eligible(now, self.freed_at[slot])
@@ -515,10 +495,9 @@ impl EntityTable {
         policy: AllocationPolicy,
         displaced: Option<EntityId>,
     ) -> Allocation {
-        if self.free_bits[slot / 64] & (1 << (slot % 64)) != 0 {
+        if self.free_bits.remove(slot) {
             self.live_count += 1;
         }
-        self.free_bits[slot / 64] &= !(1 << (slot % 64));
         self.clear_columns(slot);
         self.columns.owner[slot] = owner;
         self.last_owner[slot] = owner;
@@ -550,7 +529,7 @@ impl EntityTable {
         if slot < self.reserved || self.never_free[slot] {
             return false;
         }
-        self.free_bits[slot / 64] |= 1 << (slot % 64);
+        self.free_bits.insert(slot);
         self.live_count -= 1;
         self.freed_at[slot] = Some(self.reuse[slot].freetime(now));
         self.clear_columns(slot);
@@ -613,10 +592,7 @@ mod tests {
         assert!(area.unlink(dying));
         assert!(table.release(dying, ThinkTime::Seconds(3.0)));
         assert_eq!(table.generations[last.slot as usize], u32::MAX);
-        assert_ne!(
-            table.free_bits[last.slot as usize / 64] & (1 << (last.slot % 64)),
-            0
-        );
+        assert!(table.free_bits.contains(last.slot as usize));
         assert!(table.id_at(last.slot as usize).is_none());
         assert!(table.active().all(|id| id.slot != last.slot));
         assert!(table.release(replacement.id, ThinkTime::Seconds(3.0)));
@@ -674,7 +650,7 @@ mod tests {
         let client = table.id_at(1).ok_or("client")?;
         assert!(table.reset_client(client).is_none());
         assert!(table.resolve(client).is_none());
-        assert_ne!(table.free_bits[0] & (1 << 1), 0);
+        assert!(table.free_bits.contains(1));
         assert_eq!(table.active().map(|id| id.slot).collect::<Vec<_>>(), [0]);
         assert!(
             table

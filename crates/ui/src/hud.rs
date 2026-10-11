@@ -110,9 +110,11 @@ impl HudBindings {
                 };
                 *out = count;
                 state.item_acquired_at[index] = acquired_at;
-                let mask = 1 << (index % 64);
-                let word = &mut state.owned_items[index / 64];
-                *word = (*word & !mask) | if count > 0 { mask } else { 0 };
+                if count > 0 {
+                    state.owned_items.insert(index);
+                } else {
+                    state.owned_items.remove(index);
+                }
             }
             HudChange::Weapon(weapon) => state.weapon = weapon,
             HudChange::Powerup { slot, until } => {
@@ -127,16 +129,15 @@ impl HudBindings {
                 return true;
             }
         }
-        state.owned_weapons.fill(0);
+        state.owned_weapons.clear();
         for (weapon, binding) in self.weapons.iter().enumerate() {
             if let Some(binding) = binding
                 && state
                     .item_counts
                     .get(binding.item.0 as usize)
                     .is_some_and(|&count| count > 0)
-                && let Some(word) = state.owned_weapons.get_mut(weapon / 64)
             {
-                *word |= 1 << (weapon % 64);
+                state.owned_weapons.insert(weapon);
             }
         }
         state.ammo = self

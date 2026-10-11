@@ -920,8 +920,8 @@ pub struct HudState {
     pub score: i32,
     pub item_counts: Box<[i32]>,
     pub item_acquired_at: Box<[f64]>,
-    pub owned_items: Box<[u64]>,
-    pub owned_weapons: Box<[u64]>,
+    pub owned_items: crate::bits::BitSet,
+    pub owned_weapons: crate::bits::BitSet,
     pub powerup_until: Box<[f64]>,
     pub collectibles: u64,
     pub layout: NameId,
@@ -936,8 +936,8 @@ impl HudState {
             values: ValueBank::load(values),
             item_counts: vec![0; items].into_boxed_slice(),
             item_acquired_at: vec![0.0; items].into_boxed_slice(),
-            owned_items: vec![0; items.div_ceil(64)].into_boxed_slice(),
-            owned_weapons: vec![0; weapons.div_ceil(64)].into_boxed_slice(),
+            owned_items: crate::bits::BitSet::empty(items),
+            owned_weapons: crate::bits::BitSet::empty(weapons),
             powerup_until: vec![0.0; powerups].into_boxed_slice(),
             ..Self::default()
         }
@@ -962,8 +962,8 @@ impl HudState {
         self.values.clear();
         self.item_counts.fill(0);
         self.item_acquired_at.fill(0.0);
-        self.owned_items.fill(0);
-        self.owned_weapons.fill(0);
+        self.owned_items.clear();
+        self.owned_weapons.clear();
         self.powerup_until.fill(0.0);
         *self = Self {
             values: std::mem::take(&mut self.values),

@@ -281,14 +281,8 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
             hud.powerup_until[loadouts[slot % 3].timer.0 as usize],
             slot as f64 + 100.0
         );
-        assert_ne!(
-            hud.owned_items[highest_item.0 as usize / 64] & (1 << (highest_item.0 % 64)),
-            0
-        );
-        assert_ne!(
-            hud.owned_weapons[player.weapon.0 as usize / 64] & (1 << (player.weapon.0 % 64)),
-            0
-        );
+        assert!(hud.owned_items.contains(highest_item.0 as usize));
+        assert!(hud.owned_weapons.contains(player.weapon.0 as usize));
         let weapon = host.runtime.catalog.registry.weapon(player.weapon).unwrap();
         assert_eq!(hud.ammo, player.inventory[weapon.ammo.unwrap().0 as usize]);
     }
