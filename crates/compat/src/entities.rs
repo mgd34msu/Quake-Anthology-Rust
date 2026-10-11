@@ -704,11 +704,12 @@ impl EntityProjection {
         services: &EngineServices<'_>,
         name: &[u8],
     ) -> Result<(CollisionShape, Bounds), CallError> {
-        let index = std::str::from_utf8(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
-            .ok()
-            .and_then(|n| n.parse::<u32>().ok())
-            .filter(|&index| index != 0)
-            .ok_or(CallError::Geometry)?;
+        let suffix = std::str::from_utf8(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
+            .map_err(|_| CallError::Geometry)?;
+        let index = qa_console::numbers::integer(suffix) as u32;
+        if index == 0 {
+            return Err(CallError::Geometry);
+        }
         let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
         let bounds = services
             .geometry

@@ -399,7 +399,7 @@ impl<H: Host> Console<H> {
         let time = if args.get(2).is_empty() {
             context.event_time.unwrap_or_else(|| host.input_time())
         } else {
-            EventTime::from_milliseconds(args.get(2).parse::<u64>().unwrap_or(0))
+            EventTime::from_milliseconds(crate::numbers::integer(args.get(2)) as u32 as u64)
         };
         host.input()
             .button(context.seat, action, name.starts_with('+'), key, time);

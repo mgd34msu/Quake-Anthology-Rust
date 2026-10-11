@@ -490,11 +490,10 @@ fn cloud_intersection(direction: Vec3, sphere: CloudSphere) -> Option<(f32, [f32
     }
     let mut intersection = direction * p;
     intersection.0[2] += radius;
-    let norm = math::length(intersection);
+    let norm = math::normalize(&mut intersection);
     if !norm.is_finite() || norm <= 0.0 {
         return None;
     }
-    intersection = intersection / norm;
     let uv = [
         intersection.0[0].clamp(-1.0, 1.0).acos(),
         intersection.0[1].clamp(-1.0, 1.0).acos(),

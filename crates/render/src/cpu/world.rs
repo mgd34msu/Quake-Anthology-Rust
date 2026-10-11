@@ -368,7 +368,9 @@ struct WorldPrepare {
     catalog: Arc<WorldCatalog>,
     rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
     rgba_colors: Box<[super::rgba::ProductColorCache]>,
-    sky_states: Box<[super::sky::SkyState]>,
+    sky_states: Box<[crate::sky::SkyClip]>,
+    sky_touched: qa_core::stamps::StampSet,
+    sky_drawn: qa_core::stamps::StampSet,
     sky_stages: Box<[Option<PreparedStage>]>,
     draws: Box<[PreparedDraw]>,
     reference_base: u32,
@@ -770,9 +772,11 @@ impl WorldRaster {
             rgba_colors: vec![super::rgba::ProductColorCache::default(); rgba_count]
                 .into_boxed_slice(),
             sky_states: (0..sky_state_count)
-                .map(|_| super::sky::SkyState::default())
+                .map(|_| crate::sky::SkyClip::new())
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
+            sky_touched: qa_core::stamps::StampSet::new(sky_state_count),
+            sky_drawn: qa_core::stamps::StampSet::new(sky_state_count),
             sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
             draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
             reference_base: 0,
@@ -807,6 +811,7 @@ impl WorldRaster {
             + std::mem::size_of_val(&*prepare.rgba_prepared)
             + std::mem::size_of_val(&*prepare.rgba_colors)
             + std::mem::size_of_val(&*prepare.sky_states)
+            + (prepare.sky_touched.len() + prepare.sky_drawn.len()) * std::mem::size_of::<u32>()
             + std::mem::size_of_val(&*prepare.sky_stages)
             + std::mem::size_of_val(&*prepare.draws);
         Ok(Self {
@@ -1002,9 +1007,8 @@ impl WorldPrepare {
         assets: &Assets,
         stats: &mut crate::BackendStats,
     ) {
-        for batch in &mut self.sky_states {
-            batch.clear();
-        }
+        self.sky_touched.begin();
+        self.sky_drawn.begin();
         if !camera.rgb() {
             return;
         }
@@ -1041,10 +1045,12 @@ impl WorldPrepare {
         camera: &Camera,
         stats: &mut crate::BackendStats,
     ) {
-        if !self.sky_states[material.0 as usize]
-            .clip
-            .add_polygon(&points, camera.refdef.origin)
-        {
+        let index = material.0 as usize;
+        let clip = &mut self.sky_states[index];
+        if !self.sky_touched.test_and_set(index) {
+            clip.clear();
+        }
+        if !clip.add_polygon(&points, camera.refdef.origin) {
             self.geometry.reject(stats);
         }
     }
@@ -1084,11 +1090,10 @@ impl WorldPrepare {
         let Some(batch) = self.sky_states.get_mut(id.0 as usize) else {
             return external;
         };
-        if batch.prepared {
+        if !self.sky_touched.contains(id.0 as usize) || self.sky_drawn.test_and_set(id.0 as usize) {
             return PreparedDraw::Skip;
         }
-        batch.prepared = true;
-        let mut bounds = *batch.clip.bounds();
+        let mut bounds = *batch.bounds();
         if !bounds.iter().any(|bound| bound.visible()) {
             return PreparedDraw::Skip;
         }

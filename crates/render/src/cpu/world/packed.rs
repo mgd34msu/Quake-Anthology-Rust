@@ -73,8 +73,13 @@ fn scalar_span(
         let index = buffers.offset(width, x, span.y);
         if zi <= 0.0
             || !zi.is_finite()
-            || !(zi > buffers.inverse_depth[index]
-                || (zi == buffers.inverse_depth[index] && draw_rank >= buffers.depth_ranks[index]))
+            || !super::super::depth_passes(
+                crate::assets::DepthFunc::Lequal,
+                zi,
+                buffers.inverse_depth[index],
+                draw_rank,
+                buffers.depth_ranks[index],
+            )
         {
             continue;
         }

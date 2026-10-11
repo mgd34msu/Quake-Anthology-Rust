@@ -6,7 +6,10 @@ use super::{
     tree::BrushScratch,
 };
 use qa_core::{
-    math::{AngleBasis, angle_vectors_radians, radians_from_degrees, radians_from_degrees_f32},
+    math::{
+        AngleBasis, angle_vectors_radians, inverse_transform_point, radians_from_degrees,
+        radians_from_degrees_f32,
+    },
     primitives::{
         Body, Bounds, ClipNode, CollisionShape, EntityId, GeometryId, ModelRotation, ModelRules,
         Plane, SurfaceId, Vec3,
@@ -413,8 +416,8 @@ impl CollisionStore {
             let basis = basis(angles, rules.rotation);
             let matrix = [basis.forward, -basis.right, basis.up];
             if rules.rotation == ModelRotation::TransposeBasis {
-                local.start = rotate(local.start, matrix);
-                local.end = rotate(local.end, matrix);
+                local.start = inverse_transform_point(Vec3::default(), matrix, local.start);
+                local.end = inverse_transform_point(Vec3::default(), matrix, local.end);
             } else {
                 local.start = point_rotate(local.start, basis);
                 local.end = point_rotate(local.end, basis);
@@ -435,7 +438,7 @@ impl CollisionStore {
                 let transpose = std::array::from_fn(|row| {
                     Vec3(std::array::from_fn(|column| matrix[column].0[row]))
                 });
-                rotate(trace.plane.normal, transpose)
+                inverse_transform_point(Vec3::default(), transpose, trace.plane.normal)
             };
         }
         trace.end = if rules.rotation == ModelRotation::TranslationOnly {
@@ -502,15 +505,14 @@ fn basis(angles: Vec3, rotation: ModelRotation) -> AngleBasis {
 }
 
 fn point_rotate(point: Vec3, basis: AngleBasis) -> Vec3 {
-    Vec3([
-        point.dot(basis.forward),
-        -point.dot(basis.right),
-        point.dot(basis.up),
-    ])
-}
-
-fn rotate(point: Vec3, matrix: [Vec3; 3]) -> Vec3 {
-    Vec3(matrix.map(|row| row.dot(point)))
+    // Native point-contents wrappers negate after the dot, preserving zero signs.
+    let mut projected = inverse_transform_point(
+        Vec3::default(),
+        [basis.forward, basis.right, basis.up],
+        point,
+    );
+    projected.0[1] = -projected.0[1];
+    projected
 }
 
 #[cfg(test)]

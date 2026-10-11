@@ -36,29 +36,6 @@ impl SkyDefinition {
     }
 }
 
-pub(super) struct SkyState {
-    pub clip: crate::sky::SkyClip,
-    pub prepared: bool,
-}
-#[expect(
-    clippy::derivable_impls,
-    reason = "Keep the sky reset fields explicit alongside SkyClip::new"
-)]
-impl Default for SkyState {
-    fn default() -> Self {
-        Self {
-            clip: crate::sky::SkyClip::new(),
-            prepared: false,
-        }
-    }
-}
-impl SkyState {
-    pub fn clear(&mut self) {
-        self.clip.clear();
-        self.prepared = false;
-    }
-}
-
 pub(super) const CLOUD_BOUNDARIES: usize = 5 * 8 * 8 * 2;
 pub(super) const BOX_BOUNDARIES: usize = 6;
 pub(super) const SKY_EDGES: usize = CLOUD_BOUNDARIES * 9 + BOX_BOUNDARIES * 10;

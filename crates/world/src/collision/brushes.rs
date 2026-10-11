@@ -218,13 +218,11 @@ impl<'a> BrushWork<'a> {
         if point_shortcut && self.support_point {
             return plane.distance;
         }
-        let offset = Vec3(std::array::from_fn(|axis| {
-            if plane.normal.0[axis] < 0.0 {
-                self.maxs.0[axis]
-            } else {
-                self.mins.0[axis]
-            }
-        }));
+        let offset = Bounds {
+            mins: self.mins,
+            maxs: self.maxs,
+        }
+        .corner(plane.normal, false);
         plane.distance - offset.dot(plane.normal)
     }
 
@@ -255,10 +253,7 @@ pub(super) fn position_brush(
     if work.query.rules.position == PositionRules::AxialPrefix
         && let Some(bounds) = bounds
     {
-        if (0..3).any(|axis| {
-            work.bounds.mins.0[axis] > bounds.maxs.0[axis]
-                || work.bounds.maxs.0[axis] < bounds.mins.0[axis]
-        }) {
+        if !work.bounds.overlaps(bounds) {
             return;
         }
         first = 6;
