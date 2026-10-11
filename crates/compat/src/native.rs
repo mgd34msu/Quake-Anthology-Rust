@@ -91,7 +91,7 @@ pub struct Vm {
     cvars: Option<crate::cvars::NativeCvars>,
     native_command: Option<crate::command::NativeCommand>,
     native_configs: Option<crate::configstrings::NativeConfigs>,
-    resources: Option<[crate::services::ResourceRange; 3]>,
+    resources: Option<[qa_core::primitives::IndexSpan; 3]>,
     entities: Option<EntityProjection>,
     player_stats: Option<crate::players::PlayerStats>,
     pmove: Option<crate::pmove::Pmove>,
@@ -110,7 +110,7 @@ pub struct NativeCalls<'a, 'engine> {
     pub unknown: &'a mut UnknownCalls,
 }
 impl Vm {
-    pub fn resource_ranges(&self) -> Option<&[crate::services::ResourceRange; 3]> {
+    pub fn resource_ranges(&self) -> Option<&[qa_core::primitives::IndexSpan; 3]> {
         self.resources.as_ref()
     }
     /// Map a checked, bound image and register its ordinary exports. Import,

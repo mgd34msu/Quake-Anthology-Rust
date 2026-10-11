@@ -189,7 +189,7 @@ pub struct EntityProjection {
     table_offset: usize,
     wide_stride: bool,
     layout: EntityLayout,
-    models: crate::services::ResourceRange,
+    models: qa_core::primitives::IndexSpan,
     model_handles: Box<[Option<CachedModel>]>,
     owner: Option<ModuleId>,
     bindings: Box<[Option<Binding>]>,
@@ -200,14 +200,14 @@ impl EntityProjection {
         table_offset: usize,
         wide_stride: bool,
         layout: EntityLayout,
-        models: crate::services::ResourceRange,
+        models: qa_core::primitives::IndexSpan,
     ) -> Self {
         Self {
             table_offset,
             wide_stride,
             layout,
             models,
-            model_handles: vec![None; models.count].into_boxed_slice(),
+            model_handles: vec![None; models.count as usize].into_boxed_slice(),
             owner: None,
             bindings: vec![None; MAX_ENTITIES].into_boxed_slice(),
             leaves: [0; 128],
@@ -703,9 +703,10 @@ impl EntityProjection {
             .model_handles
             .get_mut(model as usize)
             .ok_or(CallError::Geometry)?;
-        let (registered, revision) = services
-            .storage
-            .configstring(context.module, self.models.first + model as usize)?;
+        let (registered, revision) = services.storage.configstring(
+            context.module,
+            self.models.get(model as usize).ok_or(CallError::Geometry)?,
+        )?;
         let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
         if name.is_none()
             && let Some(entry) =

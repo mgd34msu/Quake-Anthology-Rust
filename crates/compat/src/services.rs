@@ -11,8 +11,8 @@ use qa_core::{
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
-        GeometryId, ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity, PrintKind,
-        SoundEvent, UserCmd, Vec3,
+        GeometryId, IndexSpan, ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity,
+        PrintKind, SoundEvent, UserCmd, Vec3,
     },
     text::FixedText,
 };
@@ -66,23 +66,6 @@ struct ConfigString {
     revision: u64,
     resource_name: Option<NameId>,
 }
-/// Native ordinals are relative to a caller-selected configuration range.
-#[derive(Clone, Copy)]
-pub struct ResourceRange {
-    pub first: usize,
-    pub count: usize,
-}
-impl ResourceRange {
-    pub fn contains(self, ordinal: usize) -> bool {
-        ordinal
-            .checked_sub(self.first)
-            .is_some_and(|index| index < self.count)
-    }
-    pub fn ordinal(self, index: usize) -> Option<usize> {
-        (index < self.count).then_some(())?;
-        self.first.checked_add(index)
-    }
-}
 /// Native Q2 resource names select player-relative or explicit file paths.
 pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, CallError> {
     if name.is_empty() || name.starts_with(b"*") {
@@ -99,13 +82,12 @@ pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, CallError> {
 }
 struct ConfigRange {
     module: ModuleId,
-    first: usize,
-    count: usize,
+    span: IndexSpan,
     message: Box<[u8]>,
     written: usize,
     revision: u64,
     entity_text: Option<EntityText>,
-    sounds: Option<ResourceRange>,
+    sounds: Option<IndexSpan>,
 }
 struct EntityText {
     bytes: std::sync::Arc<[u8]>,
@@ -145,8 +127,10 @@ impl ServiceStorage {
             }
             ranges.push(ConfigRange {
                 module,
-                first: total,
-                count,
+                span: IndexSpan {
+                    first: u32::try_from(total).map_err(|_| CallError::Capacity)?,
+                    count: u32::try_from(count).map_err(|_| CallError::Capacity)?,
+                },
                 message: vec![0; 0x8000].into_boxed_slice(),
                 written: 0,
                 revision: 0,
@@ -185,23 +169,14 @@ impl ServiceStorage {
     }
     fn config(&self, module: ModuleId, ordinal: usize) -> Result<usize, CallError> {
         let range = self.range(module).ok_or(CallError::ConfigString)?;
-        ResourceRange {
-            first: range.first,
-            count: range.count,
-        }
-        .ordinal(ordinal)
-        .ok_or(CallError::ConfigString)
+        range.span.get(ordinal).ok_or(CallError::ConfigString)
     }
-    fn check_range(&self, module: ModuleId, resource: ResourceRange) -> Result<usize, CallError> {
+    fn check_range(&self, module: ModuleId, resource: IndexSpan) -> Result<usize, CallError> {
         let range = self.range(module).ok_or(CallError::ConfigString)?;
-        let end = resource
-            .first
-            .checked_add(resource.count)
-            .ok_or(CallError::ConfigString)?;
-        if end > range.count {
+        if !resource.fits(range.span.count as usize) {
             return Err(CallError::ConfigString);
         }
-        Ok(range.first + resource.first)
+        Ok(range.span.first as usize + resource.first as usize)
     }
     pub fn bind_entity_text(
         &mut self,
@@ -273,7 +248,7 @@ impl ServiceStorage {
     pub fn bind_sound_bank(
         &mut self,
         module: ModuleId,
-        sounds: ResourceRange,
+        sounds: IndexSpan,
         bank: std::sync::Arc<qa_audio::Bank>,
     ) -> Result<(), CallError> {
         if sounds.count == 0 {
@@ -289,7 +264,7 @@ impl ServiceStorage {
         for i in 0..self.ranges.len() {
             let owner = self.ranges[i].module;
             if let Some(range) = self.ranges[i].sounds {
-                for ordinal in (0..range.count).filter_map(|index| range.ordinal(index)) {
+                for ordinal in range.range() {
                     self.bind_sound(owner, ordinal)?;
                 }
             }
@@ -304,6 +279,9 @@ impl ServiceStorage {
         if !range.contains(ordinal) {
             return Ok(());
         }
+        self.bind_sound_at(index)
+    }
+    fn bind_sound_at(&mut self, index: usize) -> Result<(), CallError> {
         self.sounds[index] = None;
         let sound = match self
             .sound_bank
@@ -325,6 +303,14 @@ impl ServiceStorage {
         text: &[u8],
     ) -> Result<(), CallError> {
         let index = self.config(module, ordinal)?;
+        self.set_configstring_at(module, index, text)
+    }
+    fn set_configstring_at(
+        &mut self,
+        module: ModuleId,
+        index: usize,
+        text: &[u8],
+    ) -> Result<(), CallError> {
         if text.len() > 8192 {
             return Err(CallError::Text);
         }
@@ -344,14 +330,17 @@ impl ServiceStorage {
             row.revision = row.revision.wrapping_add(1);
             let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
             range.revision = range.revision.wrapping_add(1);
-            self.bind_sound(module, ordinal)?;
+            let ordinal = index - range.span.first as usize;
+            if range.sounds.is_some_and(|sounds| sounds.contains(ordinal)) {
+                self.bind_sound_at(index)?;
+            }
         }
         Ok(())
     }
     fn resource_index(
         &mut self,
         module: ModuleId,
-        range: ResourceRange,
+        range: IndexSpan,
         name: &[u8],
     ) -> Result<u32, CallError> {
         if name.is_empty() {
@@ -367,14 +356,10 @@ impl ServiceStorage {
             .map_err(|_| CallError::Capacity)?;
         // SV_FindIndex stops at the first empty slot. Keep that native order,
         // including a gap made by a module's direct configstring update.
-        for ordinal in 1..range.count {
+        for ordinal in 1..range.count as usize {
             let row = &mut self.configs[first + ordinal];
             if row.text.as_bytes().is_empty() {
-                self.set_configstring(
-                    module,
-                    range.ordinal(ordinal).ok_or(CallError::ConfigString)?,
-                    name,
-                )?;
+                self.set_configstring_at(module, first + ordinal, name)?;
                 self.configs[first + ordinal].resource_name = Some(name_id);
                 return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
             }
@@ -442,7 +427,7 @@ pub type FileOpenCall =
 pub type CvarRegisterCall =
     fn(&mut EngineServices<'_>, Context, &str, Option<&str>, u32) -> Result<View, CallError>;
 pub type ResourceIndexCall =
-    fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
+    fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<u32, CallError>;
 pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
 pub type EntityTokenCall =
@@ -493,7 +478,7 @@ pub struct EngineCallTable {
     pub sound_id: fn(
         &EngineServices<'_>,
         ModuleId,
-        ResourceRange,
+        IndexSpan,
         i32,
     ) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
@@ -623,7 +608,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     sound: |s, e| s.sound(e),
     sound_id: |s, module, range, index| {
         let index = usize::try_from(index).map_err(|_| CallError::Text)?;
-        let ordinal = range.ordinal(index).ok_or(CallError::Text)?;
+        let ordinal = range.get(index).ok_or(CallError::Text)?;
         let row = s.storage.config(module, ordinal)?;
         Ok(s.storage.sounds[row])
     },

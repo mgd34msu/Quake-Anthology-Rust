@@ -24,7 +24,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
     pub memory: &'a mut ModuleMemory<'memory>,
     pub native_cvars: Option<&'a mut crate::cvars::NativeCvars>,
-    pub native_resources: Option<&'a [crate::services::ResourceRange; 3]>,
+    pub native_resources: Option<&'a [qa_core::primitives::IndexSpan; 3]>,
     pub native_entities: Option<(&'a mut crate::entities::EntityProjection, u64)>,
     pub native_surfaces: Option<&'a crate::surfaces::NativeSurfaces>,
     pub native_command: Option<&'a crate::command::NativeCommand>,

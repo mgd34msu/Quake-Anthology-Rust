@@ -1,6 +1,7 @@
 use qa_app::Runtime;
-use qa_compat::services::{CallContext, CallError, ENGINE_CALLS, ResourceRange, ServiceStorage};
+use qa_compat::services::{CallContext, CallError, ENGINE_CALLS, ServiceStorage};
 use qa_console::{commands::Console, views::Context};
+use qa_core::primitives::IndexSpan;
 use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
@@ -483,8 +484,8 @@ fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() 
         ServiceStorage::load(&[(ModuleId(1), 12), (ModuleId(2), 12)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-    let models = ResourceRange { first: 1, count: 5 };
-    let sounds = ResourceRange { first: 6, count: 5 };
+    let models = IndexSpan { first: 1, count: 5 };
+    let sounds = IndexSpan { first: 6, count: 5 };
     let index = ENGINE_CALLS.resource_index;
     let set = ENGINE_CALLS.configstring;
     assert_eq!(index(&mut services, ModuleId(1), models, b"").unwrap(), 0);
@@ -549,7 +550,7 @@ fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() 
         index(
             &mut services,
             ModuleId(1),
-            ResourceRange {
+            IndexSpan {
                 first: 11,
                 count: 2
             },
@@ -561,8 +562,8 @@ fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() 
         index(
             &mut services,
             ModuleId(1),
-            ResourceRange {
-                first: usize::MAX,
+            IndexSpan {
+                first: u32::MAX,
                 count: 2
             },
             b"bad"
@@ -573,7 +574,7 @@ fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() 
         index(
             &mut services,
             ModuleId(1),
-            ResourceRange { first: 0, count: 1 },
+            IndexSpan { first: 0, count: 1 },
             b"bad"
         ),
         Err(CallError::ConfigString)

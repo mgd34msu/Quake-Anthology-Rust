@@ -356,3 +356,15 @@ App module setup, accounting, row lookups and local-seat views use shared helper
 network button projection, row access, command bounds and slot masks do likewise.
 No copy remains at the listed sweep and follow-up sites. Native-module and
 installed gameplay acceptance remains THE-3169.
+<!-- TA-3448 adoption -->
+
+## TA-3448: native resource spans
+
+Core `IndexSpan::contains/get` (`crates/core/src/primitives.rs:9`) serves native
+resource and config ranges. Compat ABI tables, VM/entity projections, app sound
+registration and their tests use it; `ResourceRange` is deleted.
+`ConfigRange` owns a span (`crates/compat/src/services.rs:83`); range checks use
+`fits`, config lookup uses `get`, and model caching projects through that span.
+Resource registration passes one resolved row to text and sound binding.
+No remaining `ResourceRange` sites in `crates/`; native ordinals are unchanged.
+

@@ -3,7 +3,7 @@ use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::Impor
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
 use crate::cvars::NativeCvars;
 use crate::entities::EntityLayout;
-use crate::services::ResourceRange;
+use qa_core::primitives::IndexSpan;
 use qa_core::{
     names::NameTable,
     primitives::{NameId, RuleSetId},
@@ -32,7 +32,7 @@ struct Layout {
     import_header: usize,
     imports: &'static [&'static [u8]],
     functions: &'static [Function],
-    resources: [ResourceRange; 3],
+    resources: [IndexSpan; 3],
     entity: EntityLayout,
 }
 const CLASSIC_IMPORTS: &[&[u8]] = &[
@@ -241,15 +241,15 @@ const CLASSIC: Layout = Layout {
         },
     },
     resources: [
-        ResourceRange {
+        IndexSpan {
             first: 32,
             count: 256,
         },
-        ResourceRange {
+        IndexSpan {
             first: 288,
             count: 256,
         },
-        ResourceRange {
+        IndexSpan {
             first: 544,
             count: 256,
         },
@@ -286,15 +286,15 @@ const RERELEASE: Layout = Layout {
         model_rules: CLASSIC.entity.model_rules,
     },
     resources: [
-        ResourceRange {
+        IndexSpan {
             first: 62,
             count: 8192,
         },
-        ResourceRange {
+        IndexSpan {
             first: 8254,
             count: 2048,
         },
-        ResourceRange {
+        IndexSpan {
             first: 10302,
             count: 512,
         },
@@ -396,7 +396,7 @@ impl Game {
         // entries may span their native ranges. The common store bounds values
         // at 8192 bytes, so no projection needs a larger individual slot.
         let config_capacities: Vec<usize> = if layout.version == 2023 {
-            let general = layout.resources[2].first + layout.resources[2].count + 4 * 256;
+            let general = layout.resources[2].range().end + 4 * 256;
             let wheels = general + 512;
             let end = wheels + 3 * 32 + 2;
             (0..32768)

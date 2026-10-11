@@ -1,3 +1,4 @@
+use qa_core::primitives::IndexSpan;
 #[path = "support/service_program.rs"]
 mod service_program;
 #[path = "support/visibility_world.rs"]
@@ -1924,7 +1925,7 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
 
 #[test]
 fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
-    use qa_compat::services::{ENGINE_CALLS, ResourceRange};
+    use qa_compat::services::ENGINE_CALLS;
     use qa_core::primitives::{Pcm, PcmChannels};
     use std::{num::NonZeroU32, sync::Arc};
     let rate = NonZeroU32::new(44100).unwrap();
@@ -1958,27 +1959,27 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
     let mut storage = ServiceStorage::load(&[(module, 8), (other, 8)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-    let range = ResourceRange { first: 2, count: 4 };
+    let range = IndexSpan { first: 2, count: 4 };
     assert!(!range.contains(1));
     assert!(range.contains(2));
     assert!(range.contains(5));
     assert!(!range.contains(6));
-    assert_eq!(range.ordinal(0), Some(2));
-    assert_eq!(range.ordinal(3), Some(5));
-    assert_eq!(range.ordinal(4), None);
+    assert_eq!(range.get(0), Some(2));
+    assert_eq!(range.get(3), Some(5));
+    assert_eq!(range.get(4), None);
     assert_eq!(
-        ResourceRange {
-            first: usize::MAX,
+        IndexSpan {
+            first: u32::MAX,
             count: 2
         }
-        .ordinal(1),
+        .get(usize::MAX),
         None
     );
     for bad in [
-        ResourceRange { first: 2, count: 0 },
-        ResourceRange { first: 6, count: 3 },
-        ResourceRange {
-            first: usize::MAX,
+        IndexSpan { first: 2, count: 0 },
+        IndexSpan { first: 6, count: 3 },
+        IndexSpan {
+            first: u32::MAX,
             count: 2,
         },
     ] {

@@ -6,6 +6,15 @@ pub struct IndexSpan {
     pub count: u32,
 }
 impl IndexSpan {
+    pub fn contains(self, ordinal: usize) -> bool {
+        ordinal
+            .checked_sub(self.first as usize)
+            .is_some_and(|index| index < self.count as usize)
+    }
+    pub fn get(self, index: usize) -> Option<usize> {
+        (index < self.count as usize).then_some(())?;
+        (self.first as usize).checked_add(index)
+    }
     pub fn range(self) -> std::ops::Range<usize> {
         self.first as usize..self.first as usize + self.count as usize
     }

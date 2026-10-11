@@ -190,7 +190,7 @@ struct Module {
     client_api: Option<Q2Clients>,
 }
 impl Module {
-    fn native_sounds(&self) -> Option<qa_compat::services::ResourceRange> {
+    fn native_sounds(&self) -> Option<qa_core::primitives::IndexSpan> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if let Program::Native { vm, .. } = &self.request.program {
             return vm.resource_ranges().map(|ranges| ranges[1]);
@@ -382,10 +382,10 @@ impl FrameHost {
         if let Some(modules) = &self.modules {
             for row in modules.rows.iter().flatten() {
                 if let Some(sounds) = row.native_sounds() {
-                    for ordinal in 1..sounds.count {
+                    for ordinal in sounds.range().skip(1) {
                         let (name, _) = row
                             .storage
-                            .configstring(row.request.context.module, sounds.first + ordinal)
+                            .configstring(row.request.context.module, ordinal)
                             .map_err(|e| format!("native sound precache: {e:?}"))?;
                         if !name.is_empty() {
                             visit(name, row.request.context.console.source)?;
