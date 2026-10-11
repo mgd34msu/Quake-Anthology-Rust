@@ -196,6 +196,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[10] = Some(resource_index::<2>);
     table.entries[11] = Some(native_set_model);
     table.entries[12] = Some(native_trace::<false>);
+    table.entries[13] = Some(native_point_contents::<false>);
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[20] = Some(native_area_query::<false>);
@@ -215,6 +216,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[12] = Some(resource_index::<2>);
     table.entries[13] = Some(native_set_model);
     table.entries[14] = Some(native_trace::<true>);
+    table.entries[16] = Some(native_point_contents::<true>);
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
     table.entries[23] = Some(native_area_query::<true>);
@@ -644,6 +646,21 @@ fn native_trace<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
     let result = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
     let entity = view.address(&c.services.server.entities, result.entity)?;
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
+}
+
+fn native_point_contents<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_core::primitives::RuleSetId;
+    let point = c.memory.read_vec3(c.pointer(0)?)?;
+    if point.0.iter().any(|v| !v.is_finite()) {
+        return Err(CallError::Geometry);
+    }
+    let (_, rules) = qa_world::collision::trace_policy(if WIDE {
+        RuleSetId::Quake2Rerelease
+    } else {
+        RuleSetId::Quake2
+    });
+    let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
+    Ok(u64::from(contents.to_q2()))
 }
 
 fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

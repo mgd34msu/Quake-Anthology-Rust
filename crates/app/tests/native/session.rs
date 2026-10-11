@@ -1996,10 +1996,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut owned_entity = None;
         let trace_slot = if rr { 14 } else { 12 };
         let area_slot = if rr { 23 } else { 20 };
+        let contents_slot = if rr { 16 } else { 13 };
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
                 || slot == area_slot
+                || slot == contents_slot
                 || (index_slot..index_slot + 3).contains(&slot);
             let stack = if a.len() > 4 { 0x48 } else { 0x28 };
             let mut code = vec![0x48, 0x83, 0xec, stack];
@@ -2511,6 +2513,18 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             } else {
                 assert_eq!(&memory[0x1e00..0x1e18], &[0xcc; 24]);
             }
+        }
+        for (point, expected) in [
+            (origin, body_mask),
+            (qa_core::primitives::Vec3([-13.0, -11.0, -17.0]), body_mask),
+            (qa_core::primitives::Vec3([19.0, 21.0, 39.0]), 0),
+            (qa_core::primitives::Vec3([50.0, 5.0, 7.0]), 0),
+        ] {
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .write_vec3(start, point)
+                .unwrap();
+            assert_eq!(invoke_import(&mut game, contents_slot, &[start]), expected);
         }
         invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
         invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);

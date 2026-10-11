@@ -496,6 +496,15 @@ impl Game {
                         ][..],
                         NativeScalar::Word,
                     ))
+                } else if ordinal == if layout.version == 2023 { 16 } else { 13 } {
+                    Some((
+                        &[NativeScalar::Word][..],
+                        if layout.version == 2023 {
+                            NativeScalar::U32
+                        } else {
+                            NativeScalar::I32
+                        },
+                    ))
                 } else if ordinal == if layout.version == 2023 { 23 } else { 20 } {
                     Some((
                         if layout.version == 2023 {

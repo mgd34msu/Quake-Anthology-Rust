@@ -257,6 +257,8 @@ pub struct EngineCallTable {
         TraceQuery<'_>,
         Option<&dyn NativeTraceEntities>,
     ) -> Result<Trace, CallError>,
+    pub point_contents:
+        fn(&mut EngineServices<'_>, Vec3, EntityTracePolicy) -> Result<Contents, CallError>,
     pub link:
         fn(&mut EngineServices<'_>, CallContext, EntityId, LinkFlags) -> Result<bool, CallError>,
     pub unlink: fn(&mut EngineServices<'_>, EntityId) -> Result<(), CallError>,
@@ -295,6 +297,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
+    point_contents: |s, p, rules| s.point_contents(p, rules),
     link: |s, c, e, f| s.link(c, e, f),
     unlink: |s, e| s.unlink(e),
     bot_registration: |s, e, registered| s.bot_registration(e, registered),
