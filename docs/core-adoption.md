@@ -256,8 +256,9 @@ No audited copy remains. Corner tests cover all octants and signed zero.
 `loopback.rs:20` own time construction/projection, eighth-unit conversion
 and endpoint indexing. All audited app, session, movement, network, compat
 and platform callers use them; local conversions and admission checks are deleted.
-Profile parsing, product path folding and hull axis lookup use RuleSetId,
-path_byte and Axis. `content/src/vfs.rs:349` resolves through NameTable and
+Profile aliases live in `core/src/primitives.rs:484`; profile parsing calls
+RuleSetId::parse directly. Product paths and hull axes use path_byte and Axis.
+`content/src/vfs.rs:349` resolves through NameTable and
 NameId-indexed winners; its listing retains every active file and native priority.
 `console/src/commands.rs:83` binds aliases numerically; conversion.rs uses FixedText.
 Image recipes use RuleSetId; `formats/src/image.rs:62` alone derives decode flags.

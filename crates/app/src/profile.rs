@@ -49,16 +49,6 @@ fn document(vfs: &Vfs, file: FileRef) -> Result<Value, String> {
     Ok(value)
 }
 
-fn dialect(name: &str) -> Option<RuleSetId> {
-    RuleSetId::parse(name).or_else(|| match name {
-        "q1-netquake" => Some(RuleSetId::Quake),
-        "q1-quakeworld" => Some(RuleSetId::QuakeWorld),
-        "q2-classic" => Some(RuleSetId::Quake2),
-        "q2-rerelease" => Some(RuleSetId::Quake2Rerelease),
-        _ => None,
-    })
-}
-
 fn put(
     console: &mut Console<Runtime>,
     source: RuleSetId,
@@ -331,7 +321,7 @@ pub fn load(
                 let file_source = value
                     .get("dialect")
                     .and_then(Value::as_str)
-                    .and_then(dialect)
+                    .and_then(RuleSetId::parse)
                     .ok_or("unknown profile cvar dialect")?;
                 let expected = if stage == "cvars/movement/" {
                     movement_source

@@ -120,3 +120,34 @@ fn viewport_fit_preserves_zero_overflow_and_edge_rejection() {
         assert_eq!(viewport.fits(width, height), original);
     }
 }
+
+#[test]
+fn shared_view_point_keeps_post_dot_sign_with_caller_axes() {
+    for axes in [
+        [
+            Vec3([1.0, 0.0, 0.0]),
+            Vec3([0.0, 1.0, 0.0]),
+            Vec3([0.0, 0.0, 1.0]),
+        ],
+        [
+            Vec3([0.3, -0.7, 0.1]),
+            Vec3([-0.2, 0.6, 0.3]),
+            Vec3([0.7, 0.3, -0.1]),
+        ],
+    ] {
+        for point in [
+            Vec3([0.0, -0.0, 0.0]),
+            Vec3([-0.0; 3]),
+            Vec3([0.6, 0.2, 0.0]),
+            Vec3([37.3, -81.7, 23.0]),
+        ] {
+            let expected = Vec3([-point.dot(axes[1]), point.dot(axes[2]), point.dot(axes[0])]);
+            assert_eq!(
+                super::view_point(Vec3::default(), axes, point)
+                    .0
+                    .map(f32::to_bits),
+                expected.0.map(f32::to_bits)
+            );
+        }
+    }
+}

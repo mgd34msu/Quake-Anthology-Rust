@@ -328,3 +328,36 @@ fn native_failed_page_admission_releases_partial_pages_and_unicast_excludes_othe
     consume(&mut ring, second, OutputSubmission::BestEffort);
     assert!(ring.is_empty());
 }
+
+#[test]
+fn dispatch_stop_preserves_pending_record_and_next_cursor() {
+    let mut ring = EventRing::load(8, 1, 8, 32).unwrap();
+    let id = ring.bind(OutputTarget::Presentation).unwrap();
+    ring.push(sound(1)).unwrap();
+    ring.push(sound(2)).unwrap();
+    let stopped = std::cell::Cell::new(false);
+    let mut seen = Vec::new();
+    dispatch_consumer_until(
+        &mut ring,
+        id,
+        &mut |record: OutputRecord, _: &mut TextStore| {
+            seen.push(record.sequence);
+            stopped.set(true);
+            OutputSubmission::Unsent
+        },
+        || stopped.get(),
+    );
+    assert_eq!(seen, [0]);
+    assert_eq!(ring.len(), 2);
+    seen.clear();
+    dispatch_consumer(
+        &mut ring,
+        id,
+        &mut |record: OutputRecord, _: &mut TextStore| {
+            seen.push(record.sequence);
+            OutputSubmission::BestEffort
+        },
+    );
+    assert_eq!(seen, [0, 1]);
+    assert!(ring.is_empty());
+}

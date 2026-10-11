@@ -10,18 +10,18 @@ pub(super) fn transmit(
     payload: Option<(u64, &[u8])>,
     time: EventTime,
     admit: impl FnMut(&[u8]) -> bool,
-) -> Result<Submission, TransmitError> {
+) -> Result<(Option<OutputSubmission>, Submission), TransmitError> {
     let Some(sequence) = connection
         .pending_output
         .or(payload.map(|(sequence, _)| sequence))
     else {
-        return Ok(Submission::default());
+        return Ok((None, Submission::default()));
     };
     // A snapshot or ordinary channel control retains its existing sender.
     if connection.pending_output.is_none()
         && (connection.channel.pending_packet().is_some() || connection.channel.pending_fragments())
     {
-        return Ok(Submission::default());
+        return Ok((None, Submission::default()));
     }
     let mut rejected = None;
     let submitted = transport::send(
@@ -54,7 +54,14 @@ pub(super) fn transmit(
         // fragment; the channel owns the actual completion boundary.
         |channel, pending, _| pending.is_some() && !channel.pending_fragments(),
     );
-    rejected.map_or(Ok(submitted), Err)
+    if rejected.is_some() || submitted.complete {
+        connection.pending_output = None;
+    }
+    if let Some(error) = rejected {
+        return Err(error);
+    }
+    let disposition = submitted.complete.then_some(OutputSubmission::BestEffort);
+    Ok((disposition, submitted))
 }
 
 pub(super) fn submit(
@@ -77,12 +84,7 @@ pub(super) fn submit(
             Err(_) => Err(()),
         };
     }
-    let submitted = transmit(connection, Some((sequence, bytes)), time, admit).map_err(|_| ())?;
-    let disposition = if submitted.complete {
-        connection.pending_output = None;
-        OutputSubmission::BestEffort
-    } else {
-        OutputSubmission::Unsent
-    };
-    Ok((disposition, submitted))
+    let (disposition, submitted) =
+        transmit(connection, Some((sequence, bytes)), time, admit).map_err(|_| ())?;
+    Ok((disposition.unwrap_or(OutputSubmission::Unsent), submitted))
 }

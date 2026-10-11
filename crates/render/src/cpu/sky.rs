@@ -324,7 +324,7 @@ fn cube_planes(
     ];
     let plane = |axis: Vec3, factor: f32| {
         // Sky axes may be independently rotated; preserve post-dot negation.
-        let axis = Vec3([-axis.dot(axes[1]), axis.dot(axes[2]), axis.dot(axes[0])]);
+        let axis = super::view_point(Vec3::default(), axes, axis);
         camera.gradient(axis, factor)
     };
     CubePlanes {

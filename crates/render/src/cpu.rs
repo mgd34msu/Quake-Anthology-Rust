@@ -200,9 +200,7 @@ impl Camera {
     }
 
     fn to_view(&self, point: Vec3) -> Vec3 {
-        let local =
-            qa_core::math::inverse_transform_point(self.refdef.origin, self.refdef.axes, point);
-        Vec3([-local.0[1], local.0[2], local.0[0]])
+        view_point(self.refdef.origin, self.refdef.axes, point)
     }
 
     fn direction_to_view(&self, direction: Vec3) -> Vec3 {
@@ -1013,6 +1011,11 @@ fn draw_vertex(draw: Draw2d, at: [f32; 2]) -> Vertex {
         color: draw.color,
         ..Vertex::default()
     }
+}
+
+fn view_point(origin: Vec3, axes: [Vec3; 3], point: Vec3) -> Vec3 {
+    let local = qa_core::math::inverse_transform_point(origin, axes, point);
+    Vec3([-local.0[1], local.0[2], local.0[0]])
 }
 
 fn clip_plane(

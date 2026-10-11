@@ -28,6 +28,13 @@ pub struct OutputCounts {
     pub native_resync_retired: u64,
 }
 
+impl OutputCounts {
+    fn add_native(&mut self, submitted: &crate::transport::Submission) {
+        self.native_blocked += u64::from(submitted.blocked);
+        self.native_packets += submitted.packets;
+    }
+}
+
 pub fn dispatch(
     runtime: &mut Runtime,
     source: &mut impl FrameSource,
@@ -45,8 +52,10 @@ pub fn dispatch(
     {
         server.presentation = id;
     }
-    if let Some(mut batch) = server.events.batch(server.presentation) {
-        while let Some(record) = server.events.next(&mut batch) {
+    qa_core::events::dispatch_consumer(
+        &mut server.events,
+        server.presentation,
+        &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
             let submitted = match record.event {
                 FrameEvent::Sound(event) => {
                     counts.sounds += 1;
@@ -62,7 +71,7 @@ pub fn dispatch(
                 }
                 FrameEvent::Print(event) => {
                     counts.prints += 1;
-                    if let Some(text) = server.events.texts.get(event.text) {
+                    if let Some(text) = texts.get(event.text) {
                         if event.client.is_none_or(|id| local.contains(&Some(id)))
                             && matches!(
                                 event.kind,
@@ -81,17 +90,13 @@ pub fn dispatch(
                 FrameEvent::Native(_) => true,
                 FrameEvent::Hud(_) => true,
             };
-            server.events.submit(
-                server.presentation,
-                record.sequence,
-                if submitted {
-                    OutputSubmission::BestEffort
-                } else {
-                    OutputSubmission::Unsent
-                },
-            );
-        }
-    }
+            if submitted {
+                OutputSubmission::BestEffort
+            } else {
+                OutputSubmission::Unsent
+            }
+        },
+    );
     for slot in 0..server.clients.len() {
         let client = &mut server.clients[slot];
         let Some(mut id) = client.output else {
@@ -125,35 +130,33 @@ pub fn dispatch(
             && let Some(sequence) = connection.pending_output
         {
             let route = connection.route;
-            let submitted = match native::transmit(connection, None, time, |bytes| {
+            let (disposition, submitted) = match native::transmit(connection, None, time, |bytes| {
                 crate::transport::admit_output(&mut runtime.loopback, source, route, bytes)
             }) {
                 Ok(submitted) => submitted,
                 Err(_) => {
                     counts.native_unsupported += 1;
-                    connection.pending_output = None;
                     server
                         .events
                         .submit(id, sequence, OutputSubmission::BestEffort);
                     continue;
                 }
             };
-            counts.native_blocked += u64::from(submitted.blocked);
-            counts.native_packets += submitted.packets;
-            if !submitted.complete {
+            counts.add_native(&submitted);
+            let Some(disposition) = disposition else {
                 continue;
-            }
-            connection.pending_output = None;
-            server
-                .events
-                .submit(id, sequence, OutputSubmission::BestEffort);
+            };
+            server.events.submit(id, sequence, disposition);
         }
-        if let Some(mut batch) = server.events.batch(id) {
-            while let Some(record) = server.events.next(&mut batch) {
+        let stopped = std::cell::Cell::new(false);
+        qa_core::events::dispatch_consumer_until(
+            &mut server.events,
+            id,
+            &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
                 let submission = if let FrameEvent::Native(message) = record.event {
                     let visible = match message.delivery.target {
-                        qa_core::primitives::NativeTarget::All => true,
-                        qa_core::primitives::NativeTarget::Client(to) => to == client_id,
+                        qa_core::primitives::NativeTarget::All
+                        | qa_core::primitives::NativeTarget::Client(_) => true,
                         target => runtime.collision.as_mut().is_some_and(|collision| {
                             let Some(world) = collision.visibility.as_deref() else {
                                 return false;
@@ -184,10 +187,8 @@ pub fn dispatch(
                     if !visible {
                         counts.native_filtered += 1;
                         OutputSubmission::BestEffort
-                    } else if let Some(bytes) = server
-                        .events
-                        .texts
-                        .copy_payload(message.payload, &mut runtime.output_bytes)
+                    } else if let Some(bytes) =
+                        texts.copy_payload(message.payload, &mut runtime.output_bytes)
                         && let Some(connection) = runtime
                             .network
                             .get_mut(client_id, qa_core::loopback::Endpoint::Server)
@@ -210,8 +211,7 @@ pub fn dispatch(
                             },
                         ) {
                             Ok((submission, submitted)) => {
-                                counts.native_blocked += u64::from(submitted.blocked);
-                                counts.native_packets += submitted.packets;
+                                counts.add_native(&submitted);
                                 submission
                             }
                             Err(()) => {
@@ -236,7 +236,7 @@ pub fn dispatch(
                         }
                         FrameEvent::Print(event) => qa_ui::hud::print(
                             &mut client.hud,
-                            &mut server.events.texts,
+                            texts,
                             event,
                             now,
                             notify_time,
@@ -251,7 +251,7 @@ pub fn dispatch(
                     }
                 } else if client.connection == Some(Connection::Remote) {
                     let text = match record.event {
-                        FrameEvent::Print(p) => server.events.texts.get(p.text),
+                        FrameEvent::Print(p) => texts.get(p.text),
                         _ => None,
                     };
                     if let FrameEvent::Print(print) = record.event
@@ -287,16 +287,16 @@ pub fn dispatch(
                     // records must not hold the shared publication head.
                     OutputSubmission::BestEffort
                 };
-                server.events.submit(id, record.sequence, submission);
-                if runtime
-                    .network
-                    .get(client_id, qa_core::loopback::Endpoint::Server)
-                    .is_some_and(|connection| connection.pending_output.is_some())
-                {
-                    break;
-                }
-            }
-        }
+                stopped.set(
+                    runtime
+                        .network
+                        .get(client_id, qa_core::loopback::Endpoint::Server)
+                        .is_some_and(|connection| connection.pending_output.is_some()),
+                );
+                submission
+            },
+            || stopped.get(),
+        );
         if is_local {
             qa_ui::hud::expire_messages(&mut client.hud, &mut server.events.texts, now);
         }
@@ -328,8 +328,7 @@ pub fn dispatch(
                 // sends here are only the already-queued native control records.
                 |channel, (), _| channel.pending_controls() == 0,
             );
-            counts.native_blocked += u64::from(submitted.blocked);
-            counts.native_packets += submitted.packets;
+            counts.add_native(&submitted);
         }
     }
     counts

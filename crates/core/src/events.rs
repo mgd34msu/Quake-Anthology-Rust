@@ -210,9 +210,7 @@ impl EventRing {
                 break;
             }
             if let Some(slot) = self.slots[index].take() {
-                for lease in slot.texts.into_iter().flatten() {
-                    self.texts.release(lease);
-                }
+                self.texts.release_all(slot.texts);
             }
             self.head += 1;
         }
@@ -260,9 +258,7 @@ impl EventRing {
         for (index, page) in pages.into_iter().enumerate() {
             if let Some(page) = page {
                 let Some(lease) = self.texts.lease(page) else {
-                    for lease in texts.into_iter().flatten() {
-                        self.texts.release(lease);
-                    }
+                    self.texts.release_all(texts);
                     self.rejected_publications += 1;
                     return Err(EventStorageError::StaleText);
                 };
@@ -324,9 +320,7 @@ impl EventRing {
         let mut pages = [None; 4];
         for (index, chunk) in bytes.chunks(self.texts.width).enumerate() {
             let Some(lease) = self.texts.insert(chunk) else {
-                for lease in leases.into_iter().flatten() {
-                    self.texts.release(lease);
-                }
+                self.texts.release_all(leases);
                 self.rejected_publications += 1;
                 return Err(EventStorageError::TextCapacity);
             };
@@ -340,9 +334,7 @@ impl EventRing {
                 length: bytes.len(),
             },
         }));
-        for lease in leases.into_iter().flatten() {
-            self.texts.release(lease);
-        }
+        self.texts.release_all(leases);
         result
     }
     pub fn print(
@@ -575,6 +567,11 @@ impl TextStore {
             self.refs[lease.id.slot as usize] -= 1;
         }
     }
+    pub fn release_all(&mut self, leases: [Option<TextLease>; 4]) {
+        for lease in leases.into_iter().flatten() {
+            self.release(lease);
+        }
+    }
     pub fn get(&self, id: TextId) -> Option<&[u8]> {
         let slot = id.slot as usize;
         if id.generation == 0
@@ -640,10 +637,23 @@ pub fn dispatch_consumer(
     id: OutputConsumerId,
     consumer: &mut impl EventConsumer,
 ) {
+    dispatch_consumer_until(events, id, consumer, || false);
+}
+
+/// Stops before reading another record, preserving its pending delivery.
+pub fn dispatch_consumer_until(
+    events: &mut EventRing,
+    id: OutputConsumerId,
+    consumer: &mut impl EventConsumer,
+    mut stop: impl FnMut() -> bool,
+) {
     let Some(mut batch) = events.batch(id) else {
         return;
     };
-    while let Some(record) = events.next(&mut batch) {
+    while !stop() {
+        let Some(record) = events.next(&mut batch) else {
+            break;
+        };
         let submission = consumer.submit(record, &mut events.texts);
         events.submit(id, record.sequence, submission);
     }

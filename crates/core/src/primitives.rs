@@ -483,10 +483,10 @@ impl RuleSetId {
 
     pub fn parse(name: &str) -> Option<Self> {
         match name {
-            "q1" => Some(Self::Quake),
-            "qw" => Some(Self::QuakeWorld),
-            "q2" => Some(Self::Quake2),
-            "q2rr" => Some(Self::Quake2Rerelease),
+            "q1" | "q1-netquake" => Some(Self::Quake),
+            "qw" | "q1-quakeworld" => Some(Self::QuakeWorld),
+            "q2" | "q2-classic" => Some(Self::Quake2),
+            "q2rr" | "q2-rerelease" => Some(Self::Quake2Rerelease),
             "q3" => Some(Self::Quake3),
             _ => None,
         }
