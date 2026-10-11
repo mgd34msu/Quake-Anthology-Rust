@@ -299,6 +299,27 @@ impl FrameHost {
                 .state,
         )
     }
+    /// Read the existing native entity view only at its stopped-child boundary.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub fn native_entities(
+        &mut self,
+        module: ModuleId,
+    ) -> Result<qa_compat::entities::Entities, CallError> {
+        let row = self
+            .modules
+            .as_mut()
+            .and_then(|m| m.rows.get_mut(module.0 as usize))
+            .and_then(Option::as_mut)
+            .ok_or(CallError::MissingModule)?;
+        if row.state != State::Running {
+            return Err(CallError::Rejected);
+        }
+        match &mut row.request.program {
+            Program::Native { vm, .. } => vm.entities().map_err(|_| CallError::Rejected),
+            _ => Err(CallError::Rejected),
+        }
+    }
+
     pub fn call_module_export(
         &mut self,
         module: ModuleId,

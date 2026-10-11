@@ -230,6 +230,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[39] = Some(q2_cvar);
     table.entries[40] = Some(q2_cvar_set::<false>);
     table.entries[41] = Some(q2_cvar_set::<true>);
+    table.entries[67] = Some(native_info_value);
     table
 };
 
@@ -667,6 +668,21 @@ fn native_point_contents<const WIDE: bool>(
     });
     let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
     Ok(u64::from(contents.to_q2()))
+}
+
+fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let source = c.pointer(0)?;
+    let span =
+        qa_core::text::info_value(c.memory.cstring(source)?, c.string(1)?, false).unwrap_or(0..0);
+    let capacity = c.length(3)?;
+    if capacity != 0 {
+        let output = c.pointer(2)?;
+        let length = span.len().min(capacity - 1);
+        c.memory.read(output, length + 1)?;
+        c.memory.copy(output, source + span.start as u64, length)?;
+        c.memory.write(output + length as u64, &[0])?;
+    }
+    Ok(span.len() as u64)
 }
 
 fn native_portal_set<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

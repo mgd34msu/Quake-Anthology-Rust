@@ -2021,6 +2021,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || slot == area_slot
                 || slot == contents_slot
                 || slot == connected_slot
+                || (rr && slot == 67)
                 || (index_slot..index_slot + 3).contains(&slot);
             let stack = if a.len() > 4 { 0x48 } else { 0x28 };
             let mut code = vec![0x48, 0x83, 0xec, stack];
@@ -2371,6 +2372,44 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         assert_eq!(whole, first);
         invoke_import(&mut game, malloc_slot + 2, &[0, 0]);
         let config_slot = if rr { 7 } else { 6 };
+        if rr {
+            let info = b"\\name\\Mike\\empty\\\\name\\later\\binary\\\xff\x80\0";
+            for (key, capacity, expected, length) in [
+                (b"name\0".as_slice(), 8, b"Mike\0".as_slice(), 4),
+                (b"name\0", 3, b"Mi\0", 4),
+                (b"name\0", 1, b"\0", 4),
+                (b"name\0", 0, b"", 4),
+                (b"NAME\0", 8, b"\0", 0),
+                (b"empty\0", 8, b"\0", 0),
+                (b"binary\0", 8, b"\xff\x80\0", 2),
+            ] {
+                let memory = game.vm.process.memory_mut().unwrap();
+                memory[0x1e00..0x1e00 + info.len()].copy_from_slice(info);
+                memory[0x1e40..0x1e40 + key.len()].copy_from_slice(key);
+                memory[0x1e80..0x1e88].fill(0xcc);
+                assert_eq!(
+                    invoke_import(
+                        &mut game,
+                        67,
+                        &[
+                            base + 0x1e00,
+                            base + 0x1e40,
+                            if capacity == 0 { 0 } else { base + 0x1e80 },
+                            capacity,
+                        ]
+                    ),
+                    length
+                );
+                let memory = game.vm.process.memory().unwrap();
+                assert_eq!(&memory[0x1e80..0x1e80 + expected.len()], expected);
+                assert!(
+                    memory[0x1e80 + expected.len()..0x1e88]
+                        .iter()
+                        .all(|&b| b == 0xcc)
+                );
+                assert_eq!(&memory[0x1e00..0x1e00 + info.len()], info);
+            }
+        }
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
         invoke_import(&mut game, config_slot, &[3, 0]);

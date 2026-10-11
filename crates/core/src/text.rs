@@ -1,6 +1,33 @@
 //! Load-sized storage for engine text. Mutation never grows it.
 use std::fmt::{self, Write};
 
+/// The first matching value in a native backslash-separated info string.
+/// Callers select native key comparison; returned spans never own or alter text.
+pub fn info_value(info: &[u8], key: &[u8], folded: bool) -> Option<std::ops::Range<usize>> {
+    let mut first = usize::from(info.first() == Some(&b'\\'));
+    loop {
+        let split = first + info.get(first..)?.iter().position(|&b| b == b'\\')?;
+        let value = split + 1;
+        let end = value
+            + info[value..]
+                .iter()
+                .position(|&b| b == b'\\')
+                .unwrap_or(info.len() - value);
+        let matched = if folded {
+            crate::names::compare_folded(&info[first..split], key).is_eq()
+        } else {
+            &info[first..split] == key
+        };
+        if matched {
+            return Some(value..end);
+        }
+        if end == info.len() {
+            return None;
+        }
+        first = end + 1;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FixedText<const N: usize> {
     bytes: [u8; N],
