@@ -2011,6 +2011,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: &[],
+                        raw_args: b"",
                         unknown: &mut unknown,
                     },
                     0,
@@ -2084,6 +2085,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: &[],
+                        raw_args: b"",
                         unknown: &mut unknown,
                     },
                     run,
@@ -2150,6 +2152,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: &[],
+                        raw_args: b"",
                         unknown: &mut unknown,
                     },
                     run,
@@ -2226,10 +2229,16 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let portal_slot = if rr { 19 } else { 16 };
         let connected_slot = if rr { 20 } else { 17 };
         let argc_slot = game.import_ordinal(b"argc").unwrap();
+        let argv_slot = game.import_ordinal(b"argv").unwrap();
+        let args_slot = game.import_ordinal(b"args").unwrap();
         let append_slot = game.import_ordinal(b"AddCommandString").unwrap();
         assert_eq!(
-            (argc_slot, append_slot),
-            if rr { (42, 45) } else { (39, 42) }
+            (argc_slot, argv_slot, args_slot, append_slot),
+            if rr {
+                (42, 43, 44, 45)
+            } else {
+                (39, 40, 41, 42)
+            }
         );
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
@@ -2238,16 +2247,27 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || slot == contents_slot
                 || slot == connected_slot
                 || slot == argc_slot
+                || slot == argv_slot
+                || slot == args_slot
                 || (if rr { 17..=18 } else { 14..=15 }).contains(&slot)
                 || (rr && slot == 67)
                 || (index_slot..index_slot + 3).contains(&slot);
-            let code = native_import_code(
+            let mut code = native_import_code(
                 pointers[slot],
                 a,
                 returns_value,
                 slot == write_slots[4] || slot == vector_slots[2],
                 base + 0x1c30,
             );
+            if slot == argv_slot || slot == args_slot {
+                // Dereference the returned C string in the child as well as inspecting
+                // the authoritative shared bytes in the parent.
+                let mut read = vec![0x0f, 0xb6, 0x00, 0x48, 0xb9];
+                read.extend((base + 0x1c38).to_le_bytes());
+                read.extend([0x88, 1]);
+                let at = code.len() - 5;
+                code.splice(at..at, read);
+            }
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                 .copy_from_slice(&code);
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
@@ -2259,6 +2279,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: &[b"_qa_native_command", b"\x80", b"third"],
+                        raw_args: if rr {
+                            b"\"\x80\"   third ".as_slice()
+                        } else {
+                            b"\"\x80\"   third"
+                        },
                         unknown: &mut unknown,
                     },
                     run,
@@ -2920,6 +2945,43 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             invoke_import(&mut game, write_slots[offset], &[word]);
         }
         assert_eq!(invoke_import(&mut game, argc_slot, &[]), 3);
+        for (index, expected) in [
+            (0, b"_qa_native_command".as_slice()),
+            (1, b"\x80"),
+            (2, b"third"),
+            (3, b""),
+            (u32::MAX, b""),
+        ] {
+            let address = invoke_import(&mut game, argv_slot, &[u64::from(index)]);
+            assert_ne!(address, 0);
+            assert_eq!(
+                qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap()
+                )
+                .unwrap()
+                .cstring(address)
+                .unwrap(),
+                expected
+            );
+            assert_eq!(
+                game.vm.process.memory().unwrap()[0x1c38],
+                expected.first().copied().unwrap_or(0)
+            );
+        }
+        let address = invoke_import(&mut game, args_slot, &[]);
+        assert_eq!(
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .cstring(address)
+                .unwrap(),
+            if rr {
+                b"\"\x80\"   third ".as_slice()
+            } else {
+                b"\"\x80\"   third"
+            }
+        );
+        assert_eq!(game.vm.process.memory().unwrap()[0x1c38], b'"');
         for (at, text) in [
             (0x1e00, b"sensitivity 7\0".as_slice()),
             (0x1e40, b" extra\n\0"),
@@ -3045,6 +3107,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         context,
                         platform_time: EventTime(0),
                         command: &[],
+                        raw_args: b"",
                         unknown: &mut unknown,
                     },
                     run,

@@ -23,6 +23,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub native_resources: Option<&'a [crate::services::ResourceRange; 3]>,
     pub native_entities: Option<(&'a mut crate::entities::EntityProjection, u64)>,
     pub native_surfaces: Option<&'a crate::surfaces::NativeSurfaces>,
+    pub native_command: Option<&'a crate::command::NativeCommand>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -222,6 +223,8 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
     table.entries[39] = Some(argc);
+    table.entries[40] = Some(native_argv);
+    table.entries[41] = Some(native_args);
     table.entries[42] = Some(command_append);
     table
 };
@@ -264,6 +267,8 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[40] = Some(q2_cvar_set::<false>);
     table.entries[41] = Some(q2_cvar_set::<true>);
     table.entries[42] = Some(argc);
+    table.entries[43] = Some(native_argv);
+    table.entries[44] = Some(native_args);
     table.entries[45] = Some(command_append);
     table.entries[67] = Some(native_info_value);
     table
@@ -334,6 +339,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             native_resources: None,
             native_entities: None,
             native_surfaces: None,
+            native_command: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -402,6 +408,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             native_resources: None,
             native_entities: None,
             native_surfaces: None,
+            native_command: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
@@ -621,6 +628,14 @@ fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         c.command.get(index).copied().unwrap_or(b""),
     )?;
     Ok(0)
+}
+fn native_argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(c.native_command
+        .ok_or(CallError::Memory)?
+        .argv(c.arg(0)? as u32))
+}
+fn native_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(c.native_command.ok_or(CallError::Memory)?.args())
 }
 fn command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text =

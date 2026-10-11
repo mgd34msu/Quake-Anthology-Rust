@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod abi;
+pub mod command;
 pub mod cvars;
 pub mod entities;
 mod hooks;

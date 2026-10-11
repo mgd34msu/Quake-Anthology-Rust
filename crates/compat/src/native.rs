@@ -89,6 +89,7 @@ pub struct Vm {
     names: NameTable,
     traps: Box<[runtime::ImportTrap]>,
     cvars: Option<crate::cvars::NativeCvars>,
+    native_command: Option<crate::command::NativeCommand>,
     resources: Option<[crate::services::ResourceRange; 3]>,
     entities: Option<EntityProjection>,
     surfaces: Option<crate::surfaces::NativeSurfaces>,
@@ -99,6 +100,8 @@ pub struct NativeCalls<'a, 'engine> {
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
+    /// Native Cmd_Args/Cmd_RawArgs suffix, retained by the caller's tokenizer.
+    pub raw_args: &'a [u8],
     pub unknown: &'a mut UnknownCalls,
 }
 impl Vm {
@@ -299,6 +302,7 @@ impl Vm {
             names: image.names,
             traps: runtime.traps.into_boxed_slice(),
             cvars: None,
+            native_command: None,
             resources: None,
             entities: None,
             surfaces: None,
@@ -353,14 +357,21 @@ impl Vm {
         }
         words[first..first + arguments.len()].copy_from_slice(arguments);
         let mut rejected = None;
-        if let Some(cvars) = &mut self.cvars {
+        if self.cvars.is_some() || self.native_command.is_some() {
             let base = self.process.base();
             let mut memory =
                 ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
                     .map_err(|_| Error::Service(CallError::Memory))?;
-            cvars
-                .refresh(calls.services.cvars, &mut memory)
-                .map_err(Error::Service)?;
+            if let Some(cvars) = &mut self.cvars {
+                cvars
+                    .refresh(calls.services.cvars, &mut memory)
+                    .map_err(Error::Service)?;
+            }
+            if let Some(command) = &mut self.native_command {
+                command
+                    .prepare(&mut memory, calls.command, calls.raw_args)
+                    .map_err(Error::Service)?;
+            }
         }
         let table_address = self.table_address();
         let cvars = &mut self.cvars;
@@ -372,6 +383,7 @@ impl Vm {
         }
         let entities = &mut self.entities;
         let surfaces = self.surfaces.as_ref();
+        let native_command = self.native_command.as_ref();
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -387,6 +399,7 @@ impl Vm {
                     native_resources: resources,
                     native_entities: entities.as_mut().zip(table_address),
                     native_surfaces: surfaces,
+                    native_command,
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,

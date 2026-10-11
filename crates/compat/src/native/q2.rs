@@ -368,8 +368,17 @@ impl Game {
                 .div_ceil(PAGE_BYTES)
                 .checked_mul(PAGE_BYTES)
                 .ok_or(Error::Export)?;
-        let filter_offset = offset
+        let command_offset = offset
             .checked_add(PAGE_BYTES + cvar_bytes + surface_bytes)
+            .ok_or(Error::Export)?;
+        let command_bytes =
+            crate::command::NativeCommand::byte_length().div_ceil(PAGE_BYTES) * PAGE_BYTES;
+        let command_address = image
+            .base
+            .checked_add(command_offset as u64)
+            .ok_or(Error::Export)?;
+        let filter_offset = command_offset
+            .checked_add(command_bytes)
             .ok_or(Error::Export)?;
         let filter_address = image
             .base
@@ -410,7 +419,7 @@ impl Game {
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(Region {
             offset,
-            length: PAGE_BYTES + cvar_bytes + surface_bytes + filter_bytes,
+            length: end - offset,
             read: true,
             write: true,
             execute: false,
@@ -463,6 +472,10 @@ impl Game {
                     ))
                 } else if ordinal == cvar + 3 {
                     Some((&[][..], NativeScalar::I32))
+                } else if ordinal == cvar + 4 {
+                    Some((&[NativeScalar::I32][..], NativeScalar::Word))
+                } else if ordinal == cvar + 5 {
+                    Some((&[][..], NativeScalar::Word))
                 } else if ordinal == cvar + 6 {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else if (if layout.version == 2023 {
@@ -656,6 +669,8 @@ impl Game {
             cvar_capacity,
             layout.version == 2023,
         ));
+        vm.native_command =
+            Some(crate::command::NativeCommand::load(command_address).map_err(Error::Service)?);
         vm.resources = Some(layout.resources);
         vm.surfaces = Some(
             crate::surfaces::NativeSurfaces::load(

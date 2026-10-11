@@ -613,6 +613,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 context: call_context,
                 platform_time: host.time,
                 command: &[],
+                raw_args: b"",
                 unknown: &mut row.unknown,
             };
             vm.call(&mut calls, entry, &words)
