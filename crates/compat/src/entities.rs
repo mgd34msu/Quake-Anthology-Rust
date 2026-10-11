@@ -662,7 +662,11 @@ impl EntityProjection {
         };
         Ok((entity, position))
     }
-    fn body(&self, memory: &ModuleMemory<'_>, address: u64) -> Result<(Body, Vec3), CallError> {
+    pub(crate) fn body(
+        &self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+    ) -> Result<(Body, Vec3), CallError> {
         let body = Body {
             position: memory.read_vec3(address + 4)?,
             mins: memory.read_vec3(address + self.layout.mins as u64)?,

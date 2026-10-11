@@ -525,6 +525,7 @@ impl Vm {
                 .project(
                     &memory,
                     table,
+                    entities,
                     calls.context.module,
                     calls.services.server,
                     self.pmove.as_mut(),

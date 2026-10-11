@@ -196,11 +196,9 @@ impl Pmove {
         &mut self,
         memory: &ModuleMemory<'_>,
         pointer: u64,
-        edict: u64,
         player: &mut PlayerState,
     ) -> Result<(), CallError> {
         self.read_state(memory, pointer, player)?;
-        player.body.position = memory.read_vec3(edict + 4)?;
         player.view_angles = memory.read_vec3(pointer + self.layout.client_view as u64)?;
         player.view_offset = memory.read_vec3(pointer + self.layout.client_offset as u64)?;
         if self.layout.wide {

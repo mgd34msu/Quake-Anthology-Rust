@@ -214,6 +214,18 @@ pub(super) fn commands_move_a_native_client_once() {
                 code.extend([0xf3, 0x0f, 0x11, 0x41, (4 + i * 4) as u8]);
             }
         }
+        // A module may update an unlinked client's body before a link import.
+        for (source, target) in [
+            (if rr { 3180 } else { 328 }, if rr { 1396 } else { 204 }),
+            (if rr { 3192 } else { 340 }, if rr { 1408 } else { 216 }),
+        ] {
+            for axis in 0..3i32 {
+                code.extend([0x41, 0x8b, 0x83]);
+                code.extend((source + axis * 4).to_le_bytes());
+                code.extend([0x89, 0x81]);
+                code.extend((target + axis * 4).to_le_bytes());
+            }
+        }
         code.extend([0x48, 0x83, 0xc4, 0x28, 0xc3]);
         assert!(code.len() < 0x300);
         {
@@ -301,6 +313,8 @@ pub(super) fn commands_move_a_native_client_once() {
                 "{rules:?} command {calls}"
             );
             assert_eq!(client.player.body.velocity, expected.body.velocity);
+            assert_eq!(client.player.body.mins, expected.body.mins);
+            assert_eq!(client.player.body.maxs, expected.body.maxs);
             let world = host.runtime.collision.as_mut().unwrap();
             assert_eq!(
                 host.runtime.server.move_pending_clients(

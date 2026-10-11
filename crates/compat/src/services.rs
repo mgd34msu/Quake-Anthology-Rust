@@ -643,28 +643,39 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    /// The trace borrows spatial state while the caller may update the disjoint
+    /// client array. Both borrows end before returning to the native module.
+    fn world_trace<'a>(
+        &'a mut self,
+        pass: CollisionOwner,
+        native: Option<&'a dyn NativeTraceEntities>,
+    ) -> Result<(WorldTrace<'a>, &'a mut [qa_session::clients::Client]), CallError> {
+        let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
+        Ok((
+            WorldTrace::new(
+                self.geometry,
+                geometry,
+                index,
+                &self.server.entities,
+                &self.server.area,
+                self.scratch,
+                pass,
+            )
+            .with_native_entities(native),
+            &mut self.server.clients,
+        ))
+    }
     pub fn pmove(
         &mut self,
         id: ClientId,
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<qa_movement::MovementResult, CallError> {
-        let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
-        let client = self
-            .server
-            .clients
+        let (trace, clients) = self.world_trace(CollisionOwner::None, native)?;
+        let client = clients
             .get_mut(id.0 as usize)
-            .filter(|c| c.connection.is_some())
+            .filter(|client| client.connection.is_some())
             .ok_or(CallError::Entity)?;
-        let mut trace = WorldTrace::new(
-            self.geometry,
-            geometry,
-            index,
-            &self.server.entities,
-            &self.server.area,
-            self.scratch,
-            CollisionOwner::Lifetime(client.entity),
-        )
-        .with_native_entities(native);
+        let mut trace = trace.with_pass(CollisionOwner::Lifetime(client.entity));
         Ok(qa_movement::pmove(
             client.command,
             &mut client.player,
@@ -726,18 +737,8 @@ impl EngineServices<'_> {
         query: TraceQuery<'_>,
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<Trace, CallError> {
-        let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
-        Ok(WorldTrace::new(
-            self.geometry,
-            geometry,
-            index,
-            &self.server.entities,
-            &self.server.area,
-            self.scratch,
-            CollisionOwner::None,
-        )
-        .with_native_entities(native)
-        .trace(query))
+        let (mut trace, _) = self.world_trace(CollisionOwner::None, native)?;
+        Ok(trace.trace(query))
     }
     pub fn clip(&mut self, query: TraceQuery<'_>, target: ClipTarget) -> Result<Trace, CallError> {
         Ok(match target {
@@ -762,17 +763,8 @@ impl EngineServices<'_> {
         rules: EntityTracePolicy,
         pass: CollisionOwner,
     ) -> Result<Contents, CallError> {
-        let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
-        Ok(WorldTrace::new(
-            self.geometry,
-            geometry,
-            index,
-            &self.server.entities,
-            &self.server.area,
-            self.scratch,
-            pass,
-        )
-        .point_contents(point, rules, &[]))
+        let (mut trace, _) = self.world_trace(pass, None)?;
+        Ok(trace.point_contents(point, rules, &[]))
     }
     pub fn link(
         &mut self,

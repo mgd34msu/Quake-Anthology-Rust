@@ -51,6 +51,11 @@ impl<'a> WorldTrace<'a> {
         }
     }
 
+    pub fn with_pass(mut self, pass: CollisionOwner) -> Self {
+        self.pass = pass;
+        self
+    }
+
     pub fn with_native_entities(mut self, view: Option<&'a dyn NativeTraceEntities>) -> Self {
         self.native_entities = view.map(|view| (view.module(), view));
         self

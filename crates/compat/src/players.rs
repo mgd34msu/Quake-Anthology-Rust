@@ -1,6 +1,6 @@
 //! Native numeric stats enter the same player/value projection as snapshots.
 use crate::{
-    entities::{Entities, native_address},
+    entities::{Entities, EntityProjection, native_address},
     memory::ModuleMemory,
     services::CallError,
 };
@@ -46,6 +46,7 @@ impl PlayerStats {
         &mut self,
         memory: &ModuleMemory<'_>,
         table: Entities,
+        entities: &EntityProjection,
         module: ModuleId,
         server: &mut Server,
         mut pmove: Option<&mut crate::pmove::Pmove>,
@@ -85,8 +86,9 @@ impl PlayerStats {
                 |_| None,
             );
             if module_moves && let Some(pmove) = pmove.as_deref_mut() {
-                pmove.import_client(memory, pointer, edict, &mut client.player)?;
-                let body = server.entities.columns.body(slot);
+                let (body, _) = entities.body(memory, edict)?;
+                pmove.import_client(memory, pointer, &mut client.player)?;
+                client.player.body.position = body.position;
                 client.player.body.mins = body.mins;
                 client.player.body.maxs = body.maxs;
                 server.entities.columns.set_body(slot, client.player.body);
