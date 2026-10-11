@@ -186,6 +186,7 @@ const fn ui() -> CallTable {
     t.entries[3] = Some(cvar_set::<true, true>);
     t.entries[4] = Some(cvar_number);
     t.entries[5] = Some(cvar_string);
+    t.entries[6] = Some(cvar_set_value);
     t.entries[7] = Some(cvar_reset);
     t.entries[8] = Some(cvar_create);
     t.entries[10] = Some(argc);
@@ -517,15 +518,21 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
     }
     let value =
         std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
-    let view = match c.services.cvars.bind(name, c.context.console) {
+    write_cvar::<REGISTER, FORCE>(c.services, c.context.console, name, value)
+}
+fn write_cvar<const REGISTER: bool, const FORCE: bool>(
+    services: &mut EngineServices<'_>,
+    context: qa_console::views::Context,
+    name: &str,
+    value: &str,
+) -> Result<u64, CallError> {
+    let view = match services.cvars.bind(name, context) {
         Some(view) => view,
-        None if REGISTER => {
-            (ENGINE_CALLS.cvar_register)(c.services, c.context.console, name, Some(value), 0)?
-        }
+        None if REGISTER => (ENGINE_CALLS.cvar_register)(services, context, name, Some(value), 0)?,
         None => return Err(CallError::Cvar),
     };
     if REGISTER
-        && c.services
+        && services
             .cvars
             .read(view)
             .is_ok_and(|text| text.as_str() == value)
@@ -535,11 +542,54 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
     if FORCE {
         // Q3 game/cgame/ui call Cvar_Set -> Cvar_Set2(force=true), while
         // QuakeC keeps its existing normal-write boundary policy.
-        (ENGINE_CALLS.cvar_force)(c.services, view, value)?;
+        (ENGINE_CALLS.cvar_force)(services, view, value)?;
     } else {
-        (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
+        (ENGINE_CALLS.cvar_set)(services, view, value)?;
     }
     Ok(0)
+}
+fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let value = f32::from_bits(c.arg(1)? as u32);
+    let mut text = FixedText::<64>::default();
+    // Cvar_SetValue uses an integral form only when the f32 fits its native
+    // signed int; all other values use %f after promotion to double.
+    if (-2147483648.0..2147483648.0).contains(&value) && value == value.trunc() {
+        write!(text, "{}", value as i32).map_err(|_| CallError::Text)?;
+    } else if value.is_nan() {
+        text.set(if value.is_sign_negative() {
+            "-nan"
+        } else {
+            "nan"
+        })
+        .map_err(|_| CallError::Text)?;
+    } else {
+        write!(text, "{:.6}", f64::from(value)).map_err(|_| CallError::Text)?;
+    }
+    // The original Com_sprintf copies at most 31 bytes into val[32].
+    if text.as_bytes().len() >= 32 {
+        let mut warning = FixedText::<64>::default();
+        writeln!(
+            warning,
+            "Com_sprintf: overflow of {} in 32",
+            text.as_bytes().len()
+        )
+        .map_err(|_| CallError::Text)?;
+        let _ = (ENGINE_CALLS.print)(
+            c.services,
+            None,
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            warning.as_bytes(),
+        );
+    }
+    let name =
+        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    write_cvar::<true, true>(
+        c.services,
+        c.context.console,
+        name,
+        &text.as_str()[..text.as_bytes().len().min(31)],
+    )
 }
 fn cvar_reset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name =

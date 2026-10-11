@@ -335,6 +335,86 @@ fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
 }
 
 #[test]
+fn q3_ui_numeric_setter_preserves_native_formatting_and_forced_writes() {
+    // Cvar_SetValue's %i/%f branches and val[32], checked against libc snprintf.
+    let values: [(u32, &str); 15] = [
+        (0x00000000, "0"),
+        (0x80000000, "0"),
+        (0x3f800000, "1"),
+        (0xc0000000, "-2"),
+        (0x3f000000, "0.500000"),
+        (0xbfa00000, "-1.250000"),
+        (0x3f9e0651, "1.234568"),
+        (0x4effffff, "2147483520"),
+        (0x4f000000, "2147483648.000000"),
+        (0xcf000000, "-2147483648"),
+        (0x7149f2ca, "1000000015047466219876688855040"),
+        (0x7f800000, "inf"),
+        (0xff800000, "-inf"),
+        (0x7fc00000, "nan"),
+        (0xffc00000, "-nan"),
+    ];
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 511 }),
+        (1u64 << 40, Addresses::Native),
+    ] {
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let ctx = context();
+        let rom = console
+            .cvars
+            .register("_qa_ui_number_rom", Some("1"), 64, ctx.console)
+            .unwrap();
+        let latch = console
+            .cvars
+            .register("_qa_ui_number_latch", Some("1"), 32, ctx.console)
+            .unwrap();
+        console.cvars.set_latch_active(latch.canonical(), true);
+        console.cvars.write(latch, "3").unwrap();
+        let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        for (name, bits, expected) in values
+            .iter()
+            .map(|&(bits, text)| ("_qa_ui_number", bits, text))
+            .chain([
+                ("_qa_ui_number_rom", 0x40000000, "2"),
+                ("_qa_ui_number_latch", 0x40000000, "2"),
+            ])
+        {
+            memory
+                .write_string(base + 32, 128, name.as_bytes())
+                .unwrap();
+            let arguments = [base + 32, 0xfedcba9800000000 | u64::from(bits)];
+            let mut call = Invocation {
+                services: &mut services,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                context: ctx,
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments: &arguments,
+            };
+            assert_eq!(Q3_UI.invoke(6, &mut call, &mut unknown), Ok(0));
+            let view = services.cvars.bind(name, ctx.console).unwrap();
+            assert_eq!(services.cvars.read(view).unwrap().as_str(), expected);
+        }
+        assert_eq!(services.cvars.flags(rom) & 64, 64);
+        assert!(services.cvars.latched(latch).unwrap().is_none());
+        assert_eq!(services.server.events.len(), 1);
+        assert_eq!(unknown.calls, 0);
+    }
+}
+
+#[test]
 fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
