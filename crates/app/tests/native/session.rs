@@ -25,6 +25,8 @@ use std::time::Duration;
 #[allow(dead_code)]
 mod native_image;
 use native_image::*;
+#[path = "../support/visibility_world.rs"]
+mod visibility_world;
 
 struct Files(std::path::PathBuf);
 impl Drop for Files {
@@ -527,6 +529,93 @@ fn native_usercmd_uses_session_dispatch_and_native_client_identity() {
             assert_eq!(counts.traps, 0);
         }
         assert!(host.runtime.server.events.is_empty());
+    }
+}
+
+fn native_visibility_uses_compiled_pvs_through_session_dispatch() {
+    use qa_world::visibility::PvsRows;
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        let microsoft = encoding == Encoding::Pe;
+        // The export's first argument is the import ordinal. The two vectors
+        // live above Microsoft's shadow space in the owned child's stack.
+        let mut code = vec![0x48, 0x83, 0xec, 56, 0xc7, 0x44, 0x24, 32];
+        code.extend(1.0f32.to_bits().to_le_bytes());
+        code.extend([0x48, 0xc7, 0x44, 0x24, 36, 0, 0, 0, 0, 0xc7, 0x44, 0x24, 44]);
+        code.extend((-1.0f32).to_bits().to_le_bytes());
+        code.extend([0x48, 0xc7, 0x44, 0x24, 48, 0, 0, 0, 0]);
+        let next = code.len() + 7;
+        code.extend([0x48, 0x8b, 0x05]);
+        code.extend((0x700i32 - next as i32).to_le_bytes());
+        code.extend([0x48, 0x8d, if microsoft { 0x54 } else { 0x74 }, 0x24, 32]);
+        code.extend([
+            if microsoft { 0x4c } else { 0x48 },
+            0x8d,
+            if microsoft { 0x44 } else { 0x54 },
+            0x24,
+            44,
+        ]);
+        code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 56, 0xc3]);
+        let image = function_image(encoding, &code);
+        let name = if microsoft {
+            b"GetGameAPI".as_slice()
+        } else {
+            b"vmMain".as_slice()
+        };
+        let at = (image.symbol(name).unwrap().address - image.base) as usize;
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.collision = Some(visibility_world::collision(
+            &runtime.geometry,
+            [Some(0), Some(1)],
+            PvsRows::load(vec![Some(0); 2], vec![3]).unwrap(),
+        ));
+        let mut request = module(
+            &mut runtime,
+            ModuleId(7),
+            RuleSetId::Quake3,
+            TickRate::fixed(50).unwrap(),
+            b"unused\0",
+            encoding,
+            &[],
+        );
+        let Program::Native { vm, .. } = &mut request.program else {
+            panic!()
+        };
+        vm.process.memory_mut().unwrap()[at..at + code.len()].copy_from_slice(&code);
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![request],
+        )
+        .unwrap();
+        host.initialize_modules(Phase::Server);
+        assert_eq!(host.module_state(ModuleId(7)), Some(State::Running));
+        let live_before = host.runtime.server.entities.len();
+        for (open, ordinal, expected) in [
+            (false, 26, 0),
+            (false, 27, 1),
+            (true, 26, 1),
+            (false, 26, 0),
+        ] {
+            host.runtime
+                .collision
+                .as_mut()
+                .unwrap()
+                .portals
+                .as_mut()
+                .unwrap()
+                .set(0, open)
+                .unwrap();
+            let mut export = Export::clocked(CallbackId(0));
+            export.arguments[0] = Argument::Word(ordinal);
+            host.call_module_export(ModuleId(7), export, ThinkTime::Milliseconds(0))
+                .unwrap();
+            let counts = host.module_counts(ModuleId(7)).unwrap();
+            assert_eq!(counts.last_result, Some(ModuleResult::Native(expected)));
+            assert_eq!(counts.traps, 0);
+        }
+        assert!(host.runtime.server.events.is_empty());
+        assert_eq!(host.runtime.server.entities.len(), live_before);
     }
 }
 
@@ -4330,6 +4419,7 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 }
 
 pub fn run() {
+    native_visibility_uses_compiled_pvs_through_session_dispatch();
     native_usercmd_uses_session_dispatch_and_native_client_identity();
     pe_lifecycle_uses_session_order_and_rejects_false_attach();
     pe_lifecycle_rejects_unmapped_callbacks_and_read_only_tls_indices();

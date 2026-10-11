@@ -266,6 +266,8 @@ const fn server() -> CallTable {
     t.entries[18] = scalar!(config_set);
     t.entries[19] = scalar!(config_get);
     t.entries[25] = scalar!(q3_point_contents);
+    t.entries[26] = scalar!(q3_visibility::<false>);
+    t.entries[27] = scalar!(q3_visibility::<true>);
     t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
     t.entries[42] = scalar!(snap_vector);
@@ -1580,8 +1582,6 @@ fn native_message_entity(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
 fn native_visibility<const WIDE: bool, const HEARING: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    let first = c.memory.read_vec3(c.pointer(0)?)?;
-    let second = c.memory.read_vec3(c.pointer(1)?)?;
     let channel = if HEARING {
         qa_world::visibility::VisibilityChannel::Hearing
     } else {
@@ -1589,8 +1589,48 @@ fn native_visibility<const WIDE: bool, const HEARING: bool>(
     };
     let portals =
         (!WIDE || c.arg(2)? != 0) && !c.services.ignore_areas(c.context.console.source, WIDE);
+    visibility_import(
+        c,
+        qa_world::visibility::PointVisibility {
+            channel,
+            missing_visible: false,
+            area_zero: !WIDE,
+        },
+        portals,
+    )
+}
+fn q3_visibility<const IGNORE_PORTALS: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    let portals = !IGNORE_PORTALS
+        && !c
+            .services
+            .ignore_areas(qa_core::primitives::RuleSetId::Quake3, true);
+    visibility_import(
+        c,
+        qa_world::visibility::PointVisibility {
+            channel: qa_world::visibility::VisibilityChannel::Sight,
+            missing_visible: true,
+            area_zero: true,
+        },
+        portals,
+    )
+}
+fn visibility_import(
+    c: &mut Invocation<'_, '_, '_>,
+    policy: qa_world::visibility::PointVisibility,
+    portals: bool,
+) -> Result<u64, CallError> {
+    let first = c.memory.read_vec3(c.pointer(0)?)?;
+    let second = c.memory.read_vec3(c.pointer(1)?)?;
     Ok(u64::from((ENGINE_CALLS.in_visibility)(
-        c.services, first, second, channel, false, portals, !WIDE,
+        c.services,
+        first,
+        second,
+        policy.channel,
+        policy.missing_visible,
+        portals,
+        policy.area_zero,
     )?))
 }
 fn native_message_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

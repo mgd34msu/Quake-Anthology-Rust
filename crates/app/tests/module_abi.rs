@@ -1,5 +1,7 @@
 #[path = "support/service_program.rs"]
 mod service_program;
+#[path = "support/visibility_world.rs"]
+mod visibility_world;
 use qa_app::Runtime;
 use qa_compat::{
     abi::{Addresses, Invocation, Q3_CLIENT, Q3_SERVER, Q3_UI, QvmCalls, UnknownCalls},
@@ -23,6 +25,138 @@ fn context() -> CallContext {
         console: Context::default(),
         allocation: AllocationPolicy::EDICT,
         link_order: LinkOrder::Head,
+    }
+}
+
+#[test]
+fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
+    use qa_core::primitives::Vec3;
+    use qa_world::visibility::PvsRows;
+    for addresses in [
+        Addresses::Qvm { mask: 127 },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        let base = if matches!(addresses, Addresses::Qvm { .. }) {
+            0
+        } else {
+            1 << 40
+        };
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let ctx = Context {
+            source: RuleSetId::Quake3,
+            ..Context::default()
+        };
+        let no_areas = console.cvars.bind("cm_noAreas", ctx).unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut memory = ModuleMemory::load(base, 128, &[]).unwrap();
+        memory.write_vec3(base + 16, Vec3([1.0, 0.0, 0.0])).unwrap();
+        memory
+            .write_vec3(base + 32, Vec3([-1.0, 0.0, 0.0]))
+            .unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        for (selectors, row_bytes, visible) in [
+            ([Some(0), Some(1)], vec![3, 3], true),
+            ([Some(0), Some(1)], vec![1, 2], false),
+            ([None, Some(1)], vec![3, 3], true),
+        ] {
+            runtime.collision = Some(visibility_world::collision(
+                &runtime.geometry,
+                selectors,
+                PvsRows::load(vec![Some(0), Some(1)], row_bytes).unwrap(),
+            ));
+            for (open, ignore, same_leaf, expected) in [
+                (false, "0", false, false),
+                (true, "0", false, visible),
+                (false, "1", false, visible),
+                (false, "0.5", false, false),
+                (false, "1.5", false, visible),
+                (false, "0", true, true),
+            ] {
+                runtime
+                    .collision
+                    .as_mut()
+                    .unwrap()
+                    .portals
+                    .as_mut()
+                    .unwrap()
+                    .set(0, open)
+                    .unwrap();
+                console.cvars.force_write(no_areas, ignore).unwrap();
+                let wrap = if base == 0 { 128 } else { 0 };
+                let second = if same_leaf { 16 } else { 32 };
+                let arguments = [base + 16 + wrap, base + second + wrap];
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                let mut call = Invocation {
+                    services: &mut services,
+                    memory: &mut memory,
+                    native_cvars: None,
+                    native_resources: None,
+                    native_entities: None,
+                    native_surfaces: None,
+                    native_command: None,
+                    native_configs: None,
+                    context: context(),
+                    platform_time: EventTime(0),
+                    command: &[],
+                    addresses,
+                    arguments: &arguments,
+                };
+                assert_eq!(
+                    Q3_SERVER.invoke(26, &mut call, &mut unknown),
+                    Ok(u64::from(expected))
+                );
+                assert_eq!(
+                    Q3_SERVER.invoke(27, &mut call, &mut unknown),
+                    Ok(u64::from(same_leaf || visible))
+                );
+            }
+            if matches!(addresses, Addresses::Qvm { .. }) {
+                use qa_formats::program::qvm::Opcode::*;
+                for ordinal in [26, 27] {
+                    let mut vm = service_program::program(
+                        &[
+                            (Enter, 64),
+                            (Const, 16),
+                            (Arg, 8),
+                            (Const, 32),
+                            (Arg, 12),
+                            (Const, -ordinal - 1),
+                            (Call, 0),
+                            (Leave, 64),
+                        ],
+                        memory.read(base, 48).unwrap(),
+                    );
+                    let mut services =
+                        runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                    assert_eq!(
+                        vm.call(
+                            &mut QvmCalls {
+                                services: &mut services,
+                                table: &Q3_SERVER,
+                                context: context(),
+                                platform_time: EventTime(0),
+                                command: &[],
+                                unknown: &mut unknown,
+                            },
+                            [0; 10],
+                            128,
+                            false
+                        ),
+                        Ok(if ordinal == 26 { 0 } else { i32::from(visible) })
+                    );
+                }
+            }
+        }
+        assert_eq!(unknown.calls, 0);
+        assert!(runtime.server.events.is_empty());
     }
 }
 
