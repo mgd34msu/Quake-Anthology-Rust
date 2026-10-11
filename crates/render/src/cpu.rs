@@ -584,7 +584,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(material) = assets.material(entity.material.unwrap_or(model.material)) else {
+        let Some(material) = entity.material(assets).and_then(|id| assets.material(id)) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };

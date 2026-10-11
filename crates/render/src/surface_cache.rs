@@ -698,6 +698,25 @@ pub struct CacheStats {
     pub resident_bytes: u64,
     pub peak_resident_bytes: u64,
 }
+impl CacheStats {
+    /// Cumulative counters become deltas; resident gauges retain current values.
+    pub fn since(self, before: Self) -> Self {
+        Self {
+            hits: self.hits.saturating_sub(before.hits),
+            fills: self.fills.saturating_sub(before.fills),
+            evictions: self.evictions.saturating_sub(before.evictions),
+            rejected: self.rejected.saturating_sub(before.rejected),
+            nonresident_fills: self
+                .nonresident_fills
+                .saturating_sub(before.nonresident_fills),
+            state_fills: self.state_fills.saturating_sub(before.state_fills),
+            fill_bytes: self.fill_bytes.saturating_sub(before.fill_bytes),
+            evicted_bytes: self.evicted_bytes.saturating_sub(before.evicted_bytes),
+            resident_bytes: self.resident_bytes,
+            peak_resident_bytes: self.peak_resident_bytes,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct CacheSpan {

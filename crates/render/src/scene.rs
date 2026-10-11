@@ -163,6 +163,11 @@ pub struct SceneEntity {
     pub shader_texcoord: [f32; 2],
     pub lighting: Option<crate::stage::EntityLighting>,
 }
+impl SceneEntity {
+    pub fn material(&self, assets: &Assets) -> Option<MaterialId> {
+        Some(self.material.unwrap_or(assets.model(self.model)?.material))
+    }
+}
 impl Default for SceneEntity {
     fn default() -> Self {
         Self {
@@ -687,8 +692,7 @@ fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawK
         }
         DrawKind::Entity => {
             let entity = list.entity(draw.index);
-            let model = assets.model(entity.model)?;
-            (entity.material.unwrap_or(model.material), draw.index, 0)
+            (entity.material(assets)?, draw.index, 0)
         }
         DrawKind::Poly => (list.poly(draw.index).material, u32::MAX, 0),
     };

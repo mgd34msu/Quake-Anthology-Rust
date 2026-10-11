@@ -925,10 +925,6 @@ impl GlBackend {
         }
     }
 
-    #[expect(
-        clippy::chunks_exact_to_as_chunks,
-        reason = "Registered flat triangle lists feed native sky clipping as complete triples in submission order."
-    )]
     fn collect_skies(
         &mut self,
         list: &CommandList,
@@ -939,74 +935,25 @@ impl GlBackend {
     ) {
         self.sky_touched.begin();
         self.sky_drawn.begin();
-        // The frontend already selected visibility and owns these submissions.
-        // All geometry contributes to one clip per material; no second PVS walk.
-        for item in list.draws(draws) {
-            match item.kind {
-                DrawKind::Surface => {
-                    let reference = list.surface(item.index);
-                    let Some(world) = assets.world(reference.world) else {
-                        continue;
-                    };
-                    let Some(binding) = world.bindings.get(reference.surface as usize) else {
-                        continue;
-                    };
-                    let Some(clip) = self.sky_clip(binding.material, assets, stats) else {
-                        continue;
-                    };
-                    let Some(surface) = world.geometry.surfaces.get(reference.surface as usize)
-                    else {
-                        stats.rejected = stats.rejected.saturating_add(1);
-                        continue;
-                    };
-                    for triangle in
-                        world.geometry.indices[surface.indices.indices()].chunks_exact(3)
+        crate::sky::for_each_sky_triangle(list, draws, assets, |material, submission| {
+            match submission {
+                crate::sky::SkySubmission::Begin(_) => {
+                    return self.sky_clip(material, assets, stats).is_some();
+                }
+                crate::sky::SkySubmission::Triangle(points) => {
+                    if !self.sky_batches[material.0 as usize]
+                        .clip
+                        .add_polygon(&points, origin)
                     {
-                        let points = [triangle[0], triangle[1], triangle[2]]
-                            .map(|index| world.geometry.vertices[index as usize].vertex.position);
-                        if !clip.add_polygon(&points, origin) {
-                            stats.rejected = stats.rejected.saturating_add(1);
-                        }
+                        stats.rejected = stats.rejected.saturating_add(1);
                     }
                 }
-                DrawKind::Entity => {
-                    let entity = list.entity(item.index);
-                    let Some(model) = assets.model(entity.model) else {
-                        continue;
-                    };
-                    let material_id = entity.material.unwrap_or(model.material);
-                    let Some(clip) = self.sky_clip(material_id, assets, stats) else {
-                        continue;
-                    };
-                    for triangle in model.indices.chunks_exact(3) {
-                        let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
-                            let position = model.vertices[index as usize].position;
-                            qa_core::math::transform_point(entity.origin, entity.axes, position)
-                        });
-                        if !clip.add_polygon(&points, origin) {
-                            stats.rejected = stats.rejected.saturating_add(1);
-                        }
-                    }
-                }
-                DrawKind::Poly => {
-                    let poly = list.poly(item.index);
-                    let Some(clip) = self.sky_clip(poly.material, assets, stats) else {
-                        continue;
-                    };
-                    let vertices = list.vertices(poly.vertices);
-                    for triangle in vertices[1..].windows(2) {
-                        let points = [
-                            vertices[0].position,
-                            triangle[0].position,
-                            triangle[1].position,
-                        ];
-                        if !clip.add_polygon(&points, origin) {
-                            stats.rejected = stats.rejected.saturating_add(1);
-                        }
-                    }
+                crate::sky::SkySubmission::MissingSurface => {
+                    stats.rejected = stats.rejected.saturating_add(1)
                 }
             }
-        }
+            true
+        });
     }
 
     fn sky_clip(
@@ -1071,14 +1018,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        if rotation.is_some_and(|rotation| rotation.degrees_per_second != 0.0) {
-            // Native Q2 draws the complete cube when rotating; bounded old
-            // rectangles would leave gaps after the rotation.
-            bounds.fill(FaceBounds {
-                mins: [-1.0; 2],
-                maxs: [1.0; 2],
-            });
-        }
+        bounds = crate::sky::draw_bounds(bounds, rotation);
         self.set_depth_hack(false);
         if params.far_depth {
             unsafe {
@@ -1126,52 +1066,17 @@ impl GlBackend {
             ..MaterialSettings::default()
         };
         for face in CubeFace::ALL {
-            let bound = bounds[face.index()];
-            if !bound.visible() {
+            let Some(vertices) = crate::sky::box_face_vertices(
+                face,
+                bounds[face.index()],
+                params,
+                rotation,
+                inputs.view_origin,
+                inputs.time_ms,
+                far,
+            ) else {
                 continue;
-            }
-            let (mins, maxs) = if params.snap_bounds {
-                let Some([mins, maxs]) = bound.grid_bounds() else {
-                    continue;
-                };
-                (
-                    mins.map(|value| (value as f32 - 4.0) / 4.0),
-                    maxs.map(|value| (value as f32 - 4.0) / 4.0),
-                )
-            } else {
-                (bound.mins, bound.maxs)
             };
-            let vertices = [
-                [mins[0], mins[1]],
-                [mins[0], maxs[1]],
-                [maxs[0], maxs[1]],
-                [maxs[0], mins[1]],
-            ]
-            .map(|st| {
-                let cube = crate::sky::cube_vertex(
-                    face,
-                    st,
-                    params.distance.value(far),
-                    params.texcoord_range,
-                );
-                let direction = if let Some(rotation) = rotation {
-                    crate::sky::unrotate(
-                        cube.direction,
-                        Rotation {
-                            degrees_per_second: -rotation.degrees_per_second,
-                            ..rotation
-                        },
-                        inputs.time_ms as f32 * 0.001,
-                    )
-                } else {
-                    cube.direction
-                };
-                Vertex {
-                    position: inputs.view_origin + direction,
-                    texcoord: cube.uv,
-                    ..Vertex::default()
-                }
-            });
             let Some(first) = self.upload(&vertices) else {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
@@ -1241,45 +1146,17 @@ impl GlBackend {
             return;
         };
         let mut written = 0;
-        for face in CubeFace::ALL {
-            if face == CubeFace::NegativeZ {
-                continue;
-            }
-            let Some([mins, maxs]) = bounds[face.index()].grid_bounds() else {
-                continue;
-            };
-            for t in mins[1]..maxs[1] {
-                for s in mins[0]..maxs[0] {
-                    // Native FillCloudySkySide keeps this diagonal and index
-                    // order. All visible faces share one contiguous draw range.
-                    for [s, t] in [
-                        [s, t],
-                        [s, t + 1],
-                        [s + 1, t],
-                        [s, t + 1],
-                        [s + 1, t + 1],
-                        [s + 1, t],
-                    ] {
-                        let st = [(s as f32 - 4.0) / 4.0, (t as f32 - 4.0) / 4.0];
-                        let direction = crate::sky::cube_vertex(
-                            face,
-                            st,
-                            params.distance.value(far),
-                            [0.0, 1.0],
-                        )
-                        .direction;
-                        let vertex = Vertex {
-                            position: inputs.view_origin + direction,
-                            normal: Vec3::default(),
-                            texcoord: grid.uv[face.index()][t][s],
-                            ..Vertex::default()
-                        };
-                        unsafe {
-                            mapped.as_ptr().add(first + written).write(vertex);
-                        }
-                        written += 1;
-                    }
+        for triangle in crate::sky::cloud_triangles(
+            bounds,
+            grid,
+            params.distance.value(far),
+            inputs.view_origin,
+        ) {
+            for vertex in triangle {
+                unsafe {
+                    mapped.as_ptr().add(first + written).write(vertex);
                 }
+                written += 1;
             }
         }
         self.bind_vao(self.dynamic.vao);
@@ -1315,14 +1192,17 @@ impl GlBackend {
         far: f32,
         stats: &mut BackendStats,
     ) {
-        let (Some(model), Some(&mesh)) = (
+        let (Some(_), Some(&mesh)) = (
             assets.model(entity.model),
             self.meshes.get(entity.model.0 as usize),
         ) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let material_id = entity.material.unwrap_or(model.material);
+        let Some(material_id) = entity.material(assets) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
         let Some(material) = assets.material(material_id) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;

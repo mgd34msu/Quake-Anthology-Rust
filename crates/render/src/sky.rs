@@ -4,7 +4,211 @@
 //! quake/WinQuake/d_sky.c D_Sky_uv_To_st; quake-2/ref_gl/gl_warp.c
 //! DrawSkyPolygon/ClipSkyPolygon/MakeSkyVec; quake-iii-arena/code/renderer/
 //! tr_sky.c R_InitSkyTexCoords/MakeSkyVec/ClipSkyPolygon.
+use crate::assets::{Assets, CubeSkyParams, MaterialId, Vertex};
+use crate::scene::{CommandList, DrawItem, DrawKind, Span};
 use qa_core::{math, primitives::Vec3};
+
+pub(crate) enum SkySubmission {
+    Begin(DrawItem),
+    Triangle([Vec3; 3]),
+    MissingSurface,
+}
+
+pub(crate) fn item_material(
+    item: DrawItem,
+    list: &CommandList,
+    assets: &Assets,
+) -> Option<MaterialId> {
+    match item.kind {
+        DrawKind::Surface => {
+            let reference = list.surface(item.index);
+            Some(
+                assets
+                    .world(reference.world)?
+                    .bindings()
+                    .get(reference.surface as usize)?
+                    .material,
+            )
+        }
+        DrawKind::Entity => list.entity(item.index).material(assets),
+        DrawKind::Poly => Some(list.poly(item.index).material),
+    }
+}
+
+#[expect(
+    clippy::chunks_exact_to_as_chunks,
+    reason = "Retain native complete-triple traversal and its incomplete-tail behavior"
+)]
+pub(crate) fn for_each_sky_triangle(
+    list: &CommandList,
+    draws: Span,
+    assets: &Assets,
+    mut visit: impl FnMut(MaterialId, SkySubmission) -> bool,
+) {
+    for &item in list.draws(draws) {
+        let Some(material) = item_material(item, list, assets) else {
+            continue;
+        };
+        if !visit(material, SkySubmission::Begin(item)) {
+            continue;
+        }
+        match item.kind {
+            DrawKind::Surface => {
+                let reference = list.surface(item.index);
+                let Some(world) = assets.world(reference.world) else {
+                    continue;
+                };
+                let Some(surface) = world.geometry().surfaces.get(reference.surface as usize)
+                else {
+                    visit(material, SkySubmission::MissingSurface);
+                    continue;
+                };
+                for triangle in world.geometry().indices[surface.indices.indices()].chunks_exact(3)
+                {
+                    let points = [triangle[0], triangle[1], triangle[2]]
+                        .map(|index| world.geometry().vertices[index as usize].vertex.position);
+                    visit(material, SkySubmission::Triangle(points));
+                }
+            }
+            DrawKind::Entity => {
+                let entity = list.entity(item.index);
+                let Some(model) = assets.model(entity.model) else {
+                    continue;
+                };
+                for triangle in model.indices.chunks_exact(3) {
+                    let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
+                        math::transform_point(
+                            entity.origin,
+                            entity.axes,
+                            model.vertices[index as usize].position,
+                        )
+                    });
+                    visit(material, SkySubmission::Triangle(points));
+                }
+            }
+            DrawKind::Poly => {
+                let vertices = list.vertices(list.poly(item.index).vertices);
+                for pair in vertices[1..].windows(2) {
+                    visit(
+                        material,
+                        SkySubmission::Triangle([
+                            vertices[0].position,
+                            pair[0].position,
+                            pair[1].position,
+                        ]),
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn draw_bounds(
+    mut bounds: [FaceBounds; 6],
+    rotation: Option<Rotation>,
+) -> [FaceBounds; 6] {
+    if rotation.is_some_and(|rotation| rotation.degrees_per_second != 0.0) {
+        bounds.fill(FaceBounds {
+            mins: [-1.0; 2],
+            maxs: [1.0; 2],
+        });
+    }
+    bounds
+}
+
+pub(crate) fn grid_st(index: usize) -> f32 {
+    (index as f32 - 4.0) / 4.0
+}
+
+pub(crate) fn box_face_vertices(
+    face: CubeFace,
+    bound: FaceBounds,
+    params: CubeSkyParams,
+    rotation: Option<Rotation>,
+    view_origin: Vec3,
+    time_ms: u64,
+    far: f32,
+) -> Option<[Vertex; 4]> {
+    if !bound.visible() {
+        return None;
+    }
+    let (mins, maxs) = if params.snap_bounds {
+        let [mins, maxs] = bound.grid_bounds()?;
+        (mins.map(grid_st), maxs.map(grid_st))
+    } else {
+        (bound.mins, bound.maxs)
+    };
+    Some(
+        [
+            [mins[0], mins[1]],
+            [mins[0], maxs[1]],
+            [maxs[0], maxs[1]],
+            [maxs[0], mins[1]],
+        ]
+        .map(|st| {
+            let cube = cube_vertex(face, st, params.distance.value(far), params.texcoord_range);
+            let direction = rotation.map_or(cube.direction, |rotation| {
+                unrotate(
+                    cube.direction,
+                    Rotation {
+                        degrees_per_second: -rotation.degrees_per_second,
+                        ..rotation
+                    },
+                    time_ms as f32 * 0.001,
+                )
+            });
+            Vertex {
+                position: view_origin + direction,
+                texcoord: cube.uv,
+                ..Vertex::default()
+            }
+        }),
+    )
+}
+
+pub(crate) fn cloud_triangles(
+    bounds: [FaceBounds; 6],
+    grid: &CloudGrid,
+    distance: f32,
+    view_origin: Vec3,
+) -> impl Iterator<Item = [Vertex; 3]> + '_ {
+    CubeFace::ALL
+        .into_iter()
+        .filter_map(move |face| {
+            if face == CubeFace::NegativeZ {
+                return None;
+            }
+            bounds[face.index()]
+                .grid_bounds()
+                .map(|range| (face, range))
+        })
+        .flat_map(move |(face, [mins, maxs])| {
+            (mins[1]..maxs[1]).flat_map(move |t| {
+                (mins[0]..maxs[0]).flat_map(move |s| {
+                    [
+                        [[s, t], [s, t + 1], [s + 1, t]],
+                        [[s, t + 1], [s + 1, t + 1], [s + 1, t]],
+                    ]
+                    .map(|cell| {
+                        cell.map(|[s, t]| {
+                            let direction =
+                                cube_vertex(face, [grid_st(s), grid_st(t)], distance, [0.0, 1.0])
+                                    .direction;
+                            Vertex {
+                                position: view_origin + direction,
+                                texcoord: grid.uv[face.index()][t][s],
+                                ..Vertex::default()
+                            }
+                        })
+                    })
+                })
+            })
+        })
+}
+
+#[cfg(test)]
+#[path = "../tests/sky_geometry/oracle.rs"]
+mod geometry_tests;
 
 pub const LAYER_SIZE: usize = 128;
 pub const CLOUD_SUBDIVISIONS: usize = 8;
@@ -329,7 +533,7 @@ impl CloudGrid {
         for face in CubeFace::ALL {
             for t in 0..CLOUD_GRID_SIZE {
                 for s in 0..CLOUD_GRID_SIZE {
-                    let st = [(s as f32 - 4.0) / 4.0, (t as f32 - 4.0) / 4.0];
+                    let st = [grid_st(s), grid_st(t)];
                     let direction = cube_vertex(face, st, 1024.0 / 1.75, [0.0, 1.0]).direction;
                     let (p, uv) = cloud_intersection(direction, sphere)
                         .ok_or("sky cloud projection failed")?;

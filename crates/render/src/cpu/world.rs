@@ -146,6 +146,37 @@ pub struct WorldStats {
     pub cache: CacheStats,
 }
 
+#[derive(Clone, Copy)]
+enum CacheKind {
+    Factor,
+    Rgba,
+}
+impl WorldStats {
+    fn add_cache(&mut self, kind: CacheKind, delta: CacheStats) {
+        let fields = match kind {
+            CacheKind::Factor => [
+                &mut self.factor_hits,
+                &mut self.factor_fills,
+                &mut self.factor_evictions,
+                &mut self.factor_rejected,
+            ],
+            CacheKind::Rgba => [
+                &mut self.rgba_hits,
+                &mut self.rgba_fills,
+                &mut self.rgba_evictions,
+                &mut self.rgba_rejected,
+            ],
+        };
+        for (field, value) in
+            fields
+                .into_iter()
+                .zip([delta.hits, delta.fills, delta.evictions, delta.rejected])
+        {
+            *field = field.saturating_add(value);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct SurfaceInfo {
     cache: u32,
@@ -954,10 +985,6 @@ impl WorldPrepare {
         true
     }
 
-    #[expect(
-        clippy::chunks_exact_to_as_chunks,
-        reason = "Retain packed native pixel or triangle traversal and its incomplete-tail behavior"
-    )]
     fn collect_skies(
         &mut self,
         camera: &Camera,
@@ -972,79 +999,35 @@ impl WorldPrepare {
         if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
             return;
         }
-        for &item in list.draws(scene.draws) {
-            let Some(material) = sky_item_material(item, list, assets) else {
-                continue;
-            };
-            if !self
-                .catalog
-                .skies
-                .get(material.0 as usize)
-                .is_some_and(|batch| batch.enabled)
-            {
-                continue;
-            }
-            match item.kind {
-                DrawKind::Surface => {
-                    let reference = list.surface(item.index);
-                    let Some(world) = assets.world(reference.world) else {
-                        continue;
-                    };
-                    let Some(surface) = world.geometry().surfaces.get(reference.surface as usize)
-                    else {
-                        continue;
-                    };
-                    if self
+        crate::sky::for_each_sky_triangle(list, scene.draws, assets, |material, submission| {
+            match submission {
+                crate::sky::SkySubmission::Begin(item) => {
+                    if !self
                         .catalog
-                        .offsets
-                        .get(reference.world.0 as usize)
-                        .and_then(|offset| {
-                            self.catalog
-                                .surfaces
-                                .get(offset + reference.surface as usize)
-                        })
-                        .is_some_and(|info| info.raster_empty)
+                        .skies
+                        .get(material.0 as usize)
+                        .is_some_and(|batch| batch.enabled)
                     {
-                        continue;
+                        return false;
                     }
-                    for triangle in
-                        world.geometry().indices[surface.indices.indices()].chunks_exact(3)
-                    {
-                        let points = [triangle[0], triangle[1], triangle[2]]
-                            .map(|index| world.geometry().vertices[index as usize].vertex.position);
-                        self.add_sky_polygon(material, points, camera, stats);
-                    }
-                }
-                DrawKind::Entity => {
-                    let entity = list.entity(item.index);
-                    let Some(model) = assets.model(entity.model) else {
-                        continue;
-                    };
-                    for triangle in model.indices.chunks_exact(3) {
-                        let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
-                            let position = model.vertices[index as usize].position;
-                            qa_core::math::transform_point(entity.origin, entity.axes, position)
-                        });
-                        self.add_sky_polygon(material, points, camera, stats);
+                    if item.kind == DrawKind::Surface {
+                        let reference = list.surface(item.index);
+                        if self
+                            .catalog
+                            .surface_info(reference.world, reference.surface)
+                            .is_some_and(|info| info.raster_empty)
+                        {
+                            return false;
+                        }
                     }
                 }
-                DrawKind::Poly => {
-                    let vertices = list.vertices(list.poly(item.index).vertices);
-                    for triangle in vertices[1..].windows(2) {
-                        self.add_sky_polygon(
-                            material,
-                            [
-                                vertices[0].position,
-                                triangle[0].position,
-                                triangle[1].position,
-                            ],
-                            camera,
-                            stats,
-                        );
-                    }
+                crate::sky::SkySubmission::Triangle(points) => {
+                    self.add_sky_polygon(material, points, camera, stats)
                 }
+                crate::sky::SkySubmission::MissingSurface => {}
             }
-        }
+            true
+        });
     }
 
     fn add_sky_polygon(
@@ -1088,7 +1071,7 @@ impl WorldPrepare {
                 .unwrap_or(PreparedDraw::Skip),
             _ => PreparedDraw::External,
         };
-        let Some(id) = sky_item_material(item, list, assets) else {
+        let Some(id) = crate::sky::item_material(item, list, assets) else {
             return external;
         };
         if !self
@@ -1124,12 +1107,7 @@ impl WorldPrepare {
         else {
             return external;
         };
-        if rotation.is_some_and(|rotation| rotation.degrees_per_second != 0.0) {
-            bounds.fill(crate::sky::FaceBounds {
-                mins: [-1.0; 2],
-                maxs: [1.0; 2],
-            });
-        }
+        bounds = crate::sky::draw_bounds(bounds, rotation);
         let inputs = DrawInputs {
             time_ms: camera.refdef.time_ms,
             view_origin: camera.refdef.origin,
@@ -1144,54 +1122,17 @@ impl WorldPrepare {
                 ..MaterialSettings::default()
             };
             for face in crate::sky::CubeFace::ALL {
-                let bound = bounds[face.index()];
-                if !bound.visible() {
+                let Some(vertices) = crate::sky::box_face_vertices(
+                    face,
+                    bounds[face.index()],
+                    params,
+                    rotation.filter(|_| params.cpu_rotation),
+                    inputs.view_origin,
+                    inputs.time_ms,
+                    camera.refdef.far,
+                ) else {
                     continue;
-                }
-                let (mins, maxs) = if params.snap_bounds {
-                    let Some([mins, maxs]) = bound.grid_bounds() else {
-                        continue;
-                    };
-                    (
-                        mins.map(|v| (v as f32 - 4.0) / 4.0),
-                        maxs.map(|v| (v as f32 - 4.0) / 4.0),
-                    )
-                } else {
-                    (bound.mins, bound.maxs)
                 };
-                let vertices = [
-                    [mins[0], mins[1]],
-                    [mins[0], maxs[1]],
-                    [maxs[0], maxs[1]],
-                    [maxs[0], mins[1]],
-                ]
-                .map(|st| {
-                    let cube = crate::sky::cube_vertex(
-                        face,
-                        st,
-                        params.distance.value(camera.refdef.far),
-                        params.texcoord_range,
-                    );
-                    let direction = if params.cpu_rotation {
-                        rotation.map_or(cube.direction, |rotation| {
-                            crate::sky::unrotate(
-                                cube.direction,
-                                crate::sky::Rotation {
-                                    degrees_per_second: -rotation.degrees_per_second,
-                                    ..rotation
-                                },
-                                inputs.time_ms as f32 * 0.001,
-                            )
-                        })
-                    } else {
-                        cube.direction
-                    };
-                    Vertex {
-                        position: inputs.view_origin + direction,
-                        texcoord: cube.uv,
-                        ..Vertex::default()
-                    }
-                });
                 let stage = Stage {
                     texture: StageTexture::Image(images[face.index()]),
                     sampler: params.sampler,
@@ -1250,53 +1191,36 @@ impl WorldPrepare {
                 }
             }
             if valid {
-                for face in crate::sky::CubeFace::ALL {
-                    if face == crate::sky::CubeFace::NegativeZ {
-                        continue;
+                if let Some(grid) = self.catalog.skies[id.0 as usize].cloud.as_ref() {
+                    for vertices in crate::sky::cloud_triangles(
+                        bounds,
+                        grid,
+                        params.distance.value(camera.refdef.far),
+                        inputs.view_origin,
+                    ) {
+                        self.geometry.add_generated_sky(
+                            camera,
+                            &vertices,
+                            material.stages.len(),
+                            deforms,
+                            material.settings.cull,
+                            rank,
+                            depth_override,
+                            &self.sky_stages,
+                            assets,
+                            evaluator,
+                            stats,
+                        );
                     }
-                    let Some([mins, maxs]) = bounds[face.index()].grid_bounds() else {
-                        continue;
-                    };
-                    for t in mins[1]..maxs[1] {
-                        for s in mins[0]..maxs[0] {
-                            // FillCloudySkySide's native diagonal and vertex order.
-                            for cell in [
-                                [[s, t], [s, t + 1], [s + 1, t]],
-                                [[s, t + 1], [s + 1, t + 1], [s + 1, t]],
-                            ] {
-                                let Some(grid) = self.catalog.skies[id.0 as usize].cloud.as_ref()
-                                else {
-                                    self.geometry.reject(stats);
-                                    continue;
-                                };
-                                let vertices = cell.map(|[s, t]| {
-                                    let st = [(s as f32 - 4.0) / 4.0, (t as f32 - 4.0) / 4.0];
-                                    let direction = crate::sky::cube_vertex(
-                                        face,
-                                        st,
-                                        params.distance.value(camera.refdef.far),
-                                        [0.0, 1.0],
-                                    )
-                                    .direction;
-                                    Vertex {
-                                        position: inputs.view_origin + direction,
-                                        texcoord: grid.uv[face.index()][t][s],
-                                        ..Vertex::default()
-                                    }
-                                });
-                                self.geometry.add_generated_sky(
-                                    camera,
-                                    &vertices,
-                                    material.stages.len(),
-                                    deforms,
-                                    material.settings.cull,
-                                    rank,
-                                    depth_override,
-                                    &self.sky_stages,
-                                    assets,
-                                    evaluator,
-                                    stats,
-                                );
+                } else {
+                    // Missing cloud storage retains the per-triangle rejection count.
+                    for face in crate::sky::CubeFace::ALL {
+                        if face == crate::sky::CubeFace::NegativeZ {
+                            continue;
+                        }
+                        if let Some([mins, maxs]) = bounds[face.index()].grid_bounds() {
+                            for _ in 0..(maxs[0] - mins[0]) * (maxs[1] - mins[1]) * 2 {
+                                self.geometry.reject(stats);
                             }
                         }
                     }
@@ -1362,13 +1286,7 @@ impl SurfacePrepare {
             };
             let Some(info) = self
                 .catalog
-                .offsets
-                .get(reference.world.0 as usize)
-                .and_then(|offset| {
-                    self.catalog
-                        .surfaces
-                        .get(offset + reference.surface as usize)
-                })
+                .surface_info(reference.world, reference.surface)
                 .copied()
             else {
                 self.reject(stats);
@@ -1916,30 +1834,6 @@ fn evaluated_vertex(
     }
 }
 
-fn sky_item_material(item: DrawItem, list: &CommandList, assets: &Assets) -> Option<MaterialId> {
-    match item.kind {
-        DrawKind::Surface => {
-            let reference = list.surface(item.index);
-            Some(
-                assets
-                    .world(reference.world)?
-                    .bindings()
-                    .get(reference.surface as usize)?
-                    .material,
-            )
-        }
-        DrawKind::Entity => {
-            let entity = list.entity(item.index);
-            Some(
-                entity
-                    .material
-                    .unwrap_or(assets.model(entity.model)?.material),
-            )
-        }
-        DrawKind::Poly => Some(list.poly(item.index).material),
-    }
-}
-
 /// Used only for materials without positional deforms. Retail PVS lists can
 /// retain repeated/collinear faces. A zero texture extent does not prove zero area.
 fn boundary_is_collinear(
@@ -2465,18 +2359,7 @@ fn factor_spans(
                 [None; 2]
             };
             let after_cache = cache.stats();
-            stats.factor_hits = stats
-                .factor_hits
-                .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
-            stats.factor_fills = stats
-                .factor_fills
-                .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
-            stats.factor_evictions = stats
-                .factor_evictions
-                .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
-            stats.factor_rejected = stats
-                .factor_rejected
-                .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
+            stats.add_cache(CacheKind::Factor, after_cache.since(before_cache));
             let copied_a = cached[0]
                 .and_then(|block| cache.rgba_pixels(block))
                 .and_then(|pixels| raw_a.copied(pixels));
@@ -2610,18 +2493,7 @@ fn rgba_spans(
             recipe.fill(*prepared, mip, assets, destination);
         });
         let after_cache = cache.stats();
-        stats.rgba_hits = stats
-            .rgba_hits
-            .saturating_add(after_cache.hits.saturating_sub(before_cache.hits));
-        stats.rgba_fills = stats
-            .rgba_fills
-            .saturating_add(after_cache.fills.saturating_sub(before_cache.fills));
-        stats.rgba_evictions = stats
-            .rgba_evictions
-            .saturating_add(after_cache.evictions.saturating_sub(before_cache.evictions));
-        stats.rgba_rejected = stats
-            .rgba_rejected
-            .saturating_add(after_cache.rejected.saturating_sub(before_cache.rejected));
+        stats.add_cache(CacheKind::Rgba, after_cache.since(before_cache));
         if let Some(block) = block {
             if let Some(pixels) = cache.rgba_pixels(block) {
                 for (_, span) in selected {
@@ -2887,13 +2759,7 @@ impl SurfacePrepare {
         for reference in references {
             let info = self
                 .catalog
-                .offsets
-                .get(reference.world.0 as usize)
-                .and_then(|offset| {
-                    self.catalog
-                        .surfaces
-                        .get(offset + reference.surface as usize)
-                })?;
+                .surface_info(reference.world, reference.surface)?;
             let primitives = total.primitives.checked_add(info.preparation.primitives)?;
             let stages = total.stages.checked_add(info.preparation.stages)?;
             let coverage = total.coverage.checked_add(info.preparation.coverage)?;
@@ -2992,4 +2858,11 @@ impl WorldPrepare {
 
 fn partition(id: usize, count: usize, len: usize) -> std::ops::Range<usize> {
     id * len / count..(id + 1) * len / count
+}
+
+impl WorldCatalog {
+    fn surface_info(&self, world: WorldId, surface: u32) -> Option<&SurfaceInfo> {
+        self.surfaces
+            .get(*self.offsets.get(world.0 as usize)? + surface as usize)
+    }
 }
