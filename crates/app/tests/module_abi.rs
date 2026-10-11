@@ -30,7 +30,12 @@ fn context() -> CallContext {
 fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
     for (base, addresses) in [
         (0, Addresses::Qvm { mask: 511 }),
-        (1u64 << 40, Addresses::Native),
+        (
+            1u64 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
     ] {
         for (table, ordinal) in [(&Q3_SERVER, 5), (&Q3_CLIENT, 5), (&Q3_UI, 3)] {
             let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
@@ -103,7 +108,12 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
 fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
     for (base, addresses) in [
         (0, Addresses::Qvm { mask: 511 }),
-        (1u64 << 40, Addresses::Native),
+        (
+            1u64 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
     ] {
         for (table, ordinal) in [(&Q3_SERVER, 5), (&Q3_CLIENT, 5), (&Q3_UI, 3)] {
             let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
@@ -229,7 +239,9 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                     context: call_context,
                     platform_time: EventTime(0),
                     command: &[],
-                    addresses: Addresses::Native,
+                    addresses: Addresses::Native {
+                        abi: qa_platform::native::NativeAbi::SystemV,
+                    },
                     arguments: &arguments,
                 };
                 assert_eq!(
@@ -246,7 +258,12 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
 fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
     for (base, addresses) in [
         (0, Addresses::Qvm { mask: 511 }),
-        (1u64 << 40, Addresses::Native),
+        (
+            1u64 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
     ] {
         let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
         let mut console = Console::new(Context::default()).unwrap();
@@ -356,7 +373,12 @@ fn q3_ui_numeric_setter_preserves_native_formatting_and_forced_writes() {
     ];
     for (base, addresses) in [
         (0, Addresses::Qvm { mask: 511 }),
-        (1u64 << 40, Addresses::Native),
+        (
+            1u64 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
     ] {
         let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
         let mut console = Console::new(Context::default()).unwrap();
@@ -437,7 +459,9 @@ fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
         context: context(),
         platform_time: EventTime(0),
         command: &[],
-        addresses: Addresses::Native,
+        addresses: Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
         arguments: &[base + 32, base + 16, (1u64 << 32) + 1],
     };
     assert_eq!(Q3_SERVER.invoke(101, &mut call, &mut unknown), Ok(0));
@@ -518,7 +542,14 @@ fn original_float_syscalls_keep_their_declared_bits() {
         let args = [u64::from(bits)];
 
         assert_eq!(
-            invoke(&QUAKEC, 43, Addresses::Native, &args),
+            invoke(
+                &QUAKEC,
+                43,
+                Addresses::Native {
+                    abi: qa_platform::native::NativeAbi::SystemV
+                },
+                &args
+            ),
             Ok(u64::from(bits & 0x7fffffff))
         );
     }
@@ -551,7 +582,9 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
             context: context(),
             platform_time: EventTime((u64::from(u32::MAX) + 8) * 1_000_000),
             command: &[b"native", b"arg"],
-            addresses: Addresses::Native,
+            addresses: Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
             arguments: &[base + 16, base + 32],
         };
         assert_eq!(Q3_SERVER.invoke(5, &mut call, &mut unknown), Ok(0));

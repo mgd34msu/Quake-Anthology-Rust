@@ -12,9 +12,13 @@ pub enum Addresses {
     Qvm {
         mask: u32,
     },
-    Native,
+    Native {
+        abi: qa_platform::native::NativeAbi,
+    },
     /// Declared C function parameters, including full-width native size_t.
-    NativeFunction,
+    NativeFunction {
+        abi: qa_platform::native::NativeAbi,
+    },
 }
 pub struct Invocation<'a, 'engine, 'memory> {
     pub services: &'a mut EngineServices<'engine>,
@@ -38,7 +42,7 @@ impl Invocation<'_, '_, '_> {
     fn pointer(&self, index: usize) -> Result<u64, CallError> {
         Ok(match self.addresses {
             Addresses::Qvm { mask } => u64::from(self.arg(index)? as u32 & mask),
-            Addresses::Native | Addresses::NativeFunction => self.arg(index)?,
+            Addresses::Native { .. } | Addresses::NativeFunction { .. } => self.arg(index)?,
         })
     }
     fn null_pointer(&self, index: usize) -> Result<bool, CallError> {
@@ -46,12 +50,12 @@ impl Invocation<'_, '_, '_> {
         // QVM address that wraps to offset zero still names actual data.
         Ok(match self.addresses {
             Addresses::Qvm { .. } => self.arg(index)? as u32 == 0,
-            Addresses::Native | Addresses::NativeFunction => self.arg(index)? == 0,
+            Addresses::Native { .. } | Addresses::NativeFunction { .. } => self.arg(index)? == 0,
         })
     }
     fn length(&self, index: usize) -> Result<usize, CallError> {
         match self.addresses {
-            Addresses::NativeFunction => {
+            Addresses::NativeFunction { .. } => {
                 usize::try_from(self.arg(index)?).map_err(|_| CallError::Memory)
             }
             _ => usize::try_from(self.arg(index)? as u32 as i32).map_err(|_| CallError::Memory),
@@ -160,6 +164,7 @@ const fn server() -> CallTable {
     t.entries[14] = Some(command);
     t.entries[18] = Some(config_set);
     t.entries[19] = Some(config_get);
+    t.entries[45] = Some(file_seek);
     t
 }
 const fn client() -> CallTable {
@@ -175,6 +180,7 @@ const fn client() -> CallTable {
     t.entries[11] = Some(file_read);
     t.entries[13] = Some(file_close);
     t.entries[14] = Some(command_append);
+    t.entries[89] = Some(file_seek);
     t.entries[111] = Some(acos::<false>);
     t
 }
@@ -194,6 +200,7 @@ const fn ui() -> CallTable {
     t.entries[13] = Some(file_open);
     t.entries[14] = Some(file_read);
     t.entries[16] = Some(file_close);
+    t.entries[86] = Some(file_seek);
     t
 }
 // Original Q3 1.32 import ordinals. UI's ExecuteText and game's
@@ -361,7 +368,9 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
-            addresses: Addresses::Native,
+            addresses: Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
             arguments: &arguments[..argc],
         };
         let value = self
@@ -759,7 +768,7 @@ fn file_open(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     if c.arg(2)? != 0 {
         return Err(CallError::File);
     }
-    if c.arg(1)? == 0 {
+    if c.null_pointer(1)? {
         return match (ENGINE_CALLS.file_length)(c.services, c.memory.cstring(c.pointer(0)?)?) {
             Ok(length) => Ok(length as u32 as u64),
             Err(CallError::File) => Ok(u32::MAX as u64),
@@ -800,6 +809,33 @@ fn file_read(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn file_close(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.file_close)(c.services, c.context.module, c.arg(0)? as u32)?;
     Ok(0)
+}
+fn file_seek(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    // QVM and Microsoft long are signed 32-bit; a System V x86-64 long
+    // retains the full native word supplied by trap_FS_Seek.
+    let offset = match c.addresses {
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        }
+        | Addresses::NativeFunction {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        } => c.arg(1)? as i64,
+        _ => i64::from(c.arg(1)? as u32 as i32),
+    };
+    let from = match c.arg(2)? as u32 {
+        0 => std::io::SeekFrom::Current(offset),
+        1 => std::io::SeekFrom::End(offset),
+        2 if offset >= 0 => std::io::SeekFrom::Start(offset as u64),
+        2 => return Ok(u64::from(u32::MAX)),
+        _ => return Err(CallError::File),
+    };
+    Ok(
+        if (ENGINE_CALLS.file_seek)(c.services, c.context.module, c.arg(0)? as u32, from)? {
+            0
+        } else {
+            u64::from(u32::MAX)
+        },
+    )
 }
 fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let pointer = c.pointer(0)?;
@@ -1205,7 +1241,7 @@ fn memset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let value = c.arg(1)? as u8;
     let length = c.length(2)?;
     c.memory.read_mut(target, length)?.fill(value);
-    Ok(if matches!(c.addresses, Addresses::NativeFunction) {
+    Ok(if matches!(c.addresses, Addresses::NativeFunction { .. }) {
         target
     } else {
         0
@@ -1213,7 +1249,7 @@ fn memset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn memcpy(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     c.memory.copy(c.pointer(0)?, c.pointer(1)?, c.length(2)?)?;
-    Ok(if matches!(c.addresses, Addresses::NativeFunction) {
+    Ok(if matches!(c.addresses, Addresses::NativeFunction { .. }) {
         c.pointer(0)?
     } else {
         0

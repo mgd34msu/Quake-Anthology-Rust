@@ -357,6 +357,8 @@ pub struct EngineCallTable {
     pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
     pub file_read:
         fn(&mut EngineServices<'_>, ModuleId, u32, &mut [u8]) -> Result<usize, CallError>,
+    pub file_seek:
+        fn(&mut EngineServices<'_>, ModuleId, u32, std::io::SeekFrom) -> Result<bool, CallError>,
     pub file_close: fn(&mut EngineServices<'_>, ModuleId, u32) -> Result<(), CallError>,
 }
 
@@ -463,6 +465,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     file_open: |s, m, p| s.file_open(m, p),
     file_length: |s, p| s.file_length(p),
     file_read: |s, m, h, b| s.file_read(m, h, b),
+    file_seek: |s, m, h, from| s.file_seek(m, h, from),
     file_close: |s, m, h| s.file_close(m, h),
 };
 
@@ -712,12 +715,38 @@ impl EngineServices<'_> {
     ) -> Result<usize, CallError> {
         let file = self.file(owner, handle)?;
         let (reference, offset) = (file.reference, file.cursor);
+        if offset >= self.vfs.length(reference).map_err(|_| CallError::File)? {
+            return Ok(0);
+        }
         let read = self
             .vfs
             .read_range_reusing(reference, offset, buffer, &mut self.storage.reader)
             .map_err(|_| CallError::File)?;
         self.file(owner, handle)?.cursor += read as u64;
         Ok(read)
+    }
+    pub fn file_seek(
+        &mut self,
+        owner: ModuleId,
+        handle: u32,
+        from: std::io::SeekFrom,
+    ) -> Result<bool, CallError> {
+        let file = self.file(owner, handle)?;
+        let (reference, cursor) = (file.reference, file.cursor);
+        let target = match from {
+            std::io::SeekFrom::Start(offset) => Some(offset),
+            std::io::SeekFrom::Current(offset) => cursor.checked_add_signed(offset),
+            std::io::SeekFrom::End(offset) => self
+                .vfs
+                .length(reference)
+                .map_err(|_| CallError::File)?
+                .checked_add_signed(offset),
+        };
+        let Some(target) = target else {
+            return Ok(false);
+        };
+        self.file(owner, handle)?.cursor = target;
+        Ok(true)
     }
     pub fn file_close(&mut self, owner: ModuleId, handle: u32) -> Result<(), CallError> {
         self.file(owner, handle)?;

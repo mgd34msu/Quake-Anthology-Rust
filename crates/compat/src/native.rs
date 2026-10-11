@@ -398,6 +398,7 @@ impl Vm {
         let surfaces = self.surfaces.as_ref();
         let native_command = self.native_command.as_ref();
         let native_configs = &mut self.native_configs;
+        let abi = self.abi;
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -419,9 +420,9 @@ impl Vm {
                     platform_time: calls.platform_time,
                     command: calls.command,
                     addresses: if call.function {
-                        Addresses::NativeFunction
+                        Addresses::NativeFunction { abi }
                     } else {
-                        Addresses::Native
+                        Addresses::Native { abi }
                     },
                     arguments: &call.arguments,
                 };
