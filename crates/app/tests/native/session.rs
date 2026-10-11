@@ -2382,7 +2382,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 disconnect: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
                 userinfo: 0x180005000,
                 usercmd: 0x180005c00,
-                abi: game.client_layout(),
+                abi: qa_compat::q2_abi::client_layout(rules).unwrap(),
                 think: CallbackId(game.entry(b"ClientThink").unwrap()),
                 social: 0x180005800,
             };
@@ -3507,7 +3507,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 assert_eq!(&memory[0x1e00..0x1e00 + info.len()], info);
             }
             let info_address = base + 0x2000;
-            let info_bytes = game.client_layout().userinfo_bytes;
+            let info_bytes = qa_compat::q2_abi::client_layout(rules)
+                .unwrap()
+                .userinfo_bytes;
             let key_address = info_address + info_bytes as u64 + 64;
             let value_address = key_address + 128;
             let mut mutate_info = |game: &mut Game,

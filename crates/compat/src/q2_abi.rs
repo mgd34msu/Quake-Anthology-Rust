@@ -34,9 +34,12 @@ pub const RERELEASE: ClientLayout = ClientLayout {
         protocol: qa_network::commands::packet::Protocol::Quake2Repro1038,
     },
 };
-const CLIENT: [Option<ClientLayout>; 5] = [None, None, Some(CLASSIC), Some(RERELEASE), None];
 pub fn client_layout(rules: RuleSetId) -> Option<&'static ClientLayout> {
-    CLIENT[rules as usize].as_ref()
+    match rules {
+        RuleSetId::Quake2 => Some(&CLASSIC),
+        RuleSetId::Quake2Rerelease => Some(&RERELEASE),
+        _ => None,
+    }
 }
 impl ClientLayout {
     /// This is game.h's in-memory usercmd_t, not a delta packet. The shared

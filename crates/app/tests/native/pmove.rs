@@ -142,7 +142,7 @@ pub(super) fn commands_move_a_native_client_once() {
             think: CallbackId(game.entry(b"ClientThink").unwrap()),
             userinfo: 0x180004000,
             usercmd: 0x180004c00,
-            abi: game.client_layout(),
+            abi: qa_compat::q2_abi::client_layout(rules).unwrap(),
             social: 0x180004800,
         };
         // This small owned module copies the received usercmd, calls its native
