@@ -195,6 +195,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[9] = Some(resource_index::<1>);
     table.entries[10] = Some(resource_index::<2>);
     table.entries[11] = Some(native_set_model);
+    table.entries[12] = Some(native_trace::<false>);
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[36] = Some(q2_cvar);
@@ -212,6 +213,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[11] = Some(resource_index::<1>);
     table.entries[12] = Some(resource_index::<2>);
     table.entries[13] = Some(native_set_model);
+    table.entries[14] = Some(native_trace::<true>);
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
     table.entries[48] = Some(native_register_observer);
@@ -592,6 +594,62 @@ fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u
     };
     (ENGINE_CALLS.resource_index)(c.services, c.context.module, range, name).map(u64::from)
 }
+fn native_trace<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_core::primitives::{RuleSetId, Vec3};
+    use qa_world::collision::{Contents, TraceQuery, trace_policy};
+    let output = c.pointer(0)?;
+    c.memory.read(output, if WIDE { 96 } else { 72 })?;
+    let start = c.memory.read_vec3(c.pointer(1)?)?;
+    let end = c.memory.read_vec3(c.pointer(4)?)?;
+    let bounds = |pointer| {
+        if pointer == 0 {
+            Ok(Vec3::default())
+        } else {
+            c.memory.read_vec3(pointer).map_err(CallError::from)
+        }
+    };
+    let mins = bounds(c.pointer(2)?)?;
+    let maxs = bounds(c.pointer(3)?)?;
+    if start
+        .0
+        .iter()
+        .chain(&end.0)
+        .chain(&mins.0)
+        .chain(&maxs.0)
+        .any(|v| !v.is_finite())
+        || (0..3).any(|axis| mins.0[axis] > maxs.0[axis])
+    {
+        return Err(CallError::Geometry);
+    }
+    let passed = c.pointer(5)?;
+    let mut mask = Contents::from_q2(c.arg(6)? as u32);
+    if mask.intersects(Contents::SOLID) {
+        mask |= Contents::SKY;
+    }
+    let surfaces = c.native_surfaces.ok_or(CallError::Geometry)?;
+    let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let view = entities.trace_view(c.memory, c.context, *table)?;
+    let (rules, entity_rules) = trace_policy(if WIDE {
+        RuleSetId::Quake2Rerelease
+    } else {
+        RuleSetId::Quake2
+    });
+    let query = TraceQuery {
+        start,
+        end,
+        mins,
+        maxs,
+        mask,
+        pass: view.pass(passed)?,
+        rules,
+        entity_rules,
+        excluded: &[],
+    };
+    let result = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
+    let entity = view.address(&c.services.server.entities, result.entity)?;
+    crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
+}
+
 fn native_set_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;
     let name = c.pointer(1)?;

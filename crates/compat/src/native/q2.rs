@@ -220,6 +220,8 @@ const CLASSIC: Layout = Layout {
         linked: None,
         link_count: 100,
         flags: 200,
+        player_flag: 0,
+        projectile_flag: 0,
         mins: 204,
         maxs: 216,
         abs_min: 228,
@@ -265,6 +267,8 @@ const RERELEASE: Layout = Layout {
         linked: Some(1377),
         link_count: 1380,
         flags: 1392,
+        player_flag: 8,
+        projectile_flag: 128,
         mins: 1396,
         maxs: 1408,
         abs_min: 1420,
@@ -456,6 +460,19 @@ impl Game {
                     Some((
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Void,
+                    ))
+                } else if ordinal == if layout.version == 2023 { 14 } else { 12 } {
+                    Some((
+                        &[
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::U32,
+                        ][..],
+                        NativeScalar::Word,
                     ))
                 } else if ordinal == if layout.version == 2023 { 7 } else { 6 } {
                     Some((

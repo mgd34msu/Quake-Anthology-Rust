@@ -28,6 +28,8 @@ pub(crate) struct EntityLayout {
     pub linked: Option<usize>,
     pub link_count: usize,
     pub flags: usize,
+    pub player_flag: u32,
+    pub projectile_flag: u32,
     pub mins: usize,
     pub maxs: usize,
     pub abs_min: usize,
@@ -40,6 +42,127 @@ pub(crate) struct EntityLayout {
     pub clusters: Option<(usize, usize, usize)>,
     pub network_solid: usize,
     pub model_rules: ModelRules,
+}
+impl EntityLayout {
+    fn tags(self, flags: u32) -> CollisionTags {
+        CollisionTags(
+            u8::from(flags & 4 != 0)
+                | (u8::from(flags & 2 != 0) << 1)
+                | (u8::from(flags & self.player_flag != 0) << 2)
+                | (u8::from(flags & self.projectile_flag != 0) << 3),
+        )
+    }
+}
+
+/// Borrowed only while the native child is parked at an import boundary.
+pub struct NativeTraceView<'a, 'memory> {
+    memory: &'a ModuleMemory<'memory>,
+    entities: Entities,
+    module: ModuleId,
+    layout: EntityLayout,
+}
+impl NativeTraceView<'_, '_> {
+    pub fn pass(&self, address: u64) -> Result<CollisionOwner, CallError> {
+        if address == 0 {
+            return Ok(CollisionOwner::None);
+        }
+        let slot = native_slot(self.entities, address)?;
+        // Owner fields remain observable even for an inactive passed edict.
+        read_owner(
+            self.memory,
+            self.entities,
+            self.module,
+            self.layout,
+            address,
+        )?;
+        Ok(CollisionOwner::Native(NativeEntity {
+            module: self.module,
+            slot: slot as i32,
+        }))
+    }
+    pub fn address(&self, entities: &EntityTable, hit: Option<EntityId>) -> Result<u64, CallError> {
+        // A protocol cannot expose another module's pointer. A blocking foreign
+        // body is represented by the caller's native world edict.
+        let slot = hit
+            .and_then(|id| entities.resolve(id))
+            .and_then(|slot| entities.columns.native_entity[slot])
+            .filter(|native| native.module == self.module)
+            .map_or(0, |native| native.slot);
+        let slot = u32::try_from(slot).map_err(|_| CallError::Entity)?;
+        if slot >= self.entities.capacity {
+            return Err(CallError::Entity);
+        }
+        self.entities
+            .address
+            .checked_add(u64::from(slot) * self.entities.stride)
+            .ok_or(CallError::Memory)
+    }
+}
+impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
+    fn module(&self) -> ModuleId {
+        self.module
+    }
+    fn fields(&self, slot: i32) -> Option<(CollisionOwner, CollisionTags)> {
+        let slot = u32::try_from(slot).ok()?;
+        if slot >= self.entities.capacity {
+            return None;
+        }
+        let address = self
+            .entities
+            .address
+            .checked_add(u64::from(slot) * self.entities.stride)?;
+        Some((
+            read_owner(
+                self.memory,
+                self.entities,
+                self.module,
+                self.layout,
+                address,
+            )
+            .ok()?,
+            self.layout.tags(
+                self.memory
+                    .read_word(address + self.layout.flags as u64)
+                    .ok()? as u32,
+            ),
+        ))
+    }
+}
+
+fn native_slot(entities: Entities, address: u64) -> Result<u32, CallError> {
+    let offset = address
+        .checked_sub(entities.address)
+        .ok_or(CallError::Entity)?;
+    if address == 0
+        || entities.address == 0
+        || entities.stride == 0
+        || offset % entities.stride != 0
+        || offset / entities.stride >= u64::from(entities.capacity)
+    {
+        return Err(CallError::Entity);
+    }
+    Ok((offset / entities.stride) as u32)
+}
+fn read_owner(
+    memory: &ModuleMemory<'_>,
+    entities: Entities,
+    module: ModuleId,
+    layout: EntityLayout,
+    address: u64,
+) -> Result<CollisionOwner, CallError> {
+    let owner = u64::from_le_bytes(
+        memory
+            .read(address + layout.owner as u64, 8)?
+            .try_into()
+            .map_err(|_| CallError::Memory)?,
+    );
+    if owner == 0 {
+        return Ok(CollisionOwner::None);
+    }
+    Ok(CollisionOwner::Native(NativeEntity {
+        module,
+        slot: native_slot(entities, owner)? as i32,
+    }))
 }
 #[derive(Clone, Copy)]
 struct Binding {
@@ -168,18 +291,8 @@ impl EntityProjection {
         address: u64,
     ) -> Result<(Entities, usize, Option<EntityId>), CallError> {
         let entities = self.read(memory, table)?;
-        let offset = address
-            .checked_sub(entities.address)
-            .ok_or(CallError::Entity)?;
-        if address == 0
-            || entities.address == 0
-            || entities.stride == 0
-            || offset % entities.stride != 0
-        {
-            return Err(CallError::Entity);
-        }
-        let slot = usize::try_from(offset / entities.stride).map_err(|_| CallError::Entity)?;
-        if slot >= entities.capacity as usize || self.owner != Some(context.module) {
+        let slot = native_slot(entities, address)? as usize;
+        if self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
         let native = NativeEntity {
@@ -196,6 +309,22 @@ impl EntityProjection {
             self.bindings[slot] = None;
         }
         Ok((entities, slot, bound.map(|binding| binding.entity)))
+    }
+    pub fn trace_view<'a, 'memory>(
+        &self,
+        memory: &'a ModuleMemory<'memory>,
+        context: CallContext,
+        table: u64,
+    ) -> Result<NativeTraceView<'a, 'memory>, CallError> {
+        if self.owner != Some(context.module) {
+            return Err(CallError::Entity);
+        }
+        Ok(NativeTraceView {
+            memory,
+            entities: self.read(memory, table)?,
+            module: context.module,
+            layout: self.layout,
+        })
     }
     fn observe(
         &mut self,
@@ -356,28 +485,7 @@ impl EntityProjection {
         } else {
             CollisionShape::None
         };
-        let owner_address = u64::from_le_bytes(
-            memory
-                .read(address + layout.owner as u64, 8)?
-                .try_into()
-                .map_err(|_| CallError::Memory)?,
-        );
-        let owner = if owner_address == 0 {
-            CollisionOwner::None
-        } else {
-            let offset = owner_address
-                .checked_sub(entities.address)
-                .ok_or(CallError::Entity)?;
-            if offset % entities.stride != 0
-                || offset / entities.stride >= u64::from(entities.capacity)
-            {
-                return Err(CallError::Entity);
-            }
-            CollisionOwner::Native(NativeEntity {
-                module: context.module,
-                slot: (offset / entities.stride) as i32,
-            })
-        };
+        let owner = read_owner(memory, entities, context.module, layout, address)?;
         // A reset native link count begins a fresh game-owned lifetime. Borrowed
         // client lifetimes remain owned by the session, not by this adapter.
         if link_count == 0 && self.bindings[native_slot].is_some_and(|b| b.owned && b.published) {
@@ -394,8 +502,7 @@ impl EntityProjection {
         columns.collision_shape[slot] = shape;
         columns.model_rules[slot] = layout.model_rules;
         columns.collision_owner[slot] = owner;
-        columns.collision_tags[slot] =
-            CollisionTags(u8::from(flags & 4 != 0) | (u8::from(flags & 2 != 0) << 1));
+        columns.collision_tags[slot] = layout.tags(flags);
         // Original Q2's temporary box hull carries CONTENTS_MONSTER.
         columns.collision_contents[slot] = if solid == 2 {
             Contents::BODY.0

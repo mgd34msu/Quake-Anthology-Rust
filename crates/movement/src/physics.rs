@@ -130,7 +130,7 @@ impl Step<'_> {
             mask: self.mask,
             rules: self.parameters.trace_rules,
             entity_rules: self.parameters.entity_rules,
-            pass: None,
+            pass: qa_core::primitives::CollisionOwner::None,
             excluded: &[],
         })
     }
@@ -825,7 +825,7 @@ fn run_step(
         | if matches!(player.movement.mode, MovementMode::Dead | MovementMode::Gib) {
             Contents::EMPTY
         } else {
-            Contents::BODY
+            Contents::BODY | Contents::PLAYER
         };
     let previous_velocity = player.body.velocity;
     Step {

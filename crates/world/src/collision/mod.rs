@@ -8,8 +8,10 @@ pub mod surfaces;
 pub mod tree;
 
 pub use contents::Contents;
-use qa_core::primitives::{EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3};
-pub use scene::WorldTrace;
+use qa_core::primitives::{
+    CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
+};
+pub use scene::{NativeTraceEntities, WorldTrace};
 pub use store::{CollisionStore, StoreError, TraceScratch};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +84,8 @@ impl EntityTraceFlags {
     pub const HULL_BOX: u16 = 1 << Self::KIND_SHIFT;
     pub const BRUSH_CONTENTS: u16 = 1 << 11;
     pub const MERGE_NEARER: u16 = 1 << 12;
+    pub const PLAYER_MASK: u16 = 1 << 13;
+    pub const PROJECTILE_MASK: u16 = 1 << 14;
 
     pub const fn contains(self, behaviour: u16) -> bool {
         self.0 & behaviour != 0
@@ -297,6 +301,8 @@ pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTracePolicy) {
                         | EntityTraceFlags::STOP_AT_ZERO
                         | if matches!(rules, RuleSetId::Quake2Rerelease) {
                             EntityTraceFlags::BRUSH_CONTENTS
+                                | EntityTraceFlags::PLAYER_MASK
+                                | EntityTraceFlags::PROJECTILE_MASK
                         } else {
                             0
                         },
@@ -332,8 +338,8 @@ pub struct TraceQuery<'a> {
     pub rules: TraceRules,
     pub excluded: &'a [EntityId],
     pub mask: Contents,
-    pub pass: Option<EntityId>,
-    // Keep the float block's measured offsets; small policy data occupies its tail.
+    pub pass: CollisionOwner,
+    // Native slot identities remain weak; internal generations never enter the ABI.
     pub start: Vec3,
     pub end: Vec3,
     pub mins: Vec3,
@@ -356,7 +362,7 @@ impl TraceQuery<'_> {
             mask: Contents::SOLID,
             rules,
             entity_rules,
-            pass: None,
+            pass: CollisionOwner::None,
             excluded: &[],
         }
     }

@@ -51,7 +51,7 @@ fn main() -> Result<(), &'static str> {
                         qa_core::primitives::RuleSetId::Quake,
                     )
                     .1,
-                    pass: None,
+                    pass: qa_core::primitives::CollisionOwner::None,
                     excluded: &[],
                 },
                 body,

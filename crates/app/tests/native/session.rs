@@ -1994,12 +1994,26 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut replacement = None;
         let mut observer_entity = None;
         let mut owned_entity = None;
-        let mut invoke_import = |game: &mut Game, slot: usize, a: [u64; 2]| {
-            let returns_value = slot == malloc_slot || (index_slot..index_slot + 3).contains(&slot);
-            let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
-            code.extend(a[0].to_le_bytes());
-            code.extend([0x48, 0xba]);
-            code.extend(a[1].to_le_bytes());
+        let trace_slot = if rr { 14 } else { 12 };
+        let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
+            let returns_value = slot == malloc_slot
+                || slot == trace_slot
+                || (index_slot..index_slot + 3).contains(&slot);
+            let stack = if a.len() > 4 { 0x48 } else { 0x28 };
+            let mut code = vec![0x48, 0x83, 0xec, stack];
+            for (arg, register) in
+                a.iter()
+                    .take(4)
+                    .zip([[0x48, 0xb9], [0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]])
+            {
+                code.extend(register);
+                code.extend(arg.to_le_bytes());
+            }
+            for (index, arg) in a.iter().skip(4).enumerate() {
+                code.extend([0x48, 0xb8]);
+                code.extend(arg.to_le_bytes());
+                code.extend([0x48, 0x89, 0x44, 0x24, (32 + index * 8) as u8]);
+            }
             code.extend([0x48, 0xb8]);
             code.extend(pointers[slot].to_le_bytes());
             code.extend([0xff, 0xd0]);
@@ -2008,7 +2022,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 code.extend((base + 0x1c30).to_le_bytes());
                 code.extend([0x48, 0x89, 1]);
             }
-            code.extend([0x48, 0x83, 0xc4, 0x28, 0xc3]);
+            code.extend([0x48, 0x83, 0xc4, stack, 0xc3]);
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                 .copy_from_slice(&code);
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
@@ -2307,18 +2321,18 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         };
         // API3 admits only the low 32 size bits; the rerelease keeps size_t.
         let bytes = if rr { 16 } else { (1u64 << 32) + 16 };
-        let first = invoke_import(&mut game, malloc_slot, [bytes, 765]);
+        let first = invoke_import(&mut game, malloc_slot, &[bytes, 765]);
         let first_at = (first - base) as usize;
         assert_eq!(
             &game.vm.process.memory_mut().unwrap()[first_at..first_at + 16],
             &[0; 16]
         );
         game.vm.process.memory_mut().unwrap()[first_at..first_at + 16].fill(77);
-        let other = invoke_import(&mut game, malloc_slot, [16, 766]);
+        let other = invoke_import(&mut game, malloc_slot, &[16, 766]);
         let other_at = (other - base) as usize;
         game.vm.process.memory_mut().unwrap()[other_at..other_at + 16].fill(88);
-        invoke_import(&mut game, malloc_slot + 2, [765, 0]);
-        let next = invoke_import(&mut game, malloc_slot, [16, 765]);
+        invoke_import(&mut game, malloc_slot + 2, &[765, 0]);
+        let next = invoke_import(&mut game, malloc_slot, &[16, 765]);
         assert_eq!(next, first);
         assert_eq!(
             &game.vm.process.memory_mut().unwrap()[first_at..first_at + 16],
@@ -2328,25 +2342,25 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             &game.vm.process.memory_mut().unwrap()[other_at..other_at + 16],
             &[88; 16]
         );
-        invoke_import(&mut game, malloc_slot + 1, [other, 0]);
-        invoke_import(&mut game, malloc_slot + 2, [765, 0]);
-        let whole = invoke_import(&mut game, malloc_slot, [32, 0]);
+        invoke_import(&mut game, malloc_slot + 1, &[other, 0]);
+        invoke_import(&mut game, malloc_slot + 2, &[765, 0]);
+        let whole = invoke_import(&mut game, malloc_slot, &[32, 0]);
         assert_eq!(whole, first);
-        invoke_import(&mut game, malloc_slot + 2, [0, 0]);
+        invoke_import(&mut game, malloc_slot + 2, &[0, 0]);
         let config_slot = if rr { 7 } else { 6 };
-        invoke_import(&mut game, config_slot, [3, base + 0x1720]);
-        invoke_import(&mut game, config_slot, [3, base + 0x1720]);
-        invoke_import(&mut game, config_slot, [3, 0]);
+        invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
+        invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
+        invoke_import(&mut game, config_slot, &[3, 0]);
         for slot in index_slot..index_slot + 3 {
-            assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
-            assert_eq!(invoke_import(&mut game, slot, [base + 0x1720, 0]), 1);
-            assert_eq!(invoke_import(&mut game, slot, [0, 0]), 0);
+            assert_eq!(invoke_import(&mut game, slot, &[base + 0x1720, 0]), 1);
+            assert_eq!(invoke_import(&mut game, slot, &[base + 0x1720, 0]), 1);
+            assert_eq!(invoke_import(&mut game, slot, &[0, 0]), 0);
         }
         if rr {
-            invoke_import(&mut game, 49, [entity_address, 0]);
-            invoke_import(&mut game, 49, [entity_address, 0]);
-            invoke_import(&mut game, 49, [0, 0]);
-            invoke_import(&mut game, 49, [entity_address + stride, 0]);
+            invoke_import(&mut game, 49, &[entity_address, 0]);
+            invoke_import(&mut game, 49, &[entity_address, 0]);
+            invoke_import(&mut game, 49, &[0, 0]);
+            invoke_import(&mut game, 49, &[entity_address + stride, 0]);
             // Registration observes a real native lifetime once. It neither
             // derives its common slot from the edict ordinal nor duplicates it.
             game.vm.process.memory_mut().unwrap()
@@ -2354,10 +2368,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .copy_from_slice(&3u32.to_le_bytes());
             game.vm.process.memory_mut().unwrap()
                 [(entity_address + stride - base) as usize + 1376] = 1;
-            invoke_import(&mut game, 48, [entity_address + stride, 0]);
-            invoke_import(&mut game, 48, [entity_address + stride, 0]);
-            invoke_import(&mut game, 49, [entity_address + stride, 0]);
-            invoke_import(&mut game, 48, [entity_address + stride, 0]);
+            invoke_import(&mut game, 48, &[entity_address + stride, 0]);
+            invoke_import(&mut game, 48, &[entity_address + stride, 0]);
+            invoke_import(&mut game, 49, &[entity_address + stride, 0]);
+            invoke_import(&mut game, 48, &[entity_address + stride, 0]);
         }
         game.vm.process.memory_mut().unwrap()
             [table_at + size as usize..table_at + size as usize + 4]
@@ -2368,13 +2382,100 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .write_word(entity_address + stride + 96, 1)
                 .unwrap();
         }
-        invoke_import(&mut game, link_slot, [entity_address + stride, 0]);
-        invoke_import(&mut game, link_slot, [entity_address + stride, 0]);
+        // Exercise the actual child ABI, including the hidden result pointer,
+        // register arguments and three stack arguments. Edict3 is inactive and
+        // unbound; owner comparisons still use its original weak slot identity.
+        let output = base + 0x1d00;
+        let start = base + 0x1d80;
+        let end = base + 0x1d8c;
+        let inactive = entity_address + stride * 2;
+        let set_fields = |game: &mut Game, owner: u64, passed_owner: u64, flags: u32| {
+            let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            memory
+                .write_vec3(start, qa_core::primitives::Vec3([-50.0, 5.0, 7.0]))
+                .unwrap();
+            memory
+                .write_vec3(end, qa_core::primitives::Vec3([50.0, 5.0, 7.0]))
+                .unwrap();
+            memory
+                .write(
+                    entity_address + if rr { 1464 } else { 272 },
+                    &owner.to_le_bytes(),
+                )
+                .unwrap();
+            memory
+                .write(
+                    inactive + if rr { 1464 } else { 272 },
+                    &passed_owner.to_le_bytes(),
+                )
+                .unwrap();
+            memory
+                .write_word(entity_address + if rr { 1392 } else { 200 }, flags as i32)
+                .unwrap();
+        };
+        let result_entity = |game: &mut Game| {
+            let memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            u64::from_le_bytes(
+                memory
+                    .read(output + if rr { 56 } else { 64 }, 8)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        let body_mask = qa_world::collision::Contents::BODY.to_q2() as u64;
+        invoke_import(&mut game, link_slot, &[entity_address, 0]);
+        for (owner, passed_owner, flags, pass, mask, expected) in [
+            (0, 0, 0, 0, body_mask, entity_address),
+            (0, 0, 0, entity_address, body_mask, base + 0x3000),
+            (inactive, 0, 0, inactive, body_mask, base + 0x3000),
+            (0, entity_address, 0, inactive, body_mask, base + 0x3000),
+            (
+                0,
+                0,
+                8,
+                0,
+                body_mask,
+                if rr { base + 0x3000 } else { entity_address },
+            ),
+            (0, 0, 8, 0, body_mask | (1 << 30), entity_address),
+            (
+                0,
+                0,
+                128,
+                0,
+                body_mask,
+                if rr { base + 0x3000 } else { entity_address },
+            ),
+            (0, 0, 128, 0, body_mask | (1 << 31), entity_address),
+        ] {
+            set_fields(&mut game, owner, passed_owner, flags);
+            assert_eq!(
+                invoke_import(
+                    &mut game,
+                    trace_slot,
+                    &[output, start, 0, 0, end, pass, mask]
+                ),
+                output
+            );
+            assert_eq!(result_entity(&mut game), expected);
+        }
+        set_fields(&mut game, 0, 0, 0);
+        invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
+        invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
         qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
             .unwrap()
             .write_word(entity_address + stride + if rr { 1380 } else { 100 }, 0)
             .unwrap();
-        invoke_import(&mut game, link_slot, [entity_address + stride, 1]);
+        invoke_import(&mut game, link_slot, &[entity_address + stride, 1]);
         let address = entity_address + stride * 2;
         let mut memory =
             qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
@@ -2415,22 +2516,21 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         invoke_import(
             &mut game,
             config_slot,
-            [if rr { 64 } else { 34 }, base + 0x17a0],
+            &[if rr { 64 } else { 34 }, base + 0x17a0],
         );
-        invoke_import(&mut game, link_slot, [address, 0]);
-        invoke_import(&mut game, link_slot, [address, 0]);
-        invoke_import(&mut game, link_slot, [entity_address, 0]);
-        invoke_import(&mut game, link_slot, [entity_address, 0]);
-        invoke_import(&mut game, link_slot, [base + 0x3000, 0]);
-        invoke_import(&mut game, set_model_slot, [entity_address, base + 0x1720]);
-        invoke_import(&mut game, set_model_slot, [address, base + 0x17a0]);
-        invoke_import(&mut game, unlink_slot, [entity_address, 0]);
-        invoke_import(&mut game, unlink_slot, [entity_address, 1]);
+        invoke_import(&mut game, link_slot, &[address, 0]);
+        invoke_import(&mut game, link_slot, &[address, 0]);
+        invoke_import(&mut game, link_slot, &[entity_address, 0]);
+        invoke_import(&mut game, link_slot, &[base + 0x3000, 0]);
+        invoke_import(&mut game, set_model_slot, &[entity_address, base + 0x1720]);
+        invoke_import(&mut game, set_model_slot, &[address, base + 0x17a0]);
+        invoke_import(&mut game, unlink_slot, &[entity_address, 0]);
+        invoke_import(&mut game, unlink_slot, &[entity_address, 1]);
         // A cached old lifetime cannot unlink a replacement owned by another module.
-        invoke_import(&mut game, unlink_slot, [entity_address, 0]);
+        invoke_import(&mut game, unlink_slot, &[entity_address, 0]);
         // Unlinking a never-published native slot must not create a common entity.
-        invoke_import(&mut game, unlink_slot, [entity_address + stride, 0]);
-        invoke_import(&mut game, unlink_slot, [base + 0x3000, 0]);
+        invoke_import(&mut game, unlink_slot, &[entity_address + stride, 0]);
+        invoke_import(&mut game, unlink_slot, &[base + 0x3000, 0]);
         drop(invoke_import);
         if let Some(entity) = owned_entity {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);

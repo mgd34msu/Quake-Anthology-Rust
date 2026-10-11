@@ -21,7 +21,7 @@ impl TraceServices for CheckedQueries {
     fn trace(&mut self, query: TraceQuery) -> Trace {
         assert_eq!(query.rules, self.expected);
         assert_eq!(query.entity_rules, self.expected_entities);
-        assert_eq!(query.pass, None);
+        assert_eq!(query.pass, qa_core::primitives::CollisionOwner::None);
         assert!(query.excluded.is_empty());
         self.calls += 1;
         self.position_tests += u32::from(query.start == query.end);

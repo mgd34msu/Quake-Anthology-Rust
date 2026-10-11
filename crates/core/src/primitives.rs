@@ -207,6 +207,8 @@ pub struct CollisionTags(pub u8);
 impl CollisionTags {
     pub const MONSTER: Self = Self(1);
     pub const DEAD_MONSTER: Self = Self(2);
+    pub const PLAYER: Self = Self(4);
+    pub const PROJECTILE: Self = Self(8);
 }
 
 impl std::ops::BitOr for CollisionTags {

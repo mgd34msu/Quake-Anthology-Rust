@@ -201,7 +201,7 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
                     qa_core::primitives::RuleSetId::Quake,
                 )
                 .1,
-                pass: None,
+                pass: qa_core::primitives::CollisionOwner::None,
                 excluded: &[],
             },
         });

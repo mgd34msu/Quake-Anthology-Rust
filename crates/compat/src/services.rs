@@ -19,7 +19,8 @@ use qa_session::clients::Server;
 use qa_world::{
     area::{LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceScratch, WorldTrace,
+        CollisionStore, Contents, EntityTracePolicy, NativeTraceEntities, Trace, TraceQuery,
+        TraceScratch, WorldTrace,
     },
     entities::AllocationPolicy,
 };
@@ -248,7 +249,11 @@ pub struct EngineCallTable {
     pub print: PrintCall,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
-    pub trace: fn(&mut EngineServices<'_>, TraceQuery<'_>) -> Result<Trace, CallError>,
+    pub trace: fn(
+        &mut EngineServices<'_>,
+        TraceQuery<'_>,
+        Option<&dyn NativeTraceEntities>,
+    ) -> Result<Trace, CallError>,
     pub link:
         fn(&mut EngineServices<'_>, CallContext, EntityId, LinkFlags) -> Result<bool, CallError>,
     pub unlink: fn(&mut EngineServices<'_>, EntityId) -> Result<(), CallError>,
@@ -279,7 +284,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     print: |s, c, k, t| s.print(c, k, t),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
-    trace: |s, q| s.trace(q),
+    trace: |s, q, native| s.trace(q, native),
     link: |s, c, e, f| s.link(c, e, f),
     unlink: |s, e| s.unlink(e),
     bot_registration: |s, e, registered| s.bot_registration(e, registered),
@@ -321,7 +326,11 @@ impl EngineServices<'_> {
             .push(FrameEvent::Effect(event))
             .map_err(|_| CallError::Capacity)
     }
-    pub fn trace(&mut self, query: TraceQuery<'_>) -> Result<Trace, CallError> {
+    pub fn trace(
+        &mut self,
+        query: TraceQuery<'_>,
+        native: Option<&dyn NativeTraceEntities>,
+    ) -> Result<Trace, CallError> {
         let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
         Ok(WorldTrace::new(
             self.geometry,
@@ -330,8 +339,9 @@ impl EngineServices<'_> {
             &self.server.entities,
             &self.server.area,
             self.scratch,
-            query.pass,
+            None,
         )
+        .with_native_entities(native)
         .trace(query))
     }
     pub fn point_contents(

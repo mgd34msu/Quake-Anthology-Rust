@@ -168,7 +168,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
                 &table,
                 &area,
                 TraceQuery {
-                    pass: Some(pass),
+                    pass: CollisionOwner::Lifetime(pass),
                     ..query(rules)
                 }
             )
@@ -189,7 +189,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
                 &table,
                 &area,
                 TraceQuery {
-                    pass: Some(pass),
+                    pass: CollisionOwner::Lifetime(pass),
                     ..query(rules)
                 }
             )
@@ -203,7 +203,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
@@ -217,7 +217,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 excluded: &[target],
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
@@ -235,7 +235,7 @@ fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 excluded: &[stale],
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
@@ -275,7 +275,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
@@ -288,7 +288,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1)
             }
         )
@@ -309,7 +309,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
@@ -326,7 +326,7 @@ fn arena_siblings_and_pass_owner_none_keep_native_signed_comparison() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1)
             }
         )
@@ -398,7 +398,7 @@ fn caller_selects_missile_monster_bounds_no_monsters_and_point_pass_filter() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 mins: Vec3([-1.0; 3]),
                 maxs: Vec3([1.0; 3]),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1)
@@ -414,7 +414,7 @@ fn caller_selects_missile_monster_bounds_no_monsters_and_point_pass_filter() {
             &table,
             &area,
             TraceQuery {
-                pass: Some(pass),
+                pass: CollisionOwner::Lifetime(pass),
                 mins: Vec3([-1.0; 3]),
                 maxs: Vec3([1.0; 3]),
                 ..query(qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1)
@@ -651,5 +651,75 @@ fn native_world_zero_fraction_returns_before_linked_body_merging() {
         assert_eq!(result.entity, table.id_at(0));
         assert!(!result.start_solid);
         assert_eq!(result.contents, Contents::SOLID);
+    }
+}
+
+#[test]
+fn weak_native_pass_filtering_does_not_require_a_live_common_slot() {
+    use qa_core::primitives::RuleSetId;
+    let world = empty();
+    let (mut table, mut area) = table();
+    let target = body(
+        &mut table,
+        &mut area,
+        Vec3::default(),
+        Vec3([-5.0; 3]),
+        Vec3([5.0; 3]),
+    );
+    let weak = CollisionOwner::Native(NativeEntity {
+        module: ModuleId(8),
+        slot: 103,
+    });
+    table.columns.collision_owner[target.slot as usize] = weak;
+    let mut q = query(qa_world::collision::trace_policy(RuleSetId::Quake2).1);
+    q.pass = weak;
+    assert_eq!(trace(&world, &table, &area, q).fraction, 1.0);
+    q.pass = CollisionOwner::Native(NativeEntity {
+        module: ModuleId(9),
+        slot: 103,
+    });
+    assert_eq!(trace(&world, &table, &area, q).entity, Some(target));
+    // A stale strong pass remains absent; it cannot suppress other contacts or
+    // become a weak reference to the replacement at that slot.
+    q.pass = CollisionOwner::Lifetime(EntityId {
+        slot: u32::MAX,
+        generation: 5,
+    });
+    assert_eq!(trace(&world, &table, &area, q).entity, Some(target));
+}
+
+#[test]
+fn rerelease_entity_class_filters_are_independent_of_geometry_and_other_callers() {
+    use qa_core::primitives::RuleSetId;
+    let world = empty();
+    let (mut table, mut area) = table();
+    let target = body(
+        &mut table,
+        &mut area,
+        Vec3::default(),
+        Vec3([-5.0; 3]),
+        Vec3([5.0; 3]),
+    );
+    for (tag, content) in [
+        (CollisionTags::PLAYER, Contents::PLAYER),
+        (CollisionTags::PROJECTILE, Contents::PROJECTILE),
+    ] {
+        table.columns.collision_tags[target.slot as usize] = tag;
+        for rules in [
+            RuleSetId::Quake,
+            RuleSetId::Quake2,
+            RuleSetId::Quake2Rerelease,
+            RuleSetId::Quake3,
+        ] {
+            let (clipping, entities) = qa_world::collision::trace_policy(rules);
+            let mut q = query(entities);
+            q.rules = clipping;
+            assert_eq!(
+                trace(&world, &table, &area, q).fraction == 1.0,
+                rules == RuleSetId::Quake2Rerelease
+            );
+            q.mask |= content;
+            assert_eq!(trace(&world, &table, &area, q).entity, Some(target));
+        }
     }
 }

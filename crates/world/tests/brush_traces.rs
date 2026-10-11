@@ -123,7 +123,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
                     mask: Contents::SOLID,
                     rules,
                     entity_rules: entity_rules(rules),
-                    pass: None,
+                    pass: qa_core::primitives::CollisionOwner::None,
                     excluded: &[],
                 },
             );
@@ -154,7 +154,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
                     mask: Contents::WATER,
                     rules,
                     entity_rules: entity_rules(rules),
-                    pass: None,
+                    pass: qa_core::primitives::CollisionOwner::None,
                     excluded: &[],
                 }
             )
@@ -180,7 +180,7 @@ fn embedded_motion_keeps_original_brush_trace_semantics() {
             mask: Contents::SOLID,
             rules,
             entity_rules: entity_rules(rules),
-            pass: None,
+            pass: qa_core::primitives::CollisionOwner::None,
             excluded: &[],
         };
         let trace = trace_world(&world, query);
@@ -516,7 +516,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
         mask: Contents::SOLID,
         rules: TraceRules::ARENA,
         entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-        pass: None,
+        pass: qa_core::primitives::CollisionOwner::None,
         excluded: &[],
     };
     // Native centering adds1 to both positions. Those additions round to

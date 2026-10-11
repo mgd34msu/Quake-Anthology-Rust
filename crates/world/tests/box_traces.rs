@@ -67,7 +67,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
             rules: TraceRules::LEGACY,
             entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
                 .1,
-            pass: None,
+            pass: qa_core::primitives::CollisionOwner::None,
             excluded: &[],
         },
         &body,
@@ -87,7 +87,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
             rules: TraceRules::ARENA,
             entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
                 .1,
-            pass: None,
+            pass: qa_core::primitives::CollisionOwner::None,
             excluded: &[],
         },
         &body,
@@ -105,7 +105,7 @@ fn box_hull_expands_by_query_bounds_and_offsets_the_endpoint() {
             rules: TraceRules::LEGACY,
             entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake)
                 .1,
-            pass: None,
+            pass: qa_core::primitives::CollisionOwner::None,
             excluded: &[],
         },
         &body,

@@ -223,7 +223,7 @@ pub fn load(
                 mask,
                 rules,
                 entity_rules,
-                pass: None,
+                pass: qa_core::primitives::CollisionOwner::None,
                 excluded: &[],
             },
         });
