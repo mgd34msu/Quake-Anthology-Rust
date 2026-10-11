@@ -1,6 +1,6 @@
 //! Load-declared native function tables returned by a module API entry.
 use super::{Error, Export, Vm};
-use crate::memory::ModuleMemory;
+use crate::memory::{ProcessMemoryError, process_memory};
 use qa_platform::native::NativeScalar;
 
 pub struct TableFunction {
@@ -61,10 +61,10 @@ impl Vm {
             return Err(Error::Export);
         }
         let targets = {
-            let base = self.process.base();
-            let memory =
-                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
-                    .map_err(|_| Error::Export)?;
+            let memory = process_memory(&mut self.process).map_err(|error| match error {
+                ProcessMemoryError::Memory(_) => Error::Export,
+                error => error.into(),
+            })?;
             let version = memory.read_word(address).map_err(|_| Error::Export)?;
             if version != table.layout.version {
                 return Err(Error::Binding(format!(

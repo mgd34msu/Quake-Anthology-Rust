@@ -2419,6 +2419,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             let result = host.connect_q2_client(&api, id, b"\\name\\NativeClient");
             assert_eq!(result.is_ok(), accepted, "{rules:?}: {result:?}");
             if accepted {
+                assert_eq!(result.unwrap(), 1);
                 let client = &host.runtime.server.clients[id.0 as usize];
                 assert_eq!(
                     host.runtime.server.entities.columns.native_entity[client.entity.slot as usize],

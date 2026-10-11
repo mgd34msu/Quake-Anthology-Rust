@@ -847,11 +847,7 @@ impl Game {
                 address + (PAGE_BYTES + cvar_bytes) as u64,
                 geometry,
                 layout.version == 2023,
-                &mut crate::memory::ModuleMemory::borrow(
-                    vm.process.base(),
-                    vm.process.memory_mut().map_err(Error::Process)?,
-                )
-                .map_err(|_| Error::Service(crate::services::CallError::Memory))?,
+                &mut crate::memory::process_memory(&mut vm.process)?,
             )
             .map_err(Error::Service)?,
         );

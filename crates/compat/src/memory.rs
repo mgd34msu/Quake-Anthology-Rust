@@ -3,6 +3,26 @@ use qa_core::heap::extent;
 pub use qa_core::heap::{Heap, MemoryError};
 use qa_core::primitives::Vec3;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Debug)]
+pub enum ProcessMemoryError {
+    Process(qa_platform::native::NativeError),
+    Memory(MemoryError),
+}
+
+/// NativeProcess only lends its bytes while the owned child is stopped.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn process_memory(
+    process: &mut qa_platform::native::NativeProcess,
+) -> Result<ModuleMemory<'_>, ProcessMemoryError> {
+    let base = process.base();
+    ModuleMemory::borrow(
+        base,
+        process.memory_mut().map_err(ProcessMemoryError::Process)?,
+    )
+    .map_err(ProcessMemoryError::Memory)
+}
+
 enum Bytes<'a> {
     Owned(Box<[u8]>),
     Borrowed(&'a mut [u8]),

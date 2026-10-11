@@ -1,7 +1,7 @@
 //! Native module exports and imports over the one owned-child backend.
 use crate::{
     abi::{Addresses, CallTable, Invocation, UnknownCalls},
-    memory::ModuleMemory,
+    memory::{ModuleMemory, ProcessMemoryError, process_memory},
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
 use qa_core::{names::NameTable, sys_events::EventTime, text::FixedText};
@@ -70,6 +70,14 @@ pub enum Error {
 impl Error {
     pub fn recoverable(&self) -> bool {
         matches!(self, Self::Process(NativeError::ImportTrap { .. }))
+    }
+}
+impl From<ProcessMemoryError> for Error {
+    fn from(error: ProcessMemoryError) -> Self {
+        match error {
+            ProcessMemoryError::Process(error) => Self::Process(error),
+            ProcessMemoryError::Memory(_) => Self::Service(CallError::Memory),
+        }
     }
 }
 pub struct ImportTrapInfo<'a> {
@@ -386,10 +394,7 @@ impl Vm {
         words[first..first + arguments.len()].copy_from_slice(arguments);
         let mut rejected = None;
         if self.cvars.is_some() || self.native_command.is_some() || self.native_configs.is_some() {
-            let base = self.process.base();
-            let mut memory =
-                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
-                    .map_err(|_| Error::Service(CallError::Memory))?;
+            let mut memory = process_memory(&mut self.process)?;
             if let Some(cvars) = &mut self.cvars {
                 cvars
                     .refresh(calls.services.cvars, &mut memory)
@@ -409,10 +414,7 @@ impl Vm {
         let table_address = self.table_address();
         let native_player = if self.client_think == Some(ordinal) {
             let entities = self.entities.as_ref().ok_or(Error::Export)?;
-            let base = self.process.base();
-            let memory =
-                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
-                    .map_err(|_| Error::Service(CallError::Memory))?;
+            let memory = process_memory(&mut self.process)?;
             let native = entities
                 .identity(
                     &memory,
@@ -528,10 +530,7 @@ impl Vm {
         if let Some(table) = self.table_address()
             && let (Some(stats), Some(entities)) = (&mut self.player_stats, &self.entities)
         {
-            let base = self.process.base();
-            let memory =
-                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
-                    .map_err(|_| Error::Service(CallError::Memory))?;
+            let memory = process_memory(&mut self.process)?;
             let table = entities.read(&memory, table).map_err(Error::Service)?;
             stats
                 .project(
@@ -563,9 +562,10 @@ impl Vm {
     pub fn entities(&mut self) -> Result<Entities, Error> {
         let table = self.table_address().ok_or(Error::Export)?;
         let layout = self.entities.as_ref().ok_or(Error::Export)?;
-        let base = self.process.base();
-        let memory = ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
-            .map_err(|_| Error::Export)?;
+        let memory = process_memory(&mut self.process).map_err(|error| match error {
+            ProcessMemoryError::Memory(_) => Error::Export,
+            error => error.into(),
+        })?;
         layout.read(&memory, table).map_err(|_| Error::Export)
     }
 }

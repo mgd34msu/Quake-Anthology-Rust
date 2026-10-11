@@ -572,9 +572,9 @@ fn run() -> Result<(), String> {
                 &mut info,
             )
             .map_err(|e| format!("native userinfo: {e:?}"))?;
-        host.connect_q2_client(api, id, &info[..length])?;
+        let native_client = host.connect_q2_client(api, id, &info[..length])?;
         println!(
-            "{{\"event\":\"module_client_begin\",\"seat\":{seat},\"module\":{},\"native_client\":{seat},\"native_signon\":false,\"gameplay_accepted\":false}}",
+            "{{\"event\":\"module_client_begin\",\"seat\":{seat},\"module\":{},\"native_client\":{native_client},\"native_signon\":false,\"gameplay_accepted\":false}}",
             module.0
         );
     }

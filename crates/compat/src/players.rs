@@ -1,6 +1,6 @@
 //! Native numeric stats enter the same player/value projection as snapshots.
 use crate::{
-    entities::{Entities, slot_address},
+    entities::{Entities, native_address},
     memory::ModuleMemory,
     services::CallError,
 };
@@ -60,20 +60,11 @@ impl PlayerStats {
             if client.connection.is_none() || client.module != module {
                 continue;
             }
-            let Some(slot) = server.entities.resolve(client.entity) else {
+            let Some(edict) = native_address(table, module, &server.entities, client.entity) else {
                 continue;
             };
-            let Some(native) = server.entities.columns.native_entity[slot]
-                .filter(|native| native.module == module)
-            else {
-                continue;
-            };
-            let address = slot_address(
-                table,
-                u32::try_from(native.slot).map_err(|_| CallError::Entity)?,
-            )
-            .ok_or(CallError::Entity)?;
-            let pointer = memory.read_u64(address + self.layout.client as u64)?;
+            let slot = client.entity.slot as usize;
+            let pointer = memory.read_u64(edict + self.layout.client as u64)?;
             if pointer == 0 {
                 continue;
             }
@@ -94,12 +85,7 @@ impl PlayerStats {
             if client.module_movement
                 && let Some(pmove) = pmove.as_deref_mut()
             {
-                pmove.import_client(
-                    memory,
-                    pointer,
-                    slot_address(table, native.slot as u32).ok_or(CallError::Entity)?,
-                    &mut client.player,
-                )?;
+                pmove.import_client(memory, pointer, edict, &mut client.player)?;
                 let body = server.entities.columns.body(slot);
                 client.player.body.mins = body.mins;
                 client.player.body.maxs = body.maxs;
