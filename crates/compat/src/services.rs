@@ -504,7 +504,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     },
     print: |s, target, c, k, l, t| s.print(target, c, k, l, t),
     localized_print: |s, target, client, kind, level, base, count, argument| {
-        let mut text = qa_core::text::FixedText::<1023>::default();
+        let mut text = qa_formats::localization::LocText::default();
         s.localization.format(base, count, argument, &mut text)?;
         s.print(target, client, kind, level, text.as_bytes())
     },

@@ -92,6 +92,7 @@ impl<const N: usize> Default for FixedText<N> {
     }
 }
 impl<const N: usize> FixedText<N> {
+    pub const CAPACITY: usize = N;
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
     }

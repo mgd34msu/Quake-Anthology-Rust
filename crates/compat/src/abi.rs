@@ -805,6 +805,37 @@ fn print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.console)(c.services, text)?;
     Ok(0)
 }
+struct PrintRoute {
+    target: Option<qa_core::events::OutputTarget>,
+    client: Option<qa_core::primitives::ClientId>,
+    kind: PrintKind,
+}
+fn print_route(
+    c: &Invocation<'_, '_, '_>,
+    address: u64,
+    unicast: bool,
+    level: u8,
+) -> Result<Option<PrintRoute>, CallError> {
+    let client = if unicast && address != 0 {
+        let Some(client) = native_client(c, address)? else {
+            // A free client or non-client edict never becomes a broadcast.
+            return Ok(None);
+        };
+        Some(client)
+    } else {
+        None
+    };
+    let local = unicast && address == 0;
+    Ok(Some(PrintRoute {
+        client,
+        target: local.then_some(qa_core::events::OutputTarget::Presentation),
+        kind: if local {
+            PrintKind::Console
+        } else {
+            PrintKind::from_localized_level(level)
+        },
+    }))
+}
 fn native_print<const TARGET: bool, const CENTER: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
@@ -812,39 +843,26 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
     if CENTER && address == 0 {
         return Ok(0);
     }
-    let client = if address != 0 {
-        let Some(client) = native_client(c, address)? else {
-            // A free client or non-client edict never becomes a broadcast.
-            return Ok(0);
-        };
-        Some(client)
-    } else {
-        None
-    };
     let level = if CENTER {
         PrintKind::Center.default_level()
     } else {
         c.arg(usize::from(TARGET))? as u8
     };
-    let kind = if CENTER {
-        PrintKind::Center
-    } else if TARGET && address == 0 {
-        PrintKind::Console
-    } else {
-        PrintKind::from_localized_level(level)
+    let Some(route) = print_route(c, address, TARGET, level)? else {
+        return Ok(0);
     };
     let text = c
         .memory
         .cstring(c.pointer(usize::from(TARGET) + usize::from(!CENTER))?)?;
     (ENGINE_CALLS.print)(
         c.services,
-        if TARGET && address == 0 {
-            Some(qa_core::events::OutputTarget::Presentation)
+        route.target,
+        route.client,
+        if CENTER {
+            PrintKind::Center
         } else {
-            None
+            route.kind
         },
-        client,
-        kind,
         level,
         text,
     )?;
@@ -854,22 +872,12 @@ fn native_localized_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
     let address = c.pointer(0)?;
     let flags = c.arg(1)? as u8;
     let broadcast = flags & 8 != 0;
-    let client = if !broadcast && address != 0 {
-        let Some(client) = native_client(c, address)? else {
-            return Ok(0);
-        };
-        Some(client)
-    } else {
-        None
-    };
     let mut level = flags & !(8 | 16);
     if broadcast && level > 3 && level != 6 {
         level = 3;
     }
-    let kind = if !broadcast && address == 0 {
-        PrintKind::Console
-    } else {
-        PrintKind::from_localized_level(level)
+    let Some(route) = print_route(c, address, !broadcast, level)? else {
+        return Ok(0);
     };
     let base = c.memory.cstring(c.pointer(2)?)?;
     let count = usize::try_from(c.arg(4)?).map_err(|_| CallError::Memory)?;
@@ -892,13 +900,9 @@ fn native_localized_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
     };
     (ENGINE_CALLS.localized_print)(
         c.services,
-        if !broadcast && address == 0 {
-            Some(qa_core::events::OutputTarget::Presentation)
-        } else {
-            None
-        },
-        client,
-        kind,
+        route.target,
+        route.client,
+        route.kind,
         level,
         base,
         count,

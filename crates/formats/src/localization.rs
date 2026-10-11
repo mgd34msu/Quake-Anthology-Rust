@@ -1,6 +1,6 @@
 //! Q2 rerelease key/format catalogs, using the common quoted-token reader.
 use crate::{FormatError, text::Tokens};
-use qa_core::text::FixedText;
+pub type LocText = qa_core::text::FixedText<1023>;
 
 pub struct Entry {
     pub key: Box<[u8]>,
@@ -30,7 +30,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Entry>, FormatError> {
         if platform {
             continue;
         }
-        let mut format = FixedText::<1023>::default();
+        let mut format = LocText::default();
         let mut at = 0;
         while at < raw.len() {
             let mut byte = raw[at];

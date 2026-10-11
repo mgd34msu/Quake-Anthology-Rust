@@ -2,8 +2,9 @@
 use qa_core::{
     names::NameTable,
     primitives::IndexSpan,
-    text::{FixedText, integer_prefix, until_nul},
+    text::{integer_prefix, until_nul},
 };
+use qa_formats::localization::LocText;
 
 #[derive(Clone, Copy, Default)]
 struct Argument {
@@ -134,7 +135,7 @@ impl Catalog {
         base: &[u8],
         count: usize,
         mut argument: impl FnMut(usize) -> Result<Option<&'a [u8]>, E>,
-        output: &mut FixedText<1023>,
+        output: &mut LocText,
     ) -> Result<(), E> {
         output.clear();
         let base = until_nul(base);
@@ -146,7 +147,7 @@ impl Catalog {
             };
             (key, until_nul(&template.format), &template.arguments)
         } else if has_arguments(base) {
-            let format = &base[..base.len().min(1023)];
+            let format = &base[..base.len().min(LocText::CAPACITY)];
             let Some(parsed) = Arguments::parse(format) else {
                 append(output, base);
                 return Ok(());
@@ -207,7 +208,7 @@ fn has_arguments(base: &[u8]) -> bool {
     }
     false
 }
-fn append(output: &mut FixedText<1023>, bytes: &[u8]) {
-    let remaining = 1023 - output.as_bytes().len();
+fn append(output: &mut LocText, bytes: &[u8]) {
+    let remaining = LocText::CAPACITY - output.as_bytes().len();
     let _ = output.append_bytes(&bytes[..bytes.len().min(remaining)]);
 }
