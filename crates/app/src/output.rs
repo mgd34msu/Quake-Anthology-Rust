@@ -157,16 +157,17 @@ pub fn dispatch(
                             },
                             Err(_) => {
                                 counts.native_unsupported += 1;
-                                OutputSubmission::Unsent
+                                OutputSubmission::BestEffort
                             }
                         }
                     } else {
                         counts.native_unsupported += 1;
-                        OutputSubmission::Unsent
+                        OutputSubmission::BestEffort
                     }
                 } else {
-                    // A local client without a bound seat is not delivered yet.
-                    OutputSubmission::Unsent
+                    // No presentation is bound to this client. Inapplicable
+                    // records must not hold the shared publication head.
+                    OutputSubmission::BestEffort
                 };
                 server.events.submit(id, record.sequence, submission);
             }

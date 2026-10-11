@@ -233,6 +233,20 @@ impl EventRing {
         self.retire();
     }
     pub fn push(&mut self, event: FrameEvent) -> Result<u64, EventStorageError> {
+        self.publish(None, event)
+    }
+    pub fn push_to(
+        &mut self,
+        target: OutputTarget,
+        event: FrameEvent,
+    ) -> Result<u64, EventStorageError> {
+        self.publish(Some(target), event)
+    }
+    fn publish(
+        &mut self,
+        target: Option<OutputTarget>,
+        event: FrameEvent,
+    ) -> Result<u64, EventStorageError> {
         self.make_room();
         let text = match event {
             FrameEvent::Print(p) => {
@@ -250,6 +264,7 @@ impl EventRing {
             let consumer = self.active[index];
             let c = &mut self.consumers[consumer];
             let relevant = c.target.is_some()
+                && target.is_none_or(|target| c.target == Some(target))
                 && match (c.target, event) {
                     (Some(OutputTarget::Client(id)), FrameEvent::Print(p)) => {
                         p.client.is_none_or(|to| to == id)

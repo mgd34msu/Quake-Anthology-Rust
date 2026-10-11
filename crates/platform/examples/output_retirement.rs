@@ -34,13 +34,13 @@ struct Source {
     unsent: bool,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        EventTime(self.frame * 25_000_000)
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.frame * 25_000_000)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         if self.ack_length != 0 {
             let _ = queue.push(SysEvent {
-                time: self.begin_frame(),
+                time: EventTime(self.frame * 25_000_000),
                 kind: EventKind::Packet {
                     socket: 0,
                     from: Peer::Socket(SocketAddr::from(([127, 0, 0, 1], 1001))),
@@ -50,11 +50,11 @@ impl FrameSource for Source {
             self.ack_length = 0;
         }
         let _ = queue.push(SysEvent {
-            time: self.begin_frame(),
+            time: EventTime(self.frame * 25_000_000),
             kind: EventKind::Time,
         });
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
+    fn wait_time(&mut self, _: Duration) -> Duration {
         self.begin_frame()
     }
     fn elapsed(&self) -> Duration {

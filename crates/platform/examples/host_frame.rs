@@ -40,12 +40,12 @@ struct Source {
     first_poll: bool,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
+    fn begin_frame(&mut self) -> Duration {
         self.timer = Stopwatch::start();
         self.first_poll = true;
         let now = self.pump.begin_frame();
         if self.console {
-            EventTime(self.fixture_frame * 16_000_000)
+            Duration::from_nanos(self.fixture_frame * 16_000_000)
         } else {
             now
         }
@@ -66,7 +66,7 @@ impl FrameSource for Source {
             let _ = self.pump.enqueue(queue, EventKind::Time);
         }
     }
-    fn wait_time(&mut self, remaining: Duration) -> EventTime {
+    fn wait_time(&mut self, remaining: Duration) -> Duration {
         self.pump.wait_time(remaining)
     }
     fn elapsed(&self) -> Duration {

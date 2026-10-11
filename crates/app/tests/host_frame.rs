@@ -38,8 +38,8 @@ impl Source {
     }
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        EventTime(self.time * 1_000_000)
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.time * 1_000_000)
     }
     #[expect(
         clippy::manual_is_multiple_of,
@@ -88,10 +88,10 @@ impl FrameSource for Source {
         }
         self.stamp(queue, EventKind::Time);
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
+    fn wait_time(&mut self, _: Duration) -> Duration {
         self.waits += 1;
         self.time += 1;
-        EventTime(self.time * 1_000_000)
+        Duration::from_nanos(self.time * 1_000_000)
     }
     fn elapsed(&self) -> Duration {
         Duration::ZERO
@@ -417,8 +417,8 @@ fn cap_uses_native_millisecond_timestamps_and_zero_startup_baseline() {
         waits: usize,
     }
     impl FrameSource for ClockSource {
-        fn begin_frame(&mut self) -> EventTime {
-            self.now
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_nanos(self.now.0)
         }
         fn poll_events(&mut self, queue: &mut SysEventQueue) {
             self.polls += 1;
@@ -429,10 +429,10 @@ fn cap_uses_native_millisecond_timestamps_and_zero_startup_baseline() {
                 })
                 .unwrap();
         }
-        fn wait_time(&mut self, remaining: Duration) -> EventTime {
+        fn wait_time(&mut self, remaining: Duration) -> Duration {
             self.waits += 1;
             self.now.0 += remaining.as_nanos() as u64;
-            self.now
+            Duration::from_nanos(self.now.0)
         }
         fn elapsed(&self) -> Duration {
             Duration::ZERO

@@ -3741,8 +3741,8 @@ struct Source {
     polls: u32,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        self.time
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.time.0)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.polls += 1;
@@ -3753,8 +3753,8 @@ impl FrameSource for Source {
             })
             .unwrap();
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
-        self.time
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::from_nanos(self.time.0)
     }
     fn elapsed(&self) -> Duration {
         Duration::ZERO

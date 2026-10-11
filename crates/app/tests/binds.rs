@@ -16,8 +16,8 @@ use std::time::Duration;
 
 struct Source(u64);
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        EventTime(self.0 * 1_000_000)
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.0 * 1_000_000)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         queue
@@ -27,7 +27,7 @@ impl FrameSource for Source {
             })
             .unwrap();
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
+    fn wait_time(&mut self, _: Duration) -> Duration {
         panic!("uncapped fixture");
     }
     fn elapsed(&self) -> Duration {

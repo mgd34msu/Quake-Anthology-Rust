@@ -19,8 +19,8 @@ struct Source {
     effects: usize,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        EventTime(self.time * 1_000_000)
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.time * 1_000_000)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         queue
@@ -30,7 +30,7 @@ impl FrameSource for Source {
             })
             .unwrap();
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
+    fn wait_time(&mut self, _: Duration) -> Duration {
         panic!("uncapped fixture");
     }
     fn elapsed(&self) -> Duration {
@@ -121,7 +121,16 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
     );
     assert_eq!(source.sound_ids[..3], [1, 2, 3]);
     assert_eq!(source.effect_ids[..3], [1, 2, 3]);
-    assert_eq!(host.runtime.server.events.len(), 9); // Remote has no native channel yet.
+    assert!(host.runtime.server.events.is_empty());
+    assert_eq!(result.output.native_unsupported, 9);
+    assert_eq!(result.output.native_disconnected, 0);
+    assert!(
+        !host.runtime.server.events.needs_resync(
+            host.runtime.server.clients[remote.0 as usize]
+                .output
+                .unwrap()
+        )
+    );
     let center = host.runtime.server.clients[first.0 as usize]
         .hud
         .centerprint
@@ -279,7 +288,7 @@ struct PeerSource {
     unsent: bool,
 }
 impl FrameSource for PeerSource {
-    fn begin_frame(&mut self) -> EventTime {
+    fn begin_frame(&mut self) -> Duration {
         self.source.begin_frame()
     }
     fn poll_events(&mut self, q: &mut SysEventQueue) {
@@ -297,7 +306,7 @@ impl FrameSource for PeerSource {
             self.ack_length = 0;
         }
     }
-    fn wait_time(&mut self, d: Duration) -> EventTime {
+    fn wait_time(&mut self, d: Duration) -> Duration {
         self.source.wait_time(d)
     }
     fn elapsed(&self) -> Duration {

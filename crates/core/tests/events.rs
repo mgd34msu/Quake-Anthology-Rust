@@ -21,6 +21,26 @@ fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmiss
     sequences
 }
 #[test]
+fn targeted_publications_belong_only_to_the_selected_consumer() {
+    let mut ring = EventRing::load(4, 3, 4, 32).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let remote = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(0))).unwrap();
+    for sequence in 0..16 {
+        ring.push_to(OutputTarget::Presentation, sound(sequence))
+            .unwrap();
+        assert_eq!(
+            consume(&mut ring, presentation, OutputSubmission::BestEffort),
+            [u64::from(sequence)]
+        );
+        assert!(consume(&mut ring, remote, OutputSubmission::Unsent).is_empty());
+        assert!(consume(&mut ring, module, OutputSubmission::Unsent).is_empty());
+        assert!(ring.is_empty());
+    }
+    assert!(!ring.needs_resync(remote));
+    assert_eq!(ring.counters(remote).unwrap().submissions, 0);
+}
+#[test]
 fn submission_is_independent_of_reading_and_actual_reliable_ack() {
     let mut ring = EventRing::load(8, 3, 8, 32).unwrap();
     let reliable = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();

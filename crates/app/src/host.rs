@@ -25,10 +25,10 @@ pub struct ClientView {
 /// function can be checked headlessly with supplied event times.
 pub trait FrameSource {
     /// Starts measurement and samples platform time without collecting events.
-    fn begin_frame(&mut self) -> EventTime;
+    fn begin_frame(&mut self) -> Duration;
     fn poll_events(&mut self, queue: &mut SysEventQueue);
     /// Waits on time only. Physical intake occurs in the two poll_events calls.
-    fn wait_time(&mut self, remaining: Duration) -> EventTime;
+    fn wait_time(&mut self, remaining: Duration) -> Duration;
     fn elapsed(&self) -> Duration;
     fn render(&mut self, _views: &[Option<ClientView>; SeatId::COUNT]) {}
     fn present(&mut self);
@@ -71,13 +71,13 @@ impl FrameSource for LiveFrame<'_> {
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
         self.pump.send_udp(socket, to, bytes).is_ok()
     }
-    fn begin_frame(&mut self) -> EventTime {
+    fn begin_frame(&mut self) -> Duration {
         self.pump.begin_frame()
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.pump.poll_events(self.window, queue);
     }
-    fn wait_time(&mut self, remaining: Duration) -> EventTime {
+    fn wait_time(&mut self, remaining: Duration) -> Duration {
         self.pump.wait_time(remaining)
     }
     fn elapsed(&self) -> Duration {
@@ -216,7 +216,7 @@ impl FrameHost {
             .previous
             .unwrap_or_default()
             .milliseconds()
-            .min(now.milliseconds());
+            .min(now.as_millis().min(u128::from(u64::MAX)) as u64);
         let fps = self.console.cvars.integer(self.maxfps);
         // Preserve Com_Frame's integer-millisecond cap, including uncapped
         // values <= 0 and its zero period above 1000 fps.
@@ -226,13 +226,13 @@ impl FrameHost {
             (1000 / fps) as u64
         };
         let deadline_ns = EventTime::from_milliseconds(previous_ms + period_ms).0;
-        while now.0 < deadline_ns && !self.runtime.quit {
-            now = source.wait_time(Duration::from_nanos(deadline_ns - now.0));
+        let deadline = Duration::from_nanos(deadline_ns);
+        while now < deadline && !self.runtime.quit {
+            now = source.wait_time(deadline - now);
         }
         // Owner ruling: both intake points physically poll SDL/stdin/UDP, and
         // neither the cap wait nor any other frame phase performs intake.
         source.poll_events(&mut self.queue);
-        self.runtime.network.frame_ns = now.since(self.previous.unwrap_or_default());
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
@@ -242,7 +242,6 @@ impl FrameHost {
         }
         self.initialize_modules(crate::modules::Phase::Server);
         let server_time = self.time;
-        self.previous = Some(server_time);
         let simulation = Stopwatch::start();
         while let Some(tick) = self.timeline.next_tick(server_time) {
             result.server_ticks += 1;
@@ -307,6 +306,7 @@ impl FrameHost {
         // Immediate server->client packets take this path in the same frame.
         source.poll_events(&mut self.queue);
         self.drain(&mut result);
+        self.previous = Some(server_time);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
             self.shutdown_modules();
@@ -404,6 +404,8 @@ impl FrameHost {
                         from,
                         bytes,
                     } => {
+                        self.runtime.network.frame_ns =
+                            event.time.since(self.previous.unwrap_or_default());
                         let server = &mut self.runtime.server;
                         let predictions = &mut self.runtime.prediction;
                         let snapshots = &mut self.runtime.local_snapshots;

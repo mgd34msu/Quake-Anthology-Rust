@@ -106,15 +106,18 @@ pub fn play(
     for path in args.iter().skip(1) {
         let sound = runtime.sound_bank.as_ref().and_then(|bank| bank.find(path));
         if let Some(sound) = sound {
-            let _ = runtime.server.events.push(FrameEvent::Sound(SoundEvent {
-                sound,
-                entity: None,
-                channel: 0,
-                position: Vec3::default(),
-                volume: 1.0,
-                attenuation: 0.0,
-                action: SoundAction::Play,
-            }));
+            let _ = runtime.server.events.push_to(
+                qa_core::events::OutputTarget::Presentation,
+                FrameEvent::Sound(SoundEvent {
+                    sound,
+                    entity: None,
+                    channel: 0,
+                    position: Vec3::default(),
+                    volume: 1.0,
+                    attenuation: 0.0,
+                    action: SoundAction::Play,
+                }),
+            );
         } else {
             runtime.print_event(
                 None,

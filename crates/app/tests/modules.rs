@@ -419,7 +419,7 @@ fn quit_in_second_command_phase_prevents_client_module_startup() {
     use qa_app::modules::State;
     struct QuitAtSecond(Source);
     impl FrameSource for QuitAtSecond {
-        fn begin_frame(&mut self) -> EventTime {
+        fn begin_frame(&mut self) -> Duration {
             self.0.begin_frame()
         }
         fn poll_events(&mut self, queue: &mut SysEventQueue) {
@@ -433,7 +433,7 @@ fn quit_in_second_command_phase_prevents_client_module_startup() {
                     .unwrap();
             }
         }
-        fn wait_time(&mut self, duration: Duration) -> EventTime {
+        fn wait_time(&mut self, duration: Duration) -> Duration {
             self.0.wait_time(duration)
         }
         fn elapsed(&self) -> Duration {
@@ -505,8 +505,8 @@ pub struct Source {
     pub polls: u64,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        self.time
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.time.0)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.polls += 1;
@@ -517,8 +517,8 @@ impl FrameSource for Source {
             })
             .unwrap();
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
-        self.time
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::from_nanos(self.time.0)
     }
     fn elapsed(&self) -> Duration {
         Duration::ZERO

@@ -2,7 +2,7 @@ use crate::{
     Window,
     clock::{Clock, Stopwatch},
 };
-use qa_core::sys_events::{EventKind, EventTime, QueueError, SysEvent, SysEventQueue};
+use qa_core::sys_events::{EventKind, QueueError, SysEvent, SysEventQueue};
 use std::{
     io,
     net::{SocketAddr, UdpSocket},
@@ -47,9 +47,9 @@ impl EventPump {
         self.sockets.push(socket);
         Ok((index, local))
     }
-    pub fn begin_frame(&mut self) -> EventTime {
+    pub fn begin_frame(&mut self) -> Duration {
         self.timer = Stopwatch::start();
-        self.clock.now()
+        Duration::from_nanos(self.clock.now().0)
     }
     /// Submission never polls a receive source or the clock.
     pub fn send_udp(&self, socket: u16, to: SocketAddr, bytes: &[u8]) -> io::Result<()> {
@@ -124,9 +124,9 @@ impl EventPump {
         self.timer.elapsed()
     }
     /// Clock-only cap wait. Event admission belongs to poll_events, never here.
-    pub fn wait_time(&self, remaining: Duration) -> EventTime {
+    pub fn wait_time(&self, remaining: Duration) -> Duration {
         crate::clock::pause(remaining);
-        self.clock.now()
+        Duration::from_nanos(self.clock.now().0)
     }
     pub fn dropped_packets(&self) -> u64 {
         self.dropped_packets

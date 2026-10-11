@@ -46,8 +46,8 @@ struct Source {
     bad: bool,
 }
 impl FrameSource for Source {
-    fn begin_frame(&mut self) -> EventTime {
-        EventTime(self.frame * 16_000_000)
+    fn begin_frame(&mut self) -> Duration {
+        Duration::from_nanos(self.frame * 16_000_000)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.polls += 1;
@@ -75,8 +75,8 @@ impl FrameSource for Source {
             })
             .is_err();
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
-        EventTime(self.frame * 16_000_000)
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::from_nanos(self.frame * 16_000_000)
     }
     fn elapsed(&self) -> Duration {
         Duration::ZERO

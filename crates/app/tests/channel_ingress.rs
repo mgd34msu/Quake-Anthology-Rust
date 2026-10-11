@@ -23,9 +23,9 @@ struct Clock {
     time: u64,
 }
 impl FrameSource for Clock {
-    fn begin_frame(&mut self) -> EventTime {
+    fn begin_frame(&mut self) -> Duration {
         self.time += 10_000_000;
-        EventTime(self.time)
+        Duration::from_nanos(self.time)
     }
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.polls += 1;
@@ -38,8 +38,8 @@ impl FrameSource for Clock {
                 .is_ok()
         );
     }
-    fn wait_time(&mut self, _: Duration) -> EventTime {
-        EventTime(self.time)
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::from_nanos(self.time)
     }
     fn elapsed(&self) -> Duration {
         Duration::ZERO
@@ -230,6 +230,58 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
             assert_eq!(decoded.view_angles.0[0], 1.40625);
         }
         assert!(host.queue.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn netquake_move_duration_uses_queued_packet_time_instead_of_pacing_or_time_marker()
+-> Result<(), String> {
+    struct Source(EventTime);
+    impl FrameSource for Source {
+        fn begin_frame(&mut self) -> Duration {
+            Duration::from_secs(123)
+        }
+        fn wait_time(&mut self, _: Duration) -> Duration {
+            panic!("uncapped fixture")
+        }
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn present(&mut self) {}
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            queue
+                .push(SysEvent {
+                    time: self.0,
+                    kind: EventKind::Time,
+                })
+                .unwrap();
+        }
+    }
+    let (mut host, client) = local_host(qa_network::commands::packet::Protocol::NetQuake15)?;
+    let command = qa_core::primitives::UserCmd {
+        duration_ms: 16,
+        movement: [1.0, 0.0, 0.0],
+        ..Default::default()
+    };
+    for (packet_ms, marker_ms, duration_ms) in [(41, 50, 41), (83, 90, 33)] {
+        assert!(
+            host.runtime
+                .send_local_command(client, &command, EventTime::default())
+        );
+        assert_eq!(
+            host.runtime
+                .loopback
+                .enqueue(&mut host.queue, EventTime::from_milliseconds(packet_ms)),
+            1
+        );
+        host.frame(&mut Source(EventTime::from_milliseconds(marker_ms)), true);
+        let received = host.runtime.server.clients[client.0 as usize].command;
+        assert_eq!(u64::from(received.duration_ms), duration_ms);
+        assert_eq!(
+            received.duration_ns,
+            EventTime::from_milliseconds(duration_ms).0
+        );
     }
     Ok(())
 }
