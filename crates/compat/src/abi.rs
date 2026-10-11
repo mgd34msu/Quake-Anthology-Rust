@@ -320,6 +320,7 @@ const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
     };
+    t.entries[12] = Some(vector_length);
     t.entries[23] = Some(qc_print::<true>);
     t.entries[25] = Some(qc_print::<false>);
     t.entries[37] = Some(floor::<false>);
@@ -362,12 +363,13 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             return Err(quakec::Trap::Builtin);
         }
         let mut arguments = [0u64; 8];
+        let (words, stride) = if number == 12 { (3, 1) } else { (argc, 3) };
         let string_start = qc_print_offset(number == 23, self.context.console.source);
-        for (index, to) in arguments[..argc].iter_mut().enumerate() {
+        for (index, to) in arguments[..words].iter_mut().enumerate() {
             let word = *vm
                 .image
                 .globals
-                .get(4 + index * 3)
+                .get(4 + index * stride)
                 .ok_or(quakec::Trap::Memory)?;
             if (matches!(number, 23 | 25) && index >= string_start)
                 || matches!(number, 45 | 46 | 72)
@@ -394,7 +396,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             addresses: Addresses::Native {
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
-            arguments: &arguments[..argc],
+            arguments: &arguments[..words],
         };
         let value = self
             .table
@@ -409,6 +411,14 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
 
 fn qc_print_offset(broadcast: bool, rules: qa_core::primitives::RuleSetId) -> usize {
     usize::from(broadcast && rules == qa_core::primitives::RuleSetId::QuakeWorld)
+}
+fn vector_length(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let vector = qa_core::primitives::Vec3([
+        f32::from_bits(c.arg(0)? as u32),
+        f32::from_bits(c.arg(1)? as u32),
+        f32::from_bits(c.arg(2)? as u32),
+    ]);
+    Ok(u64::from(qa_core::math::length(vector).to_bits()))
 }
 fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let first = qc_print_offset(BROADCAST, c.context.console.source);

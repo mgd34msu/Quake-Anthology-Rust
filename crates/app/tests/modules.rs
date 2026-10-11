@@ -698,6 +698,10 @@ fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameH
     vm.image.globals[28] = 3;
     vm.image.globals[53] = level.to_bits();
     vm.image.globals[54..57].copy_from_slice(&[0x12345678, 0x87654321, 0x11223344]);
+    quakec_host(rules, vm)
+}
+
+fn quakec_host(rules: RuleSetId, vm: Vm) -> FrameHost {
     let module = ModuleId(1);
     let mut runtime = Runtime::load(1, []).unwrap();
     let anchor = runtime
@@ -742,6 +746,143 @@ fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameH
         }],
     )
     .unwrap()
+}
+
+fn quakec_vlen_program() -> Vm {
+    let bytes = quakec_program::program(
+        &[
+            (StoreV, 48, 4, 0),
+            (Call1, 27, 0, 0),
+            (Return, 1, 0, 0),
+            (Call0, 27, 0, 0),
+            (Return, 1, 0, 0),
+            (Call2, 27, 0, 0),
+            (Return, 1, 0, 0),
+        ],
+        &[0, 1, -12, 4, 6],
+    );
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 4,
+            header_bytes: 16,
+            extra_string_bytes: 0,
+            state_step: 0.1,
+        },
+    )
+    .unwrap();
+    vm.image.globals[27] = 2;
+    // The second parameter is unrelated to the vector in the first parameter.
+    vm.image.globals[7..10].fill(f32::MAX.to_bits());
+    vm.image.globals[1..4].copy_from_slice(&[0x12345678, 0x87654321, 0x11223344]);
+    vm
+}
+
+#[test]
+fn quakec_vlen_uses_three_words_of_one_parameter_through_session_dispatch() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for (vector, expected) in [
+            ([3.0f32, 4.0, 12.0], 13.0f32),
+            ([0.0, -0.0, -0.0], 0.0),
+            ([f32::from_bits(1), 0.0, 0.0], 0.0),
+            ([f32::MAX, 0.0, 0.0], f32::INFINITY),
+        ] {
+            let mut vm = quakec_vlen_program();
+            vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
+            let mut host = quakec_host(rules, vm);
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Seconds(0.1),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([
+                    expected.to_bits(),
+                    0x87654321,
+                    0x11223344,
+                ]))
+            );
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+            assert!(host.console.idle());
+            assert!(host.runtime.server.events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn quakec_vlen_matches_original_rows_and_rejects_wrong_parameter_counts() {
+    use qa_compat::{
+        abi::{QUAKEC, QuakeCCalls, UnknownCalls},
+        services::ServiceStorage,
+    };
+    let rows = std::env::var_os("QA_QC_VLEN_REFERENCE").map(|path| std::fs::read(path).unwrap());
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let developer = console.cvars.find("developer").unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        let mut calls = QuakeCCalls {
+            services: &mut services,
+            table: &QUAKEC,
+            context: CallContext {
+                module: ModuleId(1),
+                clock: ThinkTime::Seconds(0.0),
+                server_frame: 0,
+                console: Context {
+                    source: rules,
+                    ..Context::default()
+                },
+                allocation: AllocationPolicy::EDICT,
+                link_order: qa_gameplay::rules::link_order(rules),
+            },
+            platform_time: EventTime(0),
+            developer,
+            unknown: &mut unknown,
+        };
+        let mut vm = quakec_vlen_program();
+        if let Some(rows) = &rows {
+            assert!(!rows.is_empty());
+            assert_eq!(rows.len() % 24, 0);
+            for (index, row) in rows.chunks_exact(24).enumerate() {
+                let words: [u32; 6] = std::array::from_fn(|i| {
+                    u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap())
+                });
+                vm.image.globals[48..51].copy_from_slice(&words[..3]);
+                assert_eq!(
+                    vm.call(&mut calls, 1, 100, false),
+                    Ok(words[3..].try_into().unwrap()),
+                    "{rules:?} row {index}"
+                );
+            }
+        }
+        for vector in [
+            [f32::NAN, 1.0, 0.0],
+            [f32::INFINITY, f32::NEG_INFINITY, 0.0],
+        ] {
+            vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
+            let result = vm.call(&mut calls, 1, 100, false).unwrap();
+            if vector[0].is_nan() {
+                assert!(f32::from_bits(result[0]).is_nan());
+            } else {
+                assert_eq!(result[0], f32::INFINITY.to_bits());
+            }
+            assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
+        }
+        let before: [u32; 3] = vm.image.globals[1..4].try_into().unwrap();
+        for function in [3, 4] {
+            assert_eq!(
+                vm.call(&mut calls, function, 100, false),
+                Err(qa_compat::quakec::Trap::Builtin)
+            );
+            assert_eq!(&vm.image.globals[1..4], &before);
+        }
+        assert_eq!(calls.unknown.calls, 0);
+    }
 }
 
 #[test]
