@@ -322,6 +322,9 @@ impl Vm {
     pub fn declares_export(&self, ordinal: u32) -> bool {
         (ordinal as usize) < self.exports.len()
     }
+    pub fn export_count(&self) -> usize {
+        self.exports.len()
+    }
     pub fn import_callback(&self) -> u64 {
         self.process.callback(self.abi)
     }

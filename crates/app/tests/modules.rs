@@ -32,6 +32,26 @@ fn quakec_presets_are_explicit_and_do_not_inherit_map_or_player_rules() {
 }
 
 #[test]
+fn q2_native_presets_do_not_inherit_map_or_player_rules() {
+    use qa_app::modules::Q2Spec;
+    for (input, rules, path) in [
+        ("q2:gamex86.so", RuleSetId::Quake2, "gamex86.so"),
+        (
+            "q2rr:game_x64.dll",
+            RuleSetId::Quake2Rerelease,
+            "game_x64.dll",
+        ),
+    ] {
+        let spec = Q2Spec::parse(input).unwrap();
+        assert_eq!(spec.rules, rules);
+        assert_eq!(spec.path, path);
+    }
+    for input in ["gamex86.so", "q1:game.dll", "q3:game.dll", "q2:", "q2rr:"] {
+        assert!(Q2Spec::parse(input).is_err());
+    }
+}
+
+#[test]
 fn qvm_game_selection_does_not_schedule_client_exports_as_server_ticks() {
     use qa_app::modules::{Q3Role, Q3Spec};
     assert_eq!(

@@ -1606,6 +1606,143 @@ fn q2_table_file() -> Vec<u8> {
     file
 }
 
+fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
+    use qa_app::modules::{Q2Spec, load_q2};
+    use qa_formats::entities::EntitySyntax;
+    let files = Files(std::env::temp_dir().join(format!("qa-q2-loader-{}", std::process::id())));
+    std::fs::create_dir(&files.0).unwrap();
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    runtime.entity_sources.push(qa_app::map::NativeEntityText {
+        syntax: EntitySyntax::Quake3,
+        bytes: b"{\"classname\" \"worldspawn\"}\0"
+            .to_vec()
+            .into_boxed_slice(),
+    });
+    for rr in [false, true] {
+        let mut file = q2_table_file();
+        pe_rva(&mut file, 0x1800, if rr { 2023 } else { 3 }, 4);
+        pe_text(&mut file, 0x1500, &[0xc3]);
+        for index in 0..if rr { 29 } else { 15 } {
+            let offset = if !rr || index < 19 {
+                8 + index * 8
+            } else {
+                192 + (index - 19) * 8
+            };
+            pe_rva(&mut file, 0x1800 + offset, 0x180001500, 8);
+        }
+        let mut calls = vec![(if rr { 16 } else { 8 }, 0x1400, u8::from(rr))];
+        if rr {
+            calls.push((8, 0x1420, 0));
+        }
+        calls.push((if rr { 32 } else { 24 }, 0x1440, if rr { 2 } else { 1 }));
+        calls.push((if rr { 24 } else { 16 }, 0x14c0, if rr { 13 } else { 6 }));
+        for (table_offset, rva, expected) in calls {
+            pe_rva(
+                &mut file,
+                0x1800 + table_offset,
+                0x180000000 + rva as u64,
+                8,
+            );
+            let mut code = Vec::new();
+            if rva == 0x1440 {
+                // SpawnEntities sees owned native pointers to the basename,
+                // unchanged source text, and an empty spawn point.
+                for prefix in [
+                    &[0x80, 0x39, b'f'][..],
+                    &[0x80, 0x3a, b'{'],
+                    &[0x41, 0x80, 0x38, 0],
+                ] {
+                    code.extend_from_slice(prefix);
+                    code.extend_from_slice(&[0x74, 2, 0x0f, 0x0b]);
+                }
+            }
+            let start = rva + code.len();
+            code.extend_from_slice(&[0x83, 0x3d]);
+            code.extend_from_slice(&((0x1b00 - (start + 7)) as i32).to_le_bytes());
+            code.extend_from_slice(&[expected, 0x75, 11, 0xc7, 0x05]);
+            code.extend_from_slice(&((0x1b00 - (start + 19)) as i32).to_le_bytes());
+            code.extend_from_slice(&(u32::from(expected) + 1).to_le_bytes());
+            code.extend_from_slice(&[0xc3, 0x0f, 0x0b]);
+            pe_text(&mut file, rva, &code);
+        }
+        pe_rva(
+            &mut file,
+            0x1800 + if rr { 136 } else { 112 },
+            0x180001480,
+            8,
+        );
+        pe_text(&mut file, 0x1480, &[0x83, 0x05, 0x79, 6, 0, 0, 1, 0xc3]);
+        std::fs::write(
+            files.0.join(if rr { "rr.dll" } else { "classic.dll" }),
+            file,
+        )
+        .unwrap();
+    }
+    runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    let mut requests = Vec::new();
+    load_q2(
+        &mut runtime,
+        &[
+            Q2Spec::parse("q2:classic.dll").unwrap(),
+            Q2Spec::parse("q2rr:rr.dll").unwrap(),
+        ],
+        &mut requests,
+        "maps/fixture.bsp",
+        0,
+    )
+    .unwrap();
+    for (request, rules, interval, steps) in [
+        (&requests[0], RuleSetId::Quake2, 100, 4),
+        (&requests[1], RuleSetId::Quake2Rerelease, 25, 5),
+    ] {
+        assert_eq!(request.timing_rules, rules);
+        assert_eq!(request.context.console.source, rules);
+        assert_eq!(request.rate, TickRate::fixed(interval).unwrap());
+        assert_eq!(request.initialize.len(), steps);
+        assert_eq!(
+            request.context.link_order,
+            qa_gameplay::rules::link_order(rules)
+        );
+        assert!(
+            matches!(request.frame.arguments[0], Argument::Word(value) if value == u64::from(rules == RuleSetId::Quake2Rerelease))
+        );
+    }
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    for (id, calls) in [(ModuleId(1), 5), (ModuleId(2), 6)] {
+        assert_eq!(host.module_state(id), Some(State::Running));
+        assert_eq!(host.module_counts(id).unwrap().calls, calls);
+        assert_eq!(host.module_counts(id).unwrap().traps, 0);
+    }
+    for time in [25, 50, 75, 100, 125, 150, 175, 200] {
+        source.time = EventTime(time * 1_000_000);
+        host.frame(&mut source, true);
+    }
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 7);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 14);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    host.shutdown_modules();
+    for (id, calls) in [(ModuleId(1), 8), (ModuleId(2), 15)] {
+        assert_eq!(host.module_state(id), Some(State::Stopped));
+        assert_eq!(host.module_counts(id).unwrap().calls, calls);
+        assert_eq!(host.module_counts(id).unwrap().traps, 0);
+    }
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 8);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 15);
+}
+
 fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
     use qa_compat::native::{NativeCalls, q2::Game};
     use qa_compat::{abi::UnknownCalls, services::ServiceStorage};
@@ -3269,5 +3406,6 @@ pub fn run() {
     returned_native_tables_bind_once_and_isolate_bad_apis();
     native_initialization_sequences_follow_api_binding_and_isolate_failure();
     q2_api_layouts_bind_the_full_table_and_name_missing_engine_services();
+    q2_normal_loader_selects_native_roles_and_copies_spawn_strings();
     println!("native session dispatch checks passed");
 }

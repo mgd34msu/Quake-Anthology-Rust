@@ -55,6 +55,7 @@ fn run() -> Result<(), String> {
     let mut startup_sets = Vec::new();
     let mut precache_sounds = Vec::new();
     let mut quakec_modules = Vec::new();
+    let mut q2_modules = Vec::new();
     let mut q3_modules = Vec::new();
     #[cfg(feature = "proof")]
     let mut script = None;
@@ -62,6 +63,13 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--q2-module" => {
+                q2_modules.push(qa_app::modules::Q2Spec::parse(
+                    &args
+                        .next()
+                        .ok_or("--q2-module needs q2|q2rr:virtual-file")?,
+                )?);
+            }
             "--qvm-module" | "--q3-module" => {
                 q3_modules.push(qa_app::modules::Q3Spec::parse(
                     &args
@@ -336,6 +344,7 @@ fn run() -> Result<(), String> {
     let mut local_clients = [None; SeatId::COUNT];
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
+    let mut native_entity_source = None;
     let mut imported_profile = qa_app::profile::Import::default();
     if let Some((input, policy)) = &staged_map {
         if !console_source_explicit {
@@ -399,6 +408,7 @@ fn run() -> Result<(), String> {
             policy.client.name(),
             qa_gameplay::rules::link_order(policy.client) == qa_world::area::LinkOrder::Head,
         );
+        native_entity_source = Some(runtime.entity_sources.len());
         runtime.entity_sources.push(loaded.entity_source);
         runtime.server.area = qa_world::area::AreaGrid::load(
             runtime.server.entities.capacity(),
@@ -461,6 +471,15 @@ fn run() -> Result<(), String> {
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
     let mut module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
+    if !q2_modules.is_empty() {
+        qa_app::modules::load_q2(
+            &mut runtime,
+            &q2_modules,
+            &mut module_requests,
+            map_path.as_deref().ok_or("Q2 module needs a loaded map")?,
+            native_entity_source.ok_or("Q2 module needs a native entity source")?,
+        )?;
+    }
     if !q3_modules.is_empty() {
         let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
         qa_app::modules::load_q3(&mut runtime, &q3_modules, &mut module_requests, rate)?;
@@ -477,9 +496,17 @@ fn run() -> Result<(), String> {
     for (index, spec) in q3_modules.iter().enumerate() {
         println!(
             "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"q3\",\"role\":\"{:?}\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
-            quakec_modules.len() + index + 1,
+            quakec_modules.len() + q2_modules.len() + index + 1,
             json_string(&spec.path),
             spec.role,
+        );
+    }
+    for (index, spec) in q2_modules.iter().enumerate() {
+        println!(
+            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"role\":\"game\",\"scope\":\"module_entries_only\",\"gameplay\":false}}",
+            quakec_modules.len() + index + 1,
+            json_string(&spec.path),
+            spec.rules.name(),
         );
     }
     let bank = qa_app::audio::load_bank(

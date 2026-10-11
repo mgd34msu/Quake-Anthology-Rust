@@ -18,6 +18,21 @@ use qa_formats::{archive::ArchiveReader, program::quakec::Image};
 use qa_session::timing::TickRate;
 use qa_world::entities::AllocationPolicy;
 
+mod q2;
+pub use q2::{Q2Spec, load_q2};
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn native_export(call: &qa_compat::native::LifecycleCall) -> Export {
+    let mut arguments = [Argument::Word(0); 9];
+    for (to, &from) in arguments.iter_mut().zip(&call.arguments) {
+        *to = Argument::Word(from);
+    }
+    Export {
+        callback: CallbackId(call.ordinal),
+        arguments,
+    }
+}
+
 pub struct QuakeCSpec {
     pub rules: RuleSetId,
     pub path: String,
@@ -234,23 +249,13 @@ pub fn load_q3(
                         .map_err(|e| format!("native mapping: {e:?}"))?;
                     let mut arguments = [Argument::Word(0); 9];
                     arguments[0] = Argument::Word(vm.import_callback());
-                    let lifecycle = |call: &qa_compat::native::LifecycleCall| {
-                        let mut arguments = [Argument::Word(0); 9];
-                        for (to, &from) in arguments.iter_mut().zip(&call.arguments) {
-                            *to = Argument::Word(from);
-                        }
-                        Export {
-                            callback: CallbackId(call.ordinal),
-                            arguments,
-                        }
-                    };
-                    let mut prepare: Vec<_> = vm.initializers().iter().map(lifecycle).collect();
+                    let mut prepare: Vec<_> = vm.initializers().iter().map(native_export).collect();
                     prepare.push(Export {
                         callback: CallbackId(11),
                         arguments,
                     });
-                    let finalize: Vec<_> = vm.finalizers().iter().map(lifecycle).collect();
-                    let count = 12 + vm.initializers().len() + vm.finalizers().len();
+                    let finalize: Vec<_> = vm.finalizers().iter().map(native_export).collect();
+                    let count = vm.export_count();
                     (
                         Program::Native {
                             vm: Box::new(vm),

@@ -17,7 +17,7 @@ use qa_session::{
 use std::sync::Arc;
 
 mod load;
-pub use load::{Q3Role, Q3Spec, QuakeCSpec, load_q3, load_quakec};
+pub use load::{Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
 
 pub enum Program {
     Qvm {
