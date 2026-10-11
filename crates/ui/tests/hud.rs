@@ -10,6 +10,11 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
     let mut player =
         PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity());
     let mut state = bindings.state(16, NameId(10));
+    let mut events = qa_core::events::EventRing::load(4096, 1, 1, 32).unwrap();
+    let client = ClientId(0);
+    let consumer = events
+        .bind(qa_core::events::OutputTarget::Client(client))
+        .unwrap();
     player.health = 75;
     player.armor = 30;
     player.frags = 2;
@@ -23,7 +28,23 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
         if let Some(ammo) = weapon.ammo {
             player.inventory[ammo.0 as usize] = 17;
         }
-        bindings.update(&player, &mut state);
+        let old_weapon = state.weapon;
+        let old_items = state.item_counts.clone();
+        bindings.project_stats(&player, &mut state);
+        bindings.publish_changes(&player, &state, &mut events, client);
+        assert_eq!(state.weapon, old_weapon);
+        assert_eq!(state.item_counts, old_items);
+        qa_core::events::dispatch_consumer(
+            &mut events,
+            consumer,
+            &mut |record: qa_core::events::OutputRecord, _: &mut qa_core::events::TextStore| {
+                let qa_core::events::FrameEvent::Hud(event) = record.event else {
+                    panic!("HUD record");
+                };
+                assert!(bindings.apply(&mut state, event.change));
+                qa_core::events::OutputSubmission::BestEffort
+            },
+        );
         assert_eq!(
             (state.health, state.armor, state.frags, state.score),
             (75, 30, 2, 9)
@@ -40,6 +61,8 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
             (5, 123.5, NameId(10))
         );
     }
+    bindings.publish_changes(&player, &state, &mut events, client);
+    assert!(events.is_empty());
     let pointer = state.item_counts.as_ptr();
     state.reset(&mut qa_core::events::TextStore::load(1, 1).unwrap());
     assert_eq!(state.item_counts.as_ptr(), pointer);

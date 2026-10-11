@@ -1,5 +1,5 @@
 use crate::primitives::{
-    ClientId, EffectEvent, ModuleId, PrintEvent, PrintKind, SoundEvent, TextId, TextLease,
+    ClientId, EffectEvent, HudEvent, ModuleId, PrintEvent, PrintKind, SoundEvent, TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -8,6 +8,7 @@ pub enum FrameEvent {
     Sound(SoundEvent),
     Effect(EffectEvent),
     Print(PrintEvent),
+    Hud(HudEvent),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventStorageError {
@@ -269,6 +270,7 @@ impl EventRing {
                     (Some(OutputTarget::Client(id)), FrameEvent::Print(p)) => {
                         p.client.is_none_or(|to| to == id)
                     }
+                    (Some(OutputTarget::Client(id)), FrameEvent::Hud(event)) => event.client == id,
                     _ => true,
                 };
             if relevant && c.resync {
@@ -558,5 +560,33 @@ impl Write for TextWriter<'_> {
         self.len += count;
         self.truncated = count != text.len();
         Ok(())
+    }
+}
+
+/// Consumers report actual successful submission, an actual native reliable
+/// receipt, or no submission. Merely reading a record never retires it.
+pub trait EventConsumer {
+    fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission;
+}
+pub fn dispatch_consumer(
+    events: &mut EventRing,
+    id: OutputConsumerId,
+    consumer: &mut impl EventConsumer,
+) {
+    let Some(mut batch) = events.batch(id) else {
+        return;
+    };
+    while let Some(record) = events.next(&mut batch) {
+        let submission = consumer.submit(record, &mut events.texts);
+        events.submit(id, record.sequence, submission);
+    }
+}
+
+impl<F> EventConsumer for F
+where
+    F: FnMut(OutputRecord, &mut TextStore) -> OutputSubmission,
+{
+    fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission {
+        self(record, texts)
     }
 }

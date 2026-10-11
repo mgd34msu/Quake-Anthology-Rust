@@ -24,12 +24,29 @@ fn main() -> Result<(), &'static str> {
     }
     let mut texts = qa_core::events::TextStore::load(3, 32).map_err(|_| "text")?;
     let leases: [_; 3] = std::array::from_fn(|_| texts.insert(b"message").expect("load rows"));
+    let mut events = qa_core::events::EventRing::load(4096, 3, 1, 32).map_err(|_| "events")?;
+    let consumers = std::array::from_fn::<_, 3, _>(|slot| {
+        events
+            .bind(qa_core::events::OutputTarget::Client(ClientId(slot as u32)))
+            .expect("consumer")
+    });
     allocation_counter::start();
     let mut snapshots = 0;
     for frame in 0..10_000 {
         for (index, (player, state)) in players.iter_mut().zip(&mut states).enumerate() {
             player.health = 100 - frame % 20;
-            bindings.update(player, state);
+            bindings.project_stats(player, state);
+            bindings.publish_changes(player, state, &mut events, ClientId(index as u32));
+            qa_core::events::dispatch_consumer(
+                &mut events,
+                consumers[index],
+                &mut |record: qa_core::events::OutputRecord, _: &mut qa_core::events::TextStore| {
+                    if let qa_core::events::FrameEvent::Hud(event) = record.event {
+                        bindings.apply(state, event.change);
+                    }
+                    qa_core::events::OutputSubmission::BestEffort
+                },
+            );
             print(
                 state,
                 &mut texts,

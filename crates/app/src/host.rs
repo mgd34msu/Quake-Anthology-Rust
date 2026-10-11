@@ -584,13 +584,30 @@ impl FrameHost {
             &mut self.runtime.server.entities,
             &self.runtime.catalog.names,
         );
-        for client in &mut self.runtime.server.clients {
-            if client.connection.is_some() {
-                self.runtime
-                    .catalog
-                    .hud
-                    .update(&client.player, &mut client.hud);
+        for (seat, &id) in self.local_clients.iter().enumerate() {
+            let Some(id) = id else {
+                continue;
+            };
+            if self.local_clients[..seat].contains(&Some(id)) {
+                continue;
             }
+            let Some(client) = self.runtime.server.clients.get_mut(id.0 as usize) else {
+                continue;
+            };
+            if client.connection != Some(qa_session::clients::Connection::Local) {
+                continue;
+            }
+            let player = &self.runtime.prediction[seat].player;
+            self.runtime
+                .catalog
+                .hud
+                .project_stats(player, &mut client.hud);
+            self.runtime.catalog.hud.publish_changes(
+                player,
+                &client.hud,
+                &mut self.runtime.server.events,
+                id,
+            );
         }
         commands
     }

@@ -1,10 +1,10 @@
 #[path = "../../../tools/probes/allocation_counter.rs"]
 mod allocation_counter;
+use qa_core::events::{EventConsumer, dispatch_consumer};
 use qa_core::{
     events::{EventRing, FrameEvent, OutputRecord, OutputSubmission, OutputTarget, TextStore},
     primitives::*,
 };
-use qa_session::events::{EventConsumer, dispatch_consumer};
 
 struct Consumer {
     counts: [u64; 3],
@@ -13,6 +13,9 @@ struct Consumer {
 impl EventConsumer for Consumer {
     fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission {
         match record.event {
+            FrameEvent::Hud(event) => {
+                std::hint::black_box(event);
+            }
             FrameEvent::Sound(event) => {
                 std::hint::black_box(event);
                 self.counts[0] += 1;

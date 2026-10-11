@@ -836,6 +836,25 @@ pub struct HudLine {
     pub started_at: f64,
     pub until: f64,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct HudEvent {
+    pub client: ClientId,
+    pub change: HudChange,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum HudChange {
+    Item {
+        item: ItemId,
+        count: i32,
+        acquired_at: f64,
+    },
+    Weapon(WeaponId),
+    Powerup {
+        slot: u32,
+        until: f64,
+    },
+    Collectibles(u64),
+}
 #[derive(Debug, Default)]
 pub struct HudState {
     pub values: ValueBank,

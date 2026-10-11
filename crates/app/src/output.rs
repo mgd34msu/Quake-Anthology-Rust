@@ -12,6 +12,7 @@ pub struct OutputCounts {
     pub sounds: u64,
     pub effects: u64,
     pub prints: u64,
+    pub hud: u64,
     pub unhandled_sounds: u64,
     pub unhandled_effects: u64,
     pub stale_texts: u64,
@@ -71,6 +72,7 @@ pub fn dispatch(
                     }
                     true
                 }
+                FrameEvent::Hud(_) => true,
             };
             server.events.submit(
                 server.presentation,
@@ -116,6 +118,13 @@ pub fn dispatch(
                     // Audio/particles have one presentation consumer. Each HUD
                     // independently leases its text before retiring its record.
                     let success = match record.event {
+                        FrameEvent::Hud(event) => {
+                            counts.hud += 1;
+                            if !runtime.catalog.hud.apply(&mut client.hud, event.change) {
+                                client.hud.clipped_values += 1;
+                            }
+                            true
+                        }
                         FrameEvent::Print(event) => qa_ui::hud::print(
                             &mut client.hud,
                             &mut server.events.texts,

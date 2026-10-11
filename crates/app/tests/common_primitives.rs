@@ -119,7 +119,7 @@ struct Loadout {
 }
 
 #[test]
-fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages() {
+fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_remote_huds() {
     let capacity = 257;
     let mut runtime = Runtime::load(capacity, std::iter::empty()).unwrap();
     assert_eq!(runtime.server.clients.len(), capacity);
@@ -224,6 +224,28 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
         vec![],
     )
     .unwrap();
+    let local = [0, 255, 256];
+    for (seat, slot) in local.into_iter().enumerate() {
+        let client = &mut host.runtime.server.clients[slot];
+        client.connection = Some(Connection::Local);
+        let source = &client.player;
+        let received = &mut host.runtime.prediction[seat].player;
+        received.health = source.health - 10;
+        received.armor = source.armor;
+        received.armor_type = source.armor_type;
+        received.score = source.score;
+        received.frags = source.frags;
+        received.weapon = source.weapon;
+        received.inventory.copy_from_slice(&source.inventory);
+        received
+            .item_acquired_at
+            .copy_from_slice(&source.item_acquired_at);
+        received
+            .powerup_until
+            .copy_from_slice(&source.powerup_until);
+        received.values.copy_from(&source.values);
+        host.local_clients[seat] = Some(ClientId(slot as u32));
+    }
     host.frame(&mut Source, true);
     assert_eq!(host.runtime.network.packets, 1);
     assert_eq!(
@@ -236,16 +258,18 @@ fn all_clients_project_mixed_inventory_and_item_timers_without_losing_messages()
     );
     for (slot, client) in host.runtime.server.clients.iter().enumerate() {
         let hud = &client.hud;
-        let player = &client.player;
+        let Some(seat) = local.iter().position(|&id| id == slot) else {
+            assert_eq!((hud.health, hud.armor, hud.score, hud.frags), (0, 0, 0, 0));
+            assert!(hud.item_counts.iter().all(|&value| value == 0));
+            assert!(hud.powerup_until.iter().all(|&value| value == 0.0));
+            continue;
+        };
+        let player = &host.runtime.prediction[seat].player;
         assert_eq!(
             (hud.health, hud.armor, hud.score, hud.frags),
-            (
-                100 - slot as i32,
-                slot as i32,
-                slot as i32 * 3,
-                -(slot as i32)
-            )
+            (player.health, player.armor, player.score, player.frags)
         );
+        assert_ne!(hud.health, client.player.health);
         assert_eq!(hud.item_counts[highest_item.0 as usize], slot as i32 + 1);
         assert_eq!(
             hud.item_acquired_at[highest_item.0 as usize],

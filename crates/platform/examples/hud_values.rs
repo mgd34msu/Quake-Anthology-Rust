@@ -74,7 +74,10 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
                 &mut client.player.values,
                 (frame as u32) * 64 + index as u32,
             );
-            runtime.catalog.hud.update(&client.player, &mut client.hud);
+            runtime
+                .catalog
+                .hud
+                .project_stats(&client.player, &mut client.hud);
             let value = field.export(&client.hud.values).ok_or("snapshot value")?;
             let expected = ((frame as u32) * 64 + index as u32) & 65535;
             if value != expected || client.hud.clipped_values != 0 {

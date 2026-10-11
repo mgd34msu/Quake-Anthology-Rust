@@ -149,6 +149,7 @@ impl Runtime {
             server.clients.len(),
         ))
         .map_err(|e| format!("loopback: {e:?}"))?;
+        let value_slots = catalog.hud.values.capacity();
         Ok(Self {
             sound_bank: None,
             catalog,
@@ -160,7 +161,13 @@ impl Runtime {
             targets,
             geometry: qa_world::collision::CollisionStore::new(),
             collision: None,
-            prediction: std::array::from_fn(|_| Default::default()),
+            prediction: std::array::from_fn(|_| qa_session::prediction::Prediction {
+                player: qa_core::primitives::PlayerState::with_capacity(
+                    item_slots,
+                    item_slots,
+                    value_slots,
+                ),
+            }),
             local_snapshots: std::iter::repeat_with(|| None).take(max_clients).collect(),
             loopback,
             input: qa_input::Input::load(),

@@ -1,5 +1,5 @@
+use qa_core::events::{EventConsumer, dispatch_consumer};
 use qa_core::{events::*, primitives::*};
-use qa_session::events::{EventConsumer, dispatch_consumer};
 #[derive(Default)]
 struct Consumer {
     events: Vec<u32>,
@@ -9,6 +9,7 @@ impl EventConsumer for Consumer {
         self.events.push(match record.event {
             FrameEvent::Sound(s) => s.sound.0,
             FrameEvent::Effect(e) => e.effect.0,
+            FrameEvent::Hud(event) => event.client.0,
             FrameEvent::Print(p) => {
                 assert_eq!(texts.get(p.text), Some(b"message".as_slice()));
                 2

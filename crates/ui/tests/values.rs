@@ -29,7 +29,7 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
         for field in table.stats.iter().chain(&table.persistent) {
             for value in [i32::MIN, -32768, -1, 0, 1234, 32767, i32::MAX] {
                 assert!(field.import(&mut player.values, value as u32));
-                bindings.update(&player, &mut state);
+                bindings.project_stats(&player, &mut state);
                 let expected = if field.width == ValueWidth::Signed16 {
                     i32::from(value as i16)
                 } else {
@@ -49,7 +49,7 @@ fn native_highest_slots_and_signed_values_survive_common_snapshots() {
     }
     let q2 = bindings.values.native(RuleSetId::Quake2).stats[18];
     q2.import(&mut player.values, 1234);
-    bindings.update(&player, &mut state);
+    bindings.project_stats(&player, &mut state);
     assert_eq!(state.values.get(q2.id).unwrap().as_integer(), 1234);
     assert_eq!(state.layout_text.as_ref().map(TextLease::id), Some(text));
     assert_eq!(state.clipped_values, 0);
