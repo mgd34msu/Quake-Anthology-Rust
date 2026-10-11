@@ -42,9 +42,7 @@ impl Row<'_> {
         self.take(4)?.try_into().map_err(|_| FormatError::Truncated)
     }
 }
-fn cstring(bytes: &[u8]) -> &[u8] {
-    &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())]
-}
+
 fn records<'a, T>(
     bsp: &Bsp<'a>,
     kind: Lump,
@@ -479,7 +477,7 @@ fn extensions<'a>(bsp: &Bsp<'a>) -> Result<Vec<Extension<'a>>, FormatError> {
         let mut result = Vec::with_capacity(count);
         for index in 0..count {
             let row = &bsp.source[offset + 8 + index * 32..offset + 8 + (index + 1) * 32];
-            let name = cstring(&row[..24]);
+            let name = qa_core::text::until_nul(&row[..24]);
             let bytes = span(bsp.source, word(row, 24)?, word(row, 28)?)?;
             result.push(Extension { name, bytes });
         }

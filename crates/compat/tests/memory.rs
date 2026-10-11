@@ -13,6 +13,14 @@ fn owned_and_borrowed_bytes_use_the_same_native_bounds_and_copy_order() {
             assert_eq!(memory.cstring(base).unwrap(), b"aabcdef");
             memory.write_word(base + 16, i32::MIN).unwrap();
             assert_eq!(memory.read_word(base + 16).unwrap(), i32::MIN);
+            memory.write_u64(base + 27, 0xfedc_ba98_7654_3210).unwrap();
+            assert_eq!(memory.read_u64(base + 27).unwrap(), 0xfedc_ba98_7654_3210);
+            assert_eq!(
+                memory.read(base + 27, 8).unwrap(),
+                &[0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe]
+            );
+            assert!(memory.write_u64(base + 57, 0).is_err());
+            assert!(memory.read_u64(base + 57).is_err());
             assert!(memory.read(base - 1, 1).is_err());
             assert!(memory.read(u64::MAX, 8).is_err());
             assert!(memory.read(base + 63, 2).is_err());

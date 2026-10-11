@@ -432,7 +432,7 @@ impl<'a> Map<'a> {
     }
     pub fn entity_text(&self) -> &'a [u8] {
         let text = self.bsp.bytes(Entities);
-        &text[..text.iter().position(|&b| b == 0).unwrap_or(text.len())]
+        qa_core::text::until_nul(text)
     }
     /// The renderer receives a bounded sample span or a load-time material
     /// request, never a raw file index into an absent lighting table.

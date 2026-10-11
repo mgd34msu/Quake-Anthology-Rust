@@ -133,7 +133,7 @@ impl Vm {
         let tail = self
             .strings
             .read(address, self.string_used - address as usize)?;
-        Ok(&tail[..tail.iter().position(|&b| b == 0).ok_or(Trap::String)?])
+        qa_core::text::terminated(tail).ok_or(Trap::String)
     }
     pub fn insert_string(&mut self, text: &[u8]) -> Result<i32, Trap> {
         let end = self

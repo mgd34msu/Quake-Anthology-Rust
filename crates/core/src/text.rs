@@ -1,6 +1,18 @@
 //! Load-sized storage for engine text. Mutation never grows it.
 use std::fmt::{self, Write};
 
+/// A strict native string requires a terminator within the supplied boundary.
+pub fn terminated(bytes: &[u8]) -> Option<&[u8]> {
+    bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .map(|end| &bytes[..end])
+}
+/// Fixed-width fields keep their entire boundary when no terminator is present.
+pub fn until_nul(bytes: &[u8]) -> &[u8] {
+    terminated(bytes).unwrap_or(bytes)
+}
+
 struct InfoPair {
     start: usize,
     key: std::ops::Range<usize>,

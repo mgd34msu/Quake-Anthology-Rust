@@ -193,8 +193,12 @@ fn prepare_first_person<const P: usize>(
     {
         let previous = old.entities[index].words;
         let slot = sequence as usize & (SLOTS - 1);
-        let start = slot * ring.capacity;
-        let current = &mut ring.entities[start..start + ring.slots[slot].count];
+        let current = super::rows_mut(
+            &mut ring.entities,
+            ring.capacity,
+            slot,
+            ring.slots[slot].count,
+        );
         if let Ok(index) = current.binary_search_by_key(&number, |e| e.number) {
             // Native emit_packet_entities updates the retained client frame,
             // not only the temporary delta, when suppressing its own pose.
@@ -402,16 +406,14 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
     let base_valid = full
         || (old.sequence == Some(header.delta as u32)
             && (!rules.valid_base || (old.valid && header.delta as u32 != header.sequence))
-            && !ring
-                .retained_rows
-                .is_some_and(|n| ring.parsed_rows.saturating_sub(old.first_entity) > n));
+            && !ring.expired(&old));
     let player = player(reader, &old.player, header.player_flags)?;
     if rules.entity_opcode && reader.read_bits(8)? != 18 {
         return Err(packet::Error::Opcode);
     }
     let (count, overflow) = read_entities(
         reader,
-        &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
+        super::rows(&ring.entities, ring.capacity, base_index, old.count),
         &ring.baselines,
         &mut ring.scratch,
         MergeRules {
@@ -512,8 +514,7 @@ impl Q2Header {
         if PACKED {
             writer.write_bits(u32::from(self.player_flags), 8)?;
         }
-        writer.write_bits(areas.len() as u32, 8)?;
-        writer.write_data(areas)?;
+        super::write_areas(writer, areas)?;
         Ok(())
     }
 }

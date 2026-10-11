@@ -87,7 +87,7 @@ impl<'a> Reader<'a> {
     pub fn byte_position(&self) -> usize {
         self.bit / 8
     }
-    fn error(&self, kind: ErrorKind) -> Error {
+    pub(crate) fn error(&self, kind: ErrorKind) -> Error {
         Error {
             byte: self.byte_position(),
             kind,
@@ -156,8 +156,7 @@ impl<'a> Reader<'a> {
     }
     pub fn read_signed(&mut self, width: u8) -> Result<i32, Error> {
         let value = self.read_bits(width)?;
-        let shift = 32 - width;
-        Ok(((value << shift) as i32) >> shift)
+        Ok(sign_extend(value, width))
     }
     pub fn read_float(&mut self) -> Result<f32, Error> {
         self.read_bits(32).map(f32::from_bits)
@@ -300,4 +299,8 @@ impl<'a> Writer<'a> {
         }
         Ok(())
     }
+}
+
+pub(crate) fn sign_extend(word: u32, bits: u8) -> i32 {
+    ((word << (32 - bits)) as i32) >> (32 - bits)
 }

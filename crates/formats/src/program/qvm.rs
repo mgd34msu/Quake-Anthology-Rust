@@ -117,8 +117,7 @@ pub struct Image {
 
 fn section(bytes: &[u8], offset: i32, count: usize) -> Result<&[u8], FormatError> {
     let offset = usize::try_from(offset).map_err(|_| FormatError::InvalidRange)?;
-    let end = offset.checked_add(count).ok_or(FormatError::InvalidRange)?;
-    bytes.get(offset..end).ok_or(FormatError::InvalidRange)
+    crate::read::slice_at(bytes, offset, count)
 }
 
 impl Image {

@@ -663,10 +663,7 @@ pub fn read_q2_kex_player(
     from: &Q2KexPlayer,
 ) -> Result<Q2KexPlayer, Error> {
     if reader.read_bits(8)? != 17 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Width,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Width));
     }
     let mut flags = u64::from(reader.read_bits(16)?);
     if flags & (1 << 15) != 0 {
@@ -719,10 +716,7 @@ pub fn read_q2_player(
     from: &[u32; Q2_PLAYER_WORDS],
 ) -> Result<[u32; Q2_PLAYER_WORDS], Error> {
     if reader.read_bits(8)? != 17 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Symbol,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     let mut words = *from;
     delta::read(&Q2_PLAYER_GROUPS, &mut words, 0, reader)?;
@@ -1715,20 +1709,14 @@ pub fn read_nq_entity(
 pub(crate) fn read_nq_entity_header(reader: &mut Reader<'_>) -> Result<EntityHeader, Error> {
     let mut flags = reader.read_bits(8)?;
     if flags & 128 == 0 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Symbol,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     if flags & 1 != 0 {
         flags |= reader.read_bits(8)? << 8;
     }
     let number = reader.read_bits(if flags & (1 << 14) != 0 { 16 } else { 8 })?;
     if number >= 32768 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Symbol,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     Ok(EntityHeader {
         number: number as u16,
@@ -1899,10 +1887,7 @@ pub fn read_nq_player(
     active_weapon_is_mask: bool,
 ) -> Result<[u32; NQ_PLAYER_WORDS], Error> {
     if reader.read_bits(8)? != 15 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Symbol,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     let flags = reader.read_bits(16)?;
     let mut words = NQ_PLAYER_DEFAULTS;
@@ -2049,17 +2034,11 @@ pub fn read_qw_player(
     prior_slot_command: impl FnOnce(u8) -> QwCmd,
 ) -> Result<QwPlayerInfo, Error> {
     if reader.read_bits(8)? != 42 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Symbol,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     let number = reader.read_bits(8)?;
     if number >= 32 {
-        return Err(Error {
-            byte: reader.byte_position(),
-            kind: crate::message::ErrorKind::Symbol,
-        });
+        return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     let flags = reader.read_bits(16)?;
     let mut words = [0; QW_PLAYER_WORDS];

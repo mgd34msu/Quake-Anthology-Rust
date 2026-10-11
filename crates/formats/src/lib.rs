@@ -35,9 +35,5 @@ fn span(bytes: &[u8], offset: u32, length: u32) -> Result<&[u8], FormatError> {
     if offset > i32::MAX as u32 || length > i32::MAX as u32 {
         return Err(FormatError::InvalidRange);
     }
-    let start = offset as usize;
-    let end = start
-        .checked_add(length as usize)
-        .ok_or(FormatError::InvalidRange)?;
-    bytes.get(start..end).ok_or(FormatError::InvalidRange)
+    read::slice_at(bytes, offset as usize, length as usize)
 }

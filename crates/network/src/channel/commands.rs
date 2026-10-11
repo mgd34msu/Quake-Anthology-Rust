@@ -44,11 +44,7 @@ impl Window {
         &slot.text[..slot.length]
     }
     fn store(&mut self, sequence: u32, text: &[u8], receipt: Option<NativeReceipt>) {
-        let length = text
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(text.len())
-            .min(STRING_BYTES - 1);
+        let length = qa_core::text::until_nul(text).len().min(STRING_BYTES - 1);
         let slot = &mut self.slots[sequence as usize & (SLOTS - 1)];
         slot.text[..length].copy_from_slice(&text[..length]);
         slot.text[length] = 0;
@@ -161,7 +157,7 @@ impl CommandMessages {
 
 // msg.c uses bytewise native string conversion inside its existing MSG stream.
 pub fn write_string(writer: &mut Writer<'_>, text: &[u8]) -> Result<(), packet::Error> {
-    let n = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+    let n = qa_core::text::until_nul(text).len();
     if n < STRING_BYTES {
         for &b in &text[..n] {
             writer.write_bits(u32::from(if b > 127 { b'.' } else { b }), 8)?;
@@ -180,7 +176,7 @@ pub fn read_string<'a>(
         if b == 0 {
             break;
         }
-        text[n] = if b > 127 || b == b'%' { b'.' } else { b };
+        text[n] = read_string_byte(b);
         n += 1;
     }
     text[n] = 0;
@@ -365,5 +361,13 @@ impl Channel {
                 _ => return Err(packet::Error::Opcode),
             }
         }
+    }
+}
+
+pub(crate) fn read_string_byte(byte: u8) -> u8 {
+    if byte > 127 || byte == b'%' {
+        b'.'
+    } else {
+        byte
     }
 }

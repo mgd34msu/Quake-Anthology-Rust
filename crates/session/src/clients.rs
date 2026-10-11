@@ -33,6 +33,19 @@ pub struct Client {
     command_pending: bool,
 }
 
+impl Client {
+    fn reset(&mut self, texts: &mut qa_core::events::TextStore, module: ModuleId) {
+        self.player.reset();
+        self.hud.reset(texts);
+        self.command = UserCmd::default();
+        self.command_pending = false;
+        self.intent = CommandIntent::default();
+        self.module = module;
+        self.client_rules = RuleSetId::default();
+        self.link_order = LinkOrder::Tail;
+    }
+}
+
 pub struct Server {
     pub entities: EntityTable,
     pub area: AreaGrid,
@@ -152,15 +165,8 @@ impl Server {
         };
         let client = &mut self.clients[slot];
         client.output = output;
-        client.player.reset();
-        client.hud.reset(&mut self.events.texts);
+        client.reset(&mut self.events.texts, module);
         client.player.tail = tail;
-        client.command = UserCmd::default();
-        client.command_pending = false;
-        client.intent = CommandIntent::default();
-        client.module = module;
-        client.client_rules = RuleSetId::default();
-        client.link_order = LinkOrder::Tail;
         client.connection = Some(connection);
         let entity_slot = client.entity.slot as usize;
         self.entities.columns.owner[entity_slot] = module;
@@ -185,14 +191,7 @@ impl Server {
         }
         self.area.unlink(client.entity);
         client.connection = None;
-        client.player.reset();
-        client.hud.reset(&mut self.events.texts);
-        client.command = UserCmd::default();
-        client.command_pending = false;
-        client.intent = CommandIntent::default();
-        client.module = ModuleId::default();
-        client.client_rules = RuleSetId::default();
-        client.link_order = LinkOrder::Tail;
+        client.reset(&mut self.events.texts, ModuleId::default());
         if let Some(entity) = self.entities.reset_client(client.entity) {
             client.entity = entity;
         }

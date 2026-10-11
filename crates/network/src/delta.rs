@@ -195,13 +195,13 @@ impl Field {
                 if bits == 8 || !signed {
                     word
                 } else {
-                    ((word << (32 - bits)) as i32 >> (32 - bits)) as u32
+                    crate::message::sign_extend(word, bits) as u32
                 }
             }
             Value::FloatInt if FLOAT_BYTES && bits != 8 => {
-                ((word << (32 - bits)) as i32 >> (32 - bits)) as u32
+                crate::message::sign_extend(word, bits) as u32
             }
-            Value::Signed => ((word << (32 - bits)) as i32 >> (32 - bits)) as u32,
+            Value::Signed => crate::message::sign_extend(word, bits) as u32,
             Value::Angle16 => short_to_angle(i32::from(word as i16)).to_bits(),
             Value::Angle8 { .. } if PREFIX => byte_to_angle(i32::from(word as i8)).to_bits(),
             Value::Scaled { factor, read } if STATE => {
@@ -209,7 +209,7 @@ impl Field {
                     || PREFIX && matches!(read, ScaleRead::SignedTenthsDelta)
                     || FLOAT_BYTES && matches!(read, ScaleRead::SignedInverse)
                 {
-                    ((word << (32 - bits)) as i32 >> (32 - bits)) as f32
+                    crate::message::sign_extend(word, bits) as f32
                 } else {
                     word as f32
                 };

@@ -162,11 +162,7 @@ pub(super) fn parse(file: &[u8], requested_base: Option<u64>) -> Result<Image, F
         }
         Ok(text)
     };
-    if entry != 0
-        && !regions.iter().any(|r| {
-            r.execute && entry >= r.offset as u64 && entry < r.offset as u64 + r.length as u64
-        })
-    {
+    if entry != 0 && !super::executable(&regions, entry) {
         return Err(FormatError::InvalidRange);
     }
     let mut raw_names = Vec::new();
@@ -525,11 +521,7 @@ pub(super) fn parse(file: &[u8], requested_base: Option<u64>) -> Result<Image, F
                     .checked_sub(preferred_base)
                     .ok_or(FormatError::InvalidRange)?;
                 range(offset, 1)?;
-                if !regions.iter().any(|r| {
-                    r.execute
-                        && offset >= r.offset as u64
-                        && offset < r.offset as u64 + r.length as u64
-                }) {
+                if !super::executable(&regions, offset) {
                     return Err(FormatError::InvalidRange);
                 }
                 initializers.push(base + offset);

@@ -152,15 +152,14 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         *to = *words;
         true
     }
+    fn expired(&self, slot: &Slot<P>) -> bool {
+        self.retained_rows
+            .is_some_and(|n| self.parsed_rows.saturating_sub(slot.first_entity) > n)
+    }
     pub fn frame(&self, sequence: u32) -> Option<Frame<'_, P, E>> {
         let index = sequence as usize & (SLOTS - 1);
         let slot = &self.slots[index];
-        if !slot.valid
-            || slot.sequence != Some(sequence)
-            || self
-                .retained_rows
-                .is_some_and(|n| self.parsed_rows.saturating_sub(slot.first_entity) > n)
-        {
+        if !slot.valid || slot.sequence != Some(sequence) || self.expired(slot) {
             return None;
         }
         Some(Frame {
@@ -169,9 +168,8 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             command: slot.command,
             flags: slot.flags,
             player: &slot.player,
-            areas: &self.areas
-                [index * self.area_capacity..index * self.area_capacity + slot.area_bytes],
-            entities: &self.entities[index * self.capacity..index * self.capacity + slot.count],
+            areas: rows(&self.areas, self.area_capacity, index, slot.area_bytes),
+            entities: rows(&self.entities, self.capacity, index, slot.count),
         })
     }
     /// An invalid Q2 current frame requests a full update, even when an older
@@ -210,10 +208,20 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             ..Slot::ZERO
         };
         let index = frame.sequence as usize & (SLOTS - 1);
-        self.areas[index * self.area_capacity..index * self.area_capacity + frame.areas.len()]
-            .copy_from_slice(frame.areas);
-        self.entities[index * self.capacity..index * self.capacity + frame.entities.len()]
-            .copy_from_slice(frame.entities);
+        rows_mut(
+            &mut self.areas,
+            self.area_capacity,
+            index,
+            frame.areas.len(),
+        )
+        .copy_from_slice(frame.areas);
+        rows_mut(
+            &mut self.entities,
+            self.capacity,
+            index,
+            frame.entities.len(),
+        )
+        .copy_from_slice(frame.entities);
         self.commit(slot);
         Ok(())
     }
@@ -258,9 +266,9 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             return false;
         };
         let index = sequence as usize & (SLOTS - 1);
-        self.areas[index * self.area_capacity..index * self.area_capacity + slot.area_bytes]
+        rows_mut(&mut self.areas, self.area_capacity, index, slot.area_bytes)
             .copy_from_slice(&self.scratch_areas[..slot.area_bytes]);
-        self.entities[index * self.capacity..index * self.capacity + slot.count]
+        rows_mut(&mut self.entities, self.capacity, index, slot.count)
             .copy_from_slice(&self.scratch[..slot.count]);
         slot.valid = base_valid;
         self.commit(slot);
@@ -597,7 +605,7 @@ pub fn read_q3(
     let player = states::read_q3_player(reader, &old.player)?;
     let (count, overflow) = read_entities(
         reader,
-        &ring.entities[base_index * ring.capacity..base_index * ring.capacity + old.count],
+        rows(&ring.entities, ring.capacity, base_index, old.count),
         &ring.baselines,
         &mut ring.scratch,
         MergeRules {
@@ -684,7 +692,7 @@ pub fn read_qw(
     let mut invalid_full = false;
     let (count, overflow) = read_entities(
         reader,
-        &ring.entities[index * ring.capacity..index * ring.capacity + count],
+        rows(&ring.entities, ring.capacity, index, count),
         &ring.baselines,
         &mut ring.scratch,
         MergeRules {
@@ -862,10 +870,7 @@ pub fn write_q3(
     writer.write_bits(time, 32)?;
     writer.write_bits(from.map_or(0, |f| sequence - f.sequence), 8)?;
     writer.write_bits(u32::from(to.flags), 8)?;
-    writer.write_bits(areas.len() as u32, 8)?;
-    for &byte in areas {
-        writer.write_bits(u32::from(byte), 8)?;
-    }
+    write_areas(writer, areas)?;
     states::write_q3_player(
         writer,
         from.map_or(&[0; states::PLAYER_WORDS], |f| f.player),
@@ -1010,4 +1015,17 @@ fn write_entities<const E: usize>(
         }
     }
     Ok(())
+}
+
+fn rows<T>(items: &[T], capacity: usize, index: usize, count: usize) -> &[T] {
+    let first = index * capacity;
+    &items[first..first + count]
+}
+fn rows_mut<T>(items: &mut [T], capacity: usize, index: usize, count: usize) -> &mut [T] {
+    let first = index * capacity;
+    &mut items[first..first + count]
+}
+fn write_areas(writer: &mut Writer<'_>, areas: &[u8]) -> Result<(), crate::message::Error> {
+    writer.write_bits(areas.len() as u32, 8)?;
+    writer.write_data(areas)
 }

@@ -49,14 +49,14 @@ pub fn write_q2<const WIDE: bool>(
     memory.write_word(address + fraction, trace.fraction.to_bits() as i32)?;
     memory.write_vec3(address + end, trace.end)?;
     plane(memory, address + normal, trace.plane)?;
-    memory.write(address + surface_at, &surface.to_le_bytes())?;
+    memory.write_u64(address + surface_at, surface)?;
     memory.write_word(address + contents, trace.contents.to_q2() as i32)?;
-    memory.write(address + entity_at, &entity.to_le_bytes())?;
+    memory.write_u64(address + entity_at, entity)?;
     if WIDE {
         if let Some(value) = trace.secondary_plane {
             plane(memory, address + 64, value)?;
         }
-        memory.write(address + 88, &secondary.to_le_bytes())?;
+        memory.write_u64(address + 88, secondary)?;
     }
     Ok(address)
 }

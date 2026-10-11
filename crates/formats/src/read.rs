@@ -71,7 +71,7 @@ impl<'a> Reader<'a> {
     }
     pub fn name(&mut self, length: usize) -> Result<&'a [u8], FormatError> {
         let bytes = self.take(length)?;
-        Ok(&bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())])
+        Ok(qa_core::text::until_nul(bytes))
     }
     pub fn section(
         &self,
@@ -98,4 +98,11 @@ impl<'a> Reader<'a> {
         self.section(self.at, count, stride, 0, self.bytes.len())?;
         Ok(())
     }
+}
+
+pub(crate) fn slice_at(bytes: &[u8], offset: usize, length: usize) -> Result<&[u8], FormatError> {
+    let end = offset
+        .checked_add(length)
+        .ok_or(FormatError::InvalidRange)?;
+    bytes.get(offset..end).ok_or(FormatError::InvalidRange)
 }

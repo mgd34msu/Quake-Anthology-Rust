@@ -80,3 +80,17 @@ fn native_info_removal_keeps_unmatched_bytes_and_native_duplicate_rules() {
         assert_eq!(&bytes[..len], expected);
     }
 }
+
+#[test]
+fn string_boundaries_preserve_raw_bytes_and_require_native_termination() {
+    use qa_core::text::{terminated, until_nul};
+    for (bytes, expected) in [
+        (b"\xff\x80\0tail".as_slice(), b"\xff\x80".as_slice()),
+        (b"\0tail", b""),
+        (b"plain", b"plain"),
+        (b"", b""),
+    ] {
+        assert_eq!(until_nul(bytes), expected);
+        assert_eq!(terminated(bytes).is_some(), bytes.contains(&0));
+    }
+}

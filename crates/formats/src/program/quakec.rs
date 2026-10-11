@@ -149,10 +149,7 @@ fn string(strings: &[u8], offset: i32) -> Result<&[u8], FormatError> {
     let tail = strings
         .get(usize::try_from(offset).map_err(|_| FormatError::InvalidRange)?..)
         .ok_or(FormatError::InvalidRange)?;
-    Ok(&tail[..tail
-        .iter()
-        .position(|&b| b == 0)
-        .ok_or(FormatError::InvalidRange)?])
+    qa_core::text::terminated(tail).ok_or(FormatError::InvalidRange)
 }
 fn definition_width(kind: u16) -> Result<usize, FormatError> {
     match kind & 0x7fff {

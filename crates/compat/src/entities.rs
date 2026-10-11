@@ -165,12 +165,7 @@ fn read_owner(
     layout: EntityLayout,
     address: u64,
 ) -> Result<CollisionOwner, CallError> {
-    let owner = u64::from_le_bytes(
-        memory
-            .read(address + layout.owner as u64, 8)?
-            .try_into()
-            .map_err(|_| CallError::Memory)?,
-    );
+    let owner = memory.read_u64(address + layout.owner as u64)?;
     if owner == 0 {
         return Ok(CollisionOwner::None);
     }
@@ -250,14 +245,7 @@ impl EntityProjection {
         let at = table
             .checked_add(self.table_offset as u64)
             .ok_or(CallError::Memory)?;
-        let word = |offset| -> Result<u64, CallError> {
-            Ok(u64::from_le_bytes(
-                memory
-                    .read(at + offset, 8)?
-                    .try_into()
-                    .map_err(|_| CallError::Memory)?,
-            ))
-        };
+        let word = |offset| -> Result<u64, CallError> { Ok(memory.read_u64(at + offset)?) };
         let address = word(0)?;
         let (stride, offset) = if self.wide_stride {
             (word(8)?, 16)

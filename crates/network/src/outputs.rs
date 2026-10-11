@@ -83,7 +83,7 @@ pub fn print(
             PrintKind::Layout => return Err(Error::Unsupported),
             _ => &b"print \""[..],
         };
-        let n = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+        let n = qa_core::text::until_nul(text).len();
         let need = verb.len() + n + 2;
         let capacity = output.len();
         let out = output.get_mut(..need).ok_or(Error::Message(MessageError {
@@ -102,7 +102,7 @@ pub fn print(
         _ => (format.print, format.level),
     };
     let chat_prefix = format.chat_prefix && kind == PrintKind::Chat;
-    let n = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+    let n = qa_core::text::until_nul(text).len();
     let need = n + 2 + usize::from(has_level) + usize::from(chat_prefix);
     let capacity = output.len();
     let output = output.get_mut(..need).ok_or(Error::Message(MessageError {

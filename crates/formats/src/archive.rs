@@ -131,8 +131,7 @@ impl Archive {
         let directory = bytes(&file, size, offset, length)?;
         let mut entries = Vec::with_capacity(directory.len() / 64);
         for record in directory.as_chunks::<64>().0 {
-            let end = record[..56].iter().position(|&b| b == 0).unwrap_or(56);
-            let name = &record[..end];
+            let name = qa_core::text::until_nul(&record[..56]);
             let offset = u64::from(word(record, 56));
             let length = u64::from(word(record, 60));
             if offset > i32::MAX as u64 || length > i32::MAX as u64 {

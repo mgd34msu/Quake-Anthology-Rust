@@ -15,7 +15,7 @@ pub struct EntityTokens<'a> {
 }
 impl<'a> EntityTokens<'a> {
     pub fn new(bytes: &'a [u8], syntax: EntitySyntax) -> Self {
-        let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
+        let bytes = qa_core::text::until_nul(bytes);
         Self::from_span(bytes, syntax)
     }
     fn from_span(bytes: &'a [u8], syntax: EntitySyntax) -> Self {

@@ -192,12 +192,11 @@ impl<C: ThinkWorld> FunctionTable<C> {
         })
     }
 
+    fn binding(&self, module: ModuleId) -> Option<ModuleBinding> {
+        self.modules.get(module.0 as usize).copied().flatten()
+    }
     pub fn module_binding(&self, module: ModuleId) -> ModuleBinding {
-        self.modules
-            .get(module.0 as usize)
-            .copied()
-            .flatten()
-            .unwrap_or_default()
+        self.binding(module).unwrap_or_default()
     }
 
     /// Bind the current lifetime at a load/spawn or native field-write boundary.
@@ -229,12 +228,7 @@ impl<C: ThinkWorld> FunctionTable<C> {
             .resolve(call.entity())
             .ok_or(CallError::StaleEntity)?;
         let module = entities.columns.owner[slot];
-        let binding = self
-            .modules
-            .get(module.0 as usize)
-            .copied()
-            .flatten()
-            .ok_or(CallError::MissingModule)?;
+        let binding = self.binding(module).ok_or(CallError::MissingModule)?;
         if callback.0 >= binding.count {
             return Err(CallError::MissingFunction);
         }

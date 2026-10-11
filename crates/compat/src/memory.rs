@@ -104,6 +104,14 @@ impl<'a> ModuleMemory<'a> {
     pub fn write_word(&mut self, address: u64, word: i32) -> Result<(), MemoryError> {
         self.write(address, &word.to_le_bytes())
     }
+    pub fn read_u64(&self, address: u64) -> Result<u64, MemoryError> {
+        Ok(u64::from_le_bytes(
+            self.read(address, 8)?.try_into().map_err(|_| MemoryError)?,
+        ))
+    }
+    pub fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+        self.write(address, &value.to_le_bytes())
+    }
     pub fn read_vec3(&self, address: u64) -> Result<Vec3, MemoryError> {
         let bytes = self.read(address, 12)?;
         Ok(Vec3(std::array::from_fn(|axis| {
@@ -121,7 +129,6 @@ impl<'a> ModuleMemory<'a> {
     pub fn cstring(&self, address: u64) -> Result<&[u8], MemoryError> {
         let start = self.range(address, 0)?.start;
         let tail = &self.bytes.as_ref()[start..];
-        let end = tail.iter().position(|&b| b == 0).ok_or(MemoryError)?;
-        Ok(&tail[..end])
+        qa_core::text::terminated(tail).ok_or(MemoryError)
     }
 }

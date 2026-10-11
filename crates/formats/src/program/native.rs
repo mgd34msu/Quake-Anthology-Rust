@@ -134,9 +134,7 @@ impl Image {
 }
 fn data(bytes: &[u8], offset: u64, length: usize) -> Result<&[u8], FormatError> {
     let at = usize::try_from(offset).map_err(|_| FormatError::InvalidRange)?;
-    bytes
-        .get(at..at.checked_add(length).ok_or(FormatError::InvalidRange)?)
-        .ok_or(FormatError::InvalidRange)
+    crate::read::slice_at(bytes, at, length)
 }
 fn mapped<'a>(
     bytes: &'a [u8],
@@ -172,10 +170,7 @@ fn word(bytes: &[u8], offset: u64, bits: u32) -> Result<u64, FormatError> {
 fn terminated(bytes: &[u8], offset: u64) -> Result<&[u8], FormatError> {
     let at = usize::try_from(offset).map_err(|_| FormatError::InvalidRange)?;
     let tail = bytes.get(at..).ok_or(FormatError::InvalidRange)?;
-    Ok(&tail[..tail
-        .iter()
-        .position(|&b| b == 0)
-        .ok_or(FormatError::InvalidRange)?])
+    qa_core::text::terminated(tail).ok_or(FormatError::InvalidRange)
 }
 fn owned_length(value: u64) -> Result<usize, FormatError> {
     usize::try_from(value)
@@ -188,4 +183,12 @@ fn names(raw: &[&[u8]]) -> Result<NameTable, FormatError> {
 }
 fn name(table: &NameTable, text: &[u8]) -> Result<NameId, FormatError> {
     table.find(text).ok_or(FormatError::InvalidValue)
+}
+
+pub(super) fn executable(regions: &[Region], address: u64) -> bool {
+    regions.iter().any(|region| {
+        region.execute
+            && address >= region.offset as u64
+            && address < region.offset as u64 + region.length as u64
+    })
 }

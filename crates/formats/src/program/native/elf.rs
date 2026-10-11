@@ -259,11 +259,10 @@ pub(super) fn parse(
     };
     if entry != 0 {
         range(entry, 1)?;
-        if !regions.iter().any(|r| {
-            r.execute
-                && entry >= first + r.offset as u64
-                && entry < first + r.offset as u64 + r.length as u64
-        }) {
+        if !entry
+            .checked_sub(first)
+            .is_some_and(|at| super::executable(&regions, at))
+        {
             return Err(FormatError::InvalidRange);
         }
     }

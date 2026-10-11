@@ -233,11 +233,11 @@ pub fn command_key(text: &[u8]) -> u32 {
 }
 /// Same symmetric native byte transform for both channel directions.
 pub fn xor(data: &mut [u8], start: usize, mut key: u8, text: &[u8]) {
-    let length = text.iter().position(|&b| b == 0).unwrap_or(text.len());
+    let length = qa_core::text::until_nul(text).len();
     let mut at = 0;
     for (i, byte) in data.iter_mut().enumerate().skip(start) {
         let ch = if length == 0 { 0 } else { text[at] };
-        let ch = if ch > 127 || ch == b'%' { b'.' } else { ch };
+        let ch = crate::channel::commands::read_string_byte(ch);
         key ^= ch.wrapping_shl((i & 1) as u32);
         *byte ^= key;
         if length != 0 {

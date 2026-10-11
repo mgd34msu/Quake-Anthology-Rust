@@ -44,9 +44,7 @@ fn packed_bounds(
     let points = r.take(8)?;
     let mut bounds = Bounds::empty();
     for p in points.as_chunks::<4>().0 {
-        let point = Vec3(std::array::from_fn(|a| {
-            f32::from(p[a]) * scale.0[a] + translation.0[a]
-        }));
+        let point = unpack(p, scale, translation);
         finite_vec(point)?;
         bounds.add_point(point);
     }
@@ -72,9 +70,7 @@ fn vertices(
         let normal = *qa_core::math::DIRECTIONS
             .get(usize::from(p[3]))
             .ok_or(FormatError::InvalidReference("alias normal", p[3] as usize))?;
-        let position = Vec3(std::array::from_fn(|a| {
-            f32::from(p[a]) * scale.0[a] + translation.0[a]
-        }));
+        let position = unpack(p, scale, translation);
         finite_vec(position)?;
         bounds.add_point(position);
         out.push(Vertex { position, normal });
@@ -420,4 +416,10 @@ pub(super) fn sprite<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>,
         g.bounds = m.bounds;
     }
     Ok(m)
+}
+
+fn unpack(p: &[u8; 4], scale: Vec3, translation: Vec3) -> Vec3 {
+    Vec3(std::array::from_fn(|axis| {
+        f32::from(p[axis]) * scale.0[axis] + translation.0[axis]
+    }))
 }
