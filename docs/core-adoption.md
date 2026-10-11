@@ -249,3 +249,19 @@ boxes before translation for `collision/store.rs:402` and `collision/boxes.rs:86
 preserving the native f32 operations and CM_TransformedBoxTrace note.
 `collision/store.rs:70` uses Bounds::is_valid; its local validator is deleted.
 No audited copy remains. Corner tests cover all octants and signed zero.
+
+## TA-3366: remaining primitive callers
+
+`core/src/sys_events.rs:24`, `primitives.rs:264`, `math.rs:136` and
+`loopback.rs:20` own time construction/projection, eighth-unit conversion
+and endpoint indexing. All audited app, session, movement, network, compat
+and platform callers use them; local conversions and admission checks are deleted.
+Profile parsing, product path folding and hull axis lookup use RuleSetId,
+path_byte and Axis. `content/src/vfs.rs:349` resolves through NameTable and
+NameId-indexed winners; its listing retains every active file and native priority.
+`console/src/commands.rs:83` binds aliases numerically; conversion.rs uses FixedText.
+Image recipes use RuleSetId; `formats/src/image.rs:62` alone derives decode flags.
+`core/src/math.rs:155` supplies inverse projection to CPU gradients/vertices
+and stage entity views, retaining each caller's signed-zero negation order.
+Every audited caller is migrated and each old implementation is deleted.
+No bypass remains at the TA-3366 sites; broader consolidation is TA-3367.

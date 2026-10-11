@@ -4,6 +4,36 @@ use qa_core::{
 };
 
 #[test]
+fn inverse_projection_preserves_subtraction_dot_order_and_axis_signs() {
+    let mut seed = 0x3366_u32;
+    let mut value = || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (seed as i32) as f32 / 65536.0
+    };
+    for _ in 0..65536 {
+        let origin = Vec3(std::array::from_fn(|_| value()));
+        let axes = std::array::from_fn(|_| Vec3(std::array::from_fn(|_| value())));
+        let point = Vec3(std::array::from_fn(|_| value()));
+        let delta = point - origin;
+        let original = axes
+            .map(|axis| delta.0[0] * axis.0[0] + delta.0[1] * axis.0[1] + delta.0[2] * axis.0[2]);
+        assert_eq!(
+            inverse_transform_point(origin, axes, point)
+                .0
+                .map(f32::to_bits),
+            original.map(f32::to_bits)
+        );
+    }
+    let point = Vec3([1.0, 1.0, 0.0]);
+    let axis = Vec3([1.0, -1.0, 0.0]);
+    let projected = inverse_transform_point(Vec3::default(), [axis; 3], point);
+    let negated_axis = inverse_transform_point(Vec3::default(), [-axis; 3], point);
+    assert_eq!(projected.0[0].to_bits(), 0.0_f32.to_bits());
+    assert_eq!((-projected.0[0]).to_bits(), (-0.0_f32).to_bits());
+    assert_eq!(negated_axis.0[0].to_bits(), 0.0_f32.to_bits());
+}
+
+#[test]
 fn eighth_unit_halves_keep_native_narrowing_and_sign_extension() {
     let mut seed = 0x3366_u32;
     for _ in 0..65536 {

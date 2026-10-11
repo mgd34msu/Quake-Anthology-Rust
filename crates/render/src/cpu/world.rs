@@ -2066,11 +2066,7 @@ fn native_planes(
     let mip_scale = 1.0 / (1u32 << mip) as f32;
     let axes = surface.texture_projection.map(|projection| {
         let axis = qa_core::primitives::Vec3([projection[0], projection[1], projection[2]]);
-        qa_core::primitives::Vec3([
-            axis.dot(right),
-            axis.dot(camera.refdef.axes[2]),
-            axis.dot(camera.refdef.axes[0]),
-        ])
+        camera.direction_to_view(axis)
     });
     // Preserve D_CalcGradients' division/multiply order, transformed model
     // origin and post-transform mip scaling. Rotated views can otherwise
@@ -2084,11 +2080,7 @@ fn native_planes(
             origin: axis.0[2] * mip_scale - center[0] * x - center[1] * y,
         }
     });
-    let transformed_origin = qa_core::primitives::Vec3([
-        camera.refdef.origin.dot(right),
-        camera.refdef.origin.dot(camera.refdef.axes[2]),
-        camera.refdef.origin.dot(camera.refdef.axes[0]),
-    ]);
+    let transformed_origin = camera.direction_to_view(camera.refdef.origin);
     let scaled_origin = transformed_origin * mip_scale;
     let adjust = std::array::from_fn(|i| {
         let projection = surface.texture_projection[i];

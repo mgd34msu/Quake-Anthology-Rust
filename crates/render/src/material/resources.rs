@@ -6,7 +6,7 @@ use qa_core::primitives::{NameId, RuleSetId};
 use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
-    Colormap, DecodedImage, ImageFormat, MipTexture, Palette, PaletteOptions, RasterPolicy, decode,
+    Colormap, DecodedImage, ImageFormat, MipTexture, Palette, PaletteOptions, decode, raster_policy,
 };
 
 #[derive(Debug)]
@@ -133,7 +133,7 @@ enum ImageRecipe {
         rgba_override: Option<NameId>,
         usage: ImageUse,
     },
-    Raster(RasterPolicy),
+    Raster(RuleSetId),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ImageKey {
@@ -142,13 +142,13 @@ struct ImageKey {
 }
 
 struct ImageRecipes {
-    policy: RasterPolicy,
+    rules: RuleSetId,
     settings: ImageSettings,
     gamma: upload::RgbLut,
     light: upload::LightScale,
 }
 impl ImageRecipes {
-    fn new(policy: RasterPolicy, settings: ImageSettings) -> Result<Self, ResourceError> {
+    fn new(rules: RuleSetId, settings: ImageSettings) -> Result<Self, ResourceError> {
         if settings.picmip >= 32
             || settings.max_dimension == 0
             || settings.max_dimension > upload::MAX_DIMENSION
@@ -156,20 +156,22 @@ impl ImageRecipes {
             return Err(upload::UploadError::Extent.into());
         }
         let gamma = upload::gamma_lut(
-            if policy == RasterPolicy::Standard {
+            if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
                 settings.palette_exponent
             } else {
                 settings.gamma_exponent
             },
-            match policy {
-                RasterPolicy::Standard => upload::GammaCurve::PalettePower,
-                RasterPolicy::Quake2 => upload::GammaCurve::HalfPixelPower,
-                RasterPolicy::Quake3 => upload::GammaCurve::BytePower,
+            match rules {
+                RuleSetId::Quake | RuleSetId::QuakeWorld => upload::GammaCurve::PalettePower,
+                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
+                    upload::GammaCurve::HalfPixelPower
+                }
+                RuleSetId::Quake3 => upload::GammaCurve::BytePower,
             },
         )?;
         let light = upload::light_scale(gamma, settings.intensity)?;
         Ok(Self {
-            policy,
+            rules,
             settings,
             gamma,
             light,
@@ -179,7 +181,8 @@ impl ImageRecipes {
         if matches!(
             usage.role,
             ImageRole::Pic | ImageRole::LayeredSky | ImageRole::Lightmap
-        ) || (self.policy == RasterPolicy::Quake2 && usage.role == ImageRole::CubeSky)
+        ) || (matches!(self.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+            && usage.role == ImageRole::CubeSky)
         {
             usage.sampler.mipmaps = false;
             usage.allow_picmip = false;
@@ -199,8 +202,8 @@ impl ImageRecipes {
         } else {
             ExtentRound::Up
         };
-        let (extent, resize, kernel, order, rgb_lut, inverse_intensity) = match self.policy {
-            RasterPolicy::Standard => (
+        let (extent, resize, kernel, order, rgb_lut, inverse_intensity) = match self.rules {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => (
                 UploadExtent::PowerOfTwo {
                     round: ExtentRound::Up,
                     // GLQuake applies gl_picmip even to non-mipmapped pics.
@@ -213,7 +216,7 @@ impl ImageRecipes {
                 self.light.rgb_lut,
                 self.light.inverse_intensity,
             ),
-            RasterPolicy::Quake2 => (
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (
                 UploadExtent::PowerOfTwo {
                     round: if mipmaps { round } else { ExtentRound::Up },
                     drop: if mipmaps && usage.allow_picmip {
@@ -241,7 +244,7 @@ impl ImageRecipes {
                     1.0
                 },
             ),
-            RasterPolicy::Quake3 => {
+            RuleSetId::Quake3 => {
                 let kernel = if settings.simple_mipmaps {
                     MipmapBuild::Box
                 } else {
@@ -336,7 +339,7 @@ pub fn load_palette(
         PaletteSource::Pcx { image } => {
             let bytes = read_file(vfs, image, &mut reader)?;
             let DecodedImage::Indexed(decoded) =
-                decode(&bytes, ImageFormat::Pcx, RasterPolicy::Quake2)?
+                decode(&bytes, ImageFormat::Pcx, raster_policy(RuleSetId::Quake2))?
             else {
                 return Err(ResourceError::Asset("palette PCX must be indexed"));
             };
@@ -381,14 +384,14 @@ impl<'a> Images<'a> {
     pub fn new(
         vfs: &'a Vfs,
         assets: &'a mut Assets,
-        policy: RasterPolicy,
+        rules: RuleSetId,
         settings: ImageSettings,
     ) -> Result<Self, ResourceError> {
         Ok(Self {
             assets,
             vfs,
             reader: ArchiveReader::default(),
-            recipes: ImageRecipes::new(policy, settings)?,
+            recipes: ImageRecipes::new(rules, settings)?,
             resolved: Vec::new(),
             conflicts: Vec::new(),
         })
@@ -423,7 +426,10 @@ impl<'a> Images<'a> {
     ) -> Result<ImageId, ResourceError> {
         let texture = IndexedTexture::load(mip.width, mip.height, mip.levels, cutout)
             .map_err(ResourceError::Asset)?;
-        let gl_pixels = if self.recipes.policy == RasterPolicy::Quake2 {
+        let gl_pixels = if matches!(
+            self.recipes.rules,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        ) {
             let colors = self
                 .assets
                 .palette(palette)
@@ -500,7 +506,7 @@ impl<'a> Images<'a> {
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
         let DecodedImage::Indexed(decoded) =
-            decode(&bytes, ImageFormat::Pcx, RasterPolicy::Quake2)?
+            decode(&bytes, ImageFormat::Pcx, raster_policy(RuleSetId::Quake2))?
         else {
             return Err(ResourceError::Asset("PCX resource must retain indices"));
         };
@@ -516,7 +522,9 @@ impl<'a> Images<'a> {
             let format = ImageFormat::from_path(path.as_bytes())
                 .ok_or(ResourceError::Asset("unknown RGBA override format"))?;
             let bytes = read_file(self.vfs, path.as_bytes(), &mut self.reader)?;
-            let DecodedImage::Rgba(rgba) = decode(&bytes, format, RasterPolicy::Quake2)? else {
+            let DecodedImage::Rgba(rgba) =
+                decode(&bytes, format, raster_policy(RuleSetId::Quake2))?
+            else {
                 return Err(ResourceError::Asset(
                     "RGBA override must have original color pixels",
                 ));
@@ -547,18 +555,18 @@ impl<'a> Images<'a> {
     /// Original Q3 lookup tries TGA, then JPEG for a missing TGA. Explicit
     /// supported extensions are retained; newer formats use the same decoder.
     pub fn raster(&mut self, name: &str, usage: ImageUse) -> Result<ResolvedImage, ResourceError> {
-        let policy = self.recipes.policy;
+        let rules = self.recipes.rules;
         let key = ImageKey {
             name: self
                 .assets
                 .intern_name(name)
                 .map_err(ResourceError::Asset)?,
-            recipe: ImageRecipe::Raster(policy),
+            recipe: ImageRecipe::Raster(rules),
         };
         if let Some(index) = self.find(key) {
             let first = self.resolved[index].2;
             let requested = self.recipes.effective_use(usage);
-            if policy == RasterPolicy::Quake3
+            if rules == RuleSetId::Quake3
                 && (first.sampler != requested.sampler
                     || first.allow_picmip != requested.allow_picmip)
                 && !self
@@ -605,12 +613,14 @@ impl<'a> Images<'a> {
         // Native Q2 pics/skins ignore their embedded PCX palette and retain
         // indices for the selected global palette. Generic RGBA expansion
         // cannot preserve that contract; callers need an indexed-PCX path.
-        if policy == RasterPolicy::Quake2 && format == ImageFormat::Pcx {
+        if matches!(rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+            && format == ImageFormat::Pcx
+        {
             return Err(ResourceError::Asset(
                 "Q2 PCX requires indexed palette registration",
             ));
         }
-        let rgba = match decode(&bytes, format, policy)? {
+        let rgba = match decode(&bytes, format, raster_policy(rules))? {
             DecodedImage::Rgba(image) => image,
             DecodedImage::Indexed(image) => {
                 let palette: &Palette = image
@@ -640,7 +650,7 @@ impl<'a> Images<'a> {
             None => self.assets.prepare_image(id, params),
         }
         .map_err(ResourceError::Asset)?;
-        if self.recipes.policy == RasterPolicy::Quake3 {
+        if self.recipes.rules == RuleSetId::Quake3 {
             self.assets
                 .set_image_native_sampler(id, self.recipes.effective_use(usage).sampler)
                 .map_err(ResourceError::Asset)?;

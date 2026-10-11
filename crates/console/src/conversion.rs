@@ -7,7 +7,8 @@ use crate::{
     views::{Context, Role, RuleSetId},
 };
 use qa_core::primitives::NameId;
-use std::fmt::{self, Write};
+use qa_core::text::FixedText;
+use std::fmt::Write;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -17,41 +18,17 @@ pub enum Error {
     VideoPolicyRequired,
     InvalidBitWord,
 }
-#[derive(Clone, Debug)]
-pub struct NumberText {
-    bytes: [u8; 64],
-    len: usize,
-}
-impl Write for NumberText {
-    fn write_str(&mut self, value: &str) -> fmt::Result {
-        let end = self.len.checked_add(value.len()).ok_or(fmt::Error)?;
-        if end > self.bytes.len() {
-            return Err(fmt::Error);
-        }
-        self.bytes[self.len..end].copy_from_slice(value.as_bytes());
-        self.len = end;
-        Ok(())
+fn number_text(value: f64) -> Result<FixedText<64>, Error> {
+    if !value.is_finite() {
+        return Err(Error::NonFinite);
     }
-}
-impl NumberText {
-    fn new(value: f64) -> Result<Self, Error> {
-        if !value.is_finite() {
-            return Err(Error::NonFinite);
-        }
-        let mut text = Self {
-            bytes: [0; 64],
-            len: 0,
-        };
-        write!(text, "{value:.6}").map_err(|_| Error::TextTooLong)?;
-        Ok(text)
-    }
-    pub fn as_str(&self) -> &str {
-        std::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
-    }
+    let mut text = FixedText::default();
+    write!(text, "{value:.6}").map_err(|_| Error::TextTooLong)?;
+    Ok(text)
 }
 pub enum Text<'a> {
     Borrowed(&'a str),
-    Number(NumberText),
+    Number(FixedText<64>),
 }
 impl Text<'_> {
     pub fn as_str(&self) -> &str {
@@ -67,7 +44,7 @@ impl Text<'_> {
         }
     }
     fn numeric(n: f64) -> Result<Self, Error> {
-        Ok(Self::Number(NumberText::new(n)?))
+        Ok(Self::Number(number_text(n)?))
     }
 }
 pub struct Input<'a, 'o> {
@@ -82,7 +59,7 @@ pub struct Input<'a, 'o> {
 }
 pub struct Change {
     pub row: u16,
-    pub text: NumberText,
+    pub text: FixedText<64>,
 }
 pub struct Output<'a> {
     pub text: Text<'a>,
@@ -119,7 +96,7 @@ impl<'a> Output<'a> {
             .ok_or(Error::PolicyRequired)?;
         *target = Some(Change {
             row,
-            text: NumberText::new(value)?,
+            text: number_text(value)?,
         });
         self.change_count += 1;
         Ok(())

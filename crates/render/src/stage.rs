@@ -7,14 +7,13 @@ use crate::shader::{
     WaveFunction, Waveform,
 };
 use qa_core::{
-    math::{length, normalized_fast},
+    math::{inverse_transform_point, length, normalized_fast},
     primitives::Vec3,
 };
 
 /// Native R_RotateForEntity uses a single axis-length compensation selected by
 /// the submitted entity; this is deliberately shared by both draw consumers.
 pub fn entity_view_origin(view: Vec3, entity: &crate::scene::SceneEntity) -> Vec3 {
-    let delta = view - entity.origin;
     let scale = if entity.non_normalized_axes {
         let axis_length = length(entity.axes[0]);
         if axis_length == 0.0 {
@@ -25,7 +24,7 @@ pub fn entity_view_origin(view: Vec3, entity: &crate::scene::SceneEntity) -> Vec
     } else {
         1.0
     };
-    Vec3(entity.axes.map(|axis| delta.dot(axis) * scale))
+    inverse_transform_point(entity.origin, entity.axes, view) * scale
 }
 
 pub const TABLE_SIZE: usize = 1024;

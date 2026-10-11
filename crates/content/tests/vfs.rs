@@ -162,10 +162,26 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     let next = root.0.join("pak1.pak");
     std::fs::write(&next, pack(&[(b"a", b"last")])).unwrap();
     let next_file = Arc::new(File::open(&next).unwrap());
-    vfs.mount_archive(&next, 2, Arc::new(Archive::parse(next_file).unwrap()))
+    let next_mount = vfs
+        .mount_archive(&next, 1, Arc::new(Archive::parse(next_file).unwrap()))
         .unwrap();
     let last = vfs.open(b"A").unwrap();
     assert_eq!(vfs.read_at(last, 0, &mut buffer).unwrap(), 4);
     assert_eq!(&buffer[..4], b"last");
     assert_eq!(vfs.origin(last).unwrap().kind, MountKind::Pak);
+    let listing: Vec<_> = vfs
+        .files()
+        .map(|(reference, name)| (reference, name.to_vec()))
+        .collect();
+    let duplicates: Vec<_> = listing
+        .iter()
+        .filter(|(_, name)| name == b"a")
+        .map(|(reference, _)| *reference)
+        .collect();
+    assert_eq!(duplicates.len(), 3);
+    assert_eq!(&duplicates[..2], [last, first]);
+    assert!(vfs.unmount(next_mount));
+    assert_eq!(vfs.open(b"A"), Some(first));
+    assert_eq!(vfs.files().count(), 3);
+    assert!(vfs.read_at(last, 0, &mut buffer).is_err());
 }

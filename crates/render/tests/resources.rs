@@ -1,5 +1,5 @@
 use qa_content::vfs::Vfs;
-use qa_formats::image::RasterPolicy;
+use qa_core::primitives::RuleSetId;
 use qa_render::{
     Assets,
     assets::{Sampler, Wrap},
@@ -8,6 +8,36 @@ use qa_render::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn shared_rule_selection_preserves_native_uploads_for_all_five_sources() {
+    let root = Fixture::new();
+    root.tga("odd.tga", 3, 3, [17, 23, 31]);
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let pixels = |rules| {
+        let mut assets = Assets::load().unwrap();
+        let mut images =
+            Images::new(&vfs, &mut assets, rules, ImageSettings::native(rules)).unwrap();
+        let resolved = images.raster("odd.tga", ImageUse::default()).unwrap();
+        let image = images.assets.image(resolved.id).unwrap();
+        let prepared = image.prepared.as_ref().unwrap();
+        (
+            prepared
+                .levels
+                .iter()
+                .map(|level| (level.width, level.height, level.rgba.to_vec()))
+                .collect::<Vec<_>>(),
+            prepared.inverse_intensity.to_bits(),
+        )
+    };
+    assert_eq!(pixels(RuleSetId::QuakeWorld), pixels(RuleSetId::Quake));
+    assert_eq!(
+        pixels(RuleSetId::Quake2Rerelease),
+        pixels(RuleSetId::Quake2)
+    );
+    assert!(!pixels(RuleSetId::Quake3).0.is_empty());
+}
 
 struct Fixture(std::path::PathBuf);
 impl Fixture {
@@ -70,7 +100,7 @@ fn indexed_pcx_uses_selected_global_palette_and_explicit_mask() {
     let mut images = Images::new(
         &vfs,
         &mut assets,
-        RasterPolicy::Quake2,
+        RuleSetId::Quake2,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
     )
     .unwrap();
@@ -111,7 +141,7 @@ fn sky_resource_keeps_distinct_native_tga_pixels_and_pcx_dimensions() {
     let mut images = Images::new(
         &vfs,
         &mut assets,
-        RasterPolicy::Quake2,
+        RuleSetId::Quake2,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
     )
     .unwrap();
@@ -156,7 +186,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         ..ImageSettings::native(qa_core::primitives::RuleSetId::Quake2)
     };
     // Different native contexts can coexist in the one numeric image table.
-    let mut images = Images::new(&vfs, &mut assets, RasterPolicy::Quake2, settings).unwrap();
+    let mut images = Images::new(&vfs, &mut assets, RuleSetId::Quake2, settings).unwrap();
     let surface = images.raster("env/odd.tga", ImageUse::default()).unwrap();
     let image = images.assets.image(surface.id).unwrap();
     assert_eq!((image.width, image.height), (3, 3));
@@ -172,7 +202,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         (1.0f32 / 2.5).to_bits()
     );
     drop(images);
-    let mut images = Images::new(&vfs, &mut assets, RasterPolicy::Quake2, settings).unwrap();
+    let mut images = Images::new(&vfs, &mut assets, RuleSetId::Quake2, settings).unwrap();
     let sky = images
         .raster(
             "env/odd.tga",
@@ -204,7 +234,7 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
     let mut images = Images::new(
         &vfs,
         &mut assets,
-        RasterPolicy::Quake3,
+        RuleSetId::Quake3,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
     )
     .unwrap();
@@ -258,7 +288,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
         gamma_exponent: 2.0,
         ..ImageSettings::native(qa_core::primitives::RuleSetId::Quake3)
     };
-    let mut images = Images::new(&vfs, &mut assets, RasterPolicy::Quake3, settings).unwrap();
+    let mut images = Images::new(&vfs, &mut assets, RuleSetId::Quake3, settings).unwrap();
     let mipped = images
         .raster("env/mipped.tga", ImageUse::default())
         .unwrap();
@@ -309,7 +339,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     let mut images = Images::new(
         &vfs,
         &mut assets,
-        RasterPolicy::Quake3,
+        RuleSetId::Quake3,
         ImageSettings {
             simple_mipmaps: false,
             ..settings

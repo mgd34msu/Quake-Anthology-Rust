@@ -1,3 +1,4 @@
+use qa_core::names::NameTable;
 use std::{
     fs::File,
     io,
@@ -75,7 +76,9 @@ impl From<io::Error> for VfsError {
 pub struct Vfs {
     mounts: Vec<MountInfo>,
     entries: Vec<Entry>,
-    index: Vec<usize>,
+    names: Option<NameTable>,
+    winners: Box<[Option<FileRef>]>,
+    listing: Vec<FileRef>,
     lookups: AtomicU64,
 }
 
@@ -285,6 +288,14 @@ impl Vfs {
         {
             return Err(VfsError::Capacity);
         }
+        let names = NameTable::load(
+            self.entries
+                .iter()
+                .chain(&entries)
+                .map(|entry| entry.name.as_ref()),
+        )
+        .map_err(|_| VfsError::Capacity)?;
+        let winners = vec![None; names.len()].into_boxed_slice();
         let id = MountId(self.mounts.len() as u32);
         self.mounts.push(MountInfo {
             id,
@@ -294,22 +305,26 @@ impl Vfs {
             active: true,
         });
         self.entries.extend(entries);
+        self.names = Some(names);
+        self.winners = winners;
         self.reindex();
         Ok(id)
     }
 
     fn reindex(&mut self) {
-        self.index.clear();
-        self.index.extend(
+        self.listing.clear();
+        self.listing.extend(
             self.entries
                 .iter()
                 .enumerate()
                 .filter(|(_, entry)| self.mounts[entry.mount].active)
-                .map(|(index, _)| index),
+                .map(|(index, _)| FileRef {
+                    entry: index as u32,
+                }),
         );
-        self.index.sort_unstable_by(|&a, &b| {
-            let x = &self.entries[a];
-            let y = &self.entries[b];
+        self.listing.sort_unstable_by(|a, b| {
+            let x = &self.entries[a.entry as usize];
+            let y = &self.entries[b.entry as usize];
             x.name
                 .cmp(&y.name)
                 .then_with(|| {
@@ -318,8 +333,16 @@ impl Vfs {
                         .cmp(&self.mounts[x.mount].priority)
                 })
                 .then(y.mount.cmp(&x.mount))
-                .then(a.cmp(&b))
+                .then(a.entry.cmp(&b.entry))
         });
+        self.winners.fill(None);
+        if let Some(names) = &self.names {
+            for &reference in &self.listing {
+                if let Some(id) = names.find(&self.entries[reference.entry as usize].name) {
+                    self.winners[id.0 as usize].get_or_insert(reference);
+                }
+            }
+        }
     }
 
     /// Resolve names only while loading. Simulation/render/audio retain FileRefs.
@@ -327,14 +350,8 @@ impl Vfs {
         self.lookups.fetch_add(1, Ordering::Relaxed);
         let mut normalized = [0; 4096];
         let length = normalize_into(path, &mut normalized).ok()?;
-        let name = &normalized[..length];
-        let position = self
-            .index
-            .partition_point(|&index| self.entries[index].name.as_ref() < name);
-        let &entry = self.index.get(position)?;
-        (self.entries[entry].name.as_ref() == name).then_some(FileRef {
-            entry: entry as u32,
-        })
+        let id = self.names.as_ref()?.find(&normalized[..length])?;
+        self.winners[id.0 as usize]
     }
 
     fn entry(&self, reference: FileRef) -> Result<&Entry, VfsError> {
@@ -433,17 +450,15 @@ impl Vfs {
         self.mounts.iter().filter(|mount| mount.active)
     }
     pub fn files(&self) -> impl Iterator<Item = (FileRef, &[u8])> {
-        self.index.iter().map(|&entry| {
+        self.listing.iter().map(|&reference| {
             (
-                FileRef {
-                    entry: entry as u32,
-                },
-                self.entries[entry].name.as_ref(),
+                reference,
+                self.entries[reference.entry as usize].name.as_ref(),
             )
         })
     }
     /// Cold authority-bound reads can select saved settings even when a product
-    /// has a same-named file. The existing winning index remains unchanged.
+    /// has a same-named file. The existing winner bindings remain unchanged.
     pub fn files_in_mount(&self, id: MountId) -> impl Iterator<Item = (FileRef, &[u8])> {
         self.entries
             .iter()

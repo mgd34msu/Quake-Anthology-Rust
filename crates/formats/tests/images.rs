@@ -1,6 +1,20 @@
 use qa_formats::{FormatError, image::*};
 use std::{borrow::Cow, io::Cursor};
 
+#[test]
+fn file_decoding_flags_come_from_the_shared_rule_identity() {
+    use qa_core::primitives::RuleSetId;
+    for (rules, expected) in [
+        (RuleSetId::Quake, RasterPolicy::Standard),
+        (RuleSetId::QuakeWorld, RasterPolicy::Standard),
+        (RuleSetId::Quake2, RasterPolicy::Quake2),
+        (RuleSetId::Quake2Rerelease, RasterPolicy::Quake2),
+        (RuleSetId::Quake3, RasterPolicy::Quake3),
+    ] {
+        assert_eq!(raster_policy(rules), expected);
+    }
+}
+
 fn pcx(planes: u8) -> Vec<u8> {
     let mut b = vec![0; 128];
     b[..4].copy_from_slice(&[10, 5, 1, 8]);

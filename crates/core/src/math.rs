@@ -151,6 +151,12 @@ pub fn transform_point(origin: Vec3, axes: [Vec3; 3], local: Vec3) -> Vec3 {
     }))
 }
 
+/// Subtract the origin before projecting onto each caller-supplied axis.
+pub fn inverse_transform_point(origin: Vec3, axes: [Vec3; 3], point: Vec3) -> Vec3 {
+    let delta = point - origin;
+    Vec3(axes.map(|axis| delta.dot(axis)))
+}
+
 /// A quaternion rotation, shared by skeletal file conversion and deformation.
 pub fn rotate_quaternion(q: [f32; 4], p: Vec3) -> Vec3 {
     let dot = q[0] * p.0[0] + q[1] * p.0[1] + q[2] * p.0[2];

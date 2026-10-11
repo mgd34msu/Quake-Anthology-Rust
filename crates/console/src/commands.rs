@@ -80,6 +80,7 @@ pub struct Console<H> {
     commands: Vec<NameId>,
     command_by_name: Box<[Option<Command<H>>]>,
     aliases: Box<[Alias]>,
+    alias_by_name: Box<[Option<usize>]>,
     alias_count: usize,
     parser: Option<Box<Parser>>,
     joined: FixedText<MAX_TEXT>,
@@ -96,9 +97,11 @@ impl<H: Host> Console<H> {
     ) -> Result<Self, NamesError> {
         let cvars = Cvars::with_context(context)?;
         let command_by_name = vec![None; cvars.names.capacity()].into_boxed_slice();
+        let alias_by_name = vec![None; cvars.names.capacity()].into_boxed_slice();
         let mut console = Self {
             cvars,
             command_by_name,
+            alias_by_name,
             buffer: CommandBuffer::new(),
             commands: Vec::with_capacity(64),
             aliases: (0..alias_capacity)
@@ -257,11 +260,10 @@ impl<H: Host> Console<H> {
                     } else {
                         self.cvars.write(view, args.get(1)).map_err(Into::into)
                     }
-                } else if let Some(alias) = self.aliases[..self.alias_count].iter().find(|a| {
-                    a.name
-                        .and_then(|name| self.cvars.names.folded(name))
-                        .is_some_and(|name| Some(name) == id)
-                }) {
+                } else if let Some(alias) = id
+                    .and_then(|id| self.alias_by_name[id.0 as usize])
+                    .map(|index| &self.aliases[index])
+                {
                     aliases += 1;
                     if aliases > 16 {
                         host.print(format_args!("Alias expansion limit\n"));
@@ -456,11 +458,8 @@ impl<H: Host> Console<H> {
         args.join(2, &mut text)?;
         text.write_str("\n").map_err(|_| TextError::TooLong)?;
         let folded = self.cvars.lookup_name(name);
-        let index = self.aliases[..self.alias_count]
-            .iter()
-            .position(|a| {
-                a.name.is_some() && a.name.and_then(|id| self.cvars.names.folded(id)) == folded
-            })
+        let index = folded
+            .and_then(|id| self.alias_by_name[id.0 as usize])
             .or_else(|| {
                 self.aliases[..self.alias_count]
                     .iter()
@@ -475,7 +474,14 @@ impl<H: Host> Console<H> {
             .names
             .intern(name.as_bytes())
             .map_err(CommandError::Names)?;
+        let folded = self
+            .cvars
+            .names
+            .folded(exact)
+            .ok_or(NamesError::Capacity)
+            .map_err(CommandError::Names)?;
         self.alias_count = self.alias_count.max(index + 1);
+        self.alias_by_name[folded.0 as usize] = Some(index);
         let alias = &mut self.aliases[index];
         alias.name = Some(exact);
         alias.text = text;
@@ -486,9 +492,11 @@ impl<H: Host> Console<H> {
             return Err(CommandError::Usage);
         }
         let folded = self.cvars.lookup_name(args.get(1));
-        if let Some(alias) = self.aliases[..self.alias_count].iter_mut().find(|a| {
-            a.name.is_some() && a.name.and_then(|id| self.cvars.names.folded(id)) == folded
-        }) {
+        if let Some((id, index)) =
+            folded.and_then(|id| self.alias_by_name[id.0 as usize].map(|index| (id, index)))
+        {
+            self.alias_by_name[id.0 as usize] = None;
+            let alias = &mut self.aliases[index];
             alias.name = None;
             alias.text.clear();
         }

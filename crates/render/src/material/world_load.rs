@@ -35,7 +35,7 @@ use crate::{
 };
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
-use qa_formats::{bsp::Map, image::RasterPolicy};
+use qa_formats::bsp::Map;
 
 /// Worldspawn/configstring data copied at the entity boundary. Rendering owns
 /// no entity-lump parser and resolves this name only during asset registration.
@@ -260,16 +260,7 @@ pub fn load_world(
         }
     }
     let catalog = load_catalog(vfs).map_err(WorldMaterialError::Catalog)?;
-    let mut images = Images::new(
-        vfs,
-        assets,
-        match rules {
-            RuleSetId::Quake => RasterPolicy::Standard,
-            RuleSetId::Quake2 => RasterPolicy::Quake2,
-            _ => RasterPolicy::Quake3,
-        },
-        image_settings,
-    )?;
+    let mut images = Images::new(vfs, assets, rules, image_settings)?;
     let mut diagnostics = Vec::new();
     let mut textures = Vec::with_capacity(map.textures.len());
     let mut layered_skies = Vec::with_capacity(map.textures.len());

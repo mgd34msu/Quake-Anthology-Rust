@@ -156,17 +156,32 @@ impl Camera {
     }
 
     fn vertex(&self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
-        let delta = world_position - self.refdef.origin;
         ClipVertex {
-            camera: Vec3([
-                -delta.dot(self.refdef.axes[1]),
-                delta.dot(self.refdef.axes[2]),
-                delta.dot(self.refdef.axes[0]),
-            ]),
+            camera: self.to_view(world_position),
             texcoord: vertex.texcoord,
             lightmap_coord: vertex.lightmap_coord,
             color: vertex.color.map(|c| c as f32 / 255.0),
         }
+    }
+
+    fn to_view(&self, point: Vec3) -> Vec3 {
+        let local =
+            qa_core::math::inverse_transform_point(self.refdef.origin, self.refdef.axes, point);
+        Vec3([-local.0[1], local.0[2], local.0[0]])
+    }
+
+    fn direction_to_view(&self, direction: Vec3) -> Vec3 {
+        // Native gradients negate the axis before the dot; vertex projection
+        // negates its result. Keep cancellation's signed zero at each boundary.
+        qa_core::math::inverse_transform_point(
+            Vec3::default(),
+            [
+                -self.refdef.axes[1],
+                self.refdef.axes[2],
+                self.refdef.axes[0],
+            ],
+            direction,
+        )
     }
 
     fn project(&self, vertex: ClipVertex) -> ScreenVertex {
