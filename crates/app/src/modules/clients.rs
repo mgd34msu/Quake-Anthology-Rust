@@ -1,6 +1,6 @@
 //! Client lifecycle exports use the same session table as provider callbacks.
 use super::{Export, FrameHost, ModuleResult, Program, Q2Clients, State};
-use qa_core::primitives::{ClientId, ModuleId, NativeEntity, ThinkTime, UserCmd};
+use qa_core::primitives::{ClientId, ModuleId, NativeEntity, ThinkTime, UserCmd, Vec3};
 
 impl FrameHost {
     /// Called once for every command admitted by the native channel. Modules
@@ -35,13 +35,14 @@ impl FrameHost {
     ) -> Result<u32, String> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            let native_client = self
+            let snapshot = self
                 .runtime
                 .local_snapshots
                 .get(id.0 as usize)
                 .and_then(Option::as_ref)
-                .ok_or("native client needs connection metadata")?
-                .native_client();
+                .ok_or("native client needs connection metadata")?;
+            let native_client = snapshot.native_client();
+            let seat = snapshot.seat;
             let row = self.module_row(api.module).ok_or("missing client module")?;
             if row.state != State::Running || native_client >= 256 {
                 return Err("client module unavailable or native slot out of range".into());
@@ -98,6 +99,10 @@ impl FrameHost {
                 accepted = true;
                 self.call_module_export(api.module, Export::words(api.begin, &[address]), time)
                     .map_err(|e| format!("ClientBegin: {e:?}"))?;
+                // Q2 ClientBegin owns spawn facing through ps.pmove.delta_angles.
+                // Like CL_ClearState, begin with zero command angles rather
+                // than adding the walk-through host's map-facing seed again.
+                self.runtime.input.set_view_angles(seat, Vec3::default());
                 Ok(native_client)
             })();
             if result.is_err() {

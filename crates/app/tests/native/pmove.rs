@@ -74,9 +74,20 @@ pub(super) fn commands_move_a_native_client_once() {
         bytes[0x7000..0x7004].copy_from_slice(&mode.to_le_bytes());
         let gravity = if rr { 32 } else { 18 };
         bytes[0x7000 + gravity..0x7002 + gravity].copy_from_slice(&800i16.to_le_bytes());
+        let delta_yaw = if rr { 40 } else { 22 };
+        let delta = if rr {
+            90.0f32.to_bits().to_le_bytes().to_vec()
+        } else {
+            qa_core::math::angle_to_short(90.0, qa_core::math::AngleShortForm::Factored)
+                .to_le_bytes()
+                .to_vec()
+        };
+        bytes[0x7000 + delta_yaw..0x7000 + delta_yaw + delta.len()].copy_from_slice(&delta);
         let state_bytes = if rr { 52 } else { 28 };
         let state = bytes[0x7000..0x7000 + state_bytes].to_vec();
         bytes[0x6000..0x6000 + state_bytes].copy_from_slice(&state);
+        let view_yaw = if rr { 56 } else { 32 };
+        bytes[0x6000 + view_yaw..0x6004 + view_yaw].copy_from_slice(&90.0f32.to_le_bytes());
         if rr {
             bytes[0x7000 + 3248..0x7000 + 3256].copy_from_slice(&edict.to_le_bytes());
         }
@@ -120,7 +131,7 @@ pub(super) fn commands_move_a_native_client_once() {
                 SeatId::FIRST,
                 SpawnAnchor {
                     position: Vec3::default(),
-                    angles: Vec3::default(),
+                    angles: Vec3([0.0, 90.0, 0.0]),
                     entity: 0,
                     fixture_fallback: false,
                 },
@@ -332,7 +343,22 @@ pub(super) fn commands_move_a_native_client_once() {
             .unwrap(),
         );
         host.bind_sounds(&bank).unwrap();
+        let other_seat = SeatId::new(1).unwrap();
+        let other_angles = Vec3([10.0, 217.0, -5.0]);
+        host.runtime.input.set_view_angles(other_seat, other_angles);
         host.connect_q2_client(&api, id, b"\\name\\once").unwrap();
+        let initial = host
+            .runtime
+            .input
+            .build_frame(EventTime::default(), [127; 3], [0.022; 2]);
+        assert_eq!(initial[0].view_angles, Vec3::default());
+        assert_eq!(initial[1].view_angles, other_angles);
+        assert_eq!(
+            host.runtime.server.clients[id.0 as usize]
+                .player
+                .view_angles,
+            Vec3([0.0, 90.0, 0.0])
+        );
         let mut expected = PlayerState::default();
         expected.movement_rules = rules;
         expected.trace_rules = RuleSetId::Quake3;
@@ -342,6 +368,7 @@ pub(super) fn commands_move_a_native_client_once() {
             MovementMode::Spectator
         };
         expected.movement.tuning.gravity = Some(800.0);
+        expected.movement.delta_angles = Vec3([0.0, 90.0, 0.0]);
         let command = UserCmd {
             duration_ms: 16,
             movement: [200.0, 0.0, 0.0],
@@ -378,6 +405,8 @@ pub(super) fn commands_move_a_native_client_once() {
                 "{rules:?} command {calls}"
             );
             assert_eq!(client.player.body.velocity, expected.body.velocity);
+            assert_eq!(client.player.view_angles, expected.view_angles);
+            assert_eq!(client.player.view_angles.0[1], 90.0);
             assert_eq!(client.player.body.mins, expected.body.mins);
             assert_eq!(client.player.body.maxs, expected.body.maxs);
             let world = host.runtime.collision.as_mut().unwrap();
