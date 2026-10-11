@@ -83,6 +83,20 @@ impl<'a> ModuleMemory<'a> {
         self.bytes.as_mut()[range].copy_from_slice(bytes);
         Ok(())
     }
+    pub fn write_string(
+        &mut self,
+        address: u64,
+        capacity: usize,
+        text: &[u8],
+    ) -> Result<(), MemoryError> {
+        let output = self.read_mut(address, capacity)?;
+        if capacity != 0 {
+            let copied = text.len().min(capacity - 1);
+            output[..copied].copy_from_slice(&text[..copied]);
+            output[copied] = 0;
+        }
+        Ok(())
+    }
     pub fn read_word(&self, address: u64) -> Result<i32, MemoryError> {
         let b = self.read(address, 4)?;
         Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))

@@ -2053,11 +2053,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
         let trap_name = if rr {
-            b"get_configstring".as_slice()
+            b"local_sound".as_slice()
         } else {
             b"bprintf".as_slice()
         };
-        let pointer = pointers[if rr { 8 } else { 0 }];
+        let pointer = pointers[if rr { 6 } else { 0 }];
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -2243,7 +2243,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
-                || (rr && slot == 15)
+                || (rr && (slot == 8 || slot == 15))
                 || slot == area_slot
                 || slot == contents_slot
                 || slot == connected_slot
@@ -2260,7 +2260,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 slot == write_slots[4] || slot == vector_slots[2],
                 base + 0x1c30,
             );
-            if slot == argv_slot || slot == args_slot {
+            if slot == argv_slot || slot == args_slot || (rr && slot == 8) {
                 // Dereference the returned C string in the child as well as inspecting
                 // the authoritative shared bytes in the parent.
                 let mut read = vec![0x0f, 0xb6, 0x00, 0x48, 0xb9];
@@ -2278,6 +2278,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     services.server.entities.columns.position[bound.slot as usize],
                     services.server.area.bounds(bound),
                 )
+            });
+            let before_config = (slot == if rr { 7 } else { 6 } && a[0] == 3).then(|| {
+                let (value, revision) = services.storage.configstring(ModuleId(1), 3).unwrap();
+                (value.to_vec(), revision)
             });
             game.vm
                 .call(
@@ -2505,14 +2509,21 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     );
                 }
             }
-            if slot == if rr { 7 } else { 6 } && a[0] == 3 {
+            if let Some((before, revision)) = before_config {
+                let memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                let value = if a[1] == 0 {
+                    &[][..]
+                } else {
+                    memory.cstring(a[1]).unwrap()
+                };
+                let value = &value[..value.len().min(if rr { 95 } else { 8192 })];
                 assert_eq!(
                     services.storage.configstring(ModuleId(1), 3).unwrap(),
-                    if a[1] == 0 {
-                        (&b""[..], 2)
-                    } else {
-                        (&b"_qa_child_cvar"[..], 1)
-                    }
+                    (value, revision + u64::from(before != value))
                 );
             }
             if rr && slot == 49 {
@@ -2654,6 +2665,41 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
+        if rr {
+            let read = |game: &mut Game, pointer: u64| {
+                qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                    .unwrap()
+                    .cstring(pointer)
+                    .unwrap()
+                    .to_vec()
+            };
+            let pointer = invoke_import(&mut game, 8, &[3]);
+            assert_ne!(pointer, 0);
+            assert_eq!(read(&mut game, pointer), b"_qa_child_cvar");
+            assert_eq!(invoke_import(&mut game, 8, &[3]), pointer);
+            // The child retains a pointer while the common store is changed by
+            // another import. It is refreshed before the child resumes.
+            game.vm.process.memory_mut().unwrap()[0x1b00..0x1b05].copy_from_slice(b"\x80raw\0");
+            invoke_import(&mut game, config_slot, &[3, base + 0x1b00]);
+            assert_eq!(read(&mut game, pointer), b"\x80raw");
+            let other = invoke_import(&mut game, 8, &[4]);
+            assert_ne!(other, pointer);
+            assert_eq!(read(&mut game, other), b"");
+            invoke_import(&mut game, config_slot, &[3, 0]);
+            assert_eq!(read(&mut game, pointer), b"");
+            assert_eq!(invoke_import(&mut game, 8, &[3]), pointer);
+            assert_eq!(read(&mut game, other), b"");
+            // RR normal strings truncate at 95; statusbar retains its extended
+            // native capacity. Each returned pointer has independent storage.
+            game.vm.process.memory_mut().unwrap()[0x1b00..0x1b81].fill(b'x');
+            game.vm.process.memory_mut().unwrap()[0x1b80] = 0;
+            invoke_import(&mut game, config_slot, &[3, base + 0x1b00]);
+            assert_eq!(read(&mut game, pointer), vec![b'x'; 95]);
+            invoke_import(&mut game, config_slot, &[5, base + 0x1b00]);
+            let statusbar = invoke_import(&mut game, 8, &[5]);
+            assert_eq!(read(&mut game, statusbar), vec![b'x'; 128]);
+            assert_eq!(read(&mut game, pointer), vec![b'x'; 95]);
+        }
         invoke_import(&mut game, config_slot, &[3, 0]);
         for slot in index_slot..index_slot + 3 {
             assert_eq!(invoke_import(&mut game, slot, &[base + 0x1720, 0]), 1);
@@ -3280,6 +3326,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             TickRate::fixed(if rr { 25 } else { 100 }).unwrap(),
             game.vm,
         );
+        request.configstrings = if rr { 10814 } else { 800 };
         request.entries = (0..1 + count as u32).collect();
         request.frame = Export {
             callback: CallbackId(run),

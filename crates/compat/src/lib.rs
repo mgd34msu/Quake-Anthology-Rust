@@ -3,6 +3,7 @@
 
 pub mod abi;
 pub mod command;
+pub mod configstrings;
 pub mod cvars;
 pub mod entities;
 mod hooks;

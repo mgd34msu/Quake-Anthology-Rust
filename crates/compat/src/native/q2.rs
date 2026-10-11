@@ -377,8 +377,45 @@ impl Game {
             .base
             .checked_add(command_offset as u64)
             .ok_or(Error::Export)?;
-        let filter_offset = command_offset
+        let config_offset = command_offset
             .checked_add(command_bytes)
+            .ok_or(Error::Export)?;
+        // API2023 CS_SIZE: ordinary strings are 96 bytes; statusbar and general
+        // entries may span their native ranges. The common store bounds values
+        // at 8192 bytes, so no projection needs a larger individual slot.
+        let config_capacities: Vec<usize> = if layout.version == 2023 {
+            let general = layout.resources[2].first + layout.resources[2].count + 4 * 256;
+            let wheels = general + 512;
+            let end = wheels + 3 * 32 + 2;
+            (0..32768)
+                .map(|index| {
+                    let size = if (5..59).contains(&index) {
+                        (59 - index) * 96
+                    } else if (general..wheels).contains(&index) {
+                        (end - index) * 96
+                    } else {
+                        96
+                    };
+                    size.min(8193)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let config_bytes = if config_capacities.is_empty() {
+            0
+        } else {
+            crate::configstrings::NativeConfigs::byte_length(&config_capacities)
+                .map_err(Error::Service)?
+                .div_ceil(PAGE_BYTES)
+                * PAGE_BYTES
+        };
+        let config_address = image
+            .base
+            .checked_add(config_offset as u64)
+            .ok_or(Error::Export)?;
+        let filter_offset = config_offset
+            .checked_add(config_bytes)
             .ok_or(Error::Export)?;
         let filter_address = image
             .base
@@ -515,6 +552,8 @@ impl Game {
                         ][..],
                         NativeScalar::Word,
                     ))
+                } else if layout.version == 2023 && ordinal == 8 {
+                    Some((&[NativeScalar::I32][..], NativeScalar::Word))
                 } else if ordinal == if layout.version == 2023 { 16 } else { 13 } {
                     Some((
                         &[NativeScalar::Word][..],
@@ -673,6 +712,12 @@ impl Game {
         ));
         vm.native_command =
             Some(crate::command::NativeCommand::load(command_address).map_err(Error::Service)?);
+        if !config_capacities.is_empty() {
+            vm.native_configs = Some(
+                crate::configstrings::NativeConfigs::load(config_address, &config_capacities)
+                    .map_err(Error::Service)?,
+            );
+        }
         vm.resources = Some(layout.resources);
         vm.surfaces = Some(
             crate::surfaces::NativeSurfaces::load(

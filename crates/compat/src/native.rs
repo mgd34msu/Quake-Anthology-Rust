@@ -90,6 +90,7 @@ pub struct Vm {
     traps: Box<[runtime::ImportTrap]>,
     cvars: Option<crate::cvars::NativeCvars>,
     native_command: Option<crate::command::NativeCommand>,
+    native_configs: Option<crate::configstrings::NativeConfigs>,
     resources: Option<[crate::services::ResourceRange; 3]>,
     entities: Option<EntityProjection>,
     surfaces: Option<crate::surfaces::NativeSurfaces>,
@@ -303,6 +304,7 @@ impl Vm {
             traps: runtime.traps.into_boxed_slice(),
             cvars: None,
             native_command: None,
+            native_configs: None,
             resources: None,
             entities: None,
             surfaces: None,
@@ -332,6 +334,12 @@ impl Vm {
     pub fn import_callback(&self) -> u64 {
         self.process.callback(self.abi)
     }
+    /// Session load supplies new shared service storage even for a retained VM.
+    pub fn rebind_configstrings(&mut self) {
+        if let Some(configs) = &mut self.native_configs {
+            configs.rebind();
+        }
+    }
     pub fn call(
         &mut self,
         calls: &mut NativeCalls<'_, '_>,
@@ -357,7 +365,7 @@ impl Vm {
         }
         words[first..first + arguments.len()].copy_from_slice(arguments);
         let mut rejected = None;
-        if self.cvars.is_some() || self.native_command.is_some() {
+        if self.cvars.is_some() || self.native_command.is_some() || self.native_configs.is_some() {
             let base = self.process.base();
             let mut memory =
                 ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
@@ -372,6 +380,11 @@ impl Vm {
                     .prepare(&mut memory, calls.command, calls.raw_args)
                     .map_err(Error::Service)?;
             }
+            if let Some(configs) = &mut self.native_configs {
+                configs
+                    .refresh(calls.services.storage, calls.context.module, &mut memory)
+                    .map_err(Error::Service)?;
+            }
         }
         let table_address = self.table_address();
         let cvars = &mut self.cvars;
@@ -384,6 +397,7 @@ impl Vm {
         let entities = &mut self.entities;
         let surfaces = self.surfaces.as_ref();
         let native_command = self.native_command.as_ref();
+        let native_configs = &mut self.native_configs;
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -400,6 +414,7 @@ impl Vm {
                     native_entities: entities.as_mut().zip(table_address),
                     native_surfaces: surfaces,
                     native_command,
+                    native_configs: native_configs.as_mut(),
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,
@@ -410,13 +425,23 @@ impl Vm {
                     },
                     arguments: &call.arguments,
                 };
-                calls
+                let result = calls
                     .table
-                    .invoke(call.number, &mut invocation, calls.unknown)
-                    .map_err(|error| {
-                        rejected = Some(error);
-                        NativeError::Callback
-                    })
+                    .invoke(call.number, &mut invocation, calls.unknown);
+                let result = result.and_then(|value| {
+                    if let Some(configs) = &mut invocation.native_configs {
+                        configs.refresh(
+                            invocation.services.storage,
+                            invocation.context.module,
+                            invocation.memory,
+                        )?;
+                    }
+                    Ok(value)
+                });
+                result.map_err(|error| {
+                    rejected = Some(error);
+                    NativeError::Callback
+                })
             });
         if let Err(NativeError::ImportTrap { ordinal, address }) = &result {
             if let Some(trap) = self.traps.iter_mut().find(|trap| trap.ordinal == *ordinal) {

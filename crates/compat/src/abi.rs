@@ -24,6 +24,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub native_entities: Option<(&'a mut crate::entities::EntityProjection, u64)>,
     pub native_surfaces: Option<&'a crate::surfaces::NativeSurfaces>,
     pub native_command: Option<&'a crate::command::NativeCommand>,
+    pub native_configs: Option<&'a mut crate::configstrings::NativeConfigs>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -237,6 +238,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[2] = Some(native_print::<true, false>);
     table.entries[3] = Some(native_print::<true, true>);
     table.entries[7] = Some(config_set);
+    table.entries[8] = Some(native_config_get);
     table.entries[10] = Some(resource_index::<0>);
     table.entries[11] = Some(resource_index::<1>);
     table.entries[12] = Some(resource_index::<2>);
@@ -341,6 +343,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             native_entities: None,
             native_surfaces: None,
             native_command: None,
+            native_configs: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -410,6 +413,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             native_entities: None,
             native_surfaces: None,
             native_command: None,
+            native_configs: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
@@ -589,29 +593,16 @@ fn cvar_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         .map_err(|_| CallError::Cvar)?
         .to_bits() as u64)
 }
-fn write_string(
-    memory: &mut ModuleMemory<'_>,
-    target: u64,
-    length: usize,
-    text: &[u8],
-) -> Result<(), CallError> {
-    let buffer = memory.read_mut(target, length)?;
-    if length != 0 {
-        let copied = text.len().min(length - 1);
-        buffer[..copied].copy_from_slice(&text[..copied]);
-        buffer[copied] = 0;
-    }
-    Ok(())
-}
 fn cvar_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(1)?;
     let length = c.length(2)?;
     let view = c.services.cvars.bind(c.text(0)?, c.context.console);
     if let Some(view) = view {
         let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
-        write_string(c.memory, target, length, text.as_str().as_bytes())?;
+        c.memory
+            .write_string(target, length, text.as_str().as_bytes())?;
     } else {
-        write_string(c.memory, target, length, b"")?;
+        c.memory.write_string(target, length, b"")?;
     }
     Ok(0)
 }
@@ -622,12 +613,8 @@ fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let index = c.arg(0)? as u32 as usize;
     let target = c.pointer(1)?;
     let length = c.length(2)?;
-    write_string(
-        c.memory,
-        target,
-        length,
-        c.command.get(index).copied().unwrap_or(b""),
-    )?;
+    c.memory
+        .write_string(target, length, c.command.get(index).copied().unwrap_or(b""))?;
     Ok(0)
 }
 fn native_argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -1002,17 +989,26 @@ fn native_register_observer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallE
 }
 fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let pointer = c.pointer(1)?;
-    (ENGINE_CALLS.configstring)(
-        c.services,
-        c.context.module,
-        c.length(0)?,
-        if pointer == 0 {
-            &[]
-        } else {
-            c.memory.cstring(pointer)?
-        },
-    )?;
+    let ordinal = c.length(0)?;
+    let text = if pointer == 0 {
+        &[][..]
+    } else {
+        c.memory.cstring(pointer)?
+    };
+    let text = if let Some(native) = &c.native_configs {
+        &text[..text.len().min(native.capacity(ordinal)? - 1)]
+    } else {
+        text
+    };
+    (ENGINE_CALLS.configstring)(c.services, c.context.module, ordinal, text)?;
     Ok(0)
+}
+fn native_config_get(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let ordinal = c.length(0)?;
+    c.native_configs
+        .as_mut()
+        .ok_or(CallError::ConfigString)?
+        .publish(c.services.storage, c.context.module, c.memory, ordinal)
 }
 fn config_get(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let target = c.pointer(1)?;
@@ -1021,7 +1017,7 @@ fn config_get(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         .services
         .storage
         .configstring(c.context.module, c.length(0)?)?;
-    write_string(c.memory, target, length, text)?;
+    c.memory.write_string(target, length, text)?;
     Ok(0)
 }
 fn memset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

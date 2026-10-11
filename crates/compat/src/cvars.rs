@@ -165,7 +165,6 @@ fn write_text(memory: &mut ModuleMemory<'_>, address: u64, text: &str) -> Result
     if text.len() > MAX_TEXT || text.as_bytes().contains(&0) {
         return Err(CallError::Text);
     }
-    memory.write(address, text.as_bytes())?;
-    memory.write(address + text.len() as u64, &[0])?;
+    memory.write_string(address, text.len() + 1, text.as_bytes())?;
     Ok(())
 }

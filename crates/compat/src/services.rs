@@ -75,6 +75,7 @@ struct ConfigRange {
     count: usize,
     message: Box<[u8]>,
     written: usize,
+    revision: u64,
 }
 
 /// One load-sized store for module file handles and configstrings. Native
@@ -106,6 +107,7 @@ impl ServiceStorage {
                 count,
                 message: vec![0; 0x8000].into_boxed_slice(),
                 written: 0,
+                revision: 0,
             });
             total = total.checked_add(count).ok_or(CallError::Capacity)?;
         }
@@ -165,6 +167,13 @@ impl ServiceStorage {
         row.written = writer.size();
         Ok(())
     }
+    pub fn config_revision(&self, module: ModuleId) -> Result<u64, CallError> {
+        self.ranges
+            .iter()
+            .find(|range| range.module == module)
+            .map(|range| range.revision)
+            .ok_or(CallError::ConfigString)
+    }
     pub fn configstring(
         &self,
         module: ModuleId,
@@ -197,6 +206,12 @@ impl ServiceStorage {
             row.text.set_bytes(text).map_err(|_| CallError::Text)?;
             row.resource_name = name;
             row.revision = row.revision.wrapping_add(1);
+            let range = self
+                .ranges
+                .iter_mut()
+                .find(|range| range.module == module)
+                .ok_or(CallError::ConfigString)?;
+            range.revision = range.revision.wrapping_add(1);
         }
         Ok(())
     }
