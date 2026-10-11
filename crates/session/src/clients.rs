@@ -223,11 +223,11 @@ impl Server {
         end: EventTime,
         mut policy: impl FnMut(RuleSetId) -> qa_input::InputPolicy,
     ) {
-        let duration = std::time::Duration::from_nanos(end.since(start));
+        let duration_ns = end.since(start);
         for client in self.clients.iter_mut() {
             if client.connection == Some(Connection::Bot) {
                 let command = qa_input::UserCmdBuilder::build(
-                    duration,
+                    duration_ns,
                     end,
                     client.intent,
                     policy(client.player.movement_rules),

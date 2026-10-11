@@ -68,6 +68,15 @@ pub struct NativeRegion {
     pub permissions: u8,
 }
 
+pub(super) fn region_at(regions: &[NativeRegion], offset: usize, rights: u8) -> Option<usize> {
+    let index = regions
+        .partition_point(|region| region.offset <= offset)
+        .checked_sub(1)?;
+    let region = &regions[index];
+    (region.permissions & rights == rights && offset - region.offset < region.length)
+        .then_some(index)
+}
+
 pub struct NativeImage<'a> {
     pub base: u64,
     pub pointer_bytes: u8,

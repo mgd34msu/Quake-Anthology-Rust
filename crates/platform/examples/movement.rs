@@ -185,7 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prediction.apply_snapshot(&client.player);
             if client.connection != Some(Connection::Bot) {
                 let command = qa_input::UserCmdBuilder::build(
-                    std::time::Duration::from_nanos(end.since(start)),
+                    end.since(start),
                     end,
                     intent,
                     qa_input::InputPolicy::native(client.player.movement_rules),

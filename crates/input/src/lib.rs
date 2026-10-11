@@ -368,6 +368,12 @@ impl Device {
     }
 }
 
+fn seat_devices(devices: &[Device], index: usize) -> impl Iterator<Item = &Device> {
+    devices
+        .iter()
+        .filter(move |device| device.seat.is_some_and(|seat| seat.index() == index))
+}
+
 pub use qa_core::primitives::CommandIntent;
 
 pub struct Input {
@@ -411,7 +417,7 @@ impl Input {
     }
     /// Assignment is a load/menu operation; release held controls first.
     pub fn assign(&mut self, id: DeviceId, seat: SeatId) -> bool {
-        if let Some(index) = self.devices.iter().position(|device| device.id == Some(id)) {
+        if let Some(index) = self.device_index(id) {
             if self.devices[index].held_count != 0 {
                 return false;
             }
@@ -602,10 +608,8 @@ impl Input {
                 }
             }
         }
-        for device in &mut self.devices {
-            if device.id == Some(id) {
-                *device = Device::default();
-            }
+        if let Some(index) = self.device_index(id) {
+            self.devices[index] = Device::default();
         }
     }
     pub fn dispatch(&mut self, event: SysEvent<'_>, target: &mut impl Target) {
@@ -661,11 +665,8 @@ impl Input {
                 axis,
                 value,
             } => {
-                if let Some(device) = self
-                    .devices
-                    .iter_mut()
-                    .find(|entry| entry.id == Some(device))
-                    && let Some(slot) = device.axes.get_mut(usize::from(axis))
+                if let Some(index) = self.device_index(device)
+                    && let Some(slot) = self.devices[index].axes.get_mut(usize::from(axis))
                 {
                     *slot = value;
                 }
@@ -698,11 +699,12 @@ impl Input {
             _ => {}
         }
     }
+    fn device_index(&self, id: DeviceId) -> Option<usize> {
+        self.devices.iter().position(|device| device.id == Some(id))
+    }
     fn device_seat(&self, id: DeviceId) -> Option<SeatId> {
-        self.devices
-            .iter()
-            .find(|entry| entry.id == Some(id))
-            .and_then(|device| device.seat)
+        self.device_index(id)
+            .and_then(|index| self.devices[index].seat)
     }
     fn character(&self, device: DeviceId, value: char, target: &mut impl Target) {
         if let Some(seat) = self.device_seat(device) {
@@ -710,7 +712,7 @@ impl Input {
         }
     }
     pub fn release_device(&mut self, id: DeviceId, time: EventTime, target: &mut impl Target) {
-        let Some(index) = self.devices.iter().position(|device| device.id == Some(id)) else {
+        let Some(index) = self.device_index(id) else {
             return;
         };
         for control in 0..CONTROLS {
@@ -728,7 +730,7 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) {
-        let Some(device_index) = self.devices.iter().position(|entry| entry.id == Some(id)) else {
+        let Some(device_index) = self.device_index(id) else {
             return;
         };
         let device = &mut self.devices[device_index];
@@ -858,7 +860,7 @@ impl Input {
                 raw
             };
             seat.mouse_previous = raw;
-            let rate = (mouse[0] * mouse[0] + mouse[1] * mouse[1]).sqrt()
+            let rate = qa_core::math::length(Vec3([mouse[0], mouse[1], 0.0]))
                 / (period as f32 * 1e-6).max(1.0);
             let gain = policy.sensitivity + rate * policy.acceleration;
             mouse.iter_mut().for_each(|value| *value *= gain);
@@ -941,22 +943,16 @@ impl Input {
                         seat.angles.0[0].clamp(previous_pitch - limit, previous_pitch + limit);
                 }
                 PitchClamp::DeltaAngle(limit) => {
-                    let delta = if policy.delta_pitch > 180.0 {
-                        policy.delta_pitch - 360.0
-                    } else {
-                        policy.delta_pitch
-                    };
+                    let delta = qa_core::math::wrap_above_180(policy.delta_pitch);
                     seat.angles.0[0] = seat.angles.0[0].clamp(-limit - delta, limit - delta);
                 }
             }
-            for device in &self.devices {
-                if device.seat.is_some_and(|seat| seat.index() == index) {
-                    intent.axes[usize::from(intent.axis_count)] = [
-                        -f32::from(device.axes[1]) / 32768.0,
-                        f32::from(device.axes[0]) / 32768.0,
-                    ];
-                    intent.axis_count += 1;
-                }
+            for device in seat_devices(&self.devices, index) {
+                intent.axes[usize::from(intent.axis_count)] = [
+                    -f32::from(device.axes[1]) / 32768.0,
+                    f32::from(device.axes[0]) / 32768.0,
+                ];
+                intent.axis_count += 1;
             }
             let mut mask = 0;
             for (action, bit) in [
@@ -983,19 +979,12 @@ impl Input {
                     mask |= bit;
                 }
             }
-            if self.devices.iter().any(|device| {
-                device.seat.is_some_and(|seat| seat.index() == index) && device.held_count != 0
-            }) {
+            if seat_devices(&self.devices, index).any(|device| device.held_count != 0) {
                 mask |= buttons::ANY;
             }
             intent.view_angles = seat.angles;
             intent.buttons = mask;
-            UserCmdBuilder::build(
-                std::time::Duration::from_nanos(period),
-                time,
-                intent,
-                policy,
-            )
+            UserCmdBuilder::build(period, time, intent, policy)
         })
     }
 }

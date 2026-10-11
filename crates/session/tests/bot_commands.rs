@@ -4,7 +4,6 @@ use qa_core::{
 };
 use qa_input::UserCmdBuilder;
 use qa_session::clients::{Connection, Server};
-use std::time::Duration;
 
 #[test]
 fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
@@ -45,7 +44,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     for slot in 0..64 {
         let client = &server.clients[slot];
         let local = UserCmdBuilder::build(
-            Duration::from_millis(50),
+            50_000_000,
             EventTime(5_050_000_000),
             client.intent,
             qa_input::InputPolicy::native(client.player.movement_rules),

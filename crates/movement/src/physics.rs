@@ -458,9 +458,7 @@ impl Step<'_> {
             angles.0[0] = -angles.0[0] / 3.0;
             angles.0[2] = 0.0;
         } else if (self.classic() || self.rr()) && !water {
-            if angles.0[0] > 180.0 {
-                angles.0[0] -= 360.0;
-            }
+            angles.0[0] = math::wrap_above_180(angles.0[0]);
             angles.0[0] /= 3.0;
         }
         let mut basis = if self.arena() {

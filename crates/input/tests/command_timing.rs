@@ -3,11 +3,33 @@ use qa_core::{
     sys_events::{EventKind, EventTime, SeatId, SysEvent},
 };
 use qa_input::{Input, Target, UserCmdBuilder};
-use std::time::Duration;
 struct Sink;
 impl Target for Sink {
     fn character(&mut self, _: SeatId, _: char) {}
     fn command(&mut self, _: SeatId, _: EventTime, _: &str) {}
+}
+#[test]
+fn command_duration_keeps_submillisecond_precision_and_saturates_the_native_width() {
+    for ns in [
+        0,
+        999_999,
+        1_000_001,
+        65_535_999_999,
+        65_536_000_000,
+        u64::MAX,
+    ] {
+        let command = UserCmdBuilder::build(
+            ns,
+            EventTime(0),
+            CommandIntent::default(),
+            qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake),
+        );
+        assert_eq!(command.duration_ns, ns);
+        assert_eq!(
+            command.duration_ms,
+            (ns / 1_000_000).min(u64::from(u16::MAX)) as u16
+        );
+    }
 }
 #[test]
 fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
@@ -40,13 +62,13 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
         ..CommandIntent::moving([0.1, -0.2, 0.3])
     };
     let first = UserCmdBuilder::build(
-        Duration::from_millis(25),
+        25_000_000,
         EventTime(9_000_000_000),
         intent,
         qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3),
     );
     let other = UserCmdBuilder::build(
-        Duration::from_millis(10),
+        10_000_000,
         EventTime(50_000_000),
         intent,
         qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3),

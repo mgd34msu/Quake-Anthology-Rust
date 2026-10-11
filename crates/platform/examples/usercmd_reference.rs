@@ -46,12 +46,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = InputPolicy::native(rules);
     let mut seed = 0x434d4449;
     for _ in 0..10000 {
-        let command = UserCmdBuilder::build(
-            Duration::from_millis(16),
-            EventTime(16_000_000),
-            intent(&mut seed),
-            policy,
-        );
+        let command =
+            UserCmdBuilder::build(16_000_000, EventTime(16_000_000), intent(&mut seed), policy);
         println!(
             "{:08x} {:08x} {:08x} {}",
             command.movement[0].to_bits(),
@@ -269,7 +265,7 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
         let timer = Stopwatch::start();
         for index in 0..64 {
             let command = black_box(UserCmdBuilder::build(
-                Duration::from_nanos(16_666_667),
+                16_666_667,
                 EventTime(frame * 16_666_667),
                 black_box(intents[index]),
                 policies[index],

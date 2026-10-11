@@ -38,11 +38,7 @@ const SIGSTOP: i32 = 19;
 const SIGCONT: i32 = 18;
 
 pub(super) fn executable_offset(regions: &[NativeRegion], offset: usize) -> bool {
-    regions
-        .partition_point(|r| r.offset <= offset)
-        .checked_sub(1)
-        .and_then(|index| regions.get(index))
-        .is_some_and(|r| r.permissions & 4 != 0 && offset - r.offset < r.length)
+    super::region_at(regions, offset, 4).is_some()
 }
 
 unsafe extern "C" {

@@ -93,15 +93,9 @@ impl Memory {
     fn cursor(&self, address: u64, rights: u8) -> Result<Cursor<'_>, NativeError> {
         let at = usize::try_from(address.checked_sub(self.base).ok_or(NativeError::Extent)?)
             .map_err(|_| NativeError::Extent)?;
-        let index = self
-            .regions
-            .partition_point(|r| r.offset <= at)
-            .checked_sub(1)
-            .ok_or(NativeError::Extent)?;
+        let index =
+            crate::native::region_at(&self.regions, at, rights).ok_or(NativeError::Extent)?;
         let region = &self.regions[index];
-        if region.permissions & rights != rights || at - region.offset >= region.length {
-            return Err(NativeError::Extent);
-        }
         Ok(Cursor {
             memory: self,
             region: index,

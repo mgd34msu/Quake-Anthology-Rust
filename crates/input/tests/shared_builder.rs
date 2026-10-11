@@ -3,7 +3,6 @@ use qa_core::{
     sys_events::{EventTime, SeatId},
 };
 use qa_input::{Action, Input, InputPolicy, UserCmdBuilder};
-use std::time::Duration;
 
 #[test]
 fn sampled_human_and_bot_intents_share_native_rule_scales() {
@@ -20,7 +19,7 @@ fn sampled_human_and_bot_intents_share_native_rule_scales() {
             1.0
         };
         let bot = UserCmdBuilder::build(
-            Duration::from_millis(100),
+            100_000_000,
             EventTime(100_000_000),
             CommandIntent::moving([fraction, 0.0, 0.0]),
             policy,
@@ -49,7 +48,7 @@ fn float_rules_keep_fractions_and_short_rules_convert_each_contribution() {
         (RuleSetId::Quake3, 12.0, 24.0),
     ] {
         let command = UserCmdBuilder::build(
-            Duration::from_millis(16),
+            16_000_000,
             EventTime(16_000_000),
             intent,
             InputPolicy::native(rules),
