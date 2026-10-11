@@ -2102,13 +2102,13 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
     append([[5.0, -2.0], [20.0, -2.0], [20.0, 24.0], [5.0, 24.0]]);
     append([[5.0, 4.1], [20.0, 4.1], [20.0, 4.25], [5.0, 4.25]]);
     append([[0.0, 5.0], [1e20, 6.0], [1e20, 10.0], [0.0, 10.0]]);
-    let mut bins = CoverageBins::load(19, 8, primitives.len()).unwrap();
+    let mut bins = CoverageBins::load(19, 8, primitives.len(), coverage.len()).unwrap();
     assert_eq!(bins.capacity_bytes(), 8 * 4 * size_of::<u32>());
     bins.rebuild(
         viewport,
         DepthPolicy::PlaneDepth,
         primitives.len(),
-        &primitives,
+        &mut primitives,
         &coverage,
     );
     for (band, expected) in [
@@ -2148,7 +2148,7 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
         },
         DepthPolicy::BspKeys,
         primitives.len(),
-        &primitives,
+        &mut primitives,
         &coverage,
     );
     for band in 0..8 {
@@ -2161,7 +2161,7 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
             expected
         );
     }
-    bins.rebuild(viewport, DepthPolicy::PlaneDepth, 0, &[], &[]);
+    bins.rebuild(viewport, DepthPolicy::PlaneDepth, 0, &mut [], &[]);
     for band in 0..8 {
         assert!(
             bins.range(
@@ -2171,8 +2171,8 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
             .is_empty()
         );
     }
-    assert!(CoverageBins::load(1, 8, 1).is_err());
-    assert!(CoverageBins::load(19, 8, usize::MAX).is_err());
+    assert!(CoverageBins::load(1, 8, 1, 3).is_err());
+    assert!(CoverageBins::load(19, 8, usize::MAX, 3).is_err());
 }
 
 #[test]

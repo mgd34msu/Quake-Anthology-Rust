@@ -220,12 +220,11 @@ impl WorldBand {
                 if opaque_only && primitive.overlay {
                     continue;
                 }
-                let vertices = &prepared.geometry.coverage[primitive.coverage.range()];
                 if !self.edges.add_polygon(
                     index,
                     primitive.depth_key,
                     primitive.draw_rank,
-                    vertices,
+                    prepared.bins.edges(primitive.edges),
                     primitive.winding,
                 ) {
                     self.stats.rejected = self.stats.rejected.saturating_add(1);

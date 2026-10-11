@@ -59,29 +59,17 @@ pub struct Winding {
     reason = "Row certification only decides band eligibility; add_polygon owns the counted geometry rejection."
 )]
 pub fn certified_rows(
-    vertices: &[ProjectedVertex],
+    edges: &[Edge],
     viewport: Viewport,
     policy: DepthPolicy,
     winding: Option<Winding>,
 ) -> Result<std::ops::Range<u32>, ()> {
-    if viewport.width == 0
-        || viewport.height == 0
-        || viewport.x.checked_add(viewport.width).is_none()
-        || viewport.y.checked_add(viewport.height).is_none()
-    {
-        return Err(());
-    }
     let winding = winding.ok_or(())?;
-    let clockwise = winding.clockwise;
     let mut start = viewport.y + viewport.height;
     let mut end = viewport.y;
-    let mut previous = vertices[vertices.len() - 1];
-    for &vertex in vertices {
-        if let Some(edge) = make_edge(previous, vertex, clockwise, viewport)? {
-            start = start.min(edge.start);
-            end = end.max(edge.end);
-        }
-        previous = vertex;
+    for edge in edges {
+        start = start.min(edge.start);
+        end = end.max(edge.end);
     }
     if start >= end {
         return Ok(viewport.y..viewport.y);
@@ -93,7 +81,7 @@ pub fn certified_rows(
 }
 
 #[derive(Clone, Copy, Default)]
-struct Edge {
+pub struct Edge {
     u: i64,
     step: i64,
     start: u32,
@@ -156,6 +144,9 @@ pub struct Edges {
 }
 
 impl Edges {
+    pub fn projection(&self) -> (Viewport, DepthPolicy) {
+        (self.viewport, self.policy)
+    }
     pub fn load(
         width: u32,
         height: u32,
@@ -276,7 +267,7 @@ impl Edges {
         surface: u32,
         key: u32,
         draw_rank: u32,
-        vertices: &[ProjectedVertex],
+        prepared: &[Edge],
         winding: Option<Winding>,
     ) -> bool {
         if !self.collecting {
@@ -287,18 +278,9 @@ impl Edges {
             self.stats.rejected += 1;
             return false;
         };
-        let clockwise = winding.clockwise;
         let mut needed = 0usize;
-        let mut previous = vertices[vertices.len() - 1];
-        for &vertex in vertices {
-            match make_band_edge(
-                previous,
-                vertex,
-                clockwise,
-                self.viewport,
-                self.row_start,
-                self.row_end,
-            ) {
+        for &edge in prepared {
+            match clip_band_edge(edge, self.row_start, self.row_end) {
                 Ok(Some(edge)) => {
                     let Some(slot) = self.edges.get_mut(self.edge_count + needed) else {
                         self.stats.rejected += 1;
@@ -317,7 +299,6 @@ impl Edges {
                     return false;
                 }
             }
-            previous = vertex;
         }
         if needed == 0 {
             return true;
@@ -667,9 +648,46 @@ pub fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<Winding, ()> {
     (area != 0.0 && area.is_finite())
         .then(|| Winding {
             clockwise: area > 0.0,
-            depth: depth_plane(vertices),
+            depth: None,
         })
         .ok_or(())
+}
+
+/// Build immutable full-viewport edges once, before any band reads them.
+#[expect(
+    clippy::result_unit_err,
+    reason = "Preparation errors retain scoped band rejection"
+)]
+pub fn prepare_polygon(
+    vertices: &[ProjectedVertex],
+    viewport: Viewport,
+    policy: DepthPolicy,
+    winding: Option<Winding>,
+    storage: &mut [Edge],
+) -> Result<(usize, Winding), ()> {
+    if viewport.width == 0
+        || viewport.height == 0
+        || viewport.x.checked_add(viewport.width).is_none()
+        || viewport.y.checked_add(viewport.height).is_none()
+    {
+        return Err(());
+    }
+    let mut winding = winding.ok_or(())?;
+    let mut count = 0;
+    let mut previous = vertices[vertices.len() - 1];
+    for &vertex in vertices {
+        if let Some(edge) = make_edge(previous, vertex, winding.clockwise, viewport)? {
+            *storage.get_mut(count).ok_or(())? = edge;
+            count += 1;
+        }
+        previous = vertex;
+    }
+    winding.depth = if policy == DepthPolicy::PlaneDepth && count != 0 {
+        depth_plane(vertices)
+    } else {
+        None
+    };
+    Ok((count, winding))
 }
 
 fn make_edge(
@@ -726,17 +744,7 @@ fn make_edge(
     }))
 }
 
-fn make_band_edge(
-    a: ProjectedVertex,
-    b: ProjectedVertex,
-    clockwise: bool,
-    viewport: Viewport,
-    row_start: u32,
-    row_end: u32,
-) -> Result<Option<Edge>, ()> {
-    let Some(mut edge) = make_edge(a, b, clockwise, viewport)? else {
-        return Ok(None);
-    };
+fn clip_band_edge(mut edge: Edge, row_start: u32, row_end: u32) -> Result<Option<Edge>, ()> {
     if edge.end <= row_start || edge.start >= row_end {
         return Ok(None);
     }

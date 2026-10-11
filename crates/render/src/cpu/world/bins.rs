@@ -13,6 +13,7 @@ pub(super) enum RasterSelection {
 
 pub(super) struct CoverageBins {
     indices: Box<[u32]>,
+    edges: Box<[crate::edges::Edge]>,
     counts: [usize; MAX_BANDS],
     rows: [[u32; 2]; MAX_BANDS],
     count: usize,
@@ -22,13 +23,20 @@ pub(super) struct CoverageBins {
 }
 
 impl CoverageBins {
-    pub(super) fn load(height: u32, count: usize, capacity: usize) -> Result<Self, &'static str> {
+    pub(super) fn load(
+        height: u32,
+        count: usize,
+        capacity: usize,
+        edges: usize,
+    ) -> Result<Self, &'static str> {
         if count == 0
             || count > MAX_BANDS
             || count > height as usize
             || height > 8192
             || capacity == 0
             || capacity > u32::MAX as usize
+            || edges > u32::MAX as usize
+            || edges > isize::MAX as usize / size_of::<crate::edges::Edge>()
         {
             return Err("invalid CPU row index dimensions");
         }
@@ -43,6 +51,7 @@ impl CoverageBins {
         }
         Ok(Self {
             indices: vec![0; length].into_boxed_slice(),
+            edges: vec![crate::edges::Edge::default(); edges].into_boxed_slice(),
             counts: [0; MAX_BANDS],
             rows,
             count,
@@ -55,6 +64,12 @@ impl CoverageBins {
     pub(super) fn capacity_bytes(&self) -> usize {
         self.indices.len() * size_of::<u32>()
     }
+    pub(super) fn edge_capacity_bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.edges)
+    }
+    pub(super) fn edges(&self, span: IndexSpan) -> &[crate::edges::Edge] {
+        &self.edges[span.range()]
+    }
 
     pub(super) fn clear(&mut self) {
         self.counts.fill(0);
@@ -65,19 +80,42 @@ impl CoverageBins {
         viewport: Viewport,
         policy: DepthPolicy,
         opaque_count: usize,
-        primitives: &[Primitive],
+        primitives: &mut [Primitive],
         coverage: &[ProjectedVertex],
     ) {
         self.clear();
-        for (index, primitive) in primitives.iter().enumerate() {
+        let mut edge_count = 0;
+        for (index, primitive) in primitives.iter_mut().enumerate() {
             let vertices = &coverage[primitive.coverage.range()];
             let depth_policy = if index < opaque_count && !primitive.overlay {
                 policy
             } else {
                 DepthPolicy::PlaneDepth
             };
-            let certified =
-                crate::edges::certified_rows(vertices, viewport, depth_policy, primitive.winding);
+            primitive.edges = IndexSpan {
+                first: edge_count as u32,
+                count: 0,
+            };
+            match crate::edges::prepare_polygon(
+                vertices,
+                viewport,
+                depth_policy,
+                primitive.winding,
+                &mut self.edges[edge_count..],
+            ) {
+                Ok((count, winding)) => {
+                    primitive.edges.count = count as u32;
+                    primitive.winding = Some(winding);
+                    edge_count += count;
+                }
+                Err(()) => primitive.winding = None,
+            }
+            let certified = crate::edges::certified_rows(
+                self.edges(primitive.edges),
+                viewport,
+                depth_policy,
+                primitive.winding,
+            );
             for id in 0..self.count {
                 let start = self.rows[id][0].max(viewport.y);
                 let end = self.rows[id][1].min(viewport.y + viewport.height);

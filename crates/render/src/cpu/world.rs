@@ -301,6 +301,7 @@ struct Primitive {
     stages: qa_core::primitives::IndexSpan,
     deforms: [DeformOp; 3],
     coverage: qa_core::primitives::IndexSpan,
+    edges: IndexSpan,
     winding: Option<crate::edges::Winding>,
     depth_override: Option<f32>,
     patch: bool,
@@ -791,7 +792,12 @@ impl WorldRaster {
             skies: skies.into_boxed_slice(),
             surfaces_cache,
         });
-        let bins = CoverageBins::load(height, band_count, catalog.primitive_capacity)?;
+        let bins = CoverageBins::load(
+            height,
+            band_count,
+            catalog.primitive_capacity,
+            coverage_capacity.max(3),
+        )?;
         let bin_index_capacity_bytes = bins.capacity_bytes();
         let bands = (0..band_count)
             .map(|id| {
@@ -851,6 +857,7 @@ impl WorldRaster {
             Box::default()
         };
         let preparation_capacity_bytes = prepare.geometry.capacity_bytes()
+            + prepare.bins.edge_capacity_bytes()
             + lanes
                 .iter()
                 .map(SurfacePrepare::capacity_bytes)
@@ -1025,7 +1032,7 @@ impl WorldPrepare {
             camera.refdef.viewport,
             self.policy,
             self.opaque_count,
-            &self.geometry.primitives[..self.geometry.primitive_count],
+            &mut self.geometry.primitives[..self.geometry.primitive_count],
             &self.geometry.coverage[..self.geometry.coverage_count],
         );
         self.geometry.stats.polygons = self
@@ -1676,16 +1683,17 @@ impl SurfacePrepare {
         mut primitive: Primitive,
         count: usize,
         stats: &mut crate::BackendStats,
-    ) {
+    ) -> bool {
         if primitive.stages.count != 0 {
             primitive.planes = self.stages[primitive.stages.first as usize].planes;
         }
         if !self.keep_coverage(&mut primitive, count) {
             self.rollback(primitive.stages.first, stats);
-            return;
+            return false;
         }
         self.primitives[self.primitive_count] = primitive;
         self.primitive_count += 1;
+        true
     }
 
     #[expect(
@@ -1716,6 +1724,10 @@ impl SurfacePrepare {
                 depth_key: reference.depth_key,
                 draw_rank: reference.draw_rank,
                 sky: Some(source),
+                stages: IndexSpan {
+                    first: self.stage_count as u32,
+                    count: 0,
+                },
                 ..Primitive::default()
             };
             let Some(count) = self.prepare_clip(camera, assets, primitive, None, evaluator) else {
@@ -1743,13 +1755,9 @@ impl SurfacePrepare {
                 break;
             }
             primitive.planes = planes;
-            if !self.keep_coverage(&mut primitive, count) {
-                self.reject(stats);
-                continue;
+            if self.commit_primitive(primitive, count, stats) {
+                visible = true;
             }
-            self.primitives[self.primitive_count] = primitive;
-            self.primitive_count += 1;
-            visible = true;
         }
         visible
     }
