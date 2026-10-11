@@ -48,6 +48,20 @@ struct StateFields {
     frame: usize,
     think: usize,
 }
+pub const TEMP_STRING_BYTES: usize = 128;
+
+pub(super) fn temporary_string(memory: &mut ModuleMemory<'_>, text: &[u8]) -> Result<u32, Trap> {
+    if text.len() >= TEMP_STRING_BYTES {
+        return Err(Trap::String);
+    }
+    let start = memory
+        .len()
+        .checked_sub(TEMP_STRING_BYTES)
+        .ok_or(Trap::String)?;
+    memory.write_string(start as u64, TEMP_STRING_BYTES, text)?;
+    u32::try_from(start).map_err(|_| Trap::String)
+}
+
 pub struct Vm {
     pub image: Image,
     pub entities: ModuleMemory<'static>,
@@ -66,6 +80,8 @@ pub struct Vm {
     depth: usize,
     locals_used: usize,
     string_used: usize,
+    string_limit: usize,
+    temporary_used: usize,
 }
 impl Vm {
     pub fn load(image: Image, layout: Layout) -> Result<Self, Trap> {
@@ -85,10 +101,14 @@ impl Vm {
             .ok_or(Trap::Memory)?;
         let entities = ModuleMemory::load(0, extent, &[])?;
         let string_used = image.strings.len();
+        let string_limit = string_used
+            .checked_add(layout.extra_string_bytes)
+            .ok_or(Trap::Memory)?;
         let strings = ModuleMemory::load(
             0,
-            string_used
-                .checked_add(layout.extra_string_bytes)
+            string_limit
+                .checked_add(TEMP_STRING_BYTES)
+                .filter(|&n| n <= i32::MAX as usize)
                 .ok_or(Trap::Memory)?,
             &image.strings,
         )?;
@@ -140,6 +160,8 @@ impl Vm {
             depth: 0,
             locals_used: 0,
             string_used,
+            string_limit,
+            temporary_used: 0,
         })
     }
     pub(crate) fn write_global_vector(&mut self, offset: usize, value: Vec3) -> Result<(), Trap> {
@@ -163,20 +185,27 @@ impl Vm {
     }
     pub fn string(&self, offset: i32) -> Result<&[u8], Trap> {
         let address = u64::try_from(offset).map_err(|_| Trap::String)?;
-        if address >= self.string_used as u64 {
+        let end = if address < self.string_used as u64 {
+            self.string_used
+        } else if address >= self.string_limit as u64
+            && address < (self.string_limit + self.temporary_used) as u64
+        {
+            self.string_limit + self.temporary_used
+        } else {
             return Err(Trap::String);
-        }
-        let tail = self
-            .strings
-            .read(address, self.string_used - address as usize)?;
+        };
+        let tail = self.strings.read(address, end - address as usize)?;
         qa_core::text::terminated(tail).ok_or(Trap::String)
+    }
+    pub(super) fn register_temporary_string(&mut self, length: u8) {
+        self.temporary_used = usize::from(length) + 1;
     }
     pub fn insert_string(&mut self, text: &[u8]) -> Result<i32, Trap> {
         let end = self
             .string_used
             .checked_add(text.len())
             .and_then(|n| n.checked_add(1))
-            .filter(|&n| n <= i32::MAX as usize && n <= self.strings.len())
+            .filter(|&n| n <= i32::MAX as usize && n <= self.string_limit)
             .ok_or(Trap::String)?;
         let address = self.string_used;
         self.strings.write(address as u64, text)?;

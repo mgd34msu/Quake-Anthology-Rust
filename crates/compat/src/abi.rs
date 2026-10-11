@@ -75,6 +75,7 @@ fn text_at<'a>(memory: &'a ModuleMemory<'_>, address: u64) -> Result<&'a str, Ca
 
 enum CallValue {
     Word(u64),
+    TemporaryString(u32, u8),
     Vector(qa_core::primitives::Vec3),
     Basis(qa_core::math::AngleBasis),
 }
@@ -157,7 +158,7 @@ macro_rules! scalar {
         })
     };
 }
-macro_rules! vector {
+macro_rules! value {
     ($handler:expr, $signature:expr) => {
         Some(CallEntry {
             call: |call, _| ($handler)(call),
@@ -195,7 +196,9 @@ impl CallTable {
     ) -> Result<u64, CallError> {
         match self.invoke_value(number, call, unknown)? {
             CallValue::Word(value) => Ok(value),
-            CallValue::Vector(_) | CallValue::Basis(_) => Err(CallError::Memory),
+            CallValue::Vector(_) | CallValue::Basis(_) | CallValue::TemporaryString(..) => {
+                Err(CallError::Memory)
+            }
         }
     }
     fn invoke_value(
@@ -430,8 +433,8 @@ const fn quakec() -> CallTable {
         },
         true,
     );
-    t.entries[1] = vector!(angle_basis, vector.void());
-    t.entries[9] = vector!(vector_normalize, vector);
+    t.entries[1] = value!(angle_basis, vector.void());
+    t.entries[9] = value!(vector_normalize, vector);
     t.entries[12] = scalar!(vector_length, Some(vector));
     t.entries[13] = scalar!(vector_yaw, Some(vector));
     t.entries[23] = Some(CallEntry {
@@ -471,6 +474,8 @@ const fn quakec() -> CallTable {
             false,
         )),
     });
+    t.entries[26] = value!(qc_float_string, scalar);
+    t.entries[27] = value!(qc_vector_string, vector);
     t.entries[36] = scalar!(rint, Some(scalar));
     t.entries[37] = scalar!(floor::<false>, Some(scalar));
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
@@ -478,7 +483,7 @@ const fn quakec() -> CallTable {
     t.entries[43] = scalar!(absolute::<false>, Some(scalar));
     t.entries[45] = scalar!(cvar_number::<false>, Some(strings));
     t.entries[46] = scalar!(command_append, Some(strings.void()));
-    t.entries[51] = vector!(vector_angles, vector);
+    t.entries[51] = value!(vector_angles, vector);
     t.entries[72] = scalar!(
         cvar_set::<false, false>,
         Some(QcSignature {
@@ -564,6 +569,12 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             CallValue::Word(value) => {
                 if signature.returns {
                     *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
+                }
+            }
+            CallValue::TemporaryString(offset, length) => {
+                vm.register_temporary_string(length);
+                if signature.returns {
+                    *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = offset;
                 }
             }
             CallValue::Vector(vector) => {
@@ -657,6 +668,42 @@ fn qc_print<const BROADCAST: bool>(
     )?;
     Ok(CallValue::Word(0))
 }
+fn qc_temporary(
+    c: &mut Invocation<'_, '_, '_>,
+    text: &FixedText<{ quakec::TEMP_STRING_BYTES }>,
+) -> Result<CallValue, CallError> {
+    let offset =
+        quakec::temporary_string(c.memory, text.as_bytes()).map_err(|_| CallError::Text)?;
+    Ok(CallValue::TemporaryString(
+        offset,
+        text.as_bytes().len() as u8,
+    ))
+}
+fn qc_float_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    let value = float::<false>(c, 0)?;
+    let integer = crate::numbers::native_integer(value);
+    let mut text = FixedText::<{ quakec::TEMP_STRING_BYTES }>::default();
+    if value == f64::from(integer) {
+        write!(text, "{integer}").map_err(|_| CallError::Text)?;
+    } else {
+        crate::numbers::fixed_float(&mut text, value, 5, 1).map_err(|_| CallError::Text)?;
+    }
+    qc_temporary(c, &text)
+}
+fn qc_vector_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    let mut text = FixedText::<{ quakec::TEMP_STRING_BYTES }>::default();
+    text.write_char('\'').map_err(|_| CallError::Text)?;
+    for index in 0..3 {
+        if index != 0 {
+            text.write_char(' ').map_err(|_| CallError::Text)?;
+        }
+        crate::numbers::fixed_float(&mut text, float::<false>(c, index)?, 5, 1)
+            .map_err(|_| CallError::Text)?;
+    }
+    text.write_char('\'').map_err(|_| CallError::Text)?;
+    qc_temporary(c, &text)
+}
+
 fn qc_var_string(c: &Invocation<'_, '_, '_>, first: usize) -> Result<FixedText<1024>, CallError> {
     let mut text = FixedText::<1024>::default();
     for index in first..c.arguments.len() {
@@ -865,15 +912,9 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     // signed int; all other values use %f after promotion to double.
     if crate::numbers::fits_native_integer(value) && value == value.trunc() {
         write!(text, "{}", crate::numbers::native_integer(value)).map_err(|_| CallError::Text)?;
-    } else if value.is_nan() {
-        text.set(if value.is_sign_negative() {
-            "-nan"
-        } else {
-            "nan"
-        })
-        .map_err(|_| CallError::Text)?;
     } else {
-        write!(text, "{:.6}", f64::from(value)).map_err(|_| CallError::Text)?;
+        crate::numbers::fixed_float(&mut text, f64::from(value), 0, 6)
+            .map_err(|_| CallError::Text)?;
     }
     // The original Com_sprintf copies at most 31 bytes into val[32].
     if text.as_bytes().len() >= 32 {

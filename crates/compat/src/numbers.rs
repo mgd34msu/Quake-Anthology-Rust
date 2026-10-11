@@ -10,3 +10,21 @@ pub(crate) fn native_integer(value: impl Into<f64>) -> i32 {
         i32::MIN
     }
 }
+
+pub(crate) fn fixed_float(
+    text: &mut impl std::fmt::Write,
+    value: f64,
+    width: usize,
+    precision: usize,
+) -> std::fmt::Result {
+    if value.is_nan() {
+        let label = if value.is_sign_negative() {
+            "-nan"
+        } else {
+            "nan"
+        };
+        write!(text, "{label:>width$}")
+    } else {
+        write!(text, "{value:width$.precision$}")
+    }
+}

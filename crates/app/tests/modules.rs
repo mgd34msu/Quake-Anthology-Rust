@@ -902,6 +902,143 @@ fn quakec_pointcontents_uses_module_rules_over_all_collision_topologies() {
 }
 
 #[test]
+fn quakec_numeric_strings_reuse_one_temporary_slot_and_keep_inserted_strings() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_quakec_calls(rules, 1, |calls| {
+            let mut vm = quakec_math_program(26);
+            let persistent = vm.insert_string(b"persistent").unwrap();
+            let extent = vm.strings.len();
+            let temporary = (extent - qa_compat::quakec::TEMP_STRING_BYTES) as u32;
+            assert_eq!(
+                vm.string(temporary as i32),
+                Err(qa_compat::quakec::Trap::String)
+            );
+            assert_eq!(
+                vm.string(persistent + 12),
+                Err(qa_compat::quakec::Trap::String)
+            );
+            vm.image.functions[2].first_statement = -25;
+            vm.image.globals[48] = temporary;
+            assert_eq!(
+                vm.call(calls, 1, 100, false),
+                Err(qa_compat::quakec::Trap::String)
+            );
+            assert!(calls.services.server.events.is_empty());
+            vm.image.functions[2].first_statement = -26;
+            for (value, expected) in [
+                (0.0f32, "0"),
+                (-0.0, "0"),
+                (17.0, "17"),
+                (-7.5, " -7.5"),
+                (1.25, "  1.2"),
+                (2.75, "  2.8"),
+                (f32::NAN, "  nan"),
+                (f32::from_bits(0xffc00000), " -nan"),
+                (f32::INFINITY, "  inf"),
+                (f32::NEG_INFINITY, " -inf"),
+            ] {
+                vm.image.globals[48] = value.to_bits();
+                let result = vm.call(calls, 1, 100, false).unwrap();
+                assert_eq!(result[0], temporary);
+                assert_eq!(vm.string(temporary as i32).unwrap(), expected.as_bytes());
+                assert_eq!(
+                    vm.string(temporary as i32 + expected.len() as i32 + 1),
+                    Err(qa_compat::quakec::Trap::String)
+                );
+                assert_eq!(vm.string(persistent).unwrap(), b"persistent");
+                assert_eq!(vm.strings.len(), extent);
+                assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
+            }
+            vm.image.functions[2].first_statement = -27;
+            vm.image.globals[48..51].copy_from_slice(&[-0.0f32, 1.25, -2.75].map(f32::to_bits));
+            assert_eq!(vm.call(calls, 1, 100, false).unwrap()[0], temporary);
+            assert_eq!(vm.string(temporary as i32).unwrap(), b"' -0.0   1.2  -2.8'");
+            vm.image.globals[48..51].fill(f32::MAX.to_bits());
+            assert_eq!(vm.call(calls, 1, 100, false).unwrap()[0], temporary);
+            let prior_text = vm.string(temporary as i32).unwrap().to_vec();
+            assert_eq!(prior_text.len(), 127);
+            let before = vm.image.globals[1..4].to_vec();
+            vm.image.globals[48..51].fill((-f32::MAX).to_bits());
+            assert_eq!(
+                vm.call(calls, 1, 100, false),
+                Err(qa_compat::quakec::Trap::Builtin)
+            );
+            assert_eq!(&vm.image.globals[1..4], before);
+            assert_eq!(vm.string(temporary as i32).unwrap(), prior_text);
+            let second = vm.insert_string(b"second").unwrap();
+            assert_eq!(second, persistent + 11);
+            assert_eq!(vm.string(second).unwrap(), b"second");
+            assert!(calls.services.server.events.is_empty());
+        });
+    }
+}
+
+#[test]
+fn quakec_numeric_strings_reach_print_consumers_through_session_dispatch() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for (builtin, values, expected) in [
+            (26, [-7.5f32, 0.0, 0.0], b" -7.5".as_slice()),
+            (
+                27,
+                [-0.0f32, 1.25, -2.75],
+                b"' -0.0   1.2  -2.8'".as_slice(),
+            ),
+        ] {
+            let bytes = quakec_program::program(
+                &[
+                    (StoreV, 48, 4, 0),
+                    (Call1, 27, 0, 0),
+                    (StoreS, 1, 52, 0),
+                    (StoreS, 52, 4, 0),
+                    (Call1, 28, 0, 0),
+                    (Return, 52, 0, 0),
+                ],
+                &[0, 1, -builtin, -25],
+            );
+            let mut vm = Vm::load(
+                Image::parse(&bytes, Some(5927)).unwrap(),
+                Layout {
+                    entities: 4,
+                    header_bytes: 16,
+                    extra_string_bytes: 0,
+                    state_step: 0.1,
+                },
+            )
+            .unwrap();
+            let temporary = (vm.strings.len() - qa_compat::quakec::TEMP_STRING_BYTES) as u32;
+            vm.image.globals[27] = 2;
+            vm.image.globals[28] = 3;
+            vm.image.globals[48..51].copy_from_slice(&values.map(f32::to_bits));
+            let mut host = quakec_host(rules, vm);
+            let developer = host.console.cvars.find("developer").unwrap();
+            host.console.cvars.set_text(developer, "1").unwrap();
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Seconds(0.1),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1))
+                    .unwrap()
+                    .last_result
+                    .unwrap(),
+                ModuleResult::QuakeC([temporary, 0, 0])
+            );
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+            let events = &mut host.runtime.server.events;
+            let mut batch = events.batch(host.runtime.server.presentation).unwrap();
+            let record = events.next(&mut batch).unwrap();
+            let FrameEvent::Print(print) = record.event else {
+                panic!()
+            };
+            assert_eq!(events.texts.get(print.text).unwrap(), expected);
+            assert!(events.next(&mut batch).is_none());
+        }
+    }
+}
+
+#[test]
 fn quakec_vlen_uses_three_words_of_one_parameter_through_session_dispatch() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         for (vector, expected) in [
