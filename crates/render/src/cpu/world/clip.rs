@@ -218,7 +218,7 @@ impl ClipGraph {
                         camera: self.nodes[index].base.camera,
                         texcoord: vertex.texcoord,
                         lightmap_coord: vertex.lightmap_coord,
-                        color: vertex.color.map(|channel| channel as f32 / 255.0),
+                        color: crate::stage::unit_rgba(vertex.color),
                     }
                 }
                 ClipOperation::Intersection {

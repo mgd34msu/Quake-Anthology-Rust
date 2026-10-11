@@ -359,9 +359,9 @@ pub fn load_quakec(
 ) -> Result<Vec<ModuleRequest>, String> {
     let mut reader = ArchiveReader::default();
     let mut requests = Vec::with_capacity(specs.len());
-    for (index, spec) in specs.iter().enumerate() {
+    for spec in specs {
         // Module zero belongs to the existing built-in walk-through provider.
-        let module = ModuleId(u16::try_from(index + 1).map_err(|_| "too many modules")?);
+        let module = module_id(&requests)?;
         let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
         let crc = if spec.rules == RuleSetId::QuakeWorld {
             54730

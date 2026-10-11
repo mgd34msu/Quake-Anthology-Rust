@@ -1,6 +1,6 @@
 use super::super::CpuBackend;
 use super::*;
-use crate::assets::{CubeSkyParams, Filter, Sampler};
+use crate::assets::{CubeSkyParams, Filter, Sampler, Stage};
 use crate::scene::Span as RangeSpan;
 use crate::scene::{Command, FrontEnd, Limits, Refdef, Viewport};
 use crate::shader::{StageBlend, TexMod};
@@ -2653,4 +2653,31 @@ fn native_inverse_depth_uses_winquake_reciprocal_multiply_order() {
             usize::from(x.to_bits() != (normal.0[0] * inverse_distance / scale[0]).to_bits());
     }
     assert!(changed > 0);
+}
+
+#[test]
+fn shared_depth_gate_validates_sample_before_using_draw_override() {
+    let mut pixels = [0];
+    let mut depths = [0.5];
+    let mut ranks = [7];
+    let mut indices = [0];
+    let mut palettes = [0];
+    let buffers = Buffers {
+        first_row: 0,
+        frame_height: 1,
+        pixels: &mut pixels,
+        inverse_depth: &mut depths,
+        depth_ranks: &mut ranks,
+        indices: &mut indices,
+        palettes: &mut palettes,
+    };
+    for zi in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(!buffers.depth_test(0, zi, 1.0, 8, DepthFunc::Always));
+    }
+    assert!(!buffers.depth_test(0, 1.0, 0.25, 8, DepthFunc::Lequal));
+    assert!(buffers.depth_test(0, 0.25, 1.0, 8, DepthFunc::Lequal));
+    assert!(!buffers.depth_test(0, 1.0, 0.5, 6, DepthFunc::Lequal));
+    assert!(buffers.depth_test(0, 1.0, 0.5, 7, DepthFunc::Lequal));
+    assert!(!buffers.depth_test(0, 1.0, 0.5, 0, DepthFunc::Equal));
+    assert!(buffers.depth_test(0, 1.0, 0.5, 7, DepthFunc::Equal));
 }

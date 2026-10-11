@@ -4,16 +4,15 @@
 use crate::BackendStats;
 use crate::assets::{
     AlphaTest, Assets, CubeSkyParams, Cull, DepthFunc, Filter, MaterialId, MaterialSettings,
-    Sampler, Sky, Stage, StageTexture, TcGen, TextureIntensity, Vertex, Wrap,
+    Sampler, Sky, Stage, TcGen, TextureIntensity, Vertex, Wrap,
 };
 use crate::scene::{
     BlendPhase, Command, CommandList, Draw2d, DrawKind, Refdef, SceneEntity, Span, Viewport,
 };
 use crate::shader::{AlphaGen, RgbGen, StageBlend};
-use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyClip};
+use crate::sky::{CloudGrid, CubeFace, FaceBounds, Rotation, SkyBatches, SkyClip};
 use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, TexCoordOp};
 use qa_core::primitives::Vec3;
-use qa_core::stamps::StampSet;
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
 use std::mem::{offset_of, size_of, size_of_val};
@@ -286,10 +285,6 @@ struct Mesh {
     count: i32,
     base_vertex: i32,
 }
-struct SkyBatch {
-    clip: SkyClip,
-    cloud: Option<CloudGrid>,
-}
 struct Uniforms {
     mvp: i32,
     color: i32,
@@ -377,9 +372,8 @@ pub struct GlBackend {
     table_buffer: u32,
     table_texture: u32,
     evaluator: StageEvaluator,
-    sky_batches: Box<[SkyBatch]>,
-    sky_touched: StampSet,
-    sky_drawn: StampSet,
+    skies: SkyBatches,
+    sky_clouds: Box<[Option<CloudGrid>]>,
     dynamic: Dynamic,
     state: State,
     _context_thread: PhantomData<*mut ()>,
@@ -463,9 +457,8 @@ impl GlBackend {
             table_buffer: 0,
             table_texture: 0,
             evaluator: StageEvaluator::load(),
-            sky_batches: Box::new([]),
-            sky_touched: StampSet::new(assets.materials().len()),
-            sky_drawn: StampSet::new(assets.materials().len()),
+            sky_clouds: Box::new([]),
+            skies: SkyBatches::new(assets.materials().len()),
             dynamic: Dynamic::default(),
             state: State::default(),
             _context_thread: PhantomData,
@@ -521,7 +514,7 @@ impl GlBackend {
     }
 
     unsafe fn load_static(&mut self, assets: &Assets) -> Result<(), String> {
-        self.sky_batches = assets
+        self.sky_clouds = assets
             .materials()
             .iter()
             .map(|material| {
@@ -538,10 +531,7 @@ impl GlBackend {
                     }
                     _ => None,
                 };
-                Ok(SkyBatch {
-                    clip: SkyClip::new(),
-                    cloud,
-                })
+                Ok(cloud)
             })
             .collect::<Result<Vec<_>, String>>()?
             .into_boxed_slice();
@@ -708,12 +698,7 @@ impl GlBackend {
                     self.depth_state(true, true);
                     unsafe { (self.gl.clear)(DEPTH_BUFFER_BIT) };
                     let projection = view_projection(view.refdef, tangent);
-                    inputs = DrawInputs {
-                        time_ms: view.refdef.time_ms,
-                        view_origin: view.refdef.origin,
-                        identity_light: view.refdef.identity_light,
-                        ..DrawInputs::default()
-                    };
+                    inputs = DrawInputs::for_view(&view.refdef);
                     self.collect_skies(
                         list,
                         view.scene.draws,
@@ -904,7 +889,7 @@ impl GlBackend {
         );
         self.depth_state(false, true);
         self.set_depth_hack(false);
-        let color = rgba(color);
+        let color = crate::stage::unit_rgba(color);
         unsafe {
             (self.gl.clear_color)(color[0], color[1], color[2], color[3]);
             (self.gl.clear)(COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT);
@@ -933,17 +918,17 @@ impl GlBackend {
         origin: Vec3,
         stats: &mut BackendStats,
     ) {
-        self.sky_touched.begin();
-        self.sky_drawn.begin();
+        self.skies.begin_frame();
         crate::sky::for_each_sky_triangle(list, draws, assets, |material, submission| {
             match submission {
                 crate::sky::SkySubmission::Begin(_) => {
                     return self.sky_clip(material, assets, stats).is_some();
                 }
                 crate::sky::SkySubmission::Triangle(points) => {
-                    if !self.sky_batches[material.0 as usize]
-                        .clip
-                        .add_polygon(&points, origin)
+                    if !self
+                        .skies
+                        .clip_mut(material.0 as usize)
+                        .is_some_and(|clip| clip.add_polygon(&points, origin))
                     {
                         stats.rejected = stats.rejected.saturating_add(1);
                     }
@@ -968,14 +953,11 @@ impl GlBackend {
         {
             return None;
         }
-        let Some(batch) = self.sky_batches.get_mut(material_id.0 as usize) else {
+        let clip = self.skies.clip_mut(material_id.0 as usize);
+        if clip.is_none() {
             stats.rejected = stats.rejected.saturating_add(1);
-            return None;
-        };
-        if !self.sky_touched.test_and_set(material_id.0 as usize) {
-            batch.clip.clear();
         }
-        Some(&mut batch.clip)
+        clip
     }
 
     fn draw_sky(
@@ -1001,19 +983,9 @@ impl GlBackend {
         else {
             return;
         };
-        let Some(batch) = self.sky_batches.get_mut(material_id.0 as usize) else {
-            stats.rejected = stats.rejected.saturating_add(1);
+        let Some(mut bounds) = self.skies.take_for_draw(material_id.0 as usize) else {
             return;
         };
-        if !self.sky_touched.contains(material_id.0 as usize)
-            || self.sky_drawn.test_and_set(material_id.0 as usize)
-        {
-            return;
-        }
-        let mut bounds = *batch.clip.bounds();
-        if !bounds.iter().any(|bound| bound.visible()) {
-            return;
-        }
         if material.settings.fog.is_some() {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
@@ -1072,7 +1044,7 @@ impl GlBackend {
                 params,
                 rotation,
                 inputs.view_origin,
-                inputs.time_ms,
+                inputs.time_seconds(),
                 far,
             ) else {
                 continue;
@@ -1081,13 +1053,7 @@ impl GlBackend {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             };
-            let stage = Stage {
-                texture: StageTexture::Image(images[face.index()]),
-                sampler: params.sampler,
-                rgb_gen: RgbGen::IdentityLighting,
-                depth_write: !params.far_depth,
-                ..Stage::default()
-            };
+            let stage = crate::sky::box_face_stage(&images, face, params);
             self.bind_vao(self.dynamic.vao);
             if !self.stage(stage, settings, inputs, projection, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
@@ -1116,11 +1082,11 @@ impl GlBackend {
         if material.stages.is_empty() {
             return;
         }
-        let Some(batch) = self.sky_batches.get(material_id.0 as usize) else {
+        let Some(cloud) = self.sky_clouds.get(material_id.0 as usize) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        if batch.cloud.is_none() {
+        if cloud.is_none() {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
@@ -1136,7 +1102,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        let Some(grid) = self.sky_batches[material_id.0 as usize].cloud.as_ref() else {
+        let Some(grid) = self.sky_clouds[material_id.0 as usize].as_ref() else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1158,14 +1124,7 @@ impl GlBackend {
         for &stage in &material.stages {
             // The shared load-generated cloud grid already supplies this
             // generator's coordinates, like native tess.texCoords[0].
-            let stage = if matches!(stage.texgen, TcGen::CloudSky { .. }) {
-                Stage {
-                    texgen: TcGen::Texture,
-                    ..stage
-                }
-            } else {
-                stage
-            };
+            let stage = crate::sky::cloud_stage(stage);
             if !self.stage(stage, material.settings, inputs, projection, true, false) {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
@@ -1885,9 +1844,6 @@ unsafe fn shader_log(gl: &Gl, object: u32, program: bool) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn rgba(color: [u8; 4]) -> [f32; 4] {
-    color.map(|v| v as f32 / 255.0)
-}
 fn view_projection(view: Refdef, tangent: [f32; 2]) -> [f32; 16] {
     let x = 1.0 / tangent[0];
     let y = 1.0 / tangent[1];

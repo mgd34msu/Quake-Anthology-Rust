@@ -316,3 +316,33 @@ resolved RGBA recipe. Core decimal/hex scanning and VFS caller-owned whole-file
 reads replace CRT/console/script copies while preserving their boundary policies.
 All 93 audited items are addressed, with no remaining copy at the audited sites.
 Native-module, stock HUD and installed acceptance remains THE-3169.
+
+## TA-3377: shared event, input and internal operations
+
+References are relative to `crates/`. `core/sys_events.rs` owns queued Text;
+SDL's private text remainder and the unused Char event are deleted.
+`input/lib.rs` reads drift, clamp, key-state and look choices from CommandRules.
+The host calls that one drift gate; physical pump Duration remains pacing-only.
+
+`core/primitives.rs:4`, `:19`, `:295`, `:411`, `:735`, `math.rs:52`, `:199`
+and `text/numbers.rs:242` own ranges, axis vectors, module clocks, swept bounds,
+eye origins, interpolation, view axes and byte-based integer prefixes.
+All audited visibility, scene, collision, wire, module, console and example
+callers are migrated. Local range types, vector/bounds loops, UTF-8 integer
+conversion and private module-clock mappings are deleted.
+
+`render/sky.rs:661` supplies CPU/GL sky batching and shared face/cloud stages;
+`affine.rs:46` splits sky and load-grid polygons. `cpu.rs:582`, `:1248` share
+mesh stages and perspective derivatives. Triangle planes are fitted once;
+world Buffers own indexed writes and depth gates, keeping sampled and overridden
+depths distinct. Refdef/DrawInputs share time, view and RGBA conversion.
+The corresponding backend loops and helper copies are deleted.
+
+`world/bsp.rs:24`, `compat/entities.rs:92`, `:652`,
+`formats/program/qvm.rs:124` and `formats/entities.rs:13` serve the audited
+node, native-address, model-cache, VM-PC and entity-syntax callers.
+Archive callers use owned readers; the second per-call reader route is deleted.
+App module setup, accounting, row lookups and local-seat views use shared helpers;
+network button projection, row access, command bounds and slot masks do likewise.
+No copy remains at the listed sweep and follow-up sites. Native-module and
+installed gameplay acceptance remains THE-3169.

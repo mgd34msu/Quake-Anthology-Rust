@@ -76,3 +76,41 @@ fn rotating_bounds_keep_native_full_cube_and_zero_rotation_visibility() {
         }; 6]
     );
 }
+
+#[test]
+fn sky_batches_draw_once_per_view_and_discard_untouched_previous_bounds() {
+    let mut batches = SkyBatches::new(2);
+    let triangle = [
+        Vec3([100.0, -10.0, -10.0]),
+        Vec3([100.0, 10.0, -10.0]),
+        Vec3([100.0, 0.0, 10.0]),
+    ];
+    batches.begin_frame();
+    assert!(
+        batches
+            .clip_mut(0)
+            .unwrap()
+            .add_polygon(&triangle, Vec3::default())
+    );
+    assert!(batches.take_for_draw(0).is_some());
+    assert!(batches.take_for_draw(0).is_none());
+    assert!(batches.take_for_draw(1).is_none());
+    assert!(batches.clip_mut(2).is_none());
+    batches.begin_frame();
+    assert!(batches.take_for_draw(0).is_none());
+    assert!(
+        batches
+            .clip_mut(0)
+            .unwrap()
+            .bounds()
+            .iter()
+            .all(|bound| !bound.visible())
+    );
+    assert!(
+        batches
+            .clip_mut(0)
+            .unwrap()
+            .add_polygon(&triangle, Vec3::default())
+    );
+    assert!(batches.take_for_draw(0).is_some());
+}

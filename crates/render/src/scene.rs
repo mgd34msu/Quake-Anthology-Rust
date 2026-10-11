@@ -130,7 +130,15 @@ pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
     [fov_x, fov_y]
 }
 
+pub(crate) fn milliseconds_to_seconds(time_ms: u64) -> f32 {
+    time_ms as f32 * 0.001
+}
+
 impl Refdef {
+    pub fn time_seconds(&self) -> f32 {
+        milliseconds_to_seconds(self.time_ms)
+    }
+
     /// Shared view boundary for visibility and both drawing backends.
     /// Returns the native half-FOV tangents in the original operation order.
     pub fn validate(&self, width: u32, height: u32) -> Option<[f32; 2]> {

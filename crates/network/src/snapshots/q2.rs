@@ -1,5 +1,5 @@
 use super::{
-    Frame, MergeRules, Ring, SLOTS, Slot, delta_frame, native_entities, read_areas, read_entities,
+    Frame, MergeRules, Ring, Slot, delta_frame, native_entities, read_areas, read_entities, slot,
     write_entities,
 };
 use crate::{
@@ -192,7 +192,7 @@ fn prepare_first_person<const P: usize>(
         && let Ok(index) = old.entities.binary_search_by_key(&number, |e| e.number)
     {
         let previous = old.entities[index].words;
-        let slot = sequence as usize & (SLOTS - 1);
+        let slot = slot(sequence);
         let current = super::rows_mut(
             &mut ring.entities,
             ring.capacity,
@@ -394,7 +394,7 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
     if rules.valid_base && (header.sequence as i32) < 0 {
         return Err(packet::Error::Count);
     }
-    let base_index = header.delta as usize & (SLOTS - 1);
+    let base_index = slot(header.delta as u32);
     let full = header.delta <= 0;
     let old = if full {
         Slot::ZERO

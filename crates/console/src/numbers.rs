@@ -10,30 +10,7 @@ pub fn number(text: &str, source: RuleSetId) -> f32 {
 }
 
 pub fn integer(text: &str) -> i32 {
-    let text = text.trim_start_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);
-    let (negative, bytes) = match text.as_bytes().first() {
-        Some(b'-') => (true, &text.as_bytes()[1..]),
-        Some(b'+') => (false, &text.as_bytes()[1..]),
-        _ => (false, text.as_bytes()),
-    };
-    let limit = if negative { 2147483648u32 } else { 2147483647 };
-    let mut value = 0u32;
-    for &byte in bytes {
-        if !byte.is_ascii_digit() {
-            break;
-        }
-        let digit = u32::from(byte - b'0');
-        value = if value > (limit - digit) / 10 {
-            limit
-        } else {
-            value * 10 + digit
-        };
-    }
-    if negative {
-        value.wrapping_neg() as i32
-    } else {
-        value as i32
-    }
+    qa_core::text::atoi_prefix(text.as_bytes())
 }
 
 fn quake(mut bytes: &[u8]) -> f32 {

@@ -238,3 +238,34 @@ fn round_right(value: u64, shift: u32, sticky: bool) -> u64 {
     };
     high + u64::from(low > half || (low == half && (sticky || high & 1 != 0)))
 }
+
+pub fn atoi_prefix(bytes: &[u8]) -> i32 {
+    let first = bytes
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 11 | 12))
+        .unwrap_or(bytes.len());
+    let bytes = &bytes[first..];
+    let (negative, bytes) = match bytes.first() {
+        Some(b'-') => (true, &bytes[1..]),
+        Some(b'+') => (false, &bytes[1..]),
+        _ => (false, bytes),
+    };
+    let limit = if negative { 2147483648u32 } else { 2147483647 };
+    let mut value = 0u32;
+    for &byte in bytes {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        let digit = u32::from(byte - b'0');
+        value = if value > (limit - digit) / 10 {
+            limit
+        } else {
+            value * 10 + digit
+        };
+    }
+    if negative {
+        value.wrapping_neg() as i32
+    } else {
+        value as i32
+    }
+}

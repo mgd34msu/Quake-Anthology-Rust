@@ -13,6 +13,10 @@ pub use q2::{
 
 pub const SLOTS: usize = 32;
 
+const fn slot(sequence: u32) -> usize {
+    sequence as usize & (SLOTS - 1)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entity<const N: usize> {
     pub number: u32,
@@ -125,12 +129,12 @@ impl<const P: usize, const E: usize> Ring<P, E> {
     /// Association for the native reply to a submitted client packet. These
     /// scalars are protocol metadata, never retained input or another frame.
     pub(crate) fn record_request(&mut self, sequence: u32, base: Option<u32>) {
-        let slot = &mut self.slots[sequence as usize & (SLOTS - 1)];
+        let slot = &mut self.slots[slot(sequence)];
         slot.request_sequence = Some(sequence);
         slot.requested_base = base;
     }
     pub(crate) fn requested_base(&self, sequence: u32) -> Option<Option<u32>> {
-        let slot = &self.slots[sequence as usize & (SLOTS - 1)];
+        let slot = &self.slots[slot(sequence)];
         (slot.request_sequence == Some(sequence)).then_some(slot.requested_base)
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -157,7 +161,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             .is_some_and(|n| self.parsed_rows.saturating_sub(slot.first_entity) > n)
     }
     pub fn frame(&self, sequence: u32) -> Option<Frame<'_, P, E>> {
-        let index = sequence as usize & (SLOTS - 1);
+        let index = self::slot(sequence);
         let slot = &self.slots[index];
         if !slot.valid || slot.sequence != Some(sequence) || self.expired(slot) {
             return None;
@@ -207,7 +211,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             player: *frame.player,
             ..Slot::ZERO
         };
-        let index = frame.sequence as usize & (SLOTS - 1);
+        let index = self::slot(frame.sequence);
         rows_mut(
             &mut self.areas,
             self.area_capacity,
@@ -234,9 +238,9 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             .map_or(1, |n| n.saturating_add(1))
             .max(sequence.saturating_sub((SLOTS - 1) as u32));
         for missing in start..sequence {
-            self.slots[missing as usize & (SLOTS - 1)].sequence = None;
+            self.slots[self::slot(missing)].sequence = None;
         }
-        let index = sequence as usize & (SLOTS - 1);
+        let index = self::slot(sequence);
         slot.request_sequence = self.slots[index].request_sequence;
         slot.requested_base = self.slots[index].requested_base;
         self.slots[index] = slot;
@@ -265,7 +269,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         let Some(sequence) = slot.sequence else {
             return false;
         };
-        let index = sequence as usize & (SLOTS - 1);
+        let index = self::slot(sequence);
         rows_mut(&mut self.areas, self.area_capacity, index, slot.area_bytes)
             .copy_from_slice(&self.scratch_areas[..slot.area_bytes]);
         rows_mut(&mut self.entities, self.capacity, index, slot.count)
@@ -319,10 +323,7 @@ impl NqStorage {
     }
     pub fn begin(&mut self) -> NqPacket {
         self.marks.begin();
-        let old = self
-            .ring
-            .latest
-            .map(|n| self.ring.slots[n as usize & (SLOTS - 1)]);
+        let old = self.ring.latest.map(|n| self.ring.slots[slot(n)]);
         let mut packet = NqPacket {
             time: old.map_or(qa_core::primitives::ThinkTime::Seconds(0.0), |slot| {
                 slot.time
@@ -333,7 +334,7 @@ impl NqStorage {
             overflow: false,
         };
         if let Some(old) = old {
-            let index = old.sequence.map_or(0, |n| n as usize & (SLOTS - 1));
+            let index = old.sequence.map_or(0, slot);
             self.ring.scratch[..old.count].copy_from_slice(rows(
                 &self.ring.entities,
                 self.ring.capacity,
@@ -560,7 +561,7 @@ impl Storage {
                 // SV_EmitPacketEntities selects delta_sequence & UPDATE_MASK,
                 // not an assumed full frame number made from the request byte.
                 let request = request.and_then(|request| {
-                    let slot = ring.slots[request as usize & (SLOTS - 1)];
+                    let slot = ring.slots[slot(request)];
                     let base = slot.sequence?;
                     (base & 63 == request & 63 && ring.frame(base).is_some())
                         .then_some((base, request as u8))
@@ -597,7 +598,7 @@ pub fn read_q3(
     let full = distance == 0 || base_sequence == 0;
     let flags = reader.read_bits(8)? as u8;
     let area_bytes = read_areas(reader, &mut ring.scratch_areas, 32)?;
-    let base_index = base_sequence as usize & (SLOTS - 1);
+    let base_index = slot(base_sequence);
     let base_valid = full || ring.frame(base_sequence).is_some();
     // qsrc consumes an invalid delta using the addressed slot's retained
     // state too; those discarded rows still advance native retention age.
@@ -687,7 +688,7 @@ pub fn read_qw(
     let base_valid = full
         || request
             .is_some_and(|n| outgoing_sequence.wrapping_sub(n) < 63 && ring.frame(n).is_some());
-    let index = request.map_or(0, |n| n as usize & (SLOTS - 1));
+    let index = request.map_or(0, slot);
     let count = if request.is_none() {
         0
     } else {

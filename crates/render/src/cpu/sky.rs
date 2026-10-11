@@ -148,7 +148,7 @@ fn base(assets: &Assets, image: ImageId) -> Option<&IndexedMip> {
 
 /// Native screen rays use the full video/seat integer center and viewport
 /// extent, independently of FOV. The extra cloud shift truncates separately.
-struct LayeredDraw {
+pub(super) struct LayeredDraw {
     axes: [Vec3; 3],
     center: [i64; 2],
     extent: f32,
@@ -157,6 +157,17 @@ struct LayeredDraw {
     shift: i64,
 }
 impl LayeredDraw {
+    pub(super) fn prepare(
+        source: Source,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        let Source::Layered { sphere, .. } = source else {
+            return None;
+        };
+        Some(Self::load(camera, width, height, sphere))
+    }
     fn load(camera: &Camera, width: u32, height: u32, sphere: LayeredSphere) -> Self {
         let seat = camera.refdef.blend_viewport.unwrap_or(Viewport {
             x: 0,
@@ -165,7 +176,7 @@ impl LayeredDraw {
             height,
         });
         // R_SetSkyFrame's native period is 512 seconds for speeds 8 and 2.
-        let time = camera.refdef.time_ms as f32 * 0.001;
+        let time = camera.refdef.time_seconds();
         let time = time - (time / 512.0).trunc() * 512.0;
         Self {
             axes: camera.refdef.axes,
@@ -205,17 +216,17 @@ impl LayeredDraw {
 )]
 pub(super) fn layered_span(
     width: u32,
-    height: u32,
     span: Span,
     source: Source,
     camera: &Camera,
     assets: &Assets,
     depth: Affine,
     rank: u32,
+    draw: &LayeredDraw,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
-    let Source::Layered { images, sphere } = source else {
+    let Source::Layered { images, .. } = source else {
         stats.rejected += 1;
         return;
     };
@@ -229,7 +240,6 @@ pub(super) fn layered_span(
     };
     let before = stats.pixels;
     stats.sky_spans = stats.sky_spans.saturating_add(1);
-    let draw = LayeredDraw::load(camera, width, height, sphere);
     super::span::walk(
         span.x,
         span.count,
@@ -247,17 +257,8 @@ pub(super) fn layered_span(
             };
             let zi = depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
-            if zi.is_finite()
-                && zi > 0.0
-                && super::depth_passes(
-                    DepthFunc::Lequal,
-                    zi,
-                    buffers.inverse_depth[index],
-                    rank,
-                    buffers.depth_ranks[index],
-                )
-            {
-                write(index, color, palette, palette_id, zi, rank, buffers);
+            if buffers.depth_test(index, zi, zi, rank, DepthFunc::Lequal) {
+                buffers.write_indexed(index, color, palette, palette_id, zi, rank);
                 stats.pixels += 1;
             }
         },
@@ -335,9 +336,10 @@ impl BackgroundDraw {
         }
         let axes = if params.cpu_rotation {
             rotation.map_or(camera.refdef.axes, |rotation| {
-                camera.refdef.axes.map(|axis| {
-                    crate::sky::unrotate(axis, rotation, camera.refdef.time_ms as f32 * 0.001)
-                })
+                camera
+                    .refdef
+                    .axes
+                    .map(|axis| crate::sky::unrotate(axis, rotation, camera.refdef.time_seconds()))
             })
         } else {
             camera.refdef.axes
@@ -416,7 +418,7 @@ pub(super) fn background(
                 |px, current| {
                     let color = mip.indices()[super::span::texel(current, mip.width, mip.height)];
                     let index = buffers.offset(width, px, y);
-                    write(index, color, palette, palette_id, -0.9, 0, buffers);
+                    buffers.write_indexed(index, color, palette, palette_id, -0.9, 0);
                     stats.pixels += 1;
                 },
             );
@@ -425,22 +427,6 @@ pub(super) fn background(
                 .saturating_add(stats.pixels.saturating_sub(before));
         }
     }
-}
-
-fn write(
-    index: usize,
-    color: u8,
-    palette: &PaletteLighting,
-    palette_id: u32,
-    depth: f32,
-    rank: u32,
-    buffers: &mut Buffers<'_>,
-) {
-    buffers.pixels[index] = palette.color(color);
-    buffers.indices[index] = color;
-    buffers.palettes[index] = palette_id;
-    buffers.inverse_depth[index] = depth;
-    buffers.depth_ranks[index] = rank;
 }
 
 #[cfg(test)]

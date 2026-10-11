@@ -975,9 +975,9 @@ impl Product {
 /// before multiplying the independently filtered second factor. Native Q3's
 /// collapsed multitexture rounding is a separate presentation requirement.
 pub(super) fn multiply_pixel(first: u32, second: [f32; 4]) -> u32 {
-    u32::from_le_bytes(std::array::from_fn(|channel| {
-        let byte = first.to_le_bytes()[channel] as f32 / 255.0;
-        ((second[channel] * byte).clamp(0.0, 1.0) * 255.0).round() as u8
+    let unit = crate::stage::unit_rgba(first.to_le_bytes());
+    crate::stage::pack_unit_rgba(std::array::from_fn(|channel| {
+        second[channel] * unit[channel]
     }))
 }
 

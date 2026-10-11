@@ -324,6 +324,25 @@ pub struct DrawInputs {
     /// entity's diffuse lighting sample (tr_shade_calc.c:1038).
     pub specular_origin: Vec3,
 }
+impl DrawInputs {
+    pub fn for_view(refdef: &crate::scene::Refdef) -> Self {
+        Self {
+            time_ms: refdef.time_ms,
+            view_origin: refdef.origin,
+            identity_light: refdef.identity_light,
+            ..Self::default()
+        }
+    }
+    pub fn time_seconds(&self) -> f32 {
+        crate::scene::milliseconds_to_seconds(self.time_ms)
+    }
+}
+pub(crate) fn unit_rgba(color: [u8; 4]) -> [f32; 4] {
+    color.map(|v| v as f32 / 255.0)
+}
+pub(crate) fn pack_unit_rgba(color: [f32; 4]) -> u32 {
+    u32::from_le_bytes(color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
+}
 impl Default for DrawInputs {
     fn default() -> Self {
         Self {
@@ -884,7 +903,7 @@ impl StageEvaluator {
     }
 }
 pub fn shader_time(settings: MaterialSettings, inputs: DrawInputs) -> f32 {
-    let time = inputs.time_ms as f32 * 0.001 - inputs.entity_shader_time - settings.time_offset;
+    let time = inputs.time_seconds() - inputs.entity_shader_time - settings.time_offset;
     if let Some(clamp) = settings.clamp_time.filter(|&clamp| clamp > 0.0) {
         time.min(clamp)
     } else {

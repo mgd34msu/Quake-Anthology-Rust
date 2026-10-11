@@ -4,7 +4,7 @@
 //! quake/WinQuake/d_sky.c D_Sky_uv_To_st; quake-2/ref_gl/gl_warp.c
 //! DrawSkyPolygon/ClipSkyPolygon/MakeSkyVec; quake-iii-arena/code/renderer/
 //! tr_sky.c R_InitSkyTexCoords/MakeSkyVec/ClipSkyPolygon.
-use crate::assets::{Assets, CubeSkyParams, MaterialId, Vertex};
+use crate::assets::{Assets, CubeSkyParams, ImageId, MaterialId, Stage, StageTexture, Vertex};
 use crate::scene::{CommandList, DrawItem, DrawKind, Span};
 use qa_core::{math, primitives::Vec3};
 
@@ -102,13 +102,36 @@ pub(crate) fn grid_st(index: usize) -> f32 {
     (index as f32 - 4.0) / 4.0
 }
 
+pub(crate) fn box_face_stage(
+    images: &[ImageId; 6],
+    face: CubeFace,
+    params: CubeSkyParams,
+) -> Stage {
+    Stage {
+        texture: StageTexture::Image(images[face.index()]),
+        sampler: params.sampler,
+        rgb_gen: crate::shader::RgbGen::IdentityLighting,
+        depth_write: !params.far_depth,
+        ..Stage::default()
+    }
+}
+pub(crate) fn cloud_stage(stage: Stage) -> Stage {
+    if matches!(stage.texgen, crate::shader::TexCoordGen::CloudSky { .. }) {
+        Stage {
+            texgen: crate::shader::TexCoordGen::Texture,
+            ..stage
+        }
+    } else {
+        stage
+    }
+}
 pub(crate) fn box_face_vertices(
     face: CubeFace,
     bound: FaceBounds,
     params: CubeSkyParams,
     rotation: Option<Rotation>,
     view_origin: Vec3,
-    time_ms: u64,
+    time_seconds: f32,
     far: f32,
 ) -> Option<[Vertex; 4]> {
     if !bound.visible() {
@@ -136,7 +159,7 @@ pub(crate) fn box_face_vertices(
                         degrees_per_second: -rotation.degrees_per_second,
                         ..rotation
                     },
-                    time_ms as f32 * 0.001,
+                    time_seconds,
                 )
             });
             Vertex {
@@ -635,6 +658,47 @@ impl Default for ClipPolygon {
     }
 }
 
+pub(crate) struct SkyBatches {
+    clips: Box<[SkyClip]>,
+    touched: qa_core::stamps::StampSet,
+    drawn: qa_core::stamps::StampSet,
+}
+impl SkyBatches {
+    pub(crate) fn new(count: usize) -> Self {
+        Self {
+            clips: (0..count)
+                .map(|_| SkyClip::new())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            touched: qa_core::stamps::StampSet::new(count),
+            drawn: qa_core::stamps::StampSet::new(count),
+        }
+    }
+    pub(crate) fn bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.clips)
+            + (self.touched.len() + self.drawn.len()) * std::mem::size_of::<u32>()
+    }
+    pub(crate) fn begin_frame(&mut self) {
+        self.touched.begin();
+        self.drawn.begin();
+    }
+    pub(crate) fn clip_mut(&mut self, index: usize) -> Option<&mut SkyClip> {
+        let clip = self.clips.get_mut(index)?;
+        if !self.touched.test_and_set(index) {
+            clip.clear();
+        }
+        Some(clip)
+    }
+    pub(crate) fn take_for_draw(&mut self, index: usize) -> Option<[FaceBounds; 6]> {
+        let clip = self.clips.get(index)?;
+        if !self.touched.contains(index) || self.drawn.test_and_set(index) {
+            return None;
+        }
+        let bounds = *clip.bounds();
+        bounds.iter().any(|bound| bound.visible()).then_some(bounds)
+    }
+}
+
 pub struct SkyClip {
     bounds: [FaceBounds; 6],
     pub rejected: u64,
@@ -700,7 +764,6 @@ impl SkyClip {
                     break;
                 }
                 let mut distance = [0.0; CLIP_VERTICES];
-                let mut sides = [0_i8; CLIP_VERTICES];
                 let mut front = false;
                 let mut back = false;
                 for index in 0..polygon.count {
@@ -710,15 +773,8 @@ impl SkyClip {
                         return false;
                     }
                     distance[index] = d;
-                    sides[index] = if d > ON_EPSILON {
-                        front = true;
-                        1
-                    } else if d < -ON_EPSILON {
-                        back = true;
-                        -1
-                    } else {
-                        0
-                    };
+                    front |= d > ON_EPSILON;
+                    back |= d < -ON_EPSILON;
                 }
                 if !front || !back {
                     polygon.stage += 1;
@@ -728,29 +784,22 @@ impl SkyClip {
                     stage: polygon.stage + 1,
                     ..ClipPolygon::default()
                 }; 2];
-                for index in 0..polygon.count {
-                    let vertex = polygon.vertices[index];
-                    if sides[index] >= 0 && !append_vertex(&mut split[0], vertex) {
-                        self.rejected += 1;
-                        return false;
-                    }
-                    if sides[index] <= 0 && !append_vertex(&mut split[1], vertex) {
-                        self.rejected += 1;
-                        return false;
-                    }
-                    let next = (index + 1) % polygon.count;
-                    if sides[index] == 0 || sides[next] == 0 || sides[index] == sides[next] {
-                        continue;
-                    }
-                    let fraction = distance[index] / (distance[index] - distance[next]);
-                    let crossing = vertex + (polygon.vertices[next] - vertex) * fraction;
-                    if !crossing.0.iter().all(|v| v.is_finite())
-                        || !append_vertex(&mut split[0], crossing)
-                        || !append_vertex(&mut split[1], crossing)
-                    {
-                        self.rejected += 1;
-                        return false;
-                    }
+                let [front, back] = &mut split;
+                if crate::affine::split_polygon(
+                    &polygon.vertices[..polygon.count],
+                    |index, _| distance[index],
+                    ON_EPSILON,
+                    |vertex| append_vertex(front, vertex),
+                    |vertex| append_vertex(back, vertex),
+                    |vertex, next, fraction| {
+                        let crossing = vertex.lerp(next, fraction);
+                        crossing.0.iter().all(|v| v.is_finite()).then_some(crossing)
+                    },
+                )
+                .is_none()
+                {
+                    self.rejected += 1;
+                    return false;
                 }
                 if pending_count == pending.len() {
                     self.rejected += 1;

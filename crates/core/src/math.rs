@@ -49,6 +49,10 @@ impl Neg for Vec3 {
     }
 }
 
+pub fn lerp_array<const N: usize>(start: [f32; N], end: [f32; N], fraction: f32) -> [f32; N] {
+    std::array::from_fn(|i| start[i] + fraction * (end[i] - start[i]))
+}
+
 pub fn difference(a: Vec3, b: Vec3) -> Vec3 {
     a - b
 }

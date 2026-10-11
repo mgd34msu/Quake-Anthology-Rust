@@ -94,3 +94,19 @@ fn string_boundaries_preserve_raw_bytes_and_require_native_termination() {
         assert_eq!(terminated(bytes).is_some(), bytes.contains(&0));
     }
 }
+
+#[test]
+fn integer_prefix_accepts_raw_suffixes_and_saturates_native_signed_limits() {
+    use qa_core::text::atoi_prefix;
+    for (bytes, expected) in [
+        (&b" \t\r\n\x0b\x0c-5tail"[..], -5),
+        (&b"+123\xff"[..], 123),
+        (&b"214748364999"[..], i32::MAX),
+        (&b"-214748364999"[..], i32::MIN),
+        (&b"-"[..], 0),
+        (&b"\xff12"[..], 0),
+        (&b""[..], 0),
+    ] {
+        assert_eq!(atoi_prefix(bytes), expected, "{bytes:?}");
+    }
+}

@@ -314,7 +314,7 @@ impl InputPolicy {
         }
     }
     pub fn pitch_drift(self) -> bool {
-        self.rules.is_some() && self.command_rules().pitch_drift
+        self.command_rules().pitch_drift
     }
     pub(crate) fn command_rules(self) -> CommandRules {
         self.rules.map_or(
@@ -669,9 +669,6 @@ impl Input {
                     *slot = value;
                 }
             }
-            EventKind::Char { device, value } => {
-                self.character(device, value, target);
-            }
             EventKind::Text { device, text } => {
                 for value in text.chars() {
                     self.character(device, value, target);
@@ -943,14 +940,12 @@ impl Input {
                         seat.angles.0[0].clamp(previous_pitch - limit, previous_pitch + limit);
                 }
                 PitchClamp::DeltaAngle(limit) => {
-                    if policy.rules.is_some() {
-                        let delta = if policy.delta_pitch > 180.0 {
-                            policy.delta_pitch - 360.0
-                        } else {
-                            policy.delta_pitch
-                        };
-                        seat.angles.0[0] = seat.angles.0[0].clamp(-limit - delta, limit - delta);
-                    }
+                    let delta = if policy.delta_pitch > 180.0 {
+                        policy.delta_pitch - 360.0
+                    } else {
+                        policy.delta_pitch
+                    };
+                    seat.angles.0[0] = seat.angles.0[0].clamp(-limit - delta, limit - delta);
                 }
             }
             for device in &self.devices {

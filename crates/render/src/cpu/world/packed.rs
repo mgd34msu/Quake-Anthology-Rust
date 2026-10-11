@@ -71,16 +71,7 @@ fn scalar_span(
     for x in span.x..span.x + span.count {
         let zi = planes.inverse_depth.at(x as f32, span.y as f32);
         let index = buffers.offset(width, x, span.y);
-        if zi <= 0.0
-            || !zi.is_finite()
-            || !super::super::depth_passes(
-                crate::assets::DepthFunc::Lequal,
-                zi,
-                buffers.inverse_depth[index],
-                draw_rank,
-                buffers.depth_ranks[index],
-            )
-        {
+        if !buffers.depth_test(index, zi, zi, draw_rank, crate::assets::DepthFunc::Lequal) {
             continue;
         }
         let chart = planes

@@ -714,9 +714,8 @@ impl EntityProjection {
         geometry: qa_core::primitives::GeometryId,
         name: &[u8],
     ) -> Result<(CollisionShape, Bounds), CallError> {
-        let suffix = std::str::from_utf8(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
-            .map_err(|_| CallError::Geometry)?;
-        let index = qa_console::numbers::integer(suffix) as u32;
+        let suffix = name.strip_prefix(b"*").ok_or(CallError::Geometry)?;
+        let index = qa_core::text::atoi_prefix(suffix) as u32;
         if index == 0 {
             return Err(CallError::Geometry);
         }

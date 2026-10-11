@@ -7,6 +7,10 @@ use crate::{
 use qa_core::{events::NativeReceipt, loopback::Endpoint};
 
 const SLOTS: usize = 64;
+
+const fn slot(sequence: u32) -> usize {
+    sequence as usize & (SLOTS - 1)
+}
 pub(crate) const STRING_BYTES: usize = 1024;
 
 struct Slot {
@@ -40,12 +44,12 @@ impl Window {
         }
     }
     fn text(&self, sequence: u32) -> &[u8] {
-        let slot = &self.slots[sequence as usize & (SLOTS - 1)];
+        let slot = &self.slots[slot(sequence)];
         &slot.text[..slot.length]
     }
     fn store(&mut self, sequence: u32, text: &[u8], receipt: Option<NativeReceipt>) {
         let length = qa_core::text::until_nul(text).len().min(STRING_BYTES - 1);
-        let slot = &mut self.slots[sequence as usize & (SLOTS - 1)];
+        let slot = &mut self.slots[slot(sequence)];
         slot.text[..length].copy_from_slice(&text[..length]);
         slot.text[length] = 0;
         slot.length = length;
@@ -63,7 +67,7 @@ impl Window {
     }
     fn submitted(&mut self, sequence: u32, message: u32) {
         for n in self.sent + 1..=sequence {
-            let slot = &mut self.slots[n as usize & (SLOTS - 1)];
+            let slot = &mut self.slots[slot(n)];
             slot.first_message.get_or_insert(message);
         }
         self.sent = self.sent.max(sequence);
@@ -81,14 +85,14 @@ impl Window {
             return Ok(0);
         }
         for n in self.acknowledged + 1..=sequence {
-            let slot = &self.slots[n as usize & (SLOTS - 1)];
+            let slot = &self.slots[slot(n)];
             if slot.sequence != n || slot.first_message.is_none_or(|sent| message < sent) {
                 return Err(packet::Error::Context);
             }
         }
         let mut count = 0;
         for n in self.acknowledged + 1..=sequence {
-            if let Some(receipt) = self.slots[n as usize & (SLOTS - 1)].receipt {
+            if let Some(receipt) = self.slots[slot(n)].receipt {
                 receipts[count] = receipt;
                 count += 1;
             }

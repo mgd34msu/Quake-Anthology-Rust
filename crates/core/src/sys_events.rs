@@ -67,10 +67,6 @@ pub enum EventKind<'a> {
         down: bool,
         repeat: bool,
     },
-    Char {
-        device: DeviceId,
-        value: char,
-    },
     Text {
         device: DeviceId,
         text: &'a str,
@@ -199,10 +195,6 @@ impl SysEventQueue {
                     down,
                     repeat,
                 }),
-                &[][..],
-            ),
-            EventKind::Char { device, value } => (
-                StoredKind::Plain(EventKind::Char { device, value }),
                 &[][..],
             ),
             EventKind::Mouse { device, dx, dy } => (

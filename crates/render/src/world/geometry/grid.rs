@@ -200,24 +200,20 @@ fn split_plane(
 fn split(points: &[WorldVertex], axis: usize, middle: f32) -> (Vec<WorldVertex>, Vec<WorldVertex>) {
     let mut front = Vec::with_capacity(points.len() + 2);
     let mut back = Vec::with_capacity(points.len() + 2);
-    for i in 0..points.len() {
-        let point = points[i];
-        let next = points[(i + 1) % points.len()];
-        let distance = point.vertex.position.0[axis] - middle;
-        let next_distance = next.vertex.position.0[axis] - middle;
-        if distance >= 0.0 {
+    let _ = crate::affine::split_polygon(
+        points,
+        |_, point| point.vertex.position.0[axis] - middle,
+        0.0,
+        |point| {
             front.push(point);
-        }
-        if distance <= 0.0 {
+            true
+        },
+        |point| {
             back.push(point);
-        }
-        if distance == 0.0 || next_distance == 0.0 || (distance > 0.0) == (next_distance > 0.0) {
-            continue;
-        }
-        let point = interpolate(point, next, distance / (distance - next_distance));
-        front.push(point);
-        back.push(point);
-    }
+            true
+        },
+        |a, b, fraction| Some(interpolate(a, b, fraction)),
+    );
     (front, back)
 }
 
@@ -226,13 +222,9 @@ fn interpolate(a: WorldVertex, b: WorldVertex, fraction: f32) -> WorldVertex {
     out.vertex.position = a.vertex.position.lerp(b.vertex.position, fraction);
     out.normal = a.normal.lerp(b.normal, fraction);
     out.vertex.normal = out.normal;
-    out.vertex.texcoord = std::array::from_fn(|i| {
-        a.vertex.texcoord[i] + fraction * (b.vertex.texcoord[i] - a.vertex.texcoord[i])
-    });
-    out.vertex.lightmap_coord = std::array::from_fn(|i| {
-        a.vertex.lightmap_coord[i]
-            + fraction * (b.vertex.lightmap_coord[i] - a.vertex.lightmap_coord[i])
-    });
+    out.vertex.texcoord = qa_core::math::lerp_array(a.vertex.texcoord, b.vertex.texcoord, fraction);
+    out.vertex.lightmap_coord =
+        qa_core::math::lerp_array(a.vertex.lightmap_coord, b.vertex.lightmap_coord, fraction);
     out.vertex.color = std::array::from_fn(|i| {
         (f32::from(a.vertex.color[i])
             + fraction * (f32::from(b.vertex.color[i]) - f32::from(a.vertex.color[i])))

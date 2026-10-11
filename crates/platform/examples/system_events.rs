@@ -61,9 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 axis: 0,
                 value: 16384,
             },
-            EventKind::Char {
+            EventKind::Text {
                 device: DeviceId::Keyboard,
-                value: 'λ',
+                text: "λ",
             },
         ] {
             pump.enqueue(&mut queue, kind)

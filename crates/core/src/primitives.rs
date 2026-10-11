@@ -29,9 +29,7 @@ impl Vec3 {
     }
 
     pub fn lerp(self, end: Self, fraction: f32) -> Self {
-        Self(std::array::from_fn(|axis| {
-            self.0[axis] + fraction * (end.0[axis] - self.0[axis])
-        }))
+        Self(crate::math::lerp_array(self.0, end.0, fraction))
     }
 }
 

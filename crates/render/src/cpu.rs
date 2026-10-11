@@ -65,15 +65,13 @@ impl ClipVertex {
     fn lerp(self, end: Self, fraction: f32) -> Self {
         Self {
             camera: self.camera.lerp(end.camera, fraction),
-            texcoord: std::array::from_fn(|i| {
-                self.texcoord[i] + fraction * (end.texcoord[i] - self.texcoord[i])
-            }),
-            lightmap_coord: std::array::from_fn(|i| {
-                self.lightmap_coord[i] + fraction * (end.lightmap_coord[i] - self.lightmap_coord[i])
-            }),
-            color: std::array::from_fn(|i| {
-                self.color[i] + fraction * (end.color[i] - self.color[i])
-            }),
+            texcoord: qa_core::math::lerp_array(self.texcoord, end.texcoord, fraction),
+            lightmap_coord: qa_core::math::lerp_array(
+                self.lightmap_coord,
+                end.lightmap_coord,
+                fraction,
+            ),
+            color: qa_core::math::lerp_array(self.color, end.color, fraction),
         }
     }
 }
@@ -171,7 +169,7 @@ impl Camera {
             camera: self.to_view(world_position),
             texcoord: vertex.texcoord,
             lightmap_coord: vertex.lightmap_coord,
-            color: vertex.color.map(|c| c as f32 / 255.0),
+            color: crate::stage::unit_rgba(vertex.color),
         }
     }
 
@@ -499,51 +497,19 @@ impl CpuBackend {
             return;
         }
         let vertices = list.vertices(poly.vertices);
-        let inputs = DrawInputs {
-            time_ms: camera.refdef.time_ms,
-            view_origin: camera.refdef.origin,
-            identity_light: camera.refdef.identity_light,
-            ..DrawInputs::default()
-        };
-        let Ok(deforms) = self.evaluator.prepare_deforms(&material.settings, &inputs) else {
-            stats.rejected = stats.rejected.saturating_add(1);
-            return;
-        };
-        for (stage_index, stage) in material.stages.iter().enumerate() {
-            let Ok(stage) = self.evaluator.prepare(stage, material.settings, inputs) else {
-                stats.rejected = stats.rejected.saturating_add(1);
-                continue;
-            };
-            let Some(image) = assets.image(stage.image) else {
-                stats.rejected = stats.rejected.saturating_add(1);
-                continue;
-            };
-            let pass = RasterPass {
-                material,
-                stage,
-                image,
-                sampler: stage_sampler(image, stage.stage.sampler),
-                depth_hack: false,
-                first_stage: stage_index == 0,
-                draw_rank,
-            };
-            stats.stages = stats.stages.saturating_add(1);
-            for indices in crate::affine::fan(vertices.len()) {
-                let triangle = indices.map(|i| vertices[i]).map(|v| {
-                    let v = self.evaluator.apply_deforms(deforms, v);
-                    let evaluated = self.evaluator.evaluate(&stage, &v);
-                    camera.vertex(
-                        Vertex {
-                            texcoord: evaluated.texcoord,
-                            color: evaluated.color,
-                            ..v
-                        },
-                        evaluated.position,
-                    )
-                });
-                self.triangle(camera, triangle, pass, stats);
-            }
-        }
+        let inputs = DrawInputs::for_view(&camera.refdef);
+        self.mesh_stages(
+            camera,
+            material,
+            inputs,
+            false,
+            draw_rank,
+            vertices,
+            crate::affine::fan(vertices.len()),
+            |position| position,
+            assets,
+            stats,
+        );
     }
 
     #[expect(
@@ -582,15 +548,50 @@ impl CpuBackend {
         }
         let local_view = crate::stage::entity_view_origin(camera.refdef.origin, entity);
         let inputs = DrawInputs {
-            time_ms: camera.refdef.time_ms,
             entity_color: entity.color,
             entity_texcoord: entity.shader_texcoord,
             entity_shader_time: entity.shader_time,
             lighting: entity.lighting,
             view_origin: local_view,
-            identity_light: camera.refdef.identity_light,
-            ..DrawInputs::default()
+            ..DrawInputs::for_view(&camera.refdef)
         };
+        self.mesh_stages(
+            camera,
+            material,
+            inputs,
+            entity.depth_hack,
+            draw_rank,
+            &model.vertices,
+            model.indices.chunks_exact(3).map(|indices| {
+                [
+                    indices[0] as usize,
+                    indices[1] as usize,
+                    indices[2] as usize,
+                ]
+            }),
+            |position| qa_core::math::transform_point(entity.origin, entity.axes, position),
+            assets,
+            stats,
+        );
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Shared mesh stages preserve each submission's transform and depth policy"
+    )]
+    fn mesh_stages(
+        &mut self,
+        camera: &Camera,
+        material: &Material,
+        inputs: DrawInputs,
+        depth_hack: bool,
+        draw_rank: u32,
+        vertices: &[Vertex],
+        triangles: impl Iterator<Item = [usize; 3]> + Clone,
+        to_world: impl Fn(Vec3) -> Vec3,
+        assets: &Assets,
+        stats: &mut BackendStats,
+    ) {
         let Ok(deforms) = self.evaluator.prepare_deforms(&material.settings, &inputs) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
@@ -609,29 +610,22 @@ impl CpuBackend {
                 stage,
                 image,
                 sampler: stage_sampler(image, stage.stage.sampler),
-                depth_hack: entity.depth_hack,
+                depth_hack,
                 first_stage: stage_index == 0,
                 draw_rank,
             };
             stats.stages = stats.stages.saturating_add(1);
-            for indices in model.indices.chunks_exact(3) {
-                let triangle = std::array::from_fn(|i| {
-                    let vertex = self
-                        .evaluator
-                        .apply_deforms(deforms, model.vertices[indices[i] as usize]);
+            for indices in triangles.clone() {
+                let triangle = indices.map(|i| {
+                    let vertex = self.evaluator.apply_deforms(deforms, vertices[i]);
                     let evaluated = self.evaluator.evaluate(&stage, &vertex);
-                    let position = qa_core::math::transform_point(
-                        entity.origin,
-                        entity.axes,
-                        evaluated.position,
-                    );
                     camera.vertex(
                         Vertex {
                             texcoord: evaluated.texcoord,
                             color: evaluated.color,
                             ..vertex
                         },
-                        position,
+                        to_world(evaluated.position),
                     )
                 });
                 self.triangle(camera, triangle, pass, stats);
@@ -733,11 +727,25 @@ impl CpuBackend {
         ];
         let include_edge = edges.map(|(a, b)| top_left(a, b));
         let area_inverse = 1.0 / area;
+        let mip_planes = (image_mips(pass.image, pass.stage.stage.sampler) > 1).then(|| {
+            let points = vertices.map(|v| v.xy.map(f64::from));
+            let determinant = crate::affine::determinant(points);
+            (
+                world::Affine::fit(points, vertices.map(|v| v.inverse_depth), determinant),
+                std::array::from_fn(|coordinate| {
+                    world::Affine::fit(
+                        points,
+                        vertices.map(|v| v.texcoord_over_depth[coordinate]),
+                        determinant,
+                    )
+                }),
+            )
+        });
         for y in y_start..y_end {
             let mip = triangle_mip(
                 pass.image,
                 pass.stage.stage.sampler,
-                vertices,
+                mip_planes,
                 [(x_start as f32 + x_end as f32) * 0.5, y as f32 + 0.5],
             );
             let texels = TexelView::image(pass.image, mip, pass.stage.stage.texture_intensity);
@@ -914,7 +922,7 @@ impl CpuBackend {
                         let source = sampler(
                             texels,
                             evaluated.texcoord,
-                            evaluated.color.map(|c| c as f32 / 255.0),
+                            crate::stage::unit_rgba(evaluated.color),
                         );
                         if alpha_pass(stage.alpha_test, source[3]) {
                             let blend = stage.blend.or(Some(StageBlend::ALPHA));
@@ -1237,45 +1245,32 @@ fn image_mip(image: &Image, sampler: Sampler, derivatives: [[f32; 2]; 2]) -> u8 
         0
     }
 }
-fn triangle_mip(image: &Image, sampler: Sampler, vertices: [ScreenVertex; 3], at: [f32; 2]) -> u8 {
-    if image_mips(image, sampler) == 1 {
-        return 0;
-    }
-    let [a, b, c] = vertices;
-    let determinant = edge(a.xy, b.xy, c.xy);
-    let gradient = |values: [f32; 3]| {
-        let ab = values[1] - values[0];
-        let ac = values[2] - values[0];
-        [
-            (ab * (c.xy[1] - a.xy[1]) - ac * (b.xy[1] - a.xy[1])) / determinant,
-            ((b.xy[0] - a.xy[0]) * ac - (c.xy[0] - a.xy[0]) * ab) / determinant,
-        ]
-    };
-    let weights = [
-        edge(b.xy, c.xy, at),
-        edge(c.xy, a.xy, at),
-        edge(a.xy, b.xy, at),
-    ]
-    .map(|value| value / determinant);
-    let depths = vertices.map(|v| v.inverse_depth);
-    let zi = weights
-        .iter()
-        .zip(depths)
-        .map(|(w, value)| w * value)
-        .sum::<f32>();
-    let depth_gradient = gradient(depths);
-    let derivatives = std::array::from_fn(|axis| {
+fn uv_derivatives(
+    inverse_depth: world::Affine,
+    texture: [world::Affine; 2],
+    x: f32,
+    y: f32,
+) -> [[f32; 2]; 2] {
+    let zi = inverse_depth.at(x, y);
+    let depth = [inverse_depth.x, inverse_depth.y];
+    std::array::from_fn(|axis| {
         std::array::from_fn(|coordinate| {
-            let values = vertices.map(|v| v.texcoord_over_depth[coordinate]);
-            let value = weights
-                .iter()
-                .zip(values)
-                .map(|(w, value)| w * value)
-                .sum::<f32>();
-            (gradient(values)[axis] * zi - value * depth_gradient[axis]) / (zi * zi)
+            let p = texture[coordinate];
+            let gradient = [p.x, p.y];
+            (gradient[axis] * zi - p.at(x, y) * depth[axis]) / (zi * zi)
         })
-    });
-    image_mip(image, sampler, derivatives)
+    })
+}
+fn triangle_mip(
+    image: &Image,
+    sampler: Sampler,
+    planes: Option<(world::Affine, [world::Affine; 2])>,
+    at: [f32; 2],
+) -> u8 {
+    let Some((depth, texture)) = planes else {
+        return 0;
+    };
+    image_mip(image, sampler, uv_derivatives(depth, texture, at[0], at[1]))
 }
 
 type ShadeFn = fn(TexelView<'_>, [f32; 2], [f32; 4]) -> [f32; 4];
@@ -1441,9 +1436,9 @@ fn depth_passes(
 }
 
 fn composite(destination: u32, source: [f32; 4], blend: Option<StageBlend>) -> u32 {
-    let destination = destination.to_le_bytes().map(|c| c as f32 / 255.0);
+    let destination = crate::stage::unit_rgba(destination.to_le_bytes());
     let result = blend_pixel(blend, source, destination);
-    u32::from_le_bytes(result.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
+    crate::stage::pack_unit_rgba(result)
 }
 
 #[cfg(test)]

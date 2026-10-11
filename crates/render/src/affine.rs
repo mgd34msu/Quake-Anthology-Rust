@@ -1,4 +1,4 @@
-pub(crate) fn fan(count: usize) -> impl Iterator<Item = [usize; 3]> {
+pub(crate) fn fan(count: usize) -> impl Iterator<Item = [usize; 3]> + Clone {
     (1..count.saturating_sub(1)).map(|at| [0, at, at + 1])
 }
 
@@ -40,6 +40,48 @@ pub(crate) fn fit3(points: [[f64; 2]; 3], values: [f64; 3], area: f64) -> [f64; 
 
 pub(crate) fn fit(points: [[f64; 2]; 3], values: [f64; 3]) -> [f64; 3] {
     fit3(points, values, determinant(points))
+}
+
+/// Split a polygon in source order. Callers own storage and intersection validation.
+pub(crate) fn split_polygon<T: Copy>(
+    points: &[T],
+    distance: impl Fn(usize, T) -> f32,
+    epsilon: f32,
+    mut front: impl FnMut(T) -> bool,
+    mut back: impl FnMut(T) -> bool,
+    intersect: impl Fn(T, T, f32) -> Option<T>,
+) -> Option<()> {
+    let side = |distance: f32| {
+        if distance > epsilon {
+            1
+        } else if distance < -epsilon {
+            -1
+        } else {
+            0
+        }
+    };
+    for (index, &point) in points.iter().enumerate() {
+        let next_index = (index + 1) % points.len();
+        let next = points[next_index];
+        let d = distance(index, point);
+        let next_d = distance(next_index, next);
+        let current_side = side(d);
+        let next_side = side(next_d);
+        if current_side >= 0 && !front(point) {
+            return None;
+        }
+        if current_side <= 0 && !back(point) {
+            return None;
+        }
+        if current_side == 0 || next_side == 0 || current_side == next_side {
+            continue;
+        }
+        let crossing = intersect(point, next, d / (d - next_d))?;
+        if !front(crossing) || !back(crossing) {
+            return None;
+        }
+    }
+    Some(())
 }
 
 #[cfg(test)]

@@ -2,8 +2,7 @@
 //! triangles; polygon and tessellated-patch boundaries enter the same scanner.
 use super::{Camera, ClipVertex, ScreenVertex};
 use crate::assets::{
-    Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Sky, Stage, StageTexture,
-    Vertex,
+    Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Sky, StageTexture, Vertex,
 };
 use crate::edges::{DepthPolicy, Edges, ProjectedVertex, Span};
 use crate::scene::{CommandList, CpuPresentation, DrawItem, DrawKind, SceneRanges, SurfaceRef};
@@ -208,6 +207,9 @@ impl Affine {
     }
     fn load(vertices: [ScreenVertex; 3], values: [f32; 3], area: f64) -> Self {
         let points = vertices.map(|v| v.xy.map(|value| f64::from(value - 0.5)));
+        Self::fit(points, values, area)
+    }
+    pub(super) fn fit(points: [[f64; 2]; 3], values: [f32; 3], area: f64) -> Self {
         let [x, y, origin] = crate::affine::fit3(points, values.map(f64::from), area);
         Self {
             x: x as f32,
@@ -226,15 +228,7 @@ struct Planes {
 }
 impl Planes {
     fn derivatives(self, x: f32, y: f32) -> [[f32; 2]; 2] {
-        let zi = self.inverse_depth.at(x, y);
-        let depth = [self.inverse_depth.x, self.inverse_depth.y];
-        std::array::from_fn(|axis| {
-            std::array::from_fn(|coordinate| {
-                let p = self.texture[coordinate];
-                let gradient = [p.x, p.y];
-                (gradient[axis] * zi - p.at(x, y) * depth[axis]) / (zi * zi)
-            })
-        })
+        super::uv_derivatives(self.inverse_depth, self.texture, x, y)
     }
     fn mip(
         self,
@@ -368,9 +362,7 @@ struct WorldPrepare {
     catalog: Arc<WorldCatalog>,
     rgba_prepared: Box<[Option<super::rgba::Prepared>]>,
     rgba_colors: Box<[super::rgba::ProductColorCache]>,
-    sky_states: Box<[crate::sky::SkyClip]>,
-    sky_touched: qa_core::stamps::StampSet,
-    sky_drawn: qa_core::stamps::StampSet,
+    skies: crate::sky::SkyBatches,
     sky_stages: Box<[Option<PreparedStage>]>,
     draws: Box<[PreparedDraw]>,
     reference_base: u32,
@@ -409,6 +401,45 @@ pub(super) struct Buffers<'a> {
 }
 
 impl<'a> Buffers<'a> {
+    #[inline(always)]
+    pub(super) fn depth_test(
+        &self,
+        index: usize,
+        zi: f32,
+        depth: f32,
+        rank: u32,
+        func: DepthFunc,
+    ) -> bool {
+        zi.is_finite()
+            && zi > 0.0
+            && super::depth_passes(
+                func,
+                depth,
+                self.inverse_depth[index],
+                rank,
+                self.depth_ranks[index],
+            )
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The indexed framebuffer stores palette, depth and draw order together"
+    )]
+    pub(super) fn write_indexed(
+        &mut self,
+        index: usize,
+        color: u8,
+        palette: &crate::surface_cache::PaletteLighting,
+        palette_id: u32,
+        depth: f32,
+        rank: u32,
+    ) {
+        self.pixels[index] = palette.color(color);
+        self.indices[index] = color;
+        self.palettes[index] = palette_id;
+        self.inverse_depth[index] = depth;
+        self.depth_ranks[index] = rank;
+    }
+
     fn reborrow(&mut self) -> Buffers<'_> {
         Buffers {
             first_row: self.first_row,
@@ -771,12 +802,7 @@ impl WorldRaster {
             rgba_prepared: vec![None; rgba_count].into_boxed_slice(),
             rgba_colors: vec![super::rgba::ProductColorCache::default(); rgba_count]
                 .into_boxed_slice(),
-            sky_states: (0..sky_state_count)
-                .map(|_| crate::sky::SkyClip::new())
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-            sky_touched: qa_core::stamps::StampSet::new(sky_state_count),
-            sky_drawn: qa_core::stamps::StampSet::new(sky_state_count),
+            skies: crate::sky::SkyBatches::new(sky_state_count),
             sky_stages: vec![None; max_sky_stages.max(1)].into_boxed_slice(),
             draws: vec![PreparedDraw::default(); draw_capacity].into_boxed_slice(),
             reference_base: 0,
@@ -810,8 +836,7 @@ impl WorldRaster {
                 .sum::<usize>()
             + std::mem::size_of_val(&*prepare.rgba_prepared)
             + std::mem::size_of_val(&*prepare.rgba_colors)
-            + std::mem::size_of_val(&*prepare.sky_states)
-            + (prepare.sky_touched.len() + prepare.sky_drawn.len()) * std::mem::size_of::<u32>()
+            + prepare.skies.bytes()
             + std::mem::size_of_val(&*prepare.sky_stages)
             + std::mem::size_of_val(&*prepare.draws);
         Ok(Self {
@@ -1007,8 +1032,7 @@ impl WorldPrepare {
         assets: &Assets,
         stats: &mut crate::BackendStats,
     ) {
-        self.sky_touched.begin();
-        self.sky_drawn.begin();
+        self.skies.begin_frame();
         if !camera.rgb() {
             return;
         }
@@ -1045,12 +1069,11 @@ impl WorldPrepare {
         camera: &Camera,
         stats: &mut crate::BackendStats,
     ) {
-        let index = material.0 as usize;
-        let clip = &mut self.sky_states[index];
-        if !self.sky_touched.test_and_set(index) {
-            clip.clear();
-        }
-        if !clip.add_polygon(&points, camera.refdef.origin) {
+        if !self
+            .skies
+            .clip_mut(material.0 as usize)
+            .is_some_and(|clip| clip.add_polygon(&points, camera.refdef.origin))
+        {
             self.geometry.reject(stats);
         }
     }
@@ -1087,16 +1110,9 @@ impl WorldPrepare {
         if !self.catalog.sky_enabled(id) || !camera.rgb() {
             return external;
         }
-        let Some(batch) = self.sky_states.get_mut(id.0 as usize) else {
-            return external;
+        let Some(mut bounds) = self.skies.take_for_draw(id.0 as usize) else {
+            return PreparedDraw::Skip;
         };
-        if !self.sky_touched.contains(id.0 as usize) || self.sky_drawn.test_and_set(id.0 as usize) {
-            return PreparedDraw::Skip;
-        }
-        let mut bounds = *batch.bounds();
-        if !bounds.iter().any(|bound| bound.visible()) {
-            return PreparedDraw::Skip;
-        }
         let Some(material) = assets.material(id) else {
             self.geometry.reject(stats);
             return PreparedDraw::Skip;
@@ -1111,12 +1127,7 @@ impl WorldPrepare {
             return external;
         };
         bounds = crate::sky::draw_bounds(bounds, rotation);
-        let inputs = DrawInputs {
-            time_ms: camera.refdef.time_ms,
-            view_origin: camera.refdef.origin,
-            identity_light: camera.refdef.identity_light,
-            ..DrawInputs::default()
-        };
+        let inputs = DrawInputs::for_view(&camera.refdef);
         let old_primitive_count = self.geometry.primitive_count;
         let depth_override = params.far_depth.then_some(1.0 / camera.refdef.far);
         if let Some(images) = outer_box {
@@ -1131,18 +1142,12 @@ impl WorldPrepare {
                     params,
                     rotation.filter(|_| params.cpu_rotation),
                     inputs.view_origin,
-                    inputs.time_ms,
+                    inputs.time_seconds(),
                     camera.refdef.far,
                 ) else {
                     continue;
                 };
-                let stage = Stage {
-                    texture: StageTexture::Image(images[face.index()]),
-                    sampler: params.sampler,
-                    rgb_gen: RgbGen::IdentityLighting,
-                    depth_write: !params.far_depth,
-                    ..Stage::default()
-                };
+                let stage = crate::sky::box_face_stage(&images, face, params);
                 let Ok(prepared) = evaluator.prepare(&stage, settings, inputs) else {
                     self.geometry.reject(stats);
                     continue;
@@ -1175,14 +1180,7 @@ impl WorldPrepare {
             };
             let mut valid = true;
             for (index, &stage) in material.stages.iter().enumerate() {
-                let stage = if matches!(stage.texgen, TexCoordGen::CloudSky { .. }) {
-                    Stage {
-                        texgen: TexCoordGen::Texture,
-                        ..stage
-                    }
-                } else {
-                    stage
-                };
+                let stage = crate::sky::cloud_stage(stage);
                 match evaluator.prepare(&stage, material.settings, inputs) {
                     Ok(prepared) if assets.image(prepared.image).is_some() => {
                         self.sky_stages[index] = Some(prepared)
@@ -1324,12 +1322,9 @@ impl SurfacePrepare {
             }
             certified &= material.settings.deforms.iter().all(Option::is_none);
             let inputs = DrawInputs {
-                time_ms: camera.refdef.time_ms,
-                view_origin: camera.refdef.origin,
-                identity_light: camera.refdef.identity_light,
                 lightmap: binding.lightmap,
                 texture_scale: binding.texture_scale,
-                ..DrawInputs::default()
+                ..DrawInputs::for_view(&camera.refdef)
             };
             let Ok(base) = evaluator.prepare(&material.stages[0], material.settings, inputs) else {
                 self.reject(stats);
@@ -2034,16 +2029,22 @@ fn consume_spans(
     let refdef = &camera.refdef;
     if let Some(source) = primitive.sky {
         let depth = primitive.planes.inverse_depth;
+        let Some(draw) =
+            super::sky::LayeredDraw::prepare(source, camera, width, buffers.frame_height)
+        else {
+            stats.rejected += spans.count() as u64;
+            return;
+        };
         for (_, span) in spans {
             super::sky::layered_span(
                 width,
-                buffers.frame_height,
                 span,
                 source,
                 camera,
                 assets,
                 depth,
                 primitive.draw_rank,
+                &draw,
                 buffers,
                 stats,
             );
@@ -2204,17 +2205,14 @@ fn stage_span(
             let px = x as f32;
             let py = span.y as f32;
             let zi = stage.planes.inverse_depth.at(px, py);
-            if zi <= 0.0 || !zi.is_finite() {
-                continue;
-            }
             let index = buffers.offset(width, x, span.y);
             let depth = primitive.depth_override.unwrap_or(zi);
-            if !super::depth_passes(
-                prepared.stage.depth_func,
+            if !buffers.depth_test(
+                index,
+                zi,
                 depth,
-                buffers.inverse_depth[index],
                 primitive.draw_rank,
-                buffers.depth_ranks[index],
+                prepared.stage.depth_func,
             ) {
                 continue;
             }
@@ -2355,16 +2353,13 @@ fn factor_spans(
                     let px = x as f32;
                     let py = span.y as f32;
                     let zi_a = a.planes.inverse_depth.at(px, py);
-                    if zi_a <= 0.0 || !zi_a.is_finite() {
-                        continue;
-                    }
                     let index = buffers.offset(width, x, span.y);
-                    if !super::depth_passes(
-                        first.stage.depth_func,
+                    if !buffers.depth_test(
+                        index,
                         zi_a,
-                        buffers.inverse_depth[index],
+                        zi_a,
                         primitive.draw_rank,
-                        buffers.depth_ranks[index],
+                        first.stage.depth_func,
                     ) {
                         continue;
                     }
@@ -2374,9 +2369,7 @@ fn factor_spans(
                         a.planes.texture.map(|plane| plane.at(px, py) * z_a),
                         a.planes.color.map(|plane| plane.at(px, py) * z_a),
                     );
-                    let first_pixel = u32::from_le_bytes(
-                        source_a.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8),
-                    );
+                    let first_pixel = crate::stage::pack_unit_rgba(source_a);
                     let zi_b = b.planes.inverse_depth.at(px, py);
                     let color = if zi_b > 0.0
                         && zi_b.is_finite()
@@ -2541,22 +2534,10 @@ fn native_span(
             let zi = planes.inverse_depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
             let color = texels[super::span::texel(current, texture_width, texture_height)];
-            if zi.is_finite()
-                && zi > 0.0
-                && super::depth_passes(
-                    DepthFunc::Lequal,
-                    zi,
-                    buffers.inverse_depth[index],
-                    draw_rank,
-                    buffers.depth_ranks[index],
-                )
+            if buffers.depth_test(index, zi, zi, draw_rank, DepthFunc::Lequal)
                 && Some(color) != transparent_index
             {
-                buffers.pixels[index] = palette.color(color);
-                buffers.indices[index] = color;
-                buffers.palettes[index] = palette_id;
-                buffers.inverse_depth[index] = zi;
-                buffers.depth_ranks[index] = draw_rank;
+                buffers.write_indexed(index, color, palette, palette_id, zi, draw_rank);
                 stats.pixels = stats.pixels.saturating_add(1);
             }
         },
