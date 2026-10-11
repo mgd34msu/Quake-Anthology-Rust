@@ -59,10 +59,7 @@ struct ThinkRules {
 impl ThinkRules {
     fn load(rules: RuleSetId) -> Self {
         Self {
-            seconds: matches!(
-                rules,
-                RuleSetId::Quake | RuleSetId::QuakeWorld | RuleSetId::Quake2
-            ),
+            seconds: matches!(ThinkTime::module_clock(rules), ThinkTime::Seconds(_)),
             frame_end: matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld),
             integer_float: rules == RuleSetId::Quake3,
             repeat: rules == RuleSetId::QuakeWorld,

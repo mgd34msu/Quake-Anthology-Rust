@@ -3,22 +3,7 @@ use crate::{FormatError, text::Tokens};
 use qa_core::{names::NameTable, primitives::NameId};
 use std::ops::Range;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntitySyntax {
-    Quake,
-    Quake2,
-    Quake3,
-}
-impl EntitySyntax {
-    pub const fn for_rules(rules: qa_core::primitives::RuleSetId) -> Self {
-        use qa_core::primitives::RuleSetId;
-        match rules {
-            RuleSetId::Quake | RuleSetId::QuakeWorld => Self::Quake,
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => Self::Quake2,
-            RuleSetId::Quake3 => Self::Quake3,
-        }
-    }
-}
+pub use qa_core::primitives::Lineage as EntitySyntax;
 /// The same byte tokenizer used by cold entity conversion and module reads.
 pub struct EntityTokens<'a> {
     tokens: Tokens<'a>,

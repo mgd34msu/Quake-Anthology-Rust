@@ -17,7 +17,7 @@ fn color(r: &mut Reader<'_>, bits: u8, descriptor: u8) -> Result<[u8; 4], Format
         Ok([p[2], p[1], p[0], if bits == 32 { p[3] } else { 255 }])
     }
 }
-pub(super) fn tga(bytes: &[u8], policy: RasterPolicy) -> Result<RgbaImage, FormatError> {
+pub(super) fn tga(bytes: &[u8], policy: Lineage) -> Result<RgbaImage, FormatError> {
     let mut r = Reader::new(bytes);
     let h = r.take(18)?;
     let kind = h[2];
@@ -29,7 +29,7 @@ pub(super) fn tga(bytes: &[u8], policy: RasterPolicy) -> Result<RgbaImage, Forma
     let indexed = kind == 1 || kind == 9;
     let gray = kind == 3 || kind == 11;
     let rle = kind >= 9;
-    let legacy = policy == RasterPolicy::Quake3;
+    let legacy = policy == Lineage::Quake3;
     if legacy {
         if ![2, 3, 10].contains(&kind)
             || h[1] != 0
@@ -123,7 +123,7 @@ pub(super) fn tga(bytes: &[u8], policy: RasterPolicy) -> Result<RgbaImage, Forma
         pixels,
     })
 }
-pub(super) fn bmp(bytes: &[u8], policy: RasterPolicy) -> Result<RgbaImage, FormatError> {
+pub(super) fn bmp(bytes: &[u8], policy: Lineage) -> Result<RgbaImage, FormatError> {
     let mut r = Reader::new(bytes);
     if r.take(2)? != b"BM" {
         return Err(FormatError::Unsupported);
@@ -145,7 +145,7 @@ pub(super) fn bmp(bytes: &[u8], policy: RasterPolicy) -> Result<RgbaImage, Forma
     r.take(12)?;
     let colors = r.u32()? as usize;
     r.take(4)?;
-    let legacy = policy == RasterPolicy::Quake3;
+    let legacy = policy == Lineage::Quake3;
     if ![8, 24, 32].contains(&depth)
         || compression != 0
         || (!legacy && (header != 40 || planes != 1))

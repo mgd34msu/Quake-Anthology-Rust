@@ -5,7 +5,7 @@ use qa_console::{
 };
 use qa_content::vfs::Vfs;
 use qa_core::{names::NameTable, primitives::NameId, sys_events::EventTime, text::FixedText};
-use qa_formats::image::RasterPolicy;
+use qa_formats::image::Lineage;
 use qa_platform::{
     Stopwatch,
     allocations::{CountingAllocator, begin_frame, end_frame},
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut images = Images::new(
         &vfs,
         &mut assets,
-        RasterPolicy::Quake3,
+        Lineage::Quake3,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
     )
     .map_err(|e| format!("{e:?}"))?;

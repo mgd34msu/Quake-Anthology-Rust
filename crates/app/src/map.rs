@@ -220,7 +220,7 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = bsp.format.rule_set();
     let entity_source = NativeEntityText {
-        syntax: EntitySyntax::for_rules(source),
+        syntax: source.lineage(),
         bytes: bsp.bytes(Lump::Entities).into(),
     };
     let origin = vfs.origin(file).ok_or("missing map origin")?;
@@ -393,7 +393,7 @@ fn spawns(
     source: RuleSetId,
 ) -> Result<(Box<[SpawnAnchor]>, usize, SkyEnvironment), String> {
     let rules = map.bsp.format.rule_set();
-    let syntax = EntitySyntax::for_rules(source);
+    let syntax = source.lineage();
     let entities =
         EntityLump::parse(map.entity_text(), syntax).map_err(|e| format!("entity lump: {e:?}"))?;
     let mut preferred = None;

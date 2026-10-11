@@ -28,7 +28,7 @@ fn main() -> Result<(), String> {
         vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let bsp = Bsp::parse(&bytes).map_err(|e| format!("{e:?}"))?;
-        let syntax = EntitySyntax::for_rules(bsp.format.rule_set());
+        let syntax = bsp.format.rule_set().lineage();
         maps += 1;
         match EntityLump::parse(bsp.bytes(Lump::Entities), syntax) {
             Ok(lump) => {

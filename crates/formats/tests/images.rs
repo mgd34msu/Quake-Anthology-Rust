@@ -5,13 +5,13 @@ use std::{borrow::Cow, io::Cursor};
 fn file_decoding_flags_come_from_the_shared_rule_identity() {
     use qa_core::primitives::RuleSetId;
     for (rules, expected) in [
-        (RuleSetId::Quake, RasterPolicy::Standard),
-        (RuleSetId::QuakeWorld, RasterPolicy::Standard),
-        (RuleSetId::Quake2, RasterPolicy::Quake2),
-        (RuleSetId::Quake2Rerelease, RasterPolicy::Quake2),
-        (RuleSetId::Quake3, RasterPolicy::Quake3),
+        (RuleSetId::Quake, Lineage::Quake),
+        (RuleSetId::QuakeWorld, Lineage::Quake),
+        (RuleSetId::Quake2, Lineage::Quake2),
+        (RuleSetId::Quake2Rerelease, Lineage::Quake2),
+        (RuleSetId::Quake3, Lineage::Quake3),
     ] {
-        assert_eq!(raster_policy(rules), expected);
+        assert_eq!(rules.lineage(), expected);
     }
 }
 
@@ -57,13 +57,11 @@ fn pcx_keeps_padding_out_of_indices_and_reconstructs_rgb_planes() {
     b.extend([1, 2, 3, 4, 5, 6, 7, 8]);
     b.push(12);
     b.extend(vec![0; 768]);
-    let DecodedImage::Indexed(im) = decode(&b, ImageFormat::Pcx, RasterPolicy::Standard).unwrap()
-    else {
+    let DecodedImage::Indexed(im) = decode(&b, ImageFormat::Pcx, Lineage::Quake).unwrap() else {
         panic!()
     };
     assert_eq!(&*im.indices, &[1, 2, 5, 6]);
-    let DecodedImage::Indexed(im) = decode(&b, ImageFormat::Pcx, RasterPolicy::Quake3).unwrap()
-    else {
+    let DecodedImage::Indexed(im) = decode(&b, ImageFormat::Pcx, Lineage::Quake3).unwrap() else {
         panic!()
     };
     assert_eq!(&*im.indices, &[1, 2, 3, 4]);
@@ -71,8 +69,7 @@ fn pcx_keeps_padding_out_of_indices_and_reconstructs_rgb_planes() {
     b.extend([
         1, 2, 0, 0, 3, 4, 0, 0, 5, 6, 0, 0, 7, 8, 0, 0, 9, 10, 0, 0, 11, 12, 0, 0,
     ]);
-    let DecodedImage::Rgba(im) = decode(&b, ImageFormat::Pcx, RasterPolicy::Standard).unwrap()
-    else {
+    let DecodedImage::Rgba(im) = decode(&b, ImageFormat::Pcx, Lineage::Quake).unwrap() else {
         panic!()
     };
     assert_eq!(
@@ -83,9 +80,9 @@ fn pcx_keeps_padding_out_of_indices_and_reconstructs_rgb_planes() {
     b.extend([1, 2, 3, 4, 5, 6, 7, 8]);
     b.push(12);
     b.extend(vec![0; 768]);
-    assert!(decode(&b, ImageFormat::Pcx, RasterPolicy::Standard).is_ok());
+    assert!(decode(&b, ImageFormat::Pcx, Lineage::Quake).is_ok());
     b[128] = 0xc0;
-    assert!(decode(&b, ImageFormat::Pcx, RasterPolicy::Standard).is_err());
+    assert!(decode(&b, ImageFormat::Pcx, Lineage::Quake).is_err());
 }
 #[test]
 fn original_index_controls_cutouts_before_translation_and_fullbright_split() {
@@ -133,14 +130,11 @@ fn original_index_controls_cutouts_before_translation_and_fullbright_split() {
 #[test]
 fn tga_orientation_and_rle_policy_follow_native_boundary_options() {
     let b = tga();
-    let DecodedImage::Rgba(standard) =
-        decode(&b, ImageFormat::Tga, RasterPolicy::Standard).unwrap()
-    else {
+    let DecodedImage::Rgba(standard) = decode(&b, ImageFormat::Tga, Lineage::Quake).unwrap() else {
         panic!()
     };
     assert_eq!(&standard.pixels[..4], &[10, 20, 30, 0]);
-    let DecodedImage::Rgba(legacy) = decode(&b, ImageFormat::Tga, RasterPolicy::Quake3).unwrap()
-    else {
+    let DecodedImage::Rgba(legacy) = decode(&b, ImageFormat::Tga, Lineage::Quake3).unwrap() else {
         panic!()
     };
     assert_eq!(&legacy.pixels[..4], &[70, 80, 90, 128]);
@@ -148,9 +142,8 @@ fn tga_orientation_and_rle_policy_follow_native_boundary_options() {
     b[2] = 10;
     b.push(0x84);
     b.extend([1, 2, 3, 4]);
-    assert!(decode(&b, ImageFormat::Tga, RasterPolicy::Standard).is_err());
-    let DecodedImage::Rgba(legacy) = decode(&b, ImageFormat::Tga, RasterPolicy::Quake3).unwrap()
-    else {
+    assert!(decode(&b, ImageFormat::Tga, Lineage::Quake).is_err());
+    let DecodedImage::Rgba(legacy) = decode(&b, ImageFormat::Tga, Lineage::Quake3).unwrap() else {
         panic!()
     };
     assert_eq!(legacy.pixels, [3, 2, 1, 4].repeat(4));
@@ -170,8 +163,7 @@ fn png_palette_alpha_and_sixteen_bit_strip_match_native_conversion() {
             .write_image_data(&[0b0100_0000])
             .unwrap();
     }
-    let DecodedImage::Rgba(im) = decode(&bytes, ImageFormat::Png, RasterPolicy::Standard).unwrap()
-    else {
+    let DecodedImage::Rgba(im) = decode(&bytes, ImageFormat::Png, Lineage::Quake).unwrap() else {
         panic!()
     };
     assert_eq!(im.pixels, [10, 20, 30, 0, 40, 50, 60, 255]);
@@ -186,14 +178,13 @@ fn png_palette_alpha_and_sixteen_bit_strip_match_native_conversion() {
             .write_image_data(&[0x12, 0xff, 0x34, 0xff, 0x56, 0xff, 0x78, 0xff])
             .unwrap();
     }
-    let DecodedImage::Rgba(im) = decode(&bytes, ImageFormat::Png, RasterPolicy::Standard).unwrap()
-    else {
+    let DecodedImage::Rgba(im) = decode(&bytes, ImageFormat::Png, Lineage::Quake).unwrap() else {
         panic!()
     };
     assert_eq!(im.pixels, [0x12, 0x34, 0x56, 0x78]);
     let end = bytes.len() - 1;
     bytes[end] ^= 1;
-    assert!(decode(&bytes, ImageFormat::Png, RasterPolicy::Standard).is_err());
+    assert!(decode(&bytes, ImageFormat::Png, Lineage::Quake).is_err());
 }
 #[test]
 fn native_mip_levels_borrow_their_indices_and_preserve_palette_alpha() {
@@ -298,7 +289,7 @@ fn malformed_raster_data_returns_a_scoped_error() {
     ];
     for (bytes, format) in &fixtures {
         for end in 0..bytes.len() {
-            assert!(decode(&bytes[..end], *format, RasterPolicy::Standard).is_err());
+            assert!(decode(&bytes[..end], *format, Lineage::Quake).is_err());
         }
     }
     let mut seed = 0x494d4147u32;
@@ -310,10 +301,10 @@ fn malformed_raster_data_returns_a_scoped_error() {
         seed ^= seed << 5;
         let at = seed as usize % b.len();
         b[at] ^= (seed >> 24) as u8;
-        let _scoped_result = decode(&b, *format, RasterPolicy::Standard);
+        let _scoped_result = decode(&b, *format, Lineage::Quake);
     }
     assert!(matches!(
-        decode(&[0; 8], ImageFormat::Lmp, RasterPolicy::Standard),
+        decode(&[0; 8], ImageFormat::Lmp, Lineage::Quake),
         Err(FormatError::InvalidRange)
     ));
 }

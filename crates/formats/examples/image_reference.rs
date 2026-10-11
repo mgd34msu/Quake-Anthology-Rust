@@ -1,5 +1,5 @@
 //! Headless comparison against extracted, unchanged original image routines.
-use qa_formats::image::{self, DecodedImage, ImageFormat, MipFilter, RasterPolicy, RgbaImage};
+use qa_formats::image::{self, DecodedImage, ImageFormat, Lineage, MipFilter, RgbaImage};
 use std::{fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for case in 0..32 {
         let bytes = fs::read(root.join(format!("{case}.pcx")))?;
         let expected = fs::read(root.join(format!("{case}.pcx.raw")))?;
-        for policy in [RasterPolicy::Quake2, RasterPolicy::Quake3] {
+        for policy in [Lineage::Quake2, Lineage::Quake3] {
             let DecodedImage::Indexed(image) = image::decode(&bytes, ImageFormat::Pcx, policy)
                 .map_err(|e| format!("{case}: {e:?}"))?
             else {

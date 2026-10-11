@@ -538,7 +538,23 @@ pub enum RuleSetId {
     Quake3 = 4,
 }
 
+/// Derived file-decoding lineage; capability roles still select RuleSetId.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lineage {
+    Quake,
+    Quake2,
+    Quake3,
+}
+
 impl RuleSetId {
+    pub const fn lineage(self) -> Lineage {
+        match self {
+            Self::Quake | Self::QuakeWorld => Lineage::Quake,
+            Self::Quake2 | Self::Quake2Rerelease => Lineage::Quake2,
+            Self::Quake3 => Lineage::Quake3,
+        }
+    }
+
     pub const ALL: [Self; 5] = [
         Self::Quake,
         Self::QuakeWorld,

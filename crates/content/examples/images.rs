@@ -3,7 +3,7 @@ mod assets;
 #[path = "support/retail.rs"]
 mod retail;
 use qa_formats::image::{
-    self, Colormap, ImageFormat, MipFormat, MipTexture, Palette, RasterPolicy, Wad, WadImage,
+    self, Colormap, ImageFormat, Lineage, MipFormat, MipTexture, Palette, Wad, WadImage,
 };
 use std::{collections::BTreeMap, path::Path};
 
@@ -42,7 +42,7 @@ fn check(name: &[u8], bytes: &[u8]) -> Result<(String, usize), qa_formats::Forma
         return Ok(("Raw font".into(), 1));
     }
     let format = ImageFormat::from_path(name).ok_or(qa_formats::FormatError::Unsupported)?;
-    let _image = image::decode(bytes, format, RasterPolicy::Standard)?;
+    let _image = image::decode(bytes, format, Lineage::Quake)?;
     Ok((format!("{format:?}"), 1))
 }
 fn main() -> Result<(), String> {

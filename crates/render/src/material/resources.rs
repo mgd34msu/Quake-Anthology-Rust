@@ -6,7 +6,7 @@ use qa_core::primitives::{NameId, RuleSetId};
 use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
-    Colormap, DecodedImage, ImageFormat, MipTexture, Palette, PaletteOptions, decode, raster_policy,
+    Colormap, DecodedImage, ImageFormat, MipTexture, Palette, PaletteOptions, decode,
 };
 
 #[derive(Debug)]
@@ -334,7 +334,7 @@ pub fn load_palette(
         PaletteSource::Pcx { image } => {
             let bytes = read_file(vfs, image, &mut reader)?;
             let DecodedImage::Indexed(decoded) =
-                decode(&bytes, ImageFormat::Pcx, raster_policy(RuleSetId::Quake2))?
+                decode(&bytes, ImageFormat::Pcx, RuleSetId::Quake2.lineage())?
             else {
                 return Err(ResourceError::Asset("palette PCX must be indexed"));
             };
@@ -502,7 +502,7 @@ impl<'a> Images<'a> {
         }
         let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
         let DecodedImage::Indexed(decoded) =
-            decode(&bytes, ImageFormat::Pcx, raster_policy(RuleSetId::Quake2))?
+            decode(&bytes, ImageFormat::Pcx, RuleSetId::Quake2.lineage())?
         else {
             return Err(ResourceError::Asset("PCX resource must retain indices"));
         };
@@ -518,8 +518,7 @@ impl<'a> Images<'a> {
             let format = ImageFormat::from_path(path.as_bytes())
                 .ok_or(ResourceError::Asset("unknown RGBA override format"))?;
             let bytes = read_file(self.vfs, path.as_bytes(), &mut self.reader)?;
-            let DecodedImage::Rgba(rgba) =
-                decode(&bytes, format, raster_policy(RuleSetId::Quake2))?
+            let DecodedImage::Rgba(rgba) = decode(&bytes, format, RuleSetId::Quake2.lineage())?
             else {
                 return Err(ResourceError::Asset(
                     "RGBA override must have original color pixels",
@@ -616,7 +615,7 @@ impl<'a> Images<'a> {
                 "Q2 PCX requires indexed palette registration",
             ));
         }
-        let rgba = match decode(&bytes, format, raster_policy(rules))? {
+        let rgba = match decode(&bytes, format, rules.lineage())? {
             DecodedImage::Rgba(image) => image,
             DecodedImage::Indexed(image) => {
                 let palette: &Palette = image

@@ -87,7 +87,7 @@ pub(super) fn qpic(bytes: &[u8]) -> Result<IndexedImage<'_>, FormatError> {
         palette: None,
     })
 }
-pub(super) fn pcx(bytes: &[u8], policy: RasterPolicy) -> Result<DecodedImage<'_>, FormatError> {
+pub(super) fn pcx(bytes: &[u8], policy: Lineage) -> Result<DecodedImage<'_>, FormatError> {
     let mut r = Reader::new(bytes);
     let header = r.take(128)?;
     if header[..4] != [10, 5, 1, 8] {
@@ -98,12 +98,12 @@ pub(super) fn pcx(bytes: &[u8], policy: RasterPolicy) -> Result<DecodedImage<'_>
     let mut ymin = u32::from(bounds.u16()?);
     let xmax = u32::from(bounds.u16()?);
     let ymax = u32::from(bounds.u16()?);
-    let legacy = policy != RasterPolicy::Standard;
+    let legacy = policy != Lineage::Quake;
     if legacy {
         xmin = 0;
         ymin = 0;
     }
-    let (limit_x, limit_y) = if policy == RasterPolicy::Quake2 {
+    let (limit_x, limit_y) = if policy == Lineage::Quake2 {
         (640, 480)
     } else {
         (1024, 1024)

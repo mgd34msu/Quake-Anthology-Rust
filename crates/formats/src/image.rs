@@ -51,22 +51,7 @@ pub enum DecodedImage<'a> {
     Indexed(IndexedImage<'a>),
     Rgba(RgbaImage),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RasterPolicy {
-    Standard,
-    /// Original tight PCX rows; other formats use standard decoding.
-    Quake2,
-    Quake3,
-}
-/// File decoding flags derived from the presentation's shared rule identity.
-pub fn raster_policy(rules: qa_core::primitives::RuleSetId) -> RasterPolicy {
-    use qa_core::primitives::RuleSetId;
-    match rules {
-        RuleSetId::Quake | RuleSetId::QuakeWorld => RasterPolicy::Standard,
-        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => RasterPolicy::Quake2,
-        RuleSetId::Quake3 => RasterPolicy::Quake3,
-    }
-}
+pub use qa_core::primitives::Lineage;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageFormat {
     Lmp,
@@ -98,7 +83,7 @@ impl ImageFormat {
 pub fn decode(
     bytes: &[u8],
     format: ImageFormat,
-    policy: RasterPolicy,
+    policy: Lineage,
 ) -> Result<DecodedImage<'_>, FormatError> {
     match format {
         ImageFormat::Lmp => indexed::qpic(bytes).map(DecodedImage::Indexed),
