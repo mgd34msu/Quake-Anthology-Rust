@@ -27,6 +27,115 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn q3_game_and_ui_commands_insert_and_append_in_the_one_buffer() {
+    use qa_core::text::FixedText;
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 1023 }),
+        (
+            1 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
+        (
+            1 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::Microsoft,
+            },
+        ),
+    ] {
+        for (table, ordinal) in [(&Q3_SERVER, 14), (&Q3_UI, 12)] {
+            let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+            let mut console = Console::new(Context::default()).unwrap();
+            let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
+            let mut scratch = runtime.geometry.scratch();
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let mut ctx = context();
+            ctx.console.source = RuleSetId::Quake3;
+            services
+                .commands
+                .append("sensitivity 1\n", ctx.console)
+                .unwrap();
+            let mut memory = ModuleMemory::load(base, 1024, &[]).unwrap();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let args = [2, base + 16];
+            let mut call = Invocation {
+                services: &mut services,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                context: ctx,
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments: &args,
+            };
+            call.memory
+                .write_string(base + 16, 64, b"sensitivity 3\n")
+                .unwrap();
+            assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            let insert = [0xffff_ffff_0000_0001, base + 16];
+            call.arguments = &insert;
+            call.memory
+                .write_string(base + 16, 64, b"sensitivity 2")
+                .unwrap();
+            assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            let now = [0, base + 16];
+            call.arguments = &now;
+            assert_eq!(
+                table.invoke(ordinal, &mut call, &mut unknown),
+                Err(CallError::Text)
+            );
+            let invalid = [3, base + 16];
+            call.arguments = &invalid;
+            assert_eq!(
+                table.invoke(ordinal, &mut call, &mut unknown),
+                Err(CallError::Text)
+            );
+            let mut line = FixedText::<64>::default();
+            for expected in ["sensitivity 2", "sensitivity 1", "sensitivity 3"] {
+                let (found, result) = call.services.commands.next_line(&mut line).unwrap();
+                assert_eq!(found, ctx.console);
+                assert_eq!(result, Ok(()));
+                assert_eq!(line.as_str(), expected);
+            }
+            assert!(call.services.commands.is_empty());
+            call.services
+                .commands
+                .append(
+                    &"x".repeat(qa_console::command_buffer::CAPACITY - 20),
+                    ctx.console,
+                )
+                .unwrap();
+            call.memory
+                .write_string(base + 16, 64, b"insert text that cannot fit now")
+                .unwrap();
+            call.arguments = &insert;
+            assert_eq!(
+                table.invoke(ordinal, &mut call, &mut unknown),
+                Err(CallError::Text)
+            );
+            let mut full = FixedText::<{ qa_console::command_buffer::CAPACITY }>::default();
+            assert_eq!(
+                call.services.commands.next_line(&mut full).unwrap().1,
+                Ok(())
+            );
+            assert_eq!(
+                full.as_bytes().len(),
+                qa_console::command_buffer::CAPACITY - 20
+            );
+            assert!(full.as_bytes().iter().all(|&b| b == b'x'));
+            assert!(call.services.commands.is_empty());
+            assert_eq!(unknown.calls, 0);
+        }
+    }
+}
+
+#[test]
 fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
     use qa_formats::entities::EntitySyntax;
     use std::sync::Arc;

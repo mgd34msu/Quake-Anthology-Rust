@@ -198,14 +198,15 @@ const fn ui() -> CallTable {
     t.entries[8] = Some(cvar_create);
     t.entries[10] = Some(argc);
     t.entries[11] = Some(argv);
+    t.entries[12] = Some(command);
     t.entries[13] = Some(file_open);
     t.entries[14] = Some(file_read);
     t.entries[16] = Some(file_close);
     t.entries[86] = Some(file_seek);
     t
 }
-// Original Q3 1.32 import ordinals. UI's ExecuteText and game's
-// SendConsoleCommand have different argument layouts and are not aliases.
+// Original Q3 1.32 import ordinals. Game/UI commands carry an execution mode;
+// cgame's SendConsoleCommand accepts only text and appends it.
 pub const Q3_SERVER: CallTable = server();
 pub const Q3_CLIENT: CallTable = client();
 pub const Q3_UI: CallTable = ui();
@@ -751,12 +752,12 @@ fn native_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text =
         std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
-    // Only EXEC_APPEND is implemented; immediate/insert execution must use the
-    // existing command buffer's native ordering before those imports are enabled.
-    if c.arg(0)? != 2 {
-        return Err(CallError::Text);
+    match c.arg(0)? as u32 {
+        1 => (ENGINE_CALLS.command_insert)(c.services, c.context.console, text)?,
+        2 => (ENGINE_CALLS.command)(c.services, c.context.console, text)?,
+        // EXEC_NOW needs synchronous host dispatch, not queued insertion.
+        _ => return Err(CallError::Text),
     }
-    (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
     Ok(0)
 }
 fn command_append(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
