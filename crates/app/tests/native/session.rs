@@ -3632,7 +3632,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 )
             };
             emit(&mut game, slots[0], &[0, message]).unwrap();
+            emit(&mut game, slots[0], &[2, message]).unwrap();
             emit(&mut game, slots[1], &[target, 1, message]).unwrap();
+            emit(&mut game, slots[1], &[target, 2, message]).unwrap();
             emit(&mut game, slots[1], &[target, 3, message]).unwrap();
             emit(&mut game, slots[2], &[target, message]).unwrap();
             emit(&mut game, slots[1], &[0, 2, message]).unwrap();
@@ -3670,7 +3672,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 prints,
                 [
                     (None, PrintKind::Notify, 0),
+                    (None, PrintKind::Console, 2),
                     (Some(client), PrintKind::Notify, 1),
+                    (Some(client), PrintKind::Console, 2),
                     (Some(client), PrintKind::Chat, 3),
                     (Some(client), PrintKind::Center, 2),
                     (None, PrintKind::Console, 2),

@@ -427,7 +427,7 @@ fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64
         c.services,
         None,
         if BROADCAST {
-            message_kind(level)
+            PrintKind::from_level(level)
         } else {
             PrintKind::Console
         },
@@ -523,20 +523,13 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
     } else if TARGET && address == 0 {
         PrintKind::Console
     } else {
-        message_kind(level)
+        PrintKind::from_level(level)
     };
     let text = c
         .memory
         .cstring(c.pointer(usize::from(TARGET) + usize::from(!CENTER))?)?;
     (ENGINE_CALLS.print)(c.services, client, kind, level, text)?;
     Ok(0)
-}
-fn message_kind(level: u8) -> PrintKind {
-    if level == PrintKind::Chat.default_level() {
-        PrintKind::Chat
-    } else {
-        PrintKind::Notify
-    }
 }
 fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     print(c)?;

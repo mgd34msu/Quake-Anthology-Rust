@@ -173,13 +173,7 @@ impl<'a> Iterator for Prints<'a> {
                 self.rest = &[];
                 return Some(Err(Error::Truncated));
             };
-            kind = if level == 3 {
-                PrintKind::Chat
-            } else if level < 2 {
-                PrintKind::Notify
-            } else {
-                PrintKind::Console
-            };
+            kind = PrintKind::from_level(level);
             (Some(level), rest)
         } else {
             (None, rest)

@@ -867,6 +867,13 @@ pub enum PrintKind {
     Layout,
 }
 impl PrintKind {
+    pub const fn from_level(level: u8) -> Self {
+        match level {
+            0 | 1 => Self::Notify,
+            3 => Self::Chat,
+            _ => Self::Console,
+        }
+    }
     pub const fn default_level(self) -> u8 {
         match self {
             Self::Chat => 3,

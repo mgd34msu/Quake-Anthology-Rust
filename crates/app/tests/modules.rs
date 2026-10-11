@@ -748,7 +748,7 @@ fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameH
 fn quakec_broadcast_and_localcmd_share_output_and_deferred_commands() {
     use qa_network::commands::packet::Protocol;
     for (rules, level, kind, wire_level) in [
-        (RuleSetId::Quake, 3.0, PrintKind::Notify, 2),
+        (RuleSetId::Quake, 3.0, PrintKind::Console, 2),
         (RuleSetId::QuakeWorld, 3.0, PrintKind::Chat, 3),
         (RuleSetId::QuakeWorld, 1.75, PrintKind::Notify, 1),
     ] {

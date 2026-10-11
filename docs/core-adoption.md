@@ -344,6 +344,8 @@ Texture sampling uses the shared unit-RGBA and interpolation functions;
 buffer and factor-stage tests use one depth_gate predicate. Scalar RGBA spans,
 mesh triangles and 2D draws use Buffers::write_rgba for palette markers and
 optional depth/rank writes.
+PrintKind::from_level classifies local module and decoded wire priorities;
+the two differing classifiers are deleted.
 The corresponding backend loops and helper copies are deleted.
 
 `world/bsp.rs:24`, `compat/entities.rs:92`, `:652`,

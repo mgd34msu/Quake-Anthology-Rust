@@ -27,6 +27,121 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn local_native_and_received_priority_prints_have_identical_hud_effects() {
+    use qa_compat::abi::Q2_RERELEASE;
+    use qa_core::{
+        events::{OutputRecord, OutputSubmission, TextStore},
+        primitives::{HudState, PrintKind},
+    };
+    use qa_network::{commands::packet::Protocol, outputs};
+    for abi in [
+        qa_platform::native::NativeAbi::SystemV,
+        qa_platform::native::NativeAbi::Microsoft,
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let base = 1 << 40;
+        let mut memory = ModuleMemory::load(base, 128, &[]).unwrap();
+        memory
+            .write_string(base + 16, 32, b"priority\x82\n")
+            .unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        for level in 0u8..=255 {
+            {
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                assert_eq!(
+                    Q2_RERELEASE.invoke(
+                        0,
+                        &mut Invocation {
+                            services: &mut services,
+                            memory: &mut memory,
+                            native_cvars: None,
+                            native_resources: None,
+                            native_entities: None,
+                            native_surfaces: None,
+                            native_command: None,
+                            native_configs: None,
+                            context: context(),
+                            platform_time: EventTime(0),
+                            command: &[],
+                            addresses: Addresses::Native { abi },
+                            arguments: &[u64::from(level), base + 16],
+                        },
+                        &mut unknown
+                    ),
+                    Ok(0)
+                );
+            }
+            let consumer = runtime.server.presentation;
+            let mut seen = 0;
+            qa_core::events::dispatch_consumer(
+                &mut runtime.server.events,
+                consumer,
+                &mut |record: OutputRecord, texts: &mut TextStore| {
+                    let FrameEvent::Print(print) = record.event else {
+                        panic!("print record")
+                    };
+                    seen += 1;
+                    let mut local = HudState::default();
+                    assert!(qa_ui::hud::print(&mut local, texts, print, 1.0, 2.0, 3.0));
+                    for protocol in [
+                        Protocol::QuakeWorld28,
+                        Protocol::Quake2_34,
+                        Protocol::Quake2Repro1038,
+                    ] {
+                        let mut wire = [0; 64];
+                        let len = outputs::print(
+                            protocol,
+                            print.kind,
+                            print.level,
+                            texts.get(print.text).unwrap(),
+                            &mut wire,
+                        )
+                        .unwrap();
+                        let received = outputs::Prints::new(protocol, &wire[..len])
+                            .next()
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(print.kind, received.kind, "native level {level}");
+                        assert_eq!(received.level, Some(level));
+                        assert_eq!(received.text, b"priority\x82\n");
+                        let mut remote = HudState::default();
+                        assert!(qa_ui::hud::print(
+                            &mut remote,
+                            texts,
+                            qa_core::primitives::PrintEvent {
+                                kind: received.kind,
+                                ..print
+                            },
+                            1.0,
+                            2.0,
+                            3.0
+                        ));
+                        let expected_notify = level <= 1 || level == 3;
+                        assert_eq!(local.notify[3].is_some(), expected_notify);
+                        assert_eq!(remote.notify[3].is_some(), expected_notify);
+                        assert_eq!(
+                            local.notify[3].as_ref().map(|line| line.until),
+                            remote.notify[3].as_ref().map(|line| line.until)
+                        );
+                        remote.clear_messages(texts);
+                    }
+                    assert_eq!(print.kind == PrintKind::Console, level == 2 || level > 3);
+                    local.clear_messages(texts);
+                    OutputSubmission::BestEffort
+                },
+            );
+            assert_eq!(seen, 1);
+            assert!(runtime.server.events.is_empty());
+        }
+        assert_eq!(unknown.calls, 0);
+    }
+}
+
+#[test]
 fn q3_game_and_ui_commands_insert_and_append_in_the_one_buffer() {
     use qa_core::text::FixedText;
     for (base, addresses) in [
