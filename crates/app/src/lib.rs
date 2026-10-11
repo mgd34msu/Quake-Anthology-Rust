@@ -269,6 +269,7 @@ impl Runtime {
             client.output.ok_or("local output consumer")?,
             protocol,
             native_client,
+            &self.catalog.hud.values,
         ));
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)

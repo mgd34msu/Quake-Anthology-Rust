@@ -199,6 +199,7 @@ pub struct PlayerProjection {
     flags: [u32; 7],
     client_limit: u32,
     bindings: Box<[(usize, ValueBinding)]>,
+    write_bindings: Box<[(usize, ValueBinding)]>,
     pub dropped_bindings: usize,
 }
 impl PlayerProjection {
@@ -209,6 +210,42 @@ impl PlayerProjection {
     /// columns, which belong to independently selected capability roles.
     pub fn load_stats(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
         Self::load_fields(protocol, bindings, true)
+    }
+    /// Native array ordinals enter their explicitly reserved common bank rows.
+    /// Shared hot fields remain authoritative when writing a snapshot.
+    pub fn load_values(
+        protocol: Protocol,
+        stats: &[ValueBinding],
+        persistent: &[ValueBinding],
+    ) -> Self {
+        Self::load_value_fields(protocol, stats, persistent, false)
+    }
+    pub fn load_stat_values(protocol: Protocol, stats: &[ValueBinding]) -> Self {
+        Self::load_value_fields(protocol, stats, &[], true)
+    }
+    fn load_value_fields(
+        protocol: Protocol,
+        stats: &[ValueBinding],
+        persistent: &[ValueBinding],
+        stats_only: bool,
+    ) -> Self {
+        let (_, spans) = states::player_value_layout(protocol);
+        let bindings: Vec<_> = spans
+            .into_iter()
+            .zip([stats, persistent])
+            .flat_map(|(span, bindings)| span.range().zip(bindings.iter().copied()))
+            .collect();
+        let mut projection = Self::load_fields(protocol, &bindings, stats_only);
+        projection.dropped_bindings += stats.len() + persistent.len() - bindings.len();
+        if !stats_only {
+            projection.write_bindings = projection
+                .bindings
+                .iter()
+                .copied()
+                .filter(|(word, _)| !projection.fields.iter().any(|field| field.word == *word))
+                .collect();
+        }
+        projection
     }
     fn load_fields(
         protocol: Protocol,
@@ -280,6 +317,7 @@ impl PlayerProjection {
                 64
             },
             dropped_bindings: bindings.len() - admitted.len(),
+            write_bindings: admitted.clone(),
             bindings: admitted,
         }
     }
@@ -315,7 +353,7 @@ impl PlayerProjection {
                 }
             };
         }
-        for &(word, binding) in &self.bindings {
+        for &(word, binding) in &self.write_bindings {
             if let Some(value) = binding.export(&player.values) {
                 out[word] = if binding.width == ValueWidth::Signed16 {
                     value as i16 as i32 as u32

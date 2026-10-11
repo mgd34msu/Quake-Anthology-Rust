@@ -181,6 +181,96 @@ fn host() -> FrameHost {
 }
 
 #[test]
+fn native_player_values_reach_client_and_hud_through_the_queued_snapshot() {
+    use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::primitives::NumericValue;
+    use qa_network::commands::packet::Protocol;
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let mut runtime = Runtime::load(2, []).unwrap();
+        // Protocol, presentation, movement and trace are independent choices.
+        let policy = ClientPolicy::select(
+            Some(RuleSetId::Quake),
+            None,
+            Some(RuleSetId::QuakeWorld),
+            Some(RuleSetId::Quake3),
+        )
+        .unwrap();
+        let id = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Default::default(),
+                    angles: Default::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                policy,
+                protocol,
+                0,
+            )
+            .unwrap();
+        let wire_rules = qa_network::states::player_value_layout(protocol).0;
+        let bindings = runtime.catalog.hud.values.native(wire_rules);
+        let bank_row = bindings.stats[2];
+        let other_row = runtime.catalog.hud.values.native(RuleSetId::Quake).stats[2];
+        let player = &mut runtime.server.clients[id.0 as usize].player;
+        player.health = 71;
+        player.armor = 29;
+        player.frags = -3;
+        player.score = -5;
+        assert!(bank_row.import(&mut player.values, (-123i32) as u32));
+        assert!(other_row.import(&mut player.values, 999));
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::fixed(50).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        host.local_clients[0] = Some(id);
+        let mut source = Source::default();
+        for ms in [0, 100, 200] {
+            source.time = ms;
+            assert_eq!(host.frame(&mut source, true).drains, 2);
+        }
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!((player.health, player.armor), (71, 29));
+        assert_eq!(
+            player.values.get(bank_row.id),
+            Some(NumericValue::integer(-123))
+        );
+        assert_eq!(
+            player.values.get(other_row.id),
+            Some(NumericValue::integer(0))
+        );
+        assert_eq!(player.movement_rules, RuleSetId::QuakeWorld);
+        assert_eq!(player.trace_rules, RuleSetId::Quake3);
+        let client = &host.runtime.server.clients[id.0 as usize];
+        assert_eq!(client.client_rules, RuleSetId::Quake);
+        assert_eq!((client.hud.health, client.hud.armor), (71, 29));
+        assert_eq!(
+            client.hud.values.get(bank_row.id),
+            Some(NumericValue::integer(-123))
+        );
+        assert_eq!(
+            client.hud.values.get(other_row.id),
+            Some(NumericValue::integer(0))
+        );
+        assert!(
+            host.runtime.local_snapshots[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .applied
+                > 0
+        );
+    }
+}
+
+#[test]
 fn client_frame_transports_followers_over_predicted_anchors_without_relinking_world() {
     use qa_app::{WorldCollision, client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::primitives::{BodyAttachment, BodyFollow, Bounds, Plane, SurfaceFlags, Vec3};

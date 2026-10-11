@@ -38,7 +38,9 @@ impl LocalSnapshot {
         output: OutputConsumerId,
         protocol: Protocol,
         native_client: u32,
+        values: &qa_ui::values::ValueLayout,
     ) -> Self {
+        let native = values.native(states::player_value_layout(protocol).0);
         Self {
             seat,
             output,
@@ -46,7 +48,7 @@ impl LocalSnapshot {
             applied: 0,
             rejected: 0,
             native_client,
-            projection: PlayerProjection::load(protocol, &[]),
+            projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
             context: PlayerContext {
                 client_number: Some(native_client),
                 ..Default::default()

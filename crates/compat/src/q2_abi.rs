@@ -20,7 +20,6 @@ pub const CLASSIC: ClientLayout = ClientLayout {
     stats: crate::players::StatsLayout {
         client: 88,
         offset: 120,
-        first_word: qa_network::states::Q2_PLAYER_LAYOUT.len(),
         protocol: qa_network::commands::packet::Protocol::Quake2_34,
     },
 };
@@ -32,7 +31,6 @@ pub const RERELEASE: ClientLayout = ClientLayout {
     stats: crate::players::StatsLayout {
         client: 120,
         offset: 166,
-        first_word: qa_network::states::Q2_REPRO_PLAYER_WORDS - qa_network::states::Q2_RR_STATS,
         protocol: qa_network::commands::packet::Protocol::Quake2Repro1038,
     },
 };

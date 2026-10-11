@@ -4,7 +4,7 @@ use crate::{
     memory::ModuleMemory,
     services::CallError,
 };
-use qa_core::primitives::{ModuleId, ValueBinding};
+use qa_core::primitives::{IndexSpan, ModuleId, ValueBinding};
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
@@ -15,13 +15,13 @@ use qa_session::clients::Server;
 pub(crate) struct StatsLayout {
     pub client: usize,
     pub offset: usize,
-    pub first_word: usize,
     pub protocol: Protocol,
 }
 pub(crate) struct PlayerStats {
     layout: StatsLayout,
     projection: Option<PlayerProjection>,
     words: Box<[u32]>,
+    stats: IndexSpan,
 }
 impl PlayerStats {
     pub fn load(layout: StatsLayout) -> Self {
@@ -29,18 +29,14 @@ impl PlayerStats {
             layout,
             projection: None,
             words: Box::default(),
+            stats: qa_network::states::player_value_layout(layout.protocol).1[0],
         }
     }
     pub fn bind(&mut self, bindings: &[ValueBinding]) -> Result<(), CallError> {
-        let bindings: Vec<_> = bindings
-            .iter()
-            .enumerate()
-            .map(|(index, &binding)| (self.layout.first_word + index, binding))
-            .collect();
-        let projection = PlayerProjection::load_stats(self.layout.protocol, &bindings);
-        if bindings.len() != projection.words() - self.layout.first_word {
+        if bindings.len() != self.stats.count as usize {
             return Err(CallError::Capacity);
         }
+        let projection = PlayerProjection::load_stat_values(self.layout.protocol, bindings);
         self.words = vec![0; projection.words()].into_boxed_slice();
         self.projection = Some(projection);
         Ok(())
@@ -83,7 +79,7 @@ impl PlayerStats {
             let address = pointer
                 .checked_add(self.layout.offset as u64)
                 .ok_or(CallError::Memory)?;
-            let words = &mut self.words[self.layout.first_word..];
+            let words = &mut self.words[self.stats.range()];
             let bytes = memory.read(address, words.len() * 2)?;
             for (word, bytes) in words.iter_mut().zip(bytes.chunks_exact(2)) {
                 *word = i16::from_le_bytes([bytes[0], bytes[1]]) as i32 as u32;

@@ -39,6 +39,81 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
     }
 }
 
+#[test]
+fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values() {
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (_, spans) = states::player_value_layout(protocol);
+        let mut first = 0;
+        let bindings: [Vec<ValueBinding>; 2] = spans.map(|span| {
+            (0..span.count)
+                .map(|_| {
+                    let binding = ValueBinding {
+                        id: ValueId(first),
+                        width: ValueWidth::Signed16,
+                        reset: ValueReset::Life,
+                    };
+                    first += 1;
+                    binding
+                })
+                .collect()
+        });
+        let projection = PlayerProjection::load_values(protocol, &bindings[0], &bindings[1]);
+        let mut source = player();
+        source.values = qa_core::primitives::ValueBank::load(first as usize);
+        source.health = 123;
+        source.armor = 45;
+        source.frags = -7;
+        source.score = -9;
+        for binding in bindings.iter().flatten() {
+            assert!(binding.import(&mut source.values, (binding.id.0 as i32 - 300) as u32));
+        }
+        let mut words = vec![0; projection.words()];
+        assert!(projection.reduce(&source, &context(), &mut words));
+        let ordinary = PlayerProjection::load(protocol, &[]);
+        let mut scalar = vec![0; ordinary.words()];
+        ordinary.reduce(&source, &context(), &mut scalar);
+        let mut target = player();
+        target.values = qa_core::primitives::ValueBank::load(first as usize);
+        assert!(projection.apply(&words, &mut target, &mut context(), |_| None));
+        assert_eq!((target.health, target.armor), (123, 45));
+        if protocol == Protocol::Quake3_68 {
+            assert_eq!(target.score, -9);
+        } else {
+            assert_eq!(target.frags, -7);
+        }
+        for (span, bindings) in spans.into_iter().zip(&bindings) {
+            for (word, binding) in span.range().zip(bindings) {
+                let expected = if scalar[word] != 0 {
+                    scalar[word]
+                } else {
+                    binding.export(&source.values).unwrap() as i16 as i32 as u32
+                };
+                assert_eq!(words[word], expected);
+                assert_eq!(
+                    binding.export(&target.values),
+                    Some(u32::from(expected as u16))
+                );
+            }
+        }
+        source.health = 0;
+        source.armor = 0;
+        source.score = 0;
+        source.frags = 0;
+        assert!(projection.reduce(&source, &context(), &mut words));
+        assert!(projection.apply(&words, &mut target, &mut context(), |_| None));
+        assert_eq!((target.health, target.armor), (0, 0));
+        if protocol == Protocol::Quake3_68 {
+            assert_eq!(target.score, 0);
+        } else {
+            assert_eq!(target.frags, 0);
+        }
+    }
+}
+
 fn context() -> PlayerContext {
     PlayerContext {
         client_number: Some(17),

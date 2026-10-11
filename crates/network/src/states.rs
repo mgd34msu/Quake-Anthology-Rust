@@ -4,6 +4,39 @@ use crate::{
     delta::{self, Field, Group, Packed, Presence, ScaleRead, Value},
     message::{Error, Reader, Writer},
 };
+use qa_core::primitives::{IndexSpan, RuleSetId};
+
+/// Native numeric arrays carried by the snapshot, independently of movement,
+/// map and module roles. NQ/QW publish stats in separate service messages.
+pub fn player_value_layout(
+    protocol: crate::commands::packet::Protocol,
+) -> (RuleSetId, [IndexSpan; 2]) {
+    use crate::commands::packet::Protocol;
+    let none = IndexSpan::default();
+    let span = |first: usize, count: usize| IndexSpan {
+        first: first as u32,
+        count: count as u32,
+    };
+    match protocol {
+        Protocol::NetQuake15 => (RuleSetId::Quake, [none; 2]),
+        Protocol::QuakeWorld28 => (RuleSetId::QuakeWorld, [none; 2]),
+        Protocol::Quake2_34 => (
+            RuleSetId::Quake2,
+            [span(Q2_STATS[0].word, Q2_STATS.len()), none],
+        ),
+        Protocol::Quake2Repro1038 => (
+            RuleSetId::Quake2Rerelease,
+            [span(Q2_REPRO_PLAYER_WORDS - Q2_RR_STATS, Q2_RR_STATS), none],
+        ),
+        Protocol::Quake3_68 => (
+            RuleSetId::Quake3,
+            [
+                span(STATS[0].word, STATS.len()),
+                span(PERSISTANT[0].word, PERSISTANT.len()),
+            ],
+        ),
+    }
+}
 
 pub const ENTITY_LAYOUT: [(&str, i8); 51] = [
     ("pos.trTime", 32),
