@@ -114,6 +114,7 @@ pub fn load_q2(
             api_arguments[0] = Argument::Word(game.imports_address);
             requests.push(ModuleRequest {
                 context: CallContext {
+                    server_frame: 0,
                     module,
                     clock,
                     console: Context {

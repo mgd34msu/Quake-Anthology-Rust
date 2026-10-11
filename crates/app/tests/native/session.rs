@@ -267,6 +267,7 @@ fn request(
         .id;
     ModuleRequest {
         context: CallContext {
+            server_frame: 0,
             module: id,
             clock: ThinkTime::Milliseconds(0),
             console: Context {
@@ -1622,6 +1623,24 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
         let mut file = q2_table_file();
         pe_rva(&mut file, 0x1800, if rr { 2023 } else { 3 }, 4);
         pe_text(&mut file, 0x1500, &[0xc3]);
+        if rr {
+            // Keep the real API import pointer, then verify ServerFrame against
+            // the module's own RunFrame calls in startup, ticks and shutdown.
+            let mut api = vec![0x48, 0x89, 0x0d];
+            api.extend((0x1b20i32 - 0x1087).to_le_bytes());
+            api.extend([0x48, 0x8d, 0x05]);
+            api.extend((0x1800i32 - 0x108e).to_le_bytes());
+            api.push(0xc3);
+            pe_text(&mut file, 0x1080, &api);
+            let mut check = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05];
+            check.extend((0x1b20i32 - 0x174b).to_le_bytes());
+            check.extend([0x48, 0x8b, 0x80]);
+            check.extend((16i32 + 65 * 8).to_le_bytes());
+            check.extend([0xff, 0xd0, 0x3b, 0x05]);
+            check.extend((0x1b30i32 - 0x175a).to_le_bytes());
+            check.extend([0x74, 2, 0x0f, 0x0b, 0x48, 0x83, 0xc4, 0x28, 0xc3]);
+            pe_text(&mut file, 0x1740, &check);
+        }
         for index in 0..if rr { 29 } else { 15 } {
             let offset = if !rr || index < 19 {
                 8 + index * 8
@@ -1632,7 +1651,7 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
         }
         let mut calls = vec![(if rr { 16 } else { 8 }, 0x1400, u8::from(rr))];
         if rr {
-            calls.push((8, 0x1420, 0));
+            calls.push((8, 0x1360, 0));
         }
         calls.push((if rr { 32 } else { 24 }, 0x1440, if rr { 2 } else { 1 }));
         calls.push((if rr { 24 } else { 16 }, 0x14c0, if rr { 13 } else { 6 }));
@@ -1644,6 +1663,11 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
                 8,
             );
             let mut code = Vec::new();
+            if rr && (rva == 0x1400 || rva == 0x14c0) {
+                code.extend([0x48, 0x83, 0xec, 0x28, 0xe8]);
+                code.extend((0x1740i32 - (rva + 9) as i32).to_le_bytes());
+                code.extend([0x48, 0x83, 0xc4, 0x28]);
+            }
             if rva == 0x1440 {
                 // SpawnEntities sees owned native pointers to the basename,
                 // unchanged source text, and an empty spawn point.
@@ -1671,7 +1695,19 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
             0x180001480,
             8,
         );
-        pe_text(&mut file, 0x1480, &[0x83, 0x05, 0x79, 6, 0, 0, 1, 0xc3]);
+        let mut frame = vec![0x83, 0x05, 0x79, 6, 0, 0, 1];
+        if rr {
+            // Loading's two RunFrame(false) calls leave ServerFrame at zero.
+            // Ordinary RunFrame(true) sees the old index, then advances it.
+            frame.extend([0x48, 0x83, 0xec, 0x28, 0x88, 0x4c, 0x24, 0x20, 0xe8]);
+            frame.extend((0x1740i32 - 0x1494).to_le_bytes());
+            frame.extend([0x80, 0x7c, 0x24, 0x20, 0, 0x74, 7, 0x83, 0x05]);
+            frame.extend((0x1b30i32 - 0x14a2).to_le_bytes());
+            frame.push(1);
+            frame.extend([0x48, 0x83, 0xc4, 0x28]);
+        }
+        frame.push(0xc3);
+        pe_text(&mut file, 0x1480, &frame);
         std::fs::write(
             files.0.join(if rr { "rr.dll" } else { "classic.dll" }),
             file,
@@ -1720,11 +1756,18 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
     };
     host.frame(&mut source, true);
     for (id, calls) in [(ModuleId(1), 5), (ModuleId(2), 6)] {
-        assert_eq!(host.module_state(id), Some(State::Running));
+        assert_eq!(
+            host.module_state(id),
+            Some(State::Running),
+            "module {id:?}: {:?}",
+            host.module_counts(id)
+        );
         assert_eq!(host.module_counts(id).unwrap().calls, calls);
         assert_eq!(host.module_counts(id).unwrap().traps, 0);
     }
-    for time in [25, 50, 75, 100, 125, 150, 175, 200] {
+    // Irregular client frames make the world index differ from the provider;
+    // the 75 -> 125 jump also requires two separate native 25 ms ticks.
+    for time in [5, 15, 25, 35, 50, 75, 125, 150, 175, 200] {
         source.time = EventTime(time * 1_000_000);
         host.frame(&mut source, true);
     }
@@ -1991,6 +2034,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(8).unwrap();
         let context = CallContext {
+            server_frame: 0x1_1234_5678,
             module: ModuleId(1),
             clock: ThinkTime::Milliseconds(0),
             console: Context {
@@ -2252,6 +2296,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || slot == args_slot
                 || (if rr { 17..=18 } else { 14..=15 }).contains(&slot)
                 || (rr && (67..=69).contains(&slot))
+                || (rr && slot == 65)
                 || (index_slot..index_slot + 3).contains(&slot);
             let mut code = native_import_code(
                 pointers[slot],
@@ -2626,6 +2671,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         invoke_import(&mut game, malloc_slot + 2, &[0, 0]);
         let config_slot = if rr { 7 } else { 6 };
         if rr {
+            assert_eq!(invoke_import(&mut game, 65, &[]), 0x1234_5678);
             let info = b"\\name\\Mike\\empty\\\\name\\later\\binary\\\xff\x80\0";
             for (key, capacity, expected, length) in [
                 (b"name\0".as_slice(), 8, b"Mike\0".as_slice(), 4),

@@ -36,6 +36,7 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(1).unwrap();
         let context = CallContext {
+            server_frame: 0,
             module: ModuleId(1),
             clock: ThinkTime::Milliseconds(0),
             console: console_context,

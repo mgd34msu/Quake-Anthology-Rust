@@ -160,6 +160,7 @@ fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             let context = CallContext {
+                server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(frame),
                 console: qa_console::views::Context::default(),

@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             for i in 0..64 {
                 let context = CallContext {
+                    server_frame: 0,
                     module: ModuleId(1 + i % 2),
                     clock: ThinkTime::Seconds(2.0 + frame as f64 + i as f64 / 64.0),
                     console: Context {

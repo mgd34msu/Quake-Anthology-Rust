@@ -130,6 +130,7 @@ fn lifecycle_host_in(
         TickRate::FrameDriven,
         vec![ModuleRequest {
             context: CallContext {
+                server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
                 console: Context::default(),
@@ -474,6 +475,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
     let requests = vec![
         ModuleRequest {
             context: CallContext {
+                server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
                 console: Context::default(),
@@ -500,6 +502,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         },
         ModuleRequest {
             context: CallContext {
+                server_frame: 0,
                 module: ModuleId(2),
                 clock: ThinkTime::Seconds(0.0),
                 console: Context {

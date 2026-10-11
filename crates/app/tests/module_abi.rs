@@ -17,6 +17,7 @@ use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 
 fn context() -> CallContext {
     CallContext {
+        server_frame: 0,
         module: ModuleId(1),
         clock: ThinkTime::Milliseconds(17),
         console: Context::default(),

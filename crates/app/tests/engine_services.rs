@@ -13,6 +13,7 @@ use qa_world::{
 
 fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
     CallContext {
+        server_frame: 0,
         module: ModuleId(module),
         clock: ThinkTime::Seconds(2.0),
         console: Context {

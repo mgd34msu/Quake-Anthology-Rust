@@ -520,14 +520,25 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     };
     let Some(row) = host
         .modules
-        .as_ref()
-        .and_then(|m| m.rows.get(module.0 as usize))
-        .and_then(Option::as_ref)
+        .as_mut()
+        .and_then(|m| m.rows.get_mut(module.0 as usize))
+        .and_then(Option::as_mut)
     else {
         return;
     };
+    // qsrc advances the SERVER frame number after RunFrame. Loading calls
+    // retain zero; completed ticks are visible to later imports and shutdown.
+    row.request.context.server_frame = tick.index - 1;
     let time = module_time(row.request.context.clock, tick.end);
     invoke_frame(host, module, time);
+    if let Some(row) = host
+        .modules
+        .as_mut()
+        .and_then(|m| m.rows.get_mut(module.0 as usize))
+        .and_then(Option::as_mut)
+    {
+        row.request.context.server_frame = tick.index;
+    }
 }
 fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
     let Some(row) = host

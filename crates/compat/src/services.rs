@@ -48,6 +48,8 @@ impl From<crate::memory::MemoryError> for CallError {
 pub struct CallContext {
     pub module: ModuleId,
     pub clock: ThinkTime,
+    /// SERVER frame number before/after dispatch, projected from provider ticks.
+    pub server_frame: u64,
     pub console: Context,
     pub allocation: AllocationPolicy,
     pub link_order: LinkOrder,

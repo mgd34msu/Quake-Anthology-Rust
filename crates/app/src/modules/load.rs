@@ -293,6 +293,7 @@ pub fn load_q3(
         );
         requests.push(ModuleRequest {
             context: CallContext {
+                server_frame: 0,
                 module,
                 clock,
                 console: Context {
@@ -383,6 +384,7 @@ pub fn load_quakec(
             Some(NativeEntity { module, slot: 0 });
         requests.push(ModuleRequest {
             context: CallContext {
+                server_frame: 0,
                 module,
                 clock,
                 console: Context {

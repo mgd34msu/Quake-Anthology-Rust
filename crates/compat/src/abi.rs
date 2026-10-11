@@ -273,6 +273,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[43] = Some(native_argv);
     table.entries[44] = Some(native_args);
     table.entries[45] = Some(command_append);
+    table.entries[65] = Some(native_server_frame);
     table.entries[67] = Some(native_info_value);
     table.entries[68] = Some(native_info_remove);
     table.entries[69] = Some(native_info_set);
@@ -489,6 +490,9 @@ fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn milliseconds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.platform_time.milliseconds() as u32 as u64)
+}
+fn native_server_frame(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Ok(u64::from(c.context.server_frame as u32))
 }
 fn cvar_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name = c.text(0)?;
