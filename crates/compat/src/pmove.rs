@@ -1,10 +1,7 @@
 //! game.h memory projections; all physics executes in qa_movement.
 use crate::{memory::ModuleMemory, services::CallError};
-use qa_core::primitives::{PlayerState, UserCmd, Vec3};
-use qa_network::{
-    commands::{self, Q2Cmd, Q2RrCmd, packet::Protocol},
-    projection::{PlayerContext, PlayerProjection},
-};
+use qa_core::primitives::{PlayerState, UserCmd};
+use qa_network::projection::{PlayerContext, PlayerProjection};
 
 #[derive(Clone, Copy)]
 enum Width {
@@ -102,15 +99,20 @@ pub(crate) const RERELEASE: Layout = Layout {
 pub struct Pmove {
     pub(crate) layout: &'static Layout,
     projection: PlayerProjection,
+    client: &'static crate::q2_abi::ClientLayout,
     words: Box<[u32]>,
 }
 impl Pmove {
-    pub(crate) fn load(layout: &'static Layout, protocol: Protocol) -> Self {
-        let projection = PlayerProjection::load_movement(protocol);
+    pub(crate) fn load(
+        layout: &'static Layout,
+        client: &'static crate::q2_abi::ClientLayout,
+    ) -> Self {
+        let projection = PlayerProjection::load_movement(client.stats.protocol);
         let words = vec![0; projection.words()].into_boxed_slice();
         Self {
             layout,
             projection,
+            client,
             words,
         }
     }
@@ -187,34 +189,8 @@ impl Pmove {
         address: u64,
         server_time: i32,
     ) -> Result<UserCmd, CallError> {
-        let at = address + self.layout.command as u64;
-        let bytes = memory.read(at, if self.layout.wide { 28 } else { 16 })?;
-        Ok(if self.layout.wide {
-            let float = |offset| f32::from_le_bytes(std::array::from_fn(|i| bytes[offset + i]));
-            commands::from_q2_rr_usercmd(
-                Q2RrCmd {
-                    msec: bytes[0],
-                    buttons: bytes[1],
-                    angles: Vec3([float(4), float(8), float(12)]),
-                    movement: [float(16), float(20)],
-                    server_frame: u32::from_le_bytes(std::array::from_fn(|i| bytes[24 + i])),
-                },
-                server_time,
-            )
-        } else {
-            let short = |offset| i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
-            commands::from_q2_usercmd(
-                Q2Cmd {
-                    msec: bytes[0],
-                    buttons: bytes[1],
-                    angles: [short(2), short(4), short(6)],
-                    movement: [short(8), short(10), short(12)],
-                    impulse: bytes[14],
-                    light_level: bytes[15],
-                },
-                server_time,
-            )
-        })
+        self.client
+            .read_command(memory, address + self.layout.command as u64, server_time)
     }
     pub fn import_client(
         &mut self,

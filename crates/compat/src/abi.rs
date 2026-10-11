@@ -1445,19 +1445,13 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
 
 fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;
-    let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
-    let layout = codec.layout;
+    let layout = c.native_pmove.as_ref().ok_or(CallError::Memory)?.layout;
     c.memory.read(address, layout.bytes)?;
     let (entities, table_address) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
     let table = entities.boundary(c.memory, c.context, *table_address)?;
     let id = if let Some(offset) = layout.player {
         let player = c.memory.read_u64(address + offset as u64)?;
-        let native = entities.identity(c.memory, c.context, *table_address, player)?;
-        let id = c
-            .services
-            .server
-            .client_for_native(native)
-            .ok_or(CallError::Entity)?;
+        let id = native_client(c, player)?.ok_or(CallError::Entity)?;
         if c.native_player.is_some_and(|expected| expected != id) {
             return Err(CallError::Entity);
         }
@@ -1466,6 +1460,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         c.native_player.ok_or(CallError::Entity)?
     };
     let client = &mut c.services.server.clients[id.0 as usize];
+    let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
     codec.read_state(c.memory, address, &mut client.player)?;
     client.command = qa_movement::prepare_command(
         client.player.movement_rules,

@@ -864,7 +864,7 @@ impl Game {
             } else {
                 &crate::pmove::CLASSIC
             },
-            client.stats.protocol,
+            client,
         ));
         let pointers = (0..layout.imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))

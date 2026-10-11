@@ -8,7 +8,9 @@ use qa_compat::{
     quakec, qvm,
     services::{CallContext, ServiceStorage},
 };
-use qa_core::primitives::{CallbackCall, CallbackId, EntityId, ModuleId, RuleSetId, ThinkTime};
+use qa_core::primitives::{
+    CallbackCall, CallbackId, ClientId, EntityId, ModuleId, RuleSetId, ThinkTime,
+};
 use qa_session::{
     dispatch::{CallError, FunctionBinding, FunctionTable, ThinkWorld},
     timing::{Tick, TickRate},
@@ -124,6 +126,7 @@ pub enum Argument {
 pub struct Export {
     pub callback: CallbackId,
     pub arguments: [Argument; 9],
+    pub client: Option<ClientId>,
 }
 impl Export {
     pub fn words(callback: CallbackId, words: &[u64]) -> Self {
@@ -134,6 +137,7 @@ impl Export {
         Self {
             callback,
             arguments,
+            client: None,
         }
     }
 
@@ -143,6 +147,7 @@ impl Export {
         Self {
             callback,
             arguments,
+            client: None,
         }
     }
 }
@@ -457,6 +462,7 @@ impl FrameHost {
                 entity,
                 time,
                 arguments,
+                client: export.client,
             },
         )
     }
@@ -639,15 +645,18 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context
 }
 fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
-    let (time, words) = match call {
+    let (time, words, native_player) = match call {
         CallbackCall::Think { time, .. } => {
             let mut arguments = [0; 9];
             arguments[0] = time.milliseconds() as u64;
-            (time, arguments)
+            (time, arguments, None)
         }
         CallbackCall::Export {
-            time, arguments, ..
-        } => (time, arguments),
+            time,
+            arguments,
+            client,
+            ..
+        } => (time, arguments, client),
         _ => return false,
     };
     let Some(row) = host
@@ -693,6 +702,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 platform_time: host.time,
                 command: &[],
                 raw_args: b"",
+                native_player,
                 unknown: &mut row.unknown,
             };
             vm.call(&mut calls, entry, &words)

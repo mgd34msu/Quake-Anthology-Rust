@@ -343,6 +343,7 @@ pub enum CallbackCall {
         entity: EntityId,
         time: ThinkTime,
         arguments: [u64; 9],
+        client: Option<ClientId>,
     },
     Think {
         entity: EntityId,

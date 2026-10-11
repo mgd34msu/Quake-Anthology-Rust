@@ -155,6 +155,7 @@ pub fn load_q2(
                 initialize,
                 api: Some(ApiCheck::NativeTable {
                     export: Export {
+                        client: None,
                         callback: CallbackId(0),
                         arguments: api_arguments,
                     },

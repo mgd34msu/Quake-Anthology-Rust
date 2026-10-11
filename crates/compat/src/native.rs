@@ -116,6 +116,7 @@ pub struct NativeCalls<'a, 'engine> {
     /// Native Cmd_Args/Cmd_RawArgs suffix, retained by the caller's tokenizer.
     pub raw_args: &'a [u8],
     pub unknown: &'a mut UnknownCalls,
+    pub native_player: Option<qa_core::primitives::ClientId>,
 }
 impl Vm {
     pub fn resource_ranges(&self) -> Option<&[qa_core::primitives::IndexSpan; 3]> {
@@ -413,21 +414,9 @@ impl Vm {
         }
         let table_address = self.table_address();
         let native_player = if self.client_think == Some(ordinal) {
-            let entities = self.entities.as_ref().ok_or(Error::Export)?;
-            let memory = process_memory(&mut self.process)?;
-            let native = entities
-                .identity(
-                    &memory,
-                    calls.context,
-                    table_address.ok_or(Error::Export)?,
-                    words[0],
-                )
-                .map_err(Error::Service)?;
             Some(
                 calls
-                    .services
-                    .server
-                    .client_for_native(native)
+                    .native_player
                     .ok_or(Error::Service(CallError::Entity))?,
             )
         } else {

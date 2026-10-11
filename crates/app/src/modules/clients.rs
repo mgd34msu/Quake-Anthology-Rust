@@ -135,12 +135,10 @@ impl FrameHost {
             api.abi
                 .write_command(&mut memory, api.usercmd, command, server_frame)
                 .map_err(|e| format!("native usercmd: {e:?}"))?;
-            self.call_module_export(
-                api.module,
-                Export::words(api.think, &[address, api.usercmd]),
-                time,
-            )
-            .map_err(|e| format!("ClientThink: {e:?}"))
+            let mut export = Export::words(api.think, &[address, api.usercmd]);
+            export.client = Some(id);
+            self.call_module_export(api.module, export, time)
+                .map_err(|e| format!("ClientThink: {e:?}"))
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {

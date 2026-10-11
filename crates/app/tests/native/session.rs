@@ -237,6 +237,7 @@ fn module(
     memory[at + 16..at + 16 + text.len()].copy_from_slice(text);
     let mut request = request(runtime, id, rules, rate, vm);
     request.prepare = vec![Export {
+        client: None,
         callback: CallbackId(1),
         arguments: [
             Argument::Word(pointer),
@@ -2839,6 +2840,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm
                 .call(
                     &mut NativeCalls {
+                        native_player: None,
                         services: &mut services,
                         table: game.imports,
                         context,
@@ -2913,6 +2915,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .vm
                 .call(
                     &mut NativeCalls {
+                        native_player: None,
                         services: &mut services,
                         table: game.imports,
                         context,
@@ -2986,6 +2989,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm
                 .call(
                     &mut NativeCalls {
+                        native_player: None,
                         services: &mut services,
                         table: game.imports,
                         context,
@@ -3130,6 +3134,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm
                 .call(
                     &mut NativeCalls {
+                        native_player: None,
                         services: &mut services,
                         table: game.imports,
                         context,
@@ -4268,6 +4273,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             game.vm.call(
                 &mut NativeCalls {
+                    native_player: None,
                     services: &mut services,
                     table: game.imports,
                     context,
@@ -4494,6 +4500,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     runtime.engine_services(&mut console, &mut storage, &mut scratch);
                 game.vm.call(
                     &mut NativeCalls {
+                        native_player: None,
                         services: &mut services,
                         table: game.imports,
                         context,
@@ -4656,6 +4663,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         request.configstrings = if rr { 10814 } else { 800 };
         request.entries = (0..1 + count as u32).collect();
         request.frame = Export {
+            client: None,
             callback: CallbackId(run),
             arguments: {
                 let mut arguments = [Argument::Word(0); 9];
@@ -4742,6 +4750,7 @@ fn returned_native_tables_bind_once_and_isolate_bad_apis() {
             request.context.clock = ThinkTime::Seconds(0.0);
             request.frame = Export::clocked(CallbackId(first + 2));
             let export = |callback| Export {
+                client: None,
                 callback: CallbackId(callback),
                 arguments: [Argument::Word(0); 9],
             };
@@ -4833,6 +4842,7 @@ fn native_initialization_sequences_follow_api_binding_and_isolate_failure() {
             vm,
         );
         let export = |callback| Export {
+            client: None,
             callback: CallbackId(callback),
             arguments: [Argument::Word(0); 9],
         };

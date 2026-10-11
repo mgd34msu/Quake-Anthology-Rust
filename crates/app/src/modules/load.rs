@@ -226,6 +226,7 @@ pub fn load_q3(
                 2,
                 Some(ApiCheck::Version {
                     export: Export {
+                        client: None,
                         callback: CallbackId(0),
                         arguments: [Argument::Word(0); 9],
                     },
@@ -263,6 +264,7 @@ pub fn load_q3(
                     arguments[0] = Argument::Word(vm.import_callback());
                     let mut prepare: Vec<_> = vm.initializers().iter().map(native_export).collect();
                     prepare.push(Export {
+                        client: None,
                         callback: CallbackId(11),
                         arguments,
                     });
@@ -299,6 +301,7 @@ pub fn load_q3(
         finalize.insert(
             0,
             Export {
+                client: None,
                 callback: CallbackId(shutdown),
                 arguments: [Argument::Word(0); 9],
             },
@@ -334,6 +337,7 @@ pub fn load_q3(
             frame: Export::clocked(CallbackId(frame)),
             prepare,
             initialize: vec![Export {
+                client: None,
                 callback: CallbackId(init),
                 arguments: initialize,
             }],

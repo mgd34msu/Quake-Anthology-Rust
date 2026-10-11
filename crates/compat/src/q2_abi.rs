@@ -10,6 +10,7 @@ pub struct ClientLayout {
     pub value_bytes: usize,
     pub command_bytes: usize,
     write_command: fn(&UserCmd, u32, &mut [u8]),
+    read_command: fn(&[u8], i32) -> UserCmd,
     pub(crate) stats: crate::players::StatsLayout,
 }
 pub const CLASSIC: ClientLayout = ClientLayout {
@@ -17,6 +18,7 @@ pub const CLASSIC: ClientLayout = ClientLayout {
     value_bytes: INFO_KEY_BYTES,
     command_bytes: 16,
     write_command: classic_command,
+    read_command: read_classic_command,
     stats: crate::players::StatsLayout {
         client: 88,
         offset: 120,
@@ -28,6 +30,7 @@ pub const RERELEASE: ClientLayout = ClientLayout {
     value_bytes: INFO_VALUE_BYTES,
     command_bytes: 28,
     write_command: rerelease_command,
+    read_command: read_rerelease_command,
     stats: crate::players::StatsLayout {
         client: 120,
         offset: 166,
@@ -42,6 +45,17 @@ pub fn client_layout(rules: RuleSetId) -> Option<&'static ClientLayout> {
     }
 }
 impl ClientLayout {
+    pub fn read_command(
+        &self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        server_time: i32,
+    ) -> Result<UserCmd, CallError> {
+        Ok((self.read_command)(
+            memory.read(address, self.command_bytes)?,
+            server_time,
+        ))
+    }
     /// This is game.h's in-memory usercmd_t, not a delta packet. The shared
     /// command projection owns all button, angle, movement and width rules.
     pub fn write_command(
@@ -81,4 +95,32 @@ fn rerelease_command(command: &UserCmd, server_frame: u32, bytes: &mut [u8]) {
         output.copy_from_slice(&value.to_le_bytes());
     }
     bytes[24..28].copy_from_slice(&native.server_frame.to_le_bytes());
+}
+
+fn read_classic_command(bytes: &[u8], server_time: i32) -> UserCmd {
+    let short = |offset| i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+    qa_network::commands::from_q2_usercmd(
+        qa_network::commands::Q2Cmd {
+            msec: bytes[0],
+            buttons: bytes[1],
+            angles: [short(2), short(4), short(6)],
+            movement: [short(8), short(10), short(12)],
+            impulse: bytes[14],
+            light_level: bytes[15],
+        },
+        server_time,
+    )
+}
+fn read_rerelease_command(bytes: &[u8], server_time: i32) -> UserCmd {
+    let float = |offset| f32::from_le_bytes(std::array::from_fn(|i| bytes[offset + i]));
+    qa_network::commands::from_q2_rr_usercmd(
+        qa_network::commands::Q2RrCmd {
+            msec: bytes[0],
+            buttons: bytes[1],
+            angles: qa_core::primitives::Vec3([float(4), float(8), float(12)]),
+            movement: [float(16), float(20)],
+            server_frame: u32::from_le_bytes(std::array::from_fn(|i| bytes[24 + i])),
+        },
+        server_time,
+    )
 }

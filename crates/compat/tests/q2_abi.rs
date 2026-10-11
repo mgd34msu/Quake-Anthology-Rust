@@ -34,6 +34,33 @@ fn game_command_layouts_preserve_native_offsets_widths_and_float_bits() {
             .concat()
         };
         assert_eq!(memory.read(0x1004, layout.command_bytes).unwrap(), expected);
+        let decoded = layout.read_command(&memory, 0x1004, -1234).unwrap();
+        let expected_command = if rules == RuleSetId::Quake2 {
+            qa_network::commands::from_q2_usercmd(
+                qa_network::commands::to_q2_usercmd(&command),
+                -1234,
+            )
+        } else {
+            qa_network::commands::from_q2_rr_usercmd(
+                qa_network::commands::to_q2_rr_usercmd(&command, 0xfedcba98),
+                -1234,
+            )
+        };
+        assert_eq!(decoded.server_time_ms, expected_command.server_time_ms);
+        assert_eq!(decoded.duration_ms, expected_command.duration_ms);
+        assert_eq!(
+            decoded.view_angles.0.map(f32::to_bits),
+            expected_command.view_angles.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            decoded.movement.map(f32::to_bits),
+            expected_command.movement.map(f32::to_bits)
+        );
+        assert_eq!(decoded.buttons, expected_command.buttons);
+        assert_eq!(decoded.impulse, expected_command.impulse);
+        assert_eq!(decoded.light_level, expected_command.light_level);
+        assert!(layout.read_command(&memory, 0x1018, 0).is_err());
+
         assert_eq!(memory.read(0x1000, 4).unwrap(), [0xcc; 4]);
         assert!(
             memory

@@ -261,6 +261,7 @@ fn lifecycle_host_in(
             frame: Export::clocked(CallbackId(frame)),
             prepare: Vec::new(),
             initialize: vec![Export {
+                client: None,
                 callback: CallbackId(initialize),
                 arguments: [
                     Argument::ClockMilliseconds,
@@ -275,6 +276,7 @@ fn lifecycle_host_in(
                 ],
             }],
             shutdown: vec![Export {
+                client: None,
                 callback: CallbackId(shutdown),
                 arguments: [
                     Argument::Word(1),
@@ -381,6 +383,7 @@ fn ui_api_version_is_checked_before_initialization_and_failure_stops_client_call
     for (accepted, running, expected_calls) in [(&[4, 6][..], true, 3), (&[4][..], false, 1)] {
         let api = ApiCheck::Version {
             export: Export {
+                client: None,
                 callback: CallbackId(0),
                 arguments: [Argument::Word(0); 9],
             },
@@ -464,6 +467,7 @@ fn export_words_narrow_only_at_the_qvm_boundary_and_owner_changes_are_rejected()
     arguments[1] = Argument::Word(0x1_8000_0000);
     arguments[2] = Argument::Word(0x1_0000_0007);
     let export = Export {
+        client: None,
         callback: CallbackId(2),
         arguments,
     };
@@ -1990,6 +1994,7 @@ fn missing_module_lookups_are_bounded() {
         assert!(host.module_counts(module).is_none());
         assert!(host.module_state(module).is_none());
         let export = Export {
+            client: None,
             callback: CallbackId(0),
             arguments: [qa_app::modules::Argument::Word(0); 9],
         };
