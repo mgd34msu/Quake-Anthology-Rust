@@ -227,12 +227,8 @@ pub(crate) fn impulse(target: &mut DamageTarget<'_>, direction: Vec3, force: f32
     }
 }
 
-pub(crate) fn center(body: Body) -> Vec3 {
-    body.position + qa_core::math::midpoint(body.mins, body.maxs)
-}
-
 pub(crate) fn center_falloff(blast: Blast, target: BlastTarget, radius: f32) -> Option<f32> {
-    let distance = length(difference(blast.origin, center(target.body)));
+    let distance = length(difference(blast.origin, target.body.center()));
     if distance > radius {
         return None;
     }

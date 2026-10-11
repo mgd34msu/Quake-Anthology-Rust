@@ -106,6 +106,9 @@ pub struct NativeCalls<'a, 'engine> {
     pub unknown: &'a mut UnknownCalls,
 }
 impl Vm {
+    pub fn resource_ranges(&self) -> Option<&[crate::services::ResourceRange; 3]> {
+        self.resources.as_ref()
+    }
     /// Map a checked, bound image and register its ordinary exports. Import,
     /// TLS and initializer orchestration belongs to the owning image loader;
     /// this step transfers bytes to the authoritative child backing and applies

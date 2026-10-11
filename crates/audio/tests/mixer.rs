@@ -40,6 +40,7 @@ fn event(m: &Mixer) -> SoundEvent {
         volume: 1.0,
         attenuation: 0.0,
         action: SoundAction::Play,
+        ..qa_core::primitives::SoundEvent::default()
     }
 }
 
@@ -172,4 +173,48 @@ fn invalid_event_does_not_replace_live_voice_or_grow_storage() {
     m.paint(&mut pcm);
     assert_eq!(pcm, [1020; 2]);
     assert_eq!(m.counts.invalid, 3);
+}
+
+#[test]
+fn native_delay_and_private_client_gain_use_the_event() {
+    let mut m = mixer(RuleSetId::Quake2Rerelease, vec![1024], None, 2);
+    m.listen(
+        &[listener(0, Vec3::default()), listener(1, Vec3::default())],
+        1.0,
+    );
+    let mut e = event(&m);
+    e.client = Some(ClientId(1));
+    e.time_offset = 2.0 / 44100.0;
+    assert!(m.sound(e));
+    let mut pcm = [0; 6];
+    m.paint(&mut pcm);
+    assert_eq!(pcm, [0, 0, 0, 0, 1020, 1020]);
+    e.client = Some(ClientId(9));
+    e.time_offset = 0.0;
+    assert!(m.sound(e));
+    m.paint(&mut pcm);
+    assert_eq!(pcm, [0; 6]);
+}
+
+#[test]
+fn private_channels_do_not_replace_another_clients_voice() {
+    let mut m = mixer(RuleSetId::Quake2Rerelease, vec![1024], None, 2);
+    m.listen(
+        &[listener(0, Vec3::default()), listener(1, Vec3::default())],
+        1.0,
+    );
+    let mut e = event(&m);
+    e.entity = Some(EntityId {
+        slot: 3,
+        generation: 1,
+    });
+    e.channel = 1;
+    for client in [0, 1] {
+        e.client = Some(ClientId(client));
+        assert!(m.sound(e));
+    }
+    assert_eq!(m.counts.replaced, 0);
+    let mut pcm = [0; 2];
+    m.paint(&mut pcm);
+    assert_eq!(pcm, [2040; 2]);
 }

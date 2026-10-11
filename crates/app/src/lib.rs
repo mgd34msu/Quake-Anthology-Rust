@@ -111,6 +111,7 @@ impl Runtime {
             commands,
             vfs: &self.vfs,
             localization: &self.localization,
+            sound_bank: self.sound_bank.as_deref(),
             registry: &self.catalog.registry,
             storage,
             geometry: &self.geometry,

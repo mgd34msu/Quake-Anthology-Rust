@@ -89,6 +89,10 @@ struct Voice {
     event: SoundEvent,
     frame: usize,
     gain: [i64; 2],
+    delay: usize,
+}
+fn same_channel(a: &SoundEvent, b: &SoundEvent) -> bool {
+    a.entity == b.entity && a.channel == b.channel && a.client == b.client
 }
 #[derive(Default, Debug)]
 pub struct MixCounts {
@@ -138,9 +142,10 @@ impl Mixer {
     pub fn sound(&mut self, event: SoundEvent) -> bool {
         if event.action == SoundAction::Stop {
             for slot in &mut self.voices {
-                if slot.as_ref().is_some_and(|v| {
-                    v.event.entity == event.entity && v.event.channel == event.channel
-                }) {
+                if slot
+                    .as_ref()
+                    .is_some_and(|v| same_channel(&v.event, &event))
+                {
                     *slot = None;
                     self.counts.stopped += 1;
                 }
@@ -156,31 +161,30 @@ impl Mixer {
             || !(0.0..=1.0).contains(&event.volume)
             || !event.attenuation.is_finite()
             || event.attenuation < 0.0
+            || !event.time_offset.is_finite()
+            || event.time_offset < 0.0
             || !event.position.is_finite()
         {
             self.counts.invalid += 1;
             return false;
         }
-        if event.action == SoundAction::StartLoop
-            && let Some(voice) = self.voices.iter_mut().flatten().find(|voice| {
-                voice.event.action == SoundAction::StartLoop
-                    && voice.event.entity == event.entity
-                    && voice.event.channel == event.channel
-                    && voice.event.sound == event.sound
-            })
-        {
-            voice.event = event;
-            return true;
+        let mut replacement = None;
+        for (index, voice) in self.voices.iter_mut().enumerate() {
+            let Some(voice) = voice else { continue };
+            if !same_channel(&voice.event, &event) {
+                continue;
+            }
+            if event.action == SoundAction::StartLoop
+                && voice.event.action == SoundAction::StartLoop
+                && voice.event.sound == event.sound
+            {
+                voice.event = event;
+                return true;
+            }
+            if event.entity.is_some() && event.channel != 0 && replacement.is_none() {
+                replacement = Some(index);
+            }
         }
-        let replacement = if event.entity.is_some() && event.channel != 0 {
-            self.voices.iter().position(|v| {
-                v.as_ref().is_some_and(|v| {
-                    v.event.entity == event.entity && v.event.channel == event.channel
-                })
-            })
-        } else {
-            None
-        };
         let Some(index) = replacement.or_else(|| self.voices.iter().position(Option::is_none))
         else {
             self.counts.full += 1;
@@ -191,6 +195,7 @@ impl Mixer {
             event,
             frame: 0,
             gain: [0; 2],
+            delay: (event.time_offset * self.bank.rate.get() as f32) as usize,
         });
         self.counts.started += 1;
         true
@@ -200,13 +205,19 @@ impl Mixer {
         if !output.len().is_multiple_of(2) {
             return false;
         }
-        let listeners = self.listeners.iter().flatten().count();
         for voice in self.voices.iter_mut().flatten() {
             let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {
                 continue;
             };
             voice.gain = [0; 2];
-            for listener in self.listeners.iter().flatten() {
+            let mut listeners = 0;
+            for listener in self
+                .listeners
+                .iter()
+                .flatten()
+                .filter(|l| voice.event.applies_to_client(l.client))
+            {
+                listeners += 1;
                 let gain = gains(voice.event, listener, &sample.policy);
                 for (to, from) in voice.gain.iter_mut().zip(gain) {
                     *to += i64::from(from);
@@ -225,6 +236,10 @@ impl Mixer {
                 let Some(voice) = slot.as_mut() else {
                     continue;
                 };
+                if voice.delay != 0 {
+                    voice.delay -= 1;
+                    continue;
+                }
                 let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {
                     continue;
                 };

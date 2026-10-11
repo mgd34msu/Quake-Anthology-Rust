@@ -57,6 +57,7 @@ fn main() -> Result<(), &'static str> {
                     volume: 1.0,
                     attenuation: 1.0,
                     action: SoundAction::Play,
+                    ..qa_core::primitives::SoundEvent::default()
                 }))
                 .map_err(|_| "publish")?;
             events

@@ -8,6 +8,7 @@ fn sound(id: u32) -> FrameEvent {
         volume: 1.0,
         attenuation: 1.0,
         action: SoundAction::Play,
+        ..qa_core::primitives::SoundEvent::default()
     })
 }
 fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmission) -> Vec<u64> {
@@ -39,6 +40,30 @@ fn targeted_publications_belong_only_to_the_selected_consumer() {
     }
     assert!(!ring.needs_resync(remote));
     assert_eq!(ring.counters(remote).unwrap().submissions, 0);
+}
+
+#[test]
+fn private_sound_only_requires_its_client_and_presentation() {
+    let mut ring = EventRing::load(4, 3, 4, 32).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let selected = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let other = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let FrameEvent::Sound(mut event) = sound(1) else {
+        unreachable!()
+    };
+    event.client = Some(ClientId(0));
+    let sequence = ring.push(FrameEvent::Sound(event)).unwrap();
+    assert_eq!(
+        consume(&mut ring, presentation, OutputSubmission::BestEffort),
+        [sequence]
+    );
+    assert!(consume(&mut ring, other, OutputSubmission::Unsent).is_empty());
+    assert!(!ring.is_empty());
+    assert_eq!(
+        consume(&mut ring, selected, OutputSubmission::BestEffort),
+        [sequence]
+    );
+    assert!(ring.is_empty());
 }
 #[test]
 fn formatted_console_uses_local_delivery_and_the_ring_text_boundary() {

@@ -351,6 +351,34 @@ impl FrameHost {
     pub fn module_state(&self, module: ModuleId) -> Option<State> {
         Some(self.module_row(module)?.state)
     }
+    /// Resource ordinals are populated by native Init/SpawnEntities at load.
+    pub fn for_each_native_sound(
+        &self,
+        mut visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
+    ) -> Result<(), String> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some(modules) = &self.modules {
+            for row in modules.rows.iter().flatten() {
+                if let Program::Native { vm, .. } = &row.request.program
+                    && let Some(ranges) = vm.resource_ranges()
+                {
+                    let sounds = ranges[1];
+                    for ordinal in 1..sounds.count {
+                        let (name, _) = row
+                            .storage
+                            .configstring(row.request.context.module, sounds.first + ordinal)
+                            .map_err(|e| format!("native sound precache: {e:?}"))?;
+                        if !name.is_empty() {
+                            visit(name, row.request.context.console.source)?;
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let _ = &mut visit;
+        Ok(())
+    }
     /// Read the existing native entity view only at its stopped-child boundary.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub fn native_entities(
@@ -400,7 +428,7 @@ impl FrameHost {
             },
         )
     }
-    /// Startup follows its event/command phase, without another intake.
+    /// Load-time startup or the frame's command phase uses the same entries.
     pub fn initialize_modules(&mut self, phase: Phase) {
         self.module_lifecycle(Some(phase));
     }

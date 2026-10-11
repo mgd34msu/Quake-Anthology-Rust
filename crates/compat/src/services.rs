@@ -72,6 +72,20 @@ pub struct ResourceRange {
     pub first: usize,
     pub count: usize,
 }
+/// Native Q2 resource names select player-relative or explicit file paths.
+pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, CallError> {
+    if name.is_empty() || name.starts_with(b"*") {
+        return Ok(None);
+    }
+    let mut path = FixedText::default();
+    if let Some(explicit) = name.strip_prefix(b"#") {
+        path.append_bytes(explicit).map_err(|_| CallError::Text)?;
+    } else {
+        path.append_bytes(b"sound/").map_err(|_| CallError::Text)?;
+        path.append_bytes(name).map_err(|_| CallError::Text)?;
+    }
+    Ok(Some(path))
+}
 struct ConfigRange {
     module: ModuleId,
     first: usize,
@@ -307,6 +321,7 @@ pub struct EngineServices<'a> {
     pub commands: &'a mut CommandBuffer,
     pub vfs: &'a Vfs,
     pub localization: &'a qa_content::localization::Catalog,
+    pub sound_bank: Option<&'a qa_audio::Bank>,
     pub registry: &'a qa_gameplay::registry::Registry,
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
@@ -388,6 +403,12 @@ pub struct EngineCallTable {
         fn(&mut EngineServices<'_>, std::fmt::Arguments<'_>) -> Result<u64, CallError>,
     pub usercmd: fn(&EngineServices<'_>, NativeEntity) -> Option<UserCmd>,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
+    pub sound_id: fn(
+        &EngineServices<'_>,
+        ModuleId,
+        ResourceRange,
+        i32,
+    ) -> Result<Option<qa_core::primitives::SoundId>, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
     pub trace: fn(
         &mut EngineServices<'_>,
@@ -512,6 +533,18 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     console_formatted: |s, text| EngineServices::console_formatted(&mut s.server.events, text),
     usercmd: |s, native| s.usercmd(native),
     sound: |s, e| s.sound(e),
+    sound_id: |s, module, range, index| {
+        let index = usize::try_from(index).map_err(|_| CallError::Text)?;
+        if index >= range.count {
+            return Err(CallError::Text);
+        }
+        let (name, _) = s.storage.configstring(module, range.first + index)?;
+        let Some(path) = sound_path(name)? else {
+            return Ok(None);
+        };
+        let path = std::str::from_utf8(path.as_bytes()).map_err(|_| CallError::Text)?;
+        Ok(s.sound_bank.and_then(|bank| bank.find(path)))
+    },
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
     clip: |s, q, target| s.clip(q, target),

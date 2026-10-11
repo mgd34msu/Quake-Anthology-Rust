@@ -32,6 +32,7 @@ fn independent_module_dispatch_routes_all_types_once_and_retires_only_after_both
         volume: 1.0,
         attenuation: 1.0,
         action: SoundAction::Play,
+        ..qa_core::primitives::SoundEvent::default()
     }))
     .unwrap();
     ring.print(

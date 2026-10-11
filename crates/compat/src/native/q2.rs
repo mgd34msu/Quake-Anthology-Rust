@@ -497,7 +497,70 @@ impl Game {
                         result: function.result,
                     });
                 }
-                let signature = if ordinal == cvar {
+                let signature = if ordinal == 4 {
+                    Some((
+                        if layout.version == 2023 {
+                            &[
+                                NativeScalar::Word,
+                                NativeScalar::U8,
+                                NativeScalar::I32,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                            ][..]
+                        } else {
+                            &[
+                                NativeScalar::Word,
+                                NativeScalar::I32,
+                                NativeScalar::I32,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                            ][..]
+                        },
+                        NativeScalar::Void,
+                    ))
+                } else if ordinal == 5 {
+                    Some((
+                        if layout.version == 2023 {
+                            &[
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::U8,
+                                NativeScalar::I32,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                            ][..]
+                        } else {
+                            &[
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::I32,
+                                NativeScalar::I32,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                                NativeScalar::Float,
+                            ][..]
+                        },
+                        NativeScalar::Void,
+                    ))
+                } else if layout.version == 2023 && ordinal == 6 {
+                    Some((
+                        &[
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::Word,
+                            NativeScalar::U8,
+                            NativeScalar::I32,
+                            NativeScalar::Float,
+                            NativeScalar::Float,
+                            NativeScalar::Float,
+                            NativeScalar::U32,
+                        ][..],
+                        NativeScalar::Void,
+                    ))
+                } else if ordinal == cvar {
                     Some((
                         &[NativeScalar::Word, NativeScalar::Word, NativeScalar::U32][..],
                         NativeScalar::Word,

@@ -332,6 +332,8 @@ pub const Q2_CLASSIC: CallTable = {
     let mut table = CallTable {
         entries: [None; 256],
     };
+    table.entries[4] = scalar!(native_sound::<false, false>);
+    table.entries[5] = scalar!(native_sound::<true, false>);
     table.entries[6] = scalar!(config_set);
     table.entries[8] = scalar!(resource_index::<0>);
     table.entries[9] = scalar!(resource_index::<1>);
@@ -374,6 +376,9 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[1] = scalar!(print);
     table.entries[2] = scalar!(native_print::<true, false>);
     table.entries[3] = scalar!(native_print::<true, true>);
+    table.entries[4] = scalar!(native_sound::<false, false>);
+    table.entries[5] = scalar!(native_sound::<true, false>);
+    table.entries[6] = scalar!(native_sound::<true, true>);
     table.entries[7] = scalar!(config_set);
     table.entries[8] = scalar!(native_config_get);
     table.entries[10] = scalar!(resource_index::<0>);
@@ -909,6 +914,74 @@ fn native_localized_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
         &argument,
     )?;
     Ok(0)
+}
+fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    use qa_core::primitives::{SoundAction, SoundEvent};
+    let address = c.pointer(if LOCAL { 0 } else { usize::from(POSITIONED) })?;
+    if address == 0 && (LOCAL || !POSITIONED) {
+        return Ok(0);
+    }
+    let client = if LOCAL {
+        let Some(client) = native_client(c, address)? else {
+            return Ok(0);
+        };
+        Some(client)
+    } else {
+        None
+    };
+    let index = if LOCAL {
+        4
+    } else {
+        2 + usize::from(POSITIONED)
+    };
+    let channel = c.arg(index - 1)? as u16;
+    let volume = float::<false>(c, index + 1)? as f32;
+    let attenuation = float::<false>(c, index + 2)? as f32;
+    let time_offset = float::<false>(c, index + 3)? as f32;
+    if !(0.0..=1.0).contains(&volume)
+        || !(0.0..=4.0).contains(&attenuation)
+        || !(0.0..=0.255).contains(&time_offset)
+    {
+        return Err(CallError::Text);
+    }
+    let resources = c.native_resources.ok_or(CallError::Text)?;
+    let Some(sound) = (ENGINE_CALLS.sound_id)(
+        c.services,
+        c.context.module,
+        resources[1],
+        c.arg(index)? as i32,
+    )?
+    else {
+        return Ok(0);
+    };
+    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    let (entity, mut position) =
+        entities.sound_source(c.services, c.memory, c.context, *table, address)?;
+    if POSITIONED && !LOCAL {
+        position = c.memory.read_vec3(c.pointer(0)?)?;
+    }
+    let dupe_key = if LOCAL { c.arg(8)? as u32 } else { 0 };
+    match (ENGINE_CALLS.sound)(
+        c.services,
+        SoundEvent {
+            sound,
+            entity,
+            position,
+            client,
+            volume,
+            attenuation,
+            time_offset,
+            channel: channel & 7,
+            reliable: channel & 16 != 0,
+            dupe_key,
+            action: SoundAction::Play,
+        },
+    ) {
+        Ok(_) | Err(CallError::Capacity) => Ok(0),
+        Err(error) => Err(error),
+    }
 }
 fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     print(c)?;

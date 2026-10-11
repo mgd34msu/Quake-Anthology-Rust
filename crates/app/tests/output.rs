@@ -59,6 +59,7 @@ fn emit(host: &mut FrameHost, tick: Tick) {
         volume: 1.0,
         attenuation: 1.0,
         action: SoundAction::Play,
+        ..qa_core::primitives::SoundEvent::default()
     }));
     runtime.print_event(None, PrintKind::Center, format_args!("{id}"));
     let _ = runtime.server.events.push(FrameEvent::Effect(EffectEvent {

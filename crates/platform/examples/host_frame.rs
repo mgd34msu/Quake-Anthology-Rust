@@ -314,6 +314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         volume: 1.0,
                         attenuation: 1.0,
                         action: SoundAction::Play,
+                        ..qa_core::primitives::SoundEvent::default()
                     }));
                 host.runtime
                     .print_event(None, PrintKind::Console, format_args!("output {id}\n"));

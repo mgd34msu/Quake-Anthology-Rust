@@ -519,17 +519,20 @@ fn run() -> Result<(), String> {
             spec.rules.name(),
         );
     }
-    let bank = qa_app::audio::load_bank(
-        &host.runtime.vfs,
-        &precache_sounds,
-        local_clients
-            .iter()
-            .flatten()
-            .next()
-            .map_or(client_module.unwrap_or(RuleSetId::Quake3), |id| {
-                host.runtime.server.clients[id.0 as usize].client_rules
-            }),
-    )?;
+    // Native resource registration finishes before client audio precaching.
+    // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
+    host.console.execute_frame(&mut host.runtime);
+    if !host.runtime.quit {
+        host.initialize_modules(qa_app::modules::Phase::Server);
+    }
+    let sound_rules = local_clients
+        .iter()
+        .flatten()
+        .next()
+        .map_or(client_module.unwrap_or(RuleSetId::Quake3), |id| {
+            host.runtime.server.clients[id.0 as usize].client_rules
+        });
+    let bank = qa_app::audio::load_bank(&mut host, &precache_sounds, sound_rules)?;
     host.runtime.sound_bank = Some(std::sync::Arc::clone(&bank));
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;

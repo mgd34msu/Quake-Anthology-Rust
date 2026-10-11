@@ -286,6 +286,9 @@ impl EventRing {
             let relevant = c.target.is_some()
                 && target.is_none_or(|target| c.target == Some(target))
                 && match (c.target, event) {
+                    (Some(OutputTarget::Client(id)), FrameEvent::Sound(sound)) => {
+                        sound.applies_to_client(id)
+                    }
                     (Some(OutputTarget::Client(id)), FrameEvent::Print(p)) => {
                         p.client.is_none_or(|to| to == id)
                     }

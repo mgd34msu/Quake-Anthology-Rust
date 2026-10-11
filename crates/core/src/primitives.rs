@@ -155,7 +155,7 @@ pub struct ProductId(pub u16);
 pub struct WeaponId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CvarHandle(pub u32);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SoundId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -381,6 +381,11 @@ pub struct Body {
     pub velocity: Vec3,
     pub mins: Vec3,
     pub maxs: Vec3,
+}
+impl Body {
+    pub fn center(self) -> Vec3 {
+        self.position + crate::math::midpoint(self.mins, self.maxs)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -845,7 +850,7 @@ impl DamageFlags {
         self.0 & flag != 0
     }
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SoundEvent {
     pub sound: SoundId,
     pub entity: Option<EntityId>,
@@ -854,6 +859,15 @@ pub struct SoundEvent {
     pub volume: f32,
     pub attenuation: f32,
     pub action: SoundAction,
+    pub client: Option<ClientId>,
+    pub time_offset: f32,
+    pub reliable: bool,
+    pub dupe_key: u32,
+}
+impl SoundEvent {
+    pub fn applies_to_client(self, client: ClientId) -> bool {
+        self.client.is_none_or(|recipient| recipient == client)
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SoundAction {

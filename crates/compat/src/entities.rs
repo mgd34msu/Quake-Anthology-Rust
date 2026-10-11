@@ -615,6 +615,23 @@ impl EntityProjection {
         }
         Ok(())
     }
+    pub fn sound_source(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<(Option<EntityId>, Vec3), CallError> {
+        let (_, _, entity) = self.entity(services, memory, context, table, address)?;
+        let (body, _) = self.body(memory, address)?;
+        let position = if field(memory, address, self.layout.solid)? == 3 {
+            body.center()
+        } else {
+            body.position
+        };
+        Ok((entity, position))
+    }
     fn body(&self, memory: &ModuleMemory<'_>, address: u64) -> Result<(Body, Vec3), CallError> {
         let body = Body {
             position: memory.read_vec3(address + 4)?,

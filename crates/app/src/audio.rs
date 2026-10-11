@@ -59,16 +59,53 @@ impl Output {
 }
 
 pub fn load_bank(
-    vfs: &qa_content::vfs::Vfs,
+    host: &mut crate::host::FrameHost,
     paths: &[String],
     rules: RuleSetId,
 ) -> Result<Arc<Bank>, String> {
+    let mut registered = paths
+        .iter()
+        .map(|path| (qa_core::names::canonical_path(path), rules, true))
+        .collect::<Vec<_>>();
+    host.for_each_native_sound(|name, rules| {
+        if let Some(path) =
+            qa_compat::services::sound_path(name).map_err(|e| format!("sound path: {e:?}"))?
+        {
+            let path = std::str::from_utf8(path.as_bytes()).map_err(|e| e.to_string())?;
+            registered.push((qa_core::names::canonical_path(path), rules, false));
+        }
+        Ok(())
+    })?;
+    let names =
+        qa_core::names::NameTable::load(registered.iter().map(|(name, _, _)| name.as_bytes()))
+            .map_err(|e| e.to_string())?;
+    let mut loaded = qa_core::stamps::StampSet::new(names.len());
     let mut reader = qa_formats::archive::ArchiveReader::default();
-    let mut sources = Vec::with_capacity(paths.len());
-    for path in paths {
-        let bytes = vfs
-            .read_file(path.as_bytes(), 256 * 1024 * 1024, &mut reader)
-            .map_err(|error| format!("sound {path}: {error}"))?;
+    let mut sources = Vec::with_capacity(names.len());
+    for (path, rules, required) in registered {
+        let id = names
+            .find(path.as_bytes())
+            .ok_or("missing sound registration")?;
+        if loaded.test_and_set(id.0 as usize) {
+            continue;
+        }
+        let bytes =
+            match host
+                .runtime
+                .vfs
+                .read_file(path.as_bytes(), 256 * 1024 * 1024, &mut reader)
+            {
+                Ok(bytes) => bytes,
+                Err(error) if !required => {
+                    host.runtime.print_event(
+                        None,
+                        qa_core::primitives::PrintKind::Console,
+                        format_args!("sound {path}: {error}\n"),
+                    );
+                    continue;
+                }
+                Err(error) => return Err(format!("sound {path}: {error}")),
+            };
         let policy = if rules == RuleSetId::Quake3 {
             qa_formats::sound::WavPolicy::Quake3
         } else {
@@ -76,7 +113,7 @@ pub fn load_bank(
         };
         let pcm = qa_formats::sound::decode(&bytes, policy)
             .map_err(|e| format!("sound decode: {e:?}"))?;
-        sources.push((path.clone(), pcm, rules));
+        sources.push((path, pcm, rules));
     }
     let rate = NonZeroU32::new(44100).ok_or("invalid device rate")?;
     Ok(Arc::new(Bank::load(rate, sources)?))
@@ -104,6 +141,7 @@ pub fn play(
                     volume: 1.0,
                     attenuation: 0.0,
                     action: SoundAction::Play,
+                    ..SoundEvent::default()
                 }),
             );
         } else {

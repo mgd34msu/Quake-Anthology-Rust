@@ -2156,15 +2156,15 @@ fn native_import_code(
     pointer: u64,
     a: &[u64],
     returns_value: bool,
-    float: bool,
+    float_positions: &[usize],
     output: u64,
 ) -> Vec<u8> {
     let stack = if a.len() > 4 { 0x48 } else { 0x28 };
     let mut code = vec![0x48, 0x83, 0xec, stack];
-    if float {
+    for &index in float_positions.iter().filter(|&&i| i < 4) {
         code.push(0xb8);
-        code.extend((a[0] as u32).to_le_bytes());
-        code.extend([0x66, 0x0f, 0x6e, 0xc0]); // native float in XMM0
+        code.extend((a[index] as u32).to_le_bytes());
+        code.extend([0x66, 0x0f, 0x6e, 0xc0 + index as u8 * 8]);
     }
     for (arg, register) in
         a.iter()
@@ -2224,7 +2224,7 @@ fn native_snap_imports_execute_through_session_dispatch() {
             )
             .unwrap();
             let mut code =
-                native_import_code(vm.import_callback(), &[ordinal, vector], false, false, 0);
+                native_import_code(vm.import_callback(), &[ordinal, vector], false, &[], 0);
             assert_eq!(code.pop(), Some(0xc3));
             code.extend([0x48, 0xb8]); // mov rax,vector
             code.extend(vector.to_le_bytes());
@@ -2553,11 +2553,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
         let trap_name = if rr {
-            b"local_sound".as_slice()
+            b"GetPathToGoal".as_slice()
         } else {
             b"bprintf".as_slice()
         };
-        let pointer = pointers[if rr { 6 } else { 0 }];
+        let pointer = pointers[if rr { 52 } else { 0 }];
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -2764,7 +2764,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 pointers[slot],
                 a,
                 returns_value,
-                slot == write_slots[4] || slot == vector_slots[2],
+                if slot == write_slots[4] || slot == vector_slots[2] {
+                    &[0]
+                } else {
+                    &[]
+                },
                 base + 0x1c30,
             );
             if slot == argv_slot || slot == args_slot || (rr && slot == 8) {
@@ -3842,6 +3846,130 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         }
         drop(invoke_import);
         console.execute_frame(&mut runtime);
+        let rate = std::num::NonZeroU32::new(44100).unwrap();
+        runtime.sound_bank = Some(std::sync::Arc::new(
+            qa_audio::Bank::load(
+                rate,
+                vec![(
+                    "sound/_qa_child_cvar".into(),
+                    qa_core::primitives::Pcm {
+                        rate,
+                        channels: qa_core::primitives::PcmChannels::Mono,
+                        samples: vec![1024],
+                        loop_start: None,
+                    },
+                    rules,
+                )],
+            )
+            .unwrap(),
+        ));
+        let source = {
+            let memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            let position = memory.read_vec3(entity_address + 4).unwrap();
+            if memory
+                .read_word(entity_address + if rr { 1380 } else { 100 })
+                .unwrap()
+                == 3
+            {
+                qa_core::primitives::Body {
+                    position,
+                    mins: memory
+                        .read_vec3(entity_address + if rr { 1396 } else { 204 })
+                        .unwrap(),
+                    maxs: memory
+                        .read_vec3(entity_address + if rr { 1408 } else { 216 })
+                        .unwrap(),
+                    ..Default::default()
+                }
+                .center()
+            } else {
+                position
+            }
+        };
+        let mut emit_sound = |game: &mut Game, slot: usize, arguments: &[u64]| {
+            let code = native_import_code(
+                pointers[slot],
+                arguments,
+                false,
+                if slot == 4 { &[3] } else { &[] },
+                0,
+            );
+            game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
+                .copy_from_slice(&code);
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            game.vm.call(
+                &mut NativeCalls {
+                    services: &mut services,
+                    table: game.imports,
+                    context,
+                    platform_time: EventTime(0),
+                    command: &[],
+                    raw_args: b"",
+                    unknown: &mut unknown,
+                },
+                run,
+                &[1],
+            )
+        };
+        let volume = u64::from(0.5f32.to_bits());
+        let attenuation = u64::from(1.0f32.to_bits());
+        let offset = u64::from(0.125f32.to_bits());
+        emit_sound(
+            &mut game,
+            4,
+            &[entity_address, 18, 1, volume, attenuation, offset],
+        )
+        .unwrap();
+        emit_sound(
+            &mut game,
+            5,
+            &[
+                base + 0x1e80,
+                entity_address,
+                3,
+                1,
+                volume,
+                attenuation,
+                offset,
+            ],
+        )
+        .unwrap();
+        emit_sound(&mut game, 4, &[0, 18, 1, volume, attenuation, offset]).unwrap();
+        drop(emit_sound);
+        let mut batch = runtime
+            .server
+            .events
+            .batch(runtime.server.presentation)
+            .unwrap();
+        let mut sounds = Vec::new();
+        while let Some(record) = runtime.server.events.next(&mut batch) {
+            if let FrameEvent::Sound(sound) = record.event {
+                sounds.push(sound);
+            }
+        }
+        assert_eq!(sounds.len(), 2);
+        assert_eq!(sounds[0].position, source);
+        assert_eq!(
+            sounds[1].position,
+            qa_core::primitives::Vec3([1.0625, -2.125, 4096.0])
+        );
+        assert_eq!((sounds[0].channel, sounds[0].reliable), (2, true));
+        assert_eq!((sounds[1].channel, sounds[1].reliable), (3, false));
+        for sound in sounds {
+            assert_eq!(
+                (
+                    sound.volume,
+                    sound.attenuation,
+                    sound.time_offset,
+                    sound.client
+                ),
+                (0.5, 1.0, 0.125, None)
+            );
+        }
         let view = console.cvars.bind("sensitivity", context.console).unwrap();
         assert_eq!(console.cvars.read(view).unwrap().as_str(), "7");
         let mut expected = vec![
@@ -3981,7 +4109,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .map(|name| game.import_ordinal(name).unwrap());
             assert_eq!(slots, [0, 2, 3]);
             let mut emit = |game: &mut Game, slot: usize, arguments: &[u64]| {
-                let code = native_import_code(pointers[slot], arguments, false, false, 0);
+                let code = native_import_code(
+                    pointers[slot],
+                    arguments,
+                    false,
+                    if slot == 4 { &[3] } else { &[] },
+                    0,
+                );
                 game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                     .copy_from_slice(&code);
                 let mut services =
@@ -4013,6 +4147,39 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             emit(&mut game, slots[1], &[target, 0, message]).unwrap();
             emit(&mut game, write_slots[0], &[0x9a]).unwrap();
             emit(&mut game, unicast_slot, &[target, 1, 0xabcd_ef01_1234_5678]).unwrap();
+            // RR local_sound uses target as emitter, ignoring origin and ent.
+            emit(
+                &mut game,
+                6,
+                &[
+                    target,
+                    1,
+                    1,
+                    18,
+                    1,
+                    u64::from(1.0f32.to_bits()),
+                    0,
+                    0,
+                    0xdead_beef,
+                ],
+            )
+            .unwrap();
+            emit(
+                &mut game,
+                6,
+                &[
+                    0,
+                    1,
+                    1,
+                    18,
+                    1,
+                    u64::from(1.0f32.to_bits()),
+                    0,
+                    0,
+                    0xdead_beef,
+                ],
+            )
+            .unwrap();
             drop(emit);
             let mut presentation = runtime
                 .server
@@ -4020,13 +4187,27 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .batch(runtime.server.presentation)
                 .unwrap();
             let mut local_prints = Vec::new();
+            let mut local_sounds = Vec::new();
             while let Some(record) = runtime.server.events.next(&mut presentation) {
+                if let FrameEvent::Sound(sound) = record.event {
+                    local_sounds.push(sound);
+                }
                 if let FrameEvent::Print(print) = record.event
                     && runtime.server.events.texts.get(print.text) == Some(text.as_slice())
                 {
                     local_prints.push((print.client, print.kind, print.level));
                 }
             }
+            assert_eq!(local_sounds.len(), 1);
+            assert_eq!(
+                (
+                    local_sounds[0].client,
+                    local_sounds[0].channel,
+                    local_sounds[0].reliable,
+                    local_sounds[0].dupe_key
+                ),
+                (Some(client), 2, true, 0xdead_beef)
+            );
             assert_eq!(
                 local_prints,
                 [

@@ -186,6 +186,7 @@ dependencies = [
 name = "qa-compat"
 version = "0.1.0"
 dependencies = [
+ "qa-audio",
  "qa-console",
  "qa-content",
  "qa-core",
