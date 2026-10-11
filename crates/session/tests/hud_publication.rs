@@ -11,8 +11,8 @@ fn hud_publication_keeps_float_bits_and_resets_for_the_next_client_lifetime() {
         .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
         .unwrap();
     let client = &mut server.clients[0];
-    client.player.item_acquired_at[1] = -0.0;
-    client.player.powerup_until[1] = f64::from_bits(0x7ff8_0000_0000_0001);
+    client.player.inventory.item_acquired_at[1] = -0.0;
+    client.player.inventory.powerup_until[1] = f64::from_bits(0x7ff8_0000_0000_0001);
     for _ in 0..10 {
         client
             .hud_publication
@@ -44,8 +44,8 @@ fn hud_publication_keeps_float_bits_and_resets_for_the_next_client_lifetime() {
         Some(id)
     );
     let client = &mut server.clients[0];
-    client.player.item_acquired_at[1] = -0.0;
-    client.player.powerup_until[1] = f64::from_bits(0x7ff8_0000_0000_0001);
+    client.player.inventory.item_acquired_at[1] = -0.0;
+    client.player.inventory.powerup_until[1] = f64::from_bits(0x7ff8_0000_0000_0001);
     client
         .hud_publication
         .publish_changes(&client.player, &mut server.events, id);

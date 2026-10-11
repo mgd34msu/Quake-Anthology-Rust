@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..CommandIntent::moving([0.01, 0.02, 0.03])
         };
     }
-    let inventory = server.clients[511].player.inventory.as_ptr();
+    let inventory = server.clients[511].player.inventory.item_counts.as_ptr();
     let mut measured_calls = 0;
     let mut measured_bytes = 0;
     let mut reconnects = 0;
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("reconnect")?;
         if id != ClientId(511)
             || server.entities.resolve(old).is_some()
-            || server.clients[511].player.inventory.as_ptr() != inventory
+            || server.clients[511].player.inventory.item_counts.as_ptr() != inventory
             || server.entities.columns.native_entity[server.clients[511].entity.slot as usize]
                 .is_some()
         {
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             qa_input::InputPolicy::native,
         );
         for (slot, client) in server.clients.iter_mut().enumerate() {
-            client.player.inventory[1] = slot as i32;
+            client.player.inventory.item_counts[1] = slot as i32;
             black_box(&client.command);
         }
         let counts = end_frame();
@@ -95,8 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if measured_calls != 0
         || measured_bytes != 0
-        || server.clients[511].player.inventory[1] != 511
-        || server.clients[0].player.inventory[1] != 0
+        || server.clients[511].player.inventory.item_counts[1] != 511
+        || server.clients[0].player.inventory.item_counts[1] != 0
     {
         return Err("client allocation/state qualification".into());
     }

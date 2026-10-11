@@ -452,11 +452,11 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
             &mut host.runtime.server.clients[id.0 as usize].player,
         ] {
             player.health = 75;
-            player.inventory[1] = 4;
-            player.item_acquired_at[1] = 1.25;
-            player.weapon = weapon;
-            player.powerup_until[2] = 3.5;
-            player.collectibles = 7;
+            player.inventory.item_counts[1] = 4;
+            player.inventory.item_acquired_at[1] = 1.25;
+            player.inventory.weapon = weapon;
+            player.inventory.powerup_until[2] = 3.5;
+            player.inventory.collectibles = 7;
         }
     }
     publish(
@@ -504,7 +504,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
         );
     }
     assert!(host.runtime.server.world_frame >= 9);
-    host.runtime.prediction[0].player.inventory[1] = 5;
+    host.runtime.prediction[0].player.inventory.item_counts[1] = 5;
     for frame in 11..=15 {
         source.now = EventTime::from_milliseconds(frame * 50);
         host.frame(&mut source, true);

@@ -11,7 +11,7 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
         PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity());
     let mut state = bindings.state(16, NameId(10));
     let mut publication =
-        qa_session::clients::HudPublication::with_capacity(player.inventory.len(), 16);
+        qa_session::clients::HudPublication::with_capacity(player.inventory.item_counts.len(), 16);
     let mut events = qa_core::events::EventRing::load(4096, 1, 1, 32).unwrap();
     let client = ClientId(0);
     let consumer = events
@@ -21,14 +21,14 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
     player.armor = 30;
     player.frags = 2;
     player.score = 9;
-    player.collectibles = 5;
-    player.powerup_until[3] = 123.5;
+    player.inventory.collectibles = 5;
+    player.inventory.powerup_until[3] = 123.5;
     for weapon in &registry.weapons {
-        player.inventory[weapon.item.0 as usize] = 1;
-        player.item_acquired_at[weapon.item.0 as usize] = 25.0;
-        player.weapon = weapon.id;
+        player.inventory.item_counts[weapon.item.0 as usize] = 1;
+        player.inventory.item_acquired_at[weapon.item.0 as usize] = 25.0;
+        player.inventory.weapon = weapon.id;
         if let Some(ammo) = weapon.ammo {
-            player.inventory[ammo.0 as usize] = 17;
+            player.inventory.item_counts[ammo.0 as usize] = 17;
         }
         let old_weapon = state.inventory.weapon;
         let old_items = state.inventory.item_counts.clone();

@@ -52,7 +52,7 @@ fn destination() -> PlayerState {
     p.body.position = Vec3([999.; 3]);
     p.view_angles = Vec3([-111.; 3]);
     p.health = 9876;
-    p.inventory[1] = 19;
+    p.inventory.item_counts[1] = 19;
     p.movement.tuning.max_speed = Some(17.);
     p.movement.tuning.speed_multiplier = 2.;
     p.tail = PlayerTail::Q1 {
@@ -64,7 +64,7 @@ fn destination() -> PlayerState {
 fn assert_independent_state(p: &PlayerState) {
     assert_eq!(p.movement_rules, RuleSetId::Quake3);
     assert_eq!(p.trace_rules, RuleSetId::Quake);
-    assert_eq!(p.inventory[1], 19);
+    assert_eq!(p.inventory.item_counts[1], 19);
     assert_eq!(p.movement.tuning.max_speed, Some(17.));
     assert_eq!(p.movement.tuning.speed_multiplier, 2.);
     assert_eq!(
@@ -463,7 +463,7 @@ fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
         &[(48, binding), (49, absent), (1000, binding)],
     );
     let mut p = destination();
-    let arena = p.inventory.as_ptr();
+    let arena = p.inventory.item_counts.as_ptr();
     let mut c = context();
     assert!(!projection.apply(&[7; 8], &mut p, &mut c, |_| panic!("short record")));
     assert_eq!(p.health, 9876);
@@ -474,7 +474,7 @@ fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
     words[20] = 1023;
     assert!(projection.apply(&words, &mut p, &mut c, |_| None));
     assert_eq!(p.values.get(ValueId(2)), Some(NumericValue::integer(-2)));
-    assert_eq!(p.inventory.as_ptr(), arena);
+    assert_eq!(p.inventory.item_counts.as_ptr(), arena);
     assert_eq!(projection.dropped_bindings, 1);
     assert_independent_state(&p);
 }

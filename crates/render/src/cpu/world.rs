@@ -1533,15 +1533,13 @@ impl SurfacePrepare {
                         primitive.stages.count += 1;
                     }
                     if !valid {
-                        self.stage_count = primitive.stages.first as usize;
-                        self.reject(stats);
+                        self.rollback(primitive.stages.first, stats);
                         continue;
                     }
                     primitive.planes = self.stages[primitive.stages.first as usize].planes;
                 }
                 if !self.keep_coverage(&mut primitive, count) {
-                    self.stage_count = primitive.stages.first as usize;
-                    self.reject(stats);
+                    self.rollback(primitive.stages.first, stats);
                     continue;
                 }
                 self.primitives[self.primitive_count] = primitive;
@@ -1561,6 +1559,11 @@ impl SurfacePrepare {
         self.certified = certified;
         true
     }
+    fn rollback(&mut self, first: u32, stats: &mut crate::BackendStats) {
+        self.stage_count = first as usize;
+        self.reject(stats);
+    }
+
     fn reject(&mut self, stats: &mut crate::BackendStats) {
         self.reject_n(stats, 1);
     }
@@ -1631,13 +1634,11 @@ impl SurfacePrepare {
         }
         for (stage, prepared) in sky_stages[..stages].iter().copied().enumerate() {
             let Some(prepared) = prepared else {
-                self.stage_count = primitive.stages.first as usize;
-                self.reject(stats);
+                self.rollback(primitive.stages.first, stats);
                 return;
             };
             let Some(image) = assets.image(prepared.image) else {
-                self.stage_count = primitive.stages.first as usize;
-                self.reject(stats);
+                self.rollback(primitive.stages.first, stats);
                 return;
             };
             if stage != 0
@@ -1646,13 +1647,11 @@ impl SurfacePrepare {
                     .project_stage(prepared, evaluator, &mut self.screen)
                     .is_none()
             {
-                self.stage_count = primitive.stages.first as usize;
-                self.reject(stats);
+                self.rollback(primitive.stages.first, stats);
                 return;
             }
             let Some(planes) = Planes::load(&self.screen[..count]) else {
-                self.stage_count = primitive.stages.first as usize;
-                self.reject(stats);
+                self.rollback(primitive.stages.first, stats);
                 return;
             };
             self.stages[self.stage_count] = StagePlanes {
@@ -1665,8 +1664,7 @@ impl SurfacePrepare {
         }
         primitive.planes = self.stages[primitive.stages.first as usize].planes;
         if !self.keep_coverage(&mut primitive, count) {
-            self.stage_count = primitive.stages.first as usize;
-            self.reject(stats);
+            self.rollback(primitive.stages.first, stats);
             return;
         }
         self.primitives[self.primitive_count] = primitive;

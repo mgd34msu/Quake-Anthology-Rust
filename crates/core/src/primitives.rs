@@ -509,12 +509,8 @@ pub struct PlayerState {
     pub armor_absorption: f32,
     pub armor_energy_absorption: f32,
     pub armor_type: ItemId,
-    pub weapon: WeaponId,
     pub pending_weapon: Option<WeaponId>,
-    pub inventory: Box<[i32]>,
-    pub item_acquired_at: Box<[f64]>,
-    pub powerup_until: Box<[f64]>,
-    pub collectibles: u64,
+    pub inventory: Inventory,
     pub view_offset: Vec3,
     pub punch_angles: Vec3,
     /// Native view target supplied by the player/module boundary, not geometry.
@@ -762,26 +758,18 @@ impl PlayerState {
     pub fn with_capacity(items: usize, powerups: usize, values: usize) -> Self {
         Self {
             values: ValueBank::load(values),
-            inventory: vec![0; items].into_boxed_slice(),
-            item_acquired_at: vec![0.0; items].into_boxed_slice(),
-            powerup_until: vec![0.0; powerups].into_boxed_slice(),
+            inventory: Inventory::with_capacity(items, powerups),
             ..Self::default()
         }
     }
 
     pub fn reset(&mut self) {
         self.values.clear();
-        self.inventory.fill(0);
-        self.item_acquired_at.fill(0.0);
-        self.powerup_until.fill(0.0);
+        self.inventory.reset();
         let inventory = std::mem::take(&mut self.inventory);
-        let item_acquired_at = std::mem::take(&mut self.item_acquired_at);
-        let powerup_until = std::mem::take(&mut self.powerup_until);
         *self = Self {
             values: std::mem::take(&mut self.values),
             inventory,
-            item_acquired_at,
-            powerup_until,
             ..Self::default()
         };
     }
@@ -987,14 +975,14 @@ pub enum HudChange {
     Collectibles(u64),
 }
 #[derive(Debug, Default)]
-pub struct HudInventory {
+pub struct Inventory {
     pub item_counts: Box<[i32]>,
     pub item_acquired_at: Box<[f64]>,
     pub powerup_until: Box<[f64]>,
     pub weapon: WeaponId,
     pub collectibles: u64,
 }
-impl HudInventory {
+impl Inventory {
     pub fn with_capacity(items: usize, powerups: usize) -> Self {
         Self {
             item_counts: vec![0; items].into_boxed_slice(),
@@ -1018,7 +1006,7 @@ pub struct HudState {
     pub health: i32,
     pub armor: i32,
     pub ammo: i32,
-    pub inventory: HudInventory,
+    pub inventory: Inventory,
     pub armor_type: ItemId,
     pub frags: i32,
     pub score: i32,
@@ -1034,7 +1022,7 @@ impl HudState {
     pub fn with_capacity(items: usize, powerups: usize, weapons: usize, values: usize) -> Self {
         Self {
             values: ValueBank::load(values),
-            inventory: HudInventory::with_capacity(items, powerups),
+            inventory: Inventory::with_capacity(items, powerups),
             owned_items: crate::bits::BitSet::empty(items),
             owned_weapons: crate::bits::BitSet::empty(weapons),
             ..Self::default()

@@ -67,23 +67,23 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     assert_ne!(server.clients[0].entity, server.clients[1].entity);
     server.clients[0].player.health = 100;
     server.clients[1].player.health = 75;
-    server.clients[0].player.inventory[4] = 25;
-    server.clients[0].player.item_acquired_at[4] = 2.5;
-    server.clients[0].player.powerup_until[15] = 100.0;
+    server.clients[0].player.inventory.item_counts[4] = 25;
+    server.clients[0].player.inventory.item_acquired_at[4] = 2.5;
+    server.clients[0].player.inventory.powerup_until[15] = 100.0;
     server.clients[0].hud.inventory.item_counts[4] = 25;
     server.clients[0].hud.inventory.powerup_until[15] = 100.0;
     server.clients[0].hud.owned_weapons.insert(7);
     assert_eq!(server.clients[0].hud.owned_weapons.words().len(), 1);
-    server.clients[1].player.weapon = WeaponId(3);
-    assert_eq!(server.clients[1].player.inventory[4], 0);
-    assert_eq!(server.clients[0].player.weapon, WeaponId(0));
+    server.clients[1].player.inventory.weapon = WeaponId(3);
+    assert_eq!(server.clients[1].player.inventory.item_counts[4], 0);
+    assert_eq!(server.clients[0].player.inventory.weapon, WeaponId(0));
     assert!(
         server
             .connect(Connection::Bot, ModuleId(3), PlayerTail::default(), None)
             .is_none()
     );
-    let memory = server.clients[0].player.inventory.as_ptr();
-    let timers = server.clients[0].player.powerup_until.as_ptr();
+    let memory = server.clients[0].player.inventory.item_counts.as_ptr();
+    let timers = server.clients[0].player.inventory.powerup_until.as_ptr();
     let hud_weapons = server.clients[0].hud.owned_weapons.words().as_ptr();
     let old_entity = server.clients[0].entity;
     assert!(server.disconnect(first));
@@ -91,11 +91,17 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
         server.connect(Connection::Local, ModuleId(3), PlayerTail::default(), None),
         Some(first)
     );
-    assert_eq!(server.clients[0].player.inventory.as_ptr(), memory);
-    assert_eq!(server.clients[0].player.inventory[4], 0);
-    assert_eq!(server.clients[0].player.powerup_until.as_ptr(), timers);
-    assert_eq!(server.clients[0].player.item_acquired_at[4], 0.0);
-    assert_eq!(server.clients[0].player.powerup_until[15], 0.0);
+    assert_eq!(
+        server.clients[0].player.inventory.item_counts.as_ptr(),
+        memory
+    );
+    assert_eq!(server.clients[0].player.inventory.item_counts[4], 0);
+    assert_eq!(
+        server.clients[0].player.inventory.powerup_until.as_ptr(),
+        timers
+    );
+    assert_eq!(server.clients[0].player.inventory.item_acquired_at[4], 0.0);
+    assert_eq!(server.clients[0].player.inventory.powerup_until[15], 0.0);
     assert_eq!(
         server.clients[0].hud.owned_weapons.words().as_ptr(),
         hud_weapons
@@ -118,7 +124,7 @@ fn native_q2_capacity_and_larger_common_namespaces_do_not_truncate_client_ids() 
                 .connect(Connection::Remote, ModuleId(7), PlayerTail::default(), None)
                 .unwrap();
             assert_eq!(id, ClientId(slot as u32));
-            server.clients[slot].player.inventory[1] = slot as i32;
+            server.clients[slot].player.inventory.item_counts[1] = slot as i32;
         }
         assert!(
             server
@@ -126,10 +132,10 @@ fn native_q2_capacity_and_larger_common_namespaces_do_not_truncate_client_ids() 
                 .is_none()
         );
         assert_eq!(
-            server.clients[count - 1].player.inventory[1],
+            server.clients[count - 1].player.inventory.item_counts[1],
             count as i32 - 1
         );
-        assert_eq!(server.clients[0].player.inventory[1], 0);
+        assert_eq!(server.clients[0].player.inventory.item_counts[1], 0);
         assert!(server.disconnect(ClientId(count as u32 - 1)));
         assert!(!server.disconnect(ClientId(count as u32)));
     }
@@ -173,7 +179,11 @@ fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
         Some(classic)
     );
     assert_eq!(server.entities.columns.native_entity[0], None);
-    let memory = server.clients[first.0 as usize].player.inventory.as_ptr();
+    let memory = server.clients[first.0 as usize]
+        .player
+        .inventory
+        .item_counts
+        .as_ptr();
     assert!(server.disconnect(first));
     assert_eq!(server.entities.columns.native_entity[slot], None);
     assert_eq!(
@@ -182,7 +192,11 @@ fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
     );
     assert_eq!(server.entities.columns.native_entity[slot], None);
     assert_eq!(
-        server.clients[first.0 as usize].player.inventory.as_ptr(),
+        server.clients[first.0 as usize]
+            .player
+            .inventory
+            .item_counts
+            .as_ptr(),
         memory
     );
     assert!(server.entities.resolve(entity).is_none());

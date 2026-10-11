@@ -24,9 +24,9 @@ fn main() -> Result<(), &'static str> {
                     && weapon.ammo.is_some()
             })
             .ok_or("weapon")?;
-        player.weapon = weapon.id;
-        player.inventory[weapon.item.0 as usize] = 1;
-        player.inventory[weapon.ammo.ok_or("ammo")?.0 as usize] = 17;
+        player.inventory.weapon = weapon.id;
+        player.inventory.item_counts[weapon.item.0 as usize] = 1;
+        player.inventory.item_counts[weapon.ammo.ok_or("ammo")?.0 as usize] = 17;
     }
     let mut texts = qa_core::events::TextStore::load(3, 32).map_err(|_| "text")?;
     let leases: [_; 3] = std::array::from_fn(|_| texts.insert(b"message").expect("load rows"));

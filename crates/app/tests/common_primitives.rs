@@ -167,12 +167,12 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
         player.armor = slot as i32;
         player.score = slot as i32 * 3;
         player.frags = -(slot as i32);
-        player.weapon = loadout.weapon;
-        player.inventory[loadout.item.0 as usize] = 1;
-        player.inventory[loadout.ammo.0 as usize] = slot as i32 + 7;
-        player.inventory[highest_item.0 as usize] = slot as i32 + 1;
-        player.item_acquired_at[highest_item.0 as usize] = slot as f64 + 0.25;
-        player.powerup_until[loadout.timer.0 as usize] = slot as f64 + 100.0;
+        player.inventory.weapon = loadout.weapon;
+        player.inventory.item_counts[loadout.item.0 as usize] = 1;
+        player.inventory.item_counts[loadout.ammo.0 as usize] = slot as i32 + 7;
+        player.inventory.item_counts[highest_item.0 as usize] = slot as i32 + 1;
+        player.inventory.item_acquired_at[highest_item.0 as usize] = slot as f64 + 0.25;
+        player.inventory.powerup_until[loadout.timer.0 as usize] = slot as f64 + 100.0;
     }
     assert!(
         runtime
@@ -198,7 +198,7 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
         Err(qa_core::loopback::SendError::Client)
     );
     // The last registry weapon and item are reachable, including the zero slot.
-    runtime.server.clients[capacity - 1].player.weapon = highest_weapon;
+    runtime.server.clients[capacity - 1].player.inventory.weapon = highest_weapon;
     let lease = runtime.server.events.texts.insert(b"keep\nthis").unwrap();
     let line = lease.id();
     let center = runtime.server.events.texts.lease(line).unwrap();
@@ -235,14 +235,19 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
         received.armor_type = source.armor_type;
         received.score = source.score;
         received.frags = source.frags;
-        received.weapon = source.weapon;
-        received.inventory.copy_from_slice(&source.inventory);
+        received.inventory.weapon = source.inventory.weapon;
         received
+            .inventory
+            .item_counts
+            .copy_from_slice(&source.inventory.item_counts);
+        received
+            .inventory
             .item_acquired_at
-            .copy_from_slice(&source.item_acquired_at);
+            .copy_from_slice(&source.inventory.item_acquired_at);
         received
+            .inventory
             .powerup_until
-            .copy_from_slice(&source.powerup_until);
+            .copy_from_slice(&source.inventory.powerup_until);
         received.values.copy_from(&source.values);
         host.local_clients[seat] = Some(ClientId(slot as u32));
     }
@@ -283,16 +288,27 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
             hud.inventory.item_acquired_at[highest_item.0 as usize],
             slot as f64 + 0.25
         );
-        assert_eq!(hud.inventory.item_counts, player.inventory);
-        assert_eq!(hud.inventory.powerup_until, player.powerup_until);
+        assert_eq!(hud.inventory.item_counts, player.inventory.item_counts);
+        assert_eq!(hud.inventory.powerup_until, player.inventory.powerup_until);
         assert_eq!(
             hud.inventory.powerup_until[loadouts[slot % 3].timer.0 as usize],
             slot as f64 + 100.0
         );
         assert!(hud.owned_items.contains(highest_item.0 as usize));
-        assert!(hud.owned_weapons.contains(player.weapon.0 as usize));
-        let weapon = host.runtime.catalog.registry.weapon(player.weapon).unwrap();
-        assert_eq!(hud.ammo, player.inventory[weapon.ammo.unwrap().0 as usize]);
+        assert!(
+            hud.owned_weapons
+                .contains(player.inventory.weapon.0 as usize)
+        );
+        let weapon = host
+            .runtime
+            .catalog
+            .registry
+            .weapon(player.inventory.weapon)
+            .unwrap();
+        assert_eq!(
+            hud.ammo,
+            player.inventory.item_counts[weapon.ammo.unwrap().0 as usize]
+        );
     }
     let hud = &host.runtime.server.clients[0].hud;
     assert_eq!(hud.layout, layout);

@@ -115,7 +115,7 @@ impl PendingWrite {
             .chain(self.detail.iter().map(|detail| detail.view.handle))
     }
 }
-type Projections = [[Result<f32, conversion::Error>; 3]; 5];
+type Projections = [[Result<(f32, i32), conversion::Error>; 3]; 5];
 
 pub struct Cvars {
     catalog_values: usize,
@@ -275,7 +275,7 @@ impl Cvars {
                 })
                 .collect(),
             pending: Vec::with_capacity(pending_capacity),
-            projections: vec![[[Ok(0.0); 3]; 5]; BINDINGS.len()],
+            projections: vec![[[Ok((0.0, 0)); 3]; 5]; BINDINGS.len()],
             dependents: (0..pending_capacity).map(|_| Vec::new()).collect(),
             dirty_handles: Vec::with_capacity(pending_capacity),
             dirty_values: StampSet::new(pending_capacity),
@@ -700,10 +700,7 @@ impl Cvars {
         detail: Option<&'a str>,
         operands: &dyn Fn(u16) -> &'a str,
     ) -> Result<Text<'a>, conversion::Error> {
-        let binding = BINDINGS.get(view.binding as usize);
-        if binding.is_none_or(|b| {
-            b.canonical && view.context.role == Role::Engine && DEFINITIONS[b.row as usize].stored
-        }) {
+        if self.reads_stored(view).unwrap_or(true) {
             return Ok(Text::Borrowed(text));
         }
         conversion::read(Input {
@@ -763,27 +760,29 @@ impl Cvars {
         .map(Some)
     }
     pub fn numeric(&self, view: View) -> Result<f32, conversion::Error> {
-        if view.binding as usize >= BINDINGS.len() {
-            return Ok(self.value_in(view.handle, view.context.source));
-        }
-        let b = &BINDINGS[view.binding as usize];
-        if b.canonical && view.context.role == Role::Engine && DEFINITIONS[b.row as usize].stored {
-            Ok(self.values[view.handle.0 as usize].numbers[view.context.source as usize])
+        if self.reads_stored(view).unwrap_or(true) {
+            Ok(self.value_in(view.handle, view.context.source))
         } else {
             self.projections[view.binding as usize][view.context.source as usize]
                 [role_index(view.context.role)]
+            .map(|(number, _)| number)
         }
     }
     pub fn integer_view(&self, view: View) -> Result<i32, conversion::Error> {
-        if view.binding as usize >= BINDINGS.len() {
-            return Ok(self.integer_in(view.handle, view.context.source));
-        }
-        let b = &BINDINGS[view.binding as usize];
-        if b.canonical && view.context.role == Role::Engine && DEFINITIONS[b.row as usize].stored {
+        if self.reads_stored(view).unwrap_or(true) {
             Ok(self.integer_in(view.handle, view.context.source))
         } else {
-            self.read(view).map(|text| integer(text.as_str()))
+            self.projections[view.binding as usize][view.context.source as usize]
+                [role_index(view.context.role)]
+            .map(|(_, integer)| integer)
         }
+    }
+    fn reads_stored(&self, view: View) -> Option<bool> {
+        BINDINGS.get(view.binding as usize).map(|binding| {
+            binding.canonical
+                && view.context.role == Role::Engine
+                && DEFINITIONS[binding.row as usize].stored
+        })
     }
     fn conversion(&self, view: View) -> &'static crate::catalog::Conversion {
         if view.binding as usize >= BINDINGS.len() {
@@ -1206,8 +1205,12 @@ impl Cvars {
                     binding: index as u16,
                     context,
                 };
-                self.read(view)
-                    .map(|text| number(text.as_str(), context.source))
+                self.read(view).map(|text| {
+                    (
+                        number(text.as_str(), context.source),
+                        integer(text.as_str()),
+                    )
+                })
             })
         });
         self.projections[index] = projections;
