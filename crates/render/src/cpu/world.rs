@@ -302,6 +302,7 @@ struct Primitive {
     deforms: [DeformOp; 3],
     coverage: qa_core::primitives::IndexSpan,
     edges: IndexSpan,
+    depth_policy: DepthPolicy,
     winding: Option<crate::edges::Winding>,
     depth_override: Option<f32>,
     patch: bool,

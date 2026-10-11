@@ -87,7 +87,7 @@ impl CoverageBins {
         let mut edge_count = 0;
         for (index, primitive) in primitives.iter_mut().enumerate() {
             let vertices = &coverage[primitive.coverage.range()];
-            let depth_policy = if index < opaque_count && !primitive.overlay {
+            primitive.depth_policy = if index < opaque_count && !primitive.overlay {
                 policy
             } else {
                 DepthPolicy::PlaneDepth
@@ -99,7 +99,7 @@ impl CoverageBins {
             match crate::edges::prepare_polygon(
                 vertices,
                 viewport,
-                depth_policy,
+                primitive.depth_policy,
                 primitive.winding,
                 &mut self.edges[edge_count..],
             ) {
@@ -113,7 +113,7 @@ impl CoverageBins {
             let certified = crate::edges::certified_rows(
                 self.edges(primitive.edges),
                 viewport,
-                depth_policy,
+                primitive.depth_policy,
                 primitive.winding,
             );
             for id in 0..self.count {

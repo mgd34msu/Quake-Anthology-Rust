@@ -654,6 +654,7 @@ pub fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<Winding, ()> {
 }
 
 /// Build immutable full-viewport edges once, before any band reads them.
+/// The viewport must already have passed Refdef::validate.
 #[expect(
     clippy::result_unit_err,
     reason = "Preparation errors retain scoped band rejection"
@@ -665,13 +666,6 @@ pub fn prepare_polygon(
     winding: Option<Winding>,
     storage: &mut [Edge],
 ) -> Result<(usize, Winding), ()> {
-    if viewport.width == 0
-        || viewport.height == 0
-        || viewport.x.checked_add(viewport.width).is_none()
-        || viewport.y.checked_add(viewport.height).is_none()
-    {
-        return Err(());
-    }
     let mut winding = winding.ok_or(())?;
     let mut count = 0;
     let mut previous = vertices[vertices.len() - 1];

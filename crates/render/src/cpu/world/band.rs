@@ -220,6 +220,7 @@ impl WorldBand {
                 if opaque_only && primitive.overlay {
                     continue;
                 }
+                debug_assert_eq!(primitive.depth_policy, policy);
                 if !self.edges.add_polygon(
                     index,
                     primitive.depth_key,
