@@ -48,6 +48,7 @@ impl PlayerStats {
         table: Entities,
         module: ModuleId,
         server: &mut Server,
+        mut pmove: Option<&mut crate::pmove::Pmove>,
     ) -> Result<(), CallError> {
         let Some(projection) = &self.projection else {
             return Ok(());
@@ -90,6 +91,20 @@ impl PlayerStats {
                 &mut PlayerContext::default(),
                 |_| None,
             );
+            if client.module_movement
+                && let Some(pmove) = pmove.as_deref_mut()
+            {
+                pmove.import_client(
+                    memory,
+                    pointer,
+                    slot_address(table, native.slot as u32).ok_or(CallError::Entity)?,
+                    &mut client.player,
+                )?;
+                let body = server.entities.columns.body(slot);
+                client.player.body.mins = body.mins;
+                client.player.body.maxs = body.maxs;
+                server.entities.columns.set_body(slot, client.player.body);
+            }
         }
         Ok(())
     }

@@ -2013,7 +2013,19 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
             } else {
                 192 + (index - 19) * 8
             };
-            pe_rva(&mut file, 0x1800 + offset, 0x180001500, 8);
+            pe_rva(
+                &mut file,
+                0x1800 + offset,
+                if rr && offset == 192 {
+                    0x180001710
+                } else {
+                    0x180001500
+                },
+                8,
+            );
+            if rr && offset == 192 {
+                pe_text(&mut file, 0x1710, &[0xc3, 0x90, 0x90, 0x90, 0x90]);
+            }
         }
         let mut calls = vec![(if rr { 16 } else { 8 }, 0x1400, u8::from(rr))];
         if rr {
@@ -2214,7 +2226,19 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 } else {
                     192 + (index - 19) * 8
                 };
-                pe_rva(&mut file, 0x1800 + offset, 0x180001700, 8);
+                pe_rva(
+                    &mut file,
+                    0x1800 + offset,
+                    if rr && offset == 192 {
+                        0x180001710
+                    } else {
+                        0x180001700
+                    },
+                    8,
+                );
+                if rr && offset == 192 {
+                    pe_text(&mut file, 0x1710, &[0xc3, 0x90, 0x90, 0x90, 0x90]);
+                }
             }
             let metadata = 0x1800 + if rr { 160 } else { 128 };
             pe_rva(&mut file, metadata, 0x180003000, 8);
@@ -2593,7 +2617,19 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             } else {
                 192 + (slot - 19) * 8
             };
-            pe_rva(&mut file, 0x1800 + offset, 0x180001500, 8);
+            pe_rva(
+                &mut file,
+                0x1800 + offset,
+                if rr && offset == 192 {
+                    0x180001710
+                } else {
+                    0x180001500
+                },
+                8,
+            );
+            if rr && offset == 192 {
+                pe_text(&mut file, 0x1710, &[0xc3, 0x90, 0x90, 0x90, 0x90]);
+            }
         }
         let entity_offset = if rr { 160 } else { 128 };
         let stride = if rr { 1472 } else { 280 };
@@ -5080,7 +5116,11 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
     }
 }
 
+#[path = "pmove.rs"]
+mod pmove;
+
 pub fn run() {
+    pmove::commands_move_a_native_client_once();
     native_area_connection_uses_shared_topology_through_session_dispatch();
     native_visibility_uses_compiled_pvs_through_session_dispatch();
     native_usercmd_uses_session_dispatch_and_native_client_identity();

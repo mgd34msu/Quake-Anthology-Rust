@@ -1,8 +1,7 @@
 use qa_core::{
     math,
     primitives::{
-        EntityId, MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, UserCmd, Vec3,
-        buttons,
+        MovementMode, MovementTimer, PlayerState, RuleSetId, SurfaceFlags, UserCmd, Vec3, buttons,
     },
     sys_events::EventTime,
 };
@@ -26,7 +25,7 @@ impl TraceServices for WorldTrace<'_> {
 pub struct MovementResult {
     pub steps: u32,
     pub traces: u32,
-    pub contacts: [Option<EntityId>; 32],
+    pub contacts: [Option<Trace>; 32],
     pub contact_count: usize,
 }
 pub type MoveEntry = fn(UserCmd, &mut PlayerState, &mut dyn TraceServices) -> MovementResult;
@@ -138,9 +137,12 @@ impl Step<'_> {
         if let Some(id) = trace.entity
             && self.result.contact_count < 32
             && (!self.arena()
-                || !self.result.contacts[..self.result.contact_count].contains(&Some(id)))
+                || !self.result.contacts[..self.result.contact_count]
+                    .iter()
+                    .flatten()
+                    .any(|contact| contact.entity == Some(id)))
         {
-            self.result.contacts[self.result.contact_count] = Some(id);
+            self.result.contacts[self.result.contact_count] = Some(*trace);
             self.result.contact_count += 1;
         }
     }

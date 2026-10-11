@@ -128,6 +128,7 @@ struct EventHeader {
 
 /// Payloads borrow the ring until the receiver finishes dispatching one event.
 /// FIFO release reuses bytes without allocating or retaining packet pointers.
+#[derive(Default)]
 pub struct SysEventQueue {
     payloads: PayloadQueue<EventHeader>,
     rejected: u64,

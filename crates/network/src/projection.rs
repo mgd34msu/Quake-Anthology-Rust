@@ -203,6 +203,18 @@ pub struct PlayerProjection {
     pub dropped_bindings: usize,
 }
 impl PlayerProjection {
+    /// Native pmove_state_t carries movement only; inventory and presentation
+    /// remain in the module's player_state_t and are imported separately.
+    pub fn load_movement(protocol: Protocol) -> Self {
+        let mut projection = Self::load_fields(protocol, &[], false);
+        projection.fields = projection
+            .fields
+            .iter()
+            .copied()
+            .filter(|field| field.word <= 12)
+            .collect();
+        projection
+    }
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
         Self::load_fields(protocol, bindings, false)
     }

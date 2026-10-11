@@ -509,7 +509,9 @@ impl Game {
                         result: function.result,
                     });
                 }
-                let signature = if ordinal == 4 {
+                let signature = if layout.version == 3 && ordinal == 21 {
+                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
+                } else if ordinal == 4 {
                     Some((
                         if layout.version == 2023 {
                             &[
@@ -809,6 +811,17 @@ impl Game {
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
+        let mut imports = imports;
+        if layout.version == 2023 {
+            imports.push(NativeImport {
+                number: 70,
+                abi,
+                parameters: &[NativeScalar::Word],
+                result: NativeScalar::Void,
+                filter: None,
+                trap: false,
+            });
+        }
         let mut vm = Vm::map_image(
             image,
             &[NamedExport {
@@ -854,7 +867,15 @@ impl Game {
             layout.resources[0],
         ));
         vm.player_stats = Some(crate::players::PlayerStats::load(layout.client.stats));
-        let pointers = (0..imports.len())
+        vm.pmove = Some(crate::pmove::Pmove::load(
+            if layout.version == 2023 {
+                &crate::pmove::RERELEASE
+            } else {
+                &crate::pmove::CLASSIC
+            },
+            layout.client.stats.protocol,
+        ));
+        let pointers = (0..layout.imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))
             .collect::<Result<Vec<_>, _>>()?;
         let memory = vm.process.memory_mut().map_err(Error::Process)?;
@@ -891,6 +912,16 @@ impl Game {
                 })
                 .collect(),
         })?;
+        vm.client_think = layout
+            .functions
+            .iter()
+            .position(|f| f.name == b"ClientThink")
+            .map(|n| first + n as u32);
+        vm.pmove_redirect = layout
+            .functions
+            .iter()
+            .position(|f| f.name == b"Pmove")
+            .map(|n| (first + n as u32, layout.imports.len()));
         Ok(Self {
             vm,
             imports_address: address,

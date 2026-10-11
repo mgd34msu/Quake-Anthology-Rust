@@ -3,6 +3,27 @@ use super::{Export, FrameHost, ModuleResult, Program, Q2Clients, State};
 use qa_core::primitives::{ClientId, NativeEntity, ThinkTime, UserCmd};
 
 impl FrameHost {
+    /// Called once for every command admitted by the native channel. Modules
+    /// never share the engine's deferred movement pass with their ClientThink.
+    pub(crate) fn received_command(&mut self, id: ClientId, command: UserCmd) {
+        let rules = self.runtime.server.clients[id.0 as usize]
+            .player
+            .movement_rules;
+        let command = qa_movement::prepare_command(rules, command);
+        self.runtime.server.submit_command(id, command);
+        if self.runtime.server.clients[id.0 as usize].module_movement {
+            let module = self.runtime.server.clients[id.0 as usize].module;
+            if let Some(api) = self.module_row(module).and_then(|row| row.client_api)
+                && let Err(error) = self.think_q2_client(&api, id, &command, 0)
+            {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("ClientThink: {error}\n"));
+            }
+        }
+    }
     /// Native client numbers are supplied by the connection boundary. They are
     /// unrelated to the common entity slot or the player's movement rules.
     pub fn connect_q2_client(
@@ -84,7 +105,8 @@ impl FrameHost {
                 }
                 self.module_row_mut(api.module)
                     .ok_or("missing client module")?
-                    .client_disconnect = Some(api.disconnect);
+                    .client_api = Some(*api);
+                self.runtime.server.clients[id.0 as usize].module_movement = true;
                 accepted = true;
                 self.call_module_export(api.module, Export::words(api.begin, &[address]), time)
                     .map_err(|e| format!("ClientBegin: {e:?}"))
@@ -172,7 +194,7 @@ impl FrameHost {
         let row = self
             .module_row(native.module)
             .ok_or("missing client module")?;
-        if row.state != State::Running || row.client_disconnect.is_none() {
+        if row.state != State::Running || row.client_api.is_none() {
             return Err("native client is not active".into());
         }
         let time = row.request.context.clock.at(self.time);
@@ -200,7 +222,7 @@ impl FrameHost {
             .clients
             .get(id.0 as usize)
             .and_then(|client| self.module_row(client.module))
-            .and_then(|row| row.client_disconnect)
+            .and_then(|row| row.client_api.map(|api| api.disconnect))
         else {
             return;
         };

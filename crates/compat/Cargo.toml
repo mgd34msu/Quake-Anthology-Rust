@@ -15,3 +15,4 @@ qa-formats = { path = "../formats" }
 qa-platform = { path = "../platform" }
 qa-network = { path = "../network" }
 qa-gameplay = { path = "../gameplay" }
+qa-movement = { path = "../movement" }

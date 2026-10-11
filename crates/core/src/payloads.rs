@@ -23,6 +23,19 @@ pub struct PayloadQueue<T> {
     write: usize,
     used: usize,
 }
+impl<T> Default for PayloadQueue<T> {
+    /// An unallocated, closed queue permits temporary ownership transfer.
+    fn default() -> Self {
+        Self {
+            slots: Box::default(),
+            bytes: Box::default(),
+            head: 0,
+            length: 0,
+            write: 0,
+            used: 0,
+        }
+    }
+}
 
 impl<T: Copy> PayloadQueue<T> {
     pub fn load(slots: usize, bytes: usize) -> Result<Self, QueueError> {

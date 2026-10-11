@@ -407,12 +407,94 @@ impl FrameHost {
         source.mix_audio();
     }
 
+    fn receive_packet(
+        &mut self,
+        socket: u16,
+        from: qa_core::sys_events::Peer,
+        bytes: &[u8],
+        time: EventTime,
+    ) {
+        // Ownership moves temporarily; the callback retains neither the packet
+        // nor an extra usercmd queue, and the same native channels are restored.
+        let mut network = std::mem::replace(
+            &mut self.runtime.network,
+            qa_network::ingress::Connections::load(0),
+        );
+        network.receive(socket, from, bytes, time, |id, endpoint, incoming| {
+            use qa_network::ingress::Incoming;
+            match endpoint {
+                qa_core::loopback::Endpoint::Client => {
+                    let server = &mut self.runtime.server;
+                    if let Some(binding) = self.runtime.local_snapshots[id.0 as usize].as_mut()
+                        && server.clients[id.0 as usize].connection
+                            == Some(qa_session::clients::Connection::Local)
+                        && server.clients[id.0 as usize].output == Some(binding.output)
+                    {
+                        if let Incoming::Print(print) = incoming {
+                            let _ = server.events.print_level_bytes(
+                                None,
+                                Some(id),
+                                print.kind,
+                                print.level.unwrap_or(print.kind.default_level()),
+                                print.text,
+                            );
+                        } else {
+                            binding.apply(
+                                incoming,
+                                &mut self.runtime.prediction[binding.seat.index()].player,
+                            );
+                        }
+                    }
+                }
+                qa_core::loopback::Endpoint::Server => match incoming {
+                    Incoming::Command { command, output } => {
+                        if output.is_some()
+                            && self.runtime.server.clients[id.0 as usize].output == output
+                        {
+                            self.received_command(id, command);
+                        }
+                    }
+                    Incoming::Acknowledged {
+                        receipt,
+                        output: Some(output),
+                    } => {
+                        self.runtime.server.events.acknowledge(output, receipt);
+                    }
+                    _ => {}
+                },
+            }
+        });
+        self.runtime.network = network;
+    }
+
     pub fn drain(&mut self, result: &mut FrameResult) {
         result.drains += 1;
+        // Move the sole queue while callbacks borrow the composed host. Its
+        // closed placeholder owns no payload storage and admits no intake.
+        let mut queue = std::mem::take(&mut self.queue);
         loop {
-            while let Some(event) = self.queue.pop() {
+            while let Some(event) = queue.pop() {
                 self.runtime.input_time = event.time;
                 result.events += 1;
+                if let EventKind::Key {
+                    down: true, repeat, ..
+                } = event.kind
+                {
+                    self.key_downs += 1;
+                    self.key_repeats += u64::from(repeat);
+                }
+                if !matches!(event.kind, EventKind::Time | EventKind::Packet { .. }) {
+                    qa_console::logger::dev_print(
+                        &self.console.cvars,
+                        self.developer,
+                        1,
+                        format_args!(
+                            "{{\"event\":\"input_diagnostic\",\"time_ns\":{},\"input\":\"{}\"}}",
+                            event.time.0,
+                            event_name(event.kind)
+                        ),
+                    );
+                }
                 match event.kind {
                     EventKind::Time => {
                         self.time = event.time;
@@ -433,72 +515,7 @@ impl FrameHost {
                     } => {
                         self.runtime.network.frame_ns =
                             event.time.since(self.previous.unwrap_or_default());
-                        let server = &mut self.runtime.server;
-                        let predictions = &mut self.runtime.prediction;
-                        let snapshots = &mut self.runtime.local_snapshots;
-                        self.runtime.network.receive(
-                            socket,
-                            from,
-                            bytes,
-                            event.time,
-                            |client, endpoint, incoming| {
-                                if endpoint == qa_core::loopback::Endpoint::Client {
-                                    if let Some(binding) = snapshots[client.0 as usize].as_mut()
-                                        && server.clients[client.0 as usize].connection
-                                            == Some(qa_session::clients::Connection::Local)
-                                        && server.clients[client.0 as usize].output
-                                            == Some(binding.output)
-                                    {
-                                        if let qa_network::ingress::Incoming::Print(print) =
-                                            incoming
-                                        {
-                                            let _ = server.events.print_level_bytes(
-                                                None,
-                                                Some(client),
-                                                print.kind,
-                                                print.level.unwrap_or(print.kind.default_level()),
-                                                print.text,
-                                            );
-                                            return;
-                                        }
-                                        binding.apply(
-                                            incoming,
-                                            &mut predictions[binding.seat.index()].player,
-                                        );
-                                    }
-                                    return;
-                                }
-                                if endpoint == qa_core::loopback::Endpoint::Server {
-                                    match incoming {
-                                        qa_network::ingress::Incoming::Command {
-                                            command,
-                                            output,
-                                        } => {
-                                            if output.is_none()
-                                                || server.clients[client.0 as usize].output
-                                                    != output
-                                            {
-                                                return;
-                                            }
-                                            let rules = server.clients[client.0 as usize]
-                                                .player
-                                                .movement_rules;
-                                            server.submit_command(
-                                                client,
-                                                qa_movement::prepare_command(rules, command),
-                                            )
-                                        }
-                                        qa_network::ingress::Incoming::Acknowledged {
-                                            receipt,
-                                            output: Some(output),
-                                        } => {
-                                            server.events.acknowledge(output, receipt);
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            },
-                        );
+                        self.receive_packet(socket, from, bytes, event.time);
                     }
                     _ => self.runtime.input.dispatch(
                         event,
@@ -507,32 +524,14 @@ impl FrameHost {
                         },
                     ),
                 }
-                if let EventKind::Key {
-                    down: true, repeat, ..
-                } = event.kind
-                {
-                    self.key_downs += 1;
-                    self.key_repeats += u64::from(repeat);
-                }
-                if !matches!(event.kind, EventKind::Time | EventKind::Packet { .. }) {
-                    qa_console::logger::dev_print(
-                        &self.console.cvars,
-                        self.developer,
-                        1,
-                        format_args!(
-                            "{{\"event\":\"input_diagnostic\",\"time_ns\":{},\"input\":\"{}\"}}",
-                            event.time.0,
-                            event_name(event.kind)
-                        ),
-                    );
-                }
             }
             // Com_EventLoop drains local client packets, then server packets when
             // system events run out. Both use the same packet consumer as UDP.
-            if self.runtime.loopback.enqueue(&mut self.queue, self.time) == 0 {
+            if self.runtime.loopback.enqueue(&mut queue, self.time) == 0 {
                 break;
             }
         }
+        self.queue = queue;
     }
 
     fn client_frame(&mut self) -> [UserCmd; SeatId::COUNT] {

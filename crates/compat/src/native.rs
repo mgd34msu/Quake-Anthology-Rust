@@ -94,6 +94,9 @@ pub struct Vm {
     resources: Option<[crate::services::ResourceRange; 3]>,
     entities: Option<EntityProjection>,
     player_stats: Option<crate::players::PlayerStats>,
+    pmove: Option<crate::pmove::Pmove>,
+    client_think: Option<u32>,
+    pmove_redirect: Option<(u32, usize)>,
     surfaces: Option<crate::surfaces::NativeSurfaces>,
 }
 pub struct NativeCalls<'a, 'engine> {
@@ -312,6 +315,9 @@ impl Vm {
             resources: None,
             entities: None,
             player_stats: None,
+            pmove: None,
+            client_think: None,
+            pmove_redirect: None,
             surfaces: None,
         })
     }
@@ -401,6 +407,30 @@ impl Vm {
             }
         }
         let table_address = self.table_address();
+        let native_player = if self.client_think == Some(ordinal) {
+            let entities = self.entities.as_ref().ok_or(Error::Export)?;
+            let base = self.process.base();
+            let memory =
+                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
+                    .map_err(|_| Error::Service(CallError::Memory))?;
+            let native = entities
+                .identity(
+                    &memory,
+                    calls.context,
+                    table_address.ok_or(Error::Export)?,
+                    words[0],
+                )
+                .map_err(Error::Service)?;
+            Some(
+                calls
+                    .services
+                    .server
+                    .client_for_native(native)
+                    .ok_or(Error::Service(CallError::Entity))?,
+            )
+        } else {
+            None
+        };
         let cvars = &mut self.cvars;
         let resources = self.resources.as_ref();
         if let Some(entities) = &mut self.entities {
@@ -412,6 +442,7 @@ impl Vm {
         let surfaces = self.surfaces.as_ref();
         let native_command = self.native_command.as_ref();
         let native_configs = &mut self.native_configs;
+        let pmove = &mut self.pmove;
         let abi = self.abi;
         self.process
             .set_event_time(calls.platform_time)
@@ -430,6 +461,8 @@ impl Vm {
                     native_surfaces: surfaces,
                     native_command,
                     native_configs: native_configs.as_mut(),
+                    native_pmove: pmove.as_mut(),
+                    native_player,
                     context: calls.context,
                     platform_time: calls.platform_time,
                     command: calls.command,
@@ -501,7 +534,13 @@ impl Vm {
                     .map_err(|_| Error::Service(CallError::Memory))?;
             let table = entities.read(&memory, table).map_err(Error::Service)?;
             stats
-                .project(&memory, table, calls.context.module, calls.services.server)
+                .project(
+                    &memory,
+                    table,
+                    calls.context.module,
+                    calls.services.server,
+                    self.pmove.as_mut(),
+                )
                 .map_err(Error::Service)?;
         }
         Ok(value)

@@ -187,7 +187,7 @@ struct Module {
     unknown: UnknownCalls,
     counts: Counts,
     state: State,
-    client_disconnect: Option<CallbackId>,
+    client_api: Option<Q2Clients>,
 }
 impl Module {
     fn native_sounds(&self) -> Option<qa_compat::services::ResourceRange> {
@@ -358,7 +358,7 @@ impl FrameHost {
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
                 state,
-                client_disconnect: None,
+                client_api: None,
             });
         }
         host.modules = Some(Modules {

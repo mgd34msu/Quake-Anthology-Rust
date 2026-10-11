@@ -102,6 +102,29 @@ impl Vm {
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let first = table.first;
+        if let Some((ordinal, import)) = self.pmove_redirect {
+            let offset = ordinal as usize - first;
+            let address = entries
+                .get(offset)
+                .and_then(Option::as_ref)
+                .ok_or(Error::Export)?
+                .entry
+                .address();
+            // Do not overwrite another exported function's prologue.
+            if entries.iter().enumerate().any(|(index, entry)| {
+                index != offset
+                    && entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.entry.address().abs_diff(address) < 5)
+            }) {
+                return Err(Error::Binding(
+                    "native Pmove overlaps another export".into(),
+                ));
+            }
+            self.process
+                .redirect_import(address, import)
+                .map_err(Error::Process)?;
+        }
         self.exports[first..first + entries.len()].copy_from_slice(&entries);
         if let Some(table) = &mut self.table {
             table.address = Some(address);

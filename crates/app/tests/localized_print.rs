@@ -52,6 +52,8 @@ fn localized_native_prints_share_ring_routing_and_checked_argument_memory() {
                         native_surfaces: None,
                         native_command: None,
                         native_configs: None,
+                        native_pmove: None,
+                        native_player: None,
                         context: CallContext {
                             server_frame: 0,
                             module: ModuleId(1),

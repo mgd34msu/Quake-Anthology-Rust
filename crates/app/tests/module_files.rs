@@ -85,6 +85,8 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
                         native_surfaces: None,
                         native_command: None,
                         native_configs: None,
+                        native_pmove: None,
+                        native_player: None,
                         context,
                         platform_time: EventTime(0),
                         command: &[],

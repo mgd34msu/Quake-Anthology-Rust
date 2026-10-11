@@ -583,6 +583,32 @@ impl NativeProcess {
         }
         Ok(self.memory.bytes_mut())
     }
+    /// Redirect an owned image entry to a load-reserved engine import while the
+    /// child is kernel-stopped. Neither address names code in the Rust process.
+    pub fn redirect_import(&mut self, address: u64, ordinal: usize) -> Result<(), NativeError> {
+        let target = self.import_pointer(ordinal).ok_or(NativeError::Extent)?;
+        let offset = usize::try_from(address.checked_sub(self.base).ok_or(NativeError::Extent)?)
+            .map_err(|_| NativeError::Extent)?;
+        let end = offset.checked_add(5).ok_or(NativeError::Extent)?;
+        let region = self
+            .regions
+            .partition_point(|region| region.offset <= offset)
+            .checked_sub(1)
+            .and_then(|index| self.regions.get(index))
+            .ok_or(NativeError::Extent)?;
+        if region.permissions & 4 == 0 || end > region.offset + region.length {
+            return Err(NativeError::Extent);
+        }
+        let displacement = i32::try_from(i128::from(target) - i128::from(address) - 5)
+            .map_err(|_| NativeError::Extent)?;
+        let bytes = self
+            .memory_mut()?
+            .get_mut(offset..end)
+            .ok_or(NativeError::Extent)?;
+        bytes[0] = 0xe9;
+        bytes[1..].copy_from_slice(&displacement.to_le_bytes());
+        Ok(())
+    }
     /// Publish a queued time snapshot only while the owned child is stopped.
     pub fn set_event_time(
         &mut self,

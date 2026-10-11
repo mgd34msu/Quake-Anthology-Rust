@@ -29,6 +29,8 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub native_surfaces: Option<&'a crate::surfaces::NativeSurfaces>,
     pub native_command: Option<&'a crate::command::NativeCommand>,
     pub native_configs: Option<&'a mut crate::configstrings::NativeConfigs>,
+    pub native_pmove: Option<&'a mut crate::pmove::Pmove>,
+    pub native_player: Option<qa_core::primitives::ClientId>,
     pub context: CallContext,
     pub platform_time: EventTime,
     pub command: &'a [&'a [u8]],
@@ -348,6 +350,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[18] = scalar!(native_link);
     table.entries[19] = scalar!(native_unlink);
     table.entries[20] = scalar!(native_area_query::<false>);
+    table.entries[21] = scalar!(native_pmove);
     table.entries[22] = scalar!(native_multicast::<false>);
     table.entries[23] = scalar!(native_unicast::<false>);
     table.entries[24] = scalar!(native_message_bits::<8>);
@@ -407,6 +410,9 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[33] = scalar!(native_message_direction);
     table.entries[34] = scalar!(native_message_angle);
     table.entries[35] = scalar!(native_message_entity);
+    // The rerelease calls the Pmove entry it exports rather than gi.Pmove.
+    // Its owned-child entry is redirected to this same service at bind time.
+    table.entries[70] = scalar!(native_pmove);
     table.entries[48] = scalar!(native_register_observer);
     table.entries[49] = scalar!(native_forget_observer);
     table.entries[53] = scalar!(native_localized_print);
@@ -560,6 +566,8 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             native_surfaces: None,
             native_command: None,
             native_configs: None,
+            native_pmove: None,
+            native_player: None,
             context: self.context,
             platform_time: self.platform_time,
             command: &[],
@@ -792,6 +800,8 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             native_surfaces: None,
             native_command: None,
             native_configs: None,
+            native_pmove: None,
+            native_player: None,
             context: self.context,
             platform_time: self.platform_time,
             command: self.command,
@@ -1433,6 +1443,113 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
 }
 
+fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.pointer(0)?;
+    let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
+    let layout = codec.layout;
+    c.memory.read(address, layout.bytes)?;
+    let (entities, table_address) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let table = entities.boundary(c.memory, c.context, *table_address)?;
+    let id = if let Some(offset) = layout.player {
+        let player = c.memory.read_u64(address + offset as u64)?;
+        let native = entities.identity(c.memory, c.context, *table_address, player)?;
+        let id = c
+            .services
+            .server
+            .client_for_native(native)
+            .ok_or(CallError::Entity)?;
+        if c.native_player.is_some_and(|expected| expected != id) {
+            return Err(CallError::Entity);
+        }
+        id
+    } else {
+        c.native_player.ok_or(CallError::Entity)?
+    };
+    let client = &mut c.services.server.clients[id.0 as usize];
+    codec.read_state(c.memory, address, &mut client.player)?;
+    client.command = qa_movement::prepare_command(
+        client.player.movement_rules,
+        codec.command(c.memory, address, client.command.server_time_ms)?,
+    );
+    let result = {
+        let view = entities.trace_view(c.memory, c.context, *table_address)?;
+        (ENGINE_CALLS.pmove)(c.services, id, Some(&view))?
+    };
+    let client = &c.services.server.clients[id.0 as usize];
+    let player = &client.player;
+    let native_address = |id| {
+        crate::entities::native_address(table, c.context.module, &c.services.server.entities, id)
+            .unwrap_or(table.address)
+    };
+    codec.write_state(c.memory, address, player)?;
+    c.memory
+        .write_vec3(address + layout.view as u64, player.view_angles)?;
+    c.memory
+        .write_vec3(address + layout.mins as u64, player.body.mins)?;
+    c.memory
+        .write_vec3(address + layout.maxs as u64, player.body.maxs)?;
+    if let Some(offset) = layout.height {
+        c.memory.write_word(
+            address + offset as u64,
+            player.view_offset.0[2].to_bits() as i32,
+        )?;
+    }
+    if layout.wide {
+        c.memory.write(address + 3309, &[0, 0])?;
+        c.memory.write_word(address + 3312, 0)?;
+    }
+    c.memory.write_u64(
+        address + layout.ground as u64,
+        if player.movement.grounded {
+            player
+                .movement
+                .ground
+                .map(native_address)
+                .unwrap_or(table.address)
+        } else {
+            0
+        },
+    )?;
+    c.memory.write_word(
+        address + layout.water as u64,
+        qa_world::collision::Contents(player.movement.water_contents).to_q2() as i32,
+    )?;
+    if layout.wide {
+        c.memory.write(
+            address + layout.level as u64,
+            &[player.movement.water_level],
+        )?;
+    } else {
+        c.memory.write_word(
+            address + layout.level as u64,
+            i32::from(player.movement.water_level),
+        )?;
+    }
+    c.memory.write_word(
+        address + layout.touch_count as u64,
+        result.contact_count as i32,
+    )?;
+    for (index, trace) in result.contacts[..result.contact_count]
+        .iter()
+        .flatten()
+        .enumerate()
+    {
+        let entity = trace.entity.map(native_address).unwrap_or(table.address);
+        let at = address + layout.touches as u64;
+        if layout.wide {
+            crate::traces::write_q2::<true>(
+                c.memory,
+                at + (index * 96) as u64,
+                *trace,
+                c.native_surfaces.ok_or(CallError::Geometry)?,
+                entity,
+            )?;
+        } else {
+            c.memory.write_u64(at + (index * 8) as u64, entity)?;
+        }
+    }
+    Ok(0)
+}
 fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let point = c.memory.read_vec3(c.pointer(0)?)?;
     if !point.is_finite() {

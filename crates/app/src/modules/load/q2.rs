@@ -7,6 +7,7 @@ pub struct Q2Spec {
     pub path: String,
 }
 /// Native boundary data selected once; every call enters session dispatch.
+#[derive(Clone, Copy)]
 pub struct Q2Clients {
     pub module: qa_core::primitives::ModuleId,
     pub rules: RuleSetId,

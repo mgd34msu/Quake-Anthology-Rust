@@ -458,6 +458,11 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub pmove: fn(
+        &mut EngineServices<'_>,
+        ClientId,
+        Option<&dyn NativeTraceEntities>,
+    ) -> Result<qa_movement::MovementResult, CallError>,
     pub in_visibility: fn(
         &mut EngineServices<'_>,
         Vec3,
@@ -535,6 +540,7 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    pmove: |services, id, native| services.pmove(id, native),
     in_visibility: |s, first, second, policy, check_portals| {
         let (world, _, row) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
         world
@@ -652,6 +658,34 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    pub fn pmove(
+        &mut self,
+        id: ClientId,
+        native: Option<&dyn NativeTraceEntities>,
+    ) -> Result<qa_movement::MovementResult, CallError> {
+        let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
+        let client = self
+            .server
+            .clients
+            .get_mut(id.0 as usize)
+            .filter(|c| c.connection.is_some())
+            .ok_or(CallError::Entity)?;
+        let mut trace = WorldTrace::new(
+            self.geometry,
+            geometry,
+            index,
+            &self.server.entities,
+            &self.server.area,
+            self.scratch,
+            CollisionOwner::Lifetime(client.entity),
+        )
+        .with_native_entities(native);
+        Ok(qa_movement::pmove(
+            client.command,
+            &mut client.player,
+            &mut trace,
+        ))
+    }
     pub fn ignore_areas(&self, source: qa_core::primitives::RuleSetId, integer: bool) -> bool {
         if integer {
             self.cvars.integer_in(self.storage.no_areas, source) != 0

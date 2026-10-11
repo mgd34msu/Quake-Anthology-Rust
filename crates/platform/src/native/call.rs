@@ -61,6 +61,9 @@ pub struct NativeEntry {
     result: Location,
 }
 impl NativeEntry {
+    pub fn address(&self) -> u64 {
+        self.address
+    }
     pub(super) fn bind(
         address: u64,
         abi: NativeAbi,

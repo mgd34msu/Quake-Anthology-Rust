@@ -34,6 +34,8 @@ pub struct Client {
     pub command: UserCmd,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
+    /// An admitted native Q2 client advances inside ClientThink through Pmove.
+    pub module_movement: bool,
     command_pending: bool,
 }
 
@@ -44,6 +46,7 @@ impl Client {
         self.hud_publication.reset();
         self.command = UserCmd::default();
         self.command_pending = false;
+        self.module_movement = false;
         self.intent = CommandIntent::default();
         self.module = module;
         self.client_rules = RuleSetId::default();
@@ -119,6 +122,7 @@ impl Server {
                 command: UserCmd::default(),
                 intent: CommandIntent::default(),
                 command_pending: false,
+                module_movement: false,
                 output: None,
                 hud: HudState::with_capacity(items, powerups, weapons, values),
                 hud_publication: HudPublication::with_capacity(items, powerups),
@@ -288,6 +292,12 @@ impl Server {
         for client in self.clients.iter_mut() {
             if client.connection.is_some() && client.command_pending {
                 client.command_pending = false;
+                if client.module_movement
+                    && self.entities.columns.native_entity[client.entity.slot as usize]
+                        .is_some_and(|native| native.module == client.module)
+                {
+                    continue;
+                }
                 let result = {
                     let mut trace = WorldTrace::new(
                         store,

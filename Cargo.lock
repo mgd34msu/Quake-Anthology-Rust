@@ -192,6 +192,7 @@ dependencies = [
  "qa-core",
  "qa-formats",
  "qa-gameplay",
+ "qa-movement",
  "qa-network",
  "qa-platform",
  "qa-session",
