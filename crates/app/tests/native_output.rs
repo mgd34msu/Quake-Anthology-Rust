@@ -491,11 +491,15 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
         assert_eq!(host.runtime.server.events.len(), 9);
         let stalled = &host.runtime.server.clients[ids[0].0 as usize];
         assert_eq!(stalled.hud.health, 75);
-        assert_eq!(stalled.hud.item_counts[1], 0);
-        assert_eq!(stalled.hud_publication.rejected_pushes, 0);
+        assert_eq!(stalled.hud.inventory.item_counts[1], 0);
+        assert_eq!(host.runtime.server.events.rejected_publications(), 0);
         let healthy = &host.runtime.server.clients[ids[1].0 as usize].hud;
         assert_eq!(
-            (healthy.item_counts[1], healthy.weapon, healthy.collectibles),
+            (
+                healthy.inventory.item_counts[1],
+                healthy.inventory.weapon,
+                healthy.inventory.collectibles
+            ),
             (4, weapon, 7)
         );
     }
@@ -520,10 +524,10 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     let hud = &host.runtime.server.clients[ids[0].0 as usize].hud;
     assert_eq!(
         (
-            hud.item_counts[1],
-            hud.weapon,
-            hud.powerup_until[2],
-            hud.collectibles
+            hud.inventory.item_counts[1],
+            hud.inventory.weapon,
+            hud.inventory.powerup_until[2],
+            hud.inventory.collectibles
         ),
         (5, weapon, 3.5, 7)
     );

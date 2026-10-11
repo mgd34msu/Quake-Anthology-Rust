@@ -50,5 +50,5 @@ fn hud_publication_keeps_float_bits_and_resets_for_the_next_client_lifetime() {
         .hud_publication
         .publish_changes(&client.player, &mut server.events, id);
     assert_eq!(server.events.len(), 2);
-    assert_eq!(client.hud_publication.rejected_pushes, 0);
+    assert_eq!(server.events.rejected_publications(), 0);
 }

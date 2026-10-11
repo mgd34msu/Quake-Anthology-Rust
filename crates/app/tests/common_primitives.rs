@@ -260,8 +260,13 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
         let hud = &client.hud;
         let Some(seat) = local.iter().position(|&id| id == slot) else {
             assert_eq!((hud.health, hud.armor, hud.score, hud.frags), (0, 0, 0, 0));
-            assert!(hud.item_counts.iter().all(|&value| value == 0));
-            assert!(hud.powerup_until.iter().all(|&value| value == 0.0));
+            assert!(hud.inventory.item_counts.iter().all(|&value| value == 0));
+            assert!(
+                hud.inventory
+                    .powerup_until
+                    .iter()
+                    .all(|&value| value == 0.0)
+            );
             continue;
         };
         let player = &host.runtime.prediction[seat].player;
@@ -270,15 +275,18 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
             (player.health, player.armor, player.score, player.frags)
         );
         assert_ne!(hud.health, client.player.health);
-        assert_eq!(hud.item_counts[highest_item.0 as usize], slot as i32 + 1);
         assert_eq!(
-            hud.item_acquired_at[highest_item.0 as usize],
+            hud.inventory.item_counts[highest_item.0 as usize],
+            slot as i32 + 1
+        );
+        assert_eq!(
+            hud.inventory.item_acquired_at[highest_item.0 as usize],
             slot as f64 + 0.25
         );
-        assert_eq!(hud.item_counts, player.inventory);
-        assert_eq!(hud.powerup_until, player.powerup_until);
+        assert_eq!(hud.inventory.item_counts, player.inventory);
+        assert_eq!(hud.inventory.powerup_until, player.powerup_until);
         assert_eq!(
-            hud.powerup_until[loadouts[slot % 3].timer.0 as usize],
+            hud.inventory.powerup_until[loadouts[slot % 3].timer.0 as usize],
             slot as f64 + 100.0
         );
         assert!(hud.owned_items.contains(highest_item.0 as usize));

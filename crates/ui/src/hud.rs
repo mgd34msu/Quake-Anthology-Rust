@@ -63,27 +63,27 @@ impl HudBindings {
                 acquired_at,
             } => {
                 let index = item.0 as usize;
-                let Some(out) = state.item_counts.get_mut(index) else {
+                let Some(out) = state.inventory.item_counts.get_mut(index) else {
                     return false;
                 };
                 *out = count;
-                state.item_acquired_at[index] = acquired_at;
+                state.inventory.item_acquired_at[index] = acquired_at;
                 if count > 0 {
                     state.owned_items.insert(index);
                 } else {
                     state.owned_items.remove(index);
                 }
             }
-            HudChange::Weapon(weapon) => state.weapon = weapon,
+            HudChange::Weapon(weapon) => state.inventory.weapon = weapon,
             HudChange::Powerup { slot, until } => {
-                let Some(value) = state.powerup_until.get_mut(slot as usize) else {
+                let Some(value) = state.inventory.powerup_until.get_mut(slot as usize) else {
                     return false;
                 };
                 *value = until;
                 return true;
             }
             HudChange::Collectibles(value) => {
-                state.collectibles = value;
+                state.inventory.collectibles = value;
                 return true;
             }
         }
@@ -91,6 +91,7 @@ impl HudBindings {
         for (weapon, binding) in self.weapons.iter().enumerate() {
             if let Some(binding) = binding
                 && state
+                    .inventory
                     .item_counts
                     .get(binding.item.0 as usize)
                     .is_some_and(|&count| count > 0)
@@ -100,10 +101,10 @@ impl HudBindings {
         }
         state.ammo = self
             .weapons
-            .get(state.weapon.0 as usize)
+            .get(state.inventory.weapon.0 as usize)
             .and_then(|binding| *binding)
             .and_then(|binding| binding.ammo)
-            .and_then(|ammo| state.item_counts.get(ammo.0 as usize))
+            .and_then(|ammo| state.inventory.item_counts.get(ammo.0 as usize))
             .copied()
             .unwrap_or(0);
         true

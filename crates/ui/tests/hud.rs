@@ -30,12 +30,12 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
         if let Some(ammo) = weapon.ammo {
             player.inventory[ammo.0 as usize] = 17;
         }
-        let old_weapon = state.weapon;
-        let old_items = state.item_counts.clone();
+        let old_weapon = state.inventory.weapon;
+        let old_items = state.inventory.item_counts.clone();
         bindings.project_stats(&player, &mut state);
         publication.publish_changes(&player, &mut events, client);
-        assert_eq!(state.weapon, old_weapon);
-        assert_eq!(state.item_counts, old_items);
+        assert_eq!(state.inventory.weapon, old_weapon);
+        assert_eq!(state.inventory.item_counts, old_items);
         qa_core::events::dispatch_consumer(
             &mut events,
             consumer,
@@ -52,19 +52,26 @@ fn every_game_and_mixed_weapon_uses_the_same_snapshot_and_numeric_ammo_binding()
             (75, 30, 2, 9)
         );
         assert_eq!(state.ammo, if weapon.ammo.is_some() { 17 } else { 0 });
-        assert_eq!(state.weapon, weapon.id);
+        assert_eq!(state.inventory.weapon, weapon.id);
         assert!(state.owned_weapons.contains(weapon.id.0 as usize));
-        assert_eq!(state.item_acquired_at[weapon.item.0 as usize], 25.0);
         assert_eq!(
-            (state.collectibles, state.powerup_until[3], state.layout),
+            state.inventory.item_acquired_at[weapon.item.0 as usize],
+            25.0
+        );
+        assert_eq!(
+            (
+                state.inventory.collectibles,
+                state.inventory.powerup_until[3],
+                state.layout
+            ),
             (5, 123.5, NameId(10))
         );
     }
     publication.publish_changes(&player, &mut events, client);
     assert!(events.is_empty());
-    let pointer = state.item_counts.as_ptr();
+    let pointer = state.inventory.item_counts.as_ptr();
     state.reset(&mut qa_core::events::TextStore::load(1, 1).unwrap());
-    assert_eq!(state.item_counts.as_ptr(), pointer);
+    assert_eq!(state.inventory.item_counts.as_ptr(), pointer);
     assert!(state.owned_weapons.next_set(0).is_none());
 }
 

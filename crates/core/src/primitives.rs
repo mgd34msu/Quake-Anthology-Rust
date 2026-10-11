@@ -987,22 +987,43 @@ pub enum HudChange {
     Collectibles(u64),
 }
 #[derive(Debug, Default)]
+pub struct HudInventory {
+    pub item_counts: Box<[i32]>,
+    pub item_acquired_at: Box<[f64]>,
+    pub powerup_until: Box<[f64]>,
+    pub weapon: WeaponId,
+    pub collectibles: u64,
+}
+impl HudInventory {
+    pub fn with_capacity(items: usize, powerups: usize) -> Self {
+        Self {
+            item_counts: vec![0; items].into_boxed_slice(),
+            item_acquired_at: vec![0.0; items].into_boxed_slice(),
+            powerup_until: vec![0.0; powerups].into_boxed_slice(),
+            ..Self::default()
+        }
+    }
+    pub fn reset(&mut self) {
+        self.item_counts.fill(0);
+        self.item_acquired_at.fill(0.0);
+        self.powerup_until.fill(0.0);
+        self.weapon = WeaponId::default();
+        self.collectibles = 0;
+    }
+}
+#[derive(Debug, Default)]
 pub struct HudState {
     pub values: ValueBank,
     pub clipped_values: u64,
     pub health: i32,
     pub armor: i32,
     pub ammo: i32,
-    pub weapon: WeaponId,
+    pub inventory: HudInventory,
     pub armor_type: ItemId,
     pub frags: i32,
     pub score: i32,
-    pub item_counts: Box<[i32]>,
-    pub item_acquired_at: Box<[f64]>,
     pub owned_items: crate::bits::BitSet,
     pub owned_weapons: crate::bits::BitSet,
-    pub powerup_until: Box<[f64]>,
-    pub collectibles: u64,
     pub layout: NameId,
     pub layout_text: Option<TextLease>,
     pub centerprint: Option<HudLine>,
@@ -1013,11 +1034,9 @@ impl HudState {
     pub fn with_capacity(items: usize, powerups: usize, weapons: usize, values: usize) -> Self {
         Self {
             values: ValueBank::load(values),
-            item_counts: vec![0; items].into_boxed_slice(),
-            item_acquired_at: vec![0.0; items].into_boxed_slice(),
+            inventory: HudInventory::with_capacity(items, powerups),
             owned_items: crate::bits::BitSet::empty(items),
             owned_weapons: crate::bits::BitSet::empty(weapons),
-            powerup_until: vec![0.0; powerups].into_boxed_slice(),
             ..Self::default()
         }
     }
@@ -1039,18 +1058,14 @@ impl HudState {
     pub fn reset(&mut self, texts: &mut crate::events::TextStore) {
         self.clear_messages(texts);
         self.values.clear();
-        self.item_counts.fill(0);
-        self.item_acquired_at.fill(0.0);
+        self.inventory.reset();
         self.owned_items.clear();
         self.owned_weapons.clear();
-        self.powerup_until.fill(0.0);
         *self = Self {
             values: std::mem::take(&mut self.values),
-            item_counts: std::mem::take(&mut self.item_counts),
-            item_acquired_at: std::mem::take(&mut self.item_acquired_at),
+            inventory: std::mem::take(&mut self.inventory),
             owned_items: std::mem::take(&mut self.owned_items),
             owned_weapons: std::mem::take(&mut self.owned_weapons),
-            powerup_until: std::mem::take(&mut self.powerup_until),
             ..Self::default()
         };
     }
