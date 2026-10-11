@@ -13,8 +13,10 @@ pub struct Q2Clients {
     pub connect: qa_core::primitives::CallbackId,
     pub begin: qa_core::primitives::CallbackId,
     pub disconnect: qa_core::primitives::CallbackId,
+    pub think: qa_core::primitives::CallbackId,
     pub userinfo: u64,
-    pub userinfo_bytes: usize,
+    pub usercmd: u64,
+    pub abi: &'static qa_compat::q2_abi::ClientLayout,
     pub social: u64,
 }
 impl Q2Spec {
@@ -58,20 +60,16 @@ pub fn load_q2(
         for spec in specs {
             let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
             let mut image = super::parse_native(&bytes)?;
-            let userinfo_bytes = qa_compat::q2_abi::info_layout(spec.rules)
-                .ok_or("unsupported Q2 userinfo ABI")?
-                .userinfo_bytes;
+            let abi =
+                qa_compat::q2_abi::client_layout(spec.rules).ok_or("unsupported Q2 client ABI")?;
             let source = runtime
                 .entity_sources
                 .get(entity_source)
                 .ok_or("missing native entity source")?;
             let map = map.strip_prefix("maps/").unwrap_or(map);
             let map = map.strip_suffix(".bsp").unwrap_or(map);
-            let (spawn_arguments, userinfo) = spawn_strings(
-                &mut image,
-                [map.as_bytes(), &source.bytes, b""],
-                userinfo_bytes,
-            )?;
+            let (spawn_arguments, userinfo, usercmd) =
+                spawn_strings(&mut image, [map.as_bytes(), &source.bytes, b""], abi)?;
             let interval = qa_gameplay::rules::tick_millis(spec.rules, std::num::NonZeroU32::MIN)
                 .ok_or("Q2 module needs a fixed native rate")?;
             let game = Game::map(
@@ -118,8 +116,10 @@ pub fn load_q2(
                 connect: client_entry(b"ClientConnect")?,
                 begin: client_entry(b"ClientBegin")?,
                 disconnect: client_entry(b"ClientDisconnect")?,
+                think: client_entry(b"ClientThink")?,
                 userinfo,
-                userinfo_bytes,
+                usercmd,
+                abi,
                 social: spawn_arguments[2],
             });
             let clock = ThinkTime::module_clock(spec.rules);
@@ -186,8 +186,8 @@ pub fn load_q2(
 fn spawn_strings(
     image: &mut qa_formats::program::native::Image,
     strings: [&[u8]; 3],
-    userinfo_bytes: usize,
-) -> Result<([u64; 3], u64), String> {
+    abi: &qa_compat::q2_abi::ClientLayout,
+) -> Result<([u64; 3], u64, u64), String> {
     use qa_formats::program::native::Region;
     use qa_platform::native::PAGE_BYTES;
     let offset = image
@@ -201,7 +201,10 @@ fn spawn_strings(
         .try_fold(0usize, |total, string| {
             total.checked_add(string.len())?.checked_add(1)
         })
-        .and_then(|size| size.checked_add(userinfo_bytes))
+        .and_then(|size| size.checked_add(abi.userinfo_bytes))
+        .and_then(|size| size.checked_add(3))
+        .map(|size| size / 4 * 4)
+        .and_then(|size| size.checked_add(abi.command_bytes))
         .ok_or("Q2 spawn strings too large")?;
     let length = size
         .div_ceil(PAGE_BYTES)
@@ -225,6 +228,7 @@ fn spawn_strings(
         address
     });
     let userinfo = image.base + at as u64;
+    let usercmd = (userinfo + abi.userinfo_bytes as u64).div_ceil(4) * 4;
     image.bytes = bytes.into_boxed_slice();
     let mut regions = std::mem::take(&mut image.regions).into_vec();
     regions.push(Region {
@@ -235,5 +239,5 @@ fn spawn_strings(
         execute: false,
     });
     image.regions = regions.into_boxed_slice();
-    Ok((arguments, userinfo))
+    Ok((arguments, userinfo, usercmd))
 }

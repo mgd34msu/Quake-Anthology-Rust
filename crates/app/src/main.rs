@@ -558,7 +558,7 @@ fn run() -> Result<(), String> {
             .iter()
             .find(|api| api.module == module)
             .ok_or("seat-game-module needs a loaded Q2 client lifecycle")?;
-        let mut info = vec![0; api.userinfo_bytes];
+        let mut info = vec![0; api.abi.userinfo_bytes];
         let length = host
             .console
             .cvars

@@ -1,6 +1,6 @@
 //! Client lifecycle exports use the same session table as provider callbacks.
 use super::{Export, FrameHost, ModuleResult, Program, Q2Clients, State};
-use qa_core::primitives::{ClientId, NativeEntity};
+use qa_core::primitives::{ClientId, NativeEntity, ThinkTime, UserCmd};
 
 impl FrameHost {
     /// Native client numbers are supplied by the connection boundary. They are
@@ -65,7 +65,7 @@ impl FrameHost {
                 )
                 .map_err(|e| format!("client memory: {e:?}"))?;
                 memory
-                    .write_string(api.userinfo, api.userinfo_bytes, userinfo)
+                    .write_string(api.userinfo, api.abi.userinfo_bytes, userinfo)
                     .map_err(|e| format!("native userinfo: {e:?}"))?;
                 self.call_module_export(
                     api.module,
@@ -104,6 +104,86 @@ impl FrameHost {
             Err("native child backend unsupported on this host".into())
         }
     }
+    /// Encode a received common command into the load-reserved game.h buffer.
+    /// `server_frame` is the client's reported snapshot, not the provider clock.
+    /// Dispatch does not also run the host's authoritative movement entry.
+    pub fn think_q2_client(
+        &mut self,
+        api: &Q2Clients,
+        id: ClientId,
+        command: &UserCmd,
+        server_frame: u32,
+    ) -> Result<(), String> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            use qa_compat::memory::ModuleMemory;
+            let (native, address, time) = self.module_client(id)?;
+            if native.module != api.module {
+                return Err("command targets another native module".into());
+            }
+            let row = self
+                .module_row_mut(native.module)
+                .ok_or("missing client module")?;
+            let Program::Native { vm, .. } = &mut row.request.program else {
+                return Err("client needs a native module".into());
+            };
+            let base = vm.process.base();
+            let mut memory = ModuleMemory::borrow(
+                base,
+                vm.process
+                    .memory_mut()
+                    .map_err(|e| format!("command memory: {e:?}"))?,
+            )
+            .map_err(|e| format!("command memory: {e:?}"))?;
+            api.abi
+                .write_command(&mut memory, api.usercmd, command, server_frame)
+                .map_err(|e| format!("native usercmd: {e:?}"))?;
+            self.call_module_export(
+                api.module,
+                Export::words(api.think, &[address, api.usercmd]),
+                time,
+            )
+            .map_err(|e| format!("ClientThink: {e:?}"))
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = (api, id, command, server_frame);
+            Err("native child backend unsupported on this host".into())
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn module_client(&mut self, id: ClientId) -> Result<(NativeEntity, u64, ThinkTime), String> {
+        let client = self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .filter(|client| client.connection.is_some())
+            .ok_or("client is disconnected")?;
+        let slot = self
+            .runtime
+            .server
+            .entities
+            .resolve(client.entity)
+            .ok_or("stale client lifetime")?;
+        let native = self.runtime.server.entities.columns.native_entity[slot]
+            .filter(|native| native.module == client.module)
+            .ok_or("client has no native binding")?;
+        let row = self
+            .module_row(native.module)
+            .ok_or("missing client module")?;
+        if row.state != State::Running || row.client_disconnect.is_none() {
+            return Err("native client is not active".into());
+        }
+        let time = row.request.context.clock.at(self.time);
+        let table = self
+            .native_entities(native.module)
+            .map_err(|e| format!("client table: {e:?}"))?;
+        let slot = u32::try_from(native.slot).map_err(|_| "invalid native client slot")?;
+        let address = qa_compat::entities::slot_address(table, slot)
+            .ok_or("native client outside published entity table")?;
+        Ok((native, address, time))
+    }
     pub(super) fn disconnect_module_clients(&mut self) {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         for index in 0..self.runtime.server.clients.len() {
@@ -112,30 +192,21 @@ impl FrameHost {
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn disconnect_module_client(&mut self, id: ClientId) {
-        let client = &self.runtime.server.clients[id.0 as usize];
-        if client.connection.is_none() {
-            return;
-        }
-        let module = client.module;
-        let Some(native) =
-            self.runtime.server.entities.columns.native_entity[client.entity.slot as usize]
+        // Only clients admitted through this lifecycle have a disconnect entry.
+        // Failed modules still release those clients without re-entering them.
+        let Some(callback) = self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .and_then(|client| self.module_row(client.module))
+            .and_then(|row| row.client_disconnect)
         else {
             return;
         };
-        let Some(row) = self.module_row(module) else {
-            return;
-        };
-        let Some(callback) = row.client_disconnect else {
-            return;
-        };
-        if row.state == State::Running {
-            let time = row.request.context.clock.at(self.time);
-            if let Ok(table) = self.native_entities(module)
-                && let Ok(slot) = u32::try_from(native.slot)
-                && let Some(address) = qa_compat::entities::slot_address(table, slot)
-            {
-                let _ = self.call_module_export(module, Export::words(callback, &[address]), time);
-            }
+        if let Ok((native, address, time)) = self.module_client(id) {
+            let _ =
+                self.call_module_export(native.module, Export::words(callback, &[address]), time);
         }
         self.runtime.server.disconnect(id);
     }

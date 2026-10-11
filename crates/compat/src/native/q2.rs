@@ -25,7 +25,7 @@ macro_rules! functions {
 }
 struct Layout {
     version: i32,
-    info: crate::q2_abi::InfoLayout,
+    client: crate::q2_abi::ClientLayout,
     bytes: usize,
     entity_offset: usize,
     wide_stride: bool,
@@ -209,7 +209,7 @@ const RERELEASE_FUNCTIONS: &[Function] = functions!(
 
 const CLASSIC: Layout = Layout {
     version: 3,
-    info: crate::q2_abi::CLASSIC,
+    client: crate::q2_abi::CLASSIC,
     bytes: 152,
     entity_offset: 128,
     wide_stride: false,
@@ -257,7 +257,7 @@ const CLASSIC: Layout = Layout {
 };
 const RERELEASE: Layout = Layout {
     version: 2023,
-    info: crate::q2_abi::RERELEASE,
+    client: crate::q2_abi::RERELEASE,
     bytes: 272,
     entity_offset: 160,
     wide_stride: true,
@@ -317,8 +317,8 @@ fn layout(rules: RuleSetId) -> Option<&'static Layout> {
     }
 }
 impl Game {
-    pub fn userinfo_bytes(&self) -> usize {
-        self.layout.info.userinfo_bytes
+    pub fn client_layout(&self) -> &'static crate::q2_abi::ClientLayout {
+        &self.layout.client
     }
     /// Bind the API shape at load. Unsupported engine services remain named traps; reaching one rejects only
     /// that call through the existing missing-import path.

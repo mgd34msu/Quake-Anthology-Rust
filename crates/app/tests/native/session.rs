@@ -2263,9 +2263,46 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 code.push(0xc3);
                 pe_text(&mut file, at as usize, &code);
             }
+            pe_rva(
+                &mut file,
+                0x1800 + if rr { 128 } else { 104 },
+                0x180001200,
+                8,
+            );
+            let mut think = vec![0x48, 0xb8];
+            think.extend(target.to_le_bytes());
+            think.extend([0x48, 0x39, 0xc1, 0x74, 2, 0x0f, 0x0b]);
+            for offset in (0..if rr { 28 } else { 16 }).step_by(4) {
+                think.extend([0x8b, 0x42, offset]);
+                think.extend([0x48, 0xb9]);
+                think.extend((0x180004400u64 + u64::from(offset)).to_le_bytes());
+                think.extend([0x3b, 0x01, 0x74, 2, 0x0f, 0x0b]);
+                if !rr || offset < 24 {
+                    think.extend([0xc7, 0x01, 0, 0, 0, 0]);
+                }
+            }
+            think.push(0xc3);
+            assert!(think.len() <= 0x200);
+            pe_text(&mut file, 0x1200, &think);
             let mut image = Image::parse(&file, None, LoadRole::Library).unwrap();
             let mut bytes = std::mem::take(&mut image.bytes).into_vec();
             bytes.resize(0x6000, 0);
+            let expected: Vec<u8> = if rr {
+                [
+                    vec![255, 139, 0, 0],
+                    [90.0f32, -90.0, 180.0, 123.75, -456.5]
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes)
+                        .collect(),
+                    0xfedcba98u32.to_le_bytes().to_vec(),
+                ]
+                .concat()
+            } else {
+                vec![
+                    255, 131, 0, 64, 0, 192, 0, 128, 123, 0, 56, 254, 200, 0, 17, 42,
+                ]
+            };
+            bytes[0x4400..0x4400 + expected.len()].copy_from_slice(&expected);
             image.bytes = bytes.into_boxed_slice();
             let mut regions = std::mem::take(&mut image.regions).into_vec();
             regions.push(qa_formats::program::native::Region {
@@ -2298,7 +2335,9 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 begin: CallbackId(game.entry(b"ClientBegin").unwrap()),
                 disconnect: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
                 userinfo: 0x180005000,
-                userinfo_bytes: game.userinfo_bytes(),
+                usercmd: 0x180005c00,
+                abi: game.client_layout(),
+                think: CallbackId(game.entry(b"ClientThink").unwrap()),
                 social: 0x180005800,
             };
             let imports = game.imports;
@@ -2344,6 +2383,31 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 );
                 assert_eq!(client.player.movement_rules, RuleSetId::Quake3);
                 assert_eq!(client.player.trace_rules, RuleSetId::Quake);
+                let body = client.player.body;
+                for command in [
+                    qa_core::primitives::UserCmd {
+                        duration_ms: 300,
+                        view_angles: qa_core::primitives::Vec3([90.0, -90.0, 180.0]),
+                        movement: [123.75, -456.5, 200.0],
+                        buttons: qa_core::primitives::buttons::ATTACK
+                            | qa_core::primitives::buttons::USE
+                            | qa_core::primitives::buttons::ANY,
+                        impulse: 17,
+                        light_level: 42,
+                        ..Default::default()
+                    },
+                    qa_core::primitives::UserCmd::default(),
+                ] {
+                    host.think_q2_client(&api, id, &command, 0xfedcba98)
+                        .unwrap();
+                    let client = &host.runtime.server.clients[id.0 as usize];
+                    assert_eq!(client.player.body.position, body.position);
+                    assert_eq!(client.player.body.velocity, body.velocity);
+                    assert_eq!(client.player.body.mins, body.mins);
+                    assert_eq!(client.player.body.maxs, body.maxs);
+                    assert_eq!(client.player.movement_rules, RuleSetId::Quake3);
+                    assert_eq!(client.player.trace_rules, RuleSetId::Quake);
+                }
             } else {
                 assert!(
                     host.runtime.server.clients[id.0 as usize]
@@ -2353,10 +2417,15 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
             }
             host.shutdown_modules();
-            let calls = if accepted { 5 } else { 3 };
+            let calls = if accepted { 7 } else { 3 };
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
             host.shutdown_modules();
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
+            assert!(
+                host.think_q2_client(&api, id, &Default::default(), 0)
+                    .is_err()
+            );
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
         }
     }
@@ -3346,7 +3415,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 assert_eq!(&memory[0x1e00..0x1e00 + info.len()], info);
             }
             let info_address = base + 0x2000;
-            let info_bytes = game.userinfo_bytes();
+            let info_bytes = game.client_layout().userinfo_bytes;
             let key_address = info_address + info_bytes as u64 + 64;
             let value_address = key_address + 128;
             let mut mutate_info = |game: &mut Game,

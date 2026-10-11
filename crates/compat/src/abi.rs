@@ -1557,14 +1557,14 @@ fn remove_native_info(
 fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     // q2repro Info_SubValidate checks raw lengths and masked delimiters before
     // removing a key. Append then strips high bits and non-printable bytes.
-    use crate::q2_abi::{INFO_KEY_BYTES, INFO_VALUE_BYTES, info_layout};
+    use crate::q2_abi::{INFO_KEY_BYTES, INFO_VALUE_BYTES, client_layout};
     use qa_core::text::{InfoBytes, InfoRules, InfoUpdate};
     let mut key = FixedText::<INFO_KEY_BYTES>::default();
     let mut value = FixedText::<INFO_VALUE_BYTES>::default();
     if key.set_bytes(c.string(1)?).is_err() || value.set_bytes(c.string(2)?).is_err() {
         return Ok(0);
     }
-    let layout = info_layout(c.context.console.source).ok_or(CallError::Text)?;
+    let layout = client_layout(c.context.console.source).ok_or(CallError::Text)?;
     let Ok(update) = InfoUpdate::new(
         key.as_bytes(),
         value.as_bytes(),
