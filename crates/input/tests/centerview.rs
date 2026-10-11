@@ -24,6 +24,18 @@ fn delta_centering_changes_only_the_selected_seat() {
         let cmds = input.build_frame_with_policy(EventTime(16_000_000), &[policy; SeatId::COUNT]);
         assert_eq!(cmds[0].view_angles.0, [40.0, 5.0, 2.0]);
         assert_eq!(cmds[1].view_angles.0, [-20.0, 5.0, 2.0]);
+        for seat in [SeatId::FIRST, second] {
+            assert_eq!(
+                input.drift_view(
+                    seat,
+                    EventTime(16_000_000),
+                    policy,
+                    &PlayerState::default(),
+                    0.0,
+                ),
+                None
+            );
+        }
     }
 }
 
@@ -46,6 +58,7 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
+                .unwrap()
                 .0[0],
             32.0
         );
@@ -55,6 +68,7 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
+                .unwrap()
                 .0[0],
             32.0
         );
@@ -70,6 +84,7 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
+                .unwrap()
                 .0[0],
             expected
         );
@@ -80,6 +95,7 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         assert_eq!(
             input
                 .drift_view(SeatId::FIRST, time, policy, &player, 0.0)
+                .unwrap()
                 .0[0],
             expected
         );

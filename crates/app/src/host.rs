@@ -553,16 +553,16 @@ impl FrameHost {
                     );
                     prediction.advance(commands[seat], &mut trace);
                     if let Some(policies) = &policies
-                        && policies[seat].pitch_drift()
                         && let Some(seat_id) = SeatId::new(seat as u8)
-                    {
-                        prediction.player.view_angles = self.runtime.input.drift_view(
+                        && let Some(angles) = self.runtime.input.drift_view(
                             seat_id,
                             self.time,
                             policies[seat],
                             &prediction.player,
                             commands[seat].movement[0],
-                        );
+                        )
+                    {
+                        prediction.player.view_angles = angles;
                     }
                 }
             }

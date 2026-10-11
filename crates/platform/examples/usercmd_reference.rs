@@ -236,7 +236,9 @@ fn view(qw: bool) -> Result<(), Box<dyn std::error::Error>> {
         };
         player.ideal_pitch = (frame % 23) as f32 - 11.0;
         let forward = if frame % 41 < 20 { 200.0 } else { 0.0 };
-        let angles = input.drift_view(SeatId::FIRST, time, policy, &player, forward);
+        let angles = input
+            .drift_view(SeatId::FIRST, time, policy, &player, forward)
+            .ok_or("native pitch drift disabled")?;
         println!("{:08x}", angles.0[0].to_bits());
     }
     Ok(())
@@ -355,7 +357,9 @@ fn bench_view() -> Result<(), Box<dyn std::error::Error>> {
                 &player,
                 commands[seat].movement[0],
             ));
-            checksum = checksum.wrapping_add(u64::from(view.0[0].to_bits()));
+            if let Some(view) = view {
+                checksum = checksum.wrapping_add(u64::from(view.0[0].to_bits()));
+            }
         }
         let ns = timer.elapsed().as_nanos() as u64;
         let counts = end_frame();

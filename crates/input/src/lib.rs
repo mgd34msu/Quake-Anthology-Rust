@@ -457,34 +457,35 @@ impl Input {
         policy: InputPolicy,
         player: &qa_core::primitives::PlayerState,
         forward: f32,
-    ) -> Vec3 {
-        let state = &mut self.seats[seat.index()];
-        if policy.pitch_drift() {
-            let rules = policy.command_rules();
-            state.angles.0[0] = state.drift.advance(
-                time,
-                EventTime(self.frame_ns).seconds(),
-                state.angles.0[0],
-                view::DriftInput {
-                    grounded: player.movement.grounded,
-                    disabled: rules.noclip_disables_drift
-                        && matches!(
-                            player.movement.mode,
-                            qa_core::primitives::MovementMode::Noclip
-                        ),
-                    forward,
-                    threshold: rules.drift_threshold.unwrap_or(policy.speed[0]),
-                    ideal_pitch: if rules.drift_uses_ideal_pitch {
-                        player.ideal_pitch
-                    } else {
-                        0.0
-                    },
-                    speed: policy.center_speed,
-                    delay: policy.center_delay,
-                },
-            );
+    ) -> Option<Vec3> {
+        if !policy.pitch_drift() {
+            return None;
         }
-        state.angles
+        let state = &mut self.seats[seat.index()];
+        let rules = policy.command_rules();
+        state.angles.0[0] = state.drift.advance(
+            time,
+            EventTime(self.frame_ns).seconds(),
+            state.angles.0[0],
+            view::DriftInput {
+                grounded: player.movement.grounded,
+                disabled: rules.noclip_disables_drift
+                    && matches!(
+                        player.movement.mode,
+                        qa_core::primitives::MovementMode::Noclip
+                    ),
+                forward,
+                threshold: rules.drift_threshold.unwrap_or(policy.speed[0]),
+                ideal_pitch: if rules.drift_uses_ideal_pitch {
+                    player.ideal_pitch
+                } else {
+                    0.0
+                },
+                speed: policy.center_speed,
+                delay: policy.center_delay,
+            },
+        );
+        Some(state.angles)
     }
     pub fn binding(&self, control: u16) -> Option<&Binding> {
         self.bindings
