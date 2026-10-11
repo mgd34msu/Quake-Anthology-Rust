@@ -366,7 +366,7 @@ pub struct EngineCallTable {
     pub area_query: AreaQueryCall,
     pub portal_set: fn(&mut EngineServices<'_>, u32, bool, bool) -> Result<bool, CallError>,
     pub portal_adjust: fn(&mut EngineServices<'_>, u32, u32, bool) -> Result<(), CallError>,
-    pub areas_connected: fn(&EngineServices<'_>, u32, u32) -> bool,
+    pub areas_connected: fn(&EngineServices<'_>, u32, u32) -> Option<bool>,
     pub box_leaves: fn(
         &mut EngineServices<'_>,
         Bounds,
@@ -476,10 +476,10 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .map_err(|_| CallError::Geometry)
     },
     areas_connected: |s, first, second| {
-        s.world.is_some()
-            && s.portals
-                .as_ref()
-                .is_none_or(|p| p.connected(first, second).unwrap_or(false))
+        s.world?;
+        s.portals
+            .as_ref()
+            .map_or(Some(true), |p| p.connected(first, second))
     },
     area_query: |s, bounds, flags, accept| {
         for row in s.server.area.query(&s.server.entities, bounds, flags) {

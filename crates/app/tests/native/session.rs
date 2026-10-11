@@ -619,6 +619,107 @@ fn native_visibility_uses_compiled_pvs_through_session_dispatch() {
     }
 }
 
+fn native_area_connection_uses_shared_topology_through_session_dispatch() {
+    use qa_world::visibility::PvsRows;
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        let mut code = vec![0x48, 0x83, 0xec, 40];
+        let next = code.len() + 7;
+        code.extend([0x48, 0x8b, 0x05]);
+        code.extend((0x700i32 - next as i32).to_le_bytes());
+        // Forward vmMain's ordinal and two native integer arguments unchanged.
+        code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 40, 0xc3]);
+        let image = function_image(encoding, &code);
+        let name = if encoding == Encoding::Elf {
+            b"vmMain".as_slice()
+        } else {
+            b"GetGameAPI".as_slice()
+        };
+        let at = (image.symbol(name).unwrap().address - image.base) as usize;
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.collision = Some(visibility_world::collision(
+            &runtime.geometry,
+            [Some(0), Some(1)],
+            PvsRows::load(vec![Some(0); 2], vec![3]).unwrap(),
+        ));
+        let mut request = module(
+            &mut runtime,
+            ModuleId(7),
+            RuleSetId::Quake3,
+            TickRate::fixed(50).unwrap(),
+            b"unused\0",
+            encoding,
+            &[],
+        );
+        let Program::Native { vm, .. } = &mut request.program else {
+            panic!()
+        };
+        vm.process.memory_mut().unwrap()[at..at + code.len()].copy_from_slice(&code);
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![request],
+        )
+        .unwrap();
+        host.initialize_modules(Phase::Server);
+        let no_areas = host
+            .console
+            .cvars
+            .bind(
+                "cm_noAreas",
+                Context {
+                    source: RuleSetId::Quake3,
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        let live_before = host.runtime.server.entities.len();
+        for (open, ignore, first, second, expected) in [
+            (false, "0", 0, 1, 0),
+            (true, "0", 0, 1, 1),
+            (false, "0", 0, 0, 1),
+            (false, "0", 1, 1, 1),
+            (false, "0", u32::MAX as u64, 0, 0),
+            (false, "0.5", 0, 1, 0),
+            (false, "1.5", 2, 3, 1),
+        ] {
+            host.runtime
+                .collision
+                .as_mut()
+                .unwrap()
+                .portals
+                .as_mut()
+                .unwrap()
+                .set(0, open)
+                .unwrap();
+            host.console.cvars.force_write(no_areas, ignore).unwrap();
+            let mut export = Export::clocked(CallbackId(0));
+            export.arguments[0] = Argument::Word(29);
+            export.arguments[1] = Argument::Word(first);
+            export.arguments[2] = Argument::Word(second);
+            host.call_module_export(ModuleId(7), export, ThinkTime::Milliseconds(0))
+                .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(7)).unwrap().last_result,
+                Some(ModuleResult::Native(expected))
+            );
+            assert_eq!(host.module_counts(ModuleId(7)).unwrap().traps, 0);
+        }
+        assert_eq!(host.runtime.server.entities.len(), live_before);
+        assert!(host.runtime.server.events.is_empty());
+        host.console.cvars.force_write(no_areas, "0").unwrap();
+        let mut export = Export::clocked(CallbackId(0));
+        export.arguments[0] = Argument::Word(29);
+        export.arguments[1] = Argument::Word(2);
+        export.arguments[2] = Argument::Word(0);
+        assert!(
+            host.call_module_export(ModuleId(7), export, ThinkTime::Milliseconds(0))
+                .is_err()
+        );
+        assert_eq!(host.module_counts(ModuleId(7)).unwrap().traps, 1);
+    }
+}
+
 fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
     use std::os::unix::process::ExitStatusExt;
     // mov [rdi],rsi; mov rax,rsi; ret
@@ -4418,6 +4519,7 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 }
 
 pub fn run() {
+    native_area_connection_uses_shared_topology_through_session_dispatch();
     native_visibility_uses_compiled_pvs_through_session_dispatch();
     native_usercmd_uses_session_dispatch_and_native_client_identity();
     pe_lifecycle_uses_session_order_and_rejects_false_attach();

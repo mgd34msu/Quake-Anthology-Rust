@@ -268,6 +268,7 @@ const fn server() -> CallTable {
     t.entries[25] = scalar!(q3_point_contents);
     t.entries[26] = scalar!(q3_visibility::<false>);
     t.entries[27] = scalar!(q3_visibility::<true>);
+    t.entries[29] = scalar!(q3_areas_connected);
     t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
     t.entries[42] = scalar!(snap_vector);
@@ -1661,19 +1662,34 @@ fn native_areas_connected<const WIDE: bool>(
     if c.services.world.is_none() {
         return Ok(0);
     }
-    if c.services.ignore_areas(c.context.console.source, WIDE) {
+    area_connection(c, c.context.console.source, WIDE, i32::from(WIDE), false)
+}
+
+fn q3_areas_connected(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    area_connection(c, qa_core::primitives::RuleSetId::Quake3, true, 0, true)
+}
+
+fn area_connection(
+    c: &mut Invocation<'_, '_, '_>,
+    source: qa_core::primitives::RuleSetId,
+    integer: bool,
+    minimum: i32,
+    strict: bool,
+) -> Result<u64, CallError> {
+    if c.services.ignore_areas(source, integer) {
         return Ok(1);
     }
     let first = c.arg(0)? as u32 as i32;
     let second = c.arg(1)? as u32 as i32;
-    if first < i32::from(WIDE) || second < i32::from(WIDE) {
+    if first < minimum || second < minimum {
         return Ok(0);
     }
-    Ok(u64::from((ENGINE_CALLS.areas_connected)(
-        c.services,
-        first as u32,
-        second as u32,
-    )))
+    let connected = (ENGINE_CALLS.areas_connected)(c.services, first as u32, second as u32);
+    Ok(u64::from(if strict {
+        connected.ok_or(CallError::Geometry)?
+    } else {
+        connected.unwrap_or(false)
+    }))
 }
 
 fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

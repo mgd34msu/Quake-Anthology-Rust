@@ -161,6 +161,116 @@ fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
 }
 
 #[test]
+fn q3_area_connection_keeps_native_bounds_and_integer_override() {
+    use qa_formats::program::qvm::Opcode::*;
+    use qa_world::visibility::PvsRows;
+    for addresses in [
+        Addresses::Qvm { mask: 127 },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.collision = Some(visibility_world::collision(
+            &runtime.geometry,
+            [Some(0), Some(1)],
+            PvsRows::load(vec![Some(0); 2], vec![3]).unwrap(),
+        ));
+        let mut console = Console::new(Context::default()).unwrap();
+        let no_areas = console
+            .cvars
+            .bind(
+                "cm_noAreas",
+                Context {
+                    source: RuleSetId::Quake3,
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut memory = ModuleMemory::load(0, 128, &[]).unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        for (open, ignore, arguments, expected) in [
+            (false, "0", [0, 0], Ok(1)),
+            (false, "0", [0, 1], Ok(0)),
+            (true, "0", [0, 1], Ok(1)),
+            (true, "0", [1, 0], Ok(1)),
+            (false, "0", [1, 1], Ok(1)),
+            (false, "0", [u32::MAX as u64, 1], Ok(0)),
+            (false, "0", [0, u32::MAX as u64], Ok(0)),
+            (false, "0", [2, 1], Err(CallError::Geometry)),
+            (false, "0", [0, 2], Err(CallError::Geometry)),
+            (false, "1", [2, u32::MAX as u64], Ok(1)),
+            (false, "0.5", [0, 1], Ok(0)),
+            (false, "1.5", [3, 4], Ok(1)),
+            (false, "0", [1 << 40, 1], Ok(0)),
+        ] {
+            runtime
+                .collision
+                .as_mut()
+                .unwrap()
+                .portals
+                .as_mut()
+                .unwrap()
+                .set(0, open)
+                .unwrap();
+            console.cvars.force_write(no_areas, ignore).unwrap();
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let mut call = Invocation {
+                services: &mut services,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                context: context(),
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments: &arguments,
+            };
+            assert_eq!(Q3_SERVER.invoke(29, &mut call, &mut unknown), expected);
+            if matches!(addresses, Addresses::Qvm { .. }) {
+                let mut vm = service_program::program(
+                    &[
+                        (Enter, 64),
+                        (Const, arguments[0] as u32 as i32),
+                        (Arg, 8),
+                        (Const, arguments[1] as u32 as i32),
+                        (Arg, 12),
+                        (Const, -30),
+                        (Call, 0),
+                        (Leave, 64),
+                    ],
+                    &[],
+                );
+                let mut calls = QvmCalls {
+                    services: &mut services,
+                    table: &Q3_SERVER,
+                    context: context(),
+                    platform_time: EventTime(0),
+                    command: &[],
+                    unknown: &mut unknown,
+                };
+                let result = vm.call(&mut calls, [0; 10], 128, false);
+                match expected {
+                    Ok(value) => assert_eq!(result.unwrap(), value as i32),
+                    Err(_) => assert!(result.is_err()),
+                }
+            }
+        }
+        assert_eq!(unknown.calls, 0);
+        assert!(runtime.server.events.is_empty());
+    }
+}
+
+#[test]
 fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
     use qa_app::WorldCollision;
     use qa_core::primitives::{
@@ -324,7 +434,6 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
 #[test]
 fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
     use qa_core::primitives::{NativeEntity, PlayerTail, UserCmd, Vec3, WeaponId, buttons};
-    use qa_gameplay::registry::Registry;
     use qa_session::clients::Connection;
     for addresses in [
         Addresses::Qvm { mask: 127 },
