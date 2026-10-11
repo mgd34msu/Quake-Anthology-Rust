@@ -10,18 +10,31 @@ pub struct ClientLayout {
     pub value_bytes: usize,
     pub command_bytes: usize,
     write_command: fn(&UserCmd, u32, &mut [u8]),
+    pub(crate) stats: crate::players::StatsLayout,
 }
 pub const CLASSIC: ClientLayout = ClientLayout {
     userinfo_bytes: 512,
     value_bytes: INFO_KEY_BYTES,
     command_bytes: 16,
     write_command: classic_command,
+    stats: crate::players::StatsLayout {
+        client: 88,
+        offset: 120,
+        first_word: qa_network::states::Q2_PLAYER_LAYOUT.len(),
+        protocol: qa_network::commands::packet::Protocol::Quake2_34,
+    },
 };
 pub const RERELEASE: ClientLayout = ClientLayout {
     userinfo_bytes: 2048,
     value_bytes: INFO_VALUE_BYTES,
     command_bytes: 28,
     write_command: rerelease_command,
+    stats: crate::players::StatsLayout {
+        client: 120,
+        offset: 166,
+        first_word: qa_network::states::Q2_REPRO_PLAYER_WORDS - qa_network::states::Q2_RR_STATS,
+        protocol: qa_network::commands::packet::Protocol::Quake2Repro1038,
+    },
 };
 const CLIENT: [Option<ClientLayout>; 5] = [None, None, Some(CLASSIC), Some(RERELEASE), None];
 pub fn client_layout(rules: RuleSetId) -> Option<&'static ClientLayout> {

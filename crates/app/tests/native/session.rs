@@ -2281,12 +2281,33 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                     think.extend([0xc7, 0x01, 0, 0, 0, 0]);
                 }
             }
+            // The module changes a native stat; the ordinary returned-call
+            // boundary must import it into the shared player/value bank.
+            think.extend([0x48, 0xb9]);
+            think.extend((0x180006000u64 + if rr { 166 } else { 120 } + 2).to_le_bytes());
+            think.extend([0x66, 0x83, 0x01, 1]);
             think.push(0xc3);
             assert!(think.len() <= 0x200);
             pe_text(&mut file, 0x1200, &think);
             let mut image = Image::parse(&file, None, LoadRole::Library).unwrap();
             let mut bytes = std::mem::take(&mut image.bytes).into_vec();
-            bytes.resize(0x6000, 0);
+            bytes.resize(0x8000, 0);
+            let pointer = target as usize - 0x180000000 + if rr { 120 } else { 88 };
+            bytes[pointer..pointer + 8].copy_from_slice(&0x180006000u64.to_le_bytes());
+            let stats_at = 0x6000 + if rr { 166 } else { 120 };
+            let native_stats: Vec<i16> = (0..if rr { 64 } else { 32 })
+                .map(|index| match index {
+                    0 => i16::MIN,
+                    1 => 90,
+                    5 => 41,
+                    14 => -7,
+                    _ => index as i16,
+                })
+                .collect();
+            for (index, value) in native_stats.iter().enumerate() {
+                bytes[stats_at + index * 2..stats_at + index * 2 + 2]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
             let expected: Vec<u8> = if rr {
                 [
                     vec![255, 139, 0, 0],
@@ -2307,7 +2328,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             let mut regions = std::mem::take(&mut image.regions).into_vec();
             regions.push(qa_formats::program::native::Region {
                 offset: 0x3000,
-                length: 0x3000,
+                length: 0x5000,
                 read: true,
                 write: true,
                 execute: false,
@@ -2383,6 +2404,29 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 );
                 assert_eq!(client.player.movement_rules, RuleSetId::Quake3);
                 assert_eq!(client.player.trace_rules, RuleSetId::Quake);
+                assert_eq!(
+                    (
+                        client.player.health,
+                        client.player.armor,
+                        client.player.frags
+                    ),
+                    (90, 41, -7)
+                );
+                let stats = &host.runtime.catalog.hud.values.native(rules).stats;
+                for (binding, &value) in stats.iter().zip(&native_stats) {
+                    assert_eq!(
+                        binding.export(&client.player.values),
+                        Some(u32::from(value as u16))
+                    );
+                    assert_eq!(
+                        client
+                            .player
+                            .values
+                            .get(binding.id)
+                            .map(|value| value.as_integer()),
+                        Some(i32::from(value))
+                    );
+                }
                 let body = client.player.body;
                 for command in [
                     qa_core::primitives::UserCmd {
@@ -2397,7 +2441,11 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                         ..Default::default()
                     },
                     qa_core::primitives::UserCmd::default(),
-                ] {
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let (index, command) = command;
                     host.think_q2_client(&api, id, &command, 0xfedcba98)
                         .unwrap();
                     let client = &host.runtime.server.clients[id.0 as usize];
@@ -2407,6 +2455,13 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                     assert_eq!(client.player.body.maxs, body.maxs);
                     assert_eq!(client.player.movement_rules, RuleSetId::Quake3);
                     assert_eq!(client.player.trace_rules, RuleSetId::Quake);
+                    assert_eq!(client.player.health, 91 + index as i32);
+                    assert_eq!((client.player.armor, client.player.frags), (41, -7));
+                    let binding = host.runtime.catalog.hud.values.native(rules).stats[1];
+                    assert_eq!(
+                        binding.export(&client.player.values),
+                        Some((91 + index) as u32)
+                    );
                 }
             } else {
                 assert!(

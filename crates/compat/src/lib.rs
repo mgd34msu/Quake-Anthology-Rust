@@ -11,6 +11,7 @@ pub mod memory;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod native;
 mod numbers;
+mod players;
 pub mod q2_abi;
 pub mod quakec;
 pub mod qvm;

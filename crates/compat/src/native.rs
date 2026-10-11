@@ -93,6 +93,7 @@ pub struct Vm {
     native_configs: Option<crate::configstrings::NativeConfigs>,
     resources: Option<[crate::services::ResourceRange; 3]>,
     entities: Option<EntityProjection>,
+    player_stats: Option<crate::players::PlayerStats>,
     surfaces: Option<crate::surfaces::NativeSurfaces>,
 }
 pub struct NativeCalls<'a, 'engine> {
@@ -310,6 +311,7 @@ impl Vm {
             native_configs: None,
             resources: None,
             entities: None,
+            player_stats: None,
             surfaces: None,
         })
     }
@@ -342,6 +344,15 @@ impl Vm {
         if let Some(configs) = &mut self.native_configs {
             configs.rebind();
         }
+    }
+    pub fn bind_player_stats(
+        &mut self,
+        bindings: &[qa_core::primitives::ValueBinding],
+    ) -> Result<(), Error> {
+        if let Some(stats) = &mut self.player_stats {
+            stats.bind(bindings).map_err(Error::Service)?;
+        }
+        Ok(())
     }
     pub fn call(
         &mut self,
@@ -480,6 +491,18 @@ impl Vm {
             result.map_err(|error| rejected.map_or(Error::Process(error), Error::Service))?;
         if export.reject_zero && value == 0 {
             return Err(Error::DllAttach);
+        }
+        if let Some(table) = self.table_address()
+            && let (Some(stats), Some(entities)) = (&mut self.player_stats, &self.entities)
+        {
+            let base = self.process.base();
+            let memory =
+                ModuleMemory::borrow(base, self.process.memory_mut().map_err(Error::Process)?)
+                    .map_err(|_| Error::Service(CallError::Memory))?;
+            let table = entities.read(&memory, table).map_err(Error::Service)?;
+            stats
+                .project(&memory, table, calls.context.module, calls.services.server)
+                .map_err(Error::Service)?;
         }
         Ok(value)
     }

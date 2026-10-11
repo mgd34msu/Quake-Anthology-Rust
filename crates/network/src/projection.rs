@@ -192,7 +192,7 @@ static Q3: &[Field] = &[
 
 /// One walker; the native format selects data at load, not another player store.
 pub struct PlayerProjection {
-    fields: &'static [Field],
+    fields: Box<[Field]>,
     words: usize,
     modes: [u32; 7],
     received_modes: &'static [MovementMode],
@@ -203,6 +203,18 @@ pub struct PlayerProjection {
 }
 impl PlayerProjection {
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
+        Self::load_fields(protocol, bindings, false)
+    }
+    /// Native module stats share this walker without importing movement/view
+    /// columns, which belong to independently selected capability roles.
+    pub fn load_stats(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
+        Self::load_fields(protocol, bindings, true)
+    }
+    fn load_fields(
+        protocol: Protocol,
+        bindings: &[(usize, ValueBinding)],
+        stats_only: bool,
+    ) -> Self {
         use MovementMode as M;
         let (fields, words, modes, received_modes, flags) = match protocol {
             Protocol::NetQuake15 => (NQ, states::NQ_PLAYER_WORDS, [0; 7], &[][..], [0; 7]),
@@ -251,7 +263,13 @@ impl PlayerProjection {
             .filter(|(word, _)| *word < words)
             .collect();
         Self {
-            fields,
+            fields: fields
+                .iter()
+                .copied()
+                .filter(|field| {
+                    !stats_only || matches!(field.source, Health | Armor | Score | Frags)
+                })
+                .collect(),
             words,
             modes,
             received_modes,
@@ -276,7 +294,7 @@ impl PlayerProjection {
             return false;
         };
         out.fill(0);
-        for field in self.fields {
+        for field in &self.fields {
             let word = self.value(field.source, player, context);
             out[field.word] = match field.convert {
                 Bits => word,
@@ -325,7 +343,7 @@ impl PlayerProjection {
         let Some(words) = words.get(..self.words) else {
             return false;
         };
-        for field in self.fields {
+        for field in &self.fields {
             let word = words[field.word];
             let value = match field.convert {
                 Bits | IntegerFloat => word,

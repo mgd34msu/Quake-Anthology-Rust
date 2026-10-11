@@ -853,6 +853,7 @@ impl Game {
             layout.entity,
             layout.resources[0],
         ));
+        vm.player_stats = Some(crate::players::PlayerStats::load(layout.client.stats));
         let pointers = (0..imports.len())
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))
             .collect::<Result<Vec<_>, _>>()?;

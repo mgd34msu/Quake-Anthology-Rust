@@ -332,6 +332,16 @@ impl FrameHost {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &mut request.program {
                 vm.rebind_configstrings();
+                vm.bind_player_stats(
+                    &host
+                        .runtime
+                        .catalog
+                        .hud
+                        .values
+                        .native(request.context.console.source)
+                        .stats,
+                )
+                .map_err(|e| format!("native player stats: {e:?}"))?;
             }
             let state = if !request.prepare.is_empty()
                 || !request.initialize.is_empty()

@@ -9,6 +9,36 @@ use qa_network::{
     states,
 };
 
+#[test]
+fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() {
+    for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+        let mut source = player();
+        source.health = 90;
+        source.armor = 41;
+        source.frags = -7;
+        let original = PlayerProjection::load(protocol, &[]);
+        let mut words = vec![0; original.words()];
+        original.reduce(&source, &context(), &mut words);
+        let projection = PlayerProjection::load_stats(protocol, &[]);
+        let mut target = player();
+        target.body.position = Vec3([500.0, 600.0, 700.0]);
+        target.view_angles = Vec3([10.0, 20.0, 30.0]);
+        target.movement.mode = MovementMode::Noclip;
+        let body = target.body;
+        let movement = target.movement;
+        projection.apply(&words, &mut target, &mut context(), |_| None);
+        assert_eq!((target.health, target.armor, target.frags), (90, 41, -7));
+        assert_eq!(target.body.position, body.position);
+        assert_eq!(target.body.velocity, body.velocity);
+        assert_eq!(target.body.mins, body.mins);
+        assert_eq!(target.body.maxs, body.maxs);
+        assert_eq!(target.view_angles, Vec3([10.0, 20.0, 30.0]));
+        assert_eq!(target.movement, movement);
+        assert_eq!(target.movement_rules, RuleSetId::Quake2);
+        assert_eq!(target.trace_rules, RuleSetId::QuakeWorld);
+    }
+}
+
 fn context() -> PlayerContext {
     PlayerContext {
         client_number: Some(17),
