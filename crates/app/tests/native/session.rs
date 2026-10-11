@@ -751,6 +751,20 @@ fn native_area_connection_uses_shared_topology_through_session_dispatch() {
                 .is_err()
         );
         assert_eq!(host.module_counts(ModuleId(7)).unwrap().traps, 1);
+        let mut batch = host
+            .runtime
+            .server
+            .events
+            .batch(host.runtime.server.presentation)
+            .unwrap();
+        let record = host.runtime.server.events.next(&mut batch).unwrap();
+        let FrameEvent::Print(print) = record.event else {
+            panic!()
+        };
+        assert_eq!(print.kind, qa_core::primitives::PrintKind::Console);
+        assert!(host.runtime.server.events.texts.get(print.text).is_some());
+        assert!(host.runtime.server.events.next(&mut batch).is_none());
+        assert_eq!(host.module_state(ModuleId(7)), Some(State::Failed));
     }
 }
 

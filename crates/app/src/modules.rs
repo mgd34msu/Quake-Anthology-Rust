@@ -639,6 +639,15 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 .map_err(|error| {
                     if !error.recoverable() {
                         row.state = State::Failed;
+                        if row.counts.traps == 0 {
+                            let _ = (qa_compat::services::ENGINE_CALLS.console_formatted)(
+                                calls.services,
+                                format_args!(
+                                    "module {}: native export {entry}: {error:?}\n",
+                                    module.0
+                                ),
+                            );
+                        }
                     }
                 })
         }
