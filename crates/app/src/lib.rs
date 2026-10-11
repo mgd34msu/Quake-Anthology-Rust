@@ -403,19 +403,15 @@ impl Host for Runtime {
     }
     fn read_script(&mut self, path: &str, destination: &mut [u8]) -> Result<usize, ScriptError> {
         let file = self.vfs.open(path.as_bytes()).ok_or(ScriptError::Missing)?;
-        let length = self.vfs.length(file).map_err(|_| ScriptError::Read)?;
-        let length = usize::try_from(length).map_err(|_| ScriptError::TooLong)?;
-        if length > destination.len() {
-            return Err(ScriptError::TooLong);
-        }
-        let read = self
-            .vfs
-            .read_into_reusing(file, &mut destination[..length], &mut self.script_reader)
-            .map_err(|_| ScriptError::Read)?;
-        if read != length {
-            return Err(ScriptError::Read);
-        }
-        Ok(length)
+        self.vfs
+            .read_whole_into(file, destination, &mut self.script_reader)
+            .map_err(|error| match error {
+                qa_content::vfs::VfsError::Missing => ScriptError::Missing,
+                qa_content::vfs::VfsError::Size | qa_content::vfs::VfsError::Limit => {
+                    ScriptError::TooLong
+                }
+                _ => ScriptError::Read,
+            })
     }
     fn quit(&mut self) {
         self.quit = true;

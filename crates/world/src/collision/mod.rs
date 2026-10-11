@@ -9,19 +9,10 @@ pub mod tree;
 
 pub use contents::Contents;
 use qa_core::primitives::{
-    ClipNode, CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
+    CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
 };
 pub use scene::{NativeTraceEntities, WorldTrace};
 pub use store::{CollisionStore, StoreError, TraceScratch};
-
-pub(super) fn descend(nodes: &[ClipNode], planes: &[Plane], mut child: i32, point: Vec3) -> i32 {
-    while child >= 0 {
-        let node = nodes[child as usize];
-        child =
-            node.children[usize::from(planes[node.plane as usize].signed_distance(point) < 0.0)];
-    }
-    child
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuakeTraceKind {

@@ -45,18 +45,15 @@ fn quake(mut bytes: &[u8]) -> f32 {
     };
     let mut value = 0.0f64;
     if bytes.starts_with(b"0x") || bytes.starts_with(b"0X") {
-        for &byte in &bytes[2..] {
-            if !byte.is_ascii_hexdigit() {
-                break;
-            }
-            let (base, extra) = if byte.is_ascii_digit() {
-                (b'0', 0.0)
-            } else if byte.is_ascii_lowercase() {
-                (b'a', 10.0)
-            } else {
-                (b'A', 10.0)
-            };
-            value = value * 16.0 + f64::from(byte) - f64::from(base) + extra;
+        for (byte, digit) in bytes[2..]
+            .iter()
+            .map_while(|&byte| qa_core::text::hex_digit(byte).map(|digit| (byte, digit)))
+        {
+            // Keep Q_atof's byte/base arithmetic: adding the decoded digit
+            // directly rounds long values differently before the f32 cast.
+            let extra = if byte.is_ascii_digit() { 0 } else { 10 };
+            let base = byte - digit + extra;
+            value = value * 16.0 + f64::from(byte) - f64::from(base) + f64::from(extra);
         }
     } else if bytes.first() == Some(&b'\'') {
         value = f64::from(bytes.get(1).copied().unwrap_or(0) as i8);

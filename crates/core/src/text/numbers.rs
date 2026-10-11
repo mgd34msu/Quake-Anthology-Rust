@@ -67,29 +67,35 @@ pub fn atof_prefix(text: &str) -> (f64, usize) {
             0.0
         }
     } else {
-        let mut digits = 0;
-        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-            at += 1;
-            digits += 1;
-        }
-        if bytes.get(at) == Some(&b'.') {
-            at += 1;
-            while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-                at += 1;
-                digits += 1;
-            }
-        }
-        if digits == 0 {
+        let Some(end) = decimal_prefix_end(bytes, at) else {
             return (0.0, 0);
-        }
-        at = exponent(bytes, at, b'e').1;
+        };
+        at = end;
         // Only the ASCII numeric prefix is indexed, so these are UTF-8 boundaries.
         text[start..at].parse::<f64>().unwrap_or(0.0)
     };
     (if negative { -value } else { value }, at)
 }
 
-fn hex_digit(byte: u8) -> Option<u8> {
+/// Scan unsigned decimal digits, an optional point and a complete exponent.
+/// Whitespace, signs and special-value policy belong to the caller.
+pub fn decimal_prefix_end(bytes: &[u8], mut at: usize) -> Option<usize> {
+    let mut digits = 0;
+    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+        at += 1;
+        digits += 1;
+    }
+    if bytes.get(at) == Some(&b'.') {
+        at += 1;
+        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+            digits += 1;
+        }
+    }
+    (digits != 0).then(|| exponent(bytes, at, b'e').1)
+}
+
+pub fn hex_digit(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),

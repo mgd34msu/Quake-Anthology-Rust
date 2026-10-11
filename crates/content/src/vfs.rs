@@ -386,10 +386,23 @@ impl Vfs {
             .try_reserve_exact(length)
             .map_err(|_| VfsError::Allocation)?;
         bytes.resize(length, 0);
-        if self.read_into_reusing(reference, &mut bytes, reader)? != length {
+        self.read_whole_into(reference, &mut bytes, reader)?;
+        Ok(bytes)
+    }
+    pub fn read_whole_into(
+        &self,
+        reference: FileRef,
+        destination: &mut [u8],
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<usize, VfsError> {
+        let length = usize::try_from(self.length(reference)?).map_err(|_| VfsError::Size)?;
+        if length > destination.len() {
+            return Err(VfsError::Limit);
+        }
+        if self.read_into_reusing(reference, &mut destination[..length], reader)? != length {
             return Err(VfsError::ShortRead);
         }
-        Ok(bytes)
+        Ok(length)
     }
     pub fn read_file(
         &self,

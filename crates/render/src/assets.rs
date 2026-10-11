@@ -639,6 +639,9 @@ impl Assets {
     pub fn world(&self, id: WorldId) -> Option<&World> {
         self.worlds.get(id.0 as usize)
     }
+    pub fn surface_binding(&self, world: WorldId, surface: u32) -> Option<&SurfaceBinding> {
+        self.world(world)?.bindings().get(surface as usize)
+    }
     pub fn worlds(&self) -> &[World] {
         &self.worlds
     }

@@ -99,35 +99,9 @@ fn float(source: &[u8]) -> Result<f64, NativeError> {
             f64::INFINITY
         });
     }
-    let mut digits = 0;
-    while source.get(at).is_some_and(u8::is_ascii_digit) {
-        at += 1;
-        digits += 1;
-    }
-    if source.get(at) == Some(&b'.') {
-        at += 1;
-        while source.get(at).is_some_and(u8::is_ascii_digit) {
-            at += 1;
-            digits += 1;
-        }
-    }
-    if digits == 0 {
+    let Some(at) = qa_core::text::decimal_prefix_end(source, at) else {
         return Ok(0.0);
-    }
-    if matches!(source.get(at), Some(b'e' | b'E')) {
-        let exponent = at;
-        at += 1;
-        if matches!(source.get(at), Some(b'-' | b'+')) {
-            at += 1;
-        }
-        let first = at;
-        while source.get(at).is_some_and(u8::is_ascii_digit) {
-            at += 1;
-        }
-        if at == first {
-            at = exponent;
-        }
-    }
+    };
     std::str::from_utf8(&source[start..at])
         .map_err(|_| NativeError::Extent)?
         .parse()

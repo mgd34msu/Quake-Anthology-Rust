@@ -40,7 +40,10 @@ pub(crate) struct Hull<'a> {
 
 impl Hull<'_> {
     fn point_contents(&self, point: Vec3, node: i32) -> i32 {
-        super::descend(self.nodes, self.planes, node, point)
+        crate::bsp::descend(node, point, false, |child| {
+            let node = self.nodes[child as usize];
+            (self.planes[node.plane as usize], node.children)
+        })
     }
 
     fn blocked(&self, point: Vec3, node: i32, mask: Contents) -> bool {

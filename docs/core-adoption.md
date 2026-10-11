@@ -290,7 +290,7 @@ acceptance remain THE-3169; these engine checks do not claim those features.
 ## TA-3367: shared internal operations
 
 References are relative to `crates/`. Renderer callers share `affine.rs:1`
-fan/plane fitting, `cpu/span.rs:1` perspective stepping, `scene.rs:126` view
+fan/plane fitting, `cpu/span.rs:45` perspective stepping, `scene.rs:126` view
 validation and `scene.rs:245` ranges, plus the sky collection/geometry helpers.
 `render/material/world_load.rs:880` classifies legacy surfaces once at load.
 CPU/GL and geometry callers are migrated; local validators, fan loops, range
@@ -298,8 +298,8 @@ types, clippers, sky generation and load-conversion copies are deleted.
 
 `core/text/numbers.rs:5`, `core/bits.rs:3`, `core/math.rs:93` and
 `core/primitives.rs:62` supply numeric parsing, membership scans, vector helpers
-and BSP encodings/plane validity. `world/bsp.rs:10`, `world/collision/mod.rs:17`
-and `world/visibility.rs:81` supply cycle checks, point descent and row tests.
+and BSP encodings/plane validity. `world/bsp.rs:4`, `:27` and
+`world/visibility.rs:81` supply caller-selected point ties, cycle checks and row tests.
 `content/vfs.rs:374` and `formats/archive.rs:80` replace whole-file and exact
 offset reader copies. All audited console, shader, entity, HUD and load callers
 use these implementations; native comparison ties and arithmetic stay at callers.
@@ -308,6 +308,9 @@ use these implementations; native comparison ties and arithmetic stay at callers
 `compat/entities.rs:644` consolidate module/config lookups, text decoding and
 revision-bound inline-model handles. `core/events.rs:175` and `:657` supply
 resync and bounded dispatch; app output/provider callers use them. Text-lease,
-native-output completion/counter and JSON-report copies are deleted. All 87
-audited items are addressed, with no remaining copy at the audited sites.
+native-output completion/counter and JSON-report copies are deleted.
+`render/assets.rs:642` supplies surface bindings; CPU preparation keeps its
+resolved RGBA recipe. Core decimal/hex scanning and VFS caller-owned whole-file
+reads replace CRT/console/script copies while preserving their boundary policies.
+All 93 audited items are addressed, with no remaining copy at the audited sites.
 Native-module, stock HUD and installed acceptance remains THE-3169.

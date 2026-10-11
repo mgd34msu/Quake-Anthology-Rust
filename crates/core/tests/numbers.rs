@@ -1,5 +1,29 @@
 use qa_core::text::atof_prefix;
 
+#[test]
+fn decimal_scan_retains_prefix_and_incomplete_exponent_boundaries() {
+    use qa_core::text::decimal_prefix_end;
+    for (bytes, start, expected) in [
+        (b"".as_slice(), 0, None),
+        (b".".as_slice(), 0, None),
+        (b".5e+tail".as_slice(), 0, Some(2)),
+        (b"12.e-3tail".as_slice(), 0, Some(6)),
+        (b"-12E+3tail".as_slice(), 1, Some(6)),
+        (b"1e".as_slice(), 0, Some(1)),
+        (b"0x1".as_slice(), 0, Some(1)),
+        (b"Infinity".as_slice(), 0, None),
+        (b"1".as_slice(), 2, None),
+    ] {
+        assert_eq!(decimal_prefix_end(bytes, start), expected);
+    }
+    for byte in 0..=u8::MAX {
+        assert_eq!(
+            qa_core::text::hex_digit(byte).map(u32::from),
+            (byte as char).to_digit(16)
+        );
+    }
+}
+
 // C-locale glibc strtod results, including its end pointer. These fixtures
 // cover prefix fallback and rounding at normal/subnormal/overflow boundaries.
 #[test]

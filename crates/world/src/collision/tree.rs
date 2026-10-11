@@ -204,7 +204,10 @@ impl Topology {
     }
 
     pub(super) fn point_leaf(&self, root: ModelRoot, point: Vec3) -> &CollisionLeaf {
-        let child = super::descend(&self.nodes, &self.planes, root_child(root), point);
+        let child = crate::bsp::descend(root_child(root), point, false, |child| {
+            let node = self.nodes[child as usize];
+            (self.planes[node.plane as usize], node.children)
+        });
         &self.leaves[leaf_from_child(child) as usize]
     }
 

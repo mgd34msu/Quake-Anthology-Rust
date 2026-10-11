@@ -717,10 +717,7 @@ pub(crate) fn item_material_lightmap(
     match draw.kind {
         DrawKind::Surface => {
             let surface = list.surface(draw.index);
-            let binding = assets
-                .world(surface.world)?
-                .bindings()
-                .get(surface.surface as usize)?;
+            let binding = assets.surface_binding(surface.world, surface.surface)?;
             Some((binding.material, binding.lightmap.0))
         }
         DrawKind::Entity => Some((list.entity(draw.index).material(assets)?, 0)),

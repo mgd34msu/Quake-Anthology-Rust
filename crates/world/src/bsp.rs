@@ -1,4 +1,21 @@
-//! Cold topology validation shared by collision and visibility.
+//! BSP operations shared by collision and visibility.
+use qa_core::primitives::{Plane, Vec3};
+
+pub(crate) fn descend(
+    mut child: i32,
+    point: Vec3,
+    back_on_tie: bool,
+    node: impl Fn(i32) -> (Plane, [i32; 2]),
+) -> i32 {
+    while child >= 0 {
+        let (plane, children) = node(child);
+        let distance = plane.signed_distance(point);
+        let back = distance < 0.0 || (back_on_tie && distance == 0.0);
+        child = children[usize::from(back)];
+    }
+    child
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NodeError {
     Cycle,

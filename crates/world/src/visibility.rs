@@ -253,14 +253,11 @@ impl VisibilityWorld {
         if point.0.iter().any(|value| !value.is_finite()) {
             return None;
         }
-        let mut child = self.root;
         // qsrc model.c Mod_PointInLeaf uses > 0, including the back-side tie.
-        while child >= 0 {
+        let child = crate::bsp::descend(self.root, point, true, |child| {
             let node = &self.nodes[child as usize];
-            let plane = self.planes[node.plane as usize];
-            let side = usize::from(plane.signed_distance(point) <= 0.0);
-            child = node.children[side];
-        }
+            (self.planes[node.plane as usize], node.children)
+        });
         Some(qa_core::primitives::leaf_from_child(child))
     }
 

@@ -1381,6 +1381,11 @@ impl SurfacePrepare {
                     self.reject(stats);
                     break;
                 }
+                let current = if native.is_none() {
+                    self.catalog.current_rgba(reference.world, boundary, assets)
+                } else {
+                    None
+                };
                 let mut primitive = Primitive {
                     world: reference.world,
                     surface: reference.surface,
@@ -1398,28 +1403,22 @@ impl SurfacePrepare {
                     stages: 0,
                     deforms,
                     patch: surface.patch.is_some(),
-                    rgba: if native.is_none() {
-                        self.catalog
-                            .current_rgba(reference.world, boundary, assets)
-                            .map(|(index, _)| index)
-                    } else {
-                        None
-                    },
+                    rgba: current.map(|(index, _)| index),
                     ..Primitive::default()
                 };
-                if let Some(index) = primitive.rgba {
-                    let prepared = self.catalog.rgba[index]
-                        .as_ref()
-                        .and_then(|recipe| rgba.resolve(index, recipe, &camera.refdef, evaluator));
-                    if prepared.is_none() {
+                let product = if let Some((index, recipe)) = current {
+                    if rgba
+                        .resolve(index, recipe, &camera.refdef, evaluator)
+                        .is_none()
+                    {
                         primitive.rgba = None;
+                        false
+                    } else {
+                        recipe.product()
                     }
-                }
-                let product = primitive.rgba.is_some_and(|index| {
-                    self.catalog.rgba[index]
-                        .as_ref()
-                        .is_some_and(|recipe| recipe.product())
-                });
+                } else {
+                    false
+                };
                 let Some(count) = self.prepare_clip(
                     camera,
                     assets,
@@ -1728,6 +1727,10 @@ impl SurfacePrepare {
         let surface = &geometry.surfaces[primitive.surface as usize];
         let boundary = geometry.boundaries[primitive.boundary as usize];
         let indices = &geometry.indices[boundary.range()];
+        let recipe = match primitive.rgba {
+            Some(index) => Some(self.catalog.rgba[index].as_ref()?),
+            None => None,
+        };
         let vertices = self.clip.sources(indices.len())?;
         // Recipe ids map to this immutable boundary, whose source corner order
         // is the same order used at recipe registration. Intersections still
@@ -1745,15 +1748,10 @@ impl SurfacePrepare {
                         - surface.texture_minima[axis] as f32)
                         / (1u32 << primitive.mip) as f32
                 });
-            } else if let Some(index) = primitive.rgba
-                && let Some(coordinate) = self.catalog.rgba[index]
-                    .as_ref()?
+            } else if let Some(recipe) = recipe
+                && let Some(coordinate) = recipe
                     .coordinate_corner(corner)
-                    .or_else(|| {
-                        self.catalog.rgba[index]
-                            .as_ref()?
-                            .coordinate(vertex.position)
-                    })
+                    .or_else(|| recipe.coordinate(vertex.position))
             {
                 vertex.texcoord = coordinate;
             }
@@ -2188,8 +2186,7 @@ fn stage_span(
         {
             let Some(bounded) = texels.region(
                 assets
-                    .world(primitive.world)
-                    .and_then(|world| world.bindings().get(primitive.surface as usize))
+                    .surface_binding(primitive.world, primitive.surface)
                     .and_then(|binding| binding.lightmap_region),
             ) else {
                 stats.rejected += 1;
@@ -2296,8 +2293,7 @@ fn factor_spans(
         pairs[mips[0] as usize] |= 1 << mips[1];
     }
     let region = assets
-        .world(primitive.world)
-        .and_then(|world| world.bindings().get(primitive.surface as usize))
+        .surface_binding(primitive.world, primitive.surface)
         .and_then(|binding| binding.lightmap_region);
     while first_levels != 0 {
         let first_mip = first_levels.trailing_zeros() as u8;

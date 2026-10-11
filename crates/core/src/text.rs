@@ -1,6 +1,6 @@
 //! Load-sized storage for engine text. Mutation never grows it.
 mod numbers;
-pub use numbers::atof_prefix;
+pub use numbers::{atof_prefix, decimal_prefix_end, hex_digit};
 
 use std::fmt::{self, Write};
 

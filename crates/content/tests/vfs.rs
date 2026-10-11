@@ -204,6 +204,19 @@ fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
     let file = vfs.open(b"a").unwrap();
     assert_eq!(vfs.read_to_vec(file, 4, &mut reader).unwrap(), b"abcd");
     assert_eq!(vfs.read_file(b"A", 4, &mut reader).unwrap(), b"abcd");
+    let mut destination = [0xaa; 6];
+    assert_eq!(
+        vfs.read_whole_into(file, &mut destination, &mut reader)
+            .unwrap(),
+        4
+    );
+    assert_eq!(&destination, b"abcd\xaa\xaa");
+    destination.fill(0xbb);
+    assert!(matches!(
+        vfs.read_whole_into(file, &mut destination[..3], &mut reader),
+        Err(VfsError::Limit)
+    ));
+    assert_eq!(destination, [0xbb; 6]);
     assert!(matches!(
         vfs.read_to_vec(file, 3, &mut reader),
         Err(VfsError::Limit)
@@ -213,6 +226,11 @@ fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
         Err(VfsError::Missing)
     ));
     assert!(vfs.read_file(b"empty", 0, &mut reader).unwrap().is_empty());
+    assert_eq!(
+        vfs.read_whole_into(vfs.open(b"empty").unwrap(), &mut [], &mut reader)
+            .unwrap(),
+        0
+    );
     std::fs::write(root.0.join("a"), b"ab").unwrap();
     assert!(matches!(
         vfs.read_to_vec(file, 4, &mut reader),
