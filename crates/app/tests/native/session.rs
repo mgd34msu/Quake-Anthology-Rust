@@ -571,9 +571,10 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         time: EventTime(0),
         polls: 0,
     };
-    host.frame(&mut source, true);
+    let mut presented_prints = host.frame(&mut source, true).output.prints;
     source.time = EventTime(50_000_000);
-    host.frame(&mut source, true);
+    presented_prints += host.frame(&mut source, true).output.prints;
+    assert_eq!(presented_prints, 4);
     host.shutdown_modules();
     for id in [ModuleId(1), ModuleId(2), ModuleId(3), ModuleId(4)] {
         assert_eq!(host.module_state(id), Some(State::Stopped));
@@ -596,6 +597,13 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         }
     }
     let mut batch = host.runtime.server.events.batch(observer).unwrap();
+    assert!(host.runtime.server.events.next(&mut batch).is_none());
+    let mut batch = host
+        .runtime
+        .server
+        .events
+        .batch(host.runtime.server.presentation)
+        .unwrap();
     let mut messages = Vec::new();
     while let Some(record) = host.runtime.server.events.next(&mut batch) {
         if let FrameEvent::Print(p) = record.event {
@@ -612,7 +620,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
     }
     assert_eq!(
         messages.iter().map(Vec::as_slice).collect::<Vec<_>>(),
-        [b"ELF cold\n".as_slice(), b"PE cold\n".as_slice()].repeat(3)
+        [b"ELF cold\n".as_slice(), b"PE cold\n".as_slice()]
     );
 }
 
@@ -825,13 +833,16 @@ fn missing_native_imports_log_once_and_preserve_session_dispatch() {
         requests,
     )
     .unwrap();
-    let mut source = Source {
-        time: EventTime(0),
-        polls: 0,
-    };
-    for frame in 0..4 {
-        source.time = EventTime(frame * 50_000_000);
-        host.frame(&mut source, true);
+    host.initialize_modules(Phase::Server);
+    for frame in 1..4 {
+        for module in [ModuleId(1), ModuleId(2), ModuleId(3)] {
+            let result = host.call_module_export(
+                module,
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Milliseconds(frame * 50),
+            );
+            assert_eq!(result.is_ok(), module == ModuleId(3));
+        }
     }
     for id in [ModuleId(1), ModuleId(2)] {
         assert_eq!(host.module_state(id), Some(State::Running));
@@ -845,6 +856,13 @@ fn missing_native_imports_log_once_and_preserve_session_dispatch() {
         (3, 0, Some(ModuleResult::Native(77)))
     );
     let mut batch = host.runtime.server.events.batch(observer).unwrap();
+    assert!(host.runtime.server.events.next(&mut batch).is_none());
+    let mut batch = host
+        .runtime
+        .server
+        .events
+        .batch(host.runtime.server.presentation)
+        .unwrap();
     let mut messages = Vec::new();
     while let Some(record) = host.runtime.server.events.next(&mut batch) {
         if let FrameEvent::Print(p) = record.event {
@@ -2238,6 +2256,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .unwrap();
         assert_eq!(import.calls, 3);
         let mut batch = runtime.server.events.batch(observer).unwrap();
+        assert!(runtime.server.events.next(&mut batch).is_none());
+        let mut batch = runtime
+            .server
+            .events
+            .batch(runtime.server.presentation)
+            .unwrap();
         let mut logs = 0;
         let mut prints = 0;
         while let Some(record) = runtime.server.events.next(&mut batch) {
@@ -3645,6 +3669,32 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             emit(&mut game, write_slots[0], &[0x9a]).unwrap();
             emit(&mut game, unicast_slot, &[target, 1, 0xabcd_ef01_1234_5678]).unwrap();
             drop(emit);
+            let mut presentation = runtime
+                .server
+                .events
+                .batch(runtime.server.presentation)
+                .unwrap();
+            let mut local_prints = Vec::new();
+            while let Some(record) = runtime.server.events.next(&mut presentation) {
+                if let FrameEvent::Print(print) = record.event
+                    && runtime.server.events.texts.get(print.text) == Some(text.as_slice())
+                {
+                    local_prints.push((print.client, print.kind, print.level));
+                }
+            }
+            assert_eq!(
+                local_prints,
+                [
+                    (None, PrintKind::Notify, 0),
+                    (None, PrintKind::Console, 2),
+                    (Some(client), PrintKind::Notify, 1),
+                    (Some(client), PrintKind::Console, 2),
+                    (Some(client), PrintKind::Chat, 3),
+                    (Some(client), PrintKind::Center, 2),
+                    (None, PrintKind::Console, 2),
+                    (Some(client), PrintKind::Notify, 0),
+                ]
+            );
             let mut batch = runtime.server.events.batch(observer).unwrap();
             let mut prints = Vec::new();
             let mut unicasts = Vec::new();
@@ -3677,7 +3727,6 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     (Some(client), PrintKind::Console, 2),
                     (Some(client), PrintKind::Chat, 3),
                     (Some(client), PrintKind::Center, 2),
-                    (None, PrintKind::Console, 2),
                     (Some(client), PrintKind::Notify, 0),
                 ]
             );
@@ -4004,11 +4053,13 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
         time: EventTime(0),
         polls: 0,
     };
+    let mut presented_prints = 0;
     for time in [0, 50, 100, 150] {
         source.time = EventTime(time * 1_000_000);
-        host.frame(&mut source, true);
+        presented_prints += host.frame(&mut source, true).output.prints;
     }
     assert_eq!(source.polls, 8);
+    assert_eq!(presented_prints, 4);
     for (id, count) in [(ModuleId(1), 3), (ModuleId(2), 1)] {
         assert_eq!(host.module_state(id), Some(State::Running));
         let counters = host.module_counts(id).unwrap();
@@ -4016,6 +4067,20 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
         assert_eq!(counters.last_result, Some(ModuleResult::Native(0)));
     }
     let mut batch = host.runtime.server.events.batch(observer).unwrap();
+    assert!(host.runtime.server.events.next(&mut batch).is_none());
+    assert!(host.runtime.server.events.is_empty());
+    // Direct session exports retain the actual owned-child print bytes before
+    // the next frame's presentation pass, for both native calling conventions.
+    for module in [ModuleId(1), ModuleId(2)] {
+        host.call_module_export(
+            module,
+            Export::words(CallbackId(0), &[]),
+            ThinkTime::Milliseconds(150),
+        )
+        .unwrap();
+    }
+    let consumer = host.runtime.server.presentation;
+    let mut batch = host.runtime.server.events.batch(consumer).unwrap();
     let mut prints = Vec::new();
     while let Some(record) = host.runtime.server.events.next(&mut batch) {
         if let FrameEvent::Print(p) = record.event {
@@ -4029,16 +4094,17 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
                     .to_vec(),
             );
         }
+        assert!(host.runtime.server.events.submit(
+            consumer,
+            record.sequence,
+            qa_core::events::OutputSubmission::BestEffort,
+        ));
     }
     assert_eq!(
         prints,
-        vec![
-            b"q3 native\n".to_vec(),
-            b"q3 native\n".to_vec(),
-            b"q2 native\n".to_vec(),
-            b"q3 native\n".to_vec()
-        ]
+        vec![b"q3 native\n".to_vec(), b"q2 native\n".to_vec()]
     );
+    assert!(host.runtime.server.events.is_empty());
 }
 
 fn native_windows_counter_uses_host_event_time_in_session_dispatch() {

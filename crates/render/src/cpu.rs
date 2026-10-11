@@ -779,7 +779,7 @@ impl CpuBackend {
                 } else {
                     inverse_depth
                 };
-                let index = y as usize * width as usize + x as usize;
+                let index = buffers.offset(width, x, y);
                 if !depth_passes(
                     pass.stage.stage.depth_func,
                     depth_score,
@@ -920,7 +920,7 @@ impl CpuBackend {
                 for x in x_start..x_end {
                     let vertex = draw_vertex(draw, [x as f32, y as f32]);
                     let evaluated = self.evaluator.evaluate(&prepared, &vertex);
-                    let index = y as usize * width as usize + x as usize;
+                    let index = buffers.offset(width, x, y);
                     if let Some((palette_id, palette, texture, mip)) = indexed {
                         if evaluated.color != [255; 4] {
                             continue;

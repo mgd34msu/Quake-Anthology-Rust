@@ -317,8 +317,14 @@ pub struct EngineServices<'a> {
 
 /// These typed entries are shared by every numbered ABI table. Boundary
 /// adapters only decode arguments and convert the native result layout.
-pub type PrintCall =
-    fn(&mut EngineServices<'_>, Option<ClientId>, PrintKind, u8, &[u8]) -> Result<u64, CallError>;
+pub type PrintCall = fn(
+    &mut EngineServices<'_>,
+    Option<qa_core::events::OutputTarget>,
+    Option<ClientId>,
+    PrintKind,
+    u8,
+    &[u8],
+) -> Result<u64, CallError>;
 pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
 pub type CvarRegisterCall =
@@ -476,7 +482,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .box_leaves(bounds, output, scratch)
             .ok_or(CallError::Capacity)
     },
-    print: |s, c, k, l, t| s.print(c, k, l, t),
+    print: |s, target, c, k, l, t| s.print(target, c, k, l, t),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
@@ -516,6 +522,7 @@ impl EngineServices<'_> {
     }
     pub fn print(
         &mut self,
+        target: Option<qa_core::events::OutputTarget>,
         client: Option<ClientId>,
         kind: PrintKind,
         level: u8,
@@ -523,7 +530,7 @@ impl EngineServices<'_> {
     ) -> Result<u64, CallError> {
         self.server
             .events
-            .print_level_bytes(client, kind, level, text)
+            .print_level_bytes(target, client, kind, level, text)
             .map_err(|_| CallError::Capacity)
     }
     pub fn sound(&mut self, event: SoundEvent) -> Result<u64, CallError> {
@@ -696,6 +703,7 @@ impl EngineServices<'_> {
         // Native protection rejects the write, not the calling module. A full
         // output ring counts its dropped warning without aborting the import.
         let _ = self.print(
+            Some(qa_core::events::OutputTarget::Presentation),
             None,
             PrintKind::Console,
             PrintKind::Console.default_level(),

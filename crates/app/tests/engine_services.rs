@@ -180,6 +180,7 @@ fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
         (ENGINE_CALLS.print)(
             &mut services,
             None,
+            None,
             PrintKind::Console,
             PrintKind::Console.default_level(),
             b"\x82native\n",

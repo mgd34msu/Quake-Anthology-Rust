@@ -855,6 +855,74 @@ fn with_quakec_calls(rules: RuleSetId, run: impl FnOnce(&mut qa_compat::abi::Qua
 }
 
 #[test]
+fn quakec_developer_prints_stay_local_while_broadcasts_reach_client_consumers() {
+    use qa_core::events::{OutputSubmission, OutputTarget};
+    use qa_core::primitives::ClientId;
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for (builtin, enabled) in [(23, true), (25, true), (25, false)] {
+            with_quakec_calls(rules, |calls| {
+                let context = calls.context.console;
+                let developer = calls.services.cvars.bind("developer", context).unwrap();
+                (qa_compat::services::ENGINE_CALLS.cvar_force)(
+                    calls.services,
+                    developer,
+                    if enabled { "1" } else { "0" },
+                )
+                .unwrap();
+                let remote = calls
+                    .services
+                    .server
+                    .events
+                    .bind(OutputTarget::Client(ClientId(0)))
+                    .unwrap();
+                let mut vm = quakec_math_program(builtin);
+                let string = vm.insert_string(b"\x82local probe").unwrap() as u32;
+                let function = if builtin == 23 && rules == RuleSetId::QuakeWorld {
+                    vm.image.globals[4] = 2.0f32.to_bits();
+                    vm.image.globals[7] = string;
+                    4
+                } else {
+                    vm.image.globals[48] = string;
+                    1
+                };
+                assert_eq!(
+                    vm.call(calls, function, 100, false),
+                    Ok([0x12345678, 0x87654321, 0x11223344])
+                );
+                let events = &mut calls.services.server.events;
+                let presentation = calls.services.server.presentation;
+                let mut client = events.batch(remote).unwrap();
+                assert_eq!(
+                    events.next(&mut client).is_some(),
+                    builtin == 23,
+                    "{rules:?} builtin {builtin} developer={enabled}"
+                );
+                let mut local = events.batch(presentation).unwrap();
+                if enabled || rules == RuleSetId::QuakeWorld {
+                    let record = events.next(&mut local).unwrap();
+                    let FrameEvent::Print(print) = record.event else {
+                        panic!()
+                    };
+                    assert_eq!(print.kind, PrintKind::Console);
+                    assert_eq!(events.texts.get(print.text).unwrap(), b"\x82local probe");
+                    assert!(events.submit(
+                        presentation,
+                        record.sequence,
+                        OutputSubmission::BestEffort
+                    ));
+                    if builtin == 25 {
+                        assert!(events.is_empty());
+                    }
+                } else {
+                    assert!(events.next(&mut local).is_none());
+                    assert!(events.is_empty());
+                }
+            });
+        }
+    }
+}
+
+#[test]
 fn quakec_cvar_signature_reads_both_strings_and_preserves_void_returns() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         with_quakec_calls(rules, |calls| {

@@ -89,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (calls.print)(
                     &mut services,
                     None,
+                    None,
                     PrintKind::Console,
                     PrintKind::Console.default_level(),
                     b"\x82native\n",

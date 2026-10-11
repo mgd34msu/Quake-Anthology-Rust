@@ -470,6 +470,7 @@ impl Vm {
                     if format.is_ok() {
                         let _ = (ENGINE_CALLS.print)(
                             calls.services,
+                            Some(qa_core::events::OutputTarget::Presentation),
                             None,
                             PrintKind::Console,
                             PrintKind::Console.default_level(),

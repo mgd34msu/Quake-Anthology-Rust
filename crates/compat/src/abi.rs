@@ -114,7 +114,7 @@ struct QcSignature {
     argc: QcArgc,
     args: QcArgs,
     returns: bool,
-    developer: bool,
+    developer: [bool; 2],
 }
 impl QcSignature {
     const fn new(argc: QcArgc, args: QcArgs, returns: bool) -> Self {
@@ -122,7 +122,7 @@ impl QcSignature {
             argc,
             args,
             returns,
-            developer: false,
+            developer: [false; 2],
         }
     }
     const fn void(mut self) -> Self {
@@ -130,7 +130,7 @@ impl QcSignature {
         self
     }
     const fn developer(mut self) -> Self {
-        self.developer = true;
+        self.developer = [true, false];
         self
     }
 }
@@ -221,6 +221,7 @@ impl CallTable {
                 // still returns zero without aborting the module or engine.
                 let _ = (ENGINE_CALLS.print)(
                     call.services,
+                    Some(qa_core::events::OutputTarget::Presentation),
                     None,
                     PrintKind::Console,
                     PrintKind::Console.default_level(),
@@ -508,7 +509,9 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             }
             *to = u64::from(word);
         }
-        if signature.developer && self.services.cvars.value(self.developer) == 0.0 {
+        let column =
+            usize::from(self.context.console.source == qa_core::primitives::RuleSetId::QuakeWorld);
+        if signature.developer[column] && self.services.cvars.value(self.developer) == 0.0 {
             return Ok(());
         }
         let mut invocation = Invocation {
@@ -625,6 +628,11 @@ fn qc_print<const BROADCAST: bool>(
     }
     (ENGINE_CALLS.print)(
         c.services,
+        if BROADCAST {
+            None
+        } else {
+            Some(qa_core::events::OutputTarget::Presentation)
+        },
         None,
         if BROADCAST {
             PrintKind::from_level(level)
@@ -690,6 +698,7 @@ fn print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(0)?)?;
     (ENGINE_CALLS.print)(
         c.services,
+        Some(qa_core::events::OutputTarget::Presentation),
         None,
         PrintKind::Console,
         PrintKind::Console.default_level(),
@@ -728,7 +737,18 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
     let text = c
         .memory
         .cstring(c.pointer(usize::from(TARGET) + usize::from(!CENTER))?)?;
-    (ENGINE_CALLS.print)(c.services, client, kind, level, text)?;
+    (ENGINE_CALLS.print)(
+        c.services,
+        if TARGET && address == 0 {
+            Some(qa_core::events::OutputTarget::Presentation)
+        } else {
+            None
+        },
+        client,
+        kind,
+        level,
+        text,
+    )?;
     Ok(0)
 }
 fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -810,6 +830,7 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         .map_err(|_| CallError::Text)?;
         let _ = (ENGINE_CALLS.print)(
             c.services,
+            Some(qa_core::events::OutputTarget::Presentation),
             None,
             PrintKind::Console,
             PrintKind::Console.default_level(),
@@ -947,6 +968,7 @@ fn q2_cvar_set<const FORCE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
     if result == Err(CallError::Cvar) {
         let _ = (ENGINE_CALLS.print)(
             c.services,
+            Some(qa_core::events::OutputTarget::Presentation),
             None,
             PrintKind::Console,
             PrintKind::Console.default_level(),
@@ -971,6 +993,7 @@ fn publish_cvar(
         Err(CallError::Capacity) => {
             let _ = (ENGINE_CALLS.print)(
                 c.services,
+                Some(qa_core::events::OutputTarget::Presentation),
                 None,
                 PrintKind::Console,
                 PrintKind::Console.default_level(),

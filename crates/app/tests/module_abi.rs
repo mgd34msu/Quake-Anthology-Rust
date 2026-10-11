@@ -27,6 +27,98 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn module_console_prints_do_not_wait_for_client_consumers() {
+    use qa_core::{
+        events::{OutputSubmission, OutputTarget},
+        primitives::{ClientId, PrintKind},
+    };
+    for addresses in [
+        Addresses::Qvm { mask: 127 },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        for (table, ordinal, native_only, null_client) in [
+            (&Q3_SERVER, 0, false, false),
+            (&Q3_CLIENT, 0, false, false),
+            (&Q3_UI, 1, false, false),
+            (&qa_compat::abi::Q2_RERELEASE, 1, true, false),
+            (&qa_compat::abi::Q2_RERELEASE, 2, true, true),
+        ] {
+            if native_only && matches!(addresses, Addresses::Qvm { .. }) {
+                continue;
+            }
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let remote = runtime
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            let mut console = Console::new(Context::default()).unwrap();
+            let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+            let mut scratch = runtime.geometry.scratch();
+            let base = if matches!(addresses, Addresses::Qvm { .. }) {
+                0
+            } else {
+                1 << 40
+            };
+            let mut memory = ModuleMemory::load(base, 128, &[]).unwrap();
+            memory
+                .write_string(base + 16, 32, b"console\x82\n")
+                .unwrap();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let arguments = if null_client {
+                [0, 2, base + 16]
+            } else {
+                [base + 16, 0, 0]
+            };
+            {
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                assert_eq!(
+                    table.invoke(
+                        ordinal,
+                        &mut Invocation {
+                            services: &mut services,
+                            memory: &mut memory,
+                            native_cvars: None,
+                            native_resources: None,
+                            native_entities: None,
+                            native_surfaces: None,
+                            native_command: None,
+                            native_configs: None,
+                            context: context(),
+                            platform_time: EventTime(0),
+                            command: &[],
+                            addresses,
+                            arguments: &arguments[..if null_client { 3 } else { 1 }],
+                        },
+                        &mut unknown
+                    ),
+                    Ok(0)
+                );
+            }
+            let events = &mut runtime.server.events;
+            let mut client = events.batch(remote).unwrap();
+            assert!(events.next(&mut client).is_none());
+            let presentation = runtime.server.presentation;
+            let mut local = events.batch(presentation).unwrap();
+            let record = events.next(&mut local).unwrap();
+            let FrameEvent::Print(print) = record.event else {
+                panic!()
+            };
+            assert_eq!(print.kind, PrintKind::Console);
+            assert_eq!(events.texts.get(print.text).unwrap(), b"console\x82\n");
+            assert!(events.submit(presentation, record.sequence, OutputSubmission::BestEffort));
+            assert!(events.is_empty());
+        }
+    }
+}
+
+#[test]
 fn local_native_and_received_priority_prints_have_identical_hud_effects() {
     use qa_compat::abi::Q2_RERELEASE;
     use qa_core::{

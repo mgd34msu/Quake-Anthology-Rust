@@ -426,6 +426,7 @@ impl FrameHost {
                                             incoming
                                         {
                                             let _ = server.events.print_level_bytes(
+                                                None,
                                                 Some(client),
                                                 print.kind,
                                                 print.level.unwrap_or(print.kind.default_level()),

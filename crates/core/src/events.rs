@@ -356,7 +356,7 @@ impl EventRing {
         kind: PrintKind,
         text: fmt::Arguments<'_>,
     ) -> Result<u64, EventStorageError> {
-        self.publish_print(client, kind, kind.default_level(), |texts| {
+        self.publish_print(None, client, kind, kind.default_level(), |texts| {
             texts.insert_formatted(text)
         })
     }
@@ -367,19 +367,21 @@ impl EventRing {
         kind: PrintKind,
         text: &[u8],
     ) -> Result<u64, EventStorageError> {
-        self.print_level_bytes(client, kind, kind.default_level(), text)
+        self.print_level_bytes(None, client, kind, kind.default_level(), text)
     }
     pub fn print_level_bytes(
         &mut self,
+        target: Option<OutputTarget>,
         client: Option<ClientId>,
         kind: PrintKind,
         level: u8,
         text: &[u8],
     ) -> Result<u64, EventStorageError> {
-        self.publish_print(client, kind, level, |texts| texts.insert(text))
+        self.publish_print(target, client, kind, level, |texts| texts.insert(text))
     }
     fn publish_print(
         &mut self,
+        target: Option<OutputTarget>,
         client: Option<ClientId>,
         kind: PrintKind,
         level: u8,
@@ -390,12 +392,15 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };
-        let result = self.push(FrameEvent::Print(PrintEvent {
-            client,
-            kind,
-            level,
-            text: lease.id(),
-        }));
+        let result = self.publish(
+            target,
+            FrameEvent::Print(PrintEvent {
+                client,
+                kind,
+                level,
+                text: lease.id(),
+            }),
+        );
         self.texts.release(lease);
         result
     }
