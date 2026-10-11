@@ -820,7 +820,9 @@ fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
     for (builtin, key) in [
         (9, "QA_QC_NORMALIZE_REFERENCE"),
         (12, "QA_QC_VLEN_REFERENCE"),
+        (13, "QA_QC_VECTOYAW_REFERENCE"),
         (36, "QA_QC_RINT_REFERENCE"),
+        (51, "QA_QC_VECTOANGLES_REFERENCE"),
     ] {
         let rows = std::env::var_os(key).map(|path| std::fs::read(path).unwrap());
         for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
@@ -879,6 +881,18 @@ fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
                         assert!(f32::from_bits(result[1]).is_nan());
                         assert_eq!(result[2], 0.0f32.to_bits());
                     }
+                } else if matches!(builtin, 13 | 51) {
+                    let yaw = if vector[0].is_nan() {
+                        i32::MIN as f32 + 360.0
+                    } else {
+                        315.0
+                    };
+                    if builtin == 13 {
+                        assert_eq!(result[0], yaw.to_bits());
+                    } else {
+                        let pitch = if vector[0].is_nan() { yaw } else { 0.0 };
+                        assert_eq!(result, [pitch, yaw, 0.0].map(f32::to_bits));
+                    }
                 } else if builtin == 36 {
                     assert_eq!(result[0], (i32::MIN as f32).to_bits());
                 } else if vector[0].is_nan() {
@@ -886,7 +900,7 @@ fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
                 } else {
                     assert_eq!(result[0], f32::INFINITY.to_bits());
                 }
-                if builtin != 9 {
+                if !matches!(builtin, 9 | 51) {
                     assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
                 }
             }
@@ -899,6 +913,49 @@ fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
                 assert_eq!(&vm.image.globals[1..4], &before);
             }
             assert_eq!(calls.unknown.calls, 0);
+        }
+    }
+}
+
+#[test]
+fn quakec_vector_angles_keep_native_axes_and_integer_angles_through_session_dispatch() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for builtin in [13, 51] {
+            for (vector, angles) in [
+                ([0.0f32, -0.0, 0.0], [270.0f32, 0.0, 0.0]),
+                ([0.0, 0.0, 1.0], [90.0, 0.0, 0.0]),
+                ([0.0, 0.0, -1.0], [270.0, 0.0, 0.0]),
+                ([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+                ([0.0, 1.0, 0.0], [0.0, 90.0, 0.0]),
+                ([-1.0, -0.0, 0.0], [0.0, 180.0, 0.0]),
+                ([0.0, -1.0, 0.0], [0.0, 270.0, 0.0]),
+                ([1.0, 1.0, 1.0], [35.0, 45.0, 0.0]),
+                ([1.0, -1.0, -1.0], [325.0, 315.0, 0.0]),
+                ([f32::MAX, 0.0, 1.0], [0.0, 0.0, 0.0]),
+            ] {
+                let mut vm = quakec_math_program(builtin);
+                vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
+                let mut host = quakec_host(rules, vm);
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(0)),
+                    ThinkTime::Seconds(0.1),
+                )
+                .unwrap();
+                let expected = if builtin == 13 {
+                    [angles[1].to_bits(), 0x87654321, 0x11223344]
+                } else {
+                    angles.map(f32::to_bits)
+                };
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC(expected)),
+                    "{rules:?} builtin {builtin}: {vector:?}"
+                );
+                assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+                assert!(host.console.idle());
+                assert!(host.runtime.server.events.is_empty());
+            }
         }
     }
 }

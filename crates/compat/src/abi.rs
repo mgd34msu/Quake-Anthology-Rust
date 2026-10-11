@@ -342,6 +342,7 @@ const fn quakec() -> CallTable {
     };
     t.entries[9] = Some(vector_normalize);
     t.entries[12] = scalar!(vector_length);
+    t.entries[13] = scalar!(vector_yaw);
     t.entries[23] = scalar!(qc_print::<true>);
     t.entries[25] = scalar!(qc_print::<false>);
     t.entries[36] = scalar!(rint);
@@ -350,6 +351,7 @@ const fn quakec() -> CallTable {
     t.entries[43] = scalar!(absolute::<false>);
     t.entries[45] = scalar!(cvar_number);
     t.entries[46] = scalar!(command_append);
+    t.entries[51] = Some(vector_angles);
     t.entries[72] = scalar!(cvar_set::<false, false>);
     t
 }
@@ -385,7 +387,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             return Err(quakec::Trap::Builtin);
         }
         let mut arguments = [0u64; 8];
-        let (words, stride) = if matches!(number, 9 | 12) {
+        let (words, stride) = if matches!(number, 9 | 12 | 13 | 51) {
             (3, 1)
         } else {
             (argc, 3)
@@ -464,6 +466,39 @@ fn vector_normalize(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallErr
     Ok(CallValue::Vector(qa_core::math::normalized_or_zero(
         argument_vector(c)?,
     )))
+}
+fn native_direction_angle(vertical: f32, horizontal: f32) -> f32 {
+    let mut angle = crate::numbers::native_integer(
+        f64::from(vertical).atan2(f64::from(horizontal)) * 180.0 / std::f64::consts::PI,
+    ) as f32;
+    if angle < 0.0 {
+        angle += 360.0;
+    }
+    angle
+}
+fn vector_yaw(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let [x, y, _] = argument_vector(c)?.0;
+    let yaw = if x == 0.0 && y == 0.0 {
+        0.0
+    } else {
+        native_direction_angle(y, x)
+    };
+    Ok(bits::<false>(f64::from(yaw)))
+}
+fn vector_angles(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    let [x, y, z] = argument_vector(c)?.0;
+    let (pitch, yaw) = if x == 0.0 && y == 0.0 {
+        (if z > 0.0 { 90.0 } else { 270.0 }, 0.0)
+    } else {
+        let forward = qa_core::math::length(qa_core::primitives::Vec3([x, y, 0.0]));
+        (
+            native_direction_angle(z, forward),
+            native_direction_angle(y, x),
+        )
+    };
+    Ok(CallValue::Vector(qa_core::primitives::Vec3([
+        pitch, yaw, 0.0,
+    ])))
 }
 fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let first = qc_print_offset(BROADCAST, c.context.console.source);
