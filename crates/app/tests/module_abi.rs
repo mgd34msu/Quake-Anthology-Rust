@@ -1881,34 +1881,92 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
 }
 
 #[test]
-fn cached_native_sound_ordinal_survives_equal_text_and_retires_on_change() {
+fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
     use qa_compat::services::{ENGINE_CALLS, ResourceRange};
-    use qa_core::primitives::SoundId;
+    use qa_core::primitives::{Pcm, PcmChannels};
+    use std::{num::NonZeroU32, sync::Arc};
+    let rate = NonZeroU32::new(44100).unwrap();
+    let bank = Arc::new(
+        qa_audio::Bank::load(
+            rate,
+            ["sound/world/amb.wav", "sound/world/new.wav"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.into(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![1024],
+                            loop_start: None,
+                        },
+                        RuleSetId::Quake2,
+                    )
+                })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let ambient = bank.find("sound/world/amb.wav").unwrap();
+    let new = bank.find("sound/world/new.wav").unwrap();
     let mut runtime = Runtime::load(1, []).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
     let module = ModuleId(1);
-    let mut storage = ServiceStorage::load(&[(module, 8)], 0, &console.cvars).unwrap();
+    let other = ModuleId(2);
+    let mut storage = ServiceStorage::load(&[(module, 8), (other, 8)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     let range = ResourceRange { first: 2, count: 4 };
     services.configstring(module, 3, b"world/amb.wav").unwrap();
     services
         .storage
-        .bind_sound(module, 3, Some(SoundId(19)))
+        .bind_sound_bank(module, range, Arc::clone(&bank))
+        .unwrap();
+    services.configstring(other, 3, b"world/amb.wav").unwrap();
+    services
+        .storage
+        .bind_sound_bank(other, range, Arc::clone(&bank))
         .unwrap();
     let read = |services: &qa_compat::services::EngineServices<'_>, index| {
         (ENGINE_CALLS.sound_id)(services, module, range, index)
     };
-    assert_eq!(read(&services, 1), Ok(Some(SoundId(19))));
+    assert_eq!(read(&services, 1), Ok(Some(ambient)));
+    let revision = services.storage.configstring(module, 3).unwrap().1;
     services.configstring(module, 3, b"world/amb.wav").unwrap();
-    assert_eq!(read(&services, 1), Ok(Some(SoundId(19))));
+    assert_eq!(read(&services, 1), Ok(Some(ambient)));
+    assert_eq!(
+        services.storage.configstring(module, 3).unwrap().1,
+        revision
+    );
     services.configstring(module, 3, b"world/new.wav").unwrap();
-    assert_eq!(read(&services, 1), Ok(None));
+    assert_eq!(read(&services, 1), Ok(Some(new)));
+    assert_eq!(
+        (ENGINE_CALLS.sound_id)(&services, other, range, 1),
+        Ok(Some(ambient))
+    );
     services
-        .storage
-        .bind_sound(module, 3, Some(SoundId(27)))
+        .configstring(module, 3, b"#sound/world/amb.wav")
         .unwrap();
-    assert_eq!(read(&services, 1), Ok(Some(SoundId(27))));
+    assert_eq!(read(&services, 1), Ok(Some(ambient)));
+    for text in [b"missing.wav".as_slice(), b"*death.wav", b""] {
+        services.configstring(module, 3, text).unwrap();
+        assert_eq!(read(&services, 1), Ok(None));
+    }
+    let ordinal =
+        (ENGINE_CALLS.resource_index)(&mut services, module, range, b"world/new.wav").unwrap();
+    assert_eq!(ordinal, 1);
+    assert_eq!(read(&services, ordinal as i32), Ok(Some(new)));
+    assert_eq!(
+        (ENGINE_CALLS.resource_index)(&mut services, module, range, b"world/amb.wav"),
+        Ok(2)
+    );
+    assert_eq!(read(&services, 2), Ok(Some(ambient)));
+    // Ordinary configstrings must keep their raw bytes and never enter path lookup.
+    services.configstring(module, 0, &[0xff, 0xfe]).unwrap();
+    assert_eq!(
+        services.storage.configstring(module, 0).unwrap().0,
+        &[0xff, 0xfe]
+    );
     services.configstring(module, 3, b"").unwrap();
     assert_eq!(read(&services, 1), Ok(None));
     assert_eq!(read(&services, 0), Ok(None));

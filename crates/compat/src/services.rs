@@ -94,6 +94,7 @@ struct ConfigRange {
     written: usize,
     revision: u64,
     entity_text: Option<EntityText>,
+    sounds: Option<ResourceRange>,
 }
 struct EntityText {
     bytes: std::sync::Arc<[u8]>,
@@ -108,6 +109,7 @@ pub struct ServiceStorage {
     files: Box<[Option<OpenFile>]>,
     configs: Box<[ConfigString]>,
     sounds: Box<[Option<qa_core::primitives::SoundId>]>,
+    sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     ranges: Box<[ConfigRange]>,
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
@@ -135,6 +137,7 @@ impl ServiceStorage {
                 written: 0,
                 revision: 0,
                 entity_text: None,
+                sounds: None,
             });
             total = total.checked_add(count).ok_or(CallError::Capacity)?;
         }
@@ -151,6 +154,7 @@ impl ServiceStorage {
             .take(total)
             .collect(),
             sounds: vec![None; total].into_boxed_slice(),
+            sound_bank: None,
             ranges: ranges.into_boxed_slice(),
             resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
                 .map_err(|_| CallError::Capacity)?,
@@ -237,13 +241,56 @@ impl ServiceStorage {
         let row = &self.configs[self.config(module, ordinal)?];
         Ok((row.text.as_bytes(), row.revision))
     }
-    pub fn bind_sound(
+    /// Attach the load-owned bank and bind each native sound row through the
+    /// same path used when gamecode changes a registered name later.
+    pub fn bind_sound_bank(
         &mut self,
         module: ModuleId,
-        ordinal: usize,
-        sound: Option<qa_core::primitives::SoundId>,
+        sounds: ResourceRange,
+        bank: std::sync::Arc<qa_audio::Bank>,
     ) -> Result<(), CallError> {
+        let end = sounds
+            .first
+            .checked_add(sounds.count)
+            .ok_or(CallError::ConfigString)?;
+        if sounds.count == 0 || end > self.range(module).ok_or(CallError::ConfigString)?.count {
+            return Err(CallError::ConfigString);
+        }
+        self.range_mut(module)
+            .ok_or(CallError::ConfigString)?
+            .sounds = Some(sounds);
+        self.sound_bank = Some(bank);
+        // A storage may hold several modules. Rebinding the bank updates all
+        // registered sound ranges, so none retain handles from an older bank.
+        for i in 0..self.ranges.len() {
+            let owner = self.ranges[i].module;
+            if let Some(range) = self.ranges[i].sounds {
+                for ordinal in range.first..range.first + range.count {
+                    self.bind_sound(owner, ordinal)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn bind_sound(&mut self, module: ModuleId, ordinal: usize) -> Result<(), CallError> {
         let index = self.config(module, ordinal)?;
+        let Some(range) = self.range(module).and_then(|range| range.sounds) else {
+            return Ok(());
+        };
+        if !(range.first..range.first + range.count).contains(&ordinal) {
+            return Ok(());
+        }
+        self.sounds[index] = None;
+        let sound = match self
+            .sound_bank
+            .as_ref()
+            .zip(sound_path(self.configs[index].text.as_bytes())?)
+        {
+            Some((bank, path)) => {
+                bank.find(std::str::from_utf8(path.as_bytes()).map_err(|_| CallError::Text)?)
+            }
+            _ => None,
+        };
         self.sounds[index] = sound;
         Ok(())
     }
@@ -270,10 +317,10 @@ impl ServiceStorage {
             };
             row.text.set_bytes(text).map_err(|_| CallError::Text)?;
             row.resource_name = name;
-            self.sounds[index] = None;
             row.revision = row.revision.wrapping_add(1);
             let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
             range.revision = range.revision.wrapping_add(1);
+            self.bind_sound(module, ordinal)?;
         }
         Ok(())
     }

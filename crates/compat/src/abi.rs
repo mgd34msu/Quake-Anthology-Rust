@@ -340,7 +340,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[10] = scalar!(resource_index::<2>);
     table.entries[11] = scalar!(native_set_model);
     table.entries[12] = scalar!(native_trace::<false, false>);
-    table.entries[13] = scalar!(native_point_contents::<false>);
+    table.entries[13] = scalar!(native_point_contents);
     table.entries[14] = scalar!(native_visibility::<false, false>);
     table.entries[15] = scalar!(native_visibility::<false, true>);
     table.entries[16] = scalar!(native_portal_set::<false>);
@@ -387,7 +387,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[13] = scalar!(native_set_model);
     table.entries[14] = scalar!(native_trace::<true, false>);
     table.entries[15] = scalar!(native_trace::<true, true>);
-    table.entries[16] = scalar!(native_point_contents::<true>);
+    table.entries[16] = scalar!(native_point_contents);
     table.entries[17] = scalar!(native_visibility::<true, false>);
     table.entries[18] = scalar!(native_visibility::<true, true>);
     table.entries[19] = scalar!(native_portal_set::<true>);
@@ -1433,9 +1433,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
 }
 
-fn native_point_contents<const WIDE: bool>(
-    c: &mut Invocation<'_, '_, '_>,
-) -> Result<u64, CallError> {
+fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let point = c.memory.read_vec3(c.pointer(0)?)?;
     if !point.is_finite() {
         return Err(CallError::Geometry);

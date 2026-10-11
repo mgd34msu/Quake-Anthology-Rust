@@ -3864,14 +3864,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .unwrap(),
         ));
         storage
-            .bind_sound(
+            .bind_sound_bank(
                 ModuleId(1),
-                if rr { 8255 } else { 289 },
-                runtime
-                    .sound_bank
-                    .as_ref()
-                    .unwrap()
-                    .find("sound/_qa_child_cvar"),
+                game.vm.resource_ranges().unwrap()[1],
+                std::sync::Arc::clone(runtime.sound_bank.as_ref().unwrap()),
             )
             .unwrap();
         let source = {

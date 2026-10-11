@@ -386,29 +386,13 @@ impl FrameHost {
         Ok(())
     }
     /// Resolve native ordinals only after the load-owned PCM bank is complete.
-    pub fn bind_native_sounds(&mut self, bank: &qa_audio::Bank) -> Result<(), String> {
+    pub fn bind_native_sounds(&mut self, bank: &Arc<qa_audio::Bank>) -> Result<(), String> {
         if let Some(modules) = &mut self.modules {
             for row in modules.rows.iter_mut().flatten() {
                 if let Some(sounds) = row.native_sounds() {
-                    let module = row.request.context.module;
-                    for ordinal in 0..sounds.count {
-                        let index = sounds.first + ordinal;
-                        let (name, _) = row
-                            .storage
-                            .configstring(module, index)
-                            .map_err(|e| format!("native sound binding: {e:?}"))?;
-                        let sound = match qa_compat::services::sound_path(name)
-                            .map_err(|e| format!("sound path: {e:?}"))?
-                        {
-                            Some(path) => bank.find(
-                                std::str::from_utf8(path.as_bytes()).map_err(|e| e.to_string())?,
-                            ),
-                            None => None,
-                        };
-                        row.storage
-                            .bind_sound(module, index, sound)
-                            .map_err(|e| format!("native sound binding: {e:?}"))?;
-                    }
+                    row.storage
+                        .bind_sound_bank(row.request.context.module, sounds, Arc::clone(bank))
+                        .map_err(|e| format!("native sound binding: {e:?}"))?;
                 }
             }
         }
