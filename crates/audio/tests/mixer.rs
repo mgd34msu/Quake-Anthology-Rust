@@ -218,3 +218,56 @@ fn private_channels_do_not_replace_another_clients_voice() {
     m.paint(&mut pcm);
     assert_eq!(pcm, [2040; 2]);
 }
+
+#[test]
+fn delayed_weapon_bursts_replace_at_their_sample_time() {
+    let mut m = mixer(RuleSetId::Quake2, vec![256, 512, 768, 1024, 1280], None, 4);
+    m.listen(&[listener(0, Vec3::default())], 1.0);
+    let mut e = event(&m);
+    e.entity = Some(EntityId {
+        slot: 0,
+        generation: 1,
+    });
+    e.channel = 1;
+    assert!(m.sound(e));
+    e.time_offset = 2.0 / 44100.0;
+    assert!(m.sound(e));
+    e.time_offset = 4.0 / 44100.0;
+    assert!(m.sound(e));
+    assert_eq!(m.counts.replaced, 0);
+    let mut first = [0; 6];
+    let mut second = [0; 8];
+    m.paint(&mut first);
+    m.paint(&mut second);
+    assert_eq!(first, [255, 255, 510, 510, 255, 255]);
+    assert_eq!(second, [510, 510, 255, 255, 510, 510, 765, 765]);
+    assert_eq!(m.counts.replaced, 2);
+}
+
+#[test]
+fn equal_time_pending_starts_keep_publication_order_and_stop_cancels_them() {
+    let mut m = mixer(RuleSetId::Quake2, vec![1024; 8], None, 4);
+    m.listen(&[listener(0, Vec3::default())], 1.0);
+    let mut e = event(&m);
+    e.entity = Some(EntityId {
+        slot: 0,
+        generation: 1,
+    });
+    e.channel = 1;
+    e.time_offset = 2.0 / 44100.0;
+    assert!(m.sound(e));
+    e.volume = 0.5;
+    assert!(m.sound(e));
+    let mut pcm = [0; 6];
+    m.paint(&mut pcm);
+    assert_eq!(pcm, [0, 0, 0, 0, 508, 508]);
+    assert_eq!(m.counts.replaced, 1);
+    e.time_offset = 4.0 / 44100.0;
+    assert!(m.sound(e));
+    e.action = SoundAction::Stop;
+    m.sound(e);
+    m.paint(&mut [0; 16]);
+    m.paint(&mut pcm);
+    assert_eq!(pcm, [0; 6]);
+    assert_eq!(m.counts.stopped, 2);
+}

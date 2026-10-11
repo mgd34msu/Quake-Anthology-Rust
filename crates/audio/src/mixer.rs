@@ -89,7 +89,8 @@ struct Voice {
     event: SoundEvent,
     frame: usize,
     gain: [i64; 2],
-    delay: usize,
+    begin: Option<u64>,
+    order: u64,
 }
 fn same_channel(a: &SoundEvent, b: &SoundEvent) -> bool {
     a.entity == b.entity && a.channel == b.channel && a.client == b.client
@@ -109,6 +110,7 @@ pub struct Mixer {
     listeners: Box<[Option<Listener>]>,
     pub counts: MixCounts,
     volume: f32,
+    next_start: Option<u64>,
 }
 impl Mixer {
     pub fn load(bank: Arc<Bank>, voices: usize, listeners: usize) -> Self {
@@ -118,6 +120,7 @@ impl Mixer {
             listeners: vec![None; listeners].into_boxed_slice(),
             counts: MixCounts::default(),
             volume: 1.0,
+            next_start: None,
         }
     }
     pub fn listen(&mut self, listeners: &[Option<Listener>], volume: f32) {
@@ -168,8 +171,7 @@ impl Mixer {
             self.counts.invalid += 1;
             return false;
         }
-        let mut replacement = None;
-        for (index, voice) in self.voices.iter_mut().enumerate() {
+        for voice in &mut self.voices {
             let Some(voice) = voice else { continue };
             if !same_channel(&voice.event, &event) {
                 continue;
@@ -177,14 +179,19 @@ impl Mixer {
             if event.action == SoundAction::StartLoop
                 && voice.event.action == SoundAction::StartLoop
                 && voice.event.sound == event.sound
+                && voice.begin.is_none()
             {
                 voice.event = event;
                 return true;
             }
-            if event.entity.is_some() && event.channel != 0 && replacement.is_none() {
-                replacement = Some(index);
-            }
         }
+        let delay = (event.time_offset * self.bank.rate.get() as f32) as u64;
+        let begin = (delay != 0).then(|| self.counts.frames.saturating_add(delay));
+        let replacement = if begin.is_none() {
+            self.channel_voice(event)
+        } else {
+            None
+        };
         let Some(index) = replacement.or_else(|| self.voices.iter().position(Option::is_none))
         else {
             self.counts.full += 1;
@@ -195,10 +202,57 @@ impl Mixer {
             event,
             frame: 0,
             gain: [0; 2],
-            delay: (event.time_offset * self.bank.rate.get() as f32) as usize,
+            begin,
+            order: self.counts.started,
         });
+        if let Some(begin) = begin {
+            self.next_start = Some(self.next_start.map_or(begin, |next| next.min(begin)));
+        }
         self.counts.started += 1;
         true
+    }
+    fn channel_voice(&self, event: SoundEvent) -> Option<usize> {
+        if event.entity.is_none() || event.channel == 0 {
+            return None;
+        }
+        self.voices.iter().position(|voice| {
+            voice
+                .as_ref()
+                .is_some_and(|voice| voice.begin.is_none() && same_channel(&voice.event, &event))
+        })
+    }
+    /// Q2 issues scheduled sounds at their sample time, then selects a channel.
+    /// Pending starts use the existing bounded voice table, not another queue.
+    fn start_ready(&mut self, time: u64) {
+        loop {
+            let next = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter_map(|(index, voice)| {
+                    let voice = voice.as_ref()?;
+                    Some((voice.begin?, voice.order, index))
+                })
+                .min();
+            let Some((begin, _, index)) = next else {
+                self.next_start = None;
+                return;
+            };
+            self.next_start = Some(begin);
+            if begin > time {
+                return;
+            }
+            let Some(event) = self.voices[index].as_ref().map(|voice| voice.event) else {
+                continue;
+            };
+            if let Some(previous) = self.channel_voice(event) {
+                self.voices[previous] = None;
+                self.counts.replaced += 1;
+            }
+            if let Some(voice) = &mut self.voices[index] {
+                voice.begin = None;
+            }
+        }
     }
     /// Stereo device-rate PCM, accumulated in voice order and saturated once.
     pub fn paint(&mut self, output: &mut [i16]) -> bool {
@@ -230,14 +284,17 @@ impl Mixer {
             }
         }
         let volume = (self.volume * 256.0) as i64;
-        for frame in output.as_chunks_mut::<2>().0 {
+        for (offset, frame) in output.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            let time = self.counts.frames.saturating_add(offset as u64);
+            if self.next_start.is_some_and(|next| next <= time) {
+                self.start_ready(time);
+            }
             let mut sum = [0i64; 2];
             for slot in &mut self.voices {
                 let Some(voice) = slot.as_mut() else {
                     continue;
                 };
-                if voice.delay != 0 {
-                    voice.delay -= 1;
+                if voice.begin.is_some() {
                     continue;
                 }
                 let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {

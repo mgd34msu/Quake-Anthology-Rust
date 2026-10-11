@@ -1,4 +1,5 @@
 //! quake-2/game/g_combat.c: T_Damage, CheckArmor, CheckPowerArmor, T_RadiusDamage.
+pub mod sounds;
 use crate::combat::*;
 use qa_core::primitives::{DamageEvent, DamageFlags, Vec3};
 

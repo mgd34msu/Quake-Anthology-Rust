@@ -313,20 +313,25 @@ pub(super) fn commands_move_a_native_client_once() {
         let bank = std::sync::Arc::new(
             qa_audio::Bank::load(
                 std::num::NonZeroU32::new(44100).unwrap(),
-                vec![(
-                    "sound/_qa_cue.wav".into(),
-                    qa_core::primitives::Pcm {
-                        rate: std::num::NonZeroU32::new(44100).unwrap(),
-                        channels: qa_core::primitives::PcmChannels::Mono,
-                        samples: vec![12000; 1024],
-                        loop_start: None,
-                    },
-                    rules,
-                )],
+                std::iter::once("sound/_qa_cue.wav")
+                    .chain(qa_gameplay::rules::q2::sounds::PATHS.iter().copied())
+                    .map(|path| {
+                        (
+                            path.into(),
+                            qa_core::primitives::Pcm {
+                                rate: std::num::NonZeroU32::new(44100).unwrap(),
+                                channels: qa_core::primitives::PcmChannels::Mono,
+                                samples: vec![12000; 22050],
+                                loop_start: None,
+                            },
+                            rules,
+                        )
+                    })
+                    .collect(),
             )
             .unwrap(),
         );
-        host.bind_native_sounds(&bank).unwrap();
+        host.bind_sounds(&bank).unwrap();
         host.connect_q2_client(&api, id, b"\\name\\once").unwrap();
         let mut expected = PlayerState::default();
         expected.movement_rules = rules;
@@ -398,7 +403,12 @@ pub(super) fn commands_move_a_native_client_once() {
             );
         }
         assert_eq!(host.runtime.network.commands, 2);
-        super::cues::received_sounds_use_precache_and_the_presentation_ring(&mut host, id, bank);
+        super::cues::received_sounds_use_precache_and_the_presentation_ring(
+            &mut host,
+            id,
+            std::sync::Arc::clone(&bank),
+        );
+        super::cues::muzzle_packets_publish_product_sounds(&mut host, id, bank);
         host.shutdown_modules();
     }
 }

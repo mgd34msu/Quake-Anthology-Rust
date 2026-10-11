@@ -11,6 +11,45 @@ use qa_core::{
 };
 use std::{num::NonZeroU32, sync::Arc};
 
+/// Client cue recipes hold numeric bindings into the one PCM bank.
+pub(crate) struct MuzzleSounds {
+    ids: [Option<qa_core::primitives::SoundId>; qa_gameplay::rules::q2::sounds::PATHS.len()],
+    random: qa_core::random::Random,
+}
+impl Default for MuzzleSounds {
+    fn default() -> Self {
+        Self {
+            ids: [None; qa_gameplay::rules::q2::sounds::PATHS.len()],
+            random: qa_core::random::Random::new(5489),
+        }
+    }
+}
+impl MuzzleSounds {
+    pub(crate) fn bind(&mut self, bank: &Bank) {
+        for (id, path) in self
+            .ids
+            .iter_mut()
+            .zip(qa_gameplay::rules::q2::sounds::PATHS)
+        {
+            *id = bank.find(path);
+        }
+    }
+    pub(crate) fn choose(
+        &mut self,
+        recipe: qa_gameplay::rules::q2::sounds::MuzzleSound,
+    ) -> Option<qa_core::primitives::SoundId> {
+        let offset = if recipe.choices.count > 1 {
+            self.random.next_u32() % recipe.choices.count
+        } else {
+            0
+        };
+        self.ids
+            .get((recipe.choices.first + offset) as usize)
+            .copied()
+            .flatten()
+    }
+}
+
 pub struct Output {
     pub mixer: Mixer,
     stream: qa_platform::AudioStream,
@@ -76,6 +115,21 @@ pub fn load_bank(
         }
         Ok(())
     })?;
+    if host.runtime.local_snapshots.iter().flatten().any(|client| {
+        matches!(
+            client.protocol,
+            qa_network::commands::packet::Protocol::Quake2_34
+                | qa_network::commands::packet::Protocol::Quake2Repro1038
+        )
+    }) {
+        registered.extend(qa_gameplay::rules::q2::sounds::PATHS.iter().map(|path| {
+            (
+                qa_core::names::canonical_path(path),
+                RuleSetId::Quake2,
+                false,
+            )
+        }));
+    }
     let names =
         qa_core::names::NameTable::load(registered.iter().map(|(name, _, _)| name.as_bytes()))
             .map_err(|e| e.to_string())?;
@@ -117,7 +171,7 @@ pub fn load_bank(
     }
     let rate = NonZeroU32::new(44100).ok_or("invalid device rate")?;
     let bank = Arc::new(Bank::load(rate, sources)?);
-    host.bind_native_sounds(&bank)?;
+    host.bind_sounds(&bank)?;
     Ok(bank)
 }
 

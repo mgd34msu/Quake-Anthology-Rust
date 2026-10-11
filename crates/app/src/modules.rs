@@ -404,8 +404,9 @@ impl FrameHost {
         let _ = &mut visit;
         Ok(())
     }
-    /// Resolve native ordinals only after the load-owned PCM bank is complete.
-    pub fn bind_native_sounds(&mut self, bank: &Arc<qa_audio::Bank>) -> Result<(), String> {
+    /// Resolve native ordinals and client cue resources after PCM loading.
+    pub fn bind_sounds(&mut self, bank: &Arc<qa_audio::Bank>) -> Result<(), String> {
+        self.muzzle_sounds.bind(bank);
         if let Some(modules) = &mut self.modules {
             for row in modules.rows.iter_mut().flatten() {
                 if let Some(sounds) = row.native_sounds() {
