@@ -1462,10 +1462,10 @@ fn qc_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 
 fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let slot = c.arg(0)? as i32;
-    let limit = c.services.cvars.integer_in(
-        c.services.storage.max_clients,
-        qa_core::primitives::RuleSetId::Quake3,
-    );
+    let limit = c
+        .services
+        .storage
+        .max_clients(c.services.cvars, qa_core::primitives::RuleSetId::Quake3);
     if slot < 0 || slot >= limit {
         return Err(CallError::Entity);
     }
@@ -1557,45 +1557,34 @@ fn remove_native_info(
 fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     // q2repro Info_SubValidate checks raw lengths and masked delimiters before
     // removing a key. Append then strips high bits and non-printable bytes.
-    let mut fields = [FixedText::<64>::default(), FixedText::<64>::default()];
+    use crate::q2_abi::{INFO_FIELD_BYTES, userinfo_bytes};
+    use qa_core::text::{InfoBytes, InfoRules, InfoUpdate};
+    let mut fields = [
+        FixedText::<INFO_FIELD_BYTES>::default(),
+        FixedText::<INFO_FIELD_BYTES>::default(),
+    ];
     for (index, field) in fields.iter_mut().enumerate() {
         let text = c.string(index + 1)?;
-        if text.len() >= 64 || text.iter().any(|b| matches!(b & 127, b'\\' | b'"' | b';')) {
+        if field.set_bytes(text).is_err() {
             return Ok(0);
         }
-        field.set_bytes(text).map_err(|_| CallError::Text)?;
     }
-    let source = c.pointer(0)?;
-    let (remaining, _) = remove_native_info(c.memory, source, fields[0].as_bytes())?;
-    if fields[1].as_bytes().is_empty() {
-        return Ok(1);
-    }
-    if remaining + fields[0].as_bytes().len() + fields[1].as_bytes().len() + 2 >= 512 {
-        // Native semantics retain the removal when the replacement cannot fit.
-        return Ok(0);
-    }
-    let mut addition = FixedText::<128>::default();
-    for bytes in [
-        b"\\".as_slice(),
+    let bytes = userinfo_bytes(c.context.console.source).ok_or(CallError::Text)?;
+    let Ok(update) = InfoUpdate::new(
         fields[0].as_bytes(),
-        b"\\",
         fields[1].as_bytes(),
-    ] {
-        for byte in bytes {
-            let byte = byte & 127;
-            if (32..=126).contains(&byte) {
-                addition
-                    .append_bytes(&[byte])
-                    .map_err(|_| CallError::Text)?;
-            }
-        }
-    }
-    c.memory.write_string(
-        source + remaining as u64,
-        addition.as_bytes().len() + 1,
-        addition.as_bytes(),
-    )?;
-    Ok(1)
+        InfoRules {
+            bytes,
+            field_bytes: INFO_FIELD_BYTES,
+            filter: InfoBytes::Ascii7Printable,
+        },
+    ) else {
+        return Ok(0);
+    };
+    let source = c.pointer(0)?;
+    let mut length = c.memory.cstring(source)?.len();
+    let output = c.memory.read_mut(source, bytes)?;
+    Ok(u64::from(update.apply(output, &mut length).is_ok()))
 }
 
 fn native_client(

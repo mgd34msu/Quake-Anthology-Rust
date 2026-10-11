@@ -7,6 +7,37 @@ use qa_core::{
 use qa_session::timing::TickRate;
 use qa_world::area::{LinkFlags, LinkOrder};
 
+#[test]
+fn seat_options_share_validation_and_preserve_the_first_registered_value() {
+    use qa_app::options::{insert_seat_value, parse_seat_value};
+    let (seat, protocol) =
+        parse_seat_value("2:34", qa_network::commands::packet::Protocol::parse).unwrap();
+    let mut slots = [None; SeatId::COUNT];
+    let mut count = 1;
+    insert_seat_value(&mut slots, &mut count, seat, protocol).unwrap();
+    assert_eq!(count, 3);
+    assert!(
+        insert_seat_value(
+            &mut slots,
+            &mut count,
+            seat,
+            qa_network::commands::packet::Protocol::Quake3_68
+        )
+        .is_err()
+    );
+    assert_eq!(slots[seat.index()], Some(protocol));
+    for bad in [
+        "4:34",
+        "-1:34",
+        "seat:34",
+        "1",
+        "1:34:extra",
+        "1:unsupported",
+    ] {
+        assert!(parse_seat_value(bad, qa_network::commands::packet::Protocol::parse).is_err());
+    }
+}
+
 fn fixed(milliseconds: u32) -> Result<TickRate, String> {
     TickRate::fixed(milliseconds).ok_or("zero expected native tick period".to_owned())
 }

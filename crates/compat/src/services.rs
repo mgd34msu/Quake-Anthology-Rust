@@ -125,10 +125,13 @@ pub struct ServiceStorage {
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
     no_areas: CvarHandle,
-    pub(crate) max_clients: CvarHandle,
+    max_clients: CvarHandle,
 }
 
 impl ServiceStorage {
+    pub fn max_clients(&self, cvars: &Cvars, rules: qa_core::primitives::RuleSetId) -> i32 {
+        cvars.integer_in(self.max_clients, rules)
+    }
     pub fn load(
         configs: &[(ModuleId, usize)],
         files: usize,

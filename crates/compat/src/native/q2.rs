@@ -25,6 +25,7 @@ macro_rules! functions {
 }
 struct Layout {
     version: i32,
+    info: crate::q2_abi::InfoLayout,
     bytes: usize,
     entity_offset: usize,
     wide_stride: bool,
@@ -208,6 +209,7 @@ const RERELEASE_FUNCTIONS: &[Function] = functions!(
 
 const CLASSIC: Layout = Layout {
     version: 3,
+    info: crate::q2_abi::CLASSIC,
     bytes: 152,
     entity_offset: 128,
     wide_stride: false,
@@ -255,6 +257,7 @@ const CLASSIC: Layout = Layout {
 };
 const RERELEASE: Layout = Layout {
     version: 2023,
+    info: crate::q2_abi::RERELEASE,
     bytes: 272,
     entity_offset: 160,
     wide_stride: true,
@@ -306,7 +309,17 @@ pub struct Game {
     layout: &'static Layout,
     first: u32,
 }
+fn layout(rules: RuleSetId) -> Option<&'static Layout> {
+    match rules {
+        RuleSetId::Quake2 => Some(&CLASSIC),
+        RuleSetId::Quake2Rerelease => Some(&RERELEASE),
+        _ => None,
+    }
+}
 impl Game {
+    pub fn userinfo_bytes(&self) -> usize {
+        self.layout.info.userinfo_bytes
+    }
     /// Bind the API shape at load. Unsupported engine services remain named traps; reaching one rejects only
     /// that call through the existing missing-import path.
     pub fn map(
@@ -316,11 +329,10 @@ impl Game {
         geometry: &qa_world::collision::CollisionStore,
         timeout: Duration,
     ) -> Result<Self, Error> {
-        let layout = match rules {
-            RuleSetId::Quake2 => &CLASSIC,
-            RuleSetId::Quake2Rerelease if interval_ms != 0 && 1000 % interval_ms == 0 => &RERELEASE,
-            _ => return Err(Error::Export),
-        };
+        let layout = layout(rules).ok_or(Error::Export)?;
+        if rules == RuleSetId::Quake2Rerelease && (interval_ms == 0 || 1000 % interval_ms != 0) {
+            return Err(Error::Export);
+        }
         if image.target.bits != 64 {
             return Err(Error::Export);
         }

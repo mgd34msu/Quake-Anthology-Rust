@@ -7,6 +7,41 @@ use qa_world::collision::{
 };
 
 #[test]
+fn native_slot_addresses_reject_capacity_and_arithmetic_overflow() {
+    use qa_compat::entities::{Entities, slot_address};
+    let table = Entities {
+        address: 0x1000,
+        stride: 280,
+        count: 1,
+        capacity: 3,
+        server_flags: 0,
+    };
+    assert_eq!(slot_address(table, 0), Some(0x1000));
+    assert_eq!(slot_address(table, 2), Some(0x1230));
+    assert_eq!(slot_address(table, 3), None);
+    assert_eq!(
+        slot_address(
+            Entities {
+                address: u64::MAX,
+                ..table
+            },
+            1
+        ),
+        None
+    );
+    assert_eq!(
+        slot_address(
+            Entities {
+                stride: u64::MAX,
+                ..table
+            },
+            2
+        ),
+        None
+    );
+}
+
+#[test]
 fn native_trace_layouts_preserve_fields_padding_and_null_surface_states() {
     check::<false>();
     check::<true>();

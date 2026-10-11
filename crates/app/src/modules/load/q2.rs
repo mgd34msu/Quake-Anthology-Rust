@@ -58,14 +58,19 @@ pub fn load_q2(
         for spec in specs {
             let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
             let mut image = super::parse_native(&bytes)?;
+            let userinfo_bytes = qa_compat::q2_abi::userinfo_bytes(spec.rules)
+                .ok_or("unsupported Q2 userinfo ABI")?;
             let source = runtime
                 .entity_sources
                 .get(entity_source)
                 .ok_or("missing native entity source")?;
             let map = map.strip_prefix("maps/").unwrap_or(map);
             let map = map.strip_suffix(".bsp").unwrap_or(map);
-            let (spawn_arguments, userinfo) =
-                spawn_strings(&mut image, [map.as_bytes(), &source.bytes, b""])?;
+            let (spawn_arguments, userinfo) = spawn_strings(
+                &mut image,
+                [map.as_bytes(), &source.bytes, b""],
+                userinfo_bytes,
+            )?;
             let interval = qa_gameplay::rules::tick_millis(spec.rules, std::num::NonZeroU32::MIN)
                 .ok_or("Q2 module needs a fixed native rate")?;
             let game = Game::map(
@@ -113,11 +118,7 @@ pub fn load_q2(
                 begin: client_entry(b"ClientBegin")?,
                 disconnect: client_entry(b"ClientDisconnect")?,
                 userinfo,
-                userinfo_bytes: if spec.rules == RuleSetId::Quake2 {
-                    512
-                } else {
-                    2048
-                },
+                userinfo_bytes,
                 social: spawn_arguments[2],
             });
             let clock = ThinkTime::module_clock(spec.rules);
@@ -184,6 +185,7 @@ pub fn load_q2(
 fn spawn_strings(
     image: &mut qa_formats::program::native::Image,
     strings: [&[u8]; 3],
+    userinfo_bytes: usize,
 ) -> Result<([u64; 3], u64), String> {
     use qa_formats::program::native::Region;
     use qa_platform::native::PAGE_BYTES;
@@ -198,7 +200,7 @@ fn spawn_strings(
         .try_fold(0usize, |total, string| {
             total.checked_add(string.len())?.checked_add(1)
         })
-        .and_then(|size| size.checked_add(2048))
+        .and_then(|size| size.checked_add(userinfo_bytes))
         .ok_or("Q2 spawn strings too large")?;
     let length = size
         .div_ceil(PAGE_BYTES)

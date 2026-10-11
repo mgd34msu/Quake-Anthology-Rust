@@ -14,27 +14,20 @@ pub struct ClientPolicy {
 impl ClientPolicy {
     /// Startup role choices are explicit and independent for each local seat.
     pub fn parse_seat(value: &str) -> Result<(qa_core::sys_events::SeatId, Self), &'static str> {
+        crate::options::parse_seat_value(value, Self::parse)
+    }
+    fn parse(value: &str) -> Option<Self> {
         let mut fields = value.split(':');
-        let seat = fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .and_then(qa_core::sys_events::SeatId::new)
-            .ok_or("seat-policy needs a seat in 0..4")?;
-        let mut rule = || {
-            fields
-                .next()
-                .and_then(RuleSetId::parse)
-                .ok_or("seat-policy needs seat:client:movement:trace (q1/qw/q2/q2rr/q3)")
-        };
+        let mut rule = || fields.next().and_then(RuleSetId::parse);
         let policy = Self {
             client: rule()?,
             movement: rule()?,
             trace: rule()?,
         };
         if fields.next().is_some() {
-            return Err("seat-policy has extra fields");
+            return None;
         }
-        Ok((seat, policy))
+        Some(policy)
     }
 
     pub fn select(

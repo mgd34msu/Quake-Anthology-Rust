@@ -89,11 +89,11 @@ impl NativeTraceView<'_, '_> {
     }
 }
 
-fn slot_address(entities: Entities, slot: u32) -> Option<u64> {
+pub fn slot_address(entities: Entities, slot: u32) -> Option<u64> {
     (slot < entities.capacity).then_some(())?;
     entities
         .address
-        .checked_add(u64::from(slot) * entities.stride)
+        .checked_add(u64::from(slot).checked_mul(entities.stride)?)
 }
 
 pub(crate) fn native_address(

@@ -9,24 +9,25 @@ impl FrameHost {
         &mut self,
         api: &Q2Clients,
         id: ClientId,
-        native_client: u32,
         userinfo: &[u8],
     ) -> Result<(), String> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             use qa_compat::memory::ModuleMemory;
+            let native_client = self
+                .runtime
+                .local_snapshots
+                .get(id.0 as usize)
+                .and_then(Option::as_ref)
+                .ok_or("native client needs connection metadata")?
+                .native_client();
             let row = self.module_row(api.module).ok_or("missing client module")?;
             if row.state != State::Running || native_client >= 256 {
                 return Err("client module unavailable or native slot out of range".into());
             }
             let time = row.request.context.clock.at(self.time);
             let context = row.request.context.console;
-            let maxclients = self
-                .console
-                .cvars
-                .bind("sv_maxclients", context)
-                .and_then(|view| self.console.cvars.integer_view(view).ok())
-                .ok_or("missing native maxclients")?;
+            let maxclients = row.storage.max_clients(&self.console.cvars, context.source);
             if native_client >= maxclients.max(0) as u32 {
                 return Err("native client outside module maxclients".into());
             }
@@ -37,10 +38,8 @@ impl FrameHost {
             let table = self
                 .native_entities(api.module)
                 .map_err(|e| format!("client table: {e:?}"))?;
-            if native.slot as u32 >= table.count {
-                return Err("native client outside published entity table".into());
-            }
-            let address = table.address + table.stride * native.slot as u64;
+            let address = qa_compat::entities::slot_address(table, native.slot as u32)
+                .ok_or("native client outside published entity table")?;
             if !self.runtime.server.bind_client_native(id, native) {
                 return Err("native client namespace already occupied".into());
             }
@@ -101,7 +100,7 @@ impl FrameHost {
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
-            let _ = (api, id, native_client, userinfo);
+            let _ = (api, id, userinfo);
             Err("native child backend unsupported on this host".into())
         }
     }
@@ -131,8 +130,10 @@ impl FrameHost {
         };
         if row.state == State::Running {
             let time = row.request.context.clock.at(self.time);
-            if let Ok(table) = self.native_entities(module) {
-                let address = table.address + table.stride * native.slot as u64;
+            if let Ok(table) = self.native_entities(module)
+                && let Ok(slot) = u32::try_from(native.slot)
+                && let Some(address) = qa_compat::entities::slot_address(table, slot)
+            {
                 let _ = self.call_module_export(module, Export::words(callback, &[address]), time);
             }
         }

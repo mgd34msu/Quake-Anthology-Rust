@@ -1172,12 +1172,18 @@ impl Cvars {
     }
     /// Native info keys use their source names and converted values. Build at
     /// connect or info-change boundaries, never while reading module cvars.
-    pub fn info_string<const N: usize>(
+    pub fn info_string(
         &self,
         context: Context,
         flag: u32,
-    ) -> Result<FixedText<N>, WriteError> {
-        let mut text = FixedText::default();
+        output: &mut [u8],
+    ) -> Result<usize, WriteError> {
+        let mut length = 0;
+        let rules = qa_core::text::InfoRules {
+            bytes: output.len(),
+            field_bytes: MAX_TEXT + 1,
+            filter: qa_core::text::InfoBytes::Exact,
+        };
         let mut append = |view: View| -> Result<(), WriteError> {
             if self.flags(view) & flag == 0 {
                 return Ok(());
@@ -1187,10 +1193,17 @@ impl Cvars {
             if value.as_str().is_empty() {
                 return Ok(());
             }
-            if !info_text(name) || !info_text(value.as_str()) {
-                return Err(WriteError::InvalidInfo);
-            }
-            write!(text, "\\{name}\\{}", value.as_str()).map_err(|_| WriteError::Capacity)
+            qa_core::text::info_set(
+                output,
+                &mut length,
+                name.as_bytes(),
+                value.as_str().as_bytes(),
+                rules,
+            )
+            .map_err(|error| match error {
+                qa_core::text::InfoError::Invalid => WriteError::InvalidInfo,
+                qa_core::text::InfoError::Capacity => WriteError::Capacity,
+            })
         };
         for (index, binding) in BINDINGS.iter().enumerate() {
             if binding.native_sources & (1 << context.source as u8) != 0
@@ -1205,7 +1218,7 @@ impl Cvars {
                 append(view)?;
             }
         }
-        Ok(text)
+        Ok(length)
     }
     fn refresh_number_at(&mut self, index: usize) {
         let numbers = std::array::from_fn(|s| {
@@ -1468,7 +1481,5 @@ fn stock_role(names: &NameTable, binding_names: &[NameId], row: usize, source: R
 }
 
 fn info_text(text: &str) -> bool {
-    !text
-        .bytes()
-        .any(|b| matches!(b, b'\\' | b'"' | b';') || b < 32)
+    qa_core::text::info_valid_field(text.as_bytes(), qa_core::text::InfoBytes::Exact)
 }

@@ -2,6 +2,57 @@ use qa_core::text::FixedText;
 use std::fmt::Write;
 
 #[test]
+fn info_writer_keeps_native_validation_filtering_and_failed_replacement_rules() {
+    use qa_core::text::{InfoBytes, InfoError, InfoRules, info_set};
+    let mut buffer = [0xcc; 64];
+    let original = b"\\name\\old\\name\\later\\keep\\raw\x80";
+    buffer[..original.len()].copy_from_slice(original);
+    let mut len = original.len();
+    let native = InfoRules {
+        bytes: 64,
+        field_bytes: 64,
+        filter: InfoBytes::Ascii7Printable,
+    };
+    assert_eq!(
+        info_set(&mut buffer, &mut len, b"name", b"bad\xdc", native),
+        Err(InfoError::Invalid)
+    );
+    assert_eq!(&buffer[..len], original);
+    info_set(&mut buffer, &mut len, b"name", b"\xe1\x01\xff\x80b", native).unwrap();
+    assert_eq!(&buffer[..len], b"\\keep\\raw\x80\\name\\ab");
+    assert_eq!(buffer[len], 0);
+    assert_eq!(
+        info_set(
+            &mut buffer,
+            &mut len,
+            b"name",
+            b"long replacement",
+            InfoRules {
+                bytes: 16,
+                ..native
+            }
+        ),
+        Err(InfoError::Capacity)
+    );
+    assert_eq!(&buffer[..len], b"\\keep\\raw\x80");
+    assert_eq!(buffer[len], 0);
+    info_set(&mut buffer, &mut len, b"keep", b"", native).unwrap();
+    assert_eq!(len, 0);
+    let exact = InfoRules {
+        filter: InfoBytes::Exact,
+        ..native
+    };
+    info_set(&mut buffer, &mut len, b"utf8", "café".as_bytes(), exact).unwrap();
+    assert_eq!(&buffer[..len], "\\utf8\\café".as_bytes());
+    let prior = buffer;
+    assert_eq!(
+        info_set(&mut buffer, &mut len, b"bad", b"\x01", exact),
+        Err(InfoError::Invalid)
+    );
+    assert_eq!(buffer, prior);
+}
+
+#[test]
 fn append_keeps_raw_bytes_and_rejects_overflow_without_changing_text() {
     let mut text = FixedText::<6>::default();
     text.write_str("a").unwrap();

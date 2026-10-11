@@ -2283,6 +2283,12 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 .unwrap();
             runtime.server.clients[id.0 as usize].player.movement_rules = RuleSetId::Quake3;
             runtime.server.clients[id.0 as usize].player.trace_rules = RuleSetId::Quake;
+            runtime.local_snapshots[id.0 as usize] = Some(qa_app::snapshots::LocalSnapshot::load(
+                qa_core::sys_events::SeatId::FIRST,
+                runtime.server.clients[id.0 as usize].output.unwrap(),
+                qa_network::commands::packet::Protocol::Quake2_34,
+                1,
+            ));
             let game =
                 Game::map(image, rules, 25, &runtime.geometry, Duration::from_secs(3)).unwrap();
             let api = Q2Clients {
@@ -2292,7 +2298,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 begin: CallbackId(game.entry(b"ClientBegin").unwrap()),
                 disconnect: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
                 userinfo: 0x180005000,
-                userinfo_bytes: if rr { 2048 } else { 512 },
+                userinfo_bytes: game.userinfo_bytes(),
                 social: 0x180005800,
             };
             let imports = game.imports;
@@ -2325,7 +2331,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             let maxclients = host.console.cvars.bind("sv_maxclients", context).unwrap();
             host.console.cvars.force_write(maxclients, "2").unwrap();
             host.initialize_modules(Phase::Server);
-            let result = host.connect_q2_client(&api, id, 1, b"\\name\\NativeClient");
+            let result = host.connect_q2_client(&api, id, b"\\name\\NativeClient");
             assert_eq!(result.is_ok(), accepted, "{rules:?}: {result:?}");
             if accepted {
                 let client = &host.runtime.server.clients[id.0 as usize];
@@ -3340,8 +3346,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 assert_eq!(&memory[0x1e00..0x1e00 + info.len()], info);
             }
             let info_address = base + 0x2000;
-            let key_address = base + 0x2240;
-            let value_address = base + 0x2280;
+            let info_bytes = game.userinfo_bytes();
+            let key_address = info_address + info_bytes as u64 + 64;
+            let value_address = key_address + 128;
             let mut mutate_info = |game: &mut Game,
                                    set: bool,
                                    info: &[u8],
@@ -3354,7 +3361,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     game.vm.process.memory_mut().unwrap(),
                 )
                 .unwrap();
-                memory.write_string(info_address, 512, info).unwrap();
+                memory.write_string(info_address, info_bytes, info).unwrap();
                 memory.write_string(key_address, 128, key).unwrap();
                 memory.write_string(value_address, 128, value).unwrap();
                 drop(memory);
@@ -3462,9 +3469,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 &[b"\\".as_slice(), &[b'k'; 63], b"\\", &[b'v'; 63]].concat(),
             );
             let mut large = b"\\name\\old\\keep\\".to_vec();
-            large.extend([b'x'; 496]);
+            large.extend(std::iter::repeat_n(b'x', info_bytes - 16));
             let mut remaining = b"\\keep\\".to_vec();
-            remaining.extend([b'x'; 496]);
+            remaining.extend(std::iter::repeat_n(b'x', info_bytes - 16));
             mutate_info(
                 &mut game,
                 true,
@@ -3475,12 +3482,25 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 &remaining,
             );
             let mut exact = b"\\keep\\".to_vec();
-            exact.extend([b'x'; 501]);
+            exact.extend(std::iter::repeat_n(b'x', info_bytes - 11));
             let mut expected = exact.clone();
             expected.extend(b"\\k\\v");
             mutate_info(&mut game, true, &exact, b"k", b"v", 1, &expected);
             exact.push(b'x');
             mutate_info(&mut game, true, &exact, b"k", b"v", 0, &exact);
+            // Invalid fields reject before inspecting even a null target.
+            let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            memory.write_string(key_address, 128, b"bad;key").unwrap();
+            memory.write_string(value_address, 128, b"value").unwrap();
+            drop(memory);
+            assert_eq!(
+                invoke_import(&mut game, 69, &[0, key_address, value_address]),
+                0
+            );
         }
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);

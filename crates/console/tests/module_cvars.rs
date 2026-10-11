@@ -35,17 +35,19 @@ fn native_info_uses_selected_scope_source_names_and_module_rows_once() {
             .register("_qa_info", Some("module-value"), 2, client)
             .unwrap();
         cvars.register("_qa_empty", Some(""), 2, client).unwrap();
-        let info = cvars.info_string::<2047>(client, 2).unwrap();
-        let bytes = info.as_bytes();
+        let mut info = [0; 2048];
+        let length = cvars.info_string(client, 2, &mut info).unwrap();
+        let bytes = &info[..length];
+        let info = std::str::from_utf8(bytes).unwrap();
         let password = info_value(bytes, b"password", false).unwrap();
         assert_eq!(&bytes[password], b"client-secret");
-        assert_eq!(info.as_str().matches("\\password\\").count(), 1);
+        assert_eq!(info.matches("\\password\\").count(), 1);
         let module = info_value(bytes, b"_qa_info", false).unwrap();
         assert_eq!(&bytes[module], b"module-value");
         assert!(info_value(bytes, b"_qa_empty", false).is_none());
         assert!(info_value(bytes, b"skin", false).is_some());
         assert_eq!(
-            cvars.info_string::<1>(client, 2).unwrap_err(),
+            cvars.info_string(client, 2, &mut [0; 1]).unwrap_err(),
             WriteError::Capacity
         );
     }

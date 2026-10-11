@@ -1,4 +1,5 @@
 use qa_app::map;
+use qa_app::options::{insert_seat_value, parse_seat, parse_seat_value};
 use qa_app::renderer::{Kind, Renderer, cpu_band_setting, parse_cpu_bands};
 use qa_app::{
     Runtime,
@@ -158,33 +159,20 @@ fn run() -> Result<(), String> {
                         .next()
                         .ok_or("--seat-policy needs seat:client:movement:trace")?,
                 )?;
-                if seat_policies[seat.index()].replace(policy).is_some() {
-                    return Err("seat-policy was supplied more than once for a seat".into());
-                }
-                seat_count = seat_count.max(seat.index() + 1);
+                insert_seat_value(&mut seat_policies, &mut seat_count, seat, policy)?;
             }
             "--seat-game-module" => {
                 let value = args
                     .next()
                     .ok_or("--seat-game-module needs seat:module-number")?;
-                let (seat, module) = value
-                    .split_once(':')
-                    .ok_or("--seat-game-module needs seat:module-number")?;
-                let seat = seat
-                    .parse()
-                    .ok()
-                    .and_then(SeatId::new)
-                    .ok_or("seat-game-module needs a seat in 0..4")?;
-                let module = module
-                    .parse::<u16>()
-                    .ok()
-                    .filter(|&id| id != 0)
-                    .map(qa_core::primitives::ModuleId)
-                    .ok_or("game module number needs 1..65536")?;
-                if seat_game_modules[seat.index()].replace(module).is_some() {
-                    return Err("duplicate seat-game-module".into());
-                }
-                seat_count = seat_count.max(seat.index() + 1);
+                let (seat, module) = parse_seat_value(&value, |module| {
+                    module
+                        .parse::<u16>()
+                        .ok()
+                        .filter(|&id| id != 0)
+                        .map(qa_core::primitives::ModuleId)
+                })?;
+                insert_seat_value(&mut seat_game_modules, &mut seat_count, seat, module)?;
             }
             "--local-protocol" => {
                 local_protocol = qa_network::commands::packet::Protocol::parse(
@@ -198,20 +186,9 @@ fn run() -> Result<(), String> {
                 let value = args
                     .next()
                     .ok_or("--seat-protocol needs seat:15/28/34/1038/68")?;
-                let (seat, protocol) = value
-                    .split_once(':')
-                    .ok_or("--seat-protocol needs seat:15/28/34/1038/68")?;
-                let seat = seat
-                    .parse()
-                    .ok()
-                    .and_then(SeatId::new)
-                    .ok_or("invalid protocol seat")?;
-                let protocol = qa_network::commands::packet::Protocol::parse(protocol)
-                    .ok_or("unsupported local protocol")?;
-                if seat_protocols[seat.index()].replace(protocol).is_some() {
-                    return Err("duplicate seat-protocol".into());
-                }
-                seat_count = seat_count.max(seat.index() + 1);
+                let (seat, protocol) =
+                    parse_seat_value(&value, qa_network::commands::packet::Protocol::parse)?;
+                insert_seat_value(&mut seat_protocols, &mut seat_count, seat, protocol)?;
             }
             #[cfg(feature = "proof")]
             "--proof-script" => {
@@ -240,8 +217,7 @@ fn run() -> Result<(), String> {
                 } else {
                     DeviceId::Controller(device.parse().map_err(|_| "invalid controller instance")?)
                 };
-                let seat = SeatId::new(seat.parse().map_err(|_| "invalid seat")?)
-                    .ok_or("seat outside 0..4")?;
+                let seat = parse_seat(seat).ok_or("seat outside 0..4")?;
                 device_assignments.push((id, seat));
                 seat_count = seat_count.max(seat.index() + 1);
             }
@@ -582,19 +558,21 @@ fn run() -> Result<(), String> {
             .iter()
             .find(|api| api.module == module)
             .ok_or("seat-game-module needs a loaded Q2 client lifecycle")?;
-        let info = host
+        let mut info = vec![0; api.userinfo_bytes];
+        let length = host
             .console
             .cvars
-            .info_string::<2047>(
+            .info_string(
                 Context {
                     source: api.rules,
                     seat: SeatId::new(seat as u8).ok_or("invalid local seat")?,
                     ..Context::default()
                 },
                 2,
+                &mut info,
             )
             .map_err(|e| format!("native userinfo: {e:?}"))?;
-        host.connect_q2_client(api, id, seat as u32, info.as_bytes())?;
+        host.connect_q2_client(api, id, &info[..length])?;
         println!(
             "{{\"event\":\"module_client_begin\",\"seat\":{seat},\"module\":{},\"native_client\":{seat},\"native_signon\":false,\"gameplay_accepted\":false}}",
             module.0
