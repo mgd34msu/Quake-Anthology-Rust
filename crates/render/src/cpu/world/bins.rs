@@ -37,10 +37,8 @@ impl CoverageBins {
             .ok_or("CPU row index capacity overflow")?;
         let mut rows = [[0; 2]; MAX_BANDS];
         for (id, row) in rows.iter_mut().enumerate().take(count) {
-            *row = [
-                (id * height as usize / count) as u32,
-                ((id + 1) * height as usize / count) as u32,
-            ];
+            let range = super::partition(id, count, height as usize);
+            *row = [range.start as u32, range.end as u32];
         }
         Ok(Self {
             indices: vec![0; length].into_boxed_slice(),

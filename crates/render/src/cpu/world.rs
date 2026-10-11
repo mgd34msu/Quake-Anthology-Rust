@@ -1542,13 +1542,7 @@ impl SurfacePrepare {
                     continue;
                 }
                 let area = polygon_area(&self.screen[..count]);
-                if area == 0.0
-                    || match material.settings.cull {
-                        Cull::Front => area < 0.0,
-                        Cull::Back => area > 0.0,
-                        Cull::None => false,
-                    }
-                {
+                if super::culled(material.settings.cull, area) {
                     continue;
                 }
                 if native.is_some() {
@@ -1709,13 +1703,7 @@ impl SurfacePrepare {
             return;
         }
         let area = polygon_area(&self.screen[..count]);
-        if area == 0.0
-            || match cull {
-                Cull::Front => area < 0.0,
-                Cull::Back => area > 0.0,
-                Cull::None => false,
-            }
-        {
+        if super::culled(cull, area) {
             return;
         }
         for (stage, prepared) in sky_stages[..stages].iter().copied().enumerate() {
@@ -1800,13 +1788,7 @@ impl SurfacePrepare {
                 continue;
             }
             let area = polygon_area(&self.screen[..count]);
-            if area == 0.0
-                || match material.settings.cull {
-                    Cull::Front => area < 0.0,
-                    Cull::Back => area > 0.0,
-                    Cull::None => false,
-                }
-            {
+            if super::culled(material.settings.cull, area) {
                 continue;
             }
             if matches!(source, super::sky::Source::BackgroundCube { .. }) {
@@ -2692,45 +2674,23 @@ fn native_span(
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
-    let extents = [
-        ((texture_width as i64) << 16) - 1,
-        ((texture_height as i64) << 16) - 1,
-    ];
-    let mut x = span.x;
-    let end = span.x + span.count;
-    let mut zi = planes.inverse_depth.at(x as f32, span.y as f32);
-    let mut divided = planes
-        .texture
-        .map(|plane| plane.at(x as f32, span.y as f32));
-    let endpoint = |divided: [f32; 2], zi: f32, minimum: i64| {
-        let z = 65536.0 / zi;
-        std::array::from_fn::<_, 2, _>(|axis| {
-            ((divided[axis] * z) as i64 + fixed_adjust[axis]).clamp(minimum, extents[axis])
-        })
-    };
-    let mut current = endpoint(divided, zi, 0);
-    while x < end {
-        let count = chunk.min(end - x);
-        let complete = x + count < end;
-        let distance = if complete { chunk } else { count - 1 } as f32;
-        divided[0] += planes.texture[0].x * distance;
-        divided[1] += planes.texture[1].x * distance;
-        zi += planes.inverse_depth.x * distance;
-        let next = endpoint(divided, zi, chunk as i64);
-        let step = if complete {
-            std::array::from_fn(|i| (next[i] - current[i]) >> chunk.trailing_zeros())
-        } else if count > 1 {
-            std::array::from_fn(|i| (next[i] - current[i]) / (count - 1) as i64)
-        } else {
-            [0; 2]
-        };
-        for offset in 0..count {
-            let px = x + offset;
+    let mut perspective = super::span::Perspective::new(
+        planes.inverse_depth,
+        planes.texture,
+        fixed_adjust,
+        [texture_width, texture_height],
+        span.x,
+        span.y,
+    );
+    super::span::walk(
+        span.x,
+        span.count,
+        chunk,
+        |_, distance, minimum| perspective.endpoint(distance, minimum),
+        |px, current| {
             let zi = planes.inverse_depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
-            let sx = (current[0] >> 16).clamp(0, texture_width as i64 - 1) as usize;
-            let sy = (current[1] >> 16).clamp(0, texture_height as i64 - 1) as usize;
-            let color = texels[sy * texture_width as usize + sx];
+            let color = texels[super::span::texel(current, texture_width, texture_height)];
             if zi.is_finite()
                 && zi > 0.0
                 && super::depth_passes(
@@ -2749,12 +2709,8 @@ fn native_span(
                 buffers.depth_ranks[index] = draw_rank;
                 stats.pixels = stats.pixels.saturating_add(1);
             }
-            current[0] += step[0];
-            current[1] += step[1];
-        }
-        x += count;
-        current = next;
-    }
+        },
+    );
 }
 
 fn mip_adjust(projection: [[f32; 4]; 2]) -> f32 {
@@ -3032,4 +2988,8 @@ impl WorldPrepare {
             }
         }
     }
+}
+
+fn partition(id: usize, count: usize, len: usize) -> std::ops::Range<usize> {
+    id * len / count..(id + 1) * len / count
 }

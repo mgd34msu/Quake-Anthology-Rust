@@ -142,9 +142,7 @@ impl WorldRaster {
                             < self.lanes.len() * self.config.prepare_minimum_primitives_per_job
                 })
             || self.lanes.iter().enumerate().any(|(id, lane)| {
-                let first = id * references.len() / self.lanes.len();
-                let end = (id + 1) * references.len() / self.lanes.len();
-                !lane.admits(&references[first..end])
+                !lane.admits(&references[super::partition(id, self.lanes.len(), references.len())])
             })
         {
             return Ok(self
@@ -163,8 +161,7 @@ impl WorldRaster {
         {
             let mut jobs: [CpuJob<'_>; MAX_BANDS] = std::array::from_fn(|_| CpuJob::empty());
             for (id, (job, lane)) in jobs.iter_mut().zip(self.lanes.iter_mut()).enumerate() {
-                let first = id * references.len() / count;
-                let end = (id + 1) * references.len() / count;
+                let range = super::partition(id, count, references.len());
                 *job = CpuJob {
                     band_id: id,
                     rows: [0; 2],
@@ -172,7 +169,7 @@ impl WorldRaster {
                     complete: false,
                     work: Some(CpuWork::Prepare(PrepareWork {
                         chunk: lane,
-                        references: &references[first..end],
+                        references: &references[range],
                         first_world,
                         rgba: &self.prepare.rgba_prepared,
                         camera,
@@ -217,9 +214,8 @@ impl WorldRaster {
         }
         self.prepare.geometry.certified = true;
         for (id, lane) in self.lanes.iter().enumerate() {
-            let first = id * references.len() / count;
-            let end = (id + 1) * references.len() / count;
-            self.prepare.geometry.append(lane, first, end - first);
+            let range = super::partition(id, count, references.len());
+            self.prepare.geometry.append(lane, range.start, range.len());
         }
         Ok(self
             .prepare
@@ -239,8 +235,9 @@ impl WorldRaster {
         let height = remainder.frame_height;
         let mut jobs: [CpuJob<'_>; MAX_BANDS] = std::array::from_fn(|_| CpuJob::empty());
         for (id, (slot, band)) in jobs.iter_mut().zip(self.bands.iter_mut()).enumerate() {
-            let first = (id * height as usize / count) as u32;
-            let end = ((id + 1) * height as usize / count) as u32;
+            let range = super::partition(id, count, height as usize);
+            let first = range.start as u32;
+            let end = range.end as u32;
             let (buffers, tail) = remainder.split_rows(band.width, end - first);
             remainder = tail;
             *slot = CpuJob {

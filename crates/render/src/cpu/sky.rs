@@ -253,22 +253,12 @@ pub(super) fn layered_span(
     let before = stats.pixels;
     stats.sky_spans = stats.sky_spans.saturating_add(1);
     let draw = LayeredDraw::load(camera, width, height, sphere);
-    let mut x = span.x;
-    let end = span.x + span.count;
-    let mut current = draw.endpoint(x, span.y);
-    while x < end {
-        let count = 32.min(end - x);
-        let complete = x + count < end;
-        let distance = if complete { 32 } else { count - 1 };
-        let next = draw.endpoint(x + distance, span.y);
-        let step = if complete {
-            std::array::from_fn(|i| (next[i] - current[i]) >> 5)
-        } else if count > 1 {
-            std::array::from_fn(|i| (next[i] - current[i]) / i64::from(count - 1))
-        } else {
-            [0; 2]
-        };
-        for offset in 0..count {
+    super::span::walk(
+        span.x,
+        span.count,
+        32,
+        |x, _, _| draw.endpoint(x, span.y),
+        |px, current| {
             let sx = (current[0] >> 16) & 127;
             let sy = (current[1] >> 16) & 127;
             let foreground = front.indices()
@@ -278,7 +268,6 @@ pub(super) fn layered_span(
             } else {
                 foreground
             };
-            let px = x + offset;
             let zi = depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
             if zi.is_finite()
@@ -294,12 +283,8 @@ pub(super) fn layered_span(
                 write(index, color, palette, palette_id, zi, rank, buffers);
                 stats.pixels += 1;
             }
-            current[0] += step[0];
-            current[1] += step[1];
-        }
-        x += count;
-        current = next;
-    }
+        },
+    );
     stats.sky_pixels = stats
         .sky_pixels
         .saturating_add(stats.pixels.saturating_sub(before));
@@ -438,48 +423,26 @@ pub(super) fn background(
             let before = stats.pixels;
             stats.sky_spans = stats.sky_spans.saturating_add(1);
             let plane = planes[face];
-            let extent = [
-                ((i64::from(mip.width)) << 16) - 1,
-                ((i64::from(mip.height)) << 16) - 1,
-            ];
-            let endpoint = |divided: [f32; 2], zi: f32, minimum: i64| {
-                let z = 65536.0 / zi;
-                std::array::from_fn::<_, 2, _>(|i| {
-                    ((divided[i] * z) as i64 + plane.adjust[i]).clamp(minimum, extent[i])
-                })
-            };
-            let mut cursor = start;
-            let mut zi = plane.depth.at(cursor as f32, y as f32);
-            let mut divided = plane.texture.map(|value| value.at(cursor as f32, y as f32));
-            let mut current = endpoint(divided, zi, 0);
-            while cursor < x {
-                let count = chunk.min(x - cursor);
-                let complete = cursor + count < x;
-                let distance = if complete { chunk } else { count - 1 } as f32;
-                divided[0] += plane.texture[0].x * distance;
-                divided[1] += plane.texture[1].x * distance;
-                zi += plane.depth.x * distance;
-                let next = endpoint(divided, zi, chunk as i64);
-                let step = if complete {
-                    std::array::from_fn(|i| (next[i] - current[i]) >> chunk.trailing_zeros())
-                } else if count > 1 {
-                    std::array::from_fn(|i| (next[i] - current[i]) / i64::from(count - 1))
-                } else {
-                    [0; 2]
-                };
-                for offset in 0..count {
-                    let sx = (current[0] >> 16).clamp(0, i64::from(mip.width) - 1) as usize;
-                    let sy = (current[1] >> 16).clamp(0, i64::from(mip.height) - 1) as usize;
-                    let color = mip.indices()[sy * mip.width as usize + sx];
-                    let index = buffers.offset(width, cursor + offset, y);
+            let mut perspective = super::span::Perspective::new(
+                plane.depth,
+                plane.texture,
+                plane.adjust,
+                [mip.width, mip.height],
+                start,
+                y,
+            );
+            super::span::walk(
+                start,
+                x - start,
+                chunk,
+                |_, distance, minimum| perspective.endpoint(distance, minimum),
+                |px, current| {
+                    let color = mip.indices()[super::span::texel(current, mip.width, mip.height)];
+                    let index = buffers.offset(width, px, y);
                     write(index, color, palette, palette_id, -0.9, 0, buffers);
                     stats.pixels += 1;
-                    current[0] += step[0];
-                    current[1] += step[1];
-                }
-                cursor += count;
-                current = next;
-            }
+                },
+            );
             stats.sky_pixels = stats
                 .sky_pixels
                 .saturating_add(stats.pixels.saturating_sub(before));

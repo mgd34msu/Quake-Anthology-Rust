@@ -10,6 +10,7 @@ use crate::shader::{BlendFactor, Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
 mod rgba;
 mod sky;
+mod span;
 mod world;
 use crate::scene::{
     BlendPhase, Command, CommandList, CpuPresentation, Draw2d, DrawKind, PaletteOperation, Poly,
@@ -719,28 +720,14 @@ impl CpuBackend {
         pass: RasterPass<'_>,
         stats: &mut BackendStats,
     ) {
-        if vertices.iter().any(|v| {
-            !v.xy
-                .iter()
-                .chain(v.texcoord_over_depth.iter())
-                .chain(v.lightmap_over_depth.iter())
-                .chain(v.color_over_depth.iter())
-                .all(|f| f.is_finite())
-                || !v.inverse_depth.is_finite()
-        }) {
+        if vertices.iter().any(|vertex| !vertex.finite()) {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
         let mut area = edge(vertices[0].xy, vertices[1].xy, vertices[2].xy);
         // Q3 CT_FRONT_SIDED culls GL_FRONT with GL_CCW. The retained winding
         // therefore has positive area in this top-left-origin framebuffer.
-        if area == 0.0
-            || (match pass.material.settings.cull {
-                Cull::Front => area < 0.0,
-                Cull::Back => area > 0.0,
-                Cull::None => false,
-            })
-        {
+        if culled(pass.material.settings.cull, area) {
             return;
         }
         if area < 0.0 {
@@ -1034,30 +1021,44 @@ fn clip_plane(
     output: &mut [ClipVertex; CLIP_VERTICES],
     plane: usize,
 ) -> Option<usize> {
+    clip_polygon_plane(
+        input,
+        output,
+        |_, vertex| camera.distance(vertex, plane),
+        |previous, current, fraction| {
+            let vertex = previous.lerp(current, fraction);
+            vertex.finite().then_some(vertex)
+        },
+    )
+}
+
+fn clip_polygon_plane<N: Copy>(
+    input: &[N],
+    output: &mut [N],
+    mut distance: impl FnMut(usize, N) -> f32,
+    mut intersect: impl FnMut(N, N, f32) -> Option<N>,
+) -> Option<usize> {
+    let Some(&last) = input.last() else {
+        return Some(0);
+    };
+    let mut previous = last;
+    let mut previous_distance = distance(input.len() - 1, previous);
     let mut count = 0;
-    let mut previous = input[input.len() - 1];
-    let mut previous_distance = camera.distance(previous, plane);
-    for &current in input {
-        let distance = camera.distance(current, plane);
-        if !distance.is_finite() || !previous_distance.is_finite() {
+    for (index, &current) in input.iter().enumerate() {
+        let current_distance = distance(index, current);
+        if !current_distance.is_finite() || !previous_distance.is_finite() {
             return None;
         }
-        let inside = distance >= 0.0;
-        let previous_inside = previous_distance >= 0.0;
-        if inside != previous_inside {
+        let inside = current_distance >= 0.0;
+        if inside != (previous_distance >= 0.0) {
             if count == output.len() {
                 return None;
             }
-            let denominator = previous_distance - distance;
+            let denominator = previous_distance - current_distance;
             if !denominator.is_finite() {
                 return None;
             }
-            let fraction = previous_distance / denominator;
-            let intersection = previous.lerp(current, fraction);
-            if !intersection.finite() {
-                return None;
-            }
-            output[count] = intersection;
+            output[count] = intersect(previous, current, previous_distance / denominator)?;
             count += 1;
         }
         if inside {
@@ -1068,9 +1069,18 @@ fn clip_plane(
             count += 1;
         }
         previous = current;
-        previous_distance = distance;
+        previous_distance = current_distance;
     }
     Some(count)
+}
+
+fn culled(cull: Cull, area: f32) -> bool {
+    area == 0.0
+        || match cull {
+            Cull::Front => area < 0.0,
+            Cull::Back => area > 0.0,
+            Cull::None => false,
+        }
 }
 
 fn edge(a: [f32; 2], b: [f32; 2], point: [f32; 2]) -> f32 {

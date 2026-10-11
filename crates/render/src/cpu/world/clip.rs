@@ -132,29 +132,22 @@ impl ClipGraph {
                 self.count = 0;
                 return Some(0);
             }
-            let mut out = 0;
-            let mut previous = self.input[self.count - 1];
-            let mut previous_distance = self.distances[self.count - 1];
-            for index in 0..self.count {
-                let current = self.input[index];
-                let distance = self.distances[index];
-                let inside = distance >= 0.0;
-                if inside != (previous_distance >= 0.0) {
-                    let denominator = previous_distance - distance;
-                    if !denominator.is_finite()
-                        || out == self.output.len()
-                        || self.node_count == self.nodes.len()
-                    {
+            self.count = super::super::clip_polygon_plane(
+                &self.input[..self.count],
+                &mut self.output,
+                |index, _| self.distances[index],
+                |previous, current, fraction| {
+                    if self.node_count == self.nodes.len() {
                         return None;
                     }
-                    let fraction = previous_distance / denominator;
                     let vertex = self.nodes[previous]
                         .base
                         .lerp(self.nodes[current].base, fraction);
                     if !vertex.finite() {
                         return None;
                     }
-                    self.nodes[self.node_count] = ClipRecord {
+                    let index = self.node_count;
+                    self.nodes[index] = ClipRecord {
                         operation: ClipOperation::Intersection {
                             left: previous,
                             right: current,
@@ -162,21 +155,10 @@ impl ClipGraph {
                         },
                         base: vertex,
                     };
-                    self.output[out] = self.node_count;
                     self.node_count += 1;
-                    out += 1;
-                }
-                if inside {
-                    if out == self.output.len() {
-                        return None;
-                    }
-                    self.output[out] = current;
-                    out += 1;
-                }
-                previous = current;
-                previous_distance = distance;
-            }
-            self.count = out;
+                    Some(index)
+                },
+            )?;
             std::mem::swap(&mut self.input, &mut self.output);
         }
         if self.count < 3 {

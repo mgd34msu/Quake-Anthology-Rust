@@ -457,52 +457,17 @@ impl Edges {
 
     fn sort_active(&mut self) {
         // R_StepActiveU's insertion repair: most stepped edges remain ordered.
-        for index in 1..self.active_count {
-            let edge = self.active[index];
-            let mut position = index;
-            while position != 0 && self.edges[edge].u < self.edges[self.active[position - 1]].u {
-                self.active[position] = self.active[position - 1];
-                position -= 1;
-            }
-            self.active[position] = edge;
-        }
+        let edges = &self.edges;
+        insertion_sort_by(&mut self.active[..self.active_count], |a, b| {
+            edges[a].u < edges[b].u
+        });
     }
 
     fn sort_carried(&mut self) {
-        // Reconstruct R_StepActiveU's stable incoming AET at the band top.
-        // At an exact-U crossing, the previous row orders larger steps first.
-        // Coincident trajectories retain their native insertion history.
-        for index in 1..self.active_count {
-            let edge = self.active[index];
-            let mut position = index;
-            while position != 0 && self.carried_before(edge, self.active[position - 1]) {
-                self.active[position] = self.active[position - 1];
-                position -= 1;
-            }
-            self.active[position] = edge;
-        }
-    }
-
-    fn carried_before(&self, first: usize, second: usize) -> bool {
-        let a = self.edges[first];
-        let b = self.edges[second];
-        if a.u != b.u {
-            return a.u < b.u;
-        }
-        if a.step != b.step {
-            return a.step > b.step;
-        }
-        if a.original_start != b.original_start {
-            return a.original_start > b.original_start;
-        }
-        if a.delta != b.delta {
-            return a.delta > b.delta;
-        }
-        if a.delta > 0 {
-            first > second
-        } else {
-            first < second
-        }
+        let edges = &self.edges;
+        insertion_sort_by(&mut self.active[..self.active_count], |a, b| {
+            carried_before(edges, a, b)
+        });
     }
 
     fn insert_new_edge(&mut self, index: usize) {
@@ -600,17 +565,10 @@ impl Edges {
         while x < end {
             // At each edge/depth event order the fixed active stack. Exact
             // depth ties use native key/activation order, without an epsilon.
-            for index in 1..self.stack_count {
-                let surface = self.depth_stack[index];
-                let mut position = index;
-                while position != 0
-                    && self.depth_before(surface, self.depth_stack[position - 1], x, y)
-                {
-                    self.depth_stack[position] = self.depth_stack[position - 1];
-                    position -= 1;
-                }
-                self.depth_stack[position] = surface;
-            }
+            let surfaces = &self.surfaces;
+            insertion_sort_by(&mut self.depth_stack[..self.stack_count], |a, b| {
+                depth_before(surfaces, a, b, x, y)
+            });
             let visible = self.depth_stack[0];
             let mut next = end;
             for index in 1..self.stack_count {
@@ -623,18 +581,6 @@ impl Edges {
             self.emit(visible, x, y, next - x, flush);
             x = next;
         }
-    }
-
-    fn depth_before(&self, first: usize, second: usize, x: u32, y: u32) -> bool {
-        let first = self.surfaces[first];
-        let second = self.surfaces[second];
-        let first_depth = first.depth.at(x, y);
-        let second_depth = second.depth.at(x, y);
-        first_depth > second_depth
-            || (first_depth == second_depth
-                && (first.draw_rank > second.draw_rank
-                    || (first.draw_rank == second.draw_rank
-                        && first.activation < second.activation)))
     }
 
     fn first_overtake(
@@ -658,7 +604,7 @@ impl Edges {
         // The analytic crossing gives adjacent integer candidates. Evaluate
         // the actual affine planes there to retain exact sample/tie ownership.
         let sample = crossing.floor().max(f64::from(x)) as u32;
-        let first = if self.depth_before(other, visible, sample, y) {
+        let first = if depth_before(&self.surfaces, other, visible, sample, y) {
             sample
         } else {
             sample + 1
@@ -794,4 +740,49 @@ fn make_band_edge(
     edge.start = start;
     edge.end = edge.end.min(row_end);
     Ok(Some(edge))
+}
+
+fn insertion_sort_by(items: &mut [usize], mut before: impl FnMut(usize, usize) -> bool) {
+    for index in 1..items.len() {
+        let value = items[index];
+        let mut position = index;
+        while position != 0 && before(value, items[position - 1]) {
+            items[position] = items[position - 1];
+            position -= 1;
+        }
+        items[position] = value;
+    }
+}
+
+fn carried_before(edges: &[Edge], first: usize, second: usize) -> bool {
+    let a = edges[first];
+    let b = edges[second];
+    if a.u != b.u {
+        return a.u < b.u;
+    }
+    if a.step != b.step {
+        return a.step > b.step;
+    }
+    if a.original_start != b.original_start {
+        return a.original_start > b.original_start;
+    }
+    if a.delta != b.delta {
+        return a.delta > b.delta;
+    }
+    if a.delta > 0 {
+        first > second
+    } else {
+        first < second
+    }
+}
+
+fn depth_before(surfaces: &[Surface], first: usize, second: usize, x: u32, y: u32) -> bool {
+    let first = surfaces[first];
+    let second = surfaces[second];
+    let first_depth = first.depth.at(x, y);
+    let second_depth = second.depth.at(x, y);
+    first_depth > second_depth
+        || (first_depth == second_depth
+            && (first.draw_rank > second.draw_rank
+                || (first.draw_rank == second.draw_rank && first.activation < second.activation)))
 }
