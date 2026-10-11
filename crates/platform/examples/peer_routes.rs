@@ -53,6 +53,7 @@ fn bind(
                 channel,
                 commands: None,
                 output: None,
+                pending_output: None,
             },
         )
         .map_err(|e| format!("bind {e:?}"))

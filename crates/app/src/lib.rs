@@ -38,6 +38,7 @@ pub struct Runtime {
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
+    pub(crate) output_bytes: Box<[u8]>,
     script_reader: qa_formats::archive::ArchiveReader,
 }
 
@@ -172,6 +173,7 @@ impl Runtime {
             loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
+            output_bytes: vec![0; 32768].into_boxed_slice(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
         })
     }
@@ -223,6 +225,7 @@ impl Runtime {
                         output: (endpoint == qa_core::loopback::Endpoint::Server)
                             .then_some(self.server.clients[id.0 as usize].output)
                             .flatten(),
+                        pending_output: None,
                         commands: Some(qa_network::commands::connection::Commands::load(protocol)),
                     },
                 )
@@ -325,6 +328,9 @@ impl Runtime {
         let Some(connection) = self.network.get_mut(id, Endpoint::Server) else {
             return false;
         };
+        if connection.pending_output.is_some() {
+            return false;
+        }
         let mut bytes = [0; 1400];
         transport::send(
             &mut connection.channel,

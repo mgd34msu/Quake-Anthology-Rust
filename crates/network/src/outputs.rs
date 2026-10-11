@@ -3,7 +3,7 @@ use crate::{
     commands::packet::Protocol,
     message::{Encoding, Error as MessageError, Writer},
 };
-use qa_core::primitives::PrintKind;
+use qa_core::primitives::{PrintKind, RuleSetId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -17,6 +17,17 @@ impl From<MessageError> for Error {
         Self::Message(error)
     }
 }
+/// gi.WritePosition selects short coordinates for classic Q2 and float
+/// coordinates for the rerelease. q2repro 1038 uses the FLOAT multicast stream
+/// (qsrc q2proto_proto_q2repro.c); never send either stream as the other.
+pub fn native(protocol: Protocol, source: RuleSetId, bytes: &[u8]) -> Result<&[u8], Error> {
+    match (protocol, source) {
+        (Protocol::Quake2_34, RuleSetId::Quake2)
+        | (Protocol::Quake2Repro1038, RuleSetId::Quake2Rerelease) => Ok(bytes),
+        _ => Err(Error::Unsupported),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PrintFormat {
     print: u8,

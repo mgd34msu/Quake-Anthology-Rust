@@ -281,6 +281,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
                     .map_err(|_| Error::Context)?,
                 commands: Some(Commands::load(Protocol::Quake3_68)),
                 output: None,
+                pending_output: None,
             },
         )
         .map_err(|_| Error::Context)?;
@@ -706,6 +707,7 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
                     .map_err(|_| Error::Context)?,
                 commands: Some(Commands::load(Protocol::Quake2_34)),
                 output: None,
+                pending_output: None,
             },
         )
         .map_err(|_| Error::Context)?;
@@ -1087,6 +1089,7 @@ fn byte_connection(protocol: Protocol) -> Result<(Channel, Commands, Connections
                 channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
                     .map_err(|_| Error::Context)?,
                 output: None,
+                pending_output: None,
                 commands: Some(Commands::load(protocol)),
             },
         )

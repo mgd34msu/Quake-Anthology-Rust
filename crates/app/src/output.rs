@@ -7,12 +7,16 @@ use qa_core::{
 };
 use qa_session::clients::Connection;
 
+mod native;
+
 #[derive(Default)]
 pub struct OutputCounts {
     pub sounds: u64,
     pub effects: u64,
     pub prints: u64,
     pub hud: u64,
+    pub native_messages: u64,
+    pub native_filtered: u64,
     pub unhandled_sounds: u64,
     pub unhandled_effects: u64,
     pub stale_texts: u64,
@@ -72,7 +76,9 @@ pub fn dispatch(
                     }
                     true
                 }
-                FrameEvent::Native(_) => false,
+                // Native messages have per-client channel delivery below;
+                // there is no second presentation copy of their payload.
+                FrameEvent::Native(_) => true,
                 FrameEvent::Hud(_) => true,
             };
             server.events.submit(
@@ -113,9 +119,111 @@ pub fn dispatch(
             client.output = Some(resumed);
             id = resumed;
         }
+        if let Some(connection) = runtime
+            .network
+            .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+            && let Some(sequence) = connection.pending_output
+        {
+            let route = connection.route;
+            let submitted = match native::transmit(connection, None, time, |bytes| {
+                crate::transport::admit_output(&mut runtime.loopback, source, route, bytes)
+            }) {
+                Ok(submitted) => submitted,
+                Err(_) => {
+                    counts.native_unsupported += 1;
+                    connection.pending_output = None;
+                    server
+                        .events
+                        .submit(id, sequence, OutputSubmission::BestEffort);
+                    continue;
+                }
+            };
+            counts.native_blocked += u64::from(submitted.blocked);
+            counts.native_packets += submitted.packets;
+            if !submitted.complete {
+                continue;
+            }
+            connection.pending_output = None;
+            server
+                .events
+                .submit(id, sequence, OutputSubmission::BestEffort);
+        }
         if let Some(mut batch) = server.events.batch(id) {
             while let Some(record) = server.events.next(&mut batch) {
-                let submission = if is_local {
+                let submission = if let FrameEvent::Native(message) = record.event {
+                    let visible = match message.delivery.target {
+                        qa_core::primitives::NativeTarget::All => true,
+                        qa_core::primitives::NativeTarget::Client(to) => to == client_id,
+                        target => runtime.collision.as_mut().is_some_and(|collision| {
+                            let Some(world) = collision.visibility.as_deref() else {
+                                return false;
+                            };
+                            let policy = qa_world::visibility::PointVisibility {
+                                channel: if target == qa_core::primitives::NativeTarget::Hearing {
+                                    qa_world::visibility::VisibilityChannel::Hearing
+                                } else {
+                                    qa_world::visibility::VisibilityChannel::Sight
+                                },
+                                missing_visible: false,
+                                area_zero: true,
+                            };
+                            world
+                                .test_points(
+                                    message.delivery.origin,
+                                    client.player.body.position,
+                                    &mut collision.visibility_row,
+                                    policy,
+                                    collision
+                                        .portals
+                                        .as_ref()
+                                        .filter(|_| message.delivery.check_portals),
+                                )
+                                .unwrap_or(false)
+                        }),
+                    };
+                    if !visible {
+                        counts.native_filtered += 1;
+                        OutputSubmission::BestEffort
+                    } else if let Some(bytes) = server
+                        .events
+                        .texts
+                        .copy_payload(message.payload, &mut runtime.output_bytes)
+                        && let Some(connection) = runtime
+                            .network
+                            .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+                    {
+                        counts.native_messages += 1;
+                        let route = connection.route;
+                        match native::submit(
+                            connection,
+                            record.sequence,
+                            message,
+                            bytes,
+                            time,
+                            |bytes| {
+                                crate::transport::admit_output(
+                                    &mut runtime.loopback,
+                                    source,
+                                    route,
+                                    bytes,
+                                )
+                            },
+                        ) {
+                            Ok((submission, submitted)) => {
+                                counts.native_blocked += u64::from(submitted.blocked);
+                                counts.native_packets += submitted.packets;
+                                submission
+                            }
+                            Err(()) => {
+                                counts.native_unsupported += 1;
+                                OutputSubmission::BestEffort
+                            }
+                        }
+                    } else {
+                        counts.native_unsupported += 1;
+                        OutputSubmission::BestEffort
+                    }
+                } else if is_local {
                     // Audio/particles have one presentation consumer. Each HUD
                     // independently leases its text before retiring its record.
                     let success = match record.event {
@@ -180,15 +288,23 @@ pub fn dispatch(
                     OutputSubmission::BestEffort
                 };
                 server.events.submit(id, record.sequence, submission);
+                if runtime
+                    .network
+                    .get(client_id, qa_core::loopback::Endpoint::Server)
+                    .is_some_and(|connection| connection.pending_output.is_some())
+                {
+                    break;
+                }
             }
         }
         if is_local {
             qa_ui::hud::expire_messages(&mut client.hud, &mut server.events.texts, now);
         }
-        if client.connection == Some(Connection::Remote)
+        if (client.connection == Some(Connection::Remote) || is_local)
             && let Some(connection) = runtime
                 .network
                 .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+            && connection.pending_output.is_none()
         {
             let submitted = crate::transport::send(
                 &mut connection.channel,
@@ -200,14 +316,13 @@ pub fn dispatch(
                             .prepare_output(time)
                             .is_ok_and(|packet| packet.is_some())
                 },
-                |bytes| match connection.route.peer {
-                    qa_core::sys_events::Peer::Loopback(client) => runtime
-                        .loopback
-                        .send(qa_core::loopback::Endpoint::Server, client, bytes)
-                        .is_ok(),
-                    qa_core::sys_events::Peer::Socket(to) => {
-                        source.send_packet(connection.route.socket, to, bytes)
-                    }
+                |bytes| {
+                    crate::transport::admit_output(
+                        &mut runtime.loopback,
+                        source,
+                        connection.route,
+                        bytes,
+                    )
                 },
                 // One ordinary channel send per CLIENT output pass. Additional
                 // sends here are only the already-queued native control records.

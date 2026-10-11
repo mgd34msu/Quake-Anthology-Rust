@@ -56,6 +56,13 @@ pub enum VisibilityQueryError {
     ScratchSize,
 }
 
+#[derive(Clone, Copy)]
+pub struct PointVisibility {
+    pub channel: VisibilityChannel,
+    pub missing_visible: bool,
+    pub area_zero: bool,
+}
+
 /// The only compressed row representation: nonzero literals, or zero + run length.
 #[derive(Debug)]
 pub struct PvsRows {
@@ -199,6 +206,46 @@ pub struct VisibilityWorld {
 }
 
 impl VisibilityWorld {
+    pub fn test_points(
+        &self,
+        first: Vec3,
+        second: Vec3,
+        row: &mut [u8],
+        policy: PointVisibility,
+        portals: Option<&crate::portals::AreaPortals>,
+    ) -> Result<bool, VisibilityQueryError> {
+        let first = self
+            .point_in_leaf(first)
+            .and_then(|i| self.leaf(i))
+            .ok_or(VisibilityQueryError::Origin)?;
+        let second = self
+            .point_in_leaf(second)
+            .and_then(|i| self.leaf(i))
+            .ok_or(VisibilityQueryError::Origin)?;
+        match (first.selector, second.selector) {
+            (Some(from), Some(to)) => {
+                self.pvs().read_channel(policy.channel, Some(from), row)?;
+                if row
+                    .get(to as usize / 8)
+                    .is_none_or(|b| b & (1 << (to % 8)) == 0)
+                {
+                    return Ok(false);
+                }
+            }
+            _ if !policy.missing_visible => return Ok(false),
+            _ => {}
+        }
+        if let Some(portals) = portals {
+            let first = first.area.unwrap_or(0);
+            let second = second.area.unwrap_or(0);
+            if !policy.area_zero && (first == 0 || second == 0) {
+                return Ok(false);
+            }
+            return Ok(portals.connected(first, second).unwrap_or(false));
+        }
+        Ok(true)
+    }
+
     pub fn box_leaves(
         &self,
         bounds: Bounds,

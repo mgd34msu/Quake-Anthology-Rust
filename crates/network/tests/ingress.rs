@@ -36,6 +36,7 @@ fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
                 },
                 channel,
                 output: None,
+                pending_output: None,
                 commands: None,
             },
         )
@@ -88,6 +89,7 @@ fn connection(socket: u16, peer: Peer, endpoint: Endpoint) -> Result<Connection,
         channel: Channel::load(channel::QUAKEWORLD, endpoint, 1450, 16)
             .map_err(|e| e.to_string())?,
         output: None,
+        pending_output: None,
         commands: None,
     })
 }
@@ -269,6 +271,7 @@ fn negotiated_repro_bind_uses_channel_compatibility() -> Result<(), String> {
                     },
                     channel,
                     output: None,
+                    pending_output: None,
                     commands: Some(Commands::load(Protocol::Quake2Repro1038)),
                 },
             )
@@ -311,6 +314,7 @@ fn native_qports_isolate_shared_addresses_and_update_only_the_selected_peer() ->
                         },
                         channel,
                         output: None,
+                        pending_output: None,
                         commands: None,
                     },
                 )
@@ -426,6 +430,7 @@ fn omitted_qport_and_client_receivers_keep_exact_socket_routes() -> Result<(), S
                     channel: Channel::load(policy, endpoint, 8192, 16)
                         .map_err(|e| e.to_string())?,
                     output: None,
+                    pending_output: None,
                     commands: None,
                 },
             )
@@ -504,6 +509,7 @@ fn qport_routing_keeps_native_ack_receipts_with_the_selected_peer() -> Result<()
                         },
                         channel,
                         output: None,
+                        pending_output: None,
                         commands: None,
                     },
                 )
@@ -583,6 +589,7 @@ fn translated_ipv6_port_preserves_registered_scope_and_flow() -> Result<(), Stri
                 },
                 channel,
                 output: None,
+                pending_output: None,
                 commands: None,
             },
         )
@@ -647,6 +654,7 @@ fn mixed_header_offsets_cannot_route_an_exact_peer_to_another_protocol() -> Resu
                     },
                     channel,
                     output: None,
+                    pending_output: None,
                     commands: None,
                 },
             )

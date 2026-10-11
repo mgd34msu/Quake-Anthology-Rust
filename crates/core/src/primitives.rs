@@ -852,6 +852,7 @@ pub struct NativeDelivery {
     pub origin: Vec3,
     pub reliable: bool,
     pub dupe_key: u32,
+    pub check_portals: bool,
 }
 /// Up to four existing payload pages, owned by the publishing ring slot.
 #[derive(Clone, Copy, Debug)]

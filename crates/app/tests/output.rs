@@ -392,6 +392,7 @@ fn stalled_peer_progress(unsent: bool) {
                     },
                     channel,
                     output: runtime.server.clients[client.0 as usize].output,
+                    pending_output: None,
                     commands: Some(qa_network::commands::connection::Commands::load(
                         qa_network::commands::packet::Protocol::QuakeWorld28,
                     )),

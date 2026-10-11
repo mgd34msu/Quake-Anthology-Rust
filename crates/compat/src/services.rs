@@ -412,39 +412,19 @@ pub struct EngineCallTable {
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     in_visibility: |s, first, second, channel, missing_visible, check_portals, area_zero| {
         let (world, _, row) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
-        let first = world
-            .point_in_leaf(first)
-            .and_then(|index| world.leaf(index))
-            .ok_or(CallError::Geometry)?;
-        let second = world
-            .point_in_leaf(second)
-            .and_then(|index| world.leaf(index))
-            .ok_or(CallError::Geometry)?;
-        match (first.selector, second.selector) {
-            (Some(from), Some(to)) => {
-                world
-                    .pvs()
-                    .read_channel(channel, Some(from), row)
-                    .map_err(|_| CallError::Geometry)?;
-                if row
-                    .get(to as usize / 8)
-                    .is_none_or(|b| b & (1 << (to % 8)) == 0)
-                {
-                    return Ok(false);
-                }
-            }
-            _ if !missing_visible => return Ok(false),
-            _ => {}
-        }
-        if check_portals && let Some(portals) = &s.portals {
-            let first = first.area.unwrap_or(0);
-            let second = second.area.unwrap_or(0);
-            if !area_zero && (first == 0 || second == 0) {
-                return Ok(false);
-            }
-            return Ok(portals.connected(first, second).unwrap_or(false));
-        }
-        Ok(true)
+        world
+            .test_points(
+                first,
+                second,
+                row,
+                qa_world::visibility::PointVisibility {
+                    channel,
+                    missing_visible,
+                    area_zero,
+                },
+                s.portals.as_deref().filter(|_| check_portals),
+            )
+            .map_err(|_| CallError::Geometry)
     },
     native_message: |s, delivery| {
         let row = s.storage.entity_range(delivery.module)?;

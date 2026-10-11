@@ -422,6 +422,17 @@ impl FrameHost {
                                         && server.clients[client.0 as usize].output
                                             == Some(binding.output)
                                     {
+                                        if let qa_network::ingress::Incoming::Print(print) =
+                                            incoming
+                                        {
+                                            let _ = server.events.print_level_bytes(
+                                                Some(client),
+                                                print.kind,
+                                                print.level.unwrap_or(print.kind.default_level()),
+                                                print.text,
+                                            );
+                                            return;
+                                        }
                                         binding.apply(
                                             incoming,
                                             &mut predictions[binding.seat.index()].player,

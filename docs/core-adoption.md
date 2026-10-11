@@ -265,3 +265,23 @@ Image recipes use RuleSetId; `formats/src/image.rs:62` alone derives decode flag
 and stage entity views, retaining each caller's signed-zero negation order.
 Every audited caller is migrated and each old implementation is deleted.
 No bypass remains at the TA-3366 sites; broader consolidation is TA-3367.
+
+## TA-3368: queued time and output publication
+
+`app/src/host.rs:407` derives NQ move duration from queued packet time; direct
+pump samples remain pacing-only Duration values. `audio.rs:109` scopes `play`
+to presentation; `output.rs` retires inapplicable remote records with a counter.
+`host.rs:615` projects local client stats; `ui/src/hud.rs:58` publishes discrete
+Hud changes for the client consumer instead of copying every SERVER HUD.
+`compat/src/abi.rs:1062` and `:1089` bind native multicast/unicast through the
+one services table. `core/src/events.rs:313` owns their bounded page leases;
+`app/src/output/native.rs` submits through the existing channel and transport.
+`world/src/visibility.rs:209` supplies the one compiled PVS/PHS/portal query for
+imports and delivery. Prepared native datagrams retain their ring sequence;
+reliable pages await native ACK, fragmented best effort awaits final submission.
+The private message reader, raw-time gameplay assignment, all-client HUD copy
+and session-local consumer dispatcher are deleted; all audited callers migrated.
+No audited bypass remains. Raw Q2/Q2RR output uses its matching native protocol;
+foreign raw forms and capacity failures retire as counted unsupported output.
+Native effect/inventory presentation, stock HUD drawing and installed gameplay
+acceptance remain THE-3169; these engine checks do not claim those features.

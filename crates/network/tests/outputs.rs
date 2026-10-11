@@ -113,3 +113,40 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
     );
     Ok(())
 }
+
+#[test]
+fn native_q2_streams_keep_their_abi_coordinate_width_and_reject_foreign_wire_forms() {
+    use qa_core::primitives::RuleSetId;
+    let short = [3, 0, 8, 0, 239, 255, 0, 128, 5];
+    let float = [3, 0, 0, 0, 136, 63, 0, 0, 8, 192, 0, 0, 128, 69, 5];
+    for (source, protocol, bytes) in [
+        (RuleSetId::Quake2, Protocol::Quake2_34, short.as_slice()),
+        (
+            RuleSetId::Quake2Rerelease,
+            Protocol::Quake2Repro1038,
+            float.as_slice(),
+        ),
+    ] {
+        let result = outputs::native(protocol, source, bytes).unwrap();
+        assert_eq!(result, bytes);
+        assert_eq!(result.as_ptr(), bytes.as_ptr());
+        for foreign in [
+            Protocol::NetQuake15,
+            Protocol::QuakeWorld28,
+            Protocol::Quake3_68,
+        ] {
+            assert_eq!(
+                outputs::native(foreign, source, bytes),
+                Err(Error::Unsupported)
+            );
+        }
+    }
+    assert_eq!(
+        outputs::native(Protocol::Quake2_34, RuleSetId::Quake2Rerelease, &float),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        outputs::native(Protocol::Quake2Repro1038, RuleSetId::Quake2, &short),
+        Err(Error::Unsupported)
+    );
+}

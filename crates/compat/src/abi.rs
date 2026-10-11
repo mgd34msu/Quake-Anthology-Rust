@@ -1044,17 +1044,19 @@ fn native_delivery<const WIDE: bool>(
     reliable: bool,
     dupe_key: u32,
 ) -> qa_core::primitives::NativeDelivery {
+    let source = if WIDE {
+        qa_core::primitives::RuleSetId::Quake2Rerelease
+    } else {
+        qa_core::primitives::RuleSetId::Quake2
+    };
     qa_core::primitives::NativeDelivery {
         module: c.context.module,
-        source: if WIDE {
-            qa_core::primitives::RuleSetId::Quake2Rerelease
-        } else {
-            qa_core::primitives::RuleSetId::Quake2
-        },
+        source,
         target,
         origin,
         reliable,
         dupe_key,
+        check_portals: !c.services.ignore_areas(source, WIDE),
     }
 }
 fn native_multicast<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

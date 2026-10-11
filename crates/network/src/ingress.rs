@@ -19,6 +19,9 @@ pub struct Connection {
     pub channel: Channel,
     /// Old ACKs retain this consumer generation across client-slot reuse.
     pub output: Option<OutputConsumerId>,
+    /// Ring sequence carried by the channel's one prepared unreliable payload.
+    /// Other SERVER senders must leave it for its output consumer to complete.
+    pub pending_output: Option<u64>,
     pub commands: Option<Commands>,
 }
 impl Connection {

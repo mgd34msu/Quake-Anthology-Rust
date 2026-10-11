@@ -413,6 +413,7 @@ fn connected_heap() -> Result<(), String> {
             ClientId(0),
             Endpoint::Client,
             Connection {
+                pending_output: None,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),
@@ -607,6 +608,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 )
                 .map_err(|e| e.to_string())?,
                 output: None,
+                pending_output: None,
                 commands: Some(Commands::load(Protocol::QuakeWorld28)),
             },
         )
@@ -815,6 +817,7 @@ fn connected_nq_heap() -> Result<(), String> {
             ClientId(0),
             Endpoint::Client,
             Connection {
+                pending_output: None,
                 route: Route {
                     socket: Endpoint::Client.socket(),
                     peer: Peer::Loopback(ClientId(0)),

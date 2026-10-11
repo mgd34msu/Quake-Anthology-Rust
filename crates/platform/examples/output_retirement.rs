@@ -208,6 +208,7 @@ fn run(
                     },
                     channel,
                     output: runtime.server.clients[slot as usize].output,
+                    pending_output: None,
                     commands: Some(Commands::load(protocol)),
                 },
             )

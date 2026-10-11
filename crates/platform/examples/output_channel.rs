@@ -196,6 +196,7 @@ fn main() -> Result<(), String> {
                     },
                     channel,
                     output: *consumer,
+                    pending_output: None,
                     commands: Some(Commands::load(protocol(slot, q3))),
                 },
             )

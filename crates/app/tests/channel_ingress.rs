@@ -70,6 +70,7 @@ fn host(policy: Policy) -> Result<(FrameHost, [ClientId; 2]), String> {
                         output: (endpoint == Endpoint::Server)
                             .then_some(runtime.server.clients[id.0 as usize].output)
                             .flatten(),
+                        pending_output: None,
                         commands: None,
                     },
                 )

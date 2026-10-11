@@ -250,6 +250,7 @@ fn native_delivery(target: NativeTarget) -> NativeDelivery {
         origin: Vec3([1.0, -2.0, 3.0]),
         reliable: true,
         dupe_key: u32::MAX,
+        check_portals: true,
     }
 }
 #[test]
