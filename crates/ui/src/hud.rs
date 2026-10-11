@@ -56,36 +56,20 @@ impl HudBindings {
         state.score = player.score;
     }
     pub fn apply(&self, state: &mut HudState, change: HudChange) -> bool {
+        if !state.inventory.apply(change) {
+            return false;
+        }
         match change {
-            HudChange::Item {
-                item,
-                count,
-                acquired_at,
-            } => {
+            HudChange::Item { item, count, .. } => {
                 let index = item.0 as usize;
-                let Some(out) = state.inventory.item_counts.get_mut(index) else {
-                    return false;
-                };
-                *out = count;
-                state.inventory.item_acquired_at[index] = acquired_at;
                 if count > 0 {
                     state.owned_items.insert(index);
                 } else {
                     state.owned_items.remove(index);
                 }
             }
-            HudChange::Weapon(weapon) => state.inventory.weapon = weapon,
-            HudChange::Powerup { slot, until } => {
-                let Some(value) = state.inventory.powerup_until.get_mut(slot as usize) else {
-                    return false;
-                };
-                *value = until;
-                return true;
-            }
-            HudChange::Collectibles(value) => {
-                state.inventory.collectibles = value;
-                return true;
-            }
+            HudChange::Weapon(_) => {}
+            HudChange::Powerup { .. } | HudChange::Collectibles(_) => return true,
         }
         state.owned_weapons.clear();
         for (weapon, binding) in self.weapons.iter().enumerate() {

@@ -998,6 +998,34 @@ impl Inventory {
         self.weapon = WeaponId::default();
         self.collectibles = 0;
     }
+    pub fn apply(&mut self, change: HudChange) -> bool {
+        match change {
+            HudChange::Item {
+                item,
+                count,
+                acquired_at,
+            } => {
+                let index = item.0 as usize;
+                let (Some(value), Some(time)) = (
+                    self.item_counts.get_mut(index),
+                    self.item_acquired_at.get_mut(index),
+                ) else {
+                    return false;
+                };
+                *value = count;
+                *time = acquired_at;
+            }
+            HudChange::Weapon(weapon) => self.weapon = weapon,
+            HudChange::Powerup { slot, until } => {
+                let Some(value) = self.powerup_until.get_mut(slot as usize) else {
+                    return false;
+                };
+                *value = until;
+            }
+            HudChange::Collectibles(value) => self.collectibles = value,
+        }
+        true
+    }
 }
 #[derive(Debug, Default)]
 pub struct HudState {

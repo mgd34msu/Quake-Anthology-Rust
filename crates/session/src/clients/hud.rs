@@ -33,7 +33,7 @@ impl HudPublication {
                 )
                 .is_ok()
         };
-        for (item, old_count) in self.inventory.item_counts.iter_mut().enumerate() {
+        for item in 0..self.inventory.item_counts.len() {
             let count = player.inventory.item_counts.get(item).copied().unwrap_or(0);
             let acquired_at = player
                 .inventory
@@ -41,43 +41,40 @@ impl HudPublication {
                 .get(item)
                 .copied()
                 .unwrap_or(0.0);
-            if (*old_count != count
+            let change = HudChange::Item {
+                item: ItemId(item as u32),
+                count,
+                acquired_at,
+            };
+            if (self.inventory.item_counts[item] != count
                 || self.inventory.item_acquired_at[item].to_bits() != acquired_at.to_bits())
-                && publish(HudChange::Item {
-                    item: ItemId(item as u32),
-                    count,
-                    acquired_at,
-                })
+                && publish(change)
             {
-                *old_count = count;
-                self.inventory.item_acquired_at[item] = acquired_at;
+                self.inventory.apply(change);
             }
         }
-        if self.inventory.weapon != player.inventory.weapon
-            && publish(HudChange::Weapon(player.inventory.weapon))
-        {
-            self.inventory.weapon = player.inventory.weapon;
+        let change = HudChange::Weapon(player.inventory.weapon);
+        if self.inventory.weapon != player.inventory.weapon && publish(change) {
+            self.inventory.apply(change);
         }
-        for (slot, old_until) in self.inventory.powerup_until.iter_mut().enumerate() {
+        for slot in 0..self.inventory.powerup_until.len() {
             let until = player
                 .inventory
                 .powerup_until
                 .get(slot)
                 .copied()
                 .unwrap_or(0.0);
-            if old_until.to_bits() != until.to_bits()
-                && publish(HudChange::Powerup {
-                    slot: slot as u32,
-                    until,
-                })
-            {
-                *old_until = until;
+            let change = HudChange::Powerup {
+                slot: slot as u32,
+                until,
+            };
+            if self.inventory.powerup_until[slot].to_bits() != until.to_bits() && publish(change) {
+                self.inventory.apply(change);
             }
         }
-        if self.inventory.collectibles != player.inventory.collectibles
-            && publish(HudChange::Collectibles(player.inventory.collectibles))
-        {
-            self.inventory.collectibles = player.inventory.collectibles;
+        let change = HudChange::Collectibles(player.inventory.collectibles);
+        if self.inventory.collectibles != player.inventory.collectibles && publish(change) {
+            self.inventory.apply(change);
         }
     }
 }

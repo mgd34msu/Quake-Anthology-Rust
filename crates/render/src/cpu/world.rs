@@ -1516,44 +1516,24 @@ impl SurfacePrepare {
                             valid = false;
                             break;
                         };
-                        let Some(image) = assets.image(prepared.image) else {
+                        if !self.append_stage(
+                            &mut primitive,
+                            stage_index,
+                            prepared,
+                            count,
+                            assets,
+                            evaluator,
+                        ) {
                             valid = false;
                             break;
-                        };
-                        let stage_count = if stage_index == 0 {
-                            Some(count)
-                        } else {
-                            self.clip
-                                .project_stage(prepared, evaluator, &mut self.screen)
-                        };
-                        let Some(stage_count) = stage_count else {
-                            valid = false;
-                            break;
-                        };
-                        let Some(planes) = Planes::load(&self.screen[..stage_count]) else {
-                            valid = false;
-                            break;
-                        };
-                        self.stages[self.stage_count] = StagePlanes {
-                            prepared: Some(prepared),
-                            planes,
-                            sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
-                        };
-                        self.stage_count += 1;
-                        primitive.stages.count += 1;
+                        }
                     }
                     if !valid {
                         self.rollback(primitive.stages.first, stats);
                         continue;
                     }
-                    primitive.planes = self.stages[primitive.stages.first as usize].planes;
                 }
-                if !self.keep_coverage(&mut primitive, count) {
-                    self.rollback(primitive.stages.first, stats);
-                    continue;
-                }
-                self.primitives[self.primitive_count] = primitive;
-                self.primitive_count += 1;
+                self.commit_primitive(primitive, count, stats);
             }
             if self.primitive_count > before {
                 stats.surfaces = stats.surfaces.saturating_add(1);
@@ -1649,32 +1629,57 @@ impl SurfacePrepare {
                 self.rollback(primitive.stages.first, stats);
                 return;
             };
-            let Some(image) = assets.image(prepared.image) else {
-                self.rollback(primitive.stages.first, stats);
-                return;
-            };
-            if stage != 0
-                && self
-                    .clip
-                    .project_stage(prepared, evaluator, &mut self.screen)
-                    .is_none()
-            {
+            if !self.append_stage(&mut primitive, stage, prepared, count, assets, evaluator) {
                 self.rollback(primitive.stages.first, stats);
                 return;
             }
-            let Some(planes) = Planes::load(&self.screen[..count]) else {
-                self.rollback(primitive.stages.first, stats);
-                return;
-            };
-            self.stages[self.stage_count] = StagePlanes {
-                prepared: Some(prepared),
-                planes,
-                sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
-            };
-            self.stage_count += 1;
-            primitive.stages.count += 1;
         }
-        primitive.planes = self.stages[primitive.stages.first as usize].planes;
+        self.commit_primitive(primitive, count, stats);
+    }
+
+    fn append_stage(
+        &mut self,
+        primitive: &mut Primitive,
+        stage_index: usize,
+        prepared: PreparedStage,
+        count: usize,
+        assets: &Assets,
+        evaluator: &StageEvaluator,
+    ) -> bool {
+        let Some(image) = assets.image(prepared.image) else {
+            return false;
+        };
+        let count = if stage_index == 0 {
+            Some(count)
+        } else {
+            self.clip
+                .project_stage(prepared, evaluator, &mut self.screen)
+        };
+        let Some(count) = count else {
+            return false;
+        };
+        let Some(planes) = Planes::load(&self.screen[..count]) else {
+            return false;
+        };
+        self.stages[self.stage_count] = StagePlanes {
+            prepared: Some(prepared),
+            planes,
+            sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
+        };
+        self.stage_count += 1;
+        primitive.stages.count += 1;
+        true
+    }
+
+    fn commit_primitive(
+        &mut self,
+        mut primitive: Primitive,
+        count: usize,
+        stats: &mut crate::BackendStats,
+    ) {
+        if primitive.stages.count != 0 {
+            primitive.planes = self.stages[primitive.stages.first as usize].planes;
+        }
         if !self.keep_coverage(&mut primitive, count) {
             self.rollback(primitive.stages.first, stats);
             return;
