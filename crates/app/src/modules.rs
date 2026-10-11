@@ -21,6 +21,7 @@ use std::sync::Arc;
 mod load;
 pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
 mod clients;
+pub use clients::ClientCommandError;
 mod cues;
 
 pub enum Program {

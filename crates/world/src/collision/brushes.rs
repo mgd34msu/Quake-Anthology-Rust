@@ -36,13 +36,25 @@ pub(super) struct BrushMap {
 impl BrushMap {
     /// Side geometry and BSP/model membership retain their original numeric IDs.
     pub(crate) fn load_tree(
-        planes: Vec<Plane>,
+        mut planes: Vec<Plane>,
         brushes: Vec<Brush>,
         surfaces: SurfaceTable<'_>,
         tree: BrushTree,
     ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
         if planes.iter().any(|plane| !plane.is_valid()) {
             return Err(GeometryError::Plane);
+        }
+        // BSP node types keep their native axial shortcut in Topology. Brush
+        // membership instead tests the authored normal, including negative
+        // axial sides (Q3 cm_test.c CM_PointContents). Preserve the native
+        // contact bytes independently of the geometric orientation.
+        for plane in &mut planes {
+            if plane.axis.is_some()
+                && plane.axis != Plane::oriented(plane.normal, plane.distance).axis
+            {
+                plane.encoding = Some(plane.type_sign());
+                plane.axis = None;
+            }
         }
         let surfaces = SurfaceStorage::load(surfaces, planes.len())?;
         if brushes.iter().any(|brush| !brush.sides.fits(planes.len())) {
@@ -125,13 +137,7 @@ fn axial_prefix(planes: &[Plane]) -> Option<Bounds> {
         bounds.mins.0[axis] = min;
         bounds.maxs.0[axis] = max;
     }
-    bounds
-        .mins
-        .0
-        .iter()
-        .zip(bounds.maxs.0)
-        .all(|(min, max)| *min <= max)
-        .then_some(bounds)
+    bounds.is_valid().then_some(bounds)
 }
 
 pub(super) struct BrushWork<'a> {

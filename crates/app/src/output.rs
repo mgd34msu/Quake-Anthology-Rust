@@ -96,7 +96,7 @@ pub fn dispatch(
     }
     for slot in 0..server.clients.len() {
         let client = &mut server.clients[slot];
-        let Some(mut id) = client.output else {
+        let Some(id) = client.output else {
             continue;
         };
         let client_id = ClientId(slot as u32);
@@ -114,12 +114,9 @@ pub fn dispatch(
             counts.native_disconnected += 1;
             continue;
         }
-        if is_local {
-            if !server.events.resume_if_needed(&mut id) {
-                continue;
-            }
-            client.output = Some(id);
-        }
+        // A local client still has a native channel. During bounded resync,
+        // finish its retained datagram/reliable flight under the old binding.
+        // Commands and snapshots keep that binding until the flight is drained.
         if let Some(connection) = runtime
             .network
             .get_mut(client_id, qa_core::loopback::Endpoint::Server)
@@ -325,6 +322,33 @@ pub fn dispatch(
                 |channel, (), _| channel.pending_controls() == 0,
             );
             counts.add_native(&submitted);
+        }
+        if is_local
+            && server.events.needs_resync(id)
+            && runtime
+                .network
+                .get(client_id, qa_core::loopback::Endpoint::Server)
+                .is_none_or(|connection| {
+                    connection.pending_output.is_none() && !connection.channel.has_output()
+                })
+            && let Some(resumed) = server.events.resume(id)
+        {
+            // Keep channel sequence/receipt counters: an old ACK cannot name a
+            // new receipt. Update every local lifetime guard in the same pass.
+            client.output = Some(resumed);
+            if let Some(connection) = runtime
+                .network
+                .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+            {
+                connection.output = Some(resumed);
+            }
+            if let Some(snapshot) = runtime.local_snapshots[slot].as_mut() {
+                snapshot.output = resumed;
+            }
+            // Rebuild discrete HUD state from CLIENT on its next publication.
+            // Independently leased text stays valid through the resync.
+            client.hud.reset_inventory();
+            client.hud_publication.reset();
         }
     }
     counts

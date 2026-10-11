@@ -15,6 +15,7 @@ use std::{borrow::Cow, fmt::Write};
 pub use crate::catalog::Definition;
 const EMPTY: u16 = u16::MAX;
 const MODULE_CVARS: usize = 1024;
+pub(crate) const USER_CREATED: u32 = 128;
 const ROLES: [Role; 3] = [Role::Engine, Role::Game, Role::Cgame];
 
 #[derive(Clone, Copy)]
@@ -419,11 +420,23 @@ impl Cvars {
             return Err(conversion::Error::TextTooLong.into());
         }
         if let Some(view) = self.bind(name, context) {
+            let previous_flags = self.flags(view);
+            let adopt_user_default = context.source == RuleSetId::Quake3
+                && view.binding as usize >= BINDINGS.len()
+                && previous_flags & USER_CREATED != 0
+                && flags & USER_CREATED == 0
+                && default.is_some_and(|value| !value.is_empty());
+            let user_value = if adopt_user_default && !self.values[view.handle.0 as usize].explicit
+            {
+                Some(native_text(self.read(view)?)?)
+            } else {
+                None
+            };
             // The catalog reserves names even when a source's audited default
             // is unresolved. Native Cvar_Get supplies that missing default;
             // an explicit user value and other sources keep their own values.
             if let Some(default) = default
-                && !self.default_available(view.handle, context.source)
+                && (adopt_user_default || !self.default_available(view.handle, context.source))
             {
                 let (changes, _) = self.prepare_write(view, default, false)?;
                 for (handle, text) in changes
@@ -438,7 +451,9 @@ impl Cvars {
                             .map(|(handle, text)| (*handle, text.as_str())),
                     )
                 {
-                    if !self.default_available(handle, context.source) {
+                    if (adopt_user_default && handle == view.handle)
+                        || !self.default_available(handle, context.source)
+                    {
                         let id = self
                             .names
                             .intern(text.as_bytes())
@@ -449,8 +464,17 @@ impl Cvars {
                     }
                 }
             }
-            let merged = self.flags(view) | flags;
-            if merged != self.flags(view) {
+            if let Some(user_value) = user_value {
+                self.publish(view.handle, user_value);
+            }
+            // Q3's first non-user registration takes ownership of the reset
+            // default while retaining the console value and existing flags.
+            let merged = (if adopt_user_default {
+                previous_flags & !USER_CREATED
+            } else {
+                previous_flags
+            }) | flags;
+            if merged != previous_flags {
                 self.values[view.handle.0 as usize].command_flags[context.source as usize] =
                     Some(merged);
                 self.mark_change(view.handle);

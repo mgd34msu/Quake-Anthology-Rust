@@ -140,7 +140,7 @@ impl Hull<'_> {
             }
             trace.plane = self.planes[frame.plane as usize];
             if frame.t1 < 0.0 {
-                trace.plane.normal = Vec3(trace.plane.normal.0.map(|value| 0.0 - value));
+                trace.plane.normal = Vec3::default() - trace.plane.normal;
                 trace.plane.distance = -trace.plane.distance;
                 trace.plane.axis = None;
                 trace.plane.encoding = None;

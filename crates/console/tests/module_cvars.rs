@@ -230,6 +230,85 @@ fn registration_preserves_catalog_aliases_defaults_and_written_values() {
 }
 
 #[test]
+fn q3_native_registration_adopts_user_reset_default_without_replacing_current_value() {
+    let mut cvars = Cvars::new().unwrap();
+    let q3 = context(RuleSetId::Quake3);
+    let user = cvars
+        .register("_QA_UserCreated", Some("42"), 128 | 1, q3)
+        .unwrap();
+    cvars.write(user, "9").unwrap();
+    let count = cvars.entries().count();
+    let native = cvars
+        .register("_qa_usercreated", Some("3"), 32, q3)
+        .unwrap();
+    assert_eq!(native.canonical(), user.canonical());
+    assert_eq!(cvars.entries().count(), count);
+    assert_eq!(cvars.read(native).unwrap().as_str(), "9");
+    assert_eq!(cvars.numeric(native).unwrap(), 9.0);
+    assert_eq!(cvars.flags(native), 1 | 32);
+    let q2 = cvars
+        .bind("_qa_usercreated", context(RuleSetId::Quake2))
+        .unwrap();
+    assert_eq!(cvars.flags(q2), 128 | 1);
+    cvars.reset(native.canonical());
+    assert_eq!(cvars.read(native).unwrap().as_str(), "3");
+    assert_eq!(cvars.read(q2).unwrap().as_str(), "42");
+    cvars.register("_qa_usercreated", Some("4"), 0, q3).unwrap();
+    assert_eq!(cvars.read(native).unwrap().as_str(), "3");
+
+    // Cvar_Get can also produce a user-created row directly. Its initial
+    // current string must survive adoption even before an explicit write.
+    let direct = cvars
+        .register("_qa_direct_user", Some("8"), 128, q3)
+        .unwrap();
+    cvars.register("_qa_direct_user", Some("2"), 0, q3).unwrap();
+    assert_eq!(cvars.read(direct).unwrap().as_str(), "8");
+    assert_eq!(cvars.flags(direct), 0);
+    cvars.reset(direct.canonical());
+    assert_eq!(cvars.read(direct).unwrap().as_str(), "2");
+}
+
+#[test]
+fn user_default_adoption_requires_q3_nonempty_non_user_registration() {
+    let mut cvars = Cvars::new().unwrap();
+    let q3 = context(RuleSetId::Quake3);
+    let user = cvars
+        .register("_qa_still_user", Some("7"), 128, q3)
+        .unwrap();
+    for (default, flags) in [(None, 0), (Some(""), 0), (Some("3"), 128)] {
+        cvars
+            .register("_qa_still_user", default, flags, q3)
+            .unwrap();
+        assert_eq!(cvars.flags(user), 128);
+        cvars.reset(user.canonical());
+        assert_eq!(cvars.read(user).unwrap().as_str(), "7");
+    }
+    let q2 = context(RuleSetId::Quake2);
+    let other = cvars
+        .register("_qa_other_source", Some("6"), 128, q2)
+        .unwrap();
+    cvars
+        .register("_qa_other_source", Some("3"), 0, q2)
+        .unwrap();
+    assert_eq!(cvars.flags(other), 128);
+    cvars.reset(other.canonical());
+    assert_eq!(cvars.read(other).unwrap().as_str(), "6");
+    let module = cvars
+        .register("_qa_native_default", Some("5"), 0, q3)
+        .unwrap();
+    cvars
+        .register("_qa_native_default", Some("3"), 0, q3)
+        .unwrap();
+    cvars.reset(module.canonical());
+    assert_eq!(cvars.read(module).unwrap().as_str(), "5");
+    let catalog = cvars.bind("fov", q3).unwrap();
+    let original = cvars.read(catalog).unwrap().as_str().to_owned();
+    cvars.register("fov", Some("3"), 0, q3).unwrap();
+    cvars.reset(catalog.canonical());
+    assert_eq!(cvars.read(catalog).unwrap().as_str(), original);
+}
+
+#[test]
 fn module_values_use_the_existing_latch_flag_and_reset_paths() {
     let mut cvars = Cvars::new().unwrap();
     let context = context(RuleSetId::Quake3);

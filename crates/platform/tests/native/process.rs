@@ -3,6 +3,8 @@ use super::{
     implementation::{NativeProcess, child_main, executable_offset, transfer},
 };
 use std::{os::unix::process::ExitStatusExt, process::Command, time::Duration};
+#[path = "parent_death.rs"]
+mod parent_death_tests;
 #[path = "runtime.rs"]
 mod runtime_tests;
 

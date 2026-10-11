@@ -2210,6 +2210,12 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
     use qa_compat::native::q2::Game;
     use qa_core::primitives::{NativeEntity, PlayerTail};
     use qa_session::clients::Connection;
+    fn error_text(error: impl std::fmt::Display) -> qa_core::text::FixedText<256> {
+        use std::fmt::Write;
+        let mut text = qa_core::text::FixedText::default();
+        write!(&mut text, "{error}").unwrap();
+        text
+    }
     for rr in [false, true] {
         for accepted in [false, true] {
             let rules = if rr {
@@ -2456,6 +2462,29 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                     );
                 }
                 let body = client.player.body;
+                let before = host.module_counts(api.module).unwrap().calls;
+                let mut invalid_api = api;
+                invalid_api.module = ModuleId(2);
+                let error = host
+                    .think_q2_client(&invalid_api, id, &Default::default(), 0)
+                    .unwrap_err();
+                assert_eq!(
+                    error_text(error).as_str(),
+                    "command targets another native module"
+                );
+                let mut invalid_api = api;
+                invalid_api.usercmd = u64::MAX;
+                let error = host
+                    .think_q2_client(&invalid_api, id, &Default::default(), 0)
+                    .unwrap_err();
+                assert_eq!(error_text(error).as_str(), "native usercmd: Memory");
+                let mut invalid_api = api;
+                invalid_api.think = CallbackId(u32::MAX);
+                let error = host
+                    .think_q2_client(&invalid_api, id, &Default::default(), 0)
+                    .unwrap_err();
+                assert_eq!(error_text(error).as_str(), "ClientThink: MissingFunction");
+                assert_eq!(host.module_counts(api.module).unwrap().calls, before);
                 for command in [
                     qa_core::primitives::UserCmd {
                         duration_ms: 300,
@@ -2505,9 +2534,12 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
             host.shutdown_modules();
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
-            assert!(
-                host.think_q2_client(&api, id, &Default::default(), 0)
-                    .is_err()
+            let error = host
+                .think_q2_client(&api, id, &Default::default(), 0)
+                .unwrap_err();
+            assert_eq!(
+                error_text(error).as_str(),
+                "client has no active native movement binding"
             );
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
         }
@@ -5134,6 +5166,12 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 mod pmove;
 
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--q2-client-commands") {
+        q2_clients_bind_after_initialization_and_disconnect_before_shutdown();
+        pmove::commands_move_a_native_client_once();
+        println!("native Q2 client command checks passed");
+        return;
+    }
     pmove::commands_move_a_native_client_once();
     native_area_connection_uses_shared_topology_through_session_dispatch();
     native_visibility_uses_compiled_pvs_through_session_dispatch();

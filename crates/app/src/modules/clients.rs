@@ -1,6 +1,48 @@
 //! Client lifecycle exports use the same session table as provider callbacks.
 use super::{Export, FrameHost, ModuleResult, Program, Q2Clients, State};
 use qa_core::primitives::{ClientId, ModuleId, NativeEntity, ThinkTime, UserCmd, Vec3};
+use std::fmt;
+
+#[derive(Debug)]
+pub enum ClientCommandError {
+    NoMovementBinding,
+    MissingModule,
+    Inactive,
+    InvalidSlot,
+    DifferentModule,
+    NeedsNativeModule,
+    SlotOutsideTable,
+    Unsupported,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    Memory(qa_compat::memory::ProcessMemoryError),
+    Usercmd(qa_compat::services::CallError),
+    Table(qa_session::dispatch::CallError),
+    Dispatch(qa_session::dispatch::CallError),
+}
+impl fmt::Display for ClientCommandError {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoMovementBinding => {
+                output.write_str("client has no active native movement binding")
+            }
+            Self::MissingModule => output.write_str("missing client module"),
+            Self::Inactive => output.write_str("native client is not active"),
+            Self::InvalidSlot => output.write_str("invalid native client slot"),
+            Self::DifferentModule => output.write_str("command targets another native module"),
+            Self::NeedsNativeModule => output.write_str("client needs a native module"),
+            Self::SlotOutsideTable => {
+                output.write_str("native client outside published entity table")
+            }
+            Self::Unsupported => output.write_str("native child backend unsupported on this host"),
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Memory(error) => write!(output, "native memory: {error:?}"),
+            Self::Usercmd(error) => write!(output, "native usercmd: {error:?}"),
+            Self::Table(error) => write!(output, "client table: {error:?}"),
+            Self::Dispatch(error) => write!(output, "ClientThink: {error:?}"),
+        }
+    }
+}
+impl std::error::Error for ClientCommandError {}
 
 impl FrameHost {
     /// Called once for every command admitted by the native channel. Modules
@@ -56,7 +98,9 @@ impl FrameHost {
                 module: api.module,
                 slot: (native_client + 1) as i32,
             };
-            let (address, time) = self.native_slot(api.module, native.slot as u32)?;
+            let (address, time) = self
+                .native_slot(api.module, native.slot as u32)
+                .map_err(|error| error.to_string())?;
             if !self.runtime.server.bind_client_native(id, native) {
                 return Err("native client namespace already occupied".into());
             }
@@ -73,7 +117,9 @@ impl FrameHost {
                 };
                 vm.bind_client(&self.runtime.server.entities, native, entity)
                     .map_err(|e| format!("native client binding: {e:?}"))?;
-                let mut memory = self.native_memory(api.module)?;
+                let mut memory = self
+                    .native_memory(api.module)
+                    .map_err(|error| error.to_string())?;
                 memory
                     .write_string(api.userinfo, api.abi.userinfo_bytes, userinfo)
                     .map_err(|e| format!("native userinfo: {e:?}"))?;
@@ -129,42 +175,45 @@ impl FrameHost {
         id: ClientId,
         command: &UserCmd,
         server_frame: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), ClientCommandError> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             let (native, address, time) = self.module_client(id)?;
             if native.module != api.module {
-                return Err("command targets another native module".into());
+                return Err(ClientCommandError::DifferentModule);
             }
             let mut memory = self.native_memory(native.module)?;
             api.abi
                 .write_command(&mut memory, api.usercmd, command, server_frame)
-                .map_err(|e| format!("native usercmd: {e:?}"))?;
+                .map_err(ClientCommandError::Usercmd)?;
             let mut export = Export::words(api.think, &[address, api.usercmd]);
             export.client = Some(id);
             self.call_module_export(api.module, export, time)
-                .map_err(|e| format!("ClientThink: {e:?}"))
+                .map_err(ClientCommandError::Dispatch)
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
             let _ = (api, id, command, server_frame);
-            Err("native child backend unsupported on this host".into())
+            Err(ClientCommandError::Unsupported)
         }
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn module_client(&mut self, id: ClientId) -> Result<(NativeEntity, u64, ThinkTime), String> {
+    fn module_client(
+        &mut self,
+        id: ClientId,
+    ) -> Result<(NativeEntity, u64, ThinkTime), ClientCommandError> {
         let native = self
             .runtime
             .server
             .module_moves(id)
-            .ok_or("client has no active native movement binding")?;
+            .ok_or(ClientCommandError::NoMovementBinding)?;
         let row = self
             .module_row(native.module)
-            .ok_or("missing client module")?;
+            .ok_or(ClientCommandError::MissingModule)?;
         if row.state != State::Running || row.client_api.is_none() {
-            return Err("native client is not active".into());
+            return Err(ClientCommandError::Inactive);
         }
-        let slot = u32::try_from(native.slot).map_err(|_| "invalid native client slot")?;
+        let slot = u32::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?;
         let (address, time) = self.native_slot(native.module, slot)?;
         Ok((native, address, time))
     }
@@ -172,23 +221,30 @@ impl FrameHost {
     fn native_memory(
         &mut self,
         module: ModuleId,
-    ) -> Result<qa_compat::memory::ModuleMemory<'_>, String> {
-        let row = self.module_row_mut(module).ok_or("missing client module")?;
+    ) -> Result<qa_compat::memory::ModuleMemory<'_>, ClientCommandError> {
+        let row = self
+            .module_row_mut(module)
+            .ok_or(ClientCommandError::MissingModule)?;
         let Program::Native { vm, .. } = &mut row.request.program else {
-            return Err("client needs a native module".into());
+            return Err(ClientCommandError::NeedsNativeModule);
         };
-        qa_compat::memory::process_memory(&mut vm.process)
-            .map_err(|error| format!("native memory: {error:?}"))
+        qa_compat::memory::process_memory(&mut vm.process).map_err(ClientCommandError::Memory)
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn native_slot(&mut self, module: ModuleId, slot: u32) -> Result<(u64, ThinkTime), String> {
-        let row = self.module_row(module).ok_or("missing client module")?;
+    fn native_slot(
+        &mut self,
+        module: ModuleId,
+        slot: u32,
+    ) -> Result<(u64, ThinkTime), ClientCommandError> {
+        let row = self
+            .module_row(module)
+            .ok_or(ClientCommandError::MissingModule)?;
         let time = row.request.context.clock.at(self.time);
         let table = self
             .native_entities(module)
-            .map_err(|error| format!("client table: {error:?}"))?;
+            .map_err(ClientCommandError::Table)?;
         let address = qa_compat::entities::slot_address(table, slot)
-            .ok_or("native client outside published entity table")?;
+            .ok_or(ClientCommandError::SlotOutsideTable)?;
         Ok((address, time))
     }
     pub(super) fn disconnect_module_clients(&mut self) {

@@ -2,7 +2,7 @@
 use crate::{
     command_buffer::CommandBuffer,
     command_text::{self, Arguments, TextError, Tokens},
-    cvars::{Cvars, WriteError},
+    cvars::{Cvars, USER_CREATED, WriteError},
     text::MAX_TEXT,
     views::{Context, RuleSetId},
 };
@@ -123,6 +123,9 @@ impl<H: Host> Console<H> {
             ("exec", Self::exec),
             ("vstr", Self::vstr),
             ("set", Self::set),
+            ("seta", Self::set_flags::<1>),
+            ("setu", Self::set_flags::<2>),
+            ("sets", Self::set_flags::<4>),
             ("cmdlist", Self::cmdlist),
             ("cvarlist", Self::cvarlist),
             ("quit", Self::quit),
@@ -556,30 +559,71 @@ impl<H: Host> Console<H> {
         args: &Arguments<'_>,
         context: Context,
     ) -> Result<(), CommandError> {
+        self.set_value(args, context, 0)
+    }
+    fn set_flags<const FLAGS: u32>(
+        &mut self,
+        _: &mut H,
+        args: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        if args.len() != 3 {
+            return Err(CommandError::Usage);
+        }
+        self.set_value(args, context, FLAGS)
+    }
+    fn set_value(
+        &mut self,
+        args: &Arguments<'_>,
+        context: Context,
+        added_flags: u32,
+    ) -> Result<(), CommandError> {
         if args.len() < 3 {
             return Err(CommandError::Usage);
         }
-        let view = self
-            .cvars
-            .bind(args.get(1), context)
-            .ok_or(CommandError::UnknownCvar)?;
-        if matches!(
+        let q2 = matches!(
             context.source,
             RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-        ) {
+        );
+        let full_flags = if q2 {
             if args.len() > 4 || (args.len() == 4 && !matches!(args.get(3), "u" | "s")) {
                 return Err(CommandError::Usage);
             }
-            if args.len() == 4 {
-                self.cvars
-                    .full_set(view, args.get(2), if args.get(3) == "u" { 2 } else { 4 })?;
-            } else {
-                self.cvars.write(view, args.get(2))?;
-            }
+            (args.len() == 4).then(|| if args.get(3) == "u" { 2 } else { 4 })
         } else {
             args.join(2, &mut self.joined)?;
-            self.cvars.write(view, self.joined.as_str())?;
+            None
+        };
+        let value = if q2 {
+            args.get(2)
+        } else {
+            self.joined.as_str()
+        };
+        let view = match self.cvars.bind(args.get(1), context) {
+            Some(view) => view,
+            None => self.cvars.register(
+                args.get(1),
+                Some(value),
+                full_flags.unwrap_or(if context.source == RuleSetId::Quake3 {
+                    USER_CREATED
+                } else {
+                    0
+                }),
+                context,
+            )?,
+        };
+        let written = if let Some(flags) = full_flags {
+            self.cvars.full_set(view, value, flags)
+        } else {
+            self.cvars.write(view, value)
+        };
+        if added_flags != 0 {
+            // Q3 adds these flags after the ordinary write, including when
+            // protection rejects the value. Catalog aliases keep their view.
+            self.cvars
+                .register(args.get(1), None, added_flags, context)?;
         }
+        written?;
         Ok(())
     }
     fn cmdlist(&mut self, host: &mut H, _: &Arguments<'_>, _: Context) -> Result<(), CommandError> {

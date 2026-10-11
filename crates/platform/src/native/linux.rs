@@ -9,7 +9,10 @@ use std::{
     mem::ManuallyDrop,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::{net::UnixStream, process::ExitStatusExt},
+        unix::{
+            net::UnixStream,
+            process::{CommandExt, ExitStatusExt},
+        },
     },
     process::{Child, Command, Stdio},
     ptr::NonNull,
@@ -34,6 +37,7 @@ const CALL_TRAP: u8 = 10;
 #[path = "runtime/child.rs"]
 mod runtime;
 const PACKET_BYTES: usize = 200;
+const SIGKILL: i32 = 9;
 const SIGSTOP: i32 = 19;
 const SIGCONT: i32 = 18;
 
@@ -64,10 +68,25 @@ unsafe extern "C" {
     fn fcntl(fd: i32, operation: i32, ...) -> i32;
     fn kill(pid: i32, signal: i32) -> i32;
     fn getpid() -> i32;
+    fn getppid() -> i32;
     fn signal(number: i32, handler: usize) -> usize;
     fn waitpid(pid: i32, status: *mut i32, flags: i32) -> i32;
     fn prctl(operation: i32, ...) -> i32;
     fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
+}
+
+pub(super) fn bind_parent_death(parent: u32) -> io::Result<()> {
+    // SAFETY: PR_SET_PDEATHSIG binds this child to its creating parent thread.
+    // SIGKILL also terminates a parked child and cannot be blocked by a module.
+    if unsafe { prctl(1, SIGKILL, 0, 0, 0) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // The parent may have died after fork but before the signal was installed.
+    // In that case reject startup before reading IPC or executing foreign code.
+    if unsafe { getppid() } as u32 != parent {
+        return Err(io::Error::from_raw_os_error(3));
+    }
+    Ok(())
 }
 
 #[repr(C)]
@@ -440,6 +459,15 @@ impl NativeProcess {
             .stdin(Stdio::from(OwnedFd::from(child_stream)))
             .stdout(Stdio::null())
             .stderr(Stdio::from(file));
+        let parent = std::process::id();
+        // SAFETY: the post-fork closure performs only prctl/getppid and creates
+        // raw OS errors. It takes no locks or heap allocations. Install the
+        // death signal before exec, including while startup waits for START;
+        // this non-setuid executable preserves it, and seccomp later forbids
+        // foreign code from clearing it. The PID check closes the fork race.
+        unsafe {
+            command.pre_exec(move || bind_parent_death(parent));
+        }
         let mut regions = image.regions.to_vec();
         regions.extend(imports.iter().map(|(_, entry, _, _)| NativeRegion {
             offset: (entry.address - image.base) as usize,

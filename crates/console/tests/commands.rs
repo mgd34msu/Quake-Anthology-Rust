@@ -323,6 +323,149 @@ fn bare_assignment_uses_argv_one_and_set_retains_native_source_rules() {
 }
 
 #[test]
+fn set_creates_one_shared_row_and_folded_reads_and_updates_use_it() {
+    for source in RuleSetId::ALL {
+        let context = context(source);
+        let mut console = Console::new(context).unwrap();
+        let mut host = Capture::default();
+        let initial = console.cvars.entries().count();
+        console
+            .append(
+                "set _QA_NewSetting \"first value\"; _qa_newsetting\n",
+                context,
+            )
+            .unwrap();
+        console.execute_frame(&mut host);
+        let created = console.cvars.bind("_qa_newsetting", context).unwrap();
+        assert_eq!(console.cvars.read(created).unwrap().as_str(), "first value");
+        assert_eq!(
+            console.cvars.flags(created),
+            if source == RuleSetId::Quake3 { 128 } else { 0 }
+        );
+        assert!(host.output.contains("_qa_newsetting = \"first value\""));
+        assert!(!host.output.contains("rejected"));
+        assert_eq!(console.cvars.entries().count(), initial + 1);
+        console
+            .append(
+                "_QA_NEWSETTING second ignored; set _qa_newsetting third\n",
+                context,
+            )
+            .unwrap();
+        console.execute_frame(&mut host);
+        for other in RuleSetId::ALL {
+            let view = console
+                .cvars
+                .bind(
+                    "_Qa_NewSetting",
+                    Context {
+                        source: other,
+                        ..Context::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(view.canonical(), created.canonical());
+            assert_eq!(console.cvars.read(view).unwrap().as_str(), "third");
+        }
+        assert_eq!(console.cvars.entries().count(), initial + 1);
+        console
+            .append("set FOV 110; set cg_fov 120\n", context)
+            .unwrap();
+        console.execute_frame(&mut host);
+        let alias = console.cvars.bind("fov", context).unwrap();
+        let canonical = console.cvars.bind("cg_fov", context).unwrap();
+        assert_eq!(alias.canonical(), canonical.canonical());
+        assert_eq!(console.cvars.read(alias).unwrap().as_str(), "120");
+        assert_eq!(console.cvars.entries().count(), initial + 1);
+    }
+}
+
+#[test]
+fn q2_set_creates_info_rows_and_replaces_flags_after_validating_arguments() {
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let context = context(source);
+        let mut console = Console::new(context).unwrap();
+        let mut host = Capture::default();
+        let initial = console.cvars.entries().count();
+        console
+            .append(
+                "set _qa_invalid 1 x; set _qa_too_many 1 u extra; set _qa_bad_info \"bad\\info\" u; set _qa_info first u\n",
+                context,
+            )
+            .unwrap();
+        console.execute_frame(&mut host);
+        for name in ["_qa_invalid", "_qa_too_many", "_qa_bad_info"] {
+            assert!(console.cvars.bind(name, context).is_none());
+        }
+        let view = console.cvars.bind("_qa_info", context).unwrap();
+        assert_eq!(console.cvars.entries().count(), initial + 1);
+        assert_eq!(console.cvars.flags(view), 2);
+        console
+            .append("set _qa_info second s; set _qa_info third\n", context)
+            .unwrap();
+        console.execute_frame(&mut host);
+        assert_eq!(console.cvars.flags(view), 4);
+        assert_eq!(console.cvars.read(view).unwrap().as_str(), "third");
+        assert_eq!(console.cvars.entries().count(), initial + 1);
+    }
+}
+
+#[test]
+fn set_variants_share_creation_and_merge_flags_after_native_write_policy() {
+    let context = context(RuleSetId::Quake3);
+    let mut console = Console::new(context).unwrap();
+    let mut host = Capture::default();
+    let initial = console.cvars.entries().count();
+    console
+        .append(
+            "seta _qa_flags first; setu _QA_FLAGS second; sets _qa_flags third; seta _qa_invalid 1 extra\n",
+            context,
+        )
+        .unwrap();
+    console.execute_frame(&mut host);
+    let view = console.cvars.bind("_qa_flags", context).unwrap();
+    assert_eq!(console.cvars.flags(view), 128 | 1 | 2 | 4);
+    assert_eq!(console.cvars.read(view).unwrap().as_str(), "third");
+    assert_eq!(console.cvars.entries().count(), initial + 1);
+    assert!(console.cvars.bind("_qa_invalid", context).is_none());
+    console.cvars.full_set(view, "protected", 64).unwrap();
+    console
+        .append("seta _qa_flags rejected\n", context)
+        .unwrap();
+    console.execute_frame(&mut host);
+    assert_eq!(console.cvars.read(view).unwrap().as_str(), "protected");
+    assert_eq!(console.cvars.flags(view), 65);
+    assert!(host.output.contains("ReadOnly"));
+}
+
+#[test]
+fn exhausted_registration_rejects_only_new_settings_and_keeps_existing_rows_live() {
+    let context = context(RuleSetId::Quake3);
+    let mut console = Console::new(context).unwrap();
+    let mut host = Capture::default();
+    assert!(console.register("mark", mark));
+    let initial = console.cvars.entries().count();
+    for index in 0..1024 {
+        console
+            .cvars
+            .register(&format!("_qa_reserved_{index}"), Some("0"), 0, context)
+            .unwrap();
+    }
+    console
+        .append(
+            "set _qa_over_capacity 1; set _QA_RESERVED_0 9; mark kept\n",
+            context,
+        )
+        .unwrap();
+    console.execute_frame(&mut host);
+    assert!(console.cvars.bind("_qa_over_capacity", context).is_none());
+    assert_eq!(console.cvars.entries().count(), initial + 1024);
+    let existing = console.cvars.bind("_qa_reserved_0", context).unwrap();
+    assert_eq!(console.cvars.read(existing).unwrap().as_str(), "9");
+    assert!(host.output.contains("Capacity"));
+    assert_eq!(host.marks, ["kept"]);
+}
+
+#[test]
 fn buffer_spans_preserve_mixed_sources_after_front_inserts_and_oversized_lines() {
     let mut buffer = CommandBuffer::new();
     let mut line = FixedText::<8192>::default();

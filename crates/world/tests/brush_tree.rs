@@ -82,6 +82,131 @@ fn leaf(contents: Option<Contents>, first: u32, count: u32) -> CollisionLeaf {
 }
 
 #[test]
+fn brush_membership_uses_geometric_orientation_and_keeps_native_contact_encoding() {
+    let planes: Vec<_> = (0..6)
+        .map(|index| {
+            let axis = index / 2;
+            let negative = index & 1 != 0;
+            Plane {
+                encoding: (axis == 1)
+                    .then_some([3 + axis as u8, if negative { 1 << axis } else { 0 }]),
+                normal: Vec3::axis(axis, if negative { -1.0 } else { 1.0 }),
+                distance: 1.0,
+                // Q2 BSP type metadata can classify either unit sign as axial.
+                axis: Axis::from_index(axis),
+            }
+        })
+        .collect();
+    let map = load(
+        planes,
+        vec![Brush {
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },
+            contents: Contents::SOLID,
+        }],
+    )
+    .unwrap();
+    let mut scratch = map.store.scratch();
+    for rules in [
+        qa_core::primitives::RuleSetId::Quake2,
+        qa_core::primitives::RuleSetId::Quake2Rerelease,
+        qa_core::primitives::RuleSetId::Quake3,
+    ] {
+        let (clipping, entities) = qa_world::collision::trace_policy(rules);
+        assert_eq!(
+            map.store
+                .point_contents_model(map.geometry, 0, Vec3::default(), entities),
+            Contents::SOLID
+        );
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                assert_eq!(
+                    map.store.point_contents_model(
+                        map.geometry,
+                        0,
+                        Vec3::axis(axis, sign),
+                        entities,
+                    ),
+                    Contents::SOLID
+                );
+                assert_eq!(
+                    map.store.point_contents_model(
+                        map.geometry,
+                        0,
+                        Vec3::axis(axis, sign * 2.0),
+                        entities,
+                    ),
+                    Contents::EMPTY
+                );
+                let trace = map.store.trace_model(
+                    map.geometry,
+                    0,
+                    TraceQuery::point(
+                        Vec3::axis(axis, sign * 2.0),
+                        Vec3::default(),
+                        clipping,
+                        entities,
+                    ),
+                    &mut scratch,
+                );
+                assert_eq!(
+                    trace.fraction,
+                    (1.0 - clipping.contact_epsilon as f32) / 2.0
+                );
+                assert_eq!(trace.plane.normal, Vec3::axis(axis, sign));
+                assert_eq!(trace.plane.distance, 1.0);
+                assert_eq!(
+                    trace.plane.type_sign(),
+                    [
+                        axis as u8 + if axis == 1 { 3 } else { 0 },
+                        if sign < 0.0 { 1 << axis } else { 0 },
+                    ]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_negative_axial_tree_keeps_its_original_coordinate_descent_and_front_tie() {
+    let map = load_tree(
+        vec![],
+        vec![],
+        vec![],
+        BrushTree {
+            planes: vec![Plane {
+                encoding: Some([0, 1]),
+                normal: Vec3([-1.0, 0.0, 0.0]),
+                distance: 1.0,
+                axis: Some(Axis::X),
+            }],
+            nodes: vec![ClipNode {
+                plane: 0,
+                children: [-1, -2],
+            }],
+            leaves: vec![
+                leaf(Some(Contents::WATER), 0, 0),
+                leaf(Some(Contents::SLIME), 0, 0),
+            ],
+            leaf_brushes: vec![],
+            models: vec![ModelRoot::Tree(0)],
+        },
+    )
+    .unwrap();
+    let entities = qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1;
+    for (x, contents) in [
+        (-2.0, Contents::SLIME),
+        (1.0, Contents::WATER),
+        (2.0, Contents::WATER),
+    ] {
+        assert_eq!(
+            map.store
+                .point_contents_model(map.geometry, 0, Vec3([x, 0.0, 0.0]), entities),
+            contents
+        );
+    }
+}
+
+#[test]
 fn native_point_contents_and_model_membership_are_caller_selected() {
     let map = load_tree(
         vec![

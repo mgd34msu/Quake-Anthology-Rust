@@ -1101,12 +1101,17 @@ impl HudState {
         }
     }
 
-    pub fn reset(&mut self, texts: &mut crate::events::TextStore) {
-        self.clear_messages(texts);
-        self.values.clear();
+    pub fn reset_inventory(&mut self) {
         self.inventory.reset();
         self.owned_items.clear();
         self.owned_weapons.clear();
+        self.ammo = 0;
+    }
+
+    pub fn reset(&mut self, texts: &mut crate::events::TextStore) {
+        self.clear_messages(texts);
+        self.values.clear();
+        self.reset_inventory();
         *self = Self {
             values: std::mem::take(&mut self.values),
             inventory: std::mem::take(&mut self.inventory),
