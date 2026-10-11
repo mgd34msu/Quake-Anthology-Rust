@@ -1308,6 +1308,21 @@ fn quakec_cvar_signature_reads_both_strings_and_preserves_void_returns() {
             );
             assert_eq!(&vm.image.globals[1..4], &returns);
             assert_eq!(calls.services.cvars.value_in(fov, rules), 83.0);
+            // QuakeC offset zero reads the string; it is not Q3's NULL reset.
+            vm.image.globals[4] = vm.insert_string(b"sensitivity").unwrap() as u32;
+            vm.image.globals[7] = 0;
+            vm.strings.write(0, b"7\0").unwrap();
+            let sensitivity = calls
+                .services
+                .cvars
+                .bind("sensitivity", calls.context.console)
+                .unwrap();
+            calls.services.cvars.force_write(sensitivity, "9").unwrap();
+            assert_eq!(vm.call(calls, 4, 100, false), Ok(returns));
+            assert_eq!(
+                calls.services.cvars.read(sensitivity).unwrap().as_str(),
+                "7"
+            );
         });
     }
 }

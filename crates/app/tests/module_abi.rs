@@ -986,7 +986,7 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                 "2"
             );
             if base == 0 {
-                // QuakeC string offset zero is a string, not Q3's NULL reset.
+                // A nonzero QVM pointer reads the text instead of resetting.
                 memory.write_string(32, 64, b"sensitivity").unwrap();
                 let arguments = [32, 512];
                 let mut call = Invocation {
@@ -1005,30 +1005,6 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
                     arguments: &arguments,
                 };
                 assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
-                assert_eq!(services.cvars.read(sensitivity).unwrap().as_str(), "7");
-                services.cvars.force_write(sensitivity, "9").unwrap();
-                let arguments = [32, 0];
-                let mut call = Invocation {
-                    services: &mut services,
-                    memory: &mut memory,
-                    native_cvars: None,
-                    native_resources: None,
-                    native_entities: None,
-                    native_surfaces: None,
-                    native_command: None,
-                    native_configs: None,
-                    context: call_context,
-                    platform_time: EventTime(0),
-                    command: &[],
-                    addresses: Addresses::Native {
-                        abi: qa_platform::native::NativeAbi::SystemV,
-                    },
-                    arguments: &arguments,
-                };
-                assert_eq!(
-                    qa_compat::abi::QUAKEC.invoke(72, &mut call, &mut unknown),
-                    Ok(0)
-                );
                 assert_eq!(services.cvars.read(sensitivity).unwrap().as_str(), "7");
             }
         }
@@ -1129,6 +1105,18 @@ fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
         assert_eq!(services.cvars.read(view).unwrap().as_str(), "5");
         assert_eq!(unknown.calls, 0);
         assert_eq!(services.server.events.len(), 3);
+        let events = &services.server.events;
+        let mut batch = events.batch(services.server.presentation).unwrap();
+        for expected in [
+            b"_qa_ui_rom is read only.\n".as_slice(),
+            b"_qa_ui_init is write protected.\n".as_slice(),
+            b"_qa_ui_cheat is cheat protected.\n".as_slice(),
+        ] {
+            let FrameEvent::Print(print) = events.next(&mut batch).unwrap().event else {
+                panic!("print");
+            };
+            assert_eq!(events.texts.get(print.text).unwrap(), expected);
+        }
     }
 }
 
@@ -1214,6 +1202,15 @@ fn q3_ui_numeric_setter_preserves_native_formatting_and_forced_writes() {
         assert!(services.cvars.latched(latch).unwrap().is_none());
         assert_eq!(services.server.events.len(), 1);
         assert_eq!(unknown.calls, 0);
+        let events = &services.server.events;
+        let mut batch = events.batch(services.server.presentation).unwrap();
+        let FrameEvent::Print(print) = events.next(&mut batch).unwrap().event else {
+            panic!("print");
+        };
+        assert_eq!(
+            events.texts.get(print.text).unwrap(),
+            b"Com_sprintf: overflow of 38 in 32\n"
+        );
     }
 }
 

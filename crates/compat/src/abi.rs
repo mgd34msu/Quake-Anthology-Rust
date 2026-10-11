@@ -205,27 +205,21 @@ impl CallTable {
         unknown: &mut UnknownCalls,
     ) -> Result<CallValue, CallError> {
         if let Some(Some(entry)) = self.entries.get(number as usize) {
-            let string_start = entry.quakec.and_then(|signature| {
-                signature.args.string_start(
-                    call.context.console.source == qa_core::primitives::RuleSetId::QuakeWorld,
-                )
-            });
-            return entry.invoke(call, string_start);
+            return entry.invoke(call, None);
         }
         unknown.calls = unknown.calls.saturating_add(1);
         let key = number.to_le_bytes();
         if unknown.numbers.find(&key).is_none() {
             if unknown.numbers.intern(&key).is_ok() {
-                let mut text = FixedText::<128>::default();
-                writeln!(
-                    text,
-                    "module {}: unknown system call {number}",
-                    call.context.module.0
-                )
-                .map_err(|_| CallError::Text)?;
                 // A full output ring counts its loss; an unsupported import
                 // still returns zero without aborting the module or engine.
-                let _ = (ENGINE_CALLS.console)(call.services, text.as_bytes());
+                let _ = (ENGINE_CALLS.console_formatted)(
+                    call.services,
+                    format_args!(
+                        "module {}: unknown system call {number}\n",
+                        call.context.module.0
+                    ),
+                );
             } else {
                 unknown.capacity_drops = unknown.capacity_drops.saturating_add(1);
             }
@@ -880,14 +874,10 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     // The original Com_sprintf copies at most 31 bytes into val[32].
     if text.as_bytes().len() >= 32 {
-        let mut warning = FixedText::<64>::default();
-        writeln!(
-            warning,
-            "Com_sprintf: overflow of {} in 32",
-            text.as_bytes().len()
-        )
-        .map_err(|_| CallError::Text)?;
-        let _ = (ENGINE_CALLS.console)(c.services, warning.as_bytes());
+        let _ = (ENGINE_CALLS.console_formatted)(
+            c.services,
+            format_args!("Com_sprintf: overflow of {} in 32\n", text.as_bytes().len()),
+        );
     }
     let name = text_at(c.memory, c.pointer(0)?)?;
     write_cvar::<true, true>(

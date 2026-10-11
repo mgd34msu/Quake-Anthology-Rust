@@ -374,6 +374,8 @@ pub struct EngineCallTable {
     ) -> Result<qa_world::leaves::BoxLeaves, CallError>,
     pub print: PrintCall,
     pub console: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
+    pub console_formatted:
+        fn(&mut EngineServices<'_>, std::fmt::Arguments<'_>) -> Result<u64, CallError>,
     pub usercmd: fn(&EngineServices<'_>, NativeEntity) -> Option<UserCmd>,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
@@ -494,6 +496,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     },
     print: |s, target, c, k, l, t| s.print(target, c, k, l, t),
     console: |s, text| s.console(text),
+    console_formatted: |s, text| EngineServices::console_formatted(&mut s.server.events, text),
     usercmd: |s, native| s.usercmd(native),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
@@ -549,6 +552,14 @@ impl EngineServices<'_> {
         self.server
             .events
             .console_bytes(text)
+            .map_err(|_| CallError::Capacity)
+    }
+    pub fn console_formatted(
+        events: &mut qa_core::events::EventRing,
+        text: std::fmt::Arguments<'_>,
+    ) -> Result<u64, CallError> {
+        events
+            .console_formatted(text)
             .map_err(|_| CallError::Capacity)
     }
     pub fn usercmd(&self, native: NativeEntity) -> Option<UserCmd> {
@@ -720,12 +731,12 @@ impl EngineServices<'_> {
             Err(WriteError::Cheats) => "cheat protected",
             Err(_) => return Err(CallError::Cvar),
         };
-        use std::fmt::Write;
-        let mut text = FixedText::<4096>::default();
-        writeln!(text, "{} is {reason}.", self.cvars.name(view)).map_err(|_| CallError::Text)?;
         // Native protection rejects the write, not the calling module. A full
         // output ring counts its dropped warning without aborting the import.
-        let _ = self.console(text.as_bytes());
+        let _ = Self::console_formatted(
+            &mut self.server.events,
+            format_args!("{} is {reason}.\n", self.cvars.name(view)),
+        );
         Ok(())
     }
     pub fn command(&mut self, context: Context, text: &str) -> Result<(), CallError> {

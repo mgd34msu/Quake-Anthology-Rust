@@ -380,12 +380,24 @@ impl EventRing {
         self.publish_print(target, client, kind, level, |texts| texts.insert(text))
     }
     pub fn console_bytes(&mut self, text: &[u8]) -> Result<u64, EventStorageError> {
-        self.print_level_bytes(
+        self.publish_console(|texts| texts.insert(text))
+    }
+    pub fn console_formatted(
+        &mut self,
+        text: fmt::Arguments<'_>,
+    ) -> Result<u64, EventStorageError> {
+        self.publish_console(|texts| texts.insert_formatted(text))
+    }
+    fn publish_console(
+        &mut self,
+        write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
+    ) -> Result<u64, EventStorageError> {
+        self.publish_print(
             Some(OutputTarget::Presentation),
             None,
             PrintKind::Console,
             PrintKind::Console.default_level(),
-            text,
+            write,
         )
     }
     fn publish_print(

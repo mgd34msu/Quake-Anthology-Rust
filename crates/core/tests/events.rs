@@ -41,6 +41,44 @@ fn targeted_publications_belong_only_to_the_selected_consumer() {
     assert_eq!(ring.counters(remote).unwrap().submissions, 0);
 }
 #[test]
+fn formatted_console_uses_local_delivery_and_the_ring_text_boundary() {
+    let mut ring = EventRing::load(4, 3, 1, 32).unwrap();
+    let local = ring.bind(OutputTarget::Presentation).unwrap();
+    let remote = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    ring.console_formatted(format_args!("{} {}", "é".repeat(20), 42))
+        .unwrap();
+    let mut batch = ring.batch(local).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Print(print) = record.event else {
+        panic!("print");
+    };
+    assert_eq!(
+        (print.client, print.kind, print.level),
+        (None, PrintKind::Console, 2)
+    );
+    assert_eq!(
+        ring.texts.get(print.text).unwrap(),
+        "é".repeat(16).as_bytes()
+    );
+    assert_eq!(ring.texts.truncated(), 1);
+    assert_eq!(
+        ring.console_formatted(format_args!("blocked {}", 7)),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert!(consume(&mut ring, remote, OutputSubmission::Unsent).is_empty());
+    assert!(consume(&mut ring, module, OutputSubmission::Unsent).is_empty());
+    assert!(ring.submit(local, record.sequence, OutputSubmission::BestEffort));
+    assert!(ring.is_empty());
+    ring.console_formatted(format_args!("ready {}\n", 7))
+        .unwrap();
+    let mut batch = ring.batch(local).unwrap();
+    let FrameEvent::Print(print) = ring.next(&mut batch).unwrap().event else {
+        panic!("print");
+    };
+    assert_eq!(ring.texts.get(print.text).unwrap(), b"ready 7\n");
+}
+#[test]
 fn submission_is_independent_of_reading_and_actual_reliable_ack() {
     let mut ring = EventRing::load(8, 3, 8, 32).unwrap();
     let reliable = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
