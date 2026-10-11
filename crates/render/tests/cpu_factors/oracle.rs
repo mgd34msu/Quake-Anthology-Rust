@@ -215,17 +215,19 @@ fn assert_buffers(fixed: &CpuBackend, generic: &CpuBackend) {
     assert_eq!(fixed.pixels(), generic.pixels());
     assert_eq!(
         fixed
+            .frame
             .inverse_depth
             .iter()
             .map(|v| v.to_bits())
             .collect::<Vec<_>>(),
         generic
+            .frame
             .inverse_depth
             .iter()
             .map(|v| v.to_bits())
             .collect::<Vec<_>>()
     );
-    assert_eq!(fixed.depth_ranks, generic.depth_ranks);
+    assert_eq!(fixed.frame.depth_ranks, generic.frame.depth_ranks);
 }
 
 #[expect(
@@ -439,7 +441,7 @@ fn invalid_prepared_region_preserves_each_generic_stage_and_depth() {
                     .iter()
                     .any(|&pixel| pixel != u32::from_le_bytes([17, 29, 43, 255]))
             );
-            assert!(fixed.inverse_depth.iter().any(|&zi| zi > 0.0));
+            assert!(fixed.frame.inverse_depth.iter().any(|&zi| zi > 0.0));
         }
     }
 }

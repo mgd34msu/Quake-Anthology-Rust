@@ -30,6 +30,14 @@ pub enum PreparePoint {
 }
 
 pub struct CpuBackend {
+    frame: Framebuffer,
+    world: Option<world::WorldRaster>,
+    evaluator: StageEvaluator,
+    presentation: CpuPresentation,
+    time_ms: u64,
+}
+
+struct Framebuffer {
     width: u32,
     height: u32,
     pixels: Box<[u32]>,
@@ -37,10 +45,19 @@ pub struct CpuBackend {
     depth_ranks: Box<[u32]>,
     indices: Box<[u8]>,
     palettes: Box<[u32]>,
-    world: Option<world::WorldRaster>,
-    evaluator: StageEvaluator,
-    presentation: CpuPresentation,
-    time_ms: u64,
+}
+impl Framebuffer {
+    fn buffers(&mut self) -> world::Buffers<'_> {
+        world::Buffers {
+            first_row: 0,
+            frame_height: self.height,
+            pixels: &mut self.pixels,
+            inverse_depth: &mut self.inverse_depth,
+            depth_ranks: &mut self.depth_ranks,
+            indices: &mut self.indices,
+            palettes: &mut self.palettes,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -238,13 +255,15 @@ impl CpuBackend {
             .checked_mul(height as usize)
             .ok_or("CPU framebuffer dimensions overflow")?;
         Ok(Self {
-            width,
-            height,
-            pixels: vec![0; count].into_boxed_slice(),
-            inverse_depth: vec![0.0; count].into_boxed_slice(),
-            depth_ranks: vec![0; count].into_boxed_slice(),
-            indices: vec![0; count].into_boxed_slice(),
-            palettes: vec![u32::MAX; count].into_boxed_slice(),
+            frame: Framebuffer {
+                width,
+                height,
+                pixels: vec![0; count].into_boxed_slice(),
+                inverse_depth: vec![0.0; count].into_boxed_slice(),
+                depth_ranks: vec![0; count].into_boxed_slice(),
+                indices: vec![0; count].into_boxed_slice(),
+                palettes: vec![u32::MAX; count].into_boxed_slice(),
+            },
             world: None,
             evaluator: StageEvaluator::load(),
             presentation: CpuPresentation::Rgb,
@@ -283,15 +302,15 @@ impl CpuBackend {
     }
 
     pub fn pixels(&self) -> &[u32] {
-        &self.pixels
+        &self.frame.pixels
     }
 
     pub fn inverse_depth(&self) -> &[f32] {
-        &self.inverse_depth
+        &self.frame.inverse_depth
     }
 
     pub fn dimensions(&self) -> [u32; 2] {
-        [self.width, self.height]
+        [self.frame.width, self.frame.height]
     }
 
     pub fn raster_config(&self) -> RasterConfig {
@@ -353,14 +372,16 @@ impl CpuBackend {
             match *command {
                 Command::Empty => {}
                 Command::Clear(color) => {
-                    self.pixels.fill(u32::from_le_bytes(color));
-                    self.inverse_depth.fill(0.0);
-                    self.depth_ranks.fill(0);
-                    self.palettes.fill(u32::MAX);
+                    self.frame.pixels.fill(u32::from_le_bytes(color));
+                    self.frame.inverse_depth.fill(0.0);
+                    self.frame.depth_ranks.fill(0);
+                    self.frame.palettes.fill(u32::MAX);
                     self.presentation = CpuPresentation::Rgb;
                 }
                 Command::View(view) => {
-                    let Some(camera) = Camera::load(view.refdef, self.width, self.height) else {
+                    let Some(camera) =
+                        Camera::load(view.refdef, self.frame.width, self.frame.height)
+                    else {
                         stats.rejected = stats.rejected.saturating_add(1);
                         continue;
                     };
@@ -386,15 +407,7 @@ impl CpuBackend {
                             world.render_opaque(
                                 &camera,
                                 assets,
-                                world::Buffers {
-                                    first_row: 0,
-                                    frame_height: self.height,
-                                    pixels: &mut self.pixels,
-                                    inverse_depth: &mut self.inverse_depth,
-                                    depth_ranks: &mut self.depth_ranks,
-                                    indices: &mut self.indices,
-                                    palettes: &mut self.palettes,
-                                },
+                                self.frame.buffers(),
                                 &mut stats,
                                 &mut dispatch,
                             )?;
@@ -410,15 +423,7 @@ impl CpuBackend {
                                 &camera,
                                 draw_rank,
                                 assets,
-                                world::Buffers {
-                                    first_row: 0,
-                                    frame_height: self.height,
-                                    pixels: &mut self.pixels,
-                                    inverse_depth: &mut self.inverse_depth,
-                                    depth_ranks: &mut self.depth_ranks,
-                                    indices: &mut self.indices,
-                                    palettes: &mut self.palettes,
-                                },
+                                self.frame.buffers(),
                                 &mut stats,
                                 &mut dispatch,
                             )?
@@ -460,7 +465,7 @@ impl CpuBackend {
         for command in list.commands() {
             if let Command::View(view) = *command
                 && view.refdef.blend_phase == BlendPhase::FinalPalette
-                && let Some(camera) = Camera::load(view.refdef, self.width, self.height)
+                && let Some(camera) = Camera::load(view.refdef, self.frame.width, self.frame.height)
             {
                 self.view_blend(&camera.refdef, true, assets);
             }
@@ -473,9 +478,9 @@ impl CpuBackend {
         // plane. Keep that equality in the shared inverse-depth surface.
         let far_depth = 1.0 / far;
         for y in viewport.y..viewport.y + viewport.height {
-            let start = y as usize * self.width as usize + viewport.x as usize;
-            self.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
-            self.depth_ranks[start..start + viewport.width as usize].fill(0);
+            let start = y as usize * self.frame.width as usize + viewport.x as usize;
+            self.frame.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
+            self.frame.depth_ranks[start..start + viewport.width as usize].fill(0);
         }
     }
 
@@ -741,16 +746,8 @@ impl CpuBackend {
                 }),
             )
         });
-        let width = self.width;
-        let mut buffers = world::Buffers {
-            first_row: 0,
-            frame_height: self.height,
-            pixels: &mut self.pixels,
-            inverse_depth: &mut self.inverse_depth,
-            depth_ranks: &mut self.depth_ranks,
-            indices: &mut self.indices,
-            palettes: &mut self.palettes,
-        };
+        let width = self.frame.width;
+        let mut buffers = self.frame.buffers();
         for y in y_start..y_end {
             let mip = triangle_mip(
                 pass.image,
@@ -840,12 +837,12 @@ impl CpuBackend {
         let (x_start, x_end) = pixel_bounds(
             [draw.rect[0], draw.rect[0] + draw.rect[2], draw.rect[0]],
             0,
-            self.width,
+            self.frame.width,
         );
         let (y_start, y_end) = pixel_bounds(
             [draw.rect[1], draw.rect[1] + draw.rect[3], draw.rect[1]],
             0,
-            self.height,
+            self.frame.height,
         );
         if material.settings.sky.is_some()
             || material.settings.fog.is_some()
@@ -913,16 +910,8 @@ impl CpuBackend {
                 }),
             );
             let texels = TexelView::image(image, mip, stage.texture_intensity);
-            let width = self.width;
-            let mut buffers = world::Buffers {
-                first_row: 0,
-                frame_height: self.height,
-                pixels: &mut self.pixels,
-                inverse_depth: &mut self.inverse_depth,
-                depth_ranks: &mut self.depth_ranks,
-                indices: &mut self.indices,
-                palettes: &mut self.palettes,
-            };
+            let width = self.frame.width;
+            let mut buffers = self.frame.buffers();
             for y in y_start..y_end {
                 for x in x_start..x_end {
                     let vertex = draw_vertex(draw, [x as f32, y as f32]);
@@ -938,9 +927,7 @@ impl CpuBackend {
                         if texture.transparent_index() == Some(color) {
                             continue;
                         }
-                        buffers.pixels[index] = palette.color(color);
-                        buffers.indices[index] = color;
-                        buffers.palettes[index] = palette_id.0;
+                        buffers.write_indexed(index, color, palette, palette_id.0, None);
                     } else {
                         let source = sampler(
                             texels,
@@ -975,10 +962,11 @@ impl CpuBackend {
                     refdef.viewport
                 };
                 for y in viewport.y..viewport.y + viewport.height {
-                    let start = y as usize * self.width as usize + viewport.x as usize;
+                    let start = y as usize * self.frame.width as usize + viewport.x as usize;
                     for index in start..start + viewport.width as usize {
-                        if self.palettes[index] == palette.0 {
-                            self.pixels[index] = transformed[self.indices[index] as usize];
+                        if self.frame.palettes[index] == palette.0 {
+                            self.frame.pixels[index] =
+                                transformed[self.frame.indices[index] as usize];
                         }
                     }
                 }
@@ -997,8 +985,8 @@ impl CpuBackend {
             refdef.viewport
         };
         for y in viewport.y..viewport.y + viewport.height {
-            let start = y as usize * self.width as usize + viewport.x as usize;
-            for pixel in &mut self.pixels[start..start + viewport.width as usize] {
+            let start = y as usize * self.frame.width as usize + viewport.x as usize;
+            for pixel in &mut self.frame.pixels[start..start + viewport.width as usize] {
                 let alpha = *pixel & 0xff00_0000;
                 *pixel = composite(*pixel, source, Some(StageBlend::ALPHA));
                 if preserve_alpha {

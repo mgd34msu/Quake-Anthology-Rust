@@ -431,30 +431,30 @@ impl<'a> Buffers<'a> {
             func,
         )
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The indexed framebuffer stores palette, depth and draw order together"
-    )]
+    #[inline(always)]
     pub(super) fn write_indexed(
         &mut self,
         index: usize,
         color: u8,
         palette: &crate::surface_cache::PaletteLighting,
         palette_id: u32,
-        depth: f32,
-        rank: u32,
+        depth: Option<(f32, u32)>,
     ) {
         self.pixels[index] = palette.color(color);
         self.indices[index] = color;
         self.palettes[index] = palette_id;
-        self.inverse_depth[index] = depth;
-        self.depth_ranks[index] = rank;
+        self.write_depth(index, depth);
     }
 
     #[inline(always)]
     pub(super) fn write_rgba(&mut self, index: usize, color: u32, depth: Option<(f32, u32)>) {
         self.pixels[index] = color;
         self.palettes[index] = u32::MAX;
+        self.write_depth(index, depth);
+    }
+
+    #[inline(always)]
+    fn write_depth(&mut self, index: usize, depth: Option<(f32, u32)>) {
         if let Some((depth, rank)) = depth {
             self.inverse_depth[index] = depth;
             self.depth_ranks[index] = rank;
@@ -2556,7 +2556,7 @@ fn native_span(
             if buffers.depth_test(index, zi, zi, draw_rank, DepthFunc::Lequal)
                 && Some(color) != transparent_index
             {
-                buffers.write_indexed(index, color, palette, palette_id, zi, draw_rank);
+                buffers.write_indexed(index, color, palette, palette_id, Some((zi, draw_rank)));
                 stats.pixels = stats.pixels.saturating_add(1);
             }
         },

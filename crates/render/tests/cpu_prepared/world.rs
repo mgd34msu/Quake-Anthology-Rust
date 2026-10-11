@@ -150,16 +150,16 @@ fn packet(assets: &Assets, worlds: &[WorldId], refdef: Refdef) -> CommandList {
 }
 
 fn row_buffers(cpu: &mut CpuBackend, rows: std::ops::Range<u32>) -> Buffers<'_> {
-    let first = rows.start as usize * cpu.width as usize;
-    let last = rows.end as usize * cpu.width as usize;
+    let first = rows.start as usize * cpu.frame.width as usize;
+    let last = rows.end as usize * cpu.frame.width as usize;
     Buffers {
         first_row: rows.start,
-        frame_height: cpu.height,
-        pixels: &mut cpu.pixels[first..last],
-        inverse_depth: &mut cpu.inverse_depth[first..last],
-        depth_ranks: &mut cpu.depth_ranks[first..last],
-        indices: &mut cpu.indices[first..last],
-        palettes: &mut cpu.palettes[first..last],
+        frame_height: cpu.frame.height,
+        pixels: &mut cpu.frame.pixels[first..last],
+        inverse_depth: &mut cpu.frame.inverse_depth[first..last],
+        depth_ranks: &mut cpu.frame.depth_ranks[first..last],
+        indices: &mut cpu.frame.indices[first..last],
+        palettes: &mut cpu.frame.palettes[first..last],
     }
 }
 
@@ -176,8 +176,8 @@ fn windowed(
     let mut bands = (0..band_count)
         .map(|_| {
             WorldBand::load(
-                cpu.width,
-                cpu.height,
+                cpu.frame.width,
+                cpu.frame.height,
                 Arc::clone(&world.prepare.catalog),
                 budget,
                 CpuLimits::default().max_spans,
@@ -187,7 +187,9 @@ fn windowed(
         })
         .collect::<Vec<_>>();
     let windows = (0..band_count)
-        .map(|band| band * cpu.height / band_count..(band + 1) * cpu.height / band_count)
+        .map(|band| {
+            band * cpu.frame.height / band_count..(band + 1) * cpu.frame.height / band_count
+        })
         .collect::<Vec<_>>();
     let mut stats = crate::BackendStats {
         rejected: list.rejected.min(u32::MAX as u64) as u32,
@@ -197,15 +199,15 @@ fn windowed(
         match *command {
             Command::Empty => {}
             Command::Clear(color) => {
-                cpu.pixels.fill(u32::from_le_bytes(color));
-                cpu.inverse_depth.fill(0.0);
-                cpu.depth_ranks.fill(0);
-                cpu.palettes.fill(u32::MAX);
+                cpu.frame.pixels.fill(u32::from_le_bytes(color));
+                cpu.frame.inverse_depth.fill(0.0);
+                cpu.frame.depth_ranks.fill(0);
+                cpu.frame.palettes.fill(u32::MAX);
                 cpu.presentation = CpuPresentation::Rgb;
             }
             Command::Draw2d(draw) => cpu.draw_2d(draw, assets, &mut stats),
             Command::View(view) => {
-                let camera = Camera::load(view.refdef, cpu.width, cpu.height).unwrap();
+                let camera = Camera::load(view.refdef, cpu.frame.width, cpu.frame.height).unwrap();
                 stats.views += 1;
                 stats.pending_lights += view.scene.lights.count;
                 cpu.presentation = camera.refdef.cpu_presentation;
@@ -376,22 +378,36 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
         let mut cpu = CpuBackend::load_with_assets(29, 19, assets).unwrap();
         let (stats, backend) = windowed(&mut cpu, list, assets, count);
         assert_eq!(backend, reference_backend);
-        assert_eq!(cpu.pixels, serial.pixels, "pixels for {count} row windows");
         assert_eq!(
-            cpu.inverse_depth
+            cpu.frame.pixels, serial.frame.pixels,
+            "pixels for {count} row windows"
+        );
+        assert_eq!(
+            cpu.frame
+                .inverse_depth
                 .iter()
                 .map(|f| f.to_bits())
                 .collect::<Vec<_>>(),
             serial
+                .frame
                 .inverse_depth
                 .iter()
                 .map(|f| f.to_bits())
                 .collect::<Vec<_>>(),
             "depth for {count}"
         );
-        assert_eq!(cpu.depth_ranks, serial.depth_ranks, "ranks for {count}");
-        assert_eq!(cpu.indices, serial.indices, "indices for {count}");
-        assert_eq!(cpu.palettes, serial.palettes, "palettes for {count}");
+        assert_eq!(
+            cpu.frame.depth_ranks, serial.frame.depth_ranks,
+            "ranks for {count}"
+        );
+        assert_eq!(
+            cpu.frame.indices, serial.frame.indices,
+            "indices for {count}"
+        );
+        assert_eq!(
+            cpu.frame.palettes, serial.frame.palettes,
+            "palettes for {count}"
+        );
         assert_eq!(stats.polygons, reference.polygons);
         assert_eq!(stats.patch_polygons, reference.patch_polygons);
         assert_eq!(stats.pixels, reference.pixels);
@@ -433,21 +449,23 @@ fn exact_rows(assets: &Assets, list: &CommandList) -> WorldStats {
             });
         assert_eq!(result.unwrap(), reference_backend);
         assert!(callbacks > 0);
-        assert_eq!(cpu.pixels, serial.pixels);
+        assert_eq!(cpu.frame.pixels, serial.frame.pixels);
         assert_eq!(
-            cpu.inverse_depth
+            cpu.frame
+                .inverse_depth
                 .iter()
                 .map(|f| f.to_bits())
                 .collect::<Vec<_>>(),
             serial
+                .frame
                 .inverse_depth
                 .iter()
                 .map(|f| f.to_bits())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(cpu.depth_ranks, serial.depth_ranks);
-        assert_eq!(cpu.indices, serial.indices);
-        assert_eq!(cpu.palettes, serial.palettes);
+        assert_eq!(cpu.frame.depth_ranks, serial.frame.depth_ranks);
+        assert_eq!(cpu.frame.indices, serial.frame.indices);
+        assert_eq!(cpu.frame.palettes, serial.frame.palettes);
         let aggregate = cpu.world_stats();
         assert_eq!(aggregate, unbinned[bands.count() - 1]);
         assert_eq!(aggregate.polygons, reference.polygons);
@@ -877,20 +895,20 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
         });
     let mut serial = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assert_eq!(fallback.unwrap(), serial.render(&frame, &assets));
-    assert_eq!(bounded.pixels, serial.pixels);
-    assert_eq!(bounded.inverse_depth, serial.inverse_depth);
-    assert_eq!(bounded.depth_ranks, serial.depth_ranks);
+    assert_eq!(bounded.frame.pixels, serial.frame.pixels);
+    assert_eq!(bounded.frame.inverse_depth, serial.frame.inverse_depth);
+    assert_eq!(bounded.frame.depth_ranks, serial.frame.depth_ranks);
     let mut warm = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assert_eq!(warm.render(&frame, &assets).rejected, 0);
-    let first_pixels = warm.pixels.clone();
-    let first_depth = warm.inverse_depth.clone();
-    let first_ranks = warm.depth_ranks.clone();
+    let first_pixels = warm.frame.pixels.clone();
+    let first_depth = warm.frame.inverse_depth.clone();
+    let first_ranks = warm.frame.depth_ranks.clone();
     assert_eq!(warm.render(&frame, &assets).rejected, 0);
     assert!(warm.world_stats().rgba_hits > 0);
     assert_eq!(warm.world_stats().rgba_fills, 0);
-    assert_eq!(warm.pixels, first_pixels);
-    assert_eq!(warm.inverse_depth, first_depth);
-    assert_eq!(warm.depth_ranks, first_ranks);
+    assert_eq!(warm.frame.pixels, first_pixels);
+    assert_eq!(warm.frame.inverse_depth, first_depth);
+    assert_eq!(warm.frame.depth_ranks, first_ranks);
     let mut old = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     let mut old_rows = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assets
@@ -904,8 +922,8 @@ fn cached_rgba_and_changed_preparation_views_keep_row_output() {
         .unwrap();
     assert_eq!(old.render(&frame, &assets).rejected, 0);
     windowed(&mut old_rows, &frame, &assets, 19);
-    assert_eq!(old_rows.pixels, old.pixels);
-    assert_eq!(old_rows.depth_ranks, old.depth_ranks);
+    assert_eq!(old_rows.frame.pixels, old.frame.pixels);
+    assert_eq!(old_rows.frame.depth_ranks, old.frame.depth_ranks);
 }
 
 #[test]
@@ -1038,21 +1056,23 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
             )
             .unwrap();
             assert_eq!(fresh.render(&frame, &assets).rejected, 0);
-            assert_eq!(cpu.pixels, fresh.pixels);
+            assert_eq!(cpu.frame.pixels, fresh.frame.pixels);
             assert_eq!(
-                cpu.inverse_depth
+                cpu.frame
+                    .inverse_depth
                     .iter()
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
                 fresh
+                    .frame
                     .inverse_depth
                     .iter()
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>()
             );
-            assert_eq!(cpu.depth_ranks, fresh.depth_ranks);
-            assert_eq!(cpu.indices, fresh.indices);
-            assert_eq!(cpu.palettes, fresh.palettes);
+            assert_eq!(cpu.frame.depth_ranks, fresh.frame.depth_ranks);
+            assert_eq!(cpu.frame.indices, fresh.frame.indices);
+            assert_eq!(cpu.frame.palettes, fresh.frame.palettes);
             let counters = cpu.world_stats();
             let valid = !can_reject_rounding || identity_light != 0.5;
             if valid {
@@ -1128,14 +1148,16 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
             )
             .unwrap();
             assert_eq!(fresh.render(&frame, &assets).rejected, 0);
-            assert_eq!(cpu.pixels, fresh.pixels);
-            assert_eq!(cpu.depth_ranks, fresh.depth_ranks);
+            assert_eq!(cpu.frame.pixels, fresh.frame.pixels);
+            assert_eq!(cpu.frame.depth_ranks, fresh.frame.depth_ranks);
             assert_eq!(
-                cpu.inverse_depth
+                cpu.frame
+                    .inverse_depth
                     .iter()
                     .map(|v| v.to_bits())
                     .collect::<Vec<_>>(),
                 fresh
+                    .frame
                     .inverse_depth
                     .iter()
                     .map(|v| v.to_bits())
@@ -1225,16 +1247,16 @@ fn non_affine_vertex_colors_keep_factor_cache_counter_merge() {
     assert_eq!(counters.factor_fills, counters.cache.fills);
     let mut warm = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     warm.render(&list, &assets);
-    let pixels = warm.pixels.to_vec();
-    let depth = warm.inverse_depth.to_vec();
-    let ranks = warm.depth_ranks.to_vec();
+    let pixels = warm.frame.pixels.to_vec();
+    let depth = warm.frame.inverse_depth.to_vec();
+    let ranks = warm.frame.depth_ranks.to_vec();
     warm.render(&list, &assets);
     let reused = warm.world_stats();
     assert!(reused.factor_hits > 0);
     assert_eq!(reused.factor_fills, 0);
-    assert_eq!(warm.pixels.as_ref(), pixels);
-    assert_eq!(warm.inverse_depth.as_ref(), depth);
-    assert_eq!(warm.depth_ranks.as_ref(), ranks);
+    assert_eq!(warm.frame.pixels.as_ref(), pixels);
+    assert_eq!(warm.frame.inverse_depth.as_ref(), depth);
+    assert_eq!(warm.frame.depth_ranks.as_ref(), ranks);
 }
 
 #[test]
@@ -1883,8 +1905,8 @@ fn opaque_only_draws_dispatch_once_and_error_counts_remain_collectable() {
     assert_eq!(observed.get(), 2);
     let mut fresh = CpuBackend::load_with_assets(29, 19, &assets).unwrap();
     assert_eq!(fresh.render(&frame, &assets).rejected, 0);
-    assert_eq!(fresh.pixels, cpu.pixels);
-    assert_eq!(fresh.depth_ranks, cpu.depth_ranks);
+    assert_eq!(fresh.frame.pixels, cpu.frame.pixels);
+    assert_eq!(fresh.frame.depth_ranks, cpu.frame.depth_ranks);
 }
 
 #[test]
@@ -2547,10 +2569,13 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     assert!(attempted[0].pixels > before[0].pixels);
     assert_eq!(&attempted[1..4], &before[1..4]);
     let other_rows = (19 / 4) * 29;
-    assert_eq!(&failed.pixels[other_rows..], &paused.pixels[other_rows..]);
     assert_eq!(
-        &failed.depth_ranks[other_rows..],
-        &paused.depth_ranks[other_rows..]
+        &failed.frame.pixels[other_rows..],
+        &paused.frame.pixels[other_rows..]
+    );
+    assert_eq!(
+        &failed.frame.depth_ranks[other_rows..],
+        &paused.frame.depth_ranks[other_rows..]
     );
     assert_band_counters(failed.world_stats(), &attempted[..4]);
 
@@ -2568,9 +2593,16 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     });
     assert_eq!(result, Err("preparation rejected"));
     assert_eq!(preparation_failed.world_stats().pixels, 0);
-    assert!(preparation_failed.depth_ranks.iter().all(|&rank| rank == 0));
     assert!(
         preparation_failed
+            .frame
+            .depth_ranks
+            .iter()
+            .all(|&rank| rank == 0)
+    );
+    assert!(
+        preparation_failed
+            .frame
             .pixels
             .iter()
             .all(|&pixel| pixel == u32::from_le_bytes([3, 5, 7, 255]))
@@ -2586,9 +2618,15 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
         });
     let mut fresh = CpuBackend::load_with_limits(29, 19, &assets, limits).unwrap();
     assert_eq!(retry.unwrap(), fresh.render(&frame, &assets));
-    assert_eq!(preparation_failed.pixels, fresh.pixels);
-    assert_eq!(preparation_failed.inverse_depth, fresh.inverse_depth);
-    assert_eq!(preparation_failed.depth_ranks, fresh.depth_ranks);
+    assert_eq!(preparation_failed.frame.pixels, fresh.frame.pixels);
+    assert_eq!(
+        preparation_failed.frame.inverse_depth,
+        fresh.frame.inverse_depth
+    );
+    assert_eq!(
+        preparation_failed.frame.depth_ranks,
+        fresh.frame.depth_ranks
+    );
     assert_eq!(preparation_failed.world_stats(), fresh.world_stats());
 }
 

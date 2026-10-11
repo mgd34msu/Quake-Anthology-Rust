@@ -73,7 +73,16 @@ fn text_at<'a>(memory: &'a ModuleMemory<'_>, address: u64) -> Result<&'a str, Ca
     std::str::from_utf8(memory.cstring(address)?).map_err(|_| CallError::Text)
 }
 
-type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<u64, CallError>;
+enum CallValue {
+    Word(u64),
+    Vector(qa_core::primitives::Vec3),
+}
+type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError>;
+macro_rules! scalar {
+    ($handler:expr) => {
+        Some(|call| ($handler)(call).map(CallValue::Word))
+    };
+}
 pub struct CallTable {
     entries: [Option<Entry>; 256],
 }
@@ -102,6 +111,17 @@ impl CallTable {
         call: &mut Invocation<'_, '_, '_>,
         unknown: &mut UnknownCalls,
     ) -> Result<u64, CallError> {
+        match self.invoke_value(number, call, unknown)? {
+            CallValue::Word(value) => Ok(value),
+            CallValue::Vector(_) => Err(CallError::Memory),
+        }
+    }
+    fn invoke_value(
+        &self,
+        number: u32,
+        call: &mut Invocation<'_, '_, '_>,
+        unknown: &mut UnknownCalls,
+    ) -> Result<CallValue, CallError> {
         if let Some(Some(entry)) = self.entries.get(number as usize) {
             return entry(call);
         }
@@ -129,7 +149,7 @@ impl CallTable {
                 unknown.capacity_drops = unknown.capacity_drops.saturating_add(1);
             }
         }
-        Ok(0)
+        Ok(CallValue::Word(0))
     }
 }
 
@@ -137,84 +157,84 @@ const fn common() -> CallTable {
     let mut table = CallTable {
         entries: [None; 256],
     };
-    table.entries[100] = Some(memset);
-    table.entries[101] = Some(memcpy);
-    table.entries[102] = Some(strncpy);
-    table.entries[103] = Some(sin::<false>);
-    table.entries[104] = Some(cos::<false>);
-    table.entries[105] = Some(atan2::<false>);
-    table.entries[106] = Some(sqrt::<false>);
-    table.entries[107] = Some(floor::<false>);
-    table.entries[108] = Some(ceil::<false>);
+    table.entries[100] = scalar!(memset);
+    table.entries[101] = scalar!(memcpy);
+    table.entries[102] = scalar!(strncpy);
+    table.entries[103] = scalar!(sin::<false>);
+    table.entries[104] = scalar!(cos::<false>);
+    table.entries[105] = scalar!(atan2::<false>);
+    table.entries[106] = scalar!(sqrt::<false>);
+    table.entries[107] = scalar!(floor::<false>);
+    table.entries[108] = scalar!(ceil::<false>);
     table
 }
 const fn server() -> CallTable {
     let mut t = common();
     t.entries[107] = None;
     t.entries[108] = None;
-    t.entries[110] = Some(floor::<false>);
-    t.entries[111] = Some(ceil::<false>);
-    t.entries[0] = Some(print);
-    t.entries[1] = Some(abort);
-    t.entries[2] = Some(milliseconds);
-    t.entries[3] = Some(q3_cvar_register);
-    t.entries[4] = Some(q3_cvar_update);
-    t.entries[5] = Some(cvar_set::<true, true>);
-    t.entries[6] = Some(cvar_integer);
-    t.entries[7] = Some(cvar_string);
-    t.entries[8] = Some(argc);
-    t.entries[9] = Some(argv);
-    t.entries[10] = Some(file_open);
-    t.entries[11] = Some(file_read);
-    t.entries[13] = Some(file_close);
-    t.entries[14] = Some(command);
-    t.entries[18] = Some(config_set);
-    t.entries[19] = Some(config_get);
-    t.entries[37] = Some(entity_token);
-    t.entries[42] = Some(snap_vector);
-    t.entries[45] = Some(file_seek);
+    t.entries[110] = scalar!(floor::<false>);
+    t.entries[111] = scalar!(ceil::<false>);
+    t.entries[0] = scalar!(print);
+    t.entries[1] = scalar!(abort);
+    t.entries[2] = scalar!(milliseconds);
+    t.entries[3] = scalar!(q3_cvar_register);
+    t.entries[4] = scalar!(q3_cvar_update);
+    t.entries[5] = scalar!(cvar_set::<true, true>);
+    t.entries[6] = scalar!(cvar_integer);
+    t.entries[7] = scalar!(cvar_string);
+    t.entries[8] = scalar!(argc);
+    t.entries[9] = scalar!(argv);
+    t.entries[10] = scalar!(file_open);
+    t.entries[11] = scalar!(file_read);
+    t.entries[13] = scalar!(file_close);
+    t.entries[14] = scalar!(command);
+    t.entries[18] = scalar!(config_set);
+    t.entries[19] = scalar!(config_get);
+    t.entries[37] = scalar!(entity_token);
+    t.entries[42] = scalar!(snap_vector);
+    t.entries[45] = scalar!(file_seek);
     t
 }
 const fn client() -> CallTable {
     let mut t = common();
-    t.entries[0] = Some(print);
-    t.entries[1] = Some(abort);
-    t.entries[2] = Some(milliseconds);
-    t.entries[3] = Some(q3_cvar_register);
-    t.entries[4] = Some(q3_cvar_update);
-    t.entries[5] = Some(cvar_set::<true, true>);
-    t.entries[6] = Some(cvar_string);
-    t.entries[7] = Some(argc);
-    t.entries[8] = Some(argv);
-    t.entries[10] = Some(file_open);
-    t.entries[11] = Some(file_read);
-    t.entries[13] = Some(file_close);
-    t.entries[14] = Some(command_append);
-    t.entries[71] = Some(snap_vector);
-    t.entries[89] = Some(file_seek);
-    t.entries[111] = Some(acos::<false>);
+    t.entries[0] = scalar!(print);
+    t.entries[1] = scalar!(abort);
+    t.entries[2] = scalar!(milliseconds);
+    t.entries[3] = scalar!(q3_cvar_register);
+    t.entries[4] = scalar!(q3_cvar_update);
+    t.entries[5] = scalar!(cvar_set::<true, true>);
+    t.entries[6] = scalar!(cvar_string);
+    t.entries[7] = scalar!(argc);
+    t.entries[8] = scalar!(argv);
+    t.entries[10] = scalar!(file_open);
+    t.entries[11] = scalar!(file_read);
+    t.entries[13] = scalar!(file_close);
+    t.entries[14] = scalar!(command_append);
+    t.entries[71] = scalar!(snap_vector);
+    t.entries[89] = scalar!(file_seek);
+    t.entries[111] = scalar!(acos::<false>);
     t
 }
 const fn ui() -> CallTable {
     let mut t = common();
-    t.entries[0] = Some(abort);
-    t.entries[1] = Some(print);
-    t.entries[2] = Some(milliseconds);
-    t.entries[3] = Some(cvar_set::<true, true>);
-    t.entries[4] = Some(cvar_number);
-    t.entries[5] = Some(cvar_string);
-    t.entries[6] = Some(cvar_set_value);
-    t.entries[7] = Some(cvar_reset);
-    t.entries[8] = Some(cvar_create);
-    t.entries[10] = Some(argc);
-    t.entries[11] = Some(argv);
-    t.entries[12] = Some(command);
-    t.entries[13] = Some(file_open);
-    t.entries[14] = Some(file_read);
-    t.entries[16] = Some(file_close);
-    t.entries[86] = Some(file_seek);
-    t.entries[50] = Some(q3_cvar_register);
-    t.entries[51] = Some(q3_cvar_update);
+    t.entries[0] = scalar!(abort);
+    t.entries[1] = scalar!(print);
+    t.entries[2] = scalar!(milliseconds);
+    t.entries[3] = scalar!(cvar_set::<true, true>);
+    t.entries[4] = scalar!(cvar_number);
+    t.entries[5] = scalar!(cvar_string);
+    t.entries[6] = scalar!(cvar_set_value);
+    t.entries[7] = scalar!(cvar_reset);
+    t.entries[8] = scalar!(cvar_create);
+    t.entries[10] = scalar!(argc);
+    t.entries[11] = scalar!(argv);
+    t.entries[12] = scalar!(command);
+    t.entries[13] = scalar!(file_open);
+    t.entries[14] = scalar!(file_read);
+    t.entries[16] = scalar!(file_close);
+    t.entries[86] = scalar!(file_seek);
+    t.entries[50] = scalar!(q3_cvar_register);
+    t.entries[51] = scalar!(q3_cvar_update);
     t
 }
 // Original Q3 1.32 import ordinals. Game/UI commands carry an execution mode;
@@ -229,90 +249,90 @@ pub const Q2_CLASSIC: CallTable = {
     let mut table = CallTable {
         entries: [None; 256],
     };
-    table.entries[6] = Some(config_set);
-    table.entries[8] = Some(resource_index::<0>);
-    table.entries[9] = Some(resource_index::<1>);
-    table.entries[10] = Some(resource_index::<2>);
-    table.entries[11] = Some(native_set_model);
-    table.entries[12] = Some(native_trace::<false, false>);
-    table.entries[13] = Some(native_point_contents::<false>);
-    table.entries[14] = Some(native_visibility::<false, false>);
-    table.entries[15] = Some(native_visibility::<false, true>);
-    table.entries[16] = Some(native_portal_set::<false>);
-    table.entries[17] = Some(native_areas_connected::<false>);
-    table.entries[18] = Some(native_link);
-    table.entries[19] = Some(native_unlink);
-    table.entries[20] = Some(native_area_query::<false>);
-    table.entries[22] = Some(native_multicast::<false>);
-    table.entries[23] = Some(native_unicast::<false>);
-    table.entries[24] = Some(native_message_bits::<8>);
-    table.entries[25] = Some(native_message_bits::<8>);
-    table.entries[26] = Some(native_message_bits::<16>);
-    table.entries[27] = Some(native_message_bits::<32>);
-    table.entries[28] = Some(native_message_bits::<32>);
-    table.entries[29] = Some(native_message_string);
-    table.entries[30] = Some(native_message_position::<false>);
-    table.entries[31] = Some(native_message_direction);
-    table.entries[32] = Some(native_message_angle);
-    table.entries[36] = Some(q2_cvar);
-    table.entries[37] = Some(q2_cvar_set::<false>);
-    table.entries[38] = Some(q2_cvar_set::<true>);
-    table.entries[39] = Some(argc);
-    table.entries[40] = Some(native_argv);
-    table.entries[41] = Some(native_args);
-    table.entries[42] = Some(command_append);
+    table.entries[6] = scalar!(config_set);
+    table.entries[8] = scalar!(resource_index::<0>);
+    table.entries[9] = scalar!(resource_index::<1>);
+    table.entries[10] = scalar!(resource_index::<2>);
+    table.entries[11] = scalar!(native_set_model);
+    table.entries[12] = scalar!(native_trace::<false, false>);
+    table.entries[13] = scalar!(native_point_contents::<false>);
+    table.entries[14] = scalar!(native_visibility::<false, false>);
+    table.entries[15] = scalar!(native_visibility::<false, true>);
+    table.entries[16] = scalar!(native_portal_set::<false>);
+    table.entries[17] = scalar!(native_areas_connected::<false>);
+    table.entries[18] = scalar!(native_link);
+    table.entries[19] = scalar!(native_unlink);
+    table.entries[20] = scalar!(native_area_query::<false>);
+    table.entries[22] = scalar!(native_multicast::<false>);
+    table.entries[23] = scalar!(native_unicast::<false>);
+    table.entries[24] = scalar!(native_message_bits::<8>);
+    table.entries[25] = scalar!(native_message_bits::<8>);
+    table.entries[26] = scalar!(native_message_bits::<16>);
+    table.entries[27] = scalar!(native_message_bits::<32>);
+    table.entries[28] = scalar!(native_message_bits::<32>);
+    table.entries[29] = scalar!(native_message_string);
+    table.entries[30] = scalar!(native_message_position::<false>);
+    table.entries[31] = scalar!(native_message_direction);
+    table.entries[32] = scalar!(native_message_angle);
+    table.entries[36] = scalar!(q2_cvar);
+    table.entries[37] = scalar!(q2_cvar_set::<false>);
+    table.entries[38] = scalar!(q2_cvar_set::<true>);
+    table.entries[39] = scalar!(argc);
+    table.entries[40] = scalar!(native_argv);
+    table.entries[41] = scalar!(native_args);
+    table.entries[42] = scalar!(command_append);
     table
 };
 pub const Q2_RERELEASE: CallTable = {
     let mut table = CallTable {
         entries: [None; 256],
     };
-    table.entries[0] = Some(native_print::<false, false>);
-    table.entries[1] = Some(print);
-    table.entries[2] = Some(native_print::<true, false>);
-    table.entries[3] = Some(native_print::<true, true>);
-    table.entries[7] = Some(config_set);
-    table.entries[8] = Some(native_config_get);
-    table.entries[10] = Some(resource_index::<0>);
-    table.entries[11] = Some(resource_index::<1>);
-    table.entries[12] = Some(resource_index::<2>);
-    table.entries[13] = Some(native_set_model);
-    table.entries[14] = Some(native_trace::<true, false>);
-    table.entries[15] = Some(native_trace::<true, true>);
-    table.entries[16] = Some(native_point_contents::<true>);
-    table.entries[17] = Some(native_visibility::<true, false>);
-    table.entries[18] = Some(native_visibility::<true, true>);
-    table.entries[19] = Some(native_portal_set::<true>);
-    table.entries[20] = Some(native_areas_connected::<true>);
-    table.entries[21] = Some(native_link);
-    table.entries[22] = Some(native_unlink);
-    table.entries[23] = Some(native_area_query::<true>);
-    table.entries[24] = Some(native_multicast::<true>);
-    table.entries[25] = Some(native_unicast::<true>);
-    table.entries[26] = Some(native_message_bits::<8>);
-    table.entries[27] = Some(native_message_bits::<8>);
-    table.entries[28] = Some(native_message_bits::<16>);
-    table.entries[29] = Some(native_message_bits::<32>);
-    table.entries[30] = Some(native_message_bits::<32>);
-    table.entries[31] = Some(native_message_string);
-    table.entries[32] = Some(native_message_position::<true>);
-    table.entries[33] = Some(native_message_direction);
-    table.entries[34] = Some(native_message_angle);
-    table.entries[35] = Some(native_message_entity);
-    table.entries[48] = Some(native_register_observer);
-    table.entries[49] = Some(native_forget_observer);
-    table.entries[9] = Some(abort);
-    table.entries[39] = Some(q2_cvar);
-    table.entries[40] = Some(q2_cvar_set::<false>);
-    table.entries[41] = Some(q2_cvar_set::<true>);
-    table.entries[42] = Some(argc);
-    table.entries[43] = Some(native_argv);
-    table.entries[44] = Some(native_args);
-    table.entries[45] = Some(command_append);
-    table.entries[65] = Some(native_server_frame);
-    table.entries[67] = Some(native_info_value);
-    table.entries[68] = Some(native_info_remove);
-    table.entries[69] = Some(native_info_set);
+    table.entries[0] = scalar!(native_print::<false, false>);
+    table.entries[1] = scalar!(print);
+    table.entries[2] = scalar!(native_print::<true, false>);
+    table.entries[3] = scalar!(native_print::<true, true>);
+    table.entries[7] = scalar!(config_set);
+    table.entries[8] = scalar!(native_config_get);
+    table.entries[10] = scalar!(resource_index::<0>);
+    table.entries[11] = scalar!(resource_index::<1>);
+    table.entries[12] = scalar!(resource_index::<2>);
+    table.entries[13] = scalar!(native_set_model);
+    table.entries[14] = scalar!(native_trace::<true, false>);
+    table.entries[15] = scalar!(native_trace::<true, true>);
+    table.entries[16] = scalar!(native_point_contents::<true>);
+    table.entries[17] = scalar!(native_visibility::<true, false>);
+    table.entries[18] = scalar!(native_visibility::<true, true>);
+    table.entries[19] = scalar!(native_portal_set::<true>);
+    table.entries[20] = scalar!(native_areas_connected::<true>);
+    table.entries[21] = scalar!(native_link);
+    table.entries[22] = scalar!(native_unlink);
+    table.entries[23] = scalar!(native_area_query::<true>);
+    table.entries[24] = scalar!(native_multicast::<true>);
+    table.entries[25] = scalar!(native_unicast::<true>);
+    table.entries[26] = scalar!(native_message_bits::<8>);
+    table.entries[27] = scalar!(native_message_bits::<8>);
+    table.entries[28] = scalar!(native_message_bits::<16>);
+    table.entries[29] = scalar!(native_message_bits::<32>);
+    table.entries[30] = scalar!(native_message_bits::<32>);
+    table.entries[31] = scalar!(native_message_string);
+    table.entries[32] = scalar!(native_message_position::<true>);
+    table.entries[33] = scalar!(native_message_direction);
+    table.entries[34] = scalar!(native_message_angle);
+    table.entries[35] = scalar!(native_message_entity);
+    table.entries[48] = scalar!(native_register_observer);
+    table.entries[49] = scalar!(native_forget_observer);
+    table.entries[9] = scalar!(abort);
+    table.entries[39] = scalar!(q2_cvar);
+    table.entries[40] = scalar!(q2_cvar_set::<false>);
+    table.entries[41] = scalar!(q2_cvar_set::<true>);
+    table.entries[42] = scalar!(argc);
+    table.entries[43] = scalar!(native_argv);
+    table.entries[44] = scalar!(native_args);
+    table.entries[45] = scalar!(command_append);
+    table.entries[65] = scalar!(native_server_frame);
+    table.entries[67] = scalar!(native_info_value);
+    table.entries[68] = scalar!(native_info_remove);
+    table.entries[69] = scalar!(native_info_set);
     table
 };
 
@@ -320,16 +340,17 @@ const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
     };
-    t.entries[12] = Some(vector_length);
-    t.entries[23] = Some(qc_print::<true>);
-    t.entries[25] = Some(qc_print::<false>);
-    t.entries[36] = Some(rint);
-    t.entries[37] = Some(floor::<false>);
-    t.entries[38] = Some(ceil::<false>);
-    t.entries[43] = Some(absolute::<false>);
-    t.entries[45] = Some(cvar_number);
-    t.entries[46] = Some(command_append);
-    t.entries[72] = Some(cvar_set::<false, false>);
+    t.entries[9] = Some(vector_normalize);
+    t.entries[12] = scalar!(vector_length);
+    t.entries[23] = scalar!(qc_print::<true>);
+    t.entries[25] = scalar!(qc_print::<false>);
+    t.entries[36] = scalar!(rint);
+    t.entries[37] = scalar!(floor::<false>);
+    t.entries[38] = scalar!(ceil::<false>);
+    t.entries[43] = scalar!(absolute::<false>);
+    t.entries[45] = scalar!(cvar_number);
+    t.entries[46] = scalar!(command_append);
+    t.entries[72] = scalar!(cvar_set::<false, false>);
     t
 }
 pub const QUAKEC: CallTable = quakec();
@@ -364,7 +385,11 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             return Err(quakec::Trap::Builtin);
         }
         let mut arguments = [0u64; 8];
-        let (words, stride) = if number == 12 { (3, 1) } else { (argc, 3) };
+        let (words, stride) = if matches!(number, 9 | 12) {
+            (3, 1)
+        } else {
+            (argc, 3)
+        };
         let string_start = qc_print_offset(number == 23, self.context.console.source);
         for (index, to) in arguments[..words].iter_mut().enumerate() {
             let word = *vm
@@ -401,10 +426,20 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         };
         let value = self
             .table
-            .invoke(number, &mut invocation, self.unknown)
+            .invoke_value(number, &mut invocation, self.unknown)
             .map_err(|_| quakec::Trap::Builtin)?;
         if !matches!(number, 23 | 25 | 46 | 72) {
-            *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
+            match value {
+                CallValue::Word(value) => {
+                    *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
+                }
+                CallValue::Vector(vector) => vm
+                    .image
+                    .globals
+                    .get_mut(1..4)
+                    .ok_or(quakec::Trap::Memory)?
+                    .copy_from_slice(&vector.0.map(f32::to_bits)),
+            }
         }
         Ok(())
     }
@@ -413,18 +448,27 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
 fn qc_print_offset(broadcast: bool, rules: qa_core::primitives::RuleSetId) -> usize {
     usize::from(broadcast && rules == qa_core::primitives::RuleSetId::QuakeWorld)
 }
+fn argument_vector(c: &Invocation<'_, '_, '_>) -> Result<qa_core::primitives::Vec3, CallError> {
+    Ok(qa_core::primitives::Vec3([
+        float::<false>(c, 0)? as f32,
+        float::<false>(c, 1)? as f32,
+        float::<false>(c, 2)? as f32,
+    ]))
+}
 fn vector_length(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let vector = qa_core::primitives::Vec3([
-        f32::from_bits(c.arg(0)? as u32),
-        f32::from_bits(c.arg(1)? as u32),
-        f32::from_bits(c.arg(2)? as u32),
-    ]);
-    Ok(u64::from(qa_core::math::length(vector).to_bits()))
+    Ok(bits::<false>(f64::from(qa_core::math::length(
+        argument_vector(c)?,
+    ))))
+}
+fn vector_normalize(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    Ok(CallValue::Vector(qa_core::math::normalized_or_zero(
+        argument_vector(c)?,
+    )))
 }
 fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let first = qc_print_offset(BROADCAST, c.context.console.source);
     let level = if first != 0 {
-        crate::numbers::native_integer(f32::from_bits(c.arg(0)? as u32)) as u8
+        crate::numbers::native_integer(float::<false>(c, 0)?) as u8
     } else {
         PrintKind::Console.default_level()
     };
@@ -594,7 +638,7 @@ fn write_cvar<const REGISTER: bool, const FORCE: bool>(
     Ok(0)
 }
 fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let value = f32::from_bits(c.arg(1)? as u32);
+    let value = float::<false>(c, 1)? as f32;
     let mut text = FixedText::<64>::default();
     // Cvar_SetValue uses an integral form only when the f32 fits its native
     // signed int; all other values use %f after promotion to double.
@@ -1261,7 +1305,7 @@ fn native_message_direction(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallE
 }
 fn native_message_angle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let word = qa_core::math::angle_to_byte(
-        f32::from_bits(c.arg(0)? as u32),
+        float::<false>(c, 0)? as f32,
         qa_core::math::AngleByteForm::Float,
     );
     (ENGINE_CALLS.message_bits)(c.services, c.context.module, word as u32, 8)?;

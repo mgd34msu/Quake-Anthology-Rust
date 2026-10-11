@@ -258,7 +258,7 @@ pub(super) fn layered_span(
             let zi = depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
             if buffers.depth_test(index, zi, zi, rank, DepthFunc::Lequal) {
-                buffers.write_indexed(index, color, palette, palette_id, zi, rank);
+                buffers.write_indexed(index, color, palette, palette_id, Some((zi, rank)));
                 stats.pixels += 1;
             }
         },
@@ -418,7 +418,7 @@ pub(super) fn background(
                 |px, current| {
                     let color = mip.indices()[super::span::texel(current, mip.width, mip.height)];
                     let index = buffers.offset(width, px, y);
-                    buffers.write_indexed(index, color, palette, palette_id, -0.9, 0);
+                    buffers.write_indexed(index, color, palette, palette_id, Some((-0.9, 0)));
                     stats.pixels += 1;
                 },
             );
