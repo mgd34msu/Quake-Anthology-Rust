@@ -320,11 +320,13 @@ const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
     };
-    t.entries[25] = Some(qc_print);
+    t.entries[23] = Some(qc_print::<true>);
+    t.entries[25] = Some(qc_print::<false>);
     t.entries[37] = Some(floor::<false>);
     t.entries[38] = Some(ceil::<false>);
     t.entries[43] = Some(absolute::<false>);
     t.entries[45] = Some(cvar_number);
+    t.entries[46] = Some(command_append);
     t.entries[72] = Some(cvar_set::<false, false>);
     t
 }
@@ -352,7 +354,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             return Err(quakec::Trap::Builtin);
         }
         let expected = match number {
-            25 => argc,
+            23 | 25 => argc,
             72 => 2,
             _ => 1,
         };
@@ -360,13 +362,16 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             return Err(quakec::Trap::Builtin);
         }
         let mut arguments = [0u64; 8];
+        let string_start = qc_print_offset(number == 23, self.context.console.source);
         for (index, to) in arguments[..argc].iter_mut().enumerate() {
             let word = *vm
                 .image
                 .globals
                 .get(4 + index * 3)
                 .ok_or(quakec::Trap::Memory)?;
-            if matches!(number, 25 | 45 | 72) {
+            if (matches!(number, 23 | 25) && index >= string_start)
+                || matches!(number, 45 | 46 | 72)
+            {
                 vm.string(word as i32)?;
             }
             *to = u64::from(word);
@@ -395,16 +400,25 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             .table
             .invoke(number, &mut invocation, self.unknown)
             .map_err(|_| quakec::Trap::Builtin)?;
-        if !matches!(number, 25 | 72) {
+        if !matches!(number, 23 | 25 | 46 | 72) {
             *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
         }
         Ok(())
     }
 }
 
-fn qc_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn qc_print_offset(broadcast: bool, rules: qa_core::primitives::RuleSetId) -> usize {
+    usize::from(broadcast && rules == qa_core::primitives::RuleSetId::QuakeWorld)
+}
+fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let first = qc_print_offset(BROADCAST, c.context.console.source);
+    let level = if first != 0 {
+        crate::numbers::native_integer(f32::from_bits(c.arg(0)? as u32)) as u8
+    } else {
+        PrintKind::Console.default_level()
+    };
     let mut text = FixedText::<1024>::default();
-    for index in 0..c.arguments.len() {
+    for index in first..c.arguments.len() {
         let bytes = c.memory.cstring(c.pointer(index)?)?;
         // QuakeC's VarString joins raw bytes rather than decoding UTF-8.
         text.append_bytes(bytes).map_err(|_| CallError::Text)?;
@@ -412,8 +426,12 @@ fn qc_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.print)(
         c.services,
         None,
-        PrintKind::Console,
-        PrintKind::Console.default_level(),
+        if BROADCAST {
+            message_kind(level)
+        } else {
+            PrintKind::Console
+        },
+        level,
         text.as_bytes(),
     )?;
     Ok(0)
@@ -504,16 +522,21 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
         PrintKind::Center
     } else if TARGET && address == 0 {
         PrintKind::Console
-    } else if level == PrintKind::Chat.default_level() {
-        PrintKind::Chat
     } else {
-        PrintKind::Notify
+        message_kind(level)
     };
     let text = c
         .memory
         .cstring(c.pointer(usize::from(TARGET) + usize::from(!CENTER))?)?;
     (ENGINE_CALLS.print)(c.services, client, kind, level, text)?;
     Ok(0)
+}
+fn message_kind(level: u8) -> PrintKind {
+    if level == PrintKind::Chat.default_level() {
+        PrintKind::Chat
+    } else {
+        PrintKind::Notify
+    }
 }
 fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     print(c)?;

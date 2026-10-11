@@ -647,6 +647,187 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         ids,
     )
 }
+
+fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameHost {
+    let mut operations = vec![(StoreF, 54, 1, 0), (StoreF, 55, 2, 0), (StoreF, 56, 3, 0)];
+    let parameter = if rules == RuleSetId::QuakeWorld {
+        operations.push((StoreF, 53, 4, 0));
+        7
+    } else {
+        4
+    };
+    operations.extend([
+        (StoreS, 48, parameter, 0),
+        (StoreS, 49, parameter + 3, 0),
+        (
+            if rules == RuleSetId::QuakeWorld {
+                Call3
+            } else {
+                Call2
+            },
+            27,
+            0,
+            0,
+        ),
+        (StoreS, 50, 4, 0),
+        (Call1, 28, 0, 0),
+        (StoreS, 51, 4, 0),
+        (Call1, 28, 0, 0),
+        (Return, 1, 0, 0),
+    ]);
+    let bytes = quakec_program::program(&operations, &[0, 1, -23, -46]);
+    let mut vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: 4,
+            header_bytes: 16,
+            extra_string_bytes: 4096,
+            state_step: 0.1,
+        },
+    )
+    .unwrap();
+    for (global, text) in [
+        (48, texts[0]),
+        (49, texts[1]),
+        (50, b"fov "),
+        (51, b"111\n"),
+    ] {
+        vm.image.globals[global] = vm.insert_string(text).unwrap() as u32;
+    }
+    vm.image.globals[27] = 2;
+    vm.image.globals[28] = 3;
+    vm.image.globals[53] = level.to_bits();
+    vm.image.globals[54..57].copy_from_slice(&[0x12345678, 0x87654321, 0x11223344]);
+    let module = ModuleId(1);
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let anchor = runtime
+        .server
+        .entities
+        .allocate(ThinkTime::Seconds(0.0), module, AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    runtime.server.entities.columns.native_entity[anchor.slot as usize] =
+        Some(NativeEntity { module, slot: 0 });
+    FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![ModuleRequest {
+            context: CallContext {
+                server_frame: 0,
+                module,
+                clock: ThinkTime::module_clock(rules),
+                console: Context {
+                    source: rules,
+                    ..Context::default()
+                },
+                allocation: AllocationPolicy::EDICT,
+                link_order: qa_gameplay::rules::link_order(rules),
+            },
+            timing_rules: rules,
+            phase: Phase::Server,
+            rate: TickRate::fixed(100).unwrap(),
+            anchor,
+            program: Program::quakec(vm),
+            entries: vec![1],
+            frame: Export::clocked(CallbackId(0)),
+            prepare: vec![],
+            initialize: vec![],
+            shutdown: vec![],
+            api: None,
+            instruction_budget: 1000,
+            configstrings: 0,
+            files: 0,
+            entity_source: None,
+        }],
+    )
+    .unwrap()
+}
+
+#[test]
+fn quakec_broadcast_and_localcmd_share_output_and_deferred_commands() {
+    use qa_network::commands::packet::Protocol;
+    for (rules, level, kind, wire_level) in [
+        (RuleSetId::Quake, 3.0, PrintKind::Notify, 2),
+        (RuleSetId::QuakeWorld, 3.0, PrintKind::Chat, 3),
+        (RuleSetId::QuakeWorld, 1.75, PrintKind::Notify, 1),
+    ] {
+        let mut host = quakec_output_host(rules, level, [b"\x82broadcast", b"\n"]);
+        let fov = host.console.cvars.find("cg_fov").unwrap();
+        let before = host.console.cvars.value_in(fov, rules);
+        host.console
+            .append(
+                "fov 77\n",
+                Context {
+                    source: rules,
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(0)),
+            ThinkTime::Seconds(0.1),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([0x12345678, 0x87654321, 0x11223344]))
+        );
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+        assert_eq!(host.console.cvars.value_in(fov, rules), before);
+        assert!(!host.console.idle());
+        let events = &host.runtime.server.events;
+        let mut batch = events.batch(host.runtime.server.presentation).unwrap();
+        let FrameEvent::Print(print) = events.next(&mut batch).unwrap().event else {
+            panic!()
+        };
+        assert_eq!(print.client, None);
+        assert_eq!(print.kind, kind);
+        assert_eq!(print.level, wire_level);
+        let text = events.texts.get(print.text).unwrap();
+        assert_eq!(text, b"\x82broadcast\n");
+        assert!(events.next(&mut batch).is_none());
+        let protocol = if rules == RuleSetId::QuakeWorld {
+            Protocol::QuakeWorld28
+        } else {
+            Protocol::NetQuake15
+        };
+        let mut wire = [0; 64];
+        let size = qa_network::outputs::print(protocol, kind, wire_level, text, &mut wire).unwrap();
+        let mut expected = vec![8];
+        if protocol == Protocol::QuakeWorld28 {
+            expected.push(wire_level);
+        }
+        expected.extend(text);
+        expected.push(0);
+        assert_eq!(&wire[..size], expected);
+        host.console.execute_frame(&mut host.runtime);
+        assert_eq!(host.console.cvars.value_in(fov, rules), 111.0);
+        assert!(host.console.idle());
+    }
+}
+
+#[test]
+fn oversized_quakec_broadcast_traps_before_publishing_or_queuing_commands() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut host = quakec_output_host(rules, 2.0, [&[b'x'; 1024], b"x"]);
+        assert_eq!(
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Seconds(0.1)
+            ),
+            Err(CallError::Rejected)
+        );
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+        assert!(host.console.idle());
+        let events = &host.runtime.server.events;
+        let mut batch = events.batch(host.runtime.server.presentation).unwrap();
+        assert!(events.next(&mut batch).is_none());
+    }
+}
+
 #[test]
 fn module_entries_share_services_keep_native_namespace_and_preserve_raw_print_bytes() {
     let (mut host, ids) = host(1000, true);
