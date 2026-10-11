@@ -349,6 +349,7 @@ pub struct EngineCallTable {
     pub cvar_register: CvarRegisterCall,
     pub cvar_set: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
     pub cvar_force: fn(&mut EngineServices<'_>, View, &str) -> Result<(), CallError>,
+    pub cvar_reset: fn(&mut EngineServices<'_>, View, bool) -> Result<(), CallError>,
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub resource_index: ResourceIndexCall,
@@ -455,6 +456,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     cvar_register: |s, c, n, d, f| s.cvar_register(c, n, d, f),
     cvar_set: |s, v, t| s.cvar_set(v, t),
     cvar_force: |s, v, t| s.cvar_force(v, t),
+    cvar_reset: |s, v, force| s.cvar_reset(v, force),
     command: |s, c, t| s.command(c, t),
     configstring: |s, m, i, t| s.configstring(m, i, t),
     resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
@@ -639,6 +641,27 @@ impl EngineServices<'_> {
         self.cvars
             .force_write(view, text)
             .map_err(|_| CallError::Cvar)
+    }
+    pub fn cvar_reset(&mut self, view: View, force: bool) -> Result<(), CallError> {
+        let reason = match self.cvars.reset_view(view, force) {
+            Ok(()) => return Ok(()),
+            Err(WriteError::ReadOnly) => "read only",
+            Err(WriteError::InitOnly) => "write protected",
+            Err(WriteError::Cheats) => "cheat protected",
+            Err(_) => return Err(CallError::Cvar),
+        };
+        use std::fmt::Write;
+        let mut text = FixedText::<4096>::default();
+        writeln!(text, "{} is {reason}.", self.cvars.name(view)).map_err(|_| CallError::Text)?;
+        // Native protection rejects the write, not the calling module. A full
+        // output ring counts its dropped warning without aborting the import.
+        let _ = self.print(
+            None,
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            text.as_bytes(),
+        );
+        Ok(())
     }
     pub fn command(&mut self, context: Context, text: &str) -> Result<(), CallError> {
         self.commands

@@ -495,7 +495,13 @@ impl Cvars {
         let value = &self.values[handle.0 as usize];
         if value.explicit {
             self.texts[handle.0 as usize].as_str()
-        } else if let Some(default) = value.module_defaults[source as usize] {
+        } else {
+            self.default_text(handle, source)
+        }
+    }
+    fn default_text(&self, handle: CvarHandle, source: RuleSetId) -> &str {
+        let value = &self.values[handle.0 as usize];
+        if let Some(default) = value.module_defaults[source as usize] {
             self.name_text(default)
         } else {
             self.defaults[value.row][source as usize]
@@ -763,6 +769,26 @@ impl Cvars {
     /// publication path as console writes.
     pub fn force_write(&mut self, view: View, text: &str) -> Result<(), WriteError> {
         self.write_inner(view, text, false)
+    }
+    /// A native reset writes this source/alias's default through its ordinary
+    /// conversion path; it does not clear explicit values for every source.
+    pub fn reset_view(&mut self, view: View, force: bool) -> Result<(), WriteError> {
+        let mut text = FixedText::<MAX_TEXT>::default();
+        let source = view.context.source;
+        let default = self.project(view, self.default_text(view.handle, source), None, &|row| {
+            self.default_text(self.slot(row as usize, 0), source)
+        })?;
+        text.set(default.as_str())
+            .map_err(|_| conversion::Error::TextTooLong)?;
+        // Cvar_Set2 returns before protection checks or latch cancellation
+        // when the reset string already equals the current native value.
+        if self
+            .read(view)
+            .is_ok_and(|current| current.as_str() == text.as_str())
+        {
+            return Ok(());
+        }
+        self.write_inner(view, text.as_str(), !force)
     }
     fn prepare_write(
         &self,

@@ -12,6 +12,74 @@ fn context(source: RuleSetId) -> Context {
 }
 
 #[test]
+fn native_reset_uses_source_and_alias_defaults_without_resetting_other_sources() {
+    for source in RuleSetId::ALL {
+        for name in ["sensitivity", "gamma"] {
+            let mut cvars = Cvars::new().unwrap();
+            let context = context(source);
+            let view = cvars.bind(name, context).unwrap();
+            if !cvars.default_available(view.canonical(), source) {
+                continue;
+            }
+            let original = cvars.read(view).unwrap().as_str().to_owned();
+            cvars.force_write(view, "0.8").unwrap();
+            cvars.reset_view(view, true).unwrap();
+            assert_eq!(cvars.read(view).unwrap().as_str(), original);
+            if name == "gamma" {
+                cvars.set_text(view.canonical(), "0").unwrap();
+                assert!(cvars.read(view).is_err());
+                cvars.reset_view(view, true).unwrap();
+                assert_eq!(cvars.read(view).unwrap().as_str(), original);
+            }
+        }
+    }
+    let mut cvars = Cvars::new().unwrap();
+    let q3 = cvars
+        .bind("sensitivity", context(RuleSetId::Quake3))
+        .unwrap();
+    let q1 = cvars
+        .bind("sensitivity", context(RuleSetId::Quake))
+        .unwrap();
+    cvars.force_write(q3, "9").unwrap();
+    cvars.reset_view(q3, true).unwrap();
+    assert_eq!(cvars.read(q3).unwrap().as_str(), "5");
+    assert_eq!(cvars.read(q1).unwrap().as_str(), "5");
+    cvars.reset_view(q1, true).unwrap();
+    assert_eq!(cvars.read(q3).unwrap().as_str(), "3");
+    assert_eq!(cvars.read(q1).unwrap().as_str(), "3");
+}
+
+#[test]
+fn native_reset_preserves_protection_latches_and_equal_value_short_circuit() {
+    let mut cvars = Cvars::new().unwrap();
+    let context = context(RuleSetId::Quake3);
+    let readonly = cvars
+        .register("_qa_reset_rom", Some("1"), 64, context)
+        .unwrap();
+    cvars.force_write(readonly, "2").unwrap();
+    assert_eq!(cvars.reset_view(readonly, false), Err(WriteError::ReadOnly));
+    assert_eq!(cvars.read(readonly).unwrap().as_str(), "2");
+    cvars.reset_view(readonly, true).unwrap();
+    assert_eq!(cvars.read(readonly).unwrap().as_str(), "1");
+    let latched = cvars
+        .register("_qa_reset_latch", Some("1"), 32, context)
+        .unwrap();
+    cvars.set_latch_active(latched.canonical(), true);
+    cvars.write(latched, "2").unwrap();
+    let generation = cvars.view_update_generation(latched);
+    cvars.reset_view(latched, true).unwrap();
+    assert_eq!(cvars.view_update_generation(latched), generation);
+    assert_eq!(cvars.latched(latched).unwrap().unwrap().as_str(), "2");
+    cvars.apply_latches().unwrap();
+    cvars.reset_view(latched, false).unwrap();
+    assert_eq!(cvars.read(latched).unwrap().as_str(), "2");
+    assert_eq!(cvars.latched(latched).unwrap().unwrap().as_str(), "1");
+    cvars.reset_view(latched, true).unwrap();
+    assert_eq!(cvars.read(latched).unwrap().as_str(), "1");
+    assert!(cvars.latched(latched).unwrap().is_none());
+}
+
+#[test]
 fn native_registration_fills_an_unresolved_source_default_without_overwriting_values() {
     let mut cvars = Cvars::new().unwrap();
     let rr = context(RuleSetId::Quake2Rerelease);

@@ -38,6 +38,9 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
             let mut call_context = context();
             call_context.console.source = RuleSetId::Quake3;
             let ctx = call_context.console;
+            let gamma = console.cvars.bind("gamma", ctx).unwrap();
+            console.cvars.set_text(gamma.canonical(), "0").unwrap();
+            assert!(console.cvars.read(gamma).is_err());
             let readonly = console
                 .cvars
                 .register("_qa_module_rom", Some("1"), 64, ctx)
@@ -63,6 +66,7 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
                 ("_qa_module_rom", "4"),
                 ("_qa_module_latch", "3"),
                 ("_qa_module_new", "18"),
+                ("gamma", "1.000000"),
             ] {
                 memory.write_string(base + 16, 64, name.as_bytes()).unwrap();
                 memory
@@ -92,6 +96,241 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
             assert_eq!(services.cvars.flags(readonly) & 64, 64);
             assert_eq!(unknown.calls, 0);
         }
+    }
+}
+
+#[test]
+fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 511 }),
+        (1u64 << 40, Addresses::Native),
+    ] {
+        for (table, ordinal) in [(&Q3_SERVER, 5), (&Q3_CLIENT, 5), (&Q3_UI, 3)] {
+            let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+            let mut console = Console::new(Context::default()).unwrap();
+            let mut call_context = context();
+            call_context.console.source = RuleSetId::Quake3;
+            let ctx = call_context.console;
+            let readonly = console
+                .cvars
+                .register("_qa_reset_rom", Some("1"), 64, ctx)
+                .unwrap();
+            let latched = console
+                .cvars
+                .register("_qa_reset_latch", Some("1"), 32, ctx)
+                .unwrap();
+            console.cvars.force_write(readonly, "2").unwrap();
+            console.cvars.force_write(latched, "2").unwrap();
+            console.cvars.set_latch_active(latched.canonical(), true);
+            console.cvars.write(latched, "3").unwrap();
+            let sensitivity = console.cvars.bind("sensitivity", ctx).unwrap();
+            console.cvars.force_write(sensitivity, "9").unwrap();
+            let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
+            let mut scratch = runtime.geometry.scratch();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+            // Zero in a QVM is NULL even when its data at offset zero is not empty.
+            memory.write(base, b"7\0").unwrap();
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let before = services.cvars.entries().count();
+            for (name, expected) in [
+                ("_qa_reset_missing", None),
+                ("_qa_reset_rom", Some("1")),
+                ("_qa_reset_latch", Some("1")),
+                ("sensitivity", Some("5")),
+            ] {
+                memory.write_string(base + 32, 64, name.as_bytes()).unwrap();
+                let arguments = [base + 32, 0];
+                let mut call = Invocation {
+                    services: &mut services,
+                    memory: &mut memory,
+                    native_cvars: None,
+                    native_resources: None,
+                    native_entities: None,
+                    native_surfaces: None,
+                    native_command: None,
+                    native_configs: None,
+                    context: call_context,
+                    platform_time: EventTime(0),
+                    command: &[],
+                    addresses,
+                    arguments: &arguments,
+                };
+                assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+                let actual = services
+                    .cvars
+                    .bind(name, ctx)
+                    .map(|view| services.cvars.read(view).unwrap().as_str().to_owned());
+                assert_eq!(actual.as_deref(), expected);
+            }
+            assert_eq!(services.cvars.entries().count(), before);
+            assert!(services.cvars.latched(latched).unwrap().is_none());
+            assert_eq!(services.cvars.flags(readonly) & 64, 64);
+            assert_eq!(unknown.calls, 0);
+            // The same native value leaves an outstanding latch untouched.
+            services.cvars.write(latched, "2").unwrap();
+            memory
+                .write_string(base + 32, 64, b"_qa_reset_latch")
+                .unwrap();
+            memory.write_string(base + 96, 64, b"1").unwrap();
+            let arguments = [base + 32, base + 96];
+            let mut call = Invocation {
+                services: &mut services,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                context: call_context,
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments: &arguments,
+            };
+            assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+            assert_eq!(
+                services.cvars.latched(latched).unwrap().unwrap().as_str(),
+                "2"
+            );
+            if base == 0 {
+                // QuakeC string offset zero is a string, not Q3's NULL reset.
+                memory.write_string(32, 64, b"sensitivity").unwrap();
+                let arguments = [32, 512];
+                let mut call = Invocation {
+                    services: &mut services,
+                    memory: &mut memory,
+                    native_cvars: None,
+                    native_resources: None,
+                    native_entities: None,
+                    native_surfaces: None,
+                    native_command: None,
+                    native_configs: None,
+                    context: call_context,
+                    platform_time: EventTime(0),
+                    command: &[],
+                    addresses,
+                    arguments: &arguments,
+                };
+                assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+                assert_eq!(services.cvars.read(sensitivity).unwrap().as_str(), "7");
+                services.cvars.force_write(sensitivity, "9").unwrap();
+                let arguments = [32, 0];
+                let mut call = Invocation {
+                    services: &mut services,
+                    memory: &mut memory,
+                    native_cvars: None,
+                    native_resources: None,
+                    native_entities: None,
+                    native_surfaces: None,
+                    native_command: None,
+                    native_configs: None,
+                    context: call_context,
+                    platform_time: EventTime(0),
+                    command: &[],
+                    addresses: Addresses::Native,
+                    arguments: &arguments,
+                };
+                assert_eq!(
+                    qa_compat::abi::QUAKEC.invoke(72, &mut call, &mut unknown),
+                    Ok(0)
+                );
+                assert_eq!(services.cvars.read(sensitivity).unwrap().as_str(), "7");
+            }
+        }
+    }
+}
+
+#[test]
+fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 511 }),
+        (1u64 << 40, Addresses::Native),
+    ] {
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let ctx = context();
+        let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        let mut invoke = |services: &mut qa_compat::services::EngineServices<'_>,
+                          ordinal,
+                          name: &str,
+                          value: Option<&str>,
+                          flags: u32| {
+            memory
+                .write_string(base + 32, 128, name.as_bytes())
+                .unwrap();
+            let value_pointer = if let Some(value) = value {
+                memory
+                    .write_string(base + 192, 128, value.as_bytes())
+                    .unwrap();
+                base + 192
+            } else {
+                0
+            };
+            let arguments = [base + 32, value_pointer, u64::from(flags)];
+            let mut call = Invocation {
+                services,
+                memory: &mut memory,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                context: ctx,
+                platform_time: EventTime(0),
+                command: &[],
+                addresses,
+                arguments: &arguments,
+            };
+            assert_eq!(Q3_UI.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+        };
+        let before = services.cvars.entries().count();
+        invoke(&mut services, 7, "_qa_ui_missing", None, 0);
+        assert_eq!(services.cvars.entries().count(), before);
+        for (name, flags) in [
+            ("_qa_ui_rom", 64),
+            ("_qa_ui_init", 16),
+            ("_qa_ui_cheat", 512),
+        ] {
+            invoke(&mut services, 8, name, Some("1"), flags);
+            invoke(&mut services, 3, name, Some("2"), 0);
+            let view = services.cvars.bind(name, ctx.console).unwrap();
+            services.cvars.initialized = true;
+            services.cvars.cheats = false;
+            invoke(&mut services, 7, name, None, 0);
+            assert_eq!(services.cvars.read(view).unwrap().as_str(), "2");
+            assert_eq!(services.cvars.flags(view) & flags, flags);
+            invoke(&mut services, 3, name, None, 0);
+            assert_eq!(services.cvars.read(view).unwrap().as_str(), "1");
+        }
+        invoke(&mut services, 8, "_qa_ui_latch", Some("1"), 32);
+        invoke(&mut services, 3, "_qa_ui_latch", Some("2"), 0);
+        let view = services.cvars.bind("_qa_ui_latch", ctx.console).unwrap();
+        services.cvars.set_latch_active(view.canonical(), true);
+        invoke(&mut services, 7, "_qa_ui_latch", None, 0);
+        assert_eq!(services.cvars.read(view).unwrap().as_str(), "2");
+        assert_eq!(services.cvars.latched(view).unwrap().unwrap().as_str(), "1");
+        invoke(&mut services, 3, "_qa_ui_latch", None, 0);
+        assert_eq!(services.cvars.read(view).unwrap().as_str(), "1");
+        assert!(services.cvars.latched(view).unwrap().is_none());
+        invoke(&mut services, 8, "_qa_ui_existing", Some("5"), 0);
+        invoke(&mut services, 3, "_qa_ui_existing", Some("8"), 0);
+        let view = services.cvars.bind("_qa_ui_existing", ctx.console).unwrap();
+        let entries = services.cvars.entries().count();
+        invoke(&mut services, 8, "_QA_UI_EXISTING", Some("99"), 64);
+        assert_eq!(services.cvars.entries().count(), entries);
+        assert_eq!(services.cvars.read(view).unwrap().as_str(), "8");
+        assert_eq!(services.cvars.flags(view) & 64, 64);
+        invoke(&mut services, 3, "_qa_ui_existing", None, 0);
+        assert_eq!(services.cvars.read(view).unwrap().as_str(), "5");
+        assert_eq!(unknown.calls, 0);
+        assert_eq!(services.server.events.len(), 3);
     }
 }
 

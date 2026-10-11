@@ -41,6 +41,14 @@ impl Invocation<'_, '_, '_> {
             Addresses::Native | Addresses::NativeFunction => self.arg(index)?,
         })
     }
+    fn null_pointer(&self, index: usize) -> Result<bool, CallError> {
+        // VM_ArgPtr tests the argument before applying dataMask. A nonzero
+        // QVM address that wraps to offset zero still names actual data.
+        Ok(match self.addresses {
+            Addresses::Qvm { .. } => self.arg(index)? as u32 == 0,
+            Addresses::Native | Addresses::NativeFunction => self.arg(index)? == 0,
+        })
+    }
     fn length(&self, index: usize) -> Result<usize, CallError> {
         match self.addresses {
             Addresses::NativeFunction => {
@@ -178,6 +186,8 @@ const fn ui() -> CallTable {
     t.entries[3] = Some(cvar_set::<true, true>);
     t.entries[4] = Some(cvar_number);
     t.entries[5] = Some(cvar_string);
+    t.entries[7] = Some(cvar_reset);
+    t.entries[8] = Some(cvar_create);
     t.entries[10] = Some(argc);
     t.entries[11] = Some(argv);
     t.entries[13] = Some(file_open);
@@ -499,6 +509,12 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
 ) -> Result<u64, CallError> {
     let name =
         std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    if REGISTER && c.null_pointer(1)? {
+        if let Some(view) = c.services.cvars.bind(name, c.context.console) {
+            (ENGINE_CALLS.cvar_reset)(c.services, view, FORCE)?;
+        }
+        return Ok(0);
+    }
     let value =
         std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
     let view = match c.services.cvars.bind(name, c.context.console) {
@@ -508,6 +524,14 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
         }
         None => return Err(CallError::Cvar),
     };
+    if REGISTER
+        && c.services
+            .cvars
+            .read(view)
+            .is_ok_and(|text| text.as_str() == value)
+    {
+        return Ok(0);
+    }
     if FORCE {
         // Q3 game/cgame/ui call Cvar_Set -> Cvar_Set2(force=true), while
         // QuakeC keeps its existing normal-write boundary policy.
@@ -515,6 +539,28 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
     } else {
         (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
     }
+    Ok(0)
+}
+fn cvar_reset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name =
+        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    if let Some(view) = c.services.cvars.bind(name, c.context.console) {
+        (ENGINE_CALLS.cvar_reset)(c.services, view, false)?;
+    }
+    Ok(0)
+}
+fn cvar_create(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let name =
+        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    let value =
+        std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
+    (ENGINE_CALLS.cvar_register)(
+        c.services,
+        c.context.console,
+        name,
+        Some(value),
+        c.arg(2)? as u32,
+    )?;
     Ok(0)
 }
 fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
