@@ -241,3 +241,89 @@ fn one_native_receipt_can_ack_a_span_without_counting_each_record_as_an_ack() {
     );
     assert!(ring.is_empty());
 }
+
+fn native_delivery(target: NativeTarget) -> NativeDelivery {
+    NativeDelivery {
+        module: ModuleId(7),
+        source: RuleSetId::Quake2Rerelease,
+        target,
+        origin: Vec3([1.0, -2.0, 3.0]),
+        reliable: true,
+        dupe_key: u32::MAX,
+    }
+}
+#[test]
+fn native_pages_follow_each_consumer_receipt_without_cloning_or_truncating() {
+    let mut ring = EventRing::load(4, 3, 4, 32).unwrap();
+    let first = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let bytes: Vec<_> = (0..128).map(|i| i as u8).collect();
+    let delivery = native_delivery(NativeTarget::All);
+    let sequence = ring.native_message(delivery, &bytes).unwrap();
+    let mut batch = ring.batch(first).unwrap();
+    let FrameEvent::Native(message) = ring.next(&mut batch).unwrap().event else {
+        panic!()
+    };
+    assert_eq!(message.delivery, delivery);
+    let mut output = [0xcc; 128];
+    assert!(
+        ring.texts
+            .copy_payload(message.payload, &mut output[..127])
+            .is_none()
+    );
+    assert_eq!(
+        ring.texts
+            .copy_payload(message.payload, &mut output)
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(ring.texts.truncated(), 0);
+    consume(&mut ring, second, OutputSubmission::BestEffort);
+    consume(&mut ring, module, OutputSubmission::BestEffort);
+    assert!(ring.submit(
+        first,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(9))
+    ));
+    assert_eq!(ring.acknowledge(first, NativeReceipt(8)), 0);
+    assert!(
+        ring.texts
+            .copy_payload(message.payload, &mut output)
+            .is_some()
+    );
+    assert_eq!(ring.acknowledge(first, NativeReceipt(9)), 1);
+    assert!(
+        ring.texts
+            .copy_payload(message.payload, &mut output)
+            .is_none()
+    );
+    assert!(ring.is_empty());
+}
+#[test]
+fn native_failed_page_admission_releases_partial_pages_and_unicast_excludes_other_clients() {
+    let mut ring = EventRing::load(4, 2, 3, 32).unwrap();
+    let first = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let delivery = native_delivery(NativeTarget::Client(ClientId(1)));
+    assert_eq!(
+        ring.native_message(delivery, &[1; 129]),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(
+        ring.native_message(delivery, &[2; 128]),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert!(ring.is_empty());
+    ring.native_message(delivery, &[3; 96]).unwrap();
+    assert!(consume(&mut ring, first, OutputSubmission::Unsent).is_empty());
+    assert_eq!(
+        consume(&mut ring, second, OutputSubmission::BestEffort),
+        [0]
+    );
+    assert!(ring.is_empty());
+    assert_eq!(ring.rejected_publications(), 2);
+    ring.native_message(delivery, &[4; 96]).unwrap();
+    consume(&mut ring, second, OutputSubmission::BestEffort);
+    assert!(ring.is_empty());
+}

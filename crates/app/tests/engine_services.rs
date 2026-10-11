@@ -40,22 +40,64 @@ fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
         (ENGINE_CALLS.message_string)(&mut services, ModuleId(1), &oversized),
         Err(CallError::Capacity)
     );
-    assert_eq!(
-        services.storage.message(ModuleId(1)).unwrap(),
-        &[0x34, 0x12]
-    );
-    assert_eq!(
-        services.storage.message(ModuleId(2)).unwrap(),
-        &[0xff, 0x80, 0]
-    );
+    let publish = |services: &mut qa_compat::services::EngineServices<'_>, module| {
+        (ENGINE_CALLS.native_message)(
+            services,
+            qa_core::primitives::NativeDelivery {
+                module,
+                source: RuleSetId::Quake2,
+                target: qa_core::primitives::NativeTarget::All,
+                origin: Default::default(),
+                reliable: true,
+                dupe_key: 0,
+            },
+        )
+        .unwrap();
+    };
+    publish(&mut services, ModuleId(1));
+    publish(&mut services, ModuleId(2));
+    (ENGINE_CALLS.message_bits)(&mut services, ModuleId(1), 0x1234, 16).unwrap();
     (ENGINE_CALLS.message_string)(&mut services, ModuleId(1), &oversized[..0x8000 - 3]).unwrap();
-    let full = services.storage.message(ModuleId(1)).unwrap().to_vec();
-    assert_eq!(full.len(), 0x8000);
     assert_eq!(
         (ENGINE_CALLS.message_bits)(&mut services, ModuleId(1), 1, 8),
         Err(CallError::Capacity)
     );
-    assert_eq!(services.storage.message(ModuleId(1)).unwrap(), full);
+    publish(&mut services, ModuleId(1));
+    publish(&mut services, ModuleId(1)); // successful admission resets staging
+    (ENGINE_CALLS.message_bits)(&mut services, ModuleId(2), 0xab, 8).unwrap();
+    services.storage.reset_message(ModuleId(2)).unwrap();
+    publish(&mut services, ModuleId(2)); // module-frame reset discards unsubmitted bytes
+    let mut batch = services
+        .server
+        .events
+        .batch(services.server.presentation)
+        .unwrap();
+    let mut output = vec![0; 0x8000];
+    for expected in [
+        vec![0x34, 0x12],
+        vec![0xff, 0x80, 0],
+        [vec![0x34, 0x12], oversized[..0x8000 - 3].to_vec(), vec![0]].concat(),
+    ] {
+        let record = services.server.events.next(&mut batch).unwrap();
+        let FrameEvent::Native(message) = record.event else {
+            panic!()
+        };
+        assert_eq!(
+            services
+                .server
+                .events
+                .texts
+                .copy_payload(message.payload, &mut output)
+                .unwrap(),
+            expected
+        );
+        services.server.events.submit(
+            services.server.presentation,
+            record.sequence,
+            qa_core::events::OutputSubmission::BestEffort,
+        );
+    }
+    assert!(services.server.events.is_empty());
     assert_eq!(
         (ENGINE_CALLS.message_bits)(&mut services, ModuleId(3), 1, 8),
         Err(CallError::Memory)

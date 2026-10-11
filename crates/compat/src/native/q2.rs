@@ -653,6 +653,24 @@ impl Game {
                         &[NativeScalar::I32, NativeScalar::Word][..],
                         NativeScalar::Void,
                     ))
+                } else if ordinal == if layout.version == 2023 { 24 } else { 22 } {
+                    Some((
+                        if layout.version == 2023 {
+                            &[NativeScalar::Word, NativeScalar::I32, NativeScalar::U8][..]
+                        } else {
+                            &[NativeScalar::Word, NativeScalar::I32][..]
+                        },
+                        NativeScalar::Void,
+                    ))
+                } else if ordinal == if layout.version == 2023 { 25 } else { 23 } {
+                    Some((
+                        if layout.version == 2023 {
+                            &[NativeScalar::Word, NativeScalar::U8, NativeScalar::U32][..]
+                        } else {
+                            &[NativeScalar::Word, NativeScalar::I32][..]
+                        },
+                        NativeScalar::Void,
+                    ))
                 } else if (if layout.version == 2023 {
                     26..=35
                 } else {

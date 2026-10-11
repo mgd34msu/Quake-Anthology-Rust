@@ -231,6 +231,8 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[20] = Some(native_area_query::<false>);
+    table.entries[22] = Some(native_multicast::<false>);
+    table.entries[23] = Some(native_unicast::<false>);
     table.entries[24] = Some(native_message_bits::<8>);
     table.entries[25] = Some(native_message_bits::<8>);
     table.entries[26] = Some(native_message_bits::<16>);
@@ -273,6 +275,8 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
     table.entries[23] = Some(native_area_query::<true>);
+    table.entries[24] = Some(native_multicast::<true>);
+    table.entries[25] = Some(native_unicast::<true>);
     table.entries[26] = Some(native_message_bits::<8>);
     table.entries[27] = Some(native_message_bits::<8>);
     table.entries[28] = Some(native_message_bits::<16>);
@@ -471,18 +475,11 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
         return Ok(0);
     }
     let client = if address != 0 {
-        let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-        let native = entities.identity(c.memory, c.context, *table, address)?;
-        let Some(slot) = c.services.server.clients.iter().position(|client| {
-            client.connection.is_some()
-                && c.services.server.entities.resolve(client.entity).is_some()
-                && c.services.server.entities.columns.native_entity[client.entity.slot as usize]
-                    == Some(native)
-        }) else {
+        let Some(client) = native_client(c, address)? else {
             // A free client or non-client edict never becomes a broadcast.
             return Ok(0);
         };
-        Some(qa_core::primitives::ClientId(slot as u32))
+        Some(client)
     } else {
         None
     };
@@ -1020,6 +1017,101 @@ fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         addition.as_bytes(),
     )?;
     Ok(1)
+}
+
+fn native_client(
+    c: &Invocation<'_, '_, '_>,
+    address: u64,
+) -> Result<Option<qa_core::primitives::ClientId>, CallError> {
+    let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let native = entities.identity(c.memory, c.context, *table, address)?;
+    Ok(c.services
+        .server
+        .clients
+        .iter()
+        .position(|client| {
+            client.connection.is_some()
+                && c.services.server.entities.resolve(client.entity).is_some()
+                && c.services.server.entities.columns.native_entity[client.entity.slot as usize]
+                    == Some(native)
+        })
+        .map(|slot| qa_core::primitives::ClientId(slot as u32)))
+}
+fn native_delivery<const WIDE: bool>(
+    c: &Invocation<'_, '_, '_>,
+    target: qa_core::primitives::NativeTarget,
+    origin: qa_core::primitives::Vec3,
+    reliable: bool,
+    dupe_key: u32,
+) -> qa_core::primitives::NativeDelivery {
+    qa_core::primitives::NativeDelivery {
+        module: c.context.module,
+        source: if WIDE {
+            qa_core::primitives::RuleSetId::Quake2Rerelease
+        } else {
+            qa_core::primitives::RuleSetId::Quake2
+        },
+        target,
+        origin,
+        reliable,
+        dupe_key,
+    }
+}
+fn native_multicast<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_core::primitives::{NativeTarget, Vec3};
+    let to = c.arg(1)? as u32 as i32;
+    if !(0..=if WIDE { 2 } else { 5 }).contains(&to) {
+        return Err(CallError::Memory);
+    }
+    let (to, reliable) = if WIDE {
+        (to, c.arg(2)? as u8 != 0)
+    } else {
+        (to % 3, to >= 3)
+    };
+    let target = match to {
+        0 => NativeTarget::All,
+        1 => NativeTarget::Hearing,
+        2 => NativeTarget::Sight,
+        _ => return Err(CallError::Memory),
+    };
+    // ALL ignores origin, as in SV_Multicast; PVS/PHS require a valid vector.
+    let origin = if target == NativeTarget::All {
+        Vec3::default()
+    } else {
+        c.memory.read_vec3(c.pointer(0)?)?
+    };
+    let delivery = native_delivery::<WIDE>(c, target, origin, reliable, 0);
+    (ENGINE_CALLS.native_message)(c.services, delivery)?;
+    Ok(0)
+}
+fn native_unicast<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.pointer(0)?;
+    let client = if address == 0 {
+        None
+    } else {
+        native_client(c, address)?
+    };
+    let Some(client) = client else {
+        if WIDE {
+            c.services.storage.reset_message(c.context.module)?;
+        }
+        return Ok(0);
+    };
+    let reliable = if WIDE {
+        c.arg(1)? as u8 != 0
+    } else {
+        c.arg(1)? as u32 != 0
+    };
+    let dupe_key = if WIDE { c.arg(2)? as u32 } else { 0 };
+    let delivery = native_delivery::<WIDE>(
+        c,
+        qa_core::primitives::NativeTarget::Client(client),
+        qa_core::primitives::Vec3::default(),
+        reliable,
+        dupe_key,
+    );
+    (ENGINE_CALLS.native_message)(c.services, delivery)?;
+    Ok(0)
 }
 
 fn native_message_bits<const WIDTH: u8>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

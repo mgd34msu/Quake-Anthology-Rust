@@ -1,5 +1,6 @@
 use crate::primitives::{
-    ClientId, EffectEvent, HudEvent, ModuleId, PrintEvent, PrintKind, SoundEvent, TextId, TextLease,
+    ClientId, EffectEvent, HudEvent, ModuleId, NativeDelivery, NativeMessage, NativePayload,
+    NativeTarget, PrintEvent, PrintKind, SoundEvent, TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -9,6 +10,7 @@ pub enum FrameEvent {
     Effect(EffectEvent),
     Print(PrintEvent),
     Hud(HudEvent),
+    Native(NativeMessage),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventStorageError {
@@ -68,7 +70,7 @@ enum Delivery {
 struct OutputSlot {
     record: OutputRecord,
     remaining: usize,
-    text: Option<TextLease>,
+    texts: [Option<TextLease>; 4],
 }
 #[derive(Default)]
 struct OutputCursor {
@@ -207,10 +209,10 @@ impl EventRing {
             if self.slots[index].as_ref().is_some_and(|s| s.remaining != 0) {
                 break;
             }
-            if let Some(slot) = self.slots[index].take()
-                && let Some(text) = slot.text
-            {
-                self.texts.release(text);
+            if let Some(slot) = self.slots[index].take() {
+                for lease in slot.texts.into_iter().flatten() {
+                    self.texts.release(lease);
+                }
             }
             self.head += 1;
         }
@@ -249,16 +251,24 @@ impl EventRing {
         event: FrameEvent,
     ) -> Result<u64, EventStorageError> {
         self.make_room();
-        let text = match event {
-            FrameEvent::Print(p) => {
-                let Some(lease) = self.texts.lease(p.text) else {
+        let mut texts = [const { None }; 4];
+        let pages = match event {
+            FrameEvent::Print(p) => [Some(p.text), None, None, None],
+            FrameEvent::Native(message) => message.payload.pages,
+            _ => [None; 4],
+        };
+        for (index, page) in pages.into_iter().enumerate() {
+            if let Some(page) = page {
+                let Some(lease) = self.texts.lease(page) else {
+                    for lease in texts.into_iter().flatten() {
+                        self.texts.release(lease);
+                    }
                     self.rejected_publications += 1;
                     return Err(EventStorageError::StaleText);
                 };
-                Some(lease)
+                texts[index] = Some(lease);
             }
-            _ => None,
-        };
+        }
         let sequence = self.tail;
         let mut remaining = 0;
         for index in 0..self.active_len {
@@ -271,6 +281,12 @@ impl EventRing {
                         p.client.is_none_or(|to| to == id)
                     }
                     (Some(OutputTarget::Client(id)), FrameEvent::Hud(event)) => event.client == id,
+                    (Some(OutputTarget::Client(id)), FrameEvent::Native(message)) => {
+                        match message.delivery.target {
+                            NativeTarget::Client(to) => id == to,
+                            _ => true,
+                        }
+                    }
                     _ => true,
                 };
             if relevant && c.resync {
@@ -288,11 +304,46 @@ impl EventRing {
         self.slots[sequence as usize & self.mask] = Some(OutputSlot {
             record: OutputRecord { sequence, event },
             remaining,
-            text,
+            texts,
         });
         self.tail += 1;
         self.retire();
         Ok(sequence)
+    }
+    pub fn native_message(
+        &mut self,
+        delivery: NativeDelivery,
+        bytes: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        self.make_room();
+        if bytes.len() > self.texts.width * 4 {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        let mut leases = [const { None }; 4];
+        let mut pages = [None; 4];
+        for (index, chunk) in bytes.chunks(self.texts.width).enumerate() {
+            let Some(lease) = self.texts.insert(chunk) else {
+                for lease in leases.into_iter().flatten() {
+                    self.texts.release(lease);
+                }
+                self.rejected_publications += 1;
+                return Err(EventStorageError::TextCapacity);
+            };
+            pages[index] = Some(lease.id());
+            leases[index] = Some(lease);
+        }
+        let result = self.push(FrameEvent::Native(NativeMessage {
+            delivery,
+            payload: NativePayload {
+                pages,
+                length: bytes.len(),
+            },
+        }));
+        for lease in leases.into_iter().flatten() {
+            self.texts.release(lease);
+        }
+        result
     }
     pub fn print(
         &mut self,
@@ -533,6 +584,22 @@ impl TextStore {
             return None;
         }
         Some(&self.bytes[slot * self.width..slot * self.width + self.lengths[slot] as usize])
+    }
+    pub fn copy_payload<'a>(
+        &self,
+        payload: NativePayload,
+        output: &'a mut [u8],
+    ) -> Option<&'a [u8]> {
+        let output = output.get_mut(..payload.length)?;
+        let mut written = 0;
+        for page in payload.pages.into_iter().flatten() {
+            let bytes = self.get(page)?;
+            output
+                .get_mut(written..written + bytes.len())?
+                .copy_from_slice(bytes);
+            written += bytes.len();
+        }
+        (written == output.len()).then_some(output)
     }
     pub fn reused(&self) -> u64 {
         self.reused

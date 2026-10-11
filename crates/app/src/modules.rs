@@ -540,6 +540,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     };
     // qsrc advances the SERVER frame number after RunFrame. Loading calls
     // retain zero; completed ticks are visible to later imports and shutdown.
+    let _ = row.storage.reset_message(module);
     row.request.context.server_frame = tick.index - 1;
     let time = row.request.context.clock.at(tick.end);
     invoke_frame(host, module, time);

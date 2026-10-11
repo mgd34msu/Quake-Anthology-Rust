@@ -1980,9 +1980,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let unicast_slot = game.import_ordinal(b"unicast").unwrap();
         assert_eq!(unicast_slot, if rr { 25 } else { 23 });
         assert!(
-            game.vm
+            !game
+                .vm
                 .unresolved_imports()
-                .any(|i| i.name == Some(b"unicast".as_slice()))
+                .any(|i| { matches!(i.name, Some(b"unicast" | b"multicast")) })
         );
         let memory = game.vm.process.memory_mut().unwrap();
         if rr {
@@ -3364,6 +3365,22 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             invoke_import(&mut game, slot, &[entity_address + stride]);
             invoke_import(&mut game, slot, &[base + 0x3000]);
         }
+        invoke_import(
+            &mut game,
+            if rr { 24 } else { 22 },
+            &[0, if rr { 0 } else { 3 }, 1],
+        );
+        invoke_import(&mut game, write_slots[0], &[0xaa]);
+        invoke_import(
+            &mut game,
+            if rr { 25 } else { 23 },
+            &[0, 1, u64::from(u32::MAX)],
+        );
+        invoke_import(&mut game, if rr { 24 } else { 22 }, &[base + 0x1e80, 2, 0]);
+        for to in 0..if rr { 3 } else { 6 } {
+            invoke_import(&mut game, write_slots[0], &[0xbb + to]);
+            invoke_import(&mut game, if rr { 24 } else { 22 }, &[base + 0x1e80, to, 1]);
+        }
         drop(invoke_import);
         console.execute_frame(&mut runtime);
         let view = console.cvars.bind("sensitivity", context.console).unwrap();
@@ -3385,7 +3402,63 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         if rr {
             expected.extend([2, 0, 0, 0]);
         }
-        assert_eq!(storage.message(ModuleId(1)).unwrap(), expected);
+        let mut native = Vec::new();
+        let mut batch = runtime
+            .server
+            .events
+            .batch(runtime.server.presentation)
+            .unwrap();
+        let mut output = vec![0; 0x8000];
+        while let Some(record) = runtime.server.events.next(&mut batch) {
+            if let FrameEvent::Native(message) = record.event {
+                let bytes = runtime
+                    .server
+                    .events
+                    .texts
+                    .copy_payload(message.payload, &mut output)
+                    .unwrap();
+                native.push((message.delivery, bytes.to_vec()));
+            }
+            runtime.server.events.submit(
+                runtime.server.presentation,
+                record.sequence,
+                qa_core::events::OutputSubmission::BestEffort,
+            );
+        }
+        assert_eq!(native[0].1, expected);
+        assert!(native[0].0.reliable);
+        assert_eq!(
+            native[0].0.source,
+            if rr {
+                RuleSetId::Quake2Rerelease
+            } else {
+                RuleSetId::Quake2
+            }
+        );
+        let start = if rr {
+            1
+        } else {
+            assert_eq!(native[1].1, [0xaa]);
+            assert_eq!(native[1].0.target, qa_core::primitives::NativeTarget::Sight);
+            assert_eq!(
+                native[1].0.origin,
+                qa_core::primitives::Vec3([1.0625, -2.125, 4096.0])
+            );
+            2
+        };
+        for (to, (delivery, bytes)) in native[start..].iter().enumerate() {
+            use qa_core::primitives::NativeTarget;
+            assert_eq!(*bytes, [0xbb + to as u8]);
+            assert_eq!(delivery.reliable, rr || to >= 3);
+            assert_eq!(
+                delivery.target,
+                [
+                    NativeTarget::All,
+                    NativeTarget::Hearing,
+                    NativeTarget::Sight
+                ][to % 3]
+            );
+        }
         if let Some(entity) = owned_entity {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             (qa_compat::services::ENGINE_CALLS.free)(&mut services, context, entity).unwrap();
@@ -3477,10 +3550,26 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             emit(&mut game, slots[2], &[0, 1]).unwrap();
             emit(&mut game, slots[1], &[entity_address, 2, 1]).unwrap();
             emit(&mut game, slots[1], &[target, 0, message]).unwrap();
+            emit(&mut game, write_slots[0], &[0x9a]).unwrap();
+            emit(&mut game, unicast_slot, &[target, 1, 0xabcd_ef01_1234_5678]).unwrap();
             drop(emit);
             let mut batch = runtime.server.events.batch(observer).unwrap();
             let mut prints = Vec::new();
+            let mut unicasts = Vec::new();
             while let Some(record) = runtime.server.events.next(&mut batch) {
+                if let FrameEvent::Native(message) = record.event {
+                    let mut bytes = [0; 32];
+                    assert_eq!(
+                        runtime
+                            .server
+                            .events
+                            .texts
+                            .copy_payload(message.payload, &mut bytes)
+                            .unwrap(),
+                        [0x9a]
+                    );
+                    unicasts.push(message.delivery);
+                }
                 if let FrameEvent::Print(print) = record.event
                     && runtime.server.events.texts.get(print.text) == Some(text.as_slice())
                 {
@@ -3498,6 +3587,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     (Some(client), PrintKind::Notify, 0),
                 ]
             );
+            assert_eq!(unicasts.len(), 1);
+            assert_eq!(
+                unicasts[0].target,
+                qa_core::primitives::NativeTarget::Client(client)
+            );
+            assert!(unicasts[0].reliable);
+            assert_eq!(unicasts[0].dupe_key, 0x1234_5678);
             runtime.server.events.unbind(observer);
         }
         let frame_code = if rr {

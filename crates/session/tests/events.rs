@@ -9,6 +9,7 @@ impl EventConsumer for Consumer {
         self.events.push(match record.event {
             FrameEvent::Sound(s) => s.sound.0,
             FrameEvent::Effect(e) => e.effect.0,
+            FrameEvent::Native(event) => event.delivery.module.0 as u32,
             FrameEvent::Hud(event) => event.client.0,
             FrameEvent::Print(p) => {
                 assert_eq!(texts.get(p.text), Some(b"message".as_slice()));

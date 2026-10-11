@@ -836,6 +836,43 @@ pub struct HudLine {
     pub started_at: f64,
     pub until: f64,
 }
+/// Recipient filtering uses compiled gameplay visibility, never render PVS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeTarget {
+    All,
+    Sight,
+    Hearing,
+    Client(ClientId),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NativeDelivery {
+    pub module: ModuleId,
+    pub source: RuleSetId,
+    pub target: NativeTarget,
+    pub origin: Vec3,
+    pub reliable: bool,
+    pub dupe_key: u32,
+}
+/// Up to four existing payload pages, owned by the publishing ring slot.
+#[derive(Clone, Copy, Debug)]
+pub struct NativePayload {
+    pub(crate) pages: [Option<TextId>; 4],
+    pub(crate) length: usize,
+}
+impl NativePayload {
+    pub fn len(self) -> usize {
+        self.length
+    }
+    pub fn is_empty(self) -> bool {
+        self.length == 0
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub struct NativeMessage {
+    pub delivery: NativeDelivery,
+    pub payload: NativePayload,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct HudEvent {
     pub client: ClientId,

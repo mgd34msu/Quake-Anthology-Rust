@@ -72,6 +72,7 @@ pub fn dispatch(
                     }
                     true
                 }
+                FrameEvent::Native(_) => false,
                 FrameEvent::Hud(_) => true,
             };
             server.events.submit(

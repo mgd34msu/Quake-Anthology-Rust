@@ -11,7 +11,7 @@ use qa_core::{
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionShape, CvarHandle, EffectEvent, EntityId, GeometryId,
-        ModelRules, ModuleId, NameId, PrintKind, SoundEvent, Vec3,
+        ModelRules, ModuleId, NameId, NativeDelivery, PrintKind, SoundEvent, Vec3,
     },
     text::FixedText,
 };
@@ -188,13 +188,9 @@ impl ServiceStorage {
             .find(|r| r.module == module)
             .ok_or(CallError::Text)
     }
-    pub fn message(&self, module: ModuleId) -> Result<&[u8], CallError> {
-        let row = self
-            .ranges
-            .iter()
-            .find(|r| r.module == module)
-            .ok_or(CallError::Memory)?;
-        Ok(&row.message[..row.written])
+    pub fn reset_message(&mut self, module: ModuleId) -> Result<(), CallError> {
+        self.entity_range(module)?.written = 0;
+        Ok(())
     }
     fn write_message(
         &mut self,
@@ -364,6 +360,8 @@ pub struct EngineCallTable {
         bool,
         bool,
     ) -> Result<bool, CallError>,
+    pub native_message:
+        fn(&mut EngineServices<'_>, NativeDelivery) -> Result<Option<u64>, CallError>,
     pub message_bits: fn(&mut EngineServices<'_>, ModuleId, u32, u8) -> Result<(), CallError>,
     pub message_string: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(), CallError>,
     pub area_query: AreaQueryCall,
@@ -447,6 +445,19 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             return Ok(portals.connected(first, second).unwrap_or(false));
         }
         Ok(true)
+    },
+    native_message: |s, delivery| {
+        let row = s.storage.entity_range(delivery.module)?;
+        if row.written == 0 {
+            return Ok(None);
+        }
+        let result = s
+            .server
+            .events
+            .native_message(delivery, &row.message[..row.written]);
+        // Native multicast/unicast consumes staging even on bounded admission failure.
+        row.written = 0;
+        result.map(Some).map_err(|_| CallError::Capacity)
     },
     message_bits: |s, module, value, width| {
         s.storage
