@@ -4,7 +4,7 @@ use crate::{
     memory::ModuleMemory,
     services::CallError,
 };
-use qa_core::primitives::{IndexSpan, ModuleId, ValueBinding};
+use qa_core::primitives::{ClientId, IndexSpan, ModuleId, ValueBinding};
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
@@ -56,7 +56,9 @@ impl PlayerStats {
         if table.address == 0 {
             return Ok(());
         }
-        for client in &mut server.clients {
+        for index in 0..server.clients.len() {
+            let module_moves = server.module_moves(ClientId(index as u32)).is_some();
+            let client = &mut server.clients[index];
             if client.connection.is_none() || client.module != module {
                 continue;
             }
@@ -82,9 +84,7 @@ impl PlayerStats {
                 &mut PlayerContext::default(),
                 |_| None,
             );
-            if client.module_movement
-                && let Some(pmove) = pmove.as_deref_mut()
-            {
+            if module_moves && let Some(pmove) = pmove.as_deref_mut() {
                 pmove.import_client(memory, pointer, edict, &mut client.player)?;
                 let body = server.entities.columns.body(slot);
                 client.player.body.mins = body.mins;

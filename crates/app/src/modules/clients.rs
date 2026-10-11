@@ -11,9 +11,10 @@ impl FrameHost {
             .movement_rules;
         let command = qa_movement::prepare_command(rules, command);
         self.runtime.server.submit_command(id, command);
-        if self.runtime.server.clients[id.0 as usize].module_movement {
-            let module = self.runtime.server.clients[id.0 as usize].module;
-            if let Some(api) = self.module_row(module).and_then(|row| row.client_api)
+        if let Some(native) = self.runtime.server.module_moves(id) {
+            if let Some(api) = self
+                .module_row(native.module)
+                .and_then(|row| row.client_api)
                 && let Err(error) = self.think_q2_client(&api, id, &command, 0)
             {
                 let _ = self
@@ -149,22 +150,11 @@ impl FrameHost {
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn module_client(&mut self, id: ClientId) -> Result<(NativeEntity, u64, ThinkTime), String> {
-        let client = self
+        let native = self
             .runtime
             .server
-            .clients
-            .get(id.0 as usize)
-            .filter(|client| client.connection.is_some())
-            .ok_or("client is disconnected")?;
-        let slot = self
-            .runtime
-            .server
-            .entities
-            .resolve(client.entity)
-            .ok_or("stale client lifetime")?;
-        let native = self.runtime.server.entities.columns.native_entity[slot]
-            .filter(|native| native.module == client.module)
-            .ok_or("client has no native binding")?;
+            .module_moves(id)
+            .ok_or("client has no active native movement binding")?;
         let row = self
             .module_row(native.module)
             .ok_or("missing client module")?;

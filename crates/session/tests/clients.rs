@@ -251,3 +251,38 @@ fn untrusted_command_client_ids_are_scoped_and_disconnected_slots_stay_idle() {
     server.submit_command(id, command);
     assert_eq!(server.clients[0].command.duration_ms, 123);
 }
+
+#[test]
+fn module_movement_requires_admission_owner_and_current_entity_lifetime() {
+    let mut server = Server::load(3, 8, 2, 2, 2, 0).unwrap();
+    for (index, connection) in [Connection::Local, Connection::Remote, Connection::Bot]
+        .into_iter()
+        .enumerate()
+    {
+        let native = NativeEntity {
+            module: ModuleId(3),
+            slot: index as i32 + 1,
+        };
+        let id = server
+            .connect(connection, native.module, PlayerTail::None, Some(native))
+            .unwrap();
+        assert_eq!(server.module_moves(id), None);
+        server.clients[id.0 as usize].module_movement = true;
+        assert_eq!(server.module_moves(id), Some(native));
+        server.clients[id.0 as usize].module = ModuleId(4);
+        assert_eq!(server.module_moves(id), None);
+        server.clients[id.0 as usize].module = native.module;
+        let entity = server.clients[id.0 as usize].entity;
+        server.entities.columns.native_entity[entity.slot as usize] = None;
+        assert_eq!(server.module_moves(id), None);
+        server.entities.columns.native_entity[entity.slot as usize] = Some(native);
+        let replacement = server.entities.reset_client(entity).unwrap();
+        server.entities.columns.native_entity[replacement.slot as usize] = Some(native);
+        assert_eq!(server.module_moves(id), None);
+        server.clients[id.0 as usize].entity = replacement;
+        assert_eq!(server.module_moves(id), Some(native));
+        assert!(server.disconnect(id));
+        assert_eq!(server.module_moves(id), None);
+    }
+    assert_eq!(server.module_moves(ClientId(u32::MAX)), None);
+}

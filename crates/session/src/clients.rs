@@ -200,6 +200,17 @@ impl Server {
             .map(|slot| ClientId(slot as u32))
     }
 
+    /// Only an admitted client with a live entity in its owning native module
+    /// routes movement through ClientThink instead of the engine mover.
+    pub fn module_moves(&self, id: ClientId) -> Option<NativeEntity> {
+        let client = self.clients.get(id.0 as usize)?;
+        if client.connection.is_none() || !client.module_movement {
+            return None;
+        }
+        let slot = self.entities.resolve(client.entity)?;
+        self.entities.columns.native_entity[slot].filter(|native| native.module == client.module)
+    }
+
     /// A module supplies its namespace after its API and entity table bind.
     pub fn bind_client_native(&mut self, id: ClientId, native: NativeEntity) -> bool {
         let Some(client) = self.clients.get(id.0 as usize) else {
@@ -289,13 +300,12 @@ impl Server {
         scratch: &mut TraceScratch,
     ) -> u32 {
         let mut steps = 0;
-        for client in self.clients.iter_mut() {
+        for client_index in 0..self.clients.len() {
+            let module_moves = self.module_moves(ClientId(client_index as u32)).is_some();
+            let client = &mut self.clients[client_index];
             if client.connection.is_some() && client.command_pending {
                 client.command_pending = false;
-                if client.module_movement
-                    && self.entities.columns.native_entity[client.entity.slot as usize]
-                        .is_some_and(|native| native.module == client.module)
-                {
+                if module_moves {
                     continue;
                 }
                 let result = {
