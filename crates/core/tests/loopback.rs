@@ -26,6 +26,10 @@ fn packet(queue: &mut SysEventQueue, to: Endpoint, client: u32, expected: &[u8])
 
 #[test]
 fn negotiated_large_messages_and_independent_seats_preserve_send_order() {
+    assert_eq!(Endpoint::Client.index(), 0);
+    assert_eq!(Endpoint::Server.index(), 1);
+    assert_eq!(Endpoint::from_index(0), Endpoint::Client);
+    assert_eq!(Endpoint::from_index(1), Endpoint::Server);
     let mut loopback = Loopback::load([
         limits(8000, 8192, 8),
         limits(64000, 128000, 8),

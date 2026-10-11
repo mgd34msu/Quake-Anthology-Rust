@@ -17,10 +17,17 @@ impl Endpoint {
             Self::Server => u16::MAX - 1,
         }
     }
-    fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         match self {
             Self::Client => 0,
             Self::Server => 1,
+        }
+    }
+    pub const fn from_index(index: usize) -> Self {
+        if index == 0 {
+            Self::Client
+        } else {
+            Self::Server
         }
     }
 }

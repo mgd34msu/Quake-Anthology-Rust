@@ -261,12 +261,7 @@ impl Q1Hulls {
             {
                 return Err(HullError::Plane);
             }
-            let axis = match plane.axis {
-                Some(Axis::X) => Some(0),
-                Some(Axis::Y) => Some(1),
-                Some(Axis::Z) => Some(2),
-                None => None,
-            };
+            let axis = plane.axis.map(Axis::index);
             if let Some(axis) = axis
                 && plane.normal.0
                     != std::array::from_fn(|index| if index == axis { 1.0 } else { 0.0 })

@@ -494,9 +494,6 @@ impl Window {
             unsafe { std::str::from_utf8_unchecked(&self.text[self.text_cursor..self.text_len]) }
                 .chars()
         {
-            if queue.len() + 1 >= queue.capacity() {
-                break;
-            }
             if queue
                 .push(SysEvent {
                     time: self.text_time,
@@ -518,7 +515,7 @@ impl Window {
             return;
         }
         let mut event = SdlEvent { padding: [0; 128] };
-        while queue.len() + 1 < queue.capacity() && unsafe { SDL_PollEvent(&mut event) } {
+        while queue.has_ordinary_room() && unsafe { SDL_PollEvent(&mut event) } {
             let time = clock.now();
             // SAFETY: SDL initializes the union variant corresponding to type.
             let kind = unsafe {

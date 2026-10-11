@@ -50,14 +50,13 @@ fn document(vfs: &Vfs, file: FileRef) -> Result<Value, String> {
 }
 
 fn dialect(name: &str) -> Option<RuleSetId> {
-    match name {
-        "q1" | "q1-netquake" => Some(RuleSetId::Quake),
-        "qw" | "q1-quakeworld" => Some(RuleSetId::QuakeWorld),
-        "q2" | "q2-classic" => Some(RuleSetId::Quake2),
-        "q2rr" | "q2-rerelease" => Some(RuleSetId::Quake2Rerelease),
-        "q3" => Some(RuleSetId::Quake3),
+    RuleSetId::parse(name).or_else(|| match name {
+        "q1-netquake" => Some(RuleSetId::Quake),
+        "q1-quakeworld" => Some(RuleSetId::QuakeWorld),
+        "q2-classic" => Some(RuleSetId::Quake2),
+        "q2-rerelease" => Some(RuleSetId::Quake2Rerelease),
         _ => None,
-    }
+    })
 }
 
 fn put(

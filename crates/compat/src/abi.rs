@@ -1034,10 +1034,7 @@ fn native_message_position<const FLOAT: bool>(
         let (word, width) = if FLOAT {
             (value.to_bits(), 32)
         } else {
-            (
-                (qa_core::math::narrow_eighth(value) * 8.0) as i32 as u32,
-                16,
-            )
+            (qa_core::math::eighth_to_short(value) as i32 as u32, 16)
         };
         (ENGINE_CALLS.message_bits)(c.services, c.context.module, word, width)?;
     }

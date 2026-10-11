@@ -79,9 +79,9 @@ impl LocalSnapshot {
         bytes: &mut [u8],
     ) -> Result<usize, Error> {
         let time = if self.protocol == Protocol::NetQuake15 {
-            ThinkTime::Seconds(time.seconds())
+            ThinkTime::Seconds(0.0).at(time)
         } else {
-            ThinkTime::Milliseconds(time.milliseconds() as i64)
+            ThinkTime::Milliseconds(0).at(time)
         };
         let mut words = [0; states::PLAYER_WORDS];
         // The provider has no native module/entity namespace yet. Do not turn

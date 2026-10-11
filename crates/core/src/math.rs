@@ -130,7 +130,15 @@ pub fn byte_to_angle(angle: i32) -> f32 {
 
 /// Native Q2 signed 16-bit coordinates and velocities in eighth units.
 pub fn narrow_eighth(value: f32) -> f32 {
-    f32::from((value * 8.0) as i32 as i16) * 0.125
+    short_to_eighth(eighth_to_short(value))
+}
+
+pub fn eighth_to_short(value: f32) -> i16 {
+    (value * 8.0) as i32 as i16
+}
+
+pub fn short_to_eighth(value: i16) -> f32 {
+    f32::from(value) * 0.125
 }
 
 /// Origin first, then each axis in order; do not regroup the products.

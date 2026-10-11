@@ -877,7 +877,7 @@ fn quakeworld(
             run_step(
                 UserCmd {
                     duration_ms: ms,
-                    duration_ns: u64::from(ms) * 1_000_000,
+                    duration_ns: EventTime::from_milliseconds(u64::from(ms)).0,
                     ..command
                 },
                 player,

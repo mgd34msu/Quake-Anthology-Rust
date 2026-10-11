@@ -90,17 +90,16 @@ impl EventPump {
             for _ in 0..64 {
                 match socket.recv_from(&mut self.datagram) {
                     Ok((length, from)) => {
-                        if queue.len() + 1 >= queue.capacity()
-                            || queue
-                                .push(SysEvent {
-                                    time: self.clock.now(),
-                                    kind: EventKind::Packet {
-                                        socket: index as u16,
-                                        from: from.into(),
-                                        bytes: &self.datagram[..length],
-                                    },
-                                })
-                                .is_err()
+                        if queue
+                            .push(SysEvent {
+                                time: self.clock.now(),
+                                kind: EventKind::Packet {
+                                    socket: index as u16,
+                                    from: from.into(),
+                                    bytes: &self.datagram[..length],
+                                },
+                            })
+                            .is_err()
                         {
                             self.dropped_packets = self.dropped_packets.saturating_add(1);
                         }

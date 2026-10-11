@@ -261,6 +261,12 @@ pub enum ThinkTime {
     Milliseconds(i64),
 }
 impl ThinkTime {
+    pub fn at(self, time: crate::sys_events::EventTime) -> Self {
+        match self {
+            Self::Seconds(_) => Self::Seconds(time.seconds()),
+            Self::Milliseconds(_) => Self::Milliseconds(time.milliseconds() as i64),
+        }
+    }
     pub fn seconds(self) -> f64 {
         match self {
             Self::Seconds(value) => value,

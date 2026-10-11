@@ -1,4 +1,4 @@
-use qa_core::sys_events::{EventKind, SysEventQueue};
+use qa_core::sys_events::{EventKind, EventTime, SysEvent, SysEventQueue};
 use qa_platform::EventPump;
 use std::net::UdpSocket;
 
@@ -45,4 +45,26 @@ fn nonblocking_udp_produces_owned_ordered_events_and_drops_overruns() {
     ));
     pump.poll_network(&mut queue);
     assert!(queue.is_empty());
+
+    let mut queue = SysEventQueue::load(2, 64).unwrap();
+    sender.send_to(b"first", address).unwrap();
+    sender.send_to(b"second", address).unwrap();
+    pump.poll_network(&mut queue);
+    assert_eq!(pump.dropped_packets(), 2);
+    assert_eq!(queue.rejected(), 1);
+    assert!(!queue.has_ordinary_room());
+    queue
+        .push(SysEvent {
+            time: EventTime(0),
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    assert!(matches!(
+        queue.pop().unwrap().kind,
+        EventKind::Packet {
+            bytes: b"first",
+            ..
+        }
+    ));
+    assert_eq!(queue.pop().unwrap().kind, EventKind::Time);
 }

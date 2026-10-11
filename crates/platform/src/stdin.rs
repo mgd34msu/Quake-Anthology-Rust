@@ -72,7 +72,7 @@ impl ConsoleInput {
         // A continuous producer cannot starve SDL, network or the final Time.
         let mut emitted = 0;
         let mut consumed = 0;
-        while emitted < 8 && consumed < 4096 && queue.len() + 1 < queue.capacity() {
+        while emitted < 8 && consumed < 4096 && queue.has_ordinary_room() {
             if self.ready {
                 if self.len > 0 {
                     if let Ok(text) = std::str::from_utf8(&self.line[..self.len]) {

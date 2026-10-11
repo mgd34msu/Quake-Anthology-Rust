@@ -4,6 +4,31 @@ use qa_core::{
 };
 
 #[test]
+fn eighth_unit_halves_keep_native_narrowing_and_sign_extension() {
+    let mut seed = 0x3366_u32;
+    for _ in 0..65536 {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let value = f32::from_bits(seed);
+        let original = (value * 8.0) as i32 as i16;
+        assert_eq!(eighth_to_short(value), original);
+        assert_eq!(
+            narrow_eighth(value).to_bits(),
+            (f32::from(original) * 0.125).to_bits()
+        );
+        assert_eq!(
+            eighth_to_short(value) as i32 as u32,
+            (narrow_eighth(value) * 8.0) as i32 as u32
+        );
+    }
+    for value in i16::MIN..=i16::MAX {
+        assert_eq!(
+            short_to_eighth(value).to_bits(),
+            (f32::from(value) * 0.125).to_bits()
+        );
+    }
+}
+
+#[test]
 fn plane_encoding_keeps_native_fields_independent_of_transformed_normals() {
     assert_eq!(size_of::<Plane>(), 20);
     for axis in 0..3 {

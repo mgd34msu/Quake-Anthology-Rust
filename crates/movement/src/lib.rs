@@ -2,7 +2,10 @@
 mod physics;
 mod slide;
 pub use physics::{MovementResult, TraceServices, entry, pmove, set_bounds};
-use qa_core::primitives::{RuleSetId, UserCmd};
+use qa_core::{
+    primitives::{RuleSetId, UserCmd},
+    sys_events::EventTime,
+};
 
 /// Apply the selected movement policy, never the map or client protocol.
 /// Keep the absolute server time: Q3's outer Pmove subdivides its interval.
@@ -25,12 +28,15 @@ pub fn prepare_command(rules: RuleSetId, mut command: UserCmd) -> UserCmd {
     };
     command.duration_ns = if rules == RuleSetId::Quake {
         if command.duration_ns == 0 {
-            u64::from(command.duration_ms) * 1_000_000
+            EventTime::from_milliseconds(u64::from(command.duration_ms)).0
         } else {
-            command.duration_ns.clamp(1_000_000, 100_000_000)
+            command.duration_ns.clamp(
+                EventTime::from_milliseconds(1).0,
+                EventTime::from_milliseconds(100).0,
+            )
         }
     } else {
-        u64::from(command.duration_ms) * 1_000_000
+        EventTime::from_milliseconds(u64::from(command.duration_ms)).0
     };
     command
 }

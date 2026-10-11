@@ -95,12 +95,6 @@ pub struct Connections {
     pub command_duplicates: u64,
     pub frame_ns: u64,
 }
-fn index(endpoint: Endpoint) -> usize {
-    match endpoint {
-        Endpoint::Client => 0,
-        Endpoint::Server => 1,
-    }
-}
 impl Connections {
     pub fn load(clients: usize) -> Self {
         Self {
@@ -134,7 +128,7 @@ impl Connections {
         if connection.channel.endpoint() != endpoint {
             return Err(BindError::Route);
         }
-        if current[index(endpoint)].is_some() {
+        if current[endpoint.index()].is_some() {
             return Err(BindError::Occupied);
         }
         if let Peer::Loopback(id) = connection.route.peer
@@ -160,14 +154,14 @@ impl Connections {
                     _ => BindError::Capacity,
                 })?;
         }
-        self.clients[slot][index(endpoint)] = Some(connection);
+        self.clients[slot][endpoint.index()] = Some(connection);
         Ok(())
     }
     pub fn get(&self, client: ClientId, endpoint: Endpoint) -> Option<&Connection> {
-        self.clients.get(client.0 as usize)?[index(endpoint)].as_ref()
+        self.clients.get(client.0 as usize)?[endpoint.index()].as_ref()
     }
     pub fn get_mut(&mut self, client: ClientId, endpoint: Endpoint) -> Option<&mut Connection> {
-        self.clients.get_mut(client.0 as usize)?[index(endpoint)].as_mut()
+        self.clients.get_mut(client.0 as usize)?[endpoint.index()].as_mut()
     }
     pub fn unbind(&mut self, client: ClientId) {
         if let Some(endpoints) = self.clients.get_mut(client.0 as usize) {
@@ -238,11 +232,7 @@ impl Connections {
         if let (Peer::Socket(bound), Peer::Socket(received)) = (&mut connection.route.peer, from) {
             bound.set_port(received.port());
         }
-        let endpoint = if endpoint == 0 {
-            Endpoint::Client
-        } else {
-            Endpoint::Server
-        };
+        let endpoint = Endpoint::from_index(endpoint);
         let client = ClientId(client as u32);
         match connection.channel.receive(bytes, time) {
             Ok(received) => {

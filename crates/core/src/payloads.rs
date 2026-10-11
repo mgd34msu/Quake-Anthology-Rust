@@ -51,13 +51,17 @@ impl<T: Copy> PayloadQueue<T> {
         self.slots.len()
     }
 
+    pub fn has_room(&self, reserve_slots: usize) -> bool {
+        self.length < self.slots.len().saturating_sub(reserve_slots)
+    }
+
     pub fn push(
         &mut self,
         header: T,
         payload: &[u8],
         reserve_slots: usize,
     ) -> Result<(), QueueError> {
-        if self.length >= self.slots.len().saturating_sub(reserve_slots) {
+        if !self.has_room(reserve_slots) {
             return Err(QueueError::Full);
         }
         let length = payload.len();

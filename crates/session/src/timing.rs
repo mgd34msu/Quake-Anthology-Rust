@@ -14,7 +14,9 @@ impl TickRate {
     fn period(self) -> Option<u64> {
         match self {
             Self::FrameDriven => None,
-            Self::FixedMilliseconds(ms) => Some(u64::from(ms.get()) * 1_000_000),
+            Self::FixedMilliseconds(ms) => {
+                Some(EventTime::from_milliseconds(u64::from(ms.get())).0)
+            }
         }
     }
 }

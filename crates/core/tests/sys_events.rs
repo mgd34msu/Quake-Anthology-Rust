@@ -26,6 +26,30 @@ fn seconds_preserve_the_native_duration_division() {
     }
 }
 
+#[test]
+fn millisecond_construction_keeps_console_saturation_and_think_units() {
+    use qa_core::primitives::ThinkTime;
+    for ms in [
+        0,
+        1,
+        100,
+        u64::from(u32::MAX),
+        u64::MAX / 1_000_000,
+        u64::MAX,
+    ] {
+        let time = EventTime::from_milliseconds(ms);
+        assert_eq!(time.0, ms.saturating_mul(1_000_000));
+        assert_eq!(
+            ThinkTime::Milliseconds(-1).at(time),
+            ThinkTime::Milliseconds((time.0 / 1_000_000) as i64)
+        );
+        assert_eq!(
+            ThinkTime::Seconds(-0.0).at(time).seconds().to_bits(),
+            (time.0 as f64 / 1e9).to_bits()
+        );
+    }
+}
+
 fn line(time: u64, text: &str) -> SysEvent<'_> {
     SysEvent {
         time: EventTime(time),
@@ -58,6 +82,7 @@ fn packet_and_utf8_console_bytes_are_owned_and_capacity_is_scoped() {
         .unwrap()
         .into();
     let mut queue = SysEventQueue::load(3, 64).unwrap();
+    assert!(queue.has_ordinary_room());
     let mut packet = [1, 2, 3];
     queue
         .push(SysEvent {
@@ -71,6 +96,7 @@ fn packet_and_utf8_console_bytes_are_owned_and_capacity_is_scoped() {
         .unwrap();
     packet.fill(0);
     queue.push(line(20, "echo λ🦀")).unwrap();
+    assert!(!queue.has_ordinary_room());
     assert_eq!(queue.push(line(21, "overflow")), Err(QueueError::Full));
     queue
         .push(SysEvent {
@@ -98,5 +124,6 @@ fn packet_and_utf8_console_bytes_are_owned_and_capacity_is_scoped() {
         })
     );
     assert!(queue.pop().is_none());
+    assert!(queue.has_ordinary_room());
     assert!(SysEventQueue::load(1, 20).is_err());
 }

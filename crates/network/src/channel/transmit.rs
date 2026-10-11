@@ -365,7 +365,7 @@ impl Channel {
             let repeat = tx.started
                 && tx.flight_records != 0
                 && !tx.send_next
-                && time.since(tx.state.last_reliable_sent) > 1_000_000_000;
+                && time.since(tx.state.last_reliable_sent) > qa_core::sys_events::NANOS_PER_SECOND;
             if fresh || tx.send_next || repeat || (tx.flight_records != 0 && !tx.started) {
                 header.sequence = if repeat {
                     tx.state.sequence.wrapping_sub(1)

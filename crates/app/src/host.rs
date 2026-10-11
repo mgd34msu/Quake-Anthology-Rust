@@ -225,7 +225,7 @@ impl FrameHost {
         } else {
             (1000 / fps) as u64
         };
-        let deadline_ns = (previous_ms + period_ms) * 1_000_000;
+        let deadline_ns = EventTime::from_milliseconds(previous_ms + period_ms).0;
         while now.0 < deadline_ns && !self.runtime.quit {
             now = source.wait_time(Duration::from_nanos(deadline_ns - now.0));
         }

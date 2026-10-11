@@ -3,6 +3,10 @@ pub use crate::payloads::QueueError;
 use crate::{payloads::PayloadQueue, primitives::ClientId};
 use std::net::SocketAddr;
 
+pub const NANOS_PER_MILLISECOND: u64 = 1_000_000;
+pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
+const ORDINARY_RESERVED_SLOTS: usize = 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Peer {
     Socket(SocketAddr),
@@ -17,15 +21,18 @@ impl From<SocketAddr> for Peer {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EventTime(pub u64);
 impl EventTime {
+    pub const fn from_milliseconds(milliseconds: u64) -> Self {
+        Self(milliseconds.saturating_mul(NANOS_PER_MILLISECOND))
+    }
     pub fn since(self, earlier: Self) -> u64 {
         self.0.saturating_sub(earlier.0)
     }
     pub fn milliseconds(self) -> u64 {
-        self.0 / 1_000_000
+        self.0 / NANOS_PER_MILLISECOND
     }
     #[inline]
     pub fn seconds(self) -> f64 {
-        self.0 as f64 / 1_000_000_000.0
+        self.0 as f64 / NANOS_PER_SECOND as f64
     }
 }
 
@@ -143,6 +150,9 @@ impl SysEventQueue {
     pub fn capacity(&self) -> usize {
         self.payloads.capacity()
     }
+    pub fn has_ordinary_room(&self) -> bool {
+        self.payloads.has_room(ORDINARY_RESERVED_SLOTS)
+    }
     pub fn rejected(&self) -> u64 {
         self.rejected
     }
@@ -156,7 +166,11 @@ impl SysEventQueue {
     }
     fn admit(&mut self, event: SysEvent<'_>) -> Result<(), QueueError> {
         // Ordinary events cannot consume the frame's final time-marker slot.
-        let reserved_time = usize::from(!matches!(event.kind, EventKind::Time));
+        let reserved_time = if matches!(event.kind, EventKind::Time) {
+            0
+        } else {
+            ORDINARY_RESERVED_SLOTS
+        };
         let (kind, payload) = match event.kind {
             EventKind::ConsoleLine(text) => (StoredKind::Console, text.as_bytes()),
             EventKind::Packet {

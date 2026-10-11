@@ -2,7 +2,7 @@
 //! Native ordinals and effective tuning are supplied by the module/connection.
 use crate::{commands::packet::Protocol, states};
 use qa_core::{
-    math::{AngleShortForm, angle_to_short, narrow_eighth, short_to_angle},
+    math::{AngleShortForm, angle_to_short, eighth_to_short, short_to_angle, short_to_eighth},
     primitives::{
         EntityId, MovementMode, MovementTimer, PlayerState, PlayerTail, ValueBinding, ValueWidth,
     },
@@ -282,7 +282,7 @@ impl PlayerProjection {
                 Bits => word,
                 IntegerFloat => (word as i32 as f32).to_bits(),
                 FloatInteger => f32::from_bits(word) as i32 as u32,
-                Eighth => (narrow_eighth(f32::from_bits(word)) * 8.0) as i32 as u32,
+                Eighth => eighth_to_short(f32::from_bits(word)) as i32 as u32,
                 ShortAngle => angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide)
                     as i16 as i32 as u32,
                 UnsignedShortAngle => {
@@ -330,7 +330,7 @@ impl PlayerProjection {
             let value = match field.convert {
                 Bits | IntegerFloat => word,
                 FloatInteger => (word as i32 as f32).to_bits(),
-                Eighth => (f32::from(word as i16) * 0.125).to_bits(),
+                Eighth => short_to_eighth(word as i16).to_bits(),
                 ShortAngle => short_to_angle(word as i16 as i32).to_bits(),
                 UnsignedShortAngle => short_to_angle(word as u16 as i32).to_bits(),
                 TimerEighth => u32::from(word as u8) * 8,

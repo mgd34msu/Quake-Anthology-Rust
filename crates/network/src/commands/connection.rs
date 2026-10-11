@@ -162,7 +162,8 @@ impl Commands {
             Move::NetQuake { command, .. } => {
                 let mut command = from_q1_move(
                     command,
-                    (frame_ns / 1_000_000).min(u64::from(u16::MAX)) as u16,
+                    (qa_core::sys_events::EventTime(frame_ns).milliseconds())
+                        .min(u64::from(u16::MAX)) as u16,
                     server_time,
                 );
                 command.duration_ns = frame_ns;

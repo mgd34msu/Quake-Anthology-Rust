@@ -363,13 +363,7 @@ pub fn detect(vfs: &Vfs) -> Vec<InstalledProduct> {
                     .as_os_str()
                     .as_encoded_bytes()
                     .iter()
-                    .map(|&b| {
-                        if b == b'\\' {
-                            b'/'
-                        } else {
-                            b.to_ascii_lowercase()
-                        }
-                    })
+                    .map(|&b| qa_core::names::path_byte(b))
                     .eq(spec.start_map.iter().copied())
             } else {
                 name == spec.start_map

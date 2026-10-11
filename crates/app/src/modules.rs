@@ -407,7 +407,7 @@ impl FrameHost {
                 continue;
             }
             let api = (!shutdown).then_some(row.request.api).flatten();
-            let time = module_time(row.request.context.clock, self.time);
+            let time = row.request.context.clock.at(self.time);
             let module = ModuleId(index as u16);
             let sequence = if shutdown {
                 LifecycleSequence::Shutdown
@@ -505,7 +505,7 @@ impl FrameHost {
             if row.request.phase != Phase::Client {
                 continue;
             }
-            let time = module_time(row.request.context.clock, self.time);
+            let time = row.request.context.clock.at(self.time);
             invoke_frame(self, ModuleId(index as u16), time);
         }
     }
@@ -541,7 +541,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     // qsrc advances the SERVER frame number after RunFrame. Loading calls
     // retain zero; completed ticks are visible to later imports and shutdown.
     row.request.context.server_frame = tick.index - 1;
-    let time = module_time(row.request.context.clock, tick.end);
+    let time = row.request.context.clock.at(tick.end);
     invoke_frame(host, module, time);
     if let Some(row) = host
         .modules
@@ -575,12 +575,6 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
     }
 }
 
-fn module_time(clock: ThinkTime, time: qa_core::sys_events::EventTime) -> ThinkTime {
-    match clock {
-        ThinkTime::Seconds(_) => ThinkTime::Seconds(time.seconds()),
-        ThinkTime::Milliseconds(_) => ThinkTime::Milliseconds(time.milliseconds() as i64),
-    }
-}
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = time;
     context
