@@ -323,6 +323,7 @@ const fn quakec() -> CallTable {
     t.entries[12] = Some(vector_length);
     t.entries[23] = Some(qc_print::<true>);
     t.entries[25] = Some(qc_print::<false>);
+    t.entries[36] = Some(rint);
     t.entries[37] = Some(floor::<false>);
     t.entries[38] = Some(ceil::<false>);
     t.entries[43] = Some(absolute::<false>);
@@ -1516,6 +1517,15 @@ fn atan2<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, Call
 }
 fn sqrt<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.sqrt()))
+}
+fn rint(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let value = float::<false>(c, 0)?;
+    // PF_rint promotes the parameter before adding the double literal. Do not
+    // round the biased value to float before the native integer conversion.
+    let biased = value + if value > 0.0 { 0.5 } else { -0.5 };
+    Ok(bits::<false>(f64::from(crate::numbers::native_integer(
+        biased,
+    ))))
 }
 fn floor<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(bits::<DOUBLE>(float::<DOUBLE>(c, 0)?.floor()))

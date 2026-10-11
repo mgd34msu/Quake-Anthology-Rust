@@ -748,7 +748,7 @@ fn quakec_host(rules: RuleSetId, vm: Vm) -> FrameHost {
     .unwrap()
 }
 
-fn quakec_vlen_program() -> Vm {
+fn quakec_math_program(builtin: i32) -> Vm {
     let bytes = quakec_program::program(
         &[
             (StoreV, 48, 4, 0),
@@ -759,7 +759,7 @@ fn quakec_vlen_program() -> Vm {
             (Call2, 27, 0, 0),
             (Return, 1, 0, 0),
         ],
-        &[0, 1, -12, 4, 6],
+        &[0, 1, -builtin, 4, 6],
     );
     let mut vm = Vm::load(
         Image::parse(&bytes, Some(5927)).unwrap(),
@@ -787,7 +787,7 @@ fn quakec_vlen_uses_three_words_of_one_parameter_through_session_dispatch() {
             ([f32::from_bits(1), 0.0, 0.0], 0.0),
             ([f32::MAX, 0.0, 0.0], f32::INFINITY),
         ] {
-            let mut vm = quakec_vlen_program();
+            let mut vm = quakec_math_program(12);
             vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
             let mut host = quakec_host(rules, vm);
             host.call_module_export(
@@ -812,76 +812,121 @@ fn quakec_vlen_uses_three_words_of_one_parameter_through_session_dispatch() {
 }
 
 #[test]
-fn quakec_vlen_matches_original_rows_and_rejects_wrong_parameter_counts() {
+fn quakec_scalar_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
     use qa_compat::{
         abi::{QUAKEC, QuakeCCalls, UnknownCalls},
         services::ServiceStorage,
     };
-    let rows = std::env::var_os("QA_QC_VLEN_REFERENCE").map(|path| std::fs::read(path).unwrap());
-    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
-        let mut runtime = Runtime::load(1, []).unwrap();
-        let mut console = Console::new(Context::default()).unwrap();
-        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
-        let mut scratch = runtime.geometry.scratch();
-        let developer = console.cvars.find("developer").unwrap();
-        let mut unknown = UnknownCalls::load(1).unwrap();
-        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-        let mut calls = QuakeCCalls {
-            services: &mut services,
-            table: &QUAKEC,
-            context: CallContext {
-                module: ModuleId(1),
-                clock: ThinkTime::Seconds(0.0),
-                server_frame: 0,
-                console: Context {
-                    source: rules,
-                    ..Context::default()
+    for (builtin, key) in [(12, "QA_QC_VLEN_REFERENCE"), (36, "QA_QC_RINT_REFERENCE")] {
+        let rows = std::env::var_os(key).map(|path| std::fs::read(path).unwrap());
+        for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let mut console = Console::new(Context::default()).unwrap();
+            let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+            let mut scratch = runtime.geometry.scratch();
+            let developer = console.cvars.find("developer").unwrap();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let mut calls = QuakeCCalls {
+                services: &mut services,
+                table: &QUAKEC,
+                context: CallContext {
+                    module: ModuleId(1),
+                    clock: ThinkTime::Seconds(0.0),
+                    server_frame: 0,
+                    console: Context {
+                        source: rules,
+                        ..Context::default()
+                    },
+                    allocation: AllocationPolicy::EDICT,
+                    link_order: qa_gameplay::rules::link_order(rules),
                 },
-                allocation: AllocationPolicy::EDICT,
-                link_order: qa_gameplay::rules::link_order(rules),
-            },
-            platform_time: EventTime(0),
-            developer,
-            unknown: &mut unknown,
-        };
-        let mut vm = quakec_vlen_program();
-        if let Some(rows) = &rows {
-            assert!(!rows.is_empty());
-            assert_eq!(rows.len() % 24, 0);
-            for (index, row) in rows.chunks_exact(24).enumerate() {
-                let words: [u32; 6] = std::array::from_fn(|i| {
-                    u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap())
-                });
-                vm.image.globals[48..51].copy_from_slice(&words[..3]);
+                platform_time: EventTime(0),
+                developer,
+                unknown: &mut unknown,
+            };
+            let mut vm = quakec_math_program(builtin);
+            if let Some(rows) = &rows {
+                assert!(!rows.is_empty());
+                assert_eq!(rows.len() % 24, 0);
+                for (index, row) in rows.chunks_exact(24).enumerate() {
+                    let words: [u32; 6] = std::array::from_fn(|i| {
+                        u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap())
+                    });
+                    vm.image.globals[48..51].copy_from_slice(&words[..3]);
+                    assert_eq!(
+                        vm.call(&mut calls, 1, 100, false),
+                        Ok(words[3..].try_into().unwrap()),
+                        "builtin {builtin}, {rules:?} row {index}"
+                    );
+                }
+            }
+            for vector in [
+                [f32::NAN, 1.0, 0.0],
+                [f32::INFINITY, f32::NEG_INFINITY, 0.0],
+            ] {
+                vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
+                let result = vm.call(&mut calls, 1, 100, false).unwrap();
+                if builtin == 36 {
+                    assert_eq!(result[0], (i32::MIN as f32).to_bits());
+                } else if vector[0].is_nan() {
+                    assert!(f32::from_bits(result[0]).is_nan());
+                } else {
+                    assert_eq!(result[0], f32::INFINITY.to_bits());
+                }
+                assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
+            }
+            let before: [u32; 3] = vm.image.globals[1..4].try_into().unwrap();
+            for function in [3, 4] {
                 assert_eq!(
-                    vm.call(&mut calls, 1, 100, false),
-                    Ok(words[3..].try_into().unwrap()),
-                    "{rules:?} row {index}"
+                    vm.call(&mut calls, function, 100, false),
+                    Err(qa_compat::quakec::Trap::Builtin)
                 );
+                assert_eq!(&vm.image.globals[1..4], &before);
             }
+            assert_eq!(calls.unknown.calls, 0);
         }
-        for vector in [
-            [f32::NAN, 1.0, 0.0],
-            [f32::INFINITY, f32::NEG_INFINITY, 0.0],
+    }
+}
+
+#[test]
+fn quakec_rint_keeps_double_bias_and_native_integer_width_through_session_dispatch() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for (value, expected) in [
+            (f32::from_bits(0x3effffff), 0.0f32),
+            (0.5, 1.0),
+            (f32::from_bits(0xbeffffff), 0.0),
+            (-0.5, -1.0),
+            (1.5, 2.0),
+            (-1.5, -2.0),
+            (-0.0, 0.0),
+            (16777215.0, 16777215.0),
+            (-16777215.0, -16777215.0),
+            (2147483520.0, 2147483520.0),
+            (2147483648.0, i32::MIN as f32),
         ] {
-            vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
-            let result = vm.call(&mut calls, 1, 100, false).unwrap();
-            if vector[0].is_nan() {
-                assert!(f32::from_bits(result[0]).is_nan());
-            } else {
-                assert_eq!(result[0], f32::INFINITY.to_bits());
-            }
-            assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
-        }
-        let before: [u32; 3] = vm.image.globals[1..4].try_into().unwrap();
-        for function in [3, 4] {
+            let mut vm = quakec_math_program(36);
+            vm.image.globals[48..51].copy_from_slice(&[value.to_bits(), 0, 0]);
+            let mut host = quakec_host(rules, vm);
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Seconds(0.1),
+            )
+            .unwrap();
             assert_eq!(
-                vm.call(&mut calls, function, 100, false),
-                Err(qa_compat::quakec::Trap::Builtin)
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC([
+                    expected.to_bits(),
+                    0x87654321,
+                    0x11223344,
+                ])),
+                "{rules:?}: {value}"
             );
-            assert_eq!(&vm.image.globals[1..4], &before);
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+            assert!(host.console.idle());
+            assert!(host.runtime.server.events.is_empty());
         }
-        assert_eq!(calls.unknown.calls, 0);
     }
 }
 
