@@ -573,6 +573,15 @@ impl Game {
                         ][..],
                         NativeScalar::Word,
                     ))
+                } else if layout.version == 2023 && matches!(ordinal, 68 | 69) {
+                    Some((
+                        if ordinal == 68 {
+                            &[NativeScalar::Word, NativeScalar::Word][..]
+                        } else {
+                            &[NativeScalar::Word, NativeScalar::Word, NativeScalar::Word][..]
+                        },
+                        NativeScalar::U8,
+                    ))
                 } else if (if layout.version == 2023 {
                     17..=18
                 } else {

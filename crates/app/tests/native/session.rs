@@ -2251,7 +2251,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || slot == argv_slot
                 || slot == args_slot
                 || (if rr { 17..=18 } else { 14..=15 }).contains(&slot)
-                || (rr && slot == 67)
+                || (rr && (67..=69).contains(&slot))
                 || (index_slot..index_slot + 3).contains(&slot);
             let mut code = native_import_code(
                 pointers[slot],
@@ -2662,6 +2662,148 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 );
                 assert_eq!(&memory[0x1e00..0x1e00 + info.len()], info);
             }
+            let info_address = base + 0x2000;
+            let key_address = base + 0x2240;
+            let value_address = base + 0x2280;
+            let mut mutate_info = |game: &mut Game,
+                                   set: bool,
+                                   info: &[u8],
+                                   key: &[u8],
+                                   value: &[u8],
+                                   accepted: u64,
+                                   expected: &[u8]| {
+                let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                memory.write_string(info_address, 512, info).unwrap();
+                memory.write_string(key_address, 128, key).unwrap();
+                memory.write_string(value_address, 128, value).unwrap();
+                drop(memory);
+                let result = if set {
+                    invoke_import(game, 69, &[info_address, key_address, value_address])
+                } else {
+                    invoke_import(game, 68, &[info_address, key_address])
+                };
+                assert_eq!(result, accepted);
+                let memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(memory.cstring(info_address).unwrap(), expected);
+            };
+            mutate_info(
+                &mut game,
+                false,
+                b"\\name\\Mike\\name\\later\\NAME\\raw\x80",
+                b"name",
+                b"",
+                1,
+                b"\\NAME\\raw\x80",
+            );
+            mutate_info(
+                &mut game,
+                false,
+                b"\\name\\Mike",
+                b"NAME",
+                b"",
+                0,
+                b"\\name\\Mike",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike\\name\\later\\n\\raw\x80",
+                b"name",
+                b"new",
+                1,
+                b"\\n\\raw\x80\\name\\new",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike\\name\\later",
+                b"name",
+                b"",
+                1,
+                b"",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike",
+                b"name",
+                b"new;value",
+                0,
+                b"\\name\\Mike",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike",
+                b"name",
+                b"\xdc",
+                0,
+                b"\\name\\Mike",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike",
+                b"name",
+                b"\xe1\x01\xff\x80b",
+                1,
+                b"\\name\\ab",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\keep\\yes",
+                b"\xe1",
+                b"value",
+                1,
+                b"\\keep\\yes\\a\\value",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike",
+                b"name",
+                &[b'a'; 64],
+                0,
+                b"\\name\\Mike",
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"",
+                &[b'k'; 63],
+                &[b'v'; 63],
+                1,
+                &[b"\\".as_slice(), &[b'k'; 63], b"\\", &[b'v'; 63]].concat(),
+            );
+            let mut large = b"\\name\\old\\keep\\".to_vec();
+            large.extend([b'x'; 496]);
+            let mut remaining = b"\\keep\\".to_vec();
+            remaining.extend([b'x'; 496]);
+            mutate_info(
+                &mut game,
+                true,
+                &large,
+                b"name",
+                b"replacement",
+                0,
+                &remaining,
+            );
+            let mut exact = b"\\keep\\".to_vec();
+            exact.extend([b'x'; 501]);
+            let mut expected = exact.clone();
+            expected.extend(b"\\k\\v");
+            mutate_info(&mut game, true, &exact, b"k", b"v", 1, &expected);
+            exact.push(b'x');
+            mutate_info(&mut game, true, &exact, b"k", b"v", 0, &exact);
         }
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);
         invoke_import(&mut game, config_slot, &[3, base + 0x1720]);

@@ -1,31 +1,66 @@
 //! Load-sized storage for engine text. Mutation never grows it.
 use std::fmt::{self, Write};
 
+struct InfoPair {
+    start: usize,
+    key: std::ops::Range<usize>,
+    value: std::ops::Range<usize>,
+}
+impl InfoPair {
+    fn matches(&self, info: &[u8], key: &[u8], folded: bool) -> bool {
+        if folded {
+            crate::names::compare_folded(&info[self.key.clone()], key).is_eq()
+        } else {
+            &info[self.key.clone()] == key
+        }
+    }
+}
+fn info_pair(info: &[u8], start: usize) -> Option<InfoPair> {
+    let first = start + usize::from(info.get(start) == Some(&b'\\'));
+    let split = first + info.get(first..)?.iter().position(|&b| b == b'\\')?;
+    let value = split + 1;
+    let end = value
+        + info[value..]
+            .iter()
+            .position(|&b| b == b'\\')
+            .unwrap_or(info.len() - value);
+    Some(InfoPair {
+        start,
+        key: first..split,
+        value: value..end,
+    })
+}
+
 /// The first matching value in a native backslash-separated info string.
 /// Callers select native key comparison; returned spans never own or alter text.
 pub fn info_value(info: &[u8], key: &[u8], folded: bool) -> Option<std::ops::Range<usize>> {
-    let mut first = usize::from(info.first() == Some(&b'\\'));
-    loop {
-        let split = first + info.get(first..)?.iter().position(|&b| b == b'\\')?;
-        let value = split + 1;
-        let end = value
-            + info[value..]
-                .iter()
-                .position(|&b| b == b'\\')
-                .unwrap_or(info.len() - value);
-        let matched = if folded {
-            crate::names::compare_folded(&info[first..split], key).is_eq()
-        } else {
-            &info[first..split] == key
-        };
-        if matched {
-            return Some(value..end);
+    let mut cursor = 0;
+    while let Some(pair) = info_pair(info, cursor) {
+        if pair.matches(info, key, folded) {
+            return Some(pair.value);
         }
-        if end == info.len() {
-            return None;
-        }
-        first = end + 1;
+        cursor = pair.value.end;
     }
+    None
+}
+
+/// Compact a native info string in place; the caller owns its NUL terminator.
+/// Matching and duplicate removal are caller-selected native rules.
+pub fn info_remove(info: &mut [u8], key: &[u8], folded: bool, remove_all: bool) -> usize {
+    let mut len = info.len();
+    let mut cursor = 0;
+    while let Some(pair) = info_pair(&info[..len], cursor) {
+        if pair.matches(info, key, folded) {
+            info.copy_within(pair.value.end..len, pair.start);
+            len -= pair.value.end - pair.start;
+            if !remove_all {
+                break;
+            }
+        } else {
+            cursor = pair.value.end;
+        }
+    }
+    len
 }
 
 #[derive(Clone, Debug)]

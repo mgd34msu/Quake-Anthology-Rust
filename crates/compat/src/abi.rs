@@ -274,6 +274,8 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[44] = Some(native_args);
     table.entries[45] = Some(command_append);
     table.entries[67] = Some(native_info_value);
+    table.entries[68] = Some(native_info_remove);
+    table.entries[69] = Some(native_info_set);
     table
 };
 
@@ -792,6 +794,73 @@ fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     Ok(span.len() as u64)
 }
+
+fn native_info_remove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let source = c.pointer(0)?;
+    let mut key = FixedText::<512>::default();
+    if key.set_bytes(c.string(1)?).is_err() {
+        return Ok(0);
+    }
+    let (_, removed) = remove_native_info(c.memory, source, key.as_bytes())?;
+    Ok(u64::from(removed))
+}
+
+fn remove_native_info(
+    memory: &mut ModuleMemory<'_>,
+    source: u64,
+    key: &[u8],
+) -> Result<(usize, bool), CallError> {
+    let len = memory.cstring(source)?.len();
+    let info = memory.read_mut(source, len + 1)?;
+    let remaining = qa_core::text::info_remove(&mut info[..len], key, false, true);
+    info[remaining] = 0;
+    Ok((remaining, remaining != len))
+}
+
+fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    // q2repro Info_SubValidate checks raw lengths and masked delimiters before
+    // removing a key. Append then strips high bits and non-printable bytes.
+    let mut fields = [FixedText::<64>::default(), FixedText::<64>::default()];
+    for (index, field) in fields.iter_mut().enumerate() {
+        let text = c.string(index + 1)?;
+        if text.len() >= 64 || text.iter().any(|b| matches!(b & 127, b'\\' | b'"' | b';')) {
+            return Ok(0);
+        }
+        field.set_bytes(text).map_err(|_| CallError::Text)?;
+    }
+    let source = c.pointer(0)?;
+    let (remaining, _) = remove_native_info(c.memory, source, fields[0].as_bytes())?;
+    if fields[1].as_bytes().is_empty() {
+        return Ok(1);
+    }
+    if remaining + fields[0].as_bytes().len() + fields[1].as_bytes().len() + 2 >= 512 {
+        // Native semantics retain the removal when the replacement cannot fit.
+        return Ok(0);
+    }
+    let mut addition = FixedText::<128>::default();
+    for bytes in [
+        b"\\".as_slice(),
+        fields[0].as_bytes(),
+        b"\\",
+        fields[1].as_bytes(),
+    ] {
+        for byte in bytes {
+            let byte = byte & 127;
+            if (32..=126).contains(&byte) {
+                addition
+                    .append_bytes(&[byte])
+                    .map_err(|_| CallError::Text)?;
+            }
+        }
+    }
+    c.memory.write_string(
+        source + remaining as u64,
+        addition.as_bytes().len() + 1,
+        addition.as_bytes(),
+    )?;
+    Ok(1)
+}
+
 fn native_message_bits<const WIDTH: u8>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.message_bits)(c.services, c.context.module, c.arg(0)? as u32, WIDTH)?;
     Ok(0)

@@ -30,3 +30,53 @@ fn native_info_values_preserve_first_match_empty_fields_and_caller_case_rules() 
     assert_eq!(info_value(b"\\key\\", b"key", false), Some(5..5));
     assert_eq!(info_value(b"", b"", false), None);
 }
+
+#[test]
+fn native_info_removal_keeps_unmatched_bytes_and_native_duplicate_rules() {
+    use qa_core::text::info_remove;
+    for (source, key, folded, all, expected) in [
+        (
+            b"\\name\\Mike\\empty\\\\name\\later\\binary\\\xff\x80".as_slice(),
+            b"name".as_slice(),
+            false,
+            true,
+            b"\\empty\\\\binary\\\xff\x80".as_slice(),
+        ),
+        (
+            b"\\name\\first\\name\\second",
+            b"name",
+            false,
+            false,
+            b"\\name\\second",
+        ),
+        (
+            b"\\name\\first\\NAME\\second",
+            b"NAME",
+            false,
+            true,
+            b"\\name\\first",
+        ),
+        (b"\\name\\first\\NAME\\second", b"NAME", true, true, b""),
+        (b"name\\Mike\\empty\\", b"name", false, true, b"\\empty\\"),
+        (b"\\\\value\\tail", b"", false, true, b"\\tail"),
+        (
+            b"\\name\\Mike\\dangling",
+            b"missing",
+            false,
+            true,
+            b"\\name\\Mike\\dangling",
+        ),
+        (
+            b"\\name\\Mike\\dangling",
+            b"name",
+            false,
+            true,
+            b"\\dangling",
+        ),
+        (b"", b"", false, true, b""),
+    ] {
+        let mut bytes = source.to_vec();
+        let len = info_remove(&mut bytes, key, folded, all);
+        assert_eq!(&bytes[..len], expected);
+    }
+}
