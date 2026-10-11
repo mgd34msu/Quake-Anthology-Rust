@@ -2,6 +2,7 @@ pub mod archive;
 pub mod bsp;
 pub mod entities;
 pub mod image;
+pub mod localization;
 pub mod model;
 pub mod program;
 mod read;

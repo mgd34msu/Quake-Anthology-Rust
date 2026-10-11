@@ -22,6 +22,7 @@ pub struct Runtime {
     pub sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     pub catalog: catalog::GameplayCatalog,
     pub vfs: Vfs,
+    pub localization: qa_content::localization::Catalog,
     /// Exact map entity sources in load order, retained for native module import.
     pub entity_sources: Vec<map::NativeEntityText>,
     pub quit: bool,
@@ -109,6 +110,7 @@ impl Runtime {
             cvars,
             commands,
             vfs: &self.vfs,
+            localization: &self.localization,
             registry: &self.catalog.registry,
             storage,
             geometry: &self.geometry,
@@ -156,6 +158,7 @@ impl Runtime {
             sound_bank: None,
             catalog,
             vfs: Vfs::default(),
+            localization: qa_content::localization::Catalog::default(),
             entity_sources: Vec::new(),
             quit: false,
             network: Connections::load(max_clients),

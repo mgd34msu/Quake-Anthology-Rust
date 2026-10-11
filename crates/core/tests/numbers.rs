@@ -1,6 +1,26 @@
 use qa_core::text::atof_prefix;
 
 #[test]
+fn decimal_integer_scan_preserves_end_pointer_and_native_widths() {
+    use qa_core::text::{atoi_prefix, integer_prefix};
+    for (bytes, value, end) in [
+        (b" \t-12tail".as_slice(), -12, 5),
+        (b"+", 0, 0),
+        (b"  x", 0, 0),
+        (b"0x10", 0, 1),
+        (b"4294967296}", 4294967296, 10),
+        (b"9223372036854775808", i64::MAX, 19),
+        (b"-9223372036854775809", i64::MIN, 20),
+    ] {
+        assert_eq!(integer_prefix(bytes), (value, end));
+        assert_eq!(
+            atoi_prefix(bytes),
+            value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+        );
+    }
+}
+
+#[test]
 fn decimal_scan_retains_prefix_and_incomplete_exponent_boundaries() {
     use qa_core::text::decimal_prefix_end;
     for (bytes, start, expected) in [

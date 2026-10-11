@@ -222,16 +222,8 @@ impl Edges {
         rows: std::ops::Range<u32>,
         policy: DepthPolicy,
     ) -> bool {
-        if viewport.width == 0
-            || viewport.height == 0
-            || viewport
-                .x
-                .checked_add(viewport.width)
-                .is_none_or(|right| right > self.width)
-            || viewport
-                .y
-                .checked_add(viewport.height)
-                .is_none_or(|bottom| bottom > self.height || rows.end > bottom)
+        if !viewport.fits(self.width, self.height)
+            || rows.end > viewport.y + viewport.height
             || rows.start < viewport.y
             || rows.start >= rows.end
         {

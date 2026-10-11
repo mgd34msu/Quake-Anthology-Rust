@@ -306,6 +306,7 @@ pub struct EngineServices<'a> {
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub vfs: &'a Vfs,
+    pub localization: &'a qa_content::localization::Catalog,
     pub registry: &'a qa_gameplay::registry::Registry,
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
@@ -328,6 +329,16 @@ pub type PrintCall = fn(
     PrintKind,
     u8,
     &[u8],
+) -> Result<u64, CallError>;
+pub type LocalizedPrintCall = for<'a> fn(
+    &mut EngineServices<'_>,
+    Option<qa_core::events::OutputTarget>,
+    Option<ClientId>,
+    PrintKind,
+    u8,
+    &[u8],
+    usize,
+    &dyn Fn(usize) -> Result<Option<&'a [u8]>, CallError>,
 ) -> Result<u64, CallError>;
 pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
@@ -371,6 +382,7 @@ pub struct EngineCallTable {
         &mut [u32],
     ) -> Result<qa_world::leaves::BoxLeaves, CallError>,
     pub print: PrintCall,
+    pub localized_print: LocalizedPrintCall,
     pub console: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
     pub console_formatted:
         fn(&mut EngineServices<'_>, std::fmt::Arguments<'_>) -> Result<u64, CallError>,
@@ -491,6 +503,11 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .ok_or(CallError::Capacity)
     },
     print: |s, target, c, k, l, t| s.print(target, c, k, l, t),
+    localized_print: |s, target, client, kind, level, base, count, argument| {
+        let mut text = qa_core::text::FixedText::<1023>::default();
+        s.localization.format(base, count, argument, &mut text)?;
+        s.print(target, client, kind, level, text.as_bytes())
+    },
     console: |s, text| s.console(text),
     console_formatted: |s, text| EngineServices::console_formatted(&mut s.server.events, text),
     usercmd: |s, native| s.usercmd(native),

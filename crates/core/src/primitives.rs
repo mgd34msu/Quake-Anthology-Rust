@@ -878,6 +878,12 @@ pub enum PrintKind {
     Layout,
 }
 impl PrintKind {
+    pub const fn from_localized_level(level: u8) -> Self {
+        match level {
+            4 | 5 => Self::Center,
+            other => Self::from_level(other),
+        }
+    }
     pub const fn from_level(level: u8) -> Self {
         match level {
             0 | 1 => Self::Notify,

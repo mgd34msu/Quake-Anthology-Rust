@@ -404,6 +404,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[35] = scalar!(native_message_entity);
     table.entries[48] = scalar!(native_register_observer);
     table.entries[49] = scalar!(native_forget_observer);
+    table.entries[53] = scalar!(native_localized_print);
     table.entries[9] = scalar!(abort);
     table.entries[39] = scalar!(q2_cvar);
     table.entries[40] = scalar!(q2_cvar_set::<false>);
@@ -830,7 +831,7 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
     } else if TARGET && address == 0 {
         PrintKind::Console
     } else {
-        PrintKind::from_level(level)
+        PrintKind::from_localized_level(level)
     };
     let text = c
         .memory
@@ -846,6 +847,62 @@ fn native_print<const TARGET: bool, const CENTER: bool>(
         kind,
         level,
         text,
+    )?;
+    Ok(0)
+}
+fn native_localized_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.pointer(0)?;
+    let flags = c.arg(1)? as u8;
+    let broadcast = flags & 8 != 0;
+    let client = if !broadcast && address != 0 {
+        let Some(client) = native_client(c, address)? else {
+            return Ok(0);
+        };
+        Some(client)
+    } else {
+        None
+    };
+    let mut level = flags & !(8 | 16);
+    if broadcast && level > 3 && level != 6 {
+        level = 3;
+    }
+    let kind = if !broadcast && address == 0 {
+        PrintKind::Console
+    } else {
+        PrintKind::from_localized_level(level)
+    };
+    let base = c.memory.cstring(c.pointer(2)?)?;
+    let count = usize::try_from(c.arg(4)?).map_err(|_| CallError::Memory)?;
+    let words = if count == 0 {
+        &[][..]
+    } else {
+        c.memory.read(
+            c.pointer(3)?,
+            count.checked_mul(8).ok_or(CallError::Memory)?,
+        )?
+    };
+    let argument = |index: usize| {
+        let bytes = &words[index * 8..index * 8 + 8];
+        let pointer = u64::from_le_bytes(bytes.try_into().map_err(|_| CallError::Memory)?);
+        if pointer == 0 {
+            Ok(None)
+        } else {
+            c.memory.cstring(pointer).map(Some).map_err(CallError::from)
+        }
+    };
+    (ENGINE_CALLS.localized_print)(
+        c.services,
+        if !broadcast && address == 0 {
+            Some(qa_core::events::OutputTarget::Presentation)
+        } else {
+            None
+        },
+        client,
+        kind,
+        level,
+        base,
+        count,
+        &argument,
     )?;
     Ok(0)
 }

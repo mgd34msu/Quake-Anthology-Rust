@@ -5,6 +5,45 @@ use qa_network::{
 };
 
 #[test]
+fn rerelease_center_levels_keep_svc_print_and_legacy_clients_get_centerprint() {
+    for level in [4, 5] {
+        let mut bytes = [0xcc; 64];
+        let n = outputs::print(
+            Protocol::Quake2Repro1038,
+            PrintKind::Center,
+            level,
+            b"center",
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(
+            &bytes[..n],
+            &[10, level, b'c', b'e', b'n', b't', b'e', b'r', 0]
+        );
+        let record = Prints::new(Protocol::Quake2Repro1038, &bytes[..n])
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.kind, PrintKind::Center);
+        assert_eq!(record.level, Some(level));
+        let n = outputs::print(
+            Protocol::Quake2_34,
+            PrintKind::Center,
+            level,
+            b"center",
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(&bytes[..n], b"\x0fcenter\0");
+    }
+    let record = Prints::new(Protocol::Quake2Repro1038, b"\x0a\x06tts\0")
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!((record.kind, record.level), (PrintKind::Console, Some(6)));
+}
+
+#[test]
 fn print_opcodes_and_all_native_priority_bytes_remain_exact() -> Result<(), Error> {
     for (protocol, opcode) in [(Protocol::QuakeWorld28, 8), (Protocol::Quake2_34, 10)] {
         for level in 0..=255 {

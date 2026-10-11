@@ -152,6 +152,31 @@ impl FrameHost {
         world_rate: TickRate,
         mut providers: Vec<Provider>,
     ) -> Result<Self, String> {
+        let localization = console
+            .cvars
+            .bind("loc_file", console.cvars.context())
+            .ok_or("missing loc_file")?;
+        let path = console
+            .cvars
+            .read(localization)
+            .map_err(|_| "invalid loc_file")?;
+        let path = if path.as_str().is_empty() {
+            "localization/loc_english.txt"
+        } else {
+            path.as_str()
+        };
+        if let Some(file) = runtime.vfs.open(path.as_bytes()) {
+            let bytes = runtime
+                .vfs
+                .read_to_vec(
+                    file,
+                    16 * 1024 * 1024,
+                    &mut qa_formats::archive::ArchiveReader::default(),
+                )
+                .map_err(|e| format!("localization: {e}"))?;
+            runtime.localization = qa_content::localization::Catalog::load(&bytes)
+                .map_err(|e| format!("localization: {e:?}"))?;
+        }
         console.register("play", crate::audio::play);
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;

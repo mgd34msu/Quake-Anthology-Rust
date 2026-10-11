@@ -35,6 +35,7 @@ struct PrintFormat {
     layout: Option<u8>,
     level: bool,
     chat_prefix: bool,
+    localized: bool,
 }
 enum Format {
     Bytes(PrintFormat),
@@ -51,6 +52,7 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
             layout: None,
             level: false,
             chat_prefix: true,
+            localized: false,
         },
         Protocol::QuakeWorld28 => PrintFormat {
             print: 8,
@@ -58,6 +60,7 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
             layout: None,
             level: true,
             chat_prefix: false,
+            localized: false,
         },
         Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PrintFormat {
             print: 10,
@@ -65,6 +68,7 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
             layout: Some(4),
             level: true,
             chat_prefix: false,
+            localized: protocol == Protocol::Quake2Repro1038,
         },
         _ => return Err(Error::Unsupported),
     }))
@@ -97,6 +101,11 @@ pub fn print(
         return Ok(need);
     };
     let (opcode, has_level) = match kind {
+        PrintKind::Center
+            if format.localized && PrintKind::from_localized_level(level) == PrintKind::Center =>
+        {
+            (format.print, format.level)
+        }
         PrintKind::Center => (format.center, false),
         PrintKind::Layout => (format.layout.ok_or(Error::Unsupported)?, false),
         _ => (format.print, format.level),
@@ -173,7 +182,11 @@ impl<'a> Iterator for Prints<'a> {
                 self.rest = &[];
                 return Some(Err(Error::Truncated));
             };
-            kind = PrintKind::from_level(level);
+            kind = if format.localized {
+                PrintKind::from_localized_level(level)
+            } else {
+                PrintKind::from_level(level)
+            };
             (Some(level), rest)
         } else {
             (None, rest)

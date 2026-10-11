@@ -6,6 +6,7 @@ pub(crate) struct Tokens<'a> {
     punctuation: &'static [u8],
     block_comments: bool,
     limit: usize,
+    quoted_escapes: bool,
 }
 impl<'a> Tokens<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
@@ -15,6 +16,7 @@ impl<'a> Tokens<'a> {
             punctuation: b"{}()",
             block_comments: true,
             limit: usize::MAX,
+            quoted_escapes: false,
         }
     }
     pub fn entity(
@@ -29,7 +31,12 @@ impl<'a> Tokens<'a> {
             punctuation,
             block_comments,
             limit,
+            quoted_escapes: false,
         }
+    }
+    pub fn quoted_escapes(mut self) -> Self {
+        self.quoted_escapes = true;
+        self
     }
     pub fn next(&mut self) -> Result<Option<&'a [u8]>, FormatError> {
         loop {
@@ -55,10 +62,15 @@ impl<'a> Tokens<'a> {
         let start = self.at;
         self.at += 1;
         if first == b'"' {
-            let length = self.bytes[self.at..]
-                .iter()
-                .position(|&b| b == b'"')
-                .ok_or(FormatError::Truncated)?;
+            let mut length = 0;
+            loop {
+                match self.bytes.get(self.at + length) {
+                    Some(b'"') => break,
+                    Some(b'\\') if self.quoted_escapes => length += 2,
+                    Some(_) => length += 1,
+                    None => return Err(FormatError::Truncated),
+                }
+            }
             let result = &self.bytes[self.at..self.at + length];
             if result.len() >= self.limit {
                 return Err(FormatError::InvalidRange);

@@ -807,7 +807,16 @@ fn local_native_and_received_priority_prints_have_identical_hud_effects() {
                             .unwrap()
                             .unwrap();
                         assert_eq!(print.kind, received.kind, "native level {level}");
-                        assert_eq!(received.level, Some(level));
+                        assert_eq!(
+                            received.level,
+                            if print.kind == PrintKind::Center
+                                && protocol != Protocol::Quake2Repro1038
+                            {
+                                None
+                            } else {
+                                Some(level)
+                            }
+                        );
                         assert_eq!(received.text, b"priority\x82\n");
                         let mut remote = HudState::default();
                         assert!(qa_ui::hud::print(
@@ -830,7 +839,7 @@ fn local_native_and_received_priority_prints_have_identical_hud_effects() {
                         );
                         remote.clear_messages(texts);
                     }
-                    assert_eq!(print.kind == PrintKind::Console, level == 2 || level > 3);
+                    assert_eq!(print.kind == PrintKind::Console, level == 2 || level > 5);
                     local.clear_messages(texts);
                     OutputSubmission::BestEffort
                 },
