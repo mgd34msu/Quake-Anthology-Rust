@@ -15,6 +15,36 @@ pub mod runtime;
 pub use call::{NativeEntry, NativeScalar};
 
 #[derive(Clone, Copy)]
+pub struct NativeListFilter {
+    /// Load-sized pointer-list banks, separate from the caller's output.
+    pub buffer: u64,
+    pub capacity: u32,
+    pub depth: u8,
+    pub list: u8,
+    pub limit: u8,
+    pub callback: u8,
+    pub data: u8,
+    pub keep: u32,
+    pub end: u32,
+}
+impl NativeListFilter {
+    pub(crate) fn valid(self, arguments: usize) -> bool {
+        let slots = [self.list, self.limit, self.callback, self.data];
+        arguments <= 13
+            && self.capacity != 0
+            && self.capacity <= 65536
+            && self.depth != 0
+            && self.depth <= 8
+            && self.keep & self.end == 0
+            && slots.iter().all(|&slot| usize::from(slot) < arguments)
+            && (0..slots.len()).all(|i| (i + 1..slots.len()).all(|j| slots[i] != slots[j]))
+    }
+    pub(crate) fn bytes(self) -> usize {
+        self.capacity as usize * usize::from(self.depth) * 8
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct NativeImport<'a> {
     /// Missing imports have no scalar argument descriptor and abort only the
     /// current foreign call. Their names remain in the module's NameTable.
@@ -23,6 +53,8 @@ pub struct NativeImport<'a> {
     pub abi: NativeAbi,
     pub parameters: &'a [NativeScalar],
     pub result: NativeScalar,
+    /// Optional module callback processing, executed only inside the child.
+    pub filter: Option<NativeListFilter>,
 }
 
 #[derive(Clone, Copy, Debug)]

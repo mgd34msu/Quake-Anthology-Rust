@@ -315,7 +315,7 @@ pub struct NativeProcess {
     parked: bool,
     sequence: u64,
     callbacks: [u64; 4],
-    imports: Box<[(u32, NativeEntry, bool)]>,
+    imports: Box<[(u32, NativeEntry, bool, Option<super::NativeListFilter>)]>,
     reaped: Option<std::process::ExitStatus>,
     timeout: Duration,
     runtime: Option<super::runtime::RuntimeConfig>,
@@ -365,6 +365,16 @@ impl NativeProcess {
                 {
                     return Err(NativeError::Extent);
                 }
+                if let Some(filter) = entry.filter
+                    && (entry.trap
+                        || !filter.valid(entry.parameters.len())
+                        || !matches!(
+                            entry.result,
+                            NativeScalar::Word | NativeScalar::I32 | NativeScalar::U32
+                        ))
+                {
+                    return Err(NativeError::Extent);
+                }
                 Ok((
                     entry.number,
                     NativeEntry::bind(
@@ -374,6 +384,7 @@ impl NativeProcess {
                         entry.result,
                     )?,
                     entry.trap,
+                    entry.filter,
                 ))
             })
             .collect::<Result<Box<[_]>, NativeError>>()?;
@@ -434,7 +445,7 @@ impl NativeProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::from(file));
         let mut regions = image.regions.to_vec();
-        regions.extend(imports.iter().map(|(_, entry, _)| NativeRegion {
+        regions.extend(imports.iter().map(|(_, entry, _, _)| NativeRegion {
             offset: (entry.address - image.base) as usize,
             length: 12,
             permissions: 5,
@@ -461,7 +472,7 @@ impl NativeProcess {
         owner.set_event_time(qa_core::sys_events::EventTime(0))?;
         // Patch each numeric import gateway only at the enforced load stop.
         // The indirect jump preserves AL and all native parameter registers.
-        for (index, (_, entry, _)) in owner.imports.iter().enumerate() {
+        for (index, (_, entry, _, _)) in owner.imports.iter().enumerate() {
             let at = (entry.address - owner.base) as usize;
             let bytes = &mut owner.memory.bytes_mut()[at..at + 32];
             bytes.fill(0xcc);
@@ -495,11 +506,26 @@ impl NativeProcess {
             packet.arguments[1] = region.permissions as u64;
             packet.send(&mut self.stream)?;
         }
-        for &(number, entry, trap) in &self.imports {
+        for &(number, entry, trap, filter) in &self.imports {
             let mut packet = Packet::new(BIND, 0);
             packet.address = u64::from(number);
             packet.abi = entry.abi as u8;
             packet.value = u64::from(trap);
+            if let Some(filter) = filter {
+                packet.value = 2;
+                packet.arguments[..6].copy_from_slice(&[
+                    filter.buffer,
+                    u64::from(filter.capacity),
+                    u64::from(filter.depth),
+                    u64::from(filter.list)
+                        | u64::from(filter.limit) << 8
+                        | u64::from(filter.callback) << 16
+                        | u64::from(filter.data) << 24,
+                    u64::from(filter.keep),
+                    u64::from(filter.end),
+                ]);
+                packet.arguments[6] = entry.argument_count() as u64;
+            }
             packet.send(&mut self.stream)?;
         }
         let ready = Packet::receive(&mut self.stream)?;
@@ -526,7 +552,9 @@ impl NativeProcess {
         self.callbacks[abi as usize]
     }
     pub fn import_pointer(&self, ordinal: usize) -> Option<u64> {
-        self.imports.get(ordinal).map(|(_, entry, _)| entry.address)
+        self.imports
+            .get(ordinal)
+            .map(|(_, entry, _, _)| entry.address)
     }
     /// Address reserved by load for a function import, used when binding an
     /// inert image's relocations before any child executes its code.
@@ -686,7 +714,7 @@ impl NativeProcess {
                     CALL_TRAP => {
                         let ordinal =
                             usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
-                        let &(_, entry, trap) =
+                        let &(_, entry, trap, _) =
                             self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
                         if !trap {
                             return Err(NativeError::Protocol);
@@ -703,7 +731,7 @@ impl NativeProcess {
                     RUNTIME_ERROR => {
                         let ordinal =
                             usize::try_from(packet.address).map_err(|_| NativeError::Protocol)?;
-                        let &(number, _, _) =
+                        let &(number, _, _, _) =
                             self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
                         let function =
                             super::runtime::function(number).ok_or(NativeError::Protocol)?;
@@ -721,7 +749,7 @@ impl NativeProcess {
                             1 => {
                                 let ordinal = usize::try_from(packet.address)
                                     .map_err(|_| NativeError::Protocol)?;
-                                let &(number, entry, _) =
+                                let &(number, entry, _, _) =
                                     self.imports.get(ordinal).ok_or(NativeError::Protocol)?;
                                 (
                                     number,
@@ -852,6 +880,20 @@ extern "C" fn import(
             }
         }
     }
+    host_import(
+        number,
+        arguments,
+        std::array::from_fn(|i| floats[i][0]),
+        typed,
+    )
+}
+
+fn host_import(
+    number: u64,
+    arguments: [u64; 13],
+    floats: [u64; 8],
+    typed: u64,
+) -> ImportResult {
     let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);
     // SAFETY: borrowed wrapper for inherited fd 0, never closed here. This
     // single-thread child alone uses the channel; clone/fork are not admitted.
@@ -860,7 +902,7 @@ extern "C" fn import(
     packet.address = number;
     packet.arguments = arguments;
     packet.abi = typed as u8;
-    packet.floats = std::array::from_fn(|i| floats[i][0]);
+    packet.floats = floats;
     if packet.send(&mut stream).is_err() {
         std::process::exit(125);
     }
@@ -969,7 +1011,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         if binding.operation != BIND
             || binding.sequence != 0
             || binding.abi > 1
-            || binding.value > 1
+            || binding.value > 2
         {
             return Err(NativeError::Protocol);
         }
@@ -979,7 +1021,34 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         } else {
             NativeAbi::Microsoft
         };
-        let entry = if binding.value == 1 {
+        let entry = if binding.value == 2 {
+            let slots = u32::try_from(binding.arguments[3])
+                .map_err(|_| NativeError::Protocol)?
+                .to_le_bytes();
+            let filter = super::NativeListFilter {
+                buffer: binding.arguments[0],
+                capacity: binding.arguments[1]
+                    .try_into()
+                    .map_err(|_| NativeError::Protocol)?,
+                depth: binding.arguments[2]
+                    .try_into()
+                    .map_err(|_| NativeError::Protocol)?,
+                list: slots[0],
+                limit: slots[1],
+                callback: slots[2],
+                data: slots[3],
+                keep: binding.arguments[4]
+                    .try_into()
+                    .map_err(|_| NativeError::Protocol)?,
+                end: binding.arguments[5]
+                    .try_into()
+                    .map_err(|_| NativeError::Protocol)?,
+            };
+            if number >= super::runtime::FIRST || !filter.valid(binding.arguments[6] as usize) {
+                return Err(NativeError::Protocol);
+            }
+            runtime::ImportBinding::Engine(Some((abi, filter)))
+        } else if binding.value == 1 {
             runtime::ImportBinding::Trap
         } else if let Some(function) = super::runtime::function(number) {
             runtime::ImportBinding::Runtime(
@@ -989,7 +1058,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         } else if number >= super::runtime::FIRST {
             return Err(NativeError::Unsupported);
         } else {
-            runtime::ImportBinding::Engine
+            runtime::ImportBinding::Engine(None)
         };
         bindings.push(entry);
     }

@@ -2725,6 +2725,7 @@ impl FrameSource for Source {
 
 fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions: bool) {
     let system_v = [NativeImport {
+        filter: None,
         trap: false,
         number: 0,
         abi: NativeAbi::SystemV,
@@ -2732,6 +2733,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
         result: NativeScalar::Word,
     }];
     let microsoft = [NativeImport {
+        filter: None,
         trap: false,
         number: 0,
         abi: NativeAbi::Microsoft,

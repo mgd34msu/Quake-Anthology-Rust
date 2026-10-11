@@ -97,6 +97,7 @@ fn a_zero_budget_cannot_transfer_even_a_ready_packet() {
 fn a_missing_import_aborts_the_call_and_keeps_the_owned_child() {
     for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
         let imports = [NativeImport {
+            filter: None,
             trap: true,
             number: 0,
             abi,
@@ -140,6 +141,7 @@ fn a_missing_import_in_a_runtime_callback_returns_through_rust_frames() {
     let abi = NativeAbi::Microsoft;
     let imports = [
         NativeImport {
+            filter: None,
             trap: false,
             number: sort.number,
             abi,
@@ -147,6 +149,7 @@ fn a_missing_import_in_a_runtime_callback_returns_through_rust_frames() {
             result: sort.result,
         },
         NativeImport {
+            filter: None,
             trap: true,
             number: 0,
             abi,
@@ -242,6 +245,7 @@ fn c_runtime_imports_execute_in_the_child_without_an_engine_round_trip() {
         let imports: Vec<_> = FUNCTIONS
             .iter()
             .map(|f| NativeImport {
+                filter: None,
                 trap: false,
                 number: f.number,
                 abi,
@@ -389,6 +393,7 @@ fn c_runtime_scans_cross_region_boundaries_without_crossing_gaps() {
         .iter()
         .take(7)
         .map(|f| NativeImport {
+            filter: None,
             trap: false,
             number: f.number,
             abi: NativeAbi::Microsoft,
@@ -484,6 +489,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         .iter()
         .filter(|f| f.windows_object())
         .map(|f| NativeImport {
+            filter: None,
             trap: false,
             number: f.number,
             abi: NativeAbi::Microsoft,
@@ -492,6 +498,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         })
         .collect();
     imports.push(NativeImport {
+        filter: None,
         trap: false,
         number: 7,
         abi: NativeAbi::Microsoft,
@@ -1428,6 +1435,7 @@ fn typed_native_function_imports_decode_scalar_arguments_and_return_in_the_nativ
             let mut bytes = vec![0; 8192];
             bytes[..code.len()].copy_from_slice(&code);
             let imports = [NativeImport {
+                filter: None,
                 trap: false,
                 number: 137,
                 abi,
@@ -1534,6 +1542,7 @@ fn native_integer_imports_apply_declared_widths_in_both_directions() {
             bytes[..code.len()].copy_from_slice(&code);
             let parameters = [kind];
             let imports = [NativeImport {
+                filter: None,
                 trap: false,
                 number: 141,
                 abi,
@@ -1647,4 +1656,260 @@ fn nonexecutable_entry_and_callback_rejection_are_local() {
     let pid = process.pid();
     drop(process);
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+}
+
+#[test]
+fn list_filters_execute_in_the_child_with_native_end_and_count_only_semantics() {
+    use super::NativeListFilter;
+    for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
+        for nested in [false, true] {
+            let filter = NativeListFilter {
+                buffer: BASE + 4608,
+                capacity: 3,
+                depth: 2,
+                list: 2,
+                limit: 3,
+                callback: 5,
+                data: 6,
+                keep: 0,
+                end: 64,
+            };
+            let imports = [
+                NativeImport {
+                    trap: false,
+                    number: 23,
+                    abi,
+                    parameters: &[NativeScalar::Word; 7],
+                    result: NativeScalar::Word,
+                    filter: Some(filter),
+                },
+                NativeImport {
+                    trap: false,
+                    number: 777,
+                    abi,
+                    parameters: &[NativeScalar::Word; 2],
+                    result: NativeScalar::U32,
+                    filter: None,
+                },
+            ];
+            let mut bytes = vec![0; 8192];
+            // The foreign filter itself imports its decision. This exercises a
+            // reentrant engine call after the initial frozen area query has ended.
+            let observer = NativeProcess::import_address(BASE, bytes.len(), 1).unwrap();
+            let mut callback = Vec::new();
+            if nested {
+                let microsoft = abi == NativeAbi::Microsoft;
+                let stack = if microsoft { 72 } else { 8 };
+                callback.extend(if microsoft {
+                    [0x51, 0x52]
+                } else {
+                    [0x57, 0x56]
+                });
+                callback.extend([0x48, 0x83, 0xec, stack]);
+                let args = [0, 0, BASE + 4352, 3, 1, BASE + 512, 0];
+                let registers = if microsoft {
+                    &[[0x48, 0xb9], [0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]][..]
+                } else {
+                    &[
+                        [0x48, 0xbf],
+                        [0x48, 0xbe],
+                        [0x48, 0xba],
+                        [0x48, 0xb9],
+                        [0x49, 0xb8],
+                        [0x49, 0xb9],
+                    ][..]
+                };
+                for (arg, register) in args.iter().zip(registers) {
+                    callback.extend(register);
+                    callback.extend(arg.to_le_bytes());
+                }
+                for (index, arg) in args.iter().skip(registers.len()).enumerate() {
+                    callback.extend([0x48, 0xb8]);
+                    callback.extend(arg.to_le_bytes());
+                    callback.extend([
+                        0x48,
+                        0x89,
+                        0x44,
+                        0x24,
+                        (if microsoft { 32 } else { 0 }) + index as u8 * 8,
+                    ]);
+                }
+                callback.extend([0x48, 0xb8]);
+                callback.extend(
+                    NativeProcess::import_address(BASE, bytes.len(), 0)
+                        .unwrap()
+                        .to_le_bytes(),
+                );
+                callback.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, stack]);
+                callback.extend(if microsoft {
+                    [0x5a, 0x59]
+                } else {
+                    [0x5e, 0x5f]
+                });
+                bytes[512..515].copy_from_slice(&[0x31, 0xc0, 0xc3]); // nested filter: Keep
+            }
+            callback.extend([0x48, 0xb8]);
+            callback.extend(observer.to_le_bytes());
+            callback.extend([0xff, 0xe0]);
+            bytes[256..256 + callback.len()].copy_from_slice(&callback);
+            let mut child =
+                image_child(&bytes, &REGIONS, &imports, Duration::from_secs(3)).unwrap();
+            let entry = child
+                .bind(
+                    child.import_pointer(0).unwrap(),
+                    abi,
+                    &[NativeScalar::Word; 7],
+                    NativeScalar::Word,
+                )
+                .unwrap();
+            for (decisions, limit, count, visited, output) in [
+                ([0, 1, 0], 3, 2, 3, vec![101u64, 303]),
+                ([0, 1, 0], 1, 1, 1, vec![101]),
+                ([1, 0, 0], 2, 2, 3, vec![202, 303]),
+                ([64, 0, 0], 3, 1, 1, vec![101]),
+                ([65, 0, 0], 3, 0, 1, vec![]),
+                ([1, 1, 1], 3, 0, 3, vec![]),
+                ([0, 1, 0], 0, 2, 3, vec![]),
+            ] {
+                child.memory_mut().unwrap()[4096..4128].fill(0xcc);
+                let mut calls = 0;
+                let mut seen = vec![];
+                let mut arguments = [0; 13];
+                arguments[..7].copy_from_slice(&[
+                    0,
+                    0,
+                    BASE + 4096,
+                    limit,
+                    1,
+                    BASE + 256,
+                    0x1122334455667788,
+                ]);
+                let result = child
+                    .invoke(entry, arguments, |call, base, memory| {
+                        assert_eq!(base, BASE);
+                        if call.number == 23 {
+                            calls += 1;
+                            assert_eq!(
+                                call.arguments[2],
+                                filter.buffer + if calls > 1 { 24 } else { 0 }
+                            );
+                            assert_eq!(call.arguments[3], 3);
+                            assert_eq!(call.arguments[5], 0);
+                            assert_eq!(call.arguments[6], 0);
+                            for (index, value) in [101u64, 202, 303].iter().enumerate() {
+                                let at = (call.arguments[2] - BASE) as usize + index * 8;
+                                memory[at..at + 8].copy_from_slice(&value.to_le_bytes());
+                            }
+                            Ok(3)
+                        } else {
+                            assert_eq!(call.number, 777);
+                            assert_eq!(call.arguments[1], 0x1122334455667788);
+                            seen.push(call.arguments[0]);
+                            Ok(decisions[seen.len() - 1])
+                        }
+                    })
+                    .unwrap();
+                assert_eq!(result, count);
+                assert_eq!(calls, if nested { 1 + visited } else { 1 });
+                assert_eq!(seen, [101u64, 202, 303][..visited]);
+                let memory = child.memory().unwrap();
+                for (index, value) in output.iter().enumerate() {
+                    assert_eq!(
+                        &memory[4096 + index * 8..4104 + index * 8],
+                        &value.to_le_bytes()
+                    );
+                }
+                assert_eq!(
+                    &memory[4096 + output.len() * 8..4128],
+                    vec![0xcc; 32 - output.len() * 8]
+                );
+            }
+            // A null filter keeps the ordinary import path and its native limit.
+            let mut arguments = [0; 13];
+            arguments[..7].copy_from_slice(&[0, 0, 0, 0, 1, 0, 0]);
+            assert_eq!(
+                child
+                    .invoke(entry, arguments, |call, _, _| {
+                        assert_eq!(call.number, 23);
+                        assert_eq!(call.arguments[2], 0);
+                        assert_eq!(call.arguments[3], 0);
+                        Ok(5)
+                    })
+                    .unwrap(),
+                5
+            );
+            if nested {
+                // Recurse through the inner filter until the fixed bank limit
+                // is reached. A rejected nested call must reap only this child.
+                let mut code = vec![0x48, 0xb8];
+                code.extend((BASE + 256).to_le_bytes());
+                code.extend([0xff, 0xe0]);
+                child.memory_mut().unwrap()[512..512 + code.len()].copy_from_slice(&code);
+                arguments[..7].copy_from_slice(&[0, 0, BASE + 4096, 3, 1, BASE + 256, 0]);
+                assert!(
+                    child
+                        .invoke(entry, arguments, |call, _, memory| {
+                            assert_eq!(call.number, 23);
+                            let at = (call.arguments[2] - BASE) as usize;
+                            memory[at..at + 8].copy_from_slice(&101u64.to_le_bytes());
+                            Ok(1)
+                        })
+                        .is_err()
+                );
+                assert!(child.memory_mut().is_ok());
+            }
+        }
+    }
+}
+
+#[test]
+fn list_filter_descriptors_validate_slots_banks_and_memory_before_execution() {
+    use super::NativeListFilter;
+    let valid = NativeListFilter {
+        buffer: BASE + 4608,
+        capacity: 3,
+        depth: 2,
+        list: 2,
+        limit: 3,
+        callback: 5,
+        data: 6,
+        keep: 0,
+        end: 64,
+    };
+    for filter in [
+        NativeListFilter {
+            capacity: 0,
+            ..valid
+        },
+        NativeListFilter { depth: 0, ..valid },
+        NativeListFilter { depth: 9, ..valid },
+        NativeListFilter {
+            callback: 2,
+            ..valid
+        },
+        NativeListFilter { data: 7, ..valid },
+        NativeListFilter { keep: 64, ..valid },
+        NativeListFilter {
+            buffer: BASE,
+            ..valid
+        },
+        NativeListFilter {
+            buffer: u64::MAX,
+            ..valid
+        },
+        NativeListFilter {
+            buffer: BASE + 8176,
+            ..valid
+        },
+    ] {
+        let imports = [NativeImport {
+            filter: Some(filter),
+            trap: false,
+            number: 23,
+            abi: NativeAbi::Microsoft,
+            parameters: &[NativeScalar::Word; 7],
+            result: NativeScalar::Word,
+        }];
+        assert!(image_child(&[0; 8192], &REGIONS, &imports, Duration::from_secs(3)).is_err());
+    }
 }

@@ -3,7 +3,10 @@
 use super::{ImportResult, NativeEntry, NativeError, NativeRegion};
 use crate::native::runtime::{Comparison, Function, Operation, RuntimeConfig};
 use qa_core::heap::{Heap, MemoryError};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    Mutex, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 #[path = "crt.rs"]
 mod crt;
 #[path = "kernel.rs"]
@@ -195,11 +198,12 @@ struct Runtime {
     heap: Mutex<Option<Heap>>,
     config: Option<RuntimeConfig>,
     kernel: Mutex<kernel::State>,
+    filter_depth: AtomicUsize,
 }
 static CHILD: OnceLock<Runtime> = OnceLock::new();
 
 pub(super) enum ImportBinding {
-    Engine,
+    Engine(Option<(crate::native::NativeAbi, crate::native::NativeListFilter)>),
     Runtime(&'static Function, NativeEntry),
     Trap,
 }
@@ -216,6 +220,11 @@ pub(super) fn initialize(
         length,
         regions,
     };
+    for binding in &imports {
+        if let ImportBinding::Engine(Some((_, filter))) = binding {
+            memory.range(filter.buffer, filter.bytes(), 3)?;
+        }
+    }
     if let Some(teb) = config.and_then(|c| c.teb) {
         memory.range(teb, crate::native::runtime::THREAD_BYTES, 3)?;
         let stack = memory.regions.last().ok_or(NativeError::Extent)?;
@@ -251,6 +260,7 @@ pub(super) fn initialize(
             heap: Mutex::new(heap),
             config,
             kernel: Mutex::new(kernel::State::default()),
+            filter_depth: AtomicUsize::new(0),
         })
         .map_err(|_| NativeError::Protocol)
 }
@@ -262,7 +272,11 @@ pub(super) fn invoke(
 ) -> Result<Option<ImportResult>, NativeError> {
     let runtime = CHILD.get().ok_or(NativeError::Protocol)?;
     let (function, entry) = match runtime.imports.get(ordinal).ok_or(NativeError::Protocol)? {
-        ImportBinding::Engine => return Ok(None),
+        ImportBinding::Engine(filter) => {
+            return filter.map_or(Ok(None), |(abi, filter)| {
+                runtime.filtered(ordinal, abi, filter, words, floats)
+            });
+        }
         ImportBinding::Trap => {
             return Err(NativeError::ImportTrap {
                 ordinal,
@@ -279,6 +293,74 @@ pub(super) fn invoke(
     }))
 }
 impl Runtime {
+    fn filtered(
+        &self,
+        ordinal: usize,
+        abi: crate::native::NativeAbi,
+        filter: crate::native::NativeListFilter,
+        mut words: [u64; 13],
+        floats: [u64; 8],
+    ) -> Result<Option<ImportResult>, NativeError> {
+        use crate::native::NativeScalar::{U32, Word};
+        let callback = words[usize::from(filter.callback)];
+        if callback == 0 {
+            return Ok(None);
+        }
+        self.memory.range(callback, 1, 4)?;
+        let output = words[usize::from(filter.list)];
+        let limit =
+            usize::try_from(words[usize::from(filter.limit)]).map_err(|_| NativeError::Extent)?;
+        if output != 0 && limit != 0 {
+            self.memory
+                .range(output, limit.checked_mul(8).ok_or(NativeError::Extent)?, 3)?;
+        }
+        let data = words[usize::from(filter.data)];
+        let depth = self.filter_depth.fetch_add(1, Ordering::Relaxed);
+        struct Bank<'a>(&'a AtomicUsize);
+        impl Drop for Bank<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        let _bank = Bank(&self.filter_depth);
+        if depth >= usize::from(filter.depth) {
+            return Err(NativeError::Extent);
+        }
+        let scratch = filter.buffer + depth as u64 * u64::from(filter.capacity) * 8;
+        words[usize::from(filter.list)] = scratch;
+        words[usize::from(filter.limit)] = u64::from(filter.capacity);
+        words[usize::from(filter.callback)] = 0;
+        words[usize::from(filter.data)] = 0;
+        let result = super::host_import(ordinal as u64, words, floats, 1);
+        if result.value > u64::from(filter.capacity) {
+            return Err(NativeError::Protocol);
+        }
+        let mut kept = 0usize;
+        for index in 0..result.value {
+            if limit != 0 && kept == limit {
+                break;
+            }
+            let entity = self.memory.unsigned(scratch + index * 8, 8)?;
+            // All byte reads and the engine's area borrow end before the native
+            // callback. Nested imports use the same stopped-memory boundary;
+            // nested filtered calls claim another fixed bank.
+            let decision = self.foreign(callback, abi, &[Word, Word], U32, &[entity, data])? as u32;
+            if decision & !filter.end == filter.keep {
+                if output != 0 && limit != 0 {
+                    self.memory.put(output + kept as u64 * 8, 8, entity)?;
+                }
+                kept += 1;
+            }
+            if decision & filter.end != 0 {
+                break;
+            }
+        }
+        Ok(Some(ImportResult {
+            value: kept as u64,
+            kind: result.kind,
+        }))
+    }
+
     fn wall_millis(&self) -> Result<i64, NativeError> {
         Ok(self.memory.unsigned(
             self.state()? + crate::native::runtime::TIME_OFFSET as u64 + 8,

@@ -422,6 +422,7 @@ impl Game {
                     let function =
                         qa_platform::native::runtime::function(number).ok_or(Error::Export)?;
                     return Ok(NativeImport {
+                        filter: None,
                         trap: false,
                         number,
                         abi,
@@ -485,6 +486,7 @@ impl Game {
                     None
                 };
                 Ok(NativeImport {
+                    filter: None,
                     trap: signature.is_none(),
                     number: ordinal as u32,
                     abi,
