@@ -35,18 +35,16 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Tr
     } = query;
     let planes: [Plane; 6] = std::array::from_fn(|index| {
         let axis = index / 2;
-        Plane {
-            encoding: None,
-            normal: Vec3(std::array::from_fn(|coordinate| {
+        Plane::oriented(
+            Vec3(std::array::from_fn(|coordinate| {
                 if coordinate == axis { 1.0 } else { 0.0 }
             })),
-            distance: if index & 1 == 0 {
+            if index & 1 == 0 {
                 body.maxs.0[axis] - mins.0[axis]
             } else {
                 body.mins.0[axis] - maxs.0[axis]
             },
-            axis: Some([Axis::X, Axis::Y, Axis::Z][axis]),
-        }
+        )
     });
     let local = |point: Vec3| point - body.position;
     let mut stack = [Frame::default(); 7];
@@ -117,7 +115,7 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) ->
                 -body.mins.0[axis]
             },
             axis: if positive {
-                Some([Axis::X, Axis::Y, Axis::Z][axis])
+                Axis::from_index(axis)
             } else {
                 None
             },

@@ -78,7 +78,11 @@ fn brush_model(
                 } else {
                     -mins.0[axis]
                 },
-                axis: positive.then_some([Axis::X, Axis::Y, Axis::Z][axis]),
+                axis: if positive {
+                    Axis::from_index(axis)
+                } else {
+                    None
+                },
             }
         })
         .collect();

@@ -23,6 +23,25 @@ pub enum Axis {
     Z,
 }
 
+impl Axis {
+    pub const fn index(self) -> usize {
+        match self {
+            Self::X => 0,
+            Self::Y => 1,
+            Self::Z => 2,
+        }
+    }
+
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::X),
+            1 => Some(Self::Y),
+            2 => Some(Self::Z),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Plane {
     pub normal: Vec3,
@@ -43,7 +62,7 @@ impl Plane {
     pub fn oriented(normal: Vec3, distance: f32) -> Self {
         let axis = (0..3)
             .find(|&a| normal.0[a] == 1.0 && (0..3).all(|b| b == a || normal.0[b] == 0.0))
-            .map(|a| [Axis::X, Axis::Y, Axis::Z][a]);
+            .and_then(Axis::from_index);
         Self {
             normal,
             distance,
@@ -54,12 +73,7 @@ impl Plane {
 
     pub fn type_sign(self) -> [u8; 2] {
         self.encoding.unwrap_or_else(|| {
-            let kind = match self.axis {
-                Some(Axis::X) => 0,
-                Some(Axis::Y) => 1,
-                Some(Axis::Z) => 2,
-                None => 3,
-            };
+            let kind = self.axis.map_or(3, |axis| axis.index() as u8);
             let signs = self
                 .normal
                 .0
@@ -74,9 +88,7 @@ impl Plane {
 
     pub fn signed_distance(self, point: Vec3) -> f32 {
         let coordinate = match self.axis {
-            Some(Axis::X) => point.0[0],
-            Some(Axis::Y) => point.0[1],
-            Some(Axis::Z) => point.0[2],
+            Some(axis) => point.0[axis.index()],
             None => self.normal.dot(point),
         };
         coordinate - self.distance

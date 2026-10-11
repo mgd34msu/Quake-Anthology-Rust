@@ -73,6 +73,8 @@ pub struct ModuleRequest {
     pub instruction_budget: u64,
     pub configstrings: usize,
     pub files: usize,
+    /// Physical spawn source and caller-selected token syntax, bound at load.
+    pub entity_source: Option<(usize, qa_formats::entities::EntitySyntax)>,
 }
 impl ModuleRequest {
     fn sequence(&self, sequence: LifecycleSequence) -> &[Export] {
@@ -259,12 +261,22 @@ impl FrameHost {
             {
                 return Err("invalid native export".into());
             }
-            let storage = ServiceStorage::load(
+            let mut storage = ServiceStorage::load(
                 &[(request.context.module, request.configstrings)],
                 request.files,
                 &host.console.cvars,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
+            if let Some((index, syntax)) = request.entity_source {
+                let source = host
+                    .runtime
+                    .entity_sources
+                    .get(index)
+                    .ok_or("missing module entity source")?;
+                storage
+                    .bind_entity_text(request.context.module, source.bytes.clone(), syntax)
+                    .map_err(|e| format!("module entity source: {e:?}"))?;
+            }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &mut request.program {
                 vm.rebind_configstrings();

@@ -89,7 +89,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         };
         let mut plane = Plane::oriented(normal, distance);
         if !matches!(rules, RuleSetId::Quake3) && (0..3).contains(&plane_type) {
-            plane.axis = Some([Axis::X, Axis::Y, Axis::Z][plane_type as usize]);
+            plane.axis = Axis::from_index(plane_type as usize);
         }
         let [kind, signs] = plane.type_sign();
         plane.encoding = Some([

@@ -2,7 +2,7 @@ use super::brushes::{
     Brush, BrushMap, BrushWork, GeometryError, clip_brush, position_brush, valid_plane,
 };
 use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceQuery};
-use qa_core::primitives::{Axis, Bounds, ClipNode, Plane, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3};
 use qa_core::stamps::StampSet;
 
 #[derive(Clone, Copy, Debug)]
@@ -84,14 +84,6 @@ impl BrushScratch {
     }
 }
 
-fn axis_index(axis: Axis) -> usize {
-    match axis {
-        Axis::X => 0,
-        Axis::Y => 1,
-        Axis::Z => 2,
-    }
-}
-
 fn leaf_index(child: i32) -> usize {
     (-1i64 - i64::from(child)) as usize
 }
@@ -121,7 +113,7 @@ impl Topology {
             if let Some(axis) = plane.axis {
                 let mut normal = [0.0; 3];
                 // Q2 PlaneTypeForNormal classifies either unit sign as axial.
-                normal[axis_index(axis)] = plane.normal.0[axis_index(axis)].signum();
+                normal[axis.index()] = plane.normal.0[axis.index()].signum();
                 return plane.normal != Vec3(normal);
             }
             false
@@ -402,7 +394,7 @@ impl Topology {
             let t1 = plane.signed_distance(frame.p1);
             let t2 = plane.signed_distance(frame.p2);
             let offset = if let Some(axis) = plane.axis {
-                work.extents.0[axis_index(axis)]
+                work.extents.0[axis.index()]
             } else if work.tree_point {
                 0.0
             } else {

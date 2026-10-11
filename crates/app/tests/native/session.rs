@@ -294,6 +294,7 @@ fn request(
         instruction_budget: 100,
         configstrings: 0,
         files: 0,
+        entity_source: None,
     }
 }
 
@@ -549,6 +550,7 @@ fn native_files_use_the_qvm_role_policy_and_vfs_loader() {
         &specs,
         &mut requests,
         TickRate::fixed(50).unwrap(),
+        None,
     )
     .unwrap();
     assert_eq!(requests.len(), 4);
@@ -1273,6 +1275,7 @@ fn elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_mo
         ],
         &mut requests,
         TickRate::fixed(50).unwrap(),
+        None,
     )
     .unwrap();
     for request in &requests {
@@ -1436,6 +1439,7 @@ fn pe_lifecycle_uses_session_order_and_rejects_false_attach() {
         ],
         &mut requests,
         TickRate::fixed(50).unwrap(),
+        None,
     )
     .unwrap();
     for request in &requests {
@@ -1615,9 +1619,7 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     runtime.entity_sources.push(qa_app::map::NativeEntityText {
         syntax: EntitySyntax::Quake3,
-        bytes: b"{\"classname\" \"worldspawn\"}\0"
-            .to_vec()
-            .into_boxed_slice(),
+        bytes: b"{\"classname\" \"worldspawn\"}\0".as_slice().into(),
     });
     for rr in [false, true] {
         let mut file = q2_table_file();

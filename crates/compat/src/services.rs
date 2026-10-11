@@ -78,6 +78,13 @@ struct ConfigRange {
     message: Box<[u8]>,
     written: usize,
     revision: u64,
+    entity_text: Option<EntityText>,
+}
+struct EntityText {
+    bytes: std::sync::Arc<[u8]>,
+    syntax: qa_formats::entities::EntitySyntax,
+    length: usize,
+    position: usize,
 }
 
 /// One load-sized store for module file handles and configstrings. Native
@@ -110,6 +117,7 @@ impl ServiceStorage {
                 message: vec![0; 0x8000].into_boxed_slice(),
                 written: 0,
                 revision: 0,
+                entity_text: None,
             });
             total = total.checked_add(count).ok_or(CallError::Capacity)?;
         }
@@ -142,6 +150,43 @@ impl ServiceStorage {
             return Err(CallError::ConfigString);
         }
         Ok(range.first + ordinal)
+    }
+    pub fn bind_entity_text(
+        &mut self,
+        module: ModuleId,
+        bytes: std::sync::Arc<[u8]>,
+        syntax: qa_formats::entities::EntitySyntax,
+    ) -> Result<(), CallError> {
+        let length = qa_formats::entities::EntityTokens::new(&bytes, syntax).source_length();
+        let range = self.entity_range(module)?;
+        range.entity_text = Some(EntityText {
+            bytes,
+            syntax,
+            length,
+            position: 0,
+        });
+        Ok(())
+    }
+    fn entity_token(&mut self, module: ModuleId) -> Result<Option<&[u8]>, CallError> {
+        let range = self.entity_range(module)?;
+        let Some(source) = &mut range.entity_text else {
+            return Ok(None);
+        };
+        let mut reader = qa_formats::entities::EntityTokens::resume(
+            &source.bytes[..source.length],
+            source.syntax,
+            source.position,
+        )
+        .map_err(|_| CallError::Text)?;
+        let token = reader.next_token().map_err(|_| CallError::Text)?;
+        source.position = reader.position();
+        Ok(token)
+    }
+    fn entity_range(&mut self, module: ModuleId) -> Result<&mut ConfigRange, CallError> {
+        self.ranges
+            .iter_mut()
+            .find(|r| r.module == module)
+            .ok_or(CallError::Text)
     }
     pub fn message(&self, module: ModuleId) -> Result<&[u8], CallError> {
         let row = self
@@ -297,6 +342,8 @@ pub type ResourceIndexCall =
     fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
 pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
+pub type EntityTokenCall =
+    for<'a> fn(&'a mut EngineServices<'_>, ModuleId) -> Result<Option<&'a [u8]>, CallError>;
 /// A direct clip selects one target, independently of area linking and owners.
 pub enum ClipTarget {
     World,
@@ -354,6 +401,7 @@ pub struct EngineCallTable {
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub resource_index: ResourceIndexCall,
     pub file_open: FileOpenCall,
+    pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
     pub file_read:
         fn(&mut EngineServices<'_>, ModuleId, u32, &mut [u8]) -> Result<usize, CallError>,
@@ -463,6 +511,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     configstring: |s, m, i, t| s.configstring(m, i, t),
     resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
     file_open: |s, m, p| s.file_open(m, p),
+    entity_token: |s, m| s.storage.entity_token(m),
     file_length: |s, p| s.file_length(p),
     file_read: |s, m, h, b| s.file_read(m, h, b),
     file_seek: |s, m, h, from| s.file_seek(m, h, from),

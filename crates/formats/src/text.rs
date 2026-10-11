@@ -23,7 +23,6 @@ impl<'a> Tokens<'a> {
         block_comments: bool,
         limit: usize,
     ) -> Self {
-        let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
         Self {
             bytes,
             at: 0,

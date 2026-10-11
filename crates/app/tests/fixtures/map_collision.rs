@@ -65,7 +65,11 @@ fn add_box(map: &mut Map<'_>, center: f32) {
                 encoding: None,
                 normal,
                 distance: 10.0 + if axis == 0 { center * normal.0[0] } else { 0.0 },
-                axis: positive.then_some([Axis::X, Axis::Y, Axis::Z][axis]),
+                axis: if positive {
+                    Axis::from_index(axis)
+                } else {
+                    None
+                },
             });
             map.brush_sides.push(BrushSide {
                 plane,

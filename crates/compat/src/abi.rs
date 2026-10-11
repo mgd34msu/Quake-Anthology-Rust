@@ -164,6 +164,7 @@ const fn server() -> CallTable {
     t.entries[14] = Some(command);
     t.entries[18] = Some(config_set);
     t.entries[19] = Some(config_get);
+    t.entries[37] = Some(entity_token);
     t.entries[45] = Some(file_seek);
     t
 }
@@ -836,6 +837,18 @@ fn file_seek(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             u64::from(u32::MAX)
         },
     )
+}
+fn entity_token(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let output = c.pointer(0)?;
+    let capacity = c.length(1)?;
+    if capacity == 0 {
+        return Err(CallError::Text);
+    }
+    c.memory.read(output, capacity)?;
+    let token = (ENGINE_CALLS.entity_token)(c.services, c.context.module)?;
+    c.memory
+        .write_string(output, capacity, token.unwrap_or_default())?;
+    Ok(u64::from(token.is_some()))
 }
 fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let pointer = c.pointer(0)?;

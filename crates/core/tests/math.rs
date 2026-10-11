@@ -1,6 +1,6 @@
 use qa_core::{
     math::*,
-    primitives::{Bounds, Plane, Vec3},
+    primitives::{Axis, Bounds, Plane, Vec3},
 };
 
 #[test]
@@ -10,6 +10,15 @@ fn plane_encoding_keeps_native_fields_independent_of_transformed_normals() {
         let mut normal = [0.0; 3];
         normal[axis] = 1.0;
         let positive = Plane::oriented(Vec3(normal), 7.0);
+        let axis_id = Axis::from_index(axis).unwrap();
+        assert_eq!(axis_id.index(), axis);
+        assert_eq!(positive.axis, Some(axis_id));
+        let mut point = [f32::NAN; 3];
+        point[axis] = -0.0;
+        assert_eq!(
+            positive.signed_distance(Vec3(point)).to_bits(),
+            (-7.0f32).to_bits()
+        );
         assert_eq!(positive.type_sign(), [axis as u8, 0]);
         normal[axis] = -1.0;
         let negative = Plane::oriented(Vec3(normal), 7.0);
@@ -23,6 +32,8 @@ fn plane_encoding_keeps_native_fields_independent_of_transformed_normals() {
         encoded.encoding = None;
         assert_eq!(encoded.type_sign(), [3, 6]);
     }
+    assert_eq!(Axis::from_index(3), None);
+    assert_eq!(Axis::from_index(usize::MAX), None);
 }
 
 #[test]

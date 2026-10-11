@@ -27,6 +27,103 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
+    use qa_formats::entities::EntitySyntax;
+    use std::sync::Arc;
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 511 }),
+        (
+            1u64 << 40,
+            Addresses::Native {
+                abi: qa_platform::native::NativeAbi::SystemV,
+            },
+        ),
+    ] {
+        let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let mut console = Console::new(Context::default()).unwrap();
+        let mut storage = ServiceStorage::load(
+            &[(ModuleId(1), 0), (ModuleId(2), 0), (ModuleId(3), 0)],
+            0,
+            &console.cvars,
+        )
+        .unwrap();
+        let source: Arc<[u8]> = b"/* comment */ { \"classname\" \"worldspawn\" \"empty\" \"\" \"raw\" \"\x82\\n\" }\0ignored".as_slice().into();
+        for module in [ModuleId(1), ModuleId(2)] {
+            storage
+                .bind_entity_text(module, source.clone(), EntitySyntax::Quake3)
+                .unwrap();
+        }
+        assert_eq!(Arc::strong_count(&source), 3);
+        let mut scratch = runtime.geometry.scratch();
+        let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+        let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        let arguments = [base + 16, 64];
+        let mut call = Invocation {
+            services: &mut services,
+            memory: &mut memory,
+            native_cvars: None,
+            native_resources: None,
+            native_entities: None,
+            native_surfaces: None,
+            native_command: None,
+            native_configs: None,
+            context: context(),
+            platform_time: EventTime(0),
+            command: &[],
+            addresses,
+            arguments: &arguments,
+        };
+        for expected in [
+            b"{".as_slice(),
+            b"classname",
+            b"worldspawn",
+            b"empty",
+            b"",
+            b"raw",
+            b"\x82\\n",
+            b"}",
+        ] {
+            for module in [ModuleId(1), ModuleId(2)] {
+                call.context.module = module;
+                assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(1));
+                assert_eq!(call.memory.cstring(base + 16).unwrap(), expected);
+            }
+        }
+        for module in [ModuleId(1), ModuleId(2), ModuleId(3)] {
+            call.context.module = module;
+            assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(0));
+            assert_eq!(call.memory.cstring(base + 16).unwrap(), b"");
+        }
+        call.services
+            .storage
+            .bind_entity_text(ModuleId(1), source.clone(), EntitySyntax::Quake3)
+            .unwrap();
+        call.context.module = ModuleId(1);
+        let short = [base + 16, 1];
+        call.arguments = &short;
+        assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(1));
+        assert_eq!(call.memory.cstring(base + 16).unwrap(), b"");
+        let invalid = [base + 510, 64];
+        call.arguments = &invalid;
+        assert_eq!(
+            Q3_SERVER.invoke(37, &mut call, &mut unknown),
+            Err(CallError::Memory)
+        );
+        let zero = [base + 16, 0];
+        call.arguments = &zero;
+        assert_eq!(
+            Q3_SERVER.invoke(37, &mut call, &mut unknown),
+            Err(CallError::Text)
+        );
+        call.arguments = &arguments;
+        assert_eq!(Q3_SERVER.invoke(37, &mut call, &mut unknown), Ok(1));
+        assert_eq!(call.memory.cstring(base + 16).unwrap(), b"classname");
+        assert_eq!(unknown.calls, 0);
+    }
+}
+
+#[test]
 fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
     for (base, addresses) in [
         (0, Addresses::Qvm { mask: 511 }),

@@ -1,5 +1,5 @@
 //! Ordered box-to-leaf collection over admitted BSP nodes.
-use qa_core::primitives::{Axis, Bounds, Plane};
+use qa_core::primitives::{Bounds, Plane};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoxLeaves {
@@ -58,11 +58,7 @@ impl LeafScratch {
 
 fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
     if let Some(axis) = plane.axis {
-        let axis = match axis {
-            Axis::X => 0,
-            Axis::Y => 1,
-            Axis::Z => 2,
-        };
+        let axis = axis.index();
         if plane.distance <= bounds.mins.0[axis] {
             return 1;
         }

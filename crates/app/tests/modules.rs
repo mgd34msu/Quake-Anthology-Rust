@@ -21,6 +21,117 @@ use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 use std::time::Duration;
 
 #[test]
+fn qvm_spawn_tokens_use_session_dispatch_and_explicit_module_syntax() {
+    use qa_app::map::NativeEntityText;
+    use qa_formats::{entities::EntitySyntax, program::qvm::Opcode::*};
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    runtime.entity_sources.push(NativeEntityText {
+        syntax: EntitySyntax::Quake,
+        bytes: b"{ a:b raw }\0ignored".as_slice().into(),
+    });
+    let operations = [
+        (Enter, 64),
+        (Const, 128),
+        (Arg, 8),
+        (Const, 64),
+        (Arg, 12),
+        (Const, -38),
+        (Call, 0),
+        (Const, 128),
+        (Arg, 8),
+        (Const, -1),
+        (Call, 0),
+        (Pop, 0),
+        (Leave, 64),
+    ];
+    let requests = (1..=2)
+        .map(|module| {
+            let module = ModuleId(module);
+            let anchor = runtime
+                .server
+                .entities
+                .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::q3(0))
+                .unwrap()
+                .id;
+            ModuleRequest {
+                context: CallContext {
+                    server_frame: 0,
+                    module,
+                    clock: ThinkTime::Milliseconds(0),
+                    console: Context::default(),
+                    allocation: AllocationPolicy::q3(0),
+                    link_order: LinkOrder::Head,
+                },
+                timing_rules: RuleSetId::Quake3,
+                phase: Phase::Server,
+                rate: TickRate::fixed(50).unwrap(),
+                anchor,
+                program: Program::Qvm {
+                    vm: Box::new(service_program::program(&operations, &[])),
+                    imports: &Q3_SERVER,
+                },
+                entries: vec![0],
+                frame: Export::clocked(CallbackId(0)),
+                prepare: Vec::new(),
+                initialize: Vec::new(),
+                api: None,
+                shutdown: Vec::new(),
+                instruction_budget: 100,
+                configstrings: 0,
+                files: 0,
+                entity_source: Some((0, EntitySyntax::Quake3)),
+            }
+        })
+        .collect();
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    for expected in [1, 1, 1, 1, 0, 0] {
+        for module in [ModuleId(1), ModuleId(2)] {
+            host.call_module_export(
+                module,
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Milliseconds(50),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(module).unwrap().last_result,
+                Some(ModuleResult::Qvm(expected))
+            );
+        }
+    }
+    let mut batch = host
+        .runtime
+        .server
+        .events
+        .batch(host.runtime.server.presentation)
+        .unwrap();
+    let mut prints = Vec::new();
+    while let Some(record) = host.runtime.server.events.next(&mut batch) {
+        if let FrameEvent::Print(print) = record.event {
+            prints.push(
+                host.runtime
+                    .server
+                    .events
+                    .texts
+                    .get(print.text)
+                    .unwrap()
+                    .to_vec(),
+            );
+        }
+    }
+    let expected = [b"{".as_slice(), b"a:b", b"raw", b"}", b"", b""]
+        .into_iter()
+        .flat_map(|token| [token.to_vec(), token.to_vec()])
+        .collect::<Vec<_>>();
+    assert_eq!(prints, expected);
+}
+
+#[test]
 fn quakec_presets_are_explicit_and_do_not_inherit_map_or_player_rules() {
     use qa_app::modules::QuakeCSpec;
     let spec = QuakeCSpec::parse("qw:qwprogs.dat").unwrap();
@@ -180,6 +291,7 @@ fn lifecycle_host_in(
             instruction_budget: budget,
             configstrings: 0,
             files: 0,
+            entity_source: None,
         }],
     )
     .unwrap()
@@ -499,6 +611,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             instruction_budget: qvm_budget,
             configstrings: 0,
             files: 0,
+            entity_source: None,
         },
         ModuleRequest {
             context: CallContext {
@@ -526,6 +639,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             instruction_budget: 1000,
             configstrings: 0,
             files: 0,
+            entity_source: None,
         },
     ];
     (

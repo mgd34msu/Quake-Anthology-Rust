@@ -48,7 +48,7 @@ pub struct LoadedMap {
 /// fields, native spelling and protocol strings must not be rebuilt from IDs.
 pub struct NativeEntityText {
     pub syntax: EntitySyntax,
-    pub bytes: Box<[u8]>,
+    pub bytes: std::sync::Arc<[u8]>,
 }
 
 #[derive(Clone, Copy)]

@@ -9,6 +9,51 @@ pub enum EntitySyntax {
     Quake2,
     Quake3,
 }
+/// The same byte tokenizer used by cold entity conversion and module reads.
+pub struct EntityTokens<'a> {
+    tokens: Tokens<'a>,
+}
+impl<'a> EntityTokens<'a> {
+    pub fn new(bytes: &'a [u8], syntax: EntitySyntax) -> Self {
+        let bytes = &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())];
+        Self::from_span(bytes, syntax)
+    }
+    fn from_span(bytes: &'a [u8], syntax: EntitySyntax) -> Self {
+        Self {
+            tokens: match syntax {
+                EntitySyntax::Quake => Tokens::entity(bytes, b"{}()':", false, usize::MAX),
+                EntitySyntax::Quake2 => Tokens::entity(bytes, b"", false, 1024),
+                EntitySyntax::Quake3 => Tokens::entity(bytes, b"", true, 1024),
+            },
+        }
+    }
+    /// `bytes` is the source span trimmed to `source_length()` at load.
+    pub fn resume(
+        bytes: &'a [u8],
+        syntax: EntitySyntax,
+        position: usize,
+    ) -> Result<Self, FormatError> {
+        let mut reader = Self::from_span(bytes, syntax);
+        if position > reader.tokens.bytes.len() {
+            return Err(FormatError::InvalidRange);
+        }
+        reader.tokens.at = position;
+        Ok(reader)
+    }
+    pub fn position(&self) -> usize {
+        self.tokens.at
+    }
+    /// Resolve once at load, then resume within this NUL-trimmed source span.
+    pub fn source_length(&self) -> usize {
+        self.tokens.bytes.len()
+    }
+    pub fn next_token(&mut self) -> Result<Option<&'a [u8]>, FormatError> {
+        self.tokens.next()
+    }
+    fn value(&mut self) -> Result<&'a [u8], FormatError> {
+        self.tokens.value()
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct SpawnField<'a> {
     pub key: NameId,
@@ -27,14 +72,10 @@ pub struct SpawnColumns<'a, T> {
 }
 impl<'a> EntityLump<'a> {
     pub fn parse(bytes: &'a [u8], syntax: EntitySyntax) -> Result<Self, FormatError> {
-        let mut tokens = match syntax {
-            EntitySyntax::Quake => Tokens::entity(bytes, b"{}()':", false, usize::MAX),
-            EntitySyntax::Quake2 => Tokens::entity(bytes, b"", false, 1024),
-            EntitySyntax::Quake3 => Tokens::entity(bytes, b"", true, 1024),
-        };
+        let mut tokens = EntityTokens::new(bytes, syntax);
         let mut pairs = Vec::new();
         let mut records = Vec::new();
-        while let Some(open) = tokens.next()? {
+        while let Some(open) = tokens.next_token()? {
             if open.first() != Some(&b'{') {
                 return Err(FormatError::InvalidValue);
             }

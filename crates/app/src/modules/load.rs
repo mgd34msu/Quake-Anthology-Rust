@@ -128,6 +128,7 @@ pub fn load_q3(
     specs: &[Q3Spec],
     requests: &mut Vec<ModuleRequest>,
     rate: TickRate,
+    entity_source: Option<usize>,
 ) -> Result<(), String> {
     let mut reader = ArchiveReader::default();
     for spec in specs {
@@ -331,6 +332,11 @@ pub fn load_q3(
             instruction_budget: 10_000_000,
             configstrings: 1024,
             files: 32,
+            entity_source: if matches!(spec.role, Q3Role::Game) {
+                entity_source.map(|index| (index, qa_formats::entities::EntitySyntax::Quake3))
+            } else {
+                None
+            },
         });
     }
     Ok(())
@@ -410,6 +416,7 @@ pub fn load_quakec(
             instruction_budget: 1_000_000,
             configstrings: 64,
             files: 32,
+            entity_source: None,
         });
     }
     Ok(requests)

@@ -482,7 +482,13 @@ fn run() -> Result<(), String> {
     }
     if !q3_modules.is_empty() {
         let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
-        qa_app::modules::load_q3(&mut runtime, &q3_modules, &mut module_requests, rate)?;
+        qa_app::modules::load_q3(
+            &mut runtime,
+            &q3_modules,
+            &mut module_requests,
+            rate,
+            native_entity_source,
+        )?;
     }
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
     for (index, spec) in quakec_modules.iter().enumerate() {

@@ -152,6 +152,7 @@ pub fn load_q2(
                     32768
                 },
                 files: 32,
+                entity_source: None,
             });
         }
         Ok(())

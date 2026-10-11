@@ -1,13 +1,5 @@
 use super::*;
 
-fn valid_bounds(bounds: Bounds) -> bool {
-    (0..3).all(|axis| {
-        bounds.mins.0[axis].is_finite()
-            && bounds.maxs.0[axis].is_finite()
-            && bounds.mins.0[axis] <= bounds.maxs.0[axis]
-    })
-}
-
 fn valid_child(child: i32, nodes: usize, leaves: usize) -> bool {
     if child >= 0 {
         (child as usize) < nodes
@@ -95,7 +87,7 @@ impl VisibilityWorld {
             if node.plane as usize >= planes.len() {
                 return Err(VisibilityError::Plane(index));
             }
-            if !valid_bounds(node.bounds) {
+            if !node.bounds.is_valid() {
                 return Err(VisibilityError::Bounds(index));
             }
             if node
@@ -120,7 +112,7 @@ impl VisibilityWorld {
             }
         }
         for (index, leaf) in leaves.iter().enumerate() {
-            if !valid_bounds(leaf.bounds) {
+            if !leaf.bounds.is_valid() {
                 return Err(VisibilityError::Bounds(nodes.len() + index));
             }
             if !valid_span(leaf.surfaces, leaf_surfaces.len()) {

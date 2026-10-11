@@ -1,6 +1,6 @@
 use qa_formats::{
     FormatError,
-    entities::{EntityLump, EntitySyntax},
+    entities::{EntityLump, EntitySyntax, EntityTokens},
 };
 
 #[test]
@@ -15,6 +15,40 @@ fn native_syntax_keeps_borrowed_values_case_policy_and_duplicate_order() {
     assert_eq!(q2.fields[2].value, b"b");
     assert!(EntityLump::parse(b"{\"x\" \"y\"}", EntitySyntax::Quake).is_ok());
     assert!(EntityLump::parse(b"{\"x\" \"y\"}", EntitySyntax::Quake2).is_err());
+}
+
+#[test]
+fn resumed_entity_tokens_keep_empty_values_raw_bytes_and_caller_syntax() {
+    let bytes = b"{ /* comment */ \"key\" \"\" // line\n \"raw\" \"\x82\\n\" }\0ignored";
+    let mut reader = EntityTokens::new(bytes, EntitySyntax::Quake3);
+    let length = reader.source_length();
+    let mut found = Vec::new();
+    loop {
+        let token = reader.next_token().unwrap();
+        let Some(token) = token else { break };
+        found.push(token);
+        reader = EntityTokens::resume(&bytes[..length], EntitySyntax::Quake3, reader.position())
+            .unwrap();
+    }
+    assert_eq!(
+        found,
+        [b"{".as_slice(), b"key", b"", b"raw", b"\x82\\n", b"}"]
+    );
+    assert!(EntityTokens::resume(&bytes[..length], EntitySyntax::Quake3, length + 1).is_err());
+    let bytes = b"a:b (x)";
+    let collect = |syntax| {
+        let mut reader = EntityTokens::new(bytes, syntax);
+        let mut result = Vec::new();
+        while let Some(token) = reader.next_token().unwrap() {
+            result.push(token);
+        }
+        result
+    };
+    assert_eq!(
+        collect(EntitySyntax::Quake),
+        [b"a".as_slice(), b":", b"b", b"(", b"x", b")"]
+    );
+    assert_eq!(collect(EntitySyntax::Quake3), [b"a:b".as_slice(), b"(x)"]);
 }
 #[test]
 fn q3_value_newlines_match_server_entity_token_calls() {
