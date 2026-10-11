@@ -1,7 +1,6 @@
-use qa_core::events::{EventRing, FrameEvent, OutputTarget, TextStore};
+use qa_core::events::TextStore;
 use qa_core::primitives::{
-    ClientId, HudChange, HudEvent, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent,
-    PrintKind,
+    HudChange, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent, PrintKind,
 };
 use qa_gameplay::registry::Registry;
 
@@ -55,47 +54,6 @@ impl HudBindings {
         state.armor_type = player.armor_type;
         state.frags = player.frags;
         state.score = player.score;
-    }
-    pub fn publish_changes(
-        &self,
-        player: &PlayerState,
-        state: &HudState,
-        events: &mut EventRing,
-        client: ClientId,
-    ) {
-        let mut publish = |change| {
-            let _ = events.push_to(
-                OutputTarget::Client(client),
-                FrameEvent::Hud(HudEvent { client, change }),
-            );
-        };
-        for (item, &old_count) in state.item_counts.iter().enumerate() {
-            let count = player.inventory.get(item).copied().unwrap_or(0);
-            let acquired_at = player.item_acquired_at.get(item).copied().unwrap_or(0.0);
-            if old_count != count || state.item_acquired_at[item].to_bits() != acquired_at.to_bits()
-            {
-                publish(HudChange::Item {
-                    item: ItemId(item as u32),
-                    count,
-                    acquired_at,
-                });
-            }
-        }
-        if state.weapon != player.weapon {
-            publish(HudChange::Weapon(player.weapon));
-        }
-        for (slot, &old_until) in state.powerup_until.iter().enumerate() {
-            let until = player.powerup_until.get(slot).copied().unwrap_or(0.0);
-            if old_until.to_bits() != until.to_bits() {
-                publish(HudChange::Powerup {
-                    slot: slot as u32,
-                    until,
-                });
-            }
-        }
-        if state.collectibles != player.collectibles {
-            publish(HudChange::Collectibles(player.collectibles));
-        }
     }
     pub fn apply(&self, state: &mut HudState, change: HudChange) -> bool {
         match change {

@@ -607,12 +607,9 @@ impl FrameHost {
                 .catalog
                 .hud
                 .project_stats(player, &mut client.hud);
-            self.runtime.catalog.hud.publish_changes(
-                player,
-                &client.hud,
-                &mut self.runtime.server.events,
-                id,
-            );
+            client
+                .hud_publication
+                .publish_changes(player, &mut self.runtime.server.events, id);
         }
         commands
     }

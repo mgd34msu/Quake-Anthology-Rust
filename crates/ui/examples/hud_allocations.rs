@@ -12,6 +12,9 @@ fn main() -> Result<(), &'static str> {
         PlayerState::with_capacity(registry.items.len() + 1, 16, bindings.values.capacity())
     });
     let mut states = std::array::from_fn::<_, 3, _>(|_| bindings.state(16, NameId(1)));
+    let mut publications = std::array::from_fn::<_, 3, _>(|_| {
+        qa_session::clients::HudPublication::with_capacity(registry.items.len() + 1, 16)
+    });
     for (index, player) in players.iter_mut().enumerate() {
         let weapon = registry
             .weapons
@@ -36,7 +39,7 @@ fn main() -> Result<(), &'static str> {
         for (index, (player, state)) in players.iter_mut().zip(&mut states).enumerate() {
             player.health = 100 - frame % 20;
             bindings.project_stats(player, state);
-            bindings.publish_changes(player, state, &mut events, ClientId(index as u32));
+            publications[index].publish_changes(player, &mut events, ClientId(index as u32));
             qa_core::events::dispatch_consumer(
                 &mut events,
                 consumers[index],

@@ -10,6 +10,9 @@ use qa_world::{
     entities::EntityTable,
 };
 
+mod hud;
+pub use hud::HudPublication;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Connection {
     Local,
@@ -27,6 +30,7 @@ pub struct Client {
     pub link_order: LinkOrder,
     pub player: PlayerState,
     pub hud: HudState,
+    pub hud_publication: HudPublication,
     pub command: UserCmd,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
@@ -37,6 +41,7 @@ impl Client {
     fn reset(&mut self, texts: &mut qa_core::events::TextStore, module: ModuleId) {
         self.player.reset();
         self.hud.reset(texts);
+        self.hud_publication.reset();
         self.command = UserCmd::default();
         self.command_pending = false;
         self.intent = CommandIntent::default();
@@ -116,6 +121,7 @@ impl Server {
                 command_pending: false,
                 output: None,
                 hud: HudState::with_capacity(items, powerups, weapons, values),
+                hud_publication: HudPublication::with_capacity(items, powerups),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();

@@ -412,6 +412,124 @@ fn fragmented_rerelease_output_retries_exact_bytes_and_oversized_payloads_retire
 }
 
 #[test]
+fn stalled_local_output_does_not_republish_unchanged_hud_records() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();
+    let ids = std::array::from_fn::<_, 2, _>(|seat| {
+        runtime
+            .connect_local(
+                SeatId::new(seat as u8).unwrap(),
+                SpawnAnchor {
+                    position: Default::default(),
+                    angles: Default::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                policy,
+                Protocol::Quake2_34,
+                seat as u32,
+            )
+            .unwrap()
+    });
+    runtime
+        .network
+        .get_mut(ids[0], Endpoint::Server)
+        .unwrap()
+        .route
+        .peer = Peer::Socket(([127, 0, 0, 1], 2000).into());
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(50).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[..2].copy_from_slice(&ids.map(Some));
+    let weapon = host.runtime.catalog.registry.weapons[0].id;
+    for (seat, id) in ids.into_iter().enumerate() {
+        for player in [
+            &mut host.runtime.prediction[seat].player,
+            &mut host.runtime.server.clients[id.0 as usize].player,
+        ] {
+            player.health = 75;
+            player.inventory[1] = 4;
+            player.item_acquired_at[1] = 1.25;
+            player.weapon = weapon;
+            player.powerup_until[2] = 3.5;
+            player.collectibles = 7;
+        }
+    }
+    publish(
+        &mut host.runtime,
+        false,
+        NativeTarget::Client(ids[0]),
+        b"\x0fheld\0",
+    );
+    let mut source = Source {
+        reject: Some(2000),
+        ..Default::default()
+    };
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &host.local_clients,
+        EventTime(0),
+        3.0,
+        2.0,
+    );
+    assert!(
+        host.runtime
+            .network
+            .get(ids[0], Endpoint::Server)
+            .unwrap()
+            .pending_output
+            .is_some()
+    );
+    for frame in 1..=10 {
+        source.now = EventTime::from_milliseconds(frame * 50);
+        host.frame(&mut source, true);
+        assert_eq!(host.runtime.server.events.len(), 9);
+        let stalled = &host.runtime.server.clients[ids[0].0 as usize];
+        assert_eq!(stalled.hud.health, 75);
+        assert_eq!(stalled.hud.item_counts[1], 0);
+        assert_eq!(stalled.hud_publication.rejected_pushes, 0);
+        let healthy = &host.runtime.server.clients[ids[1].0 as usize].hud;
+        assert_eq!(
+            (healthy.item_counts[1], healthy.weapon, healthy.collectibles),
+            (4, weapon, 7)
+        );
+    }
+    assert!(host.runtime.server.world_frame >= 9);
+    host.runtime.prediction[0].player.inventory[1] = 5;
+    for frame in 11..=15 {
+        source.now = EventTime::from_milliseconds(frame * 50);
+        host.frame(&mut source, true);
+        assert_eq!(host.runtime.server.events.len(), 10);
+    }
+    source.reject = None;
+    let now = source.now;
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &host.local_clients,
+        now,
+        3.0,
+        2.0,
+    );
+    assert!(host.runtime.server.events.is_empty());
+    let hud = &host.runtime.server.clients[ids[0].0 as usize].hud;
+    assert_eq!(
+        (
+            hud.item_counts[1],
+            hud.weapon,
+            hud.powerup_until[2],
+            hud.collectibles
+        ),
+        (5, weapon, 3.5, 7)
+    );
+}
+
+#[test]
 fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let mut runtime = Runtime::load(1, []).unwrap();
     let policy = ClientPolicy::select(Some(RuleSetId::Quake2), None, None, None).unwrap();

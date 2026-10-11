@@ -319,6 +319,7 @@ version = "0.1.0"
 dependencies = [
  "qa-core",
  "qa-gameplay",
+ "qa-session",
 ]
 
 [[package]]
