@@ -26,22 +26,14 @@ impl Import {
 }
 
 fn document(vfs: &Vfs, file: FileRef) -> Result<Value, String> {
-    let length = usize::try_from(
-        vfs.length(file)
-            .map_err(|e| format!("profile size: {e:?}"))?,
-    )
-    .map_err(|_| "profile size exceeds platform")?;
-    if length > 4 * 1024 * 1024 {
-        return Err("profile document exceeds 4 MiB".into());
-    }
-    let mut bytes = vec![0; length];
-    if vfs
-        .read_into_reusing(file, &mut bytes, &mut ArchiveReader::default())
-        .map_err(|e| format!("profile read: {e:?}"))?
-        != length
-    {
-        return Err("incomplete profile document".into());
-    }
+    let bytes = vfs
+        .read_to_vec(file, 4 * 1024 * 1024, &mut ArchiveReader::default())
+        .map_err(|error| match error {
+            qa_content::vfs::VfsError::Size => "profile size exceeds platform".into(),
+            qa_content::vfs::VfsError::Limit => "profile document exceeds 4 MiB".into(),
+            qa_content::vfs::VfsError::ShortRead => "incomplete profile document".into(),
+            error => format!("profile read: {error:?}"),
+        })?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|e| format!("profile JSON: {e}"))?;
     if !value.is_object() || value.get("version").and_then(Value::as_u64) != Some(1) {
         return Err("unsupported profile schema".into());

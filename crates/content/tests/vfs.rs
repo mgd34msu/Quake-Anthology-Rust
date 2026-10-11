@@ -149,6 +149,13 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     let first = vfs.open(b"a").unwrap();
     assert_eq!(vfs.read_at(first, 0, &mut buffer).unwrap(), 5);
     assert_eq!(&buffer[..5], b"first");
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    assert_eq!(vfs.read_to_vec(first, 5, &mut reader).unwrap(), b"first");
+    assert_eq!(vfs.read_file(b"A", 5, &mut reader).unwrap(), b"first");
+    assert!(matches!(
+        vfs.read_to_vec(first, 4, &mut reader),
+        Err(VfsError::Limit)
+    ));
     let skin_ref = vfs.open(skin).unwrap();
     assert_eq!(vfs.open(b"models/monsters/ctank/skin.pcx"), Some(skin_ref));
     assert_eq!(vfs.origin(skin_ref).unwrap().member, skin);
@@ -184,4 +191,31 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     assert_eq!(vfs.open(b"A"), Some(first));
     assert_eq!(vfs.files().count(), 3);
     assert!(vfs.read_at(last, 0, &mut buffer).is_err());
+}
+
+#[test]
+fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
+    let root = Fixture::new("whole-file");
+    std::fs::write(root.0.join("a"), b"abcd").unwrap();
+    std::fs::write(root.0.join("empty"), b"").unwrap();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut reader = qa_formats::archive::ArchiveReader::default();
+    let file = vfs.open(b"a").unwrap();
+    assert_eq!(vfs.read_to_vec(file, 4, &mut reader).unwrap(), b"abcd");
+    assert_eq!(vfs.read_file(b"A", 4, &mut reader).unwrap(), b"abcd");
+    assert!(matches!(
+        vfs.read_to_vec(file, 3, &mut reader),
+        Err(VfsError::Limit)
+    ));
+    assert!(matches!(
+        vfs.read_file(b"missing", 4, &mut reader),
+        Err(VfsError::Missing)
+    ));
+    assert!(vfs.read_file(b"empty", 0, &mut reader).unwrap().is_empty());
+    std::fs::write(root.0.join("a"), b"ab").unwrap();
+    assert!(matches!(
+        vfs.read_to_vec(file, 4, &mut reader),
+        Err(VfsError::Format(qa_formats::FormatError::Truncated))
+    ));
 }

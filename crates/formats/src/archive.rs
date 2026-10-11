@@ -77,7 +77,7 @@ fn read_at(file: &File, out: &mut [u8], at: u64) -> io::Result<usize> {
     use std::os::windows::fs::FileExt;
     file.seek_read(out, at)
 }
-fn exact(file: &File, mut at: u64, mut out: &mut [u8]) -> Result<(), FormatError> {
+pub fn read_exact_at(file: &File, mut at: u64, mut out: &mut [u8]) -> Result<(), FormatError> {
     while !out.is_empty() {
         let count = match read_at(file, out, at) {
             Ok(count) => count,
@@ -98,7 +98,7 @@ fn bytes(file: &File, size: u64, at: u64, length: u64) -> Result<Vec<u8>, Format
         return Err(FormatError::InvalidRange);
     }
     let mut out = vec![0; length as usize];
-    exact(file, at, &mut out)?;
+    read_exact_at(file, at, &mut out)?;
     Ok(out)
 }
 
@@ -272,7 +272,7 @@ impl Archive {
             let out = destination
                 .get_mut(..length)
                 .ok_or(FormatError::InvalidRange)?;
-            exact(&self.file, entry.offset, out)?;
+            read_exact_at(&self.file, entry.offset, out)?;
             if entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc) {
                 return Err(FormatError::Checksum);
             }
@@ -316,7 +316,7 @@ impl Archive {
         let out = &mut destination[..count];
         match entry.compression {
             Compression::Stored => {
-                exact(&self.file, entry.offset + offset, out)?;
+                read_exact_at(&self.file, entry.offset + offset, out)?;
                 if offset == 0
                     && count as u64 == entry.length
                     && entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc)
@@ -412,7 +412,7 @@ impl Archive {
         let count = destination
             .len()
             .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        exact(&self.file, entry.offset + offset, &mut destination[..count])?;
+        read_exact_at(&self.file, entry.offset + offset, &mut destination[..count])?;
         Ok(count)
     }
 }

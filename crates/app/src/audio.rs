@@ -66,21 +66,16 @@ pub fn load_bank(
     let mut reader = qa_formats::archive::ArchiveReader::default();
     let mut sources = Vec::with_capacity(paths.len());
     for path in paths {
-        let file = vfs
-            .open(path.as_bytes())
-            .ok_or_else(|| format!("sound not found: {path}"))?;
-        let length = usize::try_from(vfs.length(file).map_err(|e| format!("sound: {e:?}"))?)
-            .map_err(|_| "sound too large")?;
-        if length > 256 * 1024 * 1024 {
-            return Err("sound too large".into());
-        }
-        let mut bytes = vec![0; length];
-        let read = vfs
-            .read_into_reusing(file, &mut bytes, &mut reader)
-            .map_err(|e| format!("sound: {e:?}"))?;
-        if read != length {
-            return Err("short sound read".into());
-        }
+        let bytes = vfs
+            .read_file(path.as_bytes(), 256 * 1024 * 1024, &mut reader)
+            .map_err(|error| match error {
+                qa_content::vfs::VfsError::Missing => format!("sound not found: {path}"),
+                qa_content::vfs::VfsError::Size
+                | qa_content::vfs::VfsError::Limit
+                | qa_content::vfs::VfsError::Allocation => "sound too large".into(),
+                qa_content::vfs::VfsError::ShortRead => "short sound read".into(),
+                error => format!("sound: {error:?}"),
+            })?;
         let policy = if rules == RuleSetId::Quake3 {
             qa_formats::sound::WavPolicy::Quake3
         } else {

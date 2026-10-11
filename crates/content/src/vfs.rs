@@ -58,6 +58,11 @@ pub enum VfsError {
     Capacity,
     Range,
     Handle,
+    Missing,
+    Size,
+    Limit,
+    Allocation,
+    ShortRead,
     Io(io::Error),
     Format(FormatError),
 }
@@ -365,6 +370,37 @@ impl Vfs {
         Ok(self.entry(reference)?.length)
     }
 
+    /// Cold whole-file read through the same loose/archive range reader.
+    pub fn read_to_vec(
+        &self,
+        reference: FileRef,
+        limit: usize,
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<Vec<u8>, VfsError> {
+        let length = usize::try_from(self.length(reference)?).map_err(|_| VfsError::Size)?;
+        if length > limit {
+            return Err(VfsError::Limit);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| VfsError::Allocation)?;
+        bytes.resize(length, 0);
+        if self.read_into_reusing(reference, &mut bytes, reader)? != length {
+            return Err(VfsError::ShortRead);
+        }
+        Ok(bytes)
+    }
+    pub fn read_file(
+        &self,
+        path: &[u8],
+        limit: usize,
+        reader: &mut qa_formats::archive::ArchiveReader,
+    ) -> Result<Vec<u8>, VfsError> {
+        let file = self.open(path).ok_or(VfsError::Missing)?;
+        self.read_to_vec(file, limit, reader)
+    }
+
     pub fn read_into_reusing(
         &self,
         reference: FileRef,
@@ -395,19 +431,8 @@ impl Vfs {
         let count = destination
             .len()
             .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        let mut written = 0;
-        while written < count {
-            let read = native_read(
-                file,
-                &mut destination[written..count],
-                offset + written as u64,
-            )?;
-            if read == 0 {
-                return Err(io::ErrorKind::UnexpectedEof.into());
-            }
-            written += read;
-        }
-        Ok(written)
+        qa_formats::archive::read_exact_at(file, offset, &mut destination[..count])?;
+        Ok(count)
     }
 
     /// Module reads reuse the same load-owned inflate state for partial ZIP
@@ -509,17 +534,6 @@ fn package_order(name: &[u8]) -> (u8, u64) {
     } else {
         (1, 0)
     }
-}
-
-#[cfg(unix)]
-fn native_read(file: &File, destination: &mut [u8], offset: u64) -> io::Result<usize> {
-    use std::os::unix::fs::FileExt;
-    file.read_at(destination, offset)
-}
-#[cfg(windows)]
-fn native_read(file: &File, destination: &mut [u8], offset: u64) -> io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-    file.seek_read(destination, offset)
 }
 
 impl From<io::ErrorKind> for VfsError {

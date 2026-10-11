@@ -36,15 +36,16 @@ pub fn load_catalog(vfs: &Vfs) -> Result<ShaderCatalog, CatalogLoadError> {
         if !name.starts_with(b"scripts/") || !name.ends_with(b".shader") {
             continue;
         }
-        let length = usize::try_from(vfs.length(file)?).map_err(|_| CatalogLoadError::Size)?;
-        // A corrupt package must not reserve unbounded memory for a script.
-        if length > 16 * 1024 * 1024 || source_names.len() >= 4096 {
+        if source_names.len() >= 4096 {
             return Err(CatalogLoadError::Size);
         }
-        let mut bytes = vec![0; length];
-        if vfs.read_into_reusing(file, &mut bytes, &mut reader)? != length {
-            return Err(CatalogLoadError::ShortRead);
-        }
+        let bytes = vfs
+            .read_to_vec(file, 16 * 1024 * 1024, &mut reader)
+            .map_err(|error| match error {
+                VfsError::Size | VfsError::Limit | VfsError::Allocation => CatalogLoadError::Size,
+                VfsError::ShortRead => CatalogLoadError::ShortRead,
+                error => CatalogLoadError::Vfs(error),
+            })?;
         source_names.push(
             std::str::from_utf8(name)
                 .map_err(|_| CatalogLoadError::Name)?

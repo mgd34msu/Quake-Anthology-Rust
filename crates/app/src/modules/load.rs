@@ -90,30 +90,17 @@ fn module_bytes(
     path: &str,
     reader: &mut ArchiveReader,
 ) -> Result<Vec<u8>, String> {
-    let file = runtime
+    runtime
         .vfs
-        .open(path.as_bytes())
-        .ok_or_else(|| format!("module not found: {path}"))?;
-    let length = usize::try_from(
-        runtime
-            .vfs
-            .length(file)
-            .map_err(|e| format!("module: {e:?}"))?,
-    )
-    .map_err(|_| "module too large")?;
-    if length > 256 * 1024 * 1024 {
-        return Err("module too large".into());
-    }
-    let mut bytes = vec![0; length];
-    if runtime
-        .vfs
-        .read_into_reusing(file, &mut bytes, reader)
-        .map_err(|e| format!("module: {e:?}"))?
-        != length
-    {
-        return Err("incomplete module".into());
-    }
-    Ok(bytes)
+        .read_file(path.as_bytes(), 256 * 1024 * 1024, reader)
+        .map_err(|error| match error {
+            qa_content::vfs::VfsError::Missing => format!("module not found: {path}"),
+            qa_content::vfs::VfsError::Size
+            | qa_content::vfs::VfsError::Limit
+            | qa_content::vfs::VfsError::Allocation => "module too large".into(),
+            qa_content::vfs::VfsError::ShortRead => "incomplete module".into(),
+            error => format!("module: {error:?}"),
+        })
 }
 
 pub fn load_q3(

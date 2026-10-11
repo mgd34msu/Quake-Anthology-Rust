@@ -222,19 +222,14 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
     let file = vfs
         .open(path.as_bytes())
         .ok_or_else(|| format!("map not found in VFS: {path}"))?;
-    let length = usize::try_from(vfs.length(file).map_err(|e| format!("map size: {e:?}"))?)
-        .map_err(|_| "map too large for this platform")?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| "map allocation failed")?;
-    bytes.resize(length, 0);
-    let read = vfs
-        .read_into_reusing(file, &mut bytes, &mut ArchiveReader::default())
-        .map_err(|e| format!("map read: {e:?}"))?;
-    if read != length {
-        return Err("incomplete map read".into());
-    }
+    let bytes = vfs
+        .read_to_vec(file, usize::MAX, &mut ArchiveReader::default())
+        .map_err(|error| match error {
+            qa_content::vfs::VfsError::Size => "map too large for this platform".into(),
+            qa_content::vfs::VfsError::Allocation => "map allocation failed".into(),
+            qa_content::vfs::VfsError::ShortRead => "incomplete map read".into(),
+            error => format!("map read: {error:?}"),
+        })?;
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = bsp.format.rule_set();
     let entity_source = NativeEntityText {

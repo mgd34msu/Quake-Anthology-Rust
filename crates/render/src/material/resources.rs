@@ -297,18 +297,13 @@ pub fn read_file(
     name: &[u8],
     reader: &mut ArchiveReader,
 ) -> Result<Vec<u8>, ResourceError> {
-    let file = vfs
-        .open(name)
-        .ok_or_else(|| ResourceError::Missing(String::from_utf8_lossy(name).into_owned()))?;
-    let size = usize::try_from(vfs.length(file)?).map_err(|_| ResourceError::Size)?;
-    if size > 256 * 1024 * 1024 {
-        return Err(ResourceError::Size);
-    }
-    let mut bytes = vec![0; size];
-    if vfs.read_into_reusing(file, &mut bytes, reader)? != size {
-        return Err(ResourceError::ShortRead);
-    }
-    Ok(bytes)
+    vfs.read_file(name, 256 * 1024 * 1024, reader)
+        .map_err(|error| match error {
+            VfsError::Missing => ResourceError::Missing(String::from_utf8_lossy(name).into_owned()),
+            VfsError::Size | VfsError::Limit | VfsError::Allocation => ResourceError::Size,
+            VfsError::ShortRead => ResourceError::ShortRead,
+            error => ResourceError::Vfs(error),
+        })
 }
 
 /// These are resource formats, not renderer pipelines. The selected palette
