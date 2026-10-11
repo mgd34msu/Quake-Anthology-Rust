@@ -1,5 +1,6 @@
 mod audio;
 mod clock;
+mod content;
 mod cpu;
 mod events;
 pub mod native;
@@ -13,6 +14,7 @@ pub mod allocations;
 
 pub use audio::AudioStream;
 pub use clock::{Stopwatch, pause};
+pub use content::content_roots;
 pub use cpu::physical_core_count;
 pub use events::EventPump;
 pub use profile::saved_profile_root;

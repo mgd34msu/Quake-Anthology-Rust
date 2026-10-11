@@ -35,7 +35,7 @@ fn run() -> Result<(), String> {
     let mut console = Console::<Runtime>::new(Context::default()).map_err(|e| e.to_string())?;
     let mut vfs = qa_content::vfs::Vfs::default();
     let mut device_assignments = Vec::new();
-    let mut frames = 120u32;
+    let mut frames: Option<u32> = None;
     let mut width = 640i32;
     let mut height = 400i32;
     let mut warmup = 0u32;
@@ -270,11 +270,12 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "invalid client capacity")?;
             }
             "--frames" => {
-                frames = args
+                let count = args
                     .next()
                     .ok_or("--frames needs a number")?
                     .parse()
-                    .map_err(|_| "invalid frame count")?
+                    .map_err(|_| "invalid frame count")?;
+                frames = (count != 0).then_some(count);
             }
             "--width" => {
                 width = args
@@ -293,8 +294,24 @@ fn run() -> Result<(), String> {
             _ => return Err(format!("unknown option: {arg}")),
         }
     }
-    if frames == 0 || width <= 0 || height <= 0 {
-        return Err("frames and dimensions must be positive".into());
+    if width <= 0 || height <= 0 {
+        return Err("dimensions must be positive".into());
+    }
+    if timings && frames.is_none() {
+        return Err("--timings needs a positive --frames limit".into());
+    }
+    if map_name.is_none() && frames.is_none() {
+        let roots = qa_platform::content_roots().map_err(|e| format!("content locations: {e}"))?;
+        let game =
+            qa_app::startup::default_game(&mut vfs, roots.iter().map(|path| path.as_path()))?;
+        println!(
+            "{{\"event\":\"default_game\",\"product\":{},\"map\":{},\"client_rules\":\"{}\"}}",
+            json(game.product)?,
+            json(game.map)?,
+            game.rules.name()
+        );
+        map_name = Some(game.map.into());
+        client_module.get_or_insert(game.rules);
     }
     if cpu_bands.is_some() && matches!(renderer_kind, Kind::Gl) {
         return Err("--cpu-bands requires --renderer cpu".into());
@@ -642,20 +659,25 @@ fn run() -> Result<(), String> {
     };
     #[cfg(feature = "proof")]
     let mut script_start = None;
-    let mut completed = 0;
+    let mut completed = 0u64;
     #[cfg(feature = "allocation-tracking")]
     let mut allocation_gate = allocation_gate::Gate::default();
     let mut samples = if timings {
-        Vec::with_capacity(frames as usize)
+        Vec::with_capacity(frames.unwrap_or(0) as usize)
     } else {
         Vec::new()
     };
     let mut stage_samples = if timings {
-        Vec::with_capacity(frames as usize)
+        Vec::with_capacity(frames.unwrap_or(0) as usize)
     } else {
         Vec::new()
     };
-    for frame in 0..u64::from(frames) + u64::from(warmup) {
+    let limit = frames.map(|count| u64::from(count) + u64::from(warmup));
+    let mut frame = 0u64;
+    loop {
+        if limit.is_some_and(|limit| frame >= limit) {
+            break;
+        }
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
         host.console.cvars.reset_lookup_count();
         #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
@@ -834,6 +856,7 @@ fn run() -> Result<(), String> {
                 ),
             );
         }
+        frame += 1;
     }
     host.shutdown_modules();
     for index in 0..quakec_modules.len() + q2_modules.len() + q3_modules.len() {

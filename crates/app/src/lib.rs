@@ -10,6 +10,7 @@ pub mod profile;
 pub mod render_settings;
 pub mod renderer;
 pub mod snapshots;
+pub mod startup;
 mod transport;
 
 use qa_console::commands::{Host, ScriptError};

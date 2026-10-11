@@ -160,7 +160,7 @@ def audio_summary(path, cues):
                 rms=(sum(v * v for v in data) / max(1, len(data))) ** 0.5)
 
 
-def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False, audio_driver="disk"):
+def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(640, 400), title="Quake Anthology Rust", cores=None, stdin_bytes=None, stdin_tty=False, backend="x11", input_after_first_frame=False, audio_driver="disk", content_links=None):
     if backend not in ("x11", "sway", "weston"):
         raise ValueError("unknown private backend")
     if audio_driver not in ("disk", "dummy"):
@@ -185,12 +185,24 @@ def run(binary, profile, evidence, arguments, actions=None, timeout=30, size=(64
     if not equal_files(binary, candidate):
         raise ValueError("candidate copy differs")
     candidate_identity = identity(binary)
+    linked_content = {}
+    # Reproduce an installed layout without writing into the owner's content.
+    # Single directory names cannot replace the copied executable or log files.
+    for name, source in (content_links or {}).items():
+        if not name or not name.isascii() or not name.isalnum():
+            raise ValueError("content link must be a single alphanumeric directory name")
+        source = Path(source).resolve(strict=True)
+        if not source.is_dir():
+            raise ValueError("content link source must be a directory")
+        (evidence / name).symlink_to(source, target_is_directory=True)
+        linked_content[name] = str(source)
     owned, handles, client = [], [], None
     terminal_fds = []
     private_runtime = None
     result = {"artifact": str(binary), "candidate_identity": candidate_identity,
               "owner_profile_source": str(profile), "copied_owner_settings": sorted(originals),
               "copied_profile": str(copied_profile), "argv": arguments, "gameplay_reached": False,
+              "linked_content": linked_content,
               "debugger": False, "timing_qualified": False, "cpu_affinity": cores}
 
     def spawn(name, argv, env=None, pass_fds=(), stdin=None):
