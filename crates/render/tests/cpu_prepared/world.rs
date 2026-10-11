@@ -2591,3 +2591,66 @@ fn consecutive_prepared_ranks_batch_converted_sky_and_stop_at_external_draws() {
     assert_eq!(preparation_failed.depth_ranks, fresh.depth_ranks);
     assert_eq!(preparation_failed.world_stats(), fresh.world_stats());
 }
+
+#[test]
+fn native_inverse_depth_uses_winquake_reciprocal_multiply_order() {
+    let mut assets = Assets::load().unwrap();
+    let world = fixture_world(
+        &mut assets,
+        17.0,
+        0.8,
+        SurfaceMaterial {
+            material: MaterialId(0),
+            ..SurfaceMaterial::default()
+        },
+        None,
+        GeometryPartition::Unpartitioned,
+        |_| {},
+    );
+    let mut surface = assets.world(world).unwrap().geometry().surfaces[0].clone();
+    let camera = Camera::load(
+        Refdef {
+            viewport: Viewport {
+                x: 37,
+                y: 23,
+                width: 301,
+                height: 177,
+            },
+            fov: [117.0, 53.0],
+            ..Refdef::default()
+        },
+        640,
+        400,
+    )
+    .unwrap();
+    let scale = camera.screen_scale();
+    let center = camera.screen_center();
+    let mut seed = 0x3367_u32;
+    let mut component = || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        seed as i32 as f32 / 65536.0
+    };
+    let mut changed = 0;
+    for _ in 0..4096 {
+        let plane = Plane::oriented(Vec3(std::array::from_fn(|_| component())), 137.0);
+        surface.plane = Some(plane);
+        let normal = camera.direction_to_view(plane.normal);
+        let inverse_distance = 1.0 / (plane.distance - plane.normal.dot(camera.refdef.origin));
+        let x = normal.0[0] * (1.0 / scale[0]) * inverse_distance;
+        let y = -normal.0[1] * (1.0 / scale[1]) * inverse_distance;
+        let origin = normal.0[2] * inverse_distance - center[0] * x - center[1] * y;
+        let (actual, _) = native_planes(&camera, &surface, 0).unwrap();
+        assert_eq!(
+            [
+                actual.inverse_depth.x,
+                actual.inverse_depth.y,
+                actual.inverse_depth.origin
+            ]
+            .map(f32::to_bits),
+            [x, y, origin].map(f32::to_bits)
+        );
+        changed +=
+            usize::from(x.to_bits() != (normal.0[0] * inverse_distance / scale[0]).to_bits());
+    }
+    assert!(changed > 0);
+}

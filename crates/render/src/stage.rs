@@ -435,10 +435,8 @@ impl StageEvaluator {
     /// load. The evaluator and GPU table layout stay identical.
     pub fn with_noise(noise: [f32; 256], perm: [u8; 256]) -> Self {
         let mut tables = vec![0.0; TABLE_VALUES].into_boxed_slice();
+        tables[..TABLE_SIZE].copy_from_slice(qa_core::math::sine_table());
         for i in 0..TABLE_SIZE {
-            let degrees = i as f32 * 360.0 / (TABLE_SIZE - 1) as f32;
-            let radians = degrees * std::f32::consts::PI / 180.0;
-            tables[i] = (radians as f64).sin() as f32;
             tables[TABLE_SIZE + i] = if i < 512 { 1.0 } else { -1.0 };
             tables[3 * TABLE_SIZE + i] = i as f32 / TABLE_SIZE as f32;
             tables[4 * TABLE_SIZE + i] = 1.0 - tables[3 * TABLE_SIZE + i];
@@ -599,7 +597,7 @@ impl StageEvaluator {
             }
             AlphaGen::LightingSpecular => {
                 let direction = normalized_fast(inputs.specular_origin - vertex.position);
-                let reflected = (vertex.normal * (2.0 * vertex.normal.dot(direction))) - direction;
+                let reflected = qa_core::math::reflect(vertex.normal, direction);
                 let viewer = normalized_fast(inputs.view_origin - vertex.position);
                 let incidence = reflected.dot(viewer).max(0.0);
                 color[3] = byte((incidence * incidence) * (incidence * incidence));
@@ -615,7 +613,7 @@ impl StageEvaluator {
             TexCoordGen::Vector(vectors) => vectors.map(|v| Vec3(v).dot(vertex.position)),
             TexCoordGen::Environment => {
                 let viewer = normalized_fast(inputs.view_origin - vertex.position);
-                let reflected = (vertex.normal * (2.0 * vertex.normal.dot(viewer))) - viewer;
+                let reflected = qa_core::math::reflect(vertex.normal, viewer);
                 [0.5 + reflected.0[1] * 0.5, 0.5 - reflected.0[2] * 0.5]
             }
             TexCoordGen::LayeredSky {

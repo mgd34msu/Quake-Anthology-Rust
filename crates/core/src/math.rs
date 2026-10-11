@@ -90,6 +90,22 @@ pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
     ])
 }
 
+pub fn reflect(normal: Vec3, direction: Vec3) -> Vec3 {
+    (normal * (2.0 * normal.dot(direction))) - direction
+}
+
+/// Q3's wave and packed-normal table, including the duplicated cycle endpoint.
+pub fn sine_table() -> &'static [f32; 1024] {
+    static TABLE: std::sync::OnceLock<[f32; 1024]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        std::array::from_fn(|i| {
+            let degrees = i as f32 * 360.0 / 1023.0;
+            let radians = degrees * std::f32::consts::PI / 180.0;
+            f64::from(radians).sin() as f32
+        })
+    })
+}
+
 /// Preserve each caller's native arithmetic order before integer narrowing.
 #[derive(Clone, Copy)]
 pub enum AngleShortForm {

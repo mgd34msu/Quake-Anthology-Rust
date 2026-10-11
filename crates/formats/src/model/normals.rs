@@ -53,7 +53,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // Encoding table: gtkradiant/libs/picomodel/pm_mdc.c.
 // GtkRadiant's 256 MDC rows are float32-bit-identical to id RTCW-SP anorms256.h.
 use qa_core::primitives::Vec3;
-use std::sync::OnceLock;
 
 #[allow(clippy::approx_constant)] // Preserve the six-decimal original table, not mathematical constants.
 pub(super) const COMPRESSED: [Vec3; 256] = [
@@ -316,14 +315,7 @@ pub(super) const COMPRESSED: [Vec3; 256] = [
 ];
 
 pub(super) fn packed(packed: u16) -> Vec3 {
-    static SINE: OnceLock<[f32; 1024]> = OnceLock::new();
-    let table = SINE.get_or_init(|| {
-        std::array::from_fn(|i| {
-            let degrees = i as f32 * 360.0 / 1023.0;
-            let radians = degrees * std::f32::consts::PI / 180.0;
-            f64::from(radians).sin() as f32
-        })
-    });
+    let table = qa_core::math::sine_table();
     let latitude = usize::from(packed >> 8) * 4;
     let longitude = usize::from(packed & 255) * 4;
     Vec3([

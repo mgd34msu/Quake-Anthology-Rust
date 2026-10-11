@@ -166,44 +166,51 @@ pub(crate) fn box_face_vertices(
     )
 }
 
+fn cloud_faces(bounds: [FaceBounds; 6]) -> impl Iterator<Item = (CubeFace, [[usize; 2]; 2])> {
+    CubeFace::ALL.into_iter().filter_map(move |face| {
+        if face == CubeFace::NegativeZ {
+            return None;
+        }
+        bounds[face.index()]
+            .grid_bounds()
+            .map(|range| (face, range))
+    })
+}
+
+pub(crate) fn cloud_triangle_count(bounds: [FaceBounds; 6]) -> usize {
+    cloud_faces(bounds)
+        .map(|(_, [mins, maxs])| (maxs[0] - mins[0]) * (maxs[1] - mins[1]) * 2)
+        .sum()
+}
+
 pub(crate) fn cloud_triangles(
     bounds: [FaceBounds; 6],
     grid: &CloudGrid,
     distance: f32,
     view_origin: Vec3,
 ) -> impl Iterator<Item = [Vertex; 3]> + '_ {
-    CubeFace::ALL
-        .into_iter()
-        .filter_map(move |face| {
-            if face == CubeFace::NegativeZ {
-                return None;
-            }
-            bounds[face.index()]
-                .grid_bounds()
-                .map(|range| (face, range))
-        })
-        .flat_map(move |(face, [mins, maxs])| {
-            (mins[1]..maxs[1]).flat_map(move |t| {
-                (mins[0]..maxs[0]).flat_map(move |s| {
-                    [
-                        [[s, t], [s, t + 1], [s + 1, t]],
-                        [[s, t + 1], [s + 1, t + 1], [s + 1, t]],
-                    ]
-                    .map(|cell| {
-                        cell.map(|[s, t]| {
-                            let direction =
-                                cube_vertex(face, [grid_st(s), grid_st(t)], distance, [0.0, 1.0])
-                                    .direction;
-                            Vertex {
-                                position: view_origin + direction,
-                                texcoord: grid.uv[face.index()][t][s],
-                                ..Vertex::default()
-                            }
-                        })
+    cloud_faces(bounds).flat_map(move |(face, [mins, maxs])| {
+        (mins[1]..maxs[1]).flat_map(move |t| {
+            (mins[0]..maxs[0]).flat_map(move |s| {
+                [
+                    [[s, t], [s, t + 1], [s + 1, t]],
+                    [[s, t + 1], [s + 1, t + 1], [s + 1, t]],
+                ]
+                .map(|cell| {
+                    cell.map(|[s, t]| {
+                        let direction =
+                            cube_vertex(face, [grid_st(s), grid_st(t)], distance, [0.0, 1.0])
+                                .direction;
+                        Vertex {
+                            position: view_origin + direction,
+                            texcoord: grid.uv[face.index()][t][s],
+                            ..Vertex::default()
+                        }
                     })
                 })
             })
         })
+    })
 }
 
 #[cfg(test)]

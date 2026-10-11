@@ -323,18 +323,28 @@ pub fn shift_quake3_rgb(
     }
     let mut output = vec![0; rgb.len()];
     for (pixel, destination) in rgb.chunks_exact(3).zip(output.chunks_exact_mut(3)) {
-        let mut channels = [
-            u32::from(pixel[0]) << shift,
-            u32::from(pixel[1]) << shift,
-            u32::from(pixel[2]) << shift,
-        ];
-        let maximum = channels[0].max(channels[1]).max(channels[2]);
-        if maximum > 255 {
-            channels = channels.map(|value| value * 255 / maximum);
-        }
-        destination.copy_from_slice(&channels.map(|value| value as u8));
+        destination.copy_from_slice(&color_shift_rgb(
+            [pixel[0], pixel[1], pixel[2]],
+            shift as i8,
+        ));
     }
     Ok(output)
+}
+
+/// Q3 R_ColorShiftLightingBytes, before patch interpolation or atlas upload.
+pub(crate) fn color_shift_rgb(color: [u8; 3], shift: i8) -> [u8; 3] {
+    let mut channels = color.map(|value| {
+        if shift >= 0 {
+            u32::from(value) << shift as u32
+        } else {
+            u32::from(value) >> shift.unsigned_abs() as u32
+        }
+    });
+    let maximum = channels[0].max(channels[1]).max(channels[2]);
+    if maximum > 255 {
+        channels = channels.map(|value| value * 255 / maximum);
+    }
+    channels.map(|value| value as u8)
 }
 
 fn check_samples(

@@ -93,16 +93,7 @@ pub fn subdivide_surface(
             .vertices
             .get(index as usize)
             .ok_or(GeometryError::Reference("grid vertex", source_id))?;
-        if point
-            .vertex
-            .position
-            .0
-            .iter()
-            .chain(point.normal.0.iter())
-            .chain(point.vertex.texcoord.iter())
-            .chain(point.vertex.lightmap_coord.iter())
-            .any(|n| !n.is_finite())
-        {
+        if !point.is_finite() {
             return Err(GeometryError::NonFinite("grid vertex", source_id));
         }
         polygon.push(point);
@@ -144,9 +135,7 @@ pub fn subdivide_surface(
         let first = u32::try_from(vertices.len()).map_err(|_| GeometryError::SizeLimit)?;
         match options.fan {
             GridFan::PolygonAnchor => {
-                for i in 2..polygon.len() as u32 {
-                    triangles.extend_from_slice(&[first, first + i - 1, first + i]);
-                }
+                super::push_fan(&mut triangles, first, polygon.len() as u32);
                 vertices.extend_from_slice(&polygon);
             }
             GridFan::CenterFan => {
@@ -164,16 +153,7 @@ pub fn subdivide_surface(
         for axis in 0..2 {
             vertex.vertex.texcoord[axis] -= options.texture_offset[axis];
         }
-        if vertex
-            .vertex
-            .position
-            .0
-            .iter()
-            .chain(vertex.normal.0.iter())
-            .chain(vertex.vertex.texcoord.iter())
-            .chain(vertex.vertex.lightmap_coord.iter())
-            .any(|v| !v.is_finite())
-        {
+        if !vertex.is_finite() {
             return Err(GeometryError::NonFinite("grid output", source_id));
         }
     }

@@ -1,8 +1,8 @@
 //! Native Q3 adaptive subdivision and mesh normals, tr_curve.c:46-61,112-214,
 //! 262-283,360-624; stitching/group propagation follows tr_bsp.c:534-1186.
 use super::{
-    GeometryError, GeometryOptions, PatchStats, WorldGeometry, WorldVertex, push_triangle, span,
-    vertex_bounds,
+    GeometryError, GeometryOptions, PatchStats, WorldGeometry, WorldVertex, push_grid_triangles,
+    span, vertex_bounds,
 };
 use qa_core::{
     math::{cross, normalized_or_zero},
@@ -141,16 +141,7 @@ pub(super) fn subdivide(
     }
     mesh_normals(&mut rows, width, height);
     let vertices: Vec<_> = rows.into_iter().flatten().collect();
-    if vertices.iter().any(|v| {
-        v.vertex
-            .position
-            .0
-            .iter()
-            .chain(v.vertex.texcoord.iter())
-            .chain(v.vertex.lightmap_coord.iter())
-            .chain(v.normal.0.iter())
-            .any(|n| !n.is_finite())
-    }) {
+    if vertices.iter().any(|v| !v.is_finite()) {
         return Err(GeometryError::NonFinite("patch output", id));
     }
     Ok(Tessellation {
@@ -442,14 +433,12 @@ pub(super) fn finish_world_patches(
             geometry.vertices.extend_from_slice(&grid.vertices);
             let first_index = geometry.indices.len();
             let first_boundary = geometry.boundaries.len();
-            for row in 0..grid.height - 1 {
-                for column in 0..grid.width - 1 {
-                    let a = vertices.first + (row * grid.width + column) as u32;
-                    let b = a + grid.width as u32;
-                    push_triangle(geometry, [a, b, a + 1])?;
-                    push_triangle(geometry, [a + 1, b, b + 1])?;
-                }
-            }
+            push_grid_triangles(
+                geometry,
+                vertices.first,
+                grid.width as u32,
+                grid.height as u32,
+            )?;
             indices = span(first_index, geometry.indices.len() - first_index)?;
             boundaries = span(first_boundary, geometry.boundaries.len() - first_boundary)?;
         }

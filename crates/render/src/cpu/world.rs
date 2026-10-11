@@ -996,18 +996,13 @@ impl WorldPrepare {
         for batch in &mut self.sky_states {
             batch.clear();
         }
-        if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
+        if !camera.rgb() {
             return;
         }
         crate::sky::for_each_sky_triangle(list, scene.draws, assets, |material, submission| {
             match submission {
                 crate::sky::SkySubmission::Begin(item) => {
-                    if !self
-                        .catalog
-                        .skies
-                        .get(material.0 as usize)
-                        .is_some_and(|batch| batch.enabled)
-                    {
+                    if !self.catalog.sky_enabled(material) {
                         return false;
                     }
                     if item.kind == DrawKind::Surface {
@@ -1074,13 +1069,7 @@ impl WorldPrepare {
         let Some(id) = crate::sky::item_material(item, list, assets) else {
             return external;
         };
-        if !self
-            .catalog
-            .skies
-            .get(id.0 as usize)
-            .is_some_and(|sky| sky.enabled)
-            || !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
-        {
+        if !self.catalog.sky_enabled(id) || !camera.rgb() {
             return external;
         }
         let Some(batch) = self.sky_states.get_mut(id.0 as usize) else {
@@ -1214,16 +1203,8 @@ impl WorldPrepare {
                     }
                 } else {
                     // Missing cloud storage retains the per-triangle rejection count.
-                    for face in crate::sky::CubeFace::ALL {
-                        if face == crate::sky::CubeFace::NegativeZ {
-                            continue;
-                        }
-                        if let Some([mins, maxs]) = bounds[face.index()].grid_bounds() {
-                            for _ in 0..(maxs[0] - mins[0]) * (maxs[1] - mins[1]) * 2 {
-                                self.geometry.reject(stats);
-                            }
-                        }
-                    }
+                    self.geometry
+                        .reject_n(stats, crate::sky::cloud_triangle_count(bounds));
                 }
             } else {
                 self.geometry.reject(stats);
@@ -1296,13 +1277,7 @@ impl SurfacePrepare {
                 continue;
             }
             if material.settings.sky.is_some() {
-                if self
-                    .catalog
-                    .skies
-                    .get(binding.material.0 as usize)
-                    .is_some_and(|batch| batch.enabled)
-                    && matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
-                {
+                if self.catalog.sky_enabled(binding.material) && camera.rgb() {
                     stats.surfaces = stats.surfaces.saturating_add(1);
                     continue;
                 }
@@ -1563,7 +1538,11 @@ impl SurfacePrepare {
         true
     }
     fn reject(&mut self, stats: &mut crate::BackendStats) {
-        reject(&mut self.stats, stats);
+        self.reject_n(stats, 1);
+    }
+    fn reject_n(&mut self, stats: &mut crate::BackendStats, count: usize) {
+        self.stats.rejected = self.stats.rejected.saturating_add(count as u64);
+        stats.rejected = stats.rejected.saturating_add(count as u32);
     }
     #[expect(
         clippy::too_many_arguments,
@@ -1760,11 +1739,7 @@ impl SurfacePrepare {
             if primitive.cache_image.is_some() {
                 vertex.texcoord = std::array::from_fn(|axis| {
                     let projection = surface.texture_projection[axis];
-                    (vertex.position.dot(qa_core::primitives::Vec3([
-                        projection[0],
-                        projection[1],
-                        projection[2],
-                    ])) + projection[3]
+                    (crate::world::geometry::project_texture(projection, vertex.position)
                         - surface.texture_minima[axis] as f32)
                         / (1u32 << primitive.mip) as f32
                 });
@@ -1904,8 +1879,8 @@ fn native_planes(
     if !inverse_distance.is_finite() {
         return None;
     }
-    let x = normal.0[0] * inverse_distance / scale[0];
-    let y = -normal.0[1] * inverse_distance / scale[1];
+    let x = normal.0[0] * (1.0 / scale[0]) * inverse_distance;
+    let y = -normal.0[1] * (1.0 / scale[1]) * inverse_distance;
     let inverse_depth = Affine {
         x,
         y,
@@ -1913,7 +1888,7 @@ fn native_planes(
     };
     let mip_scale = 1.0 / (1u32 << mip) as f32;
     let axes = surface.texture_projection.map(|projection| {
-        let axis = qa_core::primitives::Vec3([projection[0], projection[1], projection[2]]);
+        let axis = crate::world::geometry::projection_axis(projection);
         camera.direction_to_view(axis)
     });
     // Preserve D_CalcGradients' division/multiply order, transformed model
@@ -2587,7 +2562,7 @@ fn native_span(
 
 fn mip_adjust(projection: [[f32; 4]; 2]) -> f32 {
     let lengths =
-        projection.map(|p| qa_core::math::length(qa_core::primitives::Vec3([p[0], p[1], p[2]])));
+        projection.map(|p| qa_core::math::length(crate::world::geometry::projection_axis(p)));
     let average = (lengths[0] + lengths[1]) * 0.5;
     if average < 0.32 {
         4.0
@@ -2818,7 +2793,7 @@ impl WorldPrepare {
         assets: &Assets,
         evaluator: &StageEvaluator,
     ) {
-        if !matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb) {
+        if !camera.rgb() {
             return;
         }
         let mut rgba = RgbaInput::Live {
@@ -2861,6 +2836,11 @@ fn partition(id: usize, count: usize, len: usize) -> std::ops::Range<usize> {
 }
 
 impl WorldCatalog {
+    fn sky_enabled(&self, material: MaterialId) -> bool {
+        self.skies
+            .get(material.0 as usize)
+            .is_some_and(|batch| batch.enabled)
+    }
     fn surface_info(&self, world: WorldId, surface: u32) -> Option<&SurfaceInfo> {
         self.surfaces
             .get(*self.offsets.get(world.0 as usize)? + surface as usize)

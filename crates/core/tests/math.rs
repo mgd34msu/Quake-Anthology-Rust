@@ -4,6 +4,29 @@ use qa_core::{
 };
 
 #[test]
+fn native_sine_table_and_reflection_keep_original_float_operations() {
+    for (index, &value) in sine_table().iter().enumerate() {
+        let degrees = index as f32 * 360.0 / 1023.0;
+        let radians = degrees * std::f32::consts::PI / 180.0;
+        assert_eq!(value.to_bits(), (f64::from(radians).sin() as f32).to_bits());
+    }
+    let mut seed = 0x3367_u32;
+    let mut component = || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        seed as i32 as f32 / 65536.0
+    };
+    for _ in 0..4096 {
+        let normal = Vec3(std::array::from_fn(|_| component()));
+        let direction = Vec3(std::array::from_fn(|_| component()));
+        let old = normal * (2.0 * normal.dot(direction)) - direction;
+        assert_eq!(
+            reflect(normal, direction).0.map(f32::to_bits),
+            old.0.map(f32::to_bits)
+        );
+    }
+}
+
+#[test]
 fn inverse_projection_preserves_subtraction_dot_order_and_axis_signs() {
     let mut seed = 0x3366_u32;
     let mut value = || {

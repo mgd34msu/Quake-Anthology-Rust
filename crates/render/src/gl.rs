@@ -1124,12 +1124,7 @@ impl GlBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        let count = CubeFace::ALL
-            .into_iter()
-            .filter(|&face| face != CubeFace::NegativeZ)
-            .filter_map(|face| bounds[face.index()].grid_bounds())
-            .map(|[mins, maxs]| (maxs[0] - mins[0]) * (maxs[1] - mins[1]) * 6)
-            .sum::<usize>();
+        let count = crate::sky::cloud_triangle_count(bounds) * 3;
         if count == 0 {
             return;
         }

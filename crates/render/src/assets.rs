@@ -27,6 +27,17 @@ pub struct Vertex {
     pub lightmap_coord: [f32; 2],
     pub color: [u8; 4],
 }
+impl Vertex {
+    pub fn is_finite(self) -> bool {
+        self.position
+            .0
+            .iter()
+            .chain(self.normal.0.iter())
+            .chain(self.texcoord.iter())
+            .chain(self.lightmap_coord.iter())
+            .all(|value| value.is_finite())
+    }
+}
 impl Default for Vertex {
     fn default() -> Self {
         Self {
@@ -506,15 +517,7 @@ impl Assets {
         if self.material(material).is_none()
             || !indices.len().is_multiple_of(3)
             || indices.iter().any(|&i| i as usize >= vertices.len())
-            || vertices.iter().any(|v| {
-                v.position
-                    .0
-                    .iter()
-                    .chain(v.normal.0.iter())
-                    .chain(v.texcoord.iter())
-                    .chain(v.lightmap_coord.iter())
-                    .any(|f| !f.is_finite())
-            })
+            || vertices.iter().any(|v| !v.is_finite())
         {
             return Err("invalid mesh");
         }

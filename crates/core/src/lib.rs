@@ -8,6 +8,7 @@ pub mod math;
 pub mod names;
 pub mod payloads;
 pub mod primitives;
+pub mod rle;
 pub mod stamps;
 pub mod sys_events;
 pub mod text;

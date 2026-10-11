@@ -49,6 +49,8 @@ fn shared_cloud_triangles_keep_native_face_cell_and_vertex_order() {
         .flatten()
         .map(|v| (v.position.0.map(f32::to_bits), v.texcoord.map(f32::to_bits)))
         .collect::<Vec<_>>();
+    assert_eq!(cloud_triangle_count(bounds) * 3, actual.len());
+    assert_eq!(cloud_triangle_count([FaceBounds::EMPTY; 6]), 0);
     assert_eq!(actual, previous);
 }
 

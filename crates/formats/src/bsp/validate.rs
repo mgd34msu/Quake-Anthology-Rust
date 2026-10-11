@@ -351,22 +351,11 @@ fn visibility_header(bytes: &[u8], rules: RuleSetId) -> Result<Option<usize>, Fo
     }
     Ok(Some(count))
 }
-fn validate_rle(bytes: &[u8], mut at: usize, length: usize) -> Result<(), FormatError> {
-    let mut written = 0;
-    while written < length {
-        let byte = *bytes.get(at).ok_or(FormatError::Truncated)?;
-        at += 1;
-        let count = if byte != 0 {
-            1
-        } else {
-            let run = *bytes.get(at).ok_or(FormatError::Truncated)?;
-            at += 1;
-            usize::from(run)
-        };
-        if count == 0 || count > length - written {
-            return Err(FormatError::InvalidValue);
+fn validate_rle(bytes: &[u8], at: usize, length: usize) -> Result<(), FormatError> {
+    qa_core::rle::pvs(bytes, at, length, None).map_err(|error| match error {
+        qa_core::rle::PvsRleError::Truncated | qa_core::rle::PvsRleError::TruncatedRun => {
+            FormatError::Truncated
         }
-        written += count;
-    }
-    Ok(())
+        qa_core::rle::PvsRleError::InvalidRun => FormatError::InvalidValue,
+    })
 }

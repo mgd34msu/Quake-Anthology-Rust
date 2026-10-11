@@ -199,6 +199,10 @@ impl Camera {
         }
     }
 
+    fn rgb(&self) -> bool {
+        matches!(self.refdef.cpu_presentation, CpuPresentation::Rgb)
+    }
+
     fn to_view(&self, point: Vec3) -> Vec3 {
         view_point(self.refdef.origin, self.refdef.axes, point)
     }

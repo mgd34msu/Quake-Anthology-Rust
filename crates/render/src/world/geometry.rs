@@ -49,6 +49,16 @@ pub struct WorldVertex {
     pub vertex: Vertex,
     pub normal: Vec3,
 }
+impl WorldVertex {
+    pub fn is_finite(self) -> bool {
+        // World geometry supplies the authoritative normal separately.
+        Vertex {
+            normal: self.normal,
+            ..self.vertex
+        }
+        .is_finite()
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryKind {
     Polygon,
@@ -286,7 +296,7 @@ fn load_legacy(
             let mut uv = [0.0; 2];
             for axis in 0..2 {
                 let p = info.projection[axis];
-                uv[axis] = point.dot(Vec3([p[0], p[1], p[2]])) + p[3];
+                uv[axis] = project_texture(p, point);
                 if !uv[axis].is_finite() || point.0.iter().any(|v| !v.is_finite()) {
                     return Err(GeometryError::NonFinite("texture projection", id));
                 }
@@ -329,13 +339,7 @@ fn load_legacy(
             .extend(vertices.indices().map(|value| value as u32));
         out.boundaries.push(span(loop_start, count)?);
         let index_start = out.indices.len();
-        for at in 1..count - 1 {
-            out.indices.extend_from_slice(&[
-                vertices.first,
-                vertices.first + at as u32,
-                vertices.first + at as u32 + 1,
-            ]);
-        }
+        push_fan(&mut out.indices, vertices.first, count as u32);
         let light_encoding = match map.bsp.format {
             BspFormat::Quake64 => LightEncoding::PackedRgb,
             BspFormat::HalfLife => LightEncoding::Rgb,
@@ -539,14 +543,7 @@ fn load_modern(
                 out.vertices.extend_from_slice(&grid.vertices);
                 let [width, height] = grid.dimensions;
                 if !no_draw {
-                    for row in 0..height as u32 - 1 {
-                        for column in 0..width as u32 - 1 {
-                            let a = vertices.first + row * width as u32 + column;
-                            let b = a + width as u32;
-                            push_triangle(out, [a, b, a + 1])?;
-                            push_triangle(out, [a + 1, b, b + 1])?;
-                        }
-                    }
+                    push_grid_triangles(out, vertices.first, width as u32, height as u32)?;
                 }
                 let origin = (source.lightmap_vectors[0] + source.lightmap_vectors[1]) * 0.5;
                 let radius = length(source.lightmap_vectors[0] - origin);
@@ -569,13 +566,7 @@ fn load_modern(
                 if controls.len() < 3 {
                     return Err(GeometryError::EmptySurface(id));
                 }
-                for at in 1..controls.len() as u32 - 1 {
-                    out.indices.extend_from_slice(&[
-                        vertices.first,
-                        vertices.first + at,
-                        vertices.first + at + 1,
-                    ]);
-                }
+                push_fan(&mut out.indices, vertices.first, controls.len() as u32);
                 let boundary_first = out.indices.len();
                 out.indices.extend(vertices.indices().map(|v| v as u32));
                 out.boundaries
@@ -678,6 +669,29 @@ fn load_modern(
     Ok(())
 }
 
+pub(super) fn push_grid_triangles(
+    out: &mut WorldGeometry,
+    first: u32,
+    width: u32,
+    height: u32,
+) -> Result<(), GeometryError> {
+    for row in 0..height - 1 {
+        for column in 0..width - 1 {
+            let a = first + row * width + column;
+            let b = a + width;
+            push_triangle(out, [a, b, a + 1])?;
+            push_triangle(out, [a + 1, b, b + 1])?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn push_fan(out: &mut Vec<u32>, first: u32, count: u32) {
+    for at in 1..count - 1 {
+        out.extend_from_slice(&[first, first + at, first + at + 1]);
+    }
+}
+
 fn push_triangle(out: &mut WorldGeometry, vertices: [u32; 3]) -> Result<(), GeometryError> {
     let at = out.indices.len();
     out.indices.extend_from_slice(&vertices);
@@ -730,20 +744,15 @@ fn vertex_bounds(vertices: &[WorldVertex]) -> Result<Bounds, GeometryError> {
     }
     Ok(bounds)
 }
+pub(crate) fn projection_axis(projection: [f32; 4]) -> Vec3 {
+    Vec3([projection[0], projection[1], projection[2]])
+}
+
+pub(crate) fn project_texture(projection: [f32; 4], point: Vec3) -> f32 {
+    point.dot(projection_axis(projection)) + projection[3]
+}
+
 fn color_shift(color: [u8; 4], shift: i8) -> [u8; 4] {
-    // Q3 tr_bsp.c R_ColorShiftLightingBytes. Apply before patch interpolation.
-    let mut rgb: [u32; 3] = std::array::from_fn(|axis| {
-        if shift >= 0 {
-            u32::from(color[axis]) << shift as u32
-        } else {
-            u32::from(color[axis]) >> shift.unsigned_abs() as u32
-        }
-    });
-    let highest = rgb[0].max(rgb[1]).max(rgb[2]);
-    if highest > 255 {
-        for channel in &mut rgb {
-            *channel = *channel * 255 / highest;
-        }
-    }
-    [rgb[0] as u8, rgb[1] as u8, rgb[2] as u8, color[3]]
+    let rgb = crate::lightmap::color_shift_rgb([color[0], color[1], color[2]], shift);
+    [rgb[0], rgb[1], rgb[2], color[3]]
 }

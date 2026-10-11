@@ -161,29 +161,18 @@ impl PvsRows {
 }
 
 fn decode_rle(encoded: &[u8], offset: u32, destination: &mut [u8]) -> Result<(), VisibilityError> {
-    let mut at = offset as usize;
-    let mut written = 0;
-    while written < destination.len() {
-        let byte = *encoded.get(at).ok_or(VisibilityError::PvsOffset(offset))?;
-        at += 1;
-        if byte != 0 {
-            destination[written] = byte;
-            written += 1;
-        } else {
-            let count = usize::from(
-                *encoded
-                    .get(at)
-                    .ok_or(VisibilityError::PvsEncoding(offset))?,
-            );
-            at += 1;
-            if count == 0 || count > destination.len() - written {
-                return Err(VisibilityError::PvsEncoding(offset));
-            }
-            destination[written..written + count].fill(0);
-            written += count;
+    qa_core::rle::pvs(
+        encoded,
+        offset as usize,
+        destination.len(),
+        Some(destination),
+    )
+    .map_err(|error| match error {
+        qa_core::rle::PvsRleError::Truncated => VisibilityError::PvsOffset(offset),
+        qa_core::rle::PvsRleError::TruncatedRun | qa_core::rle::PvsRleError::InvalidRun => {
+            VisibilityError::PvsEncoding(offset)
         }
-    }
-    Ok(())
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
