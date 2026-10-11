@@ -344,7 +344,7 @@ impl EntityTable {
     /// Match C body.c:389-406 without allocating an insertion record in play.
     pub fn attach(&mut self, id: EntityId, follow: BodyAttachment) -> Result<(), AttachmentError> {
         let slot = self.resolve(id).ok_or(AttachmentError::Entity)?;
-        if !follow.offset.0.iter().all(|value| value.is_finite()) {
+        if !follow.offset.is_finite() {
             return Err(AttachmentError::Offset);
         }
         self.resolve(follow.anchor).ok_or(AttachmentError::Anchor)?;

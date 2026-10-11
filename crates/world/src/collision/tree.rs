@@ -411,13 +411,13 @@ impl Topology {
             let near_frame = Frame {
                 node: node.children[side],
                 p1f: frame.p1f,
-                p2f: frame.p1f + (frame.p2f - frame.p1f) * near,
+                p2f: qa_core::math::lerp(frame.p1f, frame.p2f, near),
                 p1: frame.p1,
                 p2: frame.p1.lerp(frame.p2, near),
             };
             let far_frame = Frame {
                 node: node.children[side ^ 1],
-                p1f: frame.p1f + (frame.p2f - frame.p1f) * far,
+                p1f: qa_core::math::lerp(frame.p1f, frame.p2f, far),
                 p2f: frame.p2f,
                 p1: frame.p1.lerp(frame.p2, far),
                 p2: frame.p2,

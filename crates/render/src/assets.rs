@@ -29,13 +29,13 @@ pub struct Vertex {
 }
 impl Vertex {
     pub fn is_finite(self) -> bool {
-        self.position
-            .0
-            .iter()
-            .chain(self.normal.0.iter())
-            .chain(self.texcoord.iter())
-            .chain(self.lightmap_coord.iter())
-            .all(|value| value.is_finite())
+        self.position.is_finite()
+            && self.normal.is_finite()
+            && self
+                .texcoord
+                .iter()
+                .chain(self.lightmap_coord.iter())
+                .all(|value| value.is_finite())
     }
 }
 impl Default for Vertex {

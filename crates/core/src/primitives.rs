@@ -24,6 +24,10 @@ impl Vec3 {
         ])
     }
 
+    pub fn is_finite(self) -> bool {
+        self.0.iter().all(|value| value.is_finite())
+    }
+
     pub fn dot(self, other: Self) -> f32 {
         self.0[0] * other.0[0] + self.0[1] * other.0[1] + self.0[2] * other.0[2]
     }
@@ -85,9 +89,7 @@ pub const fn child_from_leaf(leaf: u32) -> i32 {
 
 impl Plane {
     pub fn is_valid(self) -> bool {
-        self.distance.is_finite()
-            && self.normal.0.iter().all(|value| value.is_finite())
-            && self.normal != Vec3::default()
+        self.distance.is_finite() && self.normal.is_finite() && self.normal != Vec3::default()
     }
 
     pub fn oriented(normal: Vec3, distance: f32) -> Self {

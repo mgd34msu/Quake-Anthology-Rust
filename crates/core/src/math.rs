@@ -53,6 +53,10 @@ pub fn lerp_array<const N: usize>(start: [f32; N], end: [f32; N], fraction: f32)
     std::array::from_fn(|i| start[i] + fraction * (end[i] - start[i]))
 }
 
+pub fn lerp(start: f32, end: f32, fraction: f32) -> f32 {
+    lerp_array([start], [end], fraction)[0]
+}
+
 /// Q2 pitch wrapping keeps the native strict tie and single subtraction.
 pub fn wrap_above_180(angle: f32) -> f32 {
     if angle > 180.0 { angle - 360.0 } else { angle }

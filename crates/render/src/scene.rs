@@ -145,12 +145,11 @@ impl Refdef {
         if !self.viewport.fits(width, height)
             || (self.blend_phase == BlendPhase::FinalPalette
                 && self.blend_viewport.is_some_and(|v| !v.fits(width, height)))
+            || !self.origin.is_finite()
+            || !self.axes.iter().all(|axis| axis.is_finite())
             || !self
-                .origin
-                .0
+                .fov
                 .iter()
-                .chain(self.axes.iter().flat_map(|axis| axis.0.iter()))
-                .chain(self.fov.iter())
                 .chain(self.blend.iter())
                 .all(|value| value.is_finite())
             || self.fov.iter().any(|&fov| fov <= 0.0 || fov >= 180.0)

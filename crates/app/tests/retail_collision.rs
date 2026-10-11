@@ -27,7 +27,7 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
     let mut negative_tagged_axial = 0;
     for plane in &map.planes {
         assert!(plane.distance.is_finite());
-        assert!(plane.normal.0.iter().all(|value| value.is_finite()));
+        assert!(plane.normal.is_finite());
         assert_ne!(plane.normal.0, [0.0; 3]);
         for axis in 0..3 {
             if plane

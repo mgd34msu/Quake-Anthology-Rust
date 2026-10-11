@@ -213,7 +213,7 @@ fn spawn_origins(map: &Map<'_>) -> Result<Vec<Vec3>, &'static str> {
                     .parse()
                     .map_err(|_| "spawn origin number")?;
             }
-            if coordinates.next().is_some() || position.0.iter().any(|value| !value.is_finite()) {
+            if coordinates.next().is_some() || !position.is_finite() {
                 return Err("spawn origin dimensions");
             }
         }

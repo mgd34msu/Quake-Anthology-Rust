@@ -269,9 +269,7 @@ fn load_legacy(
             .planes
             .get(face.plane as usize)
             .ok_or(GeometryError::Reference("plane", id))?;
-        if source_plane.normal.0.iter().any(|v| !v.is_finite())
-            || !source_plane.distance.is_finite()
-        {
+        if !source_plane.normal.is_finite() || !source_plane.distance.is_finite() {
             return Err(GeometryError::NonFinite("plane", id));
         }
         let plane = if face.flags == 0 {
@@ -298,7 +296,7 @@ fn load_legacy(
             for axis in 0..2 {
                 let p = info.projection[axis];
                 uv[axis] = project_texture(p, point);
-                if !uv[axis].is_finite() || point.0.iter().any(|v| !v.is_finite()) {
+                if !uv[axis].is_finite() || !point.is_finite() {
                     return Err(GeometryError::NonFinite("texture projection", id));
                 }
                 uv_min[axis] = uv_min[axis].min(uv[axis]);
@@ -473,13 +471,9 @@ fn load_modern(
 ) -> Result<(), GeometryError> {
     out.vertices.reserve(map.vertices.len());
     for (id, source) in map.vertices.iter().enumerate() {
-        if source
-            .position
-            .0
-            .iter()
-            .chain(source.normal.0.iter())
-            .chain(source.texcoord.iter())
-            .any(|v| !v.is_finite())
+        if !source.position.is_finite()
+            || !source.normal.is_finite()
+            || source.texcoord.iter().any(|v| !v.is_finite())
         {
             return Err(GeometryError::NonFinite("vertex", id as u32));
         }
@@ -601,7 +595,7 @@ fn load_modern(
             let first = vertex_data.first().ok_or(GeometryError::EmptySurface(id))?;
             let normal = source.lightmap_vectors[2];
             let distance = normal.dot(first.vertex.position);
-            if normal.0.iter().any(|v| !v.is_finite()) || !distance.is_finite() {
+            if !normal.is_finite() || !distance.is_finite() {
                 return Err(GeometryError::NonFinite("plane", id));
             }
             Some(Plane::oriented(normal, distance))

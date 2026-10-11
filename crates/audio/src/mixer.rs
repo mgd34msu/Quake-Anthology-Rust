@@ -156,7 +156,7 @@ impl Mixer {
             || !(0.0..=1.0).contains(&event.volume)
             || !event.attenuation.is_finite()
             || event.attenuation < 0.0
-            || event.position.0.iter().any(|v| !v.is_finite())
+            || !event.position.is_finite()
         {
             self.counts.invalid += 1;
             return false;

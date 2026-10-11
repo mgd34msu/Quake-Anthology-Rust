@@ -34,10 +34,6 @@ fn vector(data: &mut &[u8]) -> Result<Vec3, &'static str> {
     ]))
 }
 
-fn finite(vector: Vec3) -> bool {
-    vector.0.iter().all(|value| value.is_finite())
-}
-
 fn contents(raw: u32) -> Result<Contents, &'static str> {
     // These fixtures use common exact bits, without claiming file/wire conversion.
     if raw & !(1 | 8 | 16 | 32 | 0x10000 | 0x20000) != 0 {
@@ -75,8 +71,8 @@ fn load(
             let mins = vector(&mut data)?;
             let maxs = vector(&mut data)?;
             if !(6..=64).contains(&plane_count)
-                || !finite(mins)
-                || !finite(maxs)
+                || !mins.is_finite()
+                || !maxs.is_finite()
                 || mins.0.iter().zip(maxs.0).any(|(min, max)| *min > max)
             {
                 return Err("invalid fixture brush bounds");
@@ -130,7 +126,7 @@ fn load(
         let mins = vector(&mut data)?;
         let maxs = vector(&mut data)?;
         if map >= geometries.len()
-            || ![start, end, mins, maxs].into_iter().all(finite)
+            || ![start, end, mins, maxs].into_iter().all(Vec3::is_finite)
             || mins.0.iter().zip(maxs.0).any(|(min, max)| *min > max)
         {
             return Err("invalid fixture query");

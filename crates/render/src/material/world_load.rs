@@ -55,7 +55,7 @@ impl SkyEnvironment {
         if name.is_empty()
             || name.len() > 63
             || !degrees_per_second.is_finite()
-            || !axis.0.iter().all(|component| component.is_finite())
+            || !axis.is_finite()
             || std::str::from_utf8(name).is_err()
             || name
                 .iter()

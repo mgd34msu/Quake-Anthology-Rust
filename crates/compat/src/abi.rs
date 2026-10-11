@@ -1228,7 +1228,8 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     };
     let mins = bounds(c.pointer(first + 1)?)?;
     let maxs = bounds(c.pointer(first + 2)?)?;
-    if start.0.iter().chain(&end.0).any(|v| !v.is_finite())
+    if !start.is_finite()
+        || !end.is_finite()
         || !(qa_core::primitives::Bounds { mins, maxs }).is_valid()
     {
         return Err(CallError::Geometry);
@@ -1278,7 +1279,7 @@ fn native_point_contents<const WIDE: bool>(
 ) -> Result<u64, CallError> {
     use qa_core::primitives::RuleSetId;
     let point = c.memory.read_vec3(c.pointer(0)?)?;
-    if point.0.iter().any(|v| !v.is_finite()) {
+    if !point.is_finite() {
         return Err(CallError::Geometry);
     }
     let (_, rules) = qa_world::collision::trace_policy(if WIDE {

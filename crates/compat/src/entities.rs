@@ -623,12 +623,8 @@ impl EntityProjection {
             ..Body::default()
         };
         let angles = memory.read_vec3(address + 16)?;
-        if body
-            .position
-            .0
-            .iter()
-            .chain(&angles.0)
-            .any(|v| !v.is_finite())
+        if !body.position.is_finite()
+            || !angles.is_finite()
             || !(Bounds {
                 mins: body.mins,
                 maxs: body.maxs,

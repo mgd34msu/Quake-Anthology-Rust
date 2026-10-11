@@ -70,13 +70,13 @@ struct ClipVertex {
 
 impl ClipVertex {
     fn finite(self) -> bool {
-        self.camera
-            .0
-            .iter()
-            .chain(self.texcoord.iter())
-            .chain(self.lightmap_coord.iter())
-            .chain(self.color.iter())
-            .all(|f| f.is_finite())
+        self.camera.is_finite()
+            && self
+                .texcoord
+                .iter()
+                .chain(self.lightmap_coord.iter())
+                .chain(self.color.iter())
+                .all(|f| f.is_finite())
     }
 
     fn lerp(self, end: Self, fraction: f32) -> Self {
@@ -541,13 +541,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        if !entity
-            .origin
-            .0
-            .iter()
-            .chain(entity.axes.iter().flat_map(|axis| axis.0.iter()))
-            .all(|f| f.is_finite())
-        {
+        if !entity.origin.is_finite() || !entity.axes.iter().all(|axis| axis.is_finite()) {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }

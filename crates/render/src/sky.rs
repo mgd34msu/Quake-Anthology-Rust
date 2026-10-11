@@ -310,7 +310,7 @@ pub fn sphere_uv(
     texture_size: f32,
     scroll_speed: f32,
 ) -> Option<[f32; 2]> {
-    if !direction.0.iter().all(|f| f.is_finite())
+    if !direction.is_finite()
         || ![
             time_seconds,
             flatten_z,
@@ -428,7 +428,7 @@ pub fn cube_vertex(
 }
 
 pub fn cube_sample(direction: Vec3, texcoord_range: [f32; 2]) -> Option<CubeSample> {
-    if !direction.0.iter().all(|value| value.is_finite())
+    if !direction.is_finite()
         || !texcoord_range.iter().all(|value| value.is_finite())
         || texcoord_range[0] > texcoord_range[1]
     {
@@ -496,7 +496,7 @@ pub fn cloud_uv(direction: Vec3, sphere: CloudSphere) -> Option<[f32; 2]> {
     Some(uv)
 }
 fn cloud_intersection(direction: Vec3, sphere: CloudSphere) -> Option<(f32, [f32; 2])> {
-    if !sphere.valid() || !direction.0.iter().all(|value| value.is_finite()) {
+    if !sphere.valid() || !direction.is_finite() {
         return None;
     }
     let length = direction.dot(direction);
@@ -727,8 +727,8 @@ impl SkyClip {
     pub fn add_polygon(&mut self, vertices: &[Vec3], view_origin: Vec3) -> bool {
         if vertices.len() < 3
             || vertices.len() > CLIP_VERTICES - 2
-            || !view_origin.0.iter().all(|v| v.is_finite())
-            || !vertices.iter().all(|v| v.0.iter().all(|c| c.is_finite()))
+            || !view_origin.is_finite()
+            || !vertices.iter().all(|v| v.is_finite())
         {
             self.rejected += 1;
             return false;
@@ -739,7 +739,7 @@ impl SkyClip {
         };
         for (out, &vertex) in polygon.vertices.iter_mut().zip(vertices) {
             *out = vertex - view_origin;
-            if !out.0.iter().all(|v| v.is_finite()) {
+            if !out.is_finite() {
                 self.rejected += 1;
                 return false;
             }
@@ -793,7 +793,7 @@ impl SkyClip {
                     |vertex| append_vertex(back, vertex),
                     |vertex, next, fraction| {
                         let crossing = vertex.lerp(next, fraction);
-                        crossing.0.iter().all(|v| v.is_finite()).then_some(crossing)
+                        crossing.is_finite().then_some(crossing)
                     },
                 )
                 .is_none()
@@ -831,7 +831,7 @@ fn add_face_bounds(bounds: &mut [FaceBounds; 6], vertices: &[Vec3]) -> bool {
     for &vertex in vertices {
         direction = direction + vertex;
     }
-    if !direction.0.iter().all(|value| value.is_finite()) {
+    if !direction.is_finite() {
         return false;
     }
     let abs = direction.0.map(f32::abs);

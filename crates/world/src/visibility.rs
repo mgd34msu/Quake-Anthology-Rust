@@ -248,7 +248,7 @@ impl VisibilityWorld {
     }
 
     pub fn point_in_leaf(&self, point: Vec3) -> Option<u32> {
-        if point.0.iter().any(|value| !value.is_finite()) {
+        if !point.is_finite() {
             return None;
         }
         // qsrc model.c Mod_PointInLeaf uses > 0, including the back-side tie.

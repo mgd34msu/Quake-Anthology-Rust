@@ -106,7 +106,7 @@ impl Hull<'_> {
                 let side = usize::from(t1 < 0.0);
                 let fraction = rules.contact_fraction(t1, t2, side == 0);
                 frame.fraction = fraction.clamp(0.0, 1.0);
-                frame.midf = frame.p1f + (frame.p2f - frame.p1f) * frame.fraction;
+                frame.midf = qa_core::math::lerp(frame.p1f, frame.p2f, frame.fraction);
                 frame.mid = frame.p1.lerp(frame.p2, frame.fraction);
                 frame.t1 = t1;
                 frame.plane = clip.plane;
@@ -152,7 +152,7 @@ impl Hull<'_> {
                 if frame.fraction < 0.0 {
                     break;
                 }
-                frame.midf = frame.p1f + (frame.p2f - frame.p1f) * frame.fraction;
+                frame.midf = qa_core::math::lerp(frame.p1f, frame.p2f, frame.fraction);
                 frame.mid = frame.p1.lerp(frame.p2, frame.fraction);
             }
             trace.fraction = frame.midf;

@@ -46,7 +46,8 @@ fn input_trace(data: &mut &[u8]) -> Result<Trace, &'static str> {
     let surface = SurfaceFlags(u64::from(word(data)?));
     if !fraction.is_finite()
         || !(0.0..=1.0).contains(&fraction)
-        || !end.0.iter().chain(&normal.0).all(|value| value.is_finite())
+        || !end.is_finite()
+        || !normal.is_finite()
         || !distance.is_finite()
         || flags & !31 != 0
         || (slot == u32::MAX && generation != 0)

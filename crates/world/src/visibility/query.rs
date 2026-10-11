@@ -31,7 +31,7 @@ impl ViewVisibility {
     ) -> Result<(), VisibilityQueryError> {
         self.visible_count = 0;
         self.counters = VisibilityCounters::default();
-        if origin.0.iter().any(|value| !value.is_finite()) {
+        if !origin.is_finite() {
             return Err(VisibilityQueryError::Origin);
         }
         if frustum.len() > 6 || frustum.iter().any(|plane| !plane.is_valid()) {

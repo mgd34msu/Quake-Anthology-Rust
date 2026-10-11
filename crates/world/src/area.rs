@@ -410,7 +410,7 @@ impl AreaGrid {
                     BodyFollow::BoundsMin => columns.mins[anchor] + follow.offset,
                 };
                 let position = anchor_position + offset;
-                if !position.0.iter().all(|value| value.is_finite()) {
+                if !position.is_finite() {
                     result.rejected += 1;
                     continue;
                 }
