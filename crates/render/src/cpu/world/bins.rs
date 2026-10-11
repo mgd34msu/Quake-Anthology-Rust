@@ -2,6 +2,7 @@
 //! this fixed arena; workers borrow its completed per-band slices.
 use super::{DepthPolicy, MAX_BANDS, Primitive, ProjectedVertex};
 use crate::scene::Viewport;
+use qa_core::primitives::IndexSpan;
 
 #[derive(Clone, Copy)]
 pub(super) enum RasterSelection {
@@ -93,16 +94,16 @@ impl CoverageBins {
         }
     }
 
-    pub(super) fn range(&self, selection: RasterSelection, range: [usize; 2]) -> &[u32] {
+    pub(super) fn range(&self, selection: RasterSelection, span: IndexSpan) -> &[u32] {
         let indices = match selection {
             RasterSelection::Band(id) => {
                 &self.indices[id * self.stride..id * self.stride + self.counts[id]]
             }
             #[cfg(test)]
-            RasterSelection::Unbinned => return &self.unbinned[range[0]..range[1]],
+            RasterSelection::Unbinned => return &self.unbinned[span.range()],
         };
-        let first = indices.partition_point(|&index| (index as usize) < range[0]);
-        let end = indices.partition_point(|&index| (index as usize) < range[1]);
+        let first = indices.partition_point(|&index| index < span.first);
+        let end = indices.partition_point(|&index| index < span.first + span.count);
         &indices[first..end]
     }
 }

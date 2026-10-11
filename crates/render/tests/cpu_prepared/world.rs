@@ -1420,8 +1420,8 @@ fn simultaneous_sky_materials_retain_both_box_and_cloud_ranges() {
         .collect::<Vec<_>>();
     assert_eq!(sky_draws.len(), 2);
     for (boxes, clouds) in sky_draws {
-        assert!(boxes[0] < boxes[1]);
-        assert!(clouds[0] < clouds[1]);
+        assert!(boxes.count > 0);
+        assert!(clouds.count > 0);
     }
     let draws = &raster.prepare.draws[..raster.prepare.draw_count];
     assert_eq!(draws.len(), 4);
@@ -1810,7 +1810,10 @@ fn native_cube_background_prepares_planes_once_and_preserves_row_projection() {
         assert!(
             prepared
                 .bins
-                .range(RasterSelection::Band(band), [0, 0])
+                .range(
+                    RasterSelection::Band(band),
+                    IndexSpan { first: 0, count: 0 }
+                )
                 .is_empty()
         );
     }
@@ -2121,10 +2124,22 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
     .into_iter()
     .enumerate()
     {
-        assert_eq!(bins.range(RasterSelection::Band(band), [0, 4]), expected);
+        assert_eq!(
+            bins.range(
+                RasterSelection::Band(band),
+                IndexSpan { first: 0, count: 4 }
+            ),
+            expected
+        );
     }
-    assert_eq!(bins.range(RasterSelection::Band(2), [1, 3]), &[1]);
-    assert_eq!(bins.range(RasterSelection::Unbinned, [1, 3]), &[1, 2]);
+    assert_eq!(
+        bins.range(RasterSelection::Band(2), IndexSpan { first: 1, count: 2 }),
+        &[1]
+    );
+    assert_eq!(
+        bins.range(RasterSelection::Unbinned, IndexSpan { first: 1, count: 2 }),
+        &[1, 2]
+    );
     bins.rebuild(
         Viewport {
             y: 8,
@@ -2138,11 +2153,23 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
     );
     for band in 0..8 {
         let expected = if band == 3 { &[1, 3][..] } else { &[][..] };
-        assert_eq!(bins.range(RasterSelection::Band(band), [0, 4]), expected);
+        assert_eq!(
+            bins.range(
+                RasterSelection::Band(band),
+                IndexSpan { first: 0, count: 4 }
+            ),
+            expected
+        );
     }
     bins.rebuild(viewport, DepthPolicy::PlaneDepth, 0, &[], &[]);
     for band in 0..8 {
-        assert!(bins.range(RasterSelection::Band(band), [0, 4]).is_empty());
+        assert!(
+            bins.range(
+                RasterSelection::Band(band),
+                IndexSpan { first: 0, count: 4 }
+            )
+            .is_empty()
+        );
     }
     assert!(CoverageBins::load(1, 8, 1).is_err());
     assert!(CoverageBins::load(19, 8, usize::MAX).is_err());
@@ -2201,7 +2228,13 @@ fn single_offset_camera_row_uses_one_bin_with_exact_unbinned_output() {
     let bins = &cpu.world.as_ref().unwrap().prepare.bins;
     for band in 0..8 {
         let expected = if band == 3 { &[0][..] } else { &[][..] };
-        assert_eq!(bins.range(RasterSelection::Band(band), [0, 1]), expected);
+        assert_eq!(
+            bins.range(
+                RasterSelection::Band(band),
+                IndexSpan { first: 0, count: 1 }
+            ),
+            expected
+        );
     }
 }
 

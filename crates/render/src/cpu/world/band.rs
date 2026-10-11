@@ -4,6 +4,7 @@ use super::{
     Assets, Buffers, Camera, DepthPolicy, PreparedDraw, RasterSelection, WorldBand, WorldPrepare,
     add_edge_stats, consume_spans,
 };
+use qa_core::primitives::IndexSpan;
 
 impl WorldBand {
     pub(super) fn load(
@@ -68,7 +69,10 @@ impl WorldBand {
         self.raster_range(
             prepared,
             camera,
-            [0, prepared.opaque_count],
+            IndexSpan {
+                first: 0,
+                count: prepared.opaque_count as u32,
+            },
             true,
             prepared.policy,
             assets,
@@ -165,7 +169,7 @@ impl WorldBand {
         &mut self,
         prepared: &WorldPrepare,
         camera: &Camera,
-        range: [usize; 2],
+        range: IndexSpan,
         opaque_only: bool,
         policy: DepthPolicy,
         assets: &Assets,

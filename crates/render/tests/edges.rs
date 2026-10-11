@@ -390,7 +390,8 @@ fn stepped_aet_equal_u_preserves_existing_order_then_crossing_repairs_it() {
 
 #[test]
 fn capacity_failure_is_atomic_and_span_arena_flushes_then_reuses() {
-    let mut edges = Edges::load(8, 6, 2, 4, 1).unwrap();
+    // The rejected rectangle writes one unused edge slot before filling the arena.
+    let mut edges = Edges::load(8, 6, 3, 4, 1).unwrap();
     assert!(edges.begin(view(8, 6)));
     assert!(edge_polygon::add_polygon(
         &mut edges,

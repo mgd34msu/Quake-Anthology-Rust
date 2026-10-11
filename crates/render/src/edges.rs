@@ -48,6 +48,7 @@ pub struct Stats {
 #[derive(Clone, Copy, Debug)]
 pub struct Winding {
     clockwise: bool,
+    depth: Option<DepthPlane>,
 }
 
 /// Certifies a polygon's native global row interval without storing scanner
@@ -70,7 +71,8 @@ pub fn certified_rows(
     {
         return Err(());
     }
-    let clockwise = winding.ok_or(())?.clockwise;
+    let winding = winding.ok_or(())?;
+    let clockwise = winding.clockwise;
     let mut start = viewport.y + viewport.height;
     let mut end = viewport.y;
     let mut previous = vertices[vertices.len() - 1];
@@ -84,7 +86,7 @@ pub fn certified_rows(
     if start >= end {
         return Ok(viewport.y..viewport.y);
     }
-    if policy == DepthPolicy::PlaneDepth && depth_plane(vertices).is_none() {
+    if policy == DepthPolicy::PlaneDepth && winding.depth.is_none() {
         return Err(());
     }
     Ok(start..end)
@@ -112,7 +114,7 @@ struct Surface {
     activation: usize,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct DepthPlane {
     x: f64,
     y: f64,
@@ -297,7 +299,18 @@ impl Edges {
                 self.row_start,
                 self.row_end,
             ) {
-                Ok(Some(_)) => needed += 1,
+                Ok(Some(edge)) => {
+                    let Some(slot) = self.edges.get_mut(self.edge_count + needed) else {
+                        self.stats.rejected += 1;
+                        return false;
+                    };
+                    if self.surface_count == self.surfaces.len() {
+                        self.stats.rejected += 1;
+                        return false;
+                    }
+                    *slot = edge;
+                    needed += 1;
+                }
                 Ok(None) => {}
                 Err(()) => {
                     self.stats.rejected += 1;
@@ -309,15 +322,10 @@ impl Edges {
         if needed == 0 {
             return true;
         }
-        if needed > self.edges.len() - self.edge_count || self.surface_count == self.surfaces.len()
-        {
-            self.stats.rejected += 1;
-            return false;
-        }
         let depth = match self.policy {
             DepthPolicy::BspKeys => DepthPlane::default(),
             DepthPolicy::PlaneDepth => {
-                let Some(depth) = depth_plane(vertices) else {
+                let Some(depth) = winding.depth else {
                     self.stats.rejected += 1;
                     return false;
                 };
@@ -334,30 +342,16 @@ impl Edges {
             activation: 0,
         };
         self.surface_count += 1;
-        previous = vertices[vertices.len() - 1];
-        for &vertex in vertices {
-            // The first pass validated exactly these immutable edges.
-            if let Ok(Some(mut edge)) = make_band_edge(
-                previous,
-                vertex,
-                clockwise,
-                self.viewport,
-                self.row_start,
-                self.row_end,
-            ) {
-                let index = self.edge_count;
-                edge.polygon = polygon;
-                self.edges[index] = edge;
-                if edge.original_start < self.row_start {
-                    self.active[self.active_count] = index;
-                    self.active_count += 1;
-                } else {
-                    self.insert_new_edge(index);
-                }
-                self.edge_count += 1;
+        for index in self.edge_count..self.edge_count + needed {
+            self.edges[index].polygon = polygon;
+            if self.edges[index].original_start < self.row_start {
+                self.active[self.active_count] = index;
+                self.active_count += 1;
+            } else {
+                self.insert_new_edge(index);
             }
-            previous = vertex;
         }
+        self.edge_count += needed;
         self.stats.polygons += 1;
         self.stats.edges += needed as u64;
         true
@@ -671,8 +665,9 @@ pub fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<Winding, ()> {
     let area =
         crate::affine::signed_area(vertices.len(), |index| vertices[index].xy.map(f64::from));
     (area != 0.0 && area.is_finite())
-        .then_some(Winding {
+        .then(|| Winding {
             clockwise: area > 0.0,
+            depth: depth_plane(vertices),
         })
         .ok_or(())
 }

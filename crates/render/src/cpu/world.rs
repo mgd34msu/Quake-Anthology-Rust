@@ -11,6 +11,7 @@ use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, alpha_pa
 use crate::surface_cache::{BuildState, CacheStats, LightGrid, SurfaceCache, SurfaceSource};
 use crate::world::WorldId;
 use crate::world::geometry::{GeometryPartition, TextureCoordinates};
+use qa_core::primitives::IndexSpan;
 use std::sync::Arc;
 
 mod band;
@@ -330,10 +331,10 @@ struct WorldCatalog {
 enum PreparedDraw {
     #[default]
     External,
-    Surface([usize; 2]),
+    Surface(IndexSpan),
     Sky {
-        boxes: [usize; 2],
-        clouds: [usize; 2],
+        boxes: IndexSpan,
+        clouds: IndexSpan,
     },
     Skip,
 }
@@ -1188,14 +1189,20 @@ impl WorldPrepare {
                 );
             }
         }
-        let boxes = [old_primitive_count, self.geometry.primitive_count];
+        let boxes = IndexSpan {
+            first: old_primitive_count as u32,
+            count: (self.geometry.primitive_count - old_primitive_count) as u32,
+        };
         let first_cloud = self.geometry.primitive_count;
         if !material.stages.is_empty() {
             let Ok(deforms) = evaluator.prepare_deforms(&material.settings, &inputs) else {
                 self.geometry.reject(stats);
                 return PreparedDraw::Sky {
                     boxes,
-                    clouds: [first_cloud, first_cloud],
+                    clouds: IndexSpan {
+                        first: first_cloud as u32,
+                        count: 0,
+                    },
                 };
             };
             let mut valid = true;
@@ -1244,7 +1251,10 @@ impl WorldPrepare {
         }
         PreparedDraw::Sky {
             boxes,
-            clouds: [first_cloud, self.geometry.primitive_count],
+            clouds: IndexSpan {
+                first: first_cloud as u32,
+                count: (self.geometry.primitive_count - first_cloud) as u32,
+            },
         }
     }
 }
@@ -1551,8 +1561,10 @@ impl SurfacePrepare {
                     .iter()
                     .any(|p| p.overlay)
                 {
-                    self.surface_draws[reference_index] =
-                        PreparedDraw::Surface([before, self.primitive_count]);
+                    self.surface_draws[reference_index] = PreparedDraw::Surface(IndexSpan {
+                        first: before as u32,
+                        count: (self.primitive_count - before) as u32,
+                    });
                 }
             }
         }
@@ -2683,7 +2695,10 @@ impl SurfacePrepare {
         coverage: usize,
         references: usize,
     ) -> Result<Self, &'static str> {
-        if stages > u32::MAX as usize || coverage > u32::MAX as usize {
+        if primitives > u32::MAX as usize
+            || stages > u32::MAX as usize
+            || coverage > u32::MAX as usize
+        {
             return Err("CPU preparation range exceeds IndexSpan");
         }
         Ok(Self {
@@ -2772,8 +2787,9 @@ impl SurfacePrepare {
             .zip(&source.surface_draws[..references])
         {
             *output = match *draw {
-                PreparedDraw::Surface([first, end]) => {
-                    PreparedDraw::Surface([first + first_primitive, end + first_primitive])
+                PreparedDraw::Surface(mut span) => {
+                    span.first += first_primitive as u32;
+                    PreparedDraw::Surface(span)
                 }
                 other => other,
             };
