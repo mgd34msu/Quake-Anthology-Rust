@@ -1365,13 +1365,13 @@ fn sample<const LINEAR: bool, const REPEAT: bool, const MASK_REPEAT: bool>(
             (row1 + x0) * 4,
             (row1 + x1) * 4,
         ];
-        let samples: [[f32; 4]; 4] =
-            offsets.map(|offset| std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0));
-        std::array::from_fn(|i| {
-            let a = samples[0][i] + fraction[0] * (samples[1][i] - samples[0][i]);
-            let b = samples[2][i] + fraction[0] * (samples[3][i] - samples[2][i]);
-            a + fraction[1] * (b - a)
-        })
+        let samples = offsets
+            .map(|offset| crate::stage::unit_rgba(std::array::from_fn(|i| image.rgba[offset + i])));
+        qa_core::math::lerp_array(
+            qa_core::math::lerp_array(samples[0], samples[1], fraction[0]),
+            qa_core::math::lerp_array(samples[2], samples[3], fraction[0]),
+            fraction[1],
+        )
     } else {
         let wrap = if REPEAT { Wrap::Repeat } else { Wrap::Clamp };
         let x = texel(coordinates[0], image.width, wrap).clamp(
@@ -1383,7 +1383,7 @@ fn sample<const LINEAR: bool, const REPEAT: bool, const MASK_REPEAT: bool>(
             (image.bounds[1] + image.bounds[3] - 1) as usize,
         );
         let offset = image.offset(x, y);
-        std::array::from_fn(|i| image.rgba[offset + i] as f32 / 255.0)
+        crate::stage::unit_rgba(std::array::from_fn(|i| image.rgba[offset + i]))
     };
     std::array::from_fn(|i| texture[i] * color[i] * if i < 3 { image.intensity } else { 1.0 })
 }

@@ -331,12 +331,16 @@ eye origins, interpolation, view axes and byte-based integer prefixes.
 All audited visibility, scene, collision, wire, module, console and example
 callers are migrated. Local range types, vector/bounds loops, UTF-8 integer
 conversion and private module-clock mappings are deleted.
+`console/cvars.rs` keeps modification counts only in cached NativeViews;
+the duplicate per-Value counters and seed-only updates are deleted.
 
 `render/sky.rs:661` supplies CPU/GL sky batching and shared face/cloud stages;
 `affine.rs:46` splits sky and load-grid polygons. `cpu.rs:582`, `:1248` share
 mesh stages and perspective derivatives. Triangle planes are fitted once;
 world Buffers own indexed writes and depth gates, keeping sampled and overridden
 depths distinct. Refdef/DrawInputs share time, view and RGBA conversion.
+Texture sampling uses the shared unit-RGBA and interpolation functions;
+buffer and factor-stage tests use one depth_gate predicate.
 The corresponding backend loops and helper copies are deleted.
 
 `world/bsp.rs:24`, `compat/entities.rs:92`, `:652`,

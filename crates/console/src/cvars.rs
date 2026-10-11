@@ -63,7 +63,6 @@ struct Value {
     name_id: NameId,
     revision: u64,
     pending_revision: u64,
-    modifications: [u32; 5],
     command_flags: [Option<u32>; 5],
     /// A loaded capability can hold LATCH writes independently of a server.
     latch_active: bool,
@@ -80,13 +79,6 @@ fn native_text(value: Text<'_>) -> Result<FixedText<MAX_TEXT>, conversion::Error
     text.set(value.as_str())
         .map_err(|_| conversion::Error::TextTooLong)?;
     Ok(text)
-}
-fn count_changes(counts: &mut [u32; 5], changed: [bool; 5]) {
-    for (count, changed) in counts.iter_mut().zip(changed) {
-        if changed {
-            *count = count.wrapping_add(1);
-        }
-    }
 }
 struct Detail {
     text: FixedText<MAX_TEXT>,
@@ -237,7 +229,6 @@ impl Cvars {
                     integers: [0; 5],
                     revision: 0,
                     pending_revision: 0,
-                    modifications: [1; 5],
                     command_flags: [None; 5],
                     latch_active: false,
                 });
@@ -494,7 +485,6 @@ impl Cvars {
             integers: [0; 5],
             revision: 0,
             pending_revision: 0,
-            modifications: [1; 5],
             command_flags: [Some(flags); 5],
             latch_active: false,
         });
@@ -574,15 +564,13 @@ impl Cvars {
         }
         let current = self.native_current(view);
         let pending = self.native_pending(view);
-        let modifications =
-            self.values[view.handle.0 as usize].modifications[view.context.source as usize];
         let index = self.native_views.len() as u32;
         self.native_views.push(NativeView {
             view,
             next: self.native_heads[binding],
             current,
             pending,
-            modifications,
+            modifications: 1,
         });
         self.native_heads[binding] = Some(index);
         Ok(index)
@@ -980,20 +968,10 @@ impl Cvars {
     }
     fn write_inner(&mut self, view: View, text: &str, enforce: bool) -> Result<(), WriteError> {
         let (changes, pending) = self.prepare_write(view, text, enforce)?;
-        let changed_latch = pending
-            && self
-                .latched(view)?
-                .as_ref()
-                .is_none_or(|old| old.as_str() != text);
         self.remove_pending(|old| old.handles().any(|h| changes.handles().any(|new| h == new)));
         if pending {
             self.mark_pending(&changes);
             self.pending.push(changes);
-            if changed_latch {
-                let count = &mut self.values[view.handle.0 as usize].modifications
-                    [view.context.source as usize];
-                *count = count.wrapping_add(1);
-            }
             self.refresh_native_handle(view.handle);
             return Ok(());
         }
@@ -1078,12 +1056,10 @@ impl Cvars {
         }
     }
     fn publish(&mut self, handle: CvarHandle, text: FixedText<MAX_TEXT>) {
-        let changed = RuleSetId::ALL.map(|source| self.effective(handle, source) != text.as_str());
         let value = &mut self.values[handle.0 as usize];
         if !value.explicit || self.texts[handle.0 as usize].as_str() != text.as_str() {
             value.explicit = true;
             self.texts[handle.0 as usize] = text;
-            count_changes(&mut value.modifications, changed);
             self.mark_change(handle);
         }
     }
@@ -1132,11 +1108,8 @@ impl Cvars {
     pub fn reset(&mut self, handle: CvarHandle) {
         self.cancel_pending(handle);
         self.clear_details(handle);
-        let changed = RuleSetId::ALL
-            .map(|source| self.effective(handle, source) != self.default_text(handle, source));
         let value = &mut self.values[handle.0 as usize];
         value.explicit = false;
-        count_changes(&mut value.modifications, changed);
         self.mark_change(handle);
         self.refresh_changes();
     }

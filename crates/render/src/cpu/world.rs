@@ -400,6 +400,18 @@ pub(super) struct Buffers<'a> {
     pub palettes: &'a mut [u32],
 }
 
+#[inline(always)]
+pub(super) fn depth_gate(
+    zi: f32,
+    depth: f32,
+    stored_depth: f32,
+    rank: u32,
+    stored_rank: u32,
+    func: DepthFunc,
+) -> bool {
+    zi.is_finite() && zi > 0.0 && super::depth_passes(func, depth, stored_depth, rank, stored_rank)
+}
+
 impl<'a> Buffers<'a> {
     #[inline(always)]
     pub(super) fn depth_test(
@@ -410,15 +422,14 @@ impl<'a> Buffers<'a> {
         rank: u32,
         func: DepthFunc,
     ) -> bool {
-        zi.is_finite()
-            && zi > 0.0
-            && super::depth_passes(
-                func,
-                depth,
-                self.inverse_depth[index],
-                rank,
-                self.depth_ranks[index],
-            )
+        depth_gate(
+            zi,
+            depth,
+            self.inverse_depth[index],
+            rank,
+            self.depth_ranks[index],
+            func,
+        )
     }
     #[expect(
         clippy::too_many_arguments,
@@ -2371,15 +2382,14 @@ fn factor_spans(
                     );
                     let first_pixel = crate::stage::pack_unit_rgba(source_a);
                     let zi_b = b.planes.inverse_depth.at(px, py);
-                    let color = if zi_b > 0.0
-                        && zi_b.is_finite()
-                        && super::depth_passes(
-                            second.stage.depth_func,
-                            zi_b,
-                            zi_a,
-                            primitive.draw_rank,
-                            primitive.draw_rank,
-                        ) {
+                    let color = if depth_gate(
+                        zi_b,
+                        zi_b,
+                        zi_a,
+                        primitive.draw_rank,
+                        primitive.draw_rank,
+                        second.stage.depth_func,
+                    ) {
                         let z_b = 1.0 / zi_b;
                         let source_b = sample_b(
                             texels_b,
