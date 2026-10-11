@@ -66,7 +66,7 @@ impl NativeTraceView<'_, '_> {
         if address == 0 {
             return Ok(CollisionOwner::None);
         }
-        let slot = native_slot(self.entities, address)?;
+        let native = native_identity(self.entities, self.module, address)?;
         // Owner fields remain observable even for an inactive passed edict.
         read_owner(
             self.memory,
@@ -75,10 +75,7 @@ impl NativeTraceView<'_, '_> {
             self.layout,
             address,
         )?;
-        Ok(CollisionOwner::Native(NativeEntity {
-            module: self.module,
-            slot: slot as i32,
-        }))
+        Ok(CollisionOwner::Native(native))
     }
     pub fn address(&self, entities: &EntityTable, hit: Option<EntityId>) -> Result<u64, CallError> {
         // A protocol cannot expose another module's pointer. A blocking foreign
@@ -140,7 +137,11 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     }
 }
 
-fn native_slot(entities: Entities, address: u64) -> Result<u32, CallError> {
+fn native_identity(
+    entities: Entities,
+    module: ModuleId,
+    address: u64,
+) -> Result<NativeEntity, CallError> {
     let offset = address
         .checked_sub(entities.address)
         .ok_or(CallError::Entity)?;
@@ -152,7 +153,10 @@ fn native_slot(entities: Entities, address: u64) -> Result<u32, CallError> {
     {
         return Err(CallError::Entity);
     }
-    Ok((offset / entities.stride) as u32)
+    Ok(NativeEntity {
+        module,
+        slot: (offset / entities.stride) as i32,
+    })
 }
 fn read_owner(
     memory: &ModuleMemory<'_>,
@@ -170,10 +174,9 @@ fn read_owner(
     if owner == 0 {
         return Ok(CollisionOwner::None);
     }
-    Ok(CollisionOwner::Native(NativeEntity {
-        module,
-        slot: native_slot(entities, owner)? as i32,
-    }))
+    Ok(CollisionOwner::Native(native_identity(
+        entities, module, owner,
+    )?))
 }
 #[derive(Clone, Copy)]
 struct Binding {
@@ -302,14 +305,11 @@ impl EntityProjection {
         address: u64,
     ) -> Result<(Entities, usize, Option<EntityId>), CallError> {
         let entities = self.read(memory, table)?;
-        let slot = native_slot(entities, address)? as usize;
+        let native = native_identity(entities, context.module, address)?;
+        let slot = native.slot as usize;
         if self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
-        let native = NativeEntity {
-            module: context.module,
-            slot: slot as i32,
-        };
         let bound = self.bindings[slot].filter(|binding| {
             let entity = binding.entity;
             services.server.entities.resolve(entity).is_some()
@@ -344,6 +344,19 @@ impl EntityProjection {
             return Err(CallError::Entity);
         }
         self.read(memory, table)
+    }
+    pub(crate) fn identity(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<NativeEntity, CallError> {
+        native_identity(
+            self.boundary(memory, context, table)?,
+            context.module,
+            address,
+        )
     }
     fn observe(
         &mut self,

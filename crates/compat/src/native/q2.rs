@@ -605,6 +605,21 @@ impl Game {
                         },
                         NativeScalar::Void,
                     ))
+                } else if layout.version == 2023 && ordinal == 0 {
+                    Some((
+                        &[NativeScalar::I32, NativeScalar::Word][..],
+                        NativeScalar::Void,
+                    ))
+                } else if layout.version == 2023 && ordinal == 2 {
+                    Some((
+                        &[NativeScalar::Word, NativeScalar::I32, NativeScalar::Word][..],
+                        NativeScalar::Void,
+                    ))
+                } else if layout.version == 2023 && ordinal == 3 {
+                    Some((
+                        &[NativeScalar::Word, NativeScalar::Word][..],
+                        NativeScalar::Void,
+                    ))
                 } else if layout.version == 2023 && matches!(ordinal, 1 | 9) {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else {

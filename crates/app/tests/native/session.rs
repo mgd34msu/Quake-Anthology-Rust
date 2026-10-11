@@ -1743,6 +1743,45 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 15);
 }
 
+fn native_import_code(
+    pointer: u64,
+    a: &[u64],
+    returns_value: bool,
+    float: bool,
+    output: u64,
+) -> Vec<u8> {
+    let stack = if a.len() > 4 { 0x48 } else { 0x28 };
+    let mut code = vec![0x48, 0x83, 0xec, stack];
+    if float {
+        code.push(0xb8);
+        code.extend((a[0] as u32).to_le_bytes());
+        code.extend([0x66, 0x0f, 0x6e, 0xc0]); // native float in XMM0
+    }
+    for (arg, register) in
+        a.iter()
+            .take(4)
+            .zip([[0x48, 0xb9], [0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]])
+    {
+        code.extend(register);
+        code.extend(arg.to_le_bytes());
+    }
+    for (index, arg) in a.iter().skip(4).enumerate() {
+        code.extend([0x48, 0xb8]);
+        code.extend(arg.to_le_bytes());
+        code.extend([0x48, 0x89, 0x44, 0x24, (32 + index * 8) as u8]);
+    }
+    code.extend([0x48, 0xb8]);
+    code.extend(pointer.to_le_bytes());
+    code.extend([0xff, 0xd0]);
+    if returns_value {
+        code.extend([0x48, 0xb9]);
+        code.extend(output.to_le_bytes());
+        code.extend([0x48, 0x89, 1]);
+    }
+    code.extend([0x48, 0x83, 0xc4, stack, 0xc3]);
+    code
+}
+
 fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
     use qa_compat::native::{NativeCalls, q2::Game};
     use qa_compat::{abi::UnknownCalls, services::ServiceStorage};
@@ -2197,35 +2236,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || (if rr { 17..=18 } else { 14..=15 }).contains(&slot)
                 || (rr && slot == 67)
                 || (index_slot..index_slot + 3).contains(&slot);
-            let stack = if a.len() > 4 { 0x48 } else { 0x28 };
-            let mut code = vec![0x48, 0x83, 0xec, stack];
-            if slot == write_slots[4] {
-                code.push(0xb8);
-                code.extend((a[0] as u32).to_le_bytes());
-                code.extend([0x66, 0x0f, 0x6e, 0xc0]); // native float in XMM0
-            }
-            for (arg, register) in
-                a.iter()
-                    .take(4)
-                    .zip([[0x48, 0xb9], [0x48, 0xba], [0x49, 0xb8], [0x49, 0xb9]])
-            {
-                code.extend(register);
-                code.extend(arg.to_le_bytes());
-            }
-            for (index, arg) in a.iter().skip(4).enumerate() {
-                code.extend([0x48, 0xb8]);
-                code.extend(arg.to_le_bytes());
-                code.extend([0x48, 0x89, 0x44, 0x24, (32 + index * 8) as u8]);
-            }
-            code.extend([0x48, 0xb8]);
-            code.extend(pointers[slot].to_le_bytes());
-            code.extend([0xff, 0xd0]);
-            if returns_value {
-                code.extend([0x48, 0xb9]);
-                code.extend((base + 0x1c30).to_le_bytes());
-                code.extend([0x48, 0x89, 1]);
-            }
-            code.extend([0x48, 0x83, 0xc4, stack, 0xc3]);
+            let code = native_import_code(
+                pointers[slot],
+                a,
+                returns_value,
+                slot == write_slots[4],
+                base + 0x1c30,
+            );
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                 .copy_from_slice(&code);
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
@@ -2938,6 +2955,94 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 game.vm.process.memory().unwrap()[(entity_address - base) as usize + 1377],
                 0
             );
+            use qa_core::primitives::{NativeEntity, PlayerTail, PrintKind};
+            let native = NativeEntity {
+                module: ModuleId(1),
+                slot: 2,
+            };
+            assert!(!runtime.server.entities.active().any(|entity| {
+                runtime.server.entities.columns.native_entity[entity.slot as usize] == Some(native)
+            }));
+            let client = runtime
+                .server
+                .connect(
+                    qa_session::clients::Connection::Local,
+                    ModuleId(1),
+                    PlayerTail::None,
+                    Some(native),
+                )
+                .unwrap();
+            // Common client zero/reserved entity one targets native edict two.
+            assert_eq!(client.0, 0);
+            assert_ne!(runtime.server.clients[0].entity.slot as i32, native.slot);
+            let target = entity_address + stride;
+            let observer = runtime
+                .server
+                .events
+                .bind(OutputTarget::Module(ModuleId(91)))
+                .unwrap();
+            let text = b"\x80RR native print";
+            let message = base + 0x1e00;
+            let bytes = game.vm.process.memory_mut().unwrap();
+            bytes[0x1e00..0x1e00 + text.len()].copy_from_slice(text);
+            bytes[0x1e00 + text.len()] = 0;
+            let slots = [
+                b"Broadcast_Print".as_slice(),
+                b"Client_Print",
+                b"Center_Print",
+            ]
+            .map(|name| game.import_ordinal(name).unwrap());
+            assert_eq!(slots, [0, 2, 3]);
+            let mut emit = |game: &mut Game, slot: usize, arguments: &[u64]| {
+                let code = native_import_code(pointers[slot], arguments, false, false, 0);
+                game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
+                    .copy_from_slice(&code);
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                game.vm.call(
+                    &mut NativeCalls {
+                        services: &mut services,
+                        table: game.imports,
+                        context,
+                        platform_time: EventTime(0),
+                        command: &[],
+                        unknown: &mut unknown,
+                    },
+                    run,
+                    &[1],
+                )
+            };
+            emit(&mut game, slots[0], &[0, message]).unwrap();
+            emit(&mut game, slots[1], &[target, 1, message]).unwrap();
+            emit(&mut game, slots[1], &[target, 3, message]).unwrap();
+            emit(&mut game, slots[2], &[target, message]).unwrap();
+            emit(&mut game, slots[1], &[0, 2, message]).unwrap();
+            // Null center and unconnected targets cannot read bad text or broadcast.
+            emit(&mut game, slots[2], &[0, 1]).unwrap();
+            emit(&mut game, slots[1], &[entity_address, 2, 1]).unwrap();
+            emit(&mut game, slots[1], &[target, 0, message]).unwrap();
+            drop(emit);
+            let mut batch = runtime.server.events.batch(observer).unwrap();
+            let mut prints = Vec::new();
+            while let Some(record) = runtime.server.events.next(&mut batch) {
+                if let FrameEvent::Print(print) = record.event
+                    && runtime.server.events.texts.get(print.text) == Some(text.as_slice())
+                {
+                    prints.push((print.client, print.kind, print.level));
+                }
+            }
+            assert_eq!(
+                prints,
+                [
+                    (None, PrintKind::Notify, 0),
+                    (Some(client), PrintKind::Notify, 1),
+                    (Some(client), PrintKind::Chat, 3),
+                    (Some(client), PrintKind::Center, 2),
+                    (None, PrintKind::Console, 2),
+                    (Some(client), PrintKind::Notify, 0),
+                ]
+            );
+            runtime.server.events.unbind(observer);
         }
         let frame_code = if rr {
             &[0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b, 0xc3][..]

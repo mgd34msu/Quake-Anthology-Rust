@@ -271,7 +271,7 @@ pub struct EngineServices<'a> {
 /// These typed entries are shared by every numbered ABI table. Boundary
 /// adapters only decode arguments and convert the native result layout.
 pub type PrintCall =
-    fn(&mut EngineServices<'_>, Option<ClientId>, PrintKind, &[u8]) -> Result<u64, CallError>;
+    fn(&mut EngineServices<'_>, Option<ClientId>, PrintKind, u8, &[u8]) -> Result<u64, CallError>;
 pub type FileOpenCall =
     fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(u32, u64), CallError>;
 pub type CvarRegisterCall =
@@ -413,7 +413,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .box_leaves(bounds, output, scratch)
             .ok_or(CallError::Capacity)
     },
-    print: |s, c, k, t| s.print(c, k, t),
+    print: |s, c, k, l, t| s.print(c, k, l, t),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
@@ -447,11 +447,12 @@ impl EngineServices<'_> {
         &mut self,
         client: Option<ClientId>,
         kind: PrintKind,
+        level: u8,
         text: &[u8],
     ) -> Result<u64, CallError> {
         self.server
             .events
-            .print_bytes(client, kind, text)
+            .print_level_bytes(client, kind, level, text)
             .map_err(|_| CallError::Capacity)
     }
     pub fn sound(&mut self, event: SoundEvent) -> Result<u64, CallError> {

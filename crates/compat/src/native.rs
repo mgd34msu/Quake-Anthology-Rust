@@ -433,6 +433,7 @@ impl Vm {
                             calls.services,
                             None,
                             PrintKind::Console,
+                            PrintKind::Console.default_level(),
                             text.as_bytes(),
                         );
                     }

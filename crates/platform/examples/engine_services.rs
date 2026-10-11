@@ -85,8 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 checksum = checksum
                     .wrapping_add(entity.slot as u64)
                     .wrapping_add(entity.generation as u64);
-                (calls.print)(&mut services, None, PrintKind::Console, b"\x82native\n")
-                    .map_err(|e| format!("print {e:?}"))?;
+                (calls.print)(
+                    &mut services,
+                    None,
+                    PrintKind::Console,
+                    PrintKind::Console.default_level(),
+                    b"\x82native\n",
+                )
+                .map_err(|e| format!("print {e:?}"))?;
                 publications += 1;
             }
             let consumer = services.server.presentation;

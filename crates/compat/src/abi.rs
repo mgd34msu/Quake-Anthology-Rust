@@ -100,8 +100,13 @@ impl CallTable {
                 .map_err(|_| CallError::Text)?;
                 // A full output ring counts its loss; an unsupported import
                 // still returns zero without aborting the module or engine.
-                let _ =
-                    (ENGINE_CALLS.print)(call.services, None, PrintKind::Console, text.as_bytes());
+                let _ = (ENGINE_CALLS.print)(
+                    call.services,
+                    None,
+                    PrintKind::Console,
+                    PrintKind::Console.default_level(),
+                    text.as_bytes(),
+                );
             } else {
                 unknown.capacity_drops = unknown.capacity_drops.saturating_add(1);
             }
@@ -221,7 +226,10 @@ pub const Q2_RERELEASE: CallTable = {
     let mut table = CallTable {
         entries: [None; 256],
     };
+    table.entries[0] = Some(native_print::<false, false>);
     table.entries[1] = Some(print);
+    table.entries[2] = Some(native_print::<true, false>);
+    table.entries[3] = Some(native_print::<true, true>);
     table.entries[7] = Some(config_set);
     table.entries[10] = Some(resource_index::<0>);
     table.entries[11] = Some(resource_index::<1>);
@@ -343,7 +351,13 @@ fn qc_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         // QuakeC's VarString joins raw bytes rather than decoding UTF-8.
         text.append_bytes(bytes).map_err(|_| CallError::Text)?;
     }
-    (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text.as_bytes())?;
+    (ENGINE_CALLS.print)(
+        c.services,
+        None,
+        PrintKind::Console,
+        PrintKind::Console.default_level(),
+        text.as_bytes(),
+    )?;
     Ok(0)
 }
 fn absolute<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -396,7 +410,56 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
 
 fn print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(0)?)?;
-    (ENGINE_CALLS.print)(c.services, None, PrintKind::Console, text)?;
+    (ENGINE_CALLS.print)(
+        c.services,
+        None,
+        PrintKind::Console,
+        PrintKind::Console.default_level(),
+        text,
+    )?;
+    Ok(0)
+}
+fn native_print<const TARGET: bool, const CENTER: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    let address = if TARGET { c.pointer(0)? } else { 0 };
+    if CENTER && address == 0 {
+        return Ok(0);
+    }
+    let client = if address != 0 {
+        let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+        let native = entities.identity(c.memory, c.context, *table, address)?;
+        let Some(slot) = c.services.server.clients.iter().position(|client| {
+            client.connection.is_some()
+                && c.services.server.entities.resolve(client.entity).is_some()
+                && c.services.server.entities.columns.native_entity[client.entity.slot as usize]
+                    == Some(native)
+        }) else {
+            // A free client or non-client edict never becomes a broadcast.
+            return Ok(0);
+        };
+        Some(qa_core::primitives::ClientId(slot as u32))
+    } else {
+        None
+    };
+    let level = if CENTER {
+        PrintKind::Center.default_level()
+    } else {
+        c.arg(usize::from(TARGET))? as u8
+    };
+    let kind = if CENTER {
+        PrintKind::Center
+    } else if TARGET && address == 0 {
+        PrintKind::Console
+    } else if level == PrintKind::Chat.default_level() {
+        PrintKind::Chat
+    } else {
+        PrintKind::Notify
+    };
+    let text = c
+        .memory
+        .cstring(c.pointer(usize::from(TARGET) + usize::from(!CENTER))?)?;
+    (ENGINE_CALLS.print)(c.services, client, kind, level, text)?;
     Ok(0)
 }
 fn abort(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -462,6 +525,7 @@ fn q2_cvar_set<const FORCE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
             c.services,
             None,
             PrintKind::Console,
+            PrintKind::Console.default_level(),
             b"cvar write rejected\n",
         );
     } else {
@@ -485,6 +549,7 @@ fn publish_cvar(
                 c.services,
                 None,
                 PrintKind::Console,
+                PrintKind::Console.default_level(),
                 b"native cvar capacity exceeded\n",
             );
             Ok(0)

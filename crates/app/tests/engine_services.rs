@@ -133,7 +133,14 @@ fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
             (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 8, b"bad"),
             Err(CallError::ConfigString)
         );
-        (ENGINE_CALLS.print)(&mut services, None, PrintKind::Console, b"\x82native\n").unwrap();
+        (ENGINE_CALLS.print)(
+            &mut services,
+            None,
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            b"\x82native\n",
+        )
+        .unwrap();
         let mut batch = services
             .server
             .events
