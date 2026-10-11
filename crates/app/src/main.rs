@@ -406,12 +406,14 @@ fn run() -> Result<(), String> {
         )
         .map_err(|e| format!("world area: {e:?}"))?;
         runtime.collision = Some(
-            qa_app::WorldCollision::new(&runtime.geometry, loaded.collision, 0).with_visibility(
-                assets
-                    .world(loaded.render.world)
-                    .ok_or("missing loaded world")?
-                    .shared_visibility(),
-            ),
+            qa_app::WorldCollision::new(&runtime.geometry, loaded.collision, 0)
+                .with_visibility(
+                    assets
+                        .world(loaded.render.world)
+                        .ok_or("missing loaded world")?
+                        .shared_visibility(),
+                )
+                .with_portals(loaded.portals),
         );
         if loaded.spawns.len() < seat_count {
             return Err(format!(

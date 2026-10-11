@@ -139,8 +139,8 @@ fn engine_timings(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("{e:?}"))?;
     let mut runtime = qa_app::Runtime::load(4, std::iter::empty())?;
     let mut console = qa_console::commands::Console::new(qa_console::views::Context::default())?;
-    let mut storage =
-        ServiceStorage::load(&[(ModuleId(1), 16)], 8).map_err(|e| format!("{e:?}"))?;
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 16)], 8, &console.cvars)
+        .map_err(|e| format!("{e:?}"))?;
     let mut scratch = runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(64)?;
     let mut samples = [0u64; 600];

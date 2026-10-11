@@ -10,8 +10,8 @@ use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{
-        Bounds, ClientId, EffectEvent, EntityId, GeometryId, ModuleId, NameId, PrintKind,
-        SoundEvent, Vec3,
+        Bounds, ClientId, CvarHandle, EffectEvent, EntityId, GeometryId, ModuleId, NameId,
+        PrintKind, SoundEvent, Vec3,
     },
     text::FixedText,
 };
@@ -83,10 +83,15 @@ pub struct ServiceStorage {
     ranges: Box<[ConfigRange]>,
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
+    no_areas: CvarHandle,
 }
 
 impl ServiceStorage {
-    pub fn load(configs: &[(ModuleId, usize)], files: usize) -> Result<Self, CallError> {
+    pub fn load(
+        configs: &[(ModuleId, usize)],
+        files: usize,
+        cvars: &Cvars,
+    ) -> Result<Self, CallError> {
         let mut total = 0usize;
         let mut ranges = Vec::with_capacity(configs.len());
         for &(module, count) in configs {
@@ -116,6 +121,7 @@ impl ServiceStorage {
             resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
                 .map_err(|_| CallError::Capacity)?,
             reader: qa_formats::archive::ArchiveReader::default(),
+            no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
         })
     }
     fn config(&self, module: ModuleId, ordinal: usize) -> Result<usize, CallError> {
@@ -227,6 +233,7 @@ pub struct EngineServices<'a> {
         &'a qa_world::visibility::VisibilityWorld,
         &'a mut qa_world::leaves::LeafScratch,
     )>,
+    pub portals: Option<&'a mut qa_world::portals::AreaPortals>,
     pub scratch: &'a mut TraceScratch,
 }
 
@@ -244,6 +251,9 @@ pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
 pub struct EngineCallTable {
     pub area_query: AreaQueryCall,
+    pub portal_set: fn(&mut EngineServices<'_>, u32, bool, bool) -> Result<bool, CallError>,
+    pub portal_adjust: fn(&mut EngineServices<'_>, u32, u32, bool) -> Result<(), CallError>,
+    pub areas_connected: fn(&EngineServices<'_>, u32, u32) -> bool,
     pub box_leaves: fn(
         &mut EngineServices<'_>,
         Bounds,
@@ -280,6 +290,28 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    portal_set: |s, number, open, strict| {
+        let Some(portals) = s.portals.as_mut() else {
+            return Ok(false);
+        };
+        match portals.set(number, open) {
+            Err(qa_world::portals::PortalError::Number) if !strict => Ok(false),
+            result => result.map_err(|_| CallError::Geometry),
+        }
+    },
+    portal_adjust: |s, first, second, open| {
+        s.portals
+            .as_mut()
+            .ok_or(CallError::Geometry)?
+            .adjust(first, second, open)
+            .map_err(|_| CallError::Geometry)
+    },
+    areas_connected: |s, first, second| {
+        s.world.is_some()
+            && s.portals
+                .as_ref()
+                .is_none_or(|p| p.connected(first, second).unwrap_or(false))
+    },
     area_query: |s, bounds, flags, accept| {
         for row in s.server.area.query(&s.server.entities, bounds, flags) {
             if !accept(row.id) {
@@ -316,6 +348,13 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
 };
 
 impl EngineServices<'_> {
+    pub fn ignore_areas(&self, source: qa_core::primitives::RuleSetId, integer: bool) -> bool {
+        if integer {
+            self.cvars.integer_in(self.storage.no_areas, source) != 0
+        } else {
+            self.cvars.value_in(self.storage.no_areas, source) != 0.0
+        }
+    }
     pub fn print(
         &mut self,
         client: Option<ClientId>,

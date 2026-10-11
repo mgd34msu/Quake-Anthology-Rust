@@ -28,7 +28,8 @@ fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
 fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
     let mut runtime = Runtime::load(4, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 8), (ModuleId(2), 8)], 4).unwrap();
+    let mut storage =
+        ServiceStorage::load(&[(ModuleId(1), 8), (ModuleId(2), 8)], 4, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let q1 = context(1, RuleSetId::Quake, LinkOrder::Tail);
     let q3 = context(2, RuleSetId::Quake3, LinkOrder::Head);
@@ -118,8 +119,9 @@ fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
 
 #[test]
 fn duplicate_module_config_ranges_are_rejected_at_load() {
+    let console = Console::<Runtime>::new(Context::default()).unwrap();
     assert!(matches!(
-        ServiceStorage::load(&[(ModuleId(1), 2), (ModuleId(1), 3)], 4),
+        ServiceStorage::load(&[(ModuleId(1), 2), (ModuleId(1), 3)], 4, &console.cvars),
         Err(CallError::ConfigString)
     ));
 }
@@ -130,7 +132,7 @@ fn module_leaf_queries_share_the_immutable_world_and_reject_missing_geometry() {
     use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[], 0).unwrap();
+    let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let bounds = Bounds {
         mins: Vec3([-8.0; 3]),
@@ -203,7 +205,8 @@ fn module_leaf_queries_share_the_immutable_world_and_reject_missing_geometry() {
 fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 12), (ModuleId(2), 12)], 0).unwrap();
+    let mut storage =
+        ServiceStorage::load(&[(ModuleId(1), 12), (ModuleId(2), 12)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     let models = ResourceRange { first: 1, count: 5 };
@@ -311,7 +314,7 @@ fn module_file_handles_are_scoped_and_read_ranges_through_the_existing_vfs() {
     let mut runtime = Runtime::load(4, std::iter::empty()).unwrap();
     runtime.vfs.mount_directory(&directory, 0).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[], 1).unwrap();
+    let mut storage = ServiceStorage::load(&[], 1, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     {
         let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);

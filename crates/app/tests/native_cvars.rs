@@ -32,7 +32,7 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
             ..Context::default()
         };
         let mut console = Console::new(console_context).unwrap();
-        let mut storage = ServiceStorage::load(&[], 0).unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(1).unwrap();
         let context = CallContext {

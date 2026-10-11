@@ -24,8 +24,9 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime = Runtime::load(4, std::iter::empty()).map_err(|e| e.to_string())?;
     let mut console = Console::new(Context::default())?;
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 16), (ModuleId(2), 16)], 8)
-        .map_err(|e| format!("{e:?}"))?;
+    let mut storage =
+        ServiceStorage::load(&[(ModuleId(1), 16), (ModuleId(2), 16)], 8, &console.cvars)
+            .map_err(|e| format!("{e:?}"))?;
     let mut scratch = runtime.geometry.scratch();
     let view = console
         .cvars

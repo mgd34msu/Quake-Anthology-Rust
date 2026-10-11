@@ -47,6 +47,7 @@ pub struct WorldCollision {
     pub scratch: qa_world::collision::TraceScratch,
     pub visibility: Option<std::sync::Arc<qa_world::visibility::VisibilityWorld>>,
     pub leaves: qa_world::leaves::LeafScratch,
+    pub portals: Option<qa_world::portals::AreaPortals>,
 }
 
 impl WorldCollision {
@@ -62,6 +63,7 @@ impl WorldCollision {
             scratch,
             visibility: None,
             leaves: qa_world::leaves::LeafScratch::new(1),
+            portals: None,
         }
     }
     pub fn with_visibility(
@@ -70,6 +72,10 @@ impl WorldCollision {
     ) -> Self {
         self.leaves = qa_world::leaves::LeafScratch::new(world.node_count() + 1);
         self.visibility = Some(world);
+        self
+    }
+    pub fn with_portals(mut self, portals: Option<qa_world::portals::AreaPortals>) -> Self {
+        self.portals = portals;
         self
     }
 }
@@ -83,6 +89,17 @@ impl Runtime {
     ) -> qa_compat::services::EngineServices<'a> {
         let (cvars, commands) = console.module_parts();
         let world = self.collision.as_mut();
+        let (identity, visibility, portals) = match world {
+            Some(world) => (
+                Some((world.geometry, world.index)),
+                world
+                    .visibility
+                    .as_deref()
+                    .map(|visibility| (visibility, &mut world.leaves)),
+                world.portals.as_mut(),
+            ),
+            None => (None, None, None),
+        };
         qa_compat::services::EngineServices {
             server: &mut self.server,
             cvars,
@@ -90,13 +107,9 @@ impl Runtime {
             vfs: &self.vfs,
             storage,
             geometry: &self.geometry,
-            world: world.as_ref().map(|world| (world.geometry, world.index)),
-            visibility: world.and_then(|world| {
-                world
-                    .visibility
-                    .as_deref()
-                    .map(|visibility| (visibility, &mut world.leaves))
-            }),
+            world: identity,
+            visibility,
+            portals,
             scratch,
         }
     }

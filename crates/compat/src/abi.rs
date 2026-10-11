@@ -197,6 +197,8 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[11] = Some(native_set_model);
     table.entries[12] = Some(native_trace::<false>);
     table.entries[13] = Some(native_point_contents::<false>);
+    table.entries[16] = Some(native_portal_set::<false>);
+    table.entries[17] = Some(native_areas_connected::<false>);
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[20] = Some(native_area_query::<false>);
@@ -217,6 +219,8 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[13] = Some(native_set_model);
     table.entries[14] = Some(native_trace::<true>);
     table.entries[16] = Some(native_point_contents::<true>);
+    table.entries[19] = Some(native_portal_set::<true>);
+    table.entries[20] = Some(native_areas_connected::<true>);
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
     table.entries[23] = Some(native_area_query::<true>);
@@ -648,7 +652,9 @@ fn native_trace<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
 }
 
-fn native_point_contents<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+fn native_point_contents<const WIDE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
     use qa_core::primitives::RuleSetId;
     let point = c.memory.read_vec3(c.pointer(0)?)?;
     if point.0.iter().any(|v| !v.is_finite()) {
@@ -661,6 +667,37 @@ fn native_point_contents<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Re
     });
     let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
     Ok(u64::from(contents.to_q2()))
+}
+
+fn native_portal_set<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let number = c.arg(0)? as u32 as i32;
+    if number < 0 && WIDE {
+        return Ok(0);
+    }
+    let number = u32::try_from(number).map_err(|_| CallError::Geometry)?;
+    (ENGINE_CALLS.portal_set)(c.services, number, c.arg(1)? != 0, !WIDE)?;
+    Ok(0)
+}
+
+fn native_areas_connected<const WIDE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    if c.services.world.is_none() {
+        return Ok(0);
+    }
+    if c.services.ignore_areas(c.context.console.source, WIDE) {
+        return Ok(1);
+    }
+    let first = c.arg(0)? as u32 as i32;
+    let second = c.arg(1)? as u32 as i32;
+    if first < i32::from(WIDE) || second < i32::from(WIDE) {
+        return Ok(0);
+    }
+    Ok(u64::from((ENGINE_CALLS.areas_connected)(
+        c.services,
+        first as u32,
+        second as u32,
+    )))
 }
 
 fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

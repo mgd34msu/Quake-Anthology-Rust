@@ -505,6 +505,24 @@ impl Game {
                             NativeScalar::I32
                         },
                     ))
+                } else if ordinal == if layout.version == 2023 { 19 } else { 16 } {
+                    Some((
+                        if layout.version == 2023 {
+                            &[NativeScalar::I32, NativeScalar::U8][..]
+                        } else {
+                            &[NativeScalar::I32, NativeScalar::I32][..]
+                        },
+                        NativeScalar::Void,
+                    ))
+                } else if ordinal == if layout.version == 2023 { 20 } else { 17 } {
+                    Some((
+                        &[NativeScalar::I32, NativeScalar::I32][..],
+                        if layout.version == 2023 {
+                            NativeScalar::U8
+                        } else {
+                            NativeScalar::I32
+                        },
+                    ))
                 } else if ordinal == if layout.version == 2023 { 23 } else { 20 } {
                     Some((
                         if layout.version == 2023 {

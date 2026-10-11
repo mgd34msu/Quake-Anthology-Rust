@@ -33,6 +33,7 @@ pub struct SpawnAnchor {
 
 pub struct LoadedMap {
     pub collision: GeometryId,
+    pub portals: Option<qa_world::portals::AreaPortals>,
     pub collision_bounds: Bounds,
     pub render: LoadedWorld,
     pub spawns: Box<[SpawnAnchor]>,
@@ -306,6 +307,7 @@ impl MapInput {
         mut options: WorldLoadOptions,
     ) -> Result<LoadedMap, String> {
         let map = Map::parse(&self.bytes).map_err(|e| format!("BSP: {e:?}"))?;
+        let portals = load_portals(&map)?;
         let (spawns, entity_count, sky_environment) = spawns(&map, self.native_source)?;
         let (collision, collision_brushes) = collision(&map, geometry)?;
         options.sky_environment = sky_environment;
@@ -318,6 +320,7 @@ impl MapInput {
         };
         Ok(LoadedMap {
             collision,
+            portals,
             collision_bounds: map.models.first().ok_or("missing world model")?.bounds,
             render,
             spawns,
@@ -328,6 +331,41 @@ impl MapInput {
             entity_source: self.entity_source,
         })
     }
+}
+
+pub fn load_portals(map: &Map<'_>) -> Result<Option<qa_world::portals::AreaPortals>, String> {
+    use qa_world::portals::{AreaPortals, Portal};
+    let mut links = Vec::new();
+    for (first, area) in map.areas.iter().enumerate() {
+        for portal in &map.area_portals[area.first as usize..(area.first + area.count) as usize] {
+            links.push(Portal {
+                number: portal.portal,
+                first: first as u32,
+                second: portal.other_area,
+            });
+        }
+    }
+    let count = if map.areas.is_empty() {
+        map.leaves
+            .iter()
+            .filter_map(|leaf| usize::try_from(leaf.area).ok())
+            .max()
+            .map_or(0, |area| area + 1)
+    } else {
+        map.areas.len()
+    };
+    if count == 0 {
+        return Ok(None);
+    }
+    let numbers = map
+        .area_portals
+        .iter()
+        .map(|p| p.portal as usize + 1)
+        .max()
+        .unwrap_or(0);
+    AreaPortals::load(count, numbers, links)
+        .map(Some)
+        .map_err(|e| format!("area portals: {e:?}"))
 }
 
 fn virtual_path(name: &str) -> Result<String, String> {

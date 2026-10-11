@@ -1706,7 +1706,19 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         .unwrap();
         runtime.collision = Some(
             qa_app::WorldCollision::new(&runtime.geometry, geometry, 0)
-                .with_visibility(std::sync::Arc::new(visibility)),
+                .with_visibility(std::sync::Arc::new(visibility))
+                .with_portals(Some(
+                    qa_world::portals::AreaPortals::load(
+                        10,
+                        3,
+                        vec![qa_world::portals::Portal {
+                            number: 2,
+                            first: 7,
+                            second: 9,
+                        }],
+                    )
+                    .unwrap(),
+                )),
         );
         let mut game =
             Game::map(image, rules, 25, &runtime.geometry, Duration::from_secs(3)).unwrap();
@@ -1762,8 +1774,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             .bind(OutputTarget::Module(ModuleId(7)))
             .unwrap();
         let mut console = Console::new(Context::default()).unwrap();
-        let mut storage =
-            ServiceStorage::load(&[(ModuleId(1), if rr { 10814 } else { 800 })], 0).unwrap();
+        let mut storage = ServiceStorage::load(
+            &[(ModuleId(1), if rr { 10814 } else { 800 })],
+            0,
+            &console.cvars,
+        )
+        .unwrap();
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(8).unwrap();
         let context = CallContext {
@@ -1997,11 +2013,14 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let trace_slot = if rr { 14 } else { 12 };
         let area_slot = if rr { 23 } else { 20 };
         let contents_slot = if rr { 16 } else { 13 };
+        let portal_slot = if rr { 19 } else { 16 };
+        let connected_slot = if rr { 20 } else { 17 };
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
                 || slot == area_slot
                 || slot == contents_slot
+                || slot == connected_slot
                 || (index_slot..index_slot + 3).contains(&slot);
             let stack = if a.len() > 4 { 0x48 } else { 0x28 };
             let mut code = vec![0x48, 0x83, 0xec, stack];
@@ -2526,6 +2545,38 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .unwrap();
             assert_eq!(invoke_import(&mut game, contents_slot, &[start]), expected);
         }
+        assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 0);
+        invoke_import(&mut game, portal_slot, &[2, 1]);
+        assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 1);
+        invoke_import(&mut game, portal_slot, &[2, 1]);
+        invoke_import(&mut game, portal_slot, &[2, 0]);
+        assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 0);
+        assert_eq!(
+            invoke_import(&mut game, connected_slot, &[0, 0]),
+            u64::from(!rr)
+        );
+        assert_eq!(invoke_import(&mut game, connected_slot, &[10, 9]), 0);
+        if rr {
+            invoke_import(&mut game, portal_slot, &[99, 1]);
+            invoke_import(&mut game, portal_slot, &[u64::MAX, 1]);
+        }
+        let memory = game.vm.process.memory_mut().unwrap();
+        memory[0x1e40..0x1e4c].copy_from_slice(b"map_noareas\0");
+        memory[0x1e80..0x1e82].copy_from_slice(b"1\0");
+        memory[0x1e84..0x1e86].copy_from_slice(b"0\0");
+        memory[0x1e88..0x1e8c].copy_from_slice(b"0.5\0");
+        let force_slot = if rr { 41 } else { 38 };
+        invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e80]);
+        assert_eq!(invoke_import(&mut game, connected_slot, &[0, 0]), 1);
+        assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 1);
+        invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e84]);
+        assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 0);
+        invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e88]);
+        assert_eq!(
+            invoke_import(&mut game, connected_slot, &[7, 9]),
+            u64::from(!rr)
+        );
+        invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e84]);
         invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
         invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
         qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())

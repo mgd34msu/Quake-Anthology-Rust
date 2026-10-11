@@ -255,6 +255,7 @@ impl FrameHost {
             let storage = ServiceStorage::load(
                 &[(request.context.module, request.configstrings)],
                 request.files,
+                &host.console.cvars,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
             let state = if !request.prepare.is_empty()

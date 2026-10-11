@@ -29,7 +29,7 @@ fn context() -> CallContext {
 fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(1).unwrap();
     let base = 1u64 << 40;
@@ -63,7 +63,7 @@ fn original_float_syscalls_keep_their_declared_bits() {
     use qa_compat::abi::QUAKEC;
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(1).unwrap();
     let mut memory = ModuleMemory::load(0, 64, &[]).unwrap();
@@ -136,7 +136,7 @@ fn original_float_syscalls_keep_their_declared_bits() {
 fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_services() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 8)], 0).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 8)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(1).unwrap();
     let base = 1u64 << 40;
@@ -218,7 +218,7 @@ fn real_qvm_calls_write_cvars_print_and_append_into_the_existing_console() {
     let mut vm = service_program::qvm();
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0).unwrap();
+    let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(4).unwrap();
     {
@@ -259,7 +259,7 @@ fn real_qvm_calls_write_cvars_print_and_append_into_the_existing_console() {
 fn server_and_client_console_imports_keep_their_different_arguments() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
-    let mut storage = ServiceStorage::load(&[], 0).unwrap();
+    let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
     let mut unknown = UnknownCalls::load(4).unwrap();
     let mut memory = ModuleMemory::load(0, 128, b"\0sensitivity 6\n\0").unwrap();
