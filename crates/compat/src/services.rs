@@ -354,9 +354,7 @@ pub struct EngineCallTable {
         &mut EngineServices<'_>,
         Vec3,
         Vec3,
-        qa_world::visibility::VisibilityChannel,
-        bool,
-        bool,
+        qa_world::visibility::PointVisibility,
         bool,
     ) -> Result<bool, CallError>,
     pub native_message:
@@ -422,18 +420,14 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
-    in_visibility: |s, first, second, channel, missing_visible, check_portals, area_zero| {
+    in_visibility: |s, first, second, policy, check_portals| {
         let (world, _, row) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
         world
             .test_points(
                 first,
                 second,
                 row,
-                qa_world::visibility::PointVisibility {
-                    channel,
-                    missing_visible,
-                    area_zero,
-                },
+                policy,
                 s.portals.as_deref().filter(|_| check_portals),
             )
             .map_err(|_| CallError::Geometry)
@@ -518,12 +512,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     cvar_force: |s, v, t| s.cvar_force(v, t),
     cvar_reset: |s, v, force| s.cvar_reset(v, force),
     cvar_number: |s, view| s.cvars.numeric(view).map_err(|_| CallError::Cvar),
-    cvar_integer: |s, view| {
-        s.cvars
-            .read(view)
-            .map(|text| qa_console::numbers::integer(text.as_str()))
-            .map_err(|_| CallError::Cvar)
-    },
+    cvar_integer: |s, view| s.cvars.integer_view(view).map_err(|_| CallError::Cvar),
     command: |s, c, t| s.command(c, t),
     command_insert: |s, c, t| s.commands.insert(t, c).map_err(|_| CallError::Text),
     configstring: |s, m, i, t| s.configstring(m, i, t),

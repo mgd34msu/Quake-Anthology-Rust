@@ -21,6 +21,7 @@ fn canonical_and_converted_consumers_read_cached_fields_without_name_lookup() {
     for _ in 0..10000 {
         assert_eq!(black_box(cvars.value(canonical)), 1.25);
         assert_eq!(black_box(cvars.numeric(gamma).unwrap()), 0.8);
+        assert_eq!(black_box(cvars.integer_view(gamma).unwrap()), 0);
         assert_eq!(black_box(cvars.integer(integer)), 2);
         black_box(cvars.generation(canonical));
         black_box(cvars.view_generation(gamma));
@@ -134,6 +135,14 @@ fn published_hot_views_match_native_projections_after_coupled_and_seat_changes()
                     let expected = cvars
                         .read(view)
                         .map(|text| number(text.as_str(), source).to_bits());
+                    assert_eq!(
+                        cvars.integer_view(view),
+                        cvars
+                            .read(view)
+                            .map(|text| qa_console::numbers::integer(text.as_str())),
+                        "{name} -> {} {source:?} {role:?}",
+                        binding.name,
+                    );
                     assert_eq!(
                         cvars.numeric(view).map(f32::to_bits),
                         expected,

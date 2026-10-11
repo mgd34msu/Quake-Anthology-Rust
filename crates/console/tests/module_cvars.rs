@@ -140,6 +140,7 @@ fn module_names_share_handles_and_listing_in_every_source() {
         assert_eq!(view.canonical(), first.canonical());
         assert_eq!(cvars.read(view).unwrap().as_str(), "12.5");
         assert_eq!(cvars.numeric(view).unwrap().to_bits(), 12.5f32.to_bits());
+        assert_eq!(cvars.integer_view(view).unwrap(), 12);
         assert!(cvars.native_default_available(view.canonical(), source));
     }
     cvars.write(first, "27.25").unwrap();

@@ -774,6 +774,17 @@ impl Cvars {
                 [role_index(view.context.role)]
         }
     }
+    pub fn integer_view(&self, view: View) -> Result<i32, conversion::Error> {
+        if view.binding as usize >= BINDINGS.len() {
+            return Ok(self.integer_in(view.handle, view.context.source));
+        }
+        let b = &BINDINGS[view.binding as usize];
+        if b.canonical && view.context.role == Role::Engine && DEFINITIONS[b.row as usize].stored {
+            Ok(self.integer_in(view.handle, view.context.source))
+        } else {
+            self.read(view).map(|text| integer(text.as_str()))
+        }
+    }
     fn conversion(&self, view: View) -> &'static crate::catalog::Conversion {
         if view.binding as usize >= BINDINGS.len() {
             return &CONVERSIONS[0];

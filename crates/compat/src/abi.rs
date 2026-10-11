@@ -681,13 +681,8 @@ fn qc_temporary(
 }
 fn qc_float_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     let value = float::<false>(c, 0)?;
-    let integer = crate::numbers::native_integer(value);
     let mut text = FixedText::<{ quakec::TEMP_STRING_BYTES }>::default();
-    if value == f64::from(integer) {
-        write!(text, "{integer}").map_err(|_| CallError::Text)?;
-    } else {
-        crate::numbers::fixed_float(&mut text, value, 5, 1).map_err(|_| CallError::Text)?;
-    }
+    crate::numbers::native_number(&mut text, value, 5, 1).map_err(|_| CallError::Text)?;
     qc_temporary(c, &text)
 }
 fn qc_vector_string(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
@@ -910,12 +905,8 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let mut text = FixedText::<64>::default();
     // Cvar_SetValue uses an integral form only when the f32 fits its native
     // signed int; all other values use %f after promotion to double.
-    if crate::numbers::fits_native_integer(value) && value == value.trunc() {
-        write!(text, "{}", crate::numbers::native_integer(value)).map_err(|_| CallError::Text)?;
-    } else {
-        crate::numbers::fixed_float(&mut text, f64::from(value), 0, 6)
-            .map_err(|_| CallError::Text)?;
-    }
+    crate::numbers::native_number(&mut text, f64::from(value), 0, 6)
+        .map_err(|_| CallError::Text)?;
     // The original Com_sprintf copies at most 31 bytes into val[32].
     if text.as_bytes().len() >= 32 {
         let _ = (ENGINE_CALLS.console_formatted)(
@@ -1660,13 +1651,7 @@ fn visibility_import(
     let first = c.memory.read_vec3(c.pointer(0)?)?;
     let second = c.memory.read_vec3(c.pointer(1)?)?;
     Ok(u64::from((ENGINE_CALLS.in_visibility)(
-        c.services,
-        first,
-        second,
-        policy.channel,
-        policy.missing_visible,
-        portals,
-        policy.area_zero,
+        c.services, first, second, policy, portals,
     )?))
 }
 fn native_message_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

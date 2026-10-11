@@ -294,7 +294,7 @@ fn module_leaf_queries_share_the_immutable_world_and_reject_missing_geometry() {
 fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
     use qa_core::primitives::{Bounds, GeometryId, Plane, Vec3};
     use qa_world::visibility::{
-        PvsRows, SurfaceSpan, VisLeaf, VisNode,
+        PointVisibility, PvsRows, SurfaceSpan, VisLeaf, VisNode,
         VisibilityChannel::{Hearing, Sight},
         VisibilityWorld,
     };
@@ -306,7 +306,17 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
     let b = Vec3([-1.0, 0.0, 0.0]);
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Sight, false, true, true),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            b,
+            PointVisibility {
+                channel: Sight,
+                missing_visible: false,
+                area_zero: true
+            },
+            true
+        ),
         Err(CallError::Geometry)
     );
     drop(services);
@@ -365,28 +375,88 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
     );
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, a, Sight, false, true, true),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            a,
+            PointVisibility {
+                channel: Sight,
+                missing_visible: false,
+                area_zero: true
+            },
+            true
+        ),
         Ok(true)
     );
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Sight, false, false, true),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            b,
+            PointVisibility {
+                channel: Sight,
+                missing_visible: false,
+                area_zero: true
+            },
+            false
+        ),
         Ok(false)
     );
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, false, false),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            b,
+            PointVisibility {
+                channel: Hearing,
+                missing_visible: false,
+                area_zero: false
+            },
+            false
+        ),
         Ok(true)
     );
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, true, true),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            b,
+            PointVisibility {
+                channel: Hearing,
+                missing_visible: false,
+                area_zero: true
+            },
+            true
+        ),
         Ok(false)
     );
     (ENGINE_CALLS.portal_set)(&mut services, 0, true, true).unwrap();
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, true, true),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            b,
+            PointVisibility {
+                channel: Hearing,
+                missing_visible: false,
+                area_zero: true
+            },
+            true
+        ),
         Ok(true)
     );
     assert_eq!(
-        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, true, false),
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            a,
+            b,
+            PointVisibility {
+                channel: Hearing,
+                missing_visible: false,
+                area_zero: false
+            },
+            true
+        ),
         Ok(false)
     );
     assert_eq!(
@@ -394,9 +464,11 @@ fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
             &mut services,
             Vec3([f32::NAN; 3]),
             b,
-            Hearing,
-            false,
-            false,
+            PointVisibility {
+                channel: Hearing,
+                missing_visible: false,
+                area_zero: false
+            },
             false
         ),
         Err(CallError::Geometry)

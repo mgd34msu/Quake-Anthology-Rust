@@ -11,6 +11,20 @@ pub(crate) fn native_integer(value: impl Into<f64>) -> i32 {
     }
 }
 
+pub(crate) fn native_number(
+    text: &mut impl std::fmt::Write,
+    value: f64,
+    width: usize,
+    precision: usize,
+) -> std::fmt::Result {
+    let integer = native_integer(value);
+    if value == f64::from(integer) {
+        write!(text, "{integer}")
+    } else {
+        fixed_float(text, value, width, precision)
+    }
+}
+
 pub(crate) fn fixed_float(
     text: &mut impl std::fmt::Write,
     value: f64,
