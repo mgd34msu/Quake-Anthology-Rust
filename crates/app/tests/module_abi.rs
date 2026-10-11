@@ -27,6 +27,75 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
+    for (base, addresses) in [
+        (0, Addresses::Qvm { mask: 511 }),
+        (1u64 << 40, Addresses::Native),
+    ] {
+        for (table, ordinal) in [(&Q3_SERVER, 5), (&Q3_CLIENT, 5), (&Q3_UI, 3)] {
+            let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+            let mut console = Console::new(Context::default()).unwrap();
+            let mut call_context = context();
+            call_context.console.source = RuleSetId::Quake3;
+            let ctx = call_context.console;
+            let readonly = console
+                .cvars
+                .register("_qa_module_rom", Some("1"), 64, ctx)
+                .unwrap();
+            let latched = console
+                .cvars
+                .register("_qa_module_latch", Some("1"), 32, ctx)
+                .unwrap();
+            assert!(console.cvars.write(readonly, "2").is_err());
+            console.cvars.set_latch_active(latched.canonical(), true);
+            console.cvars.write(latched, "2").unwrap();
+            assert_eq!(
+                console.cvars.latched(latched).unwrap().unwrap().as_str(),
+                "2"
+            );
+            let mut storage = ServiceStorage::load(&[(ModuleId(1), 0)], 0, &console.cvars).unwrap();
+            let mut scratch = runtime.geometry.scratch();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            for (name, value) in [
+                ("_qa_module_new", "17"),
+                ("_qa_module_rom", "4"),
+                ("_qa_module_latch", "3"),
+                ("_qa_module_new", "18"),
+            ] {
+                memory.write_string(base + 16, 64, name.as_bytes()).unwrap();
+                memory
+                    .write_string(base + 96, 64, value.as_bytes())
+                    .unwrap();
+                let arguments = [base + 16, base + 96];
+                let mut call = Invocation {
+                    services: &mut services,
+                    memory: &mut memory,
+                    native_cvars: None,
+                    native_resources: None,
+                    native_entities: None,
+                    native_surfaces: None,
+                    native_command: None,
+                    native_configs: None,
+                    context: call_context,
+                    platform_time: EventTime(0),
+                    command: &[],
+                    addresses,
+                    arguments: &arguments,
+                };
+                assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
+                let view = services.cvars.bind(name, ctx).unwrap();
+                assert_eq!(services.cvars.read(view).unwrap().as_str(), value);
+            }
+            assert!(services.cvars.latched(latched).unwrap().is_none());
+            assert_eq!(services.cvars.flags(readonly) & 64, 64);
+            assert_eq!(unknown.calls, 0);
+        }
+    }
+}
+
+#[test]
 fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();

@@ -141,7 +141,7 @@ const fn server() -> CallTable {
     t.entries[0] = Some(print);
     t.entries[1] = Some(abort);
     t.entries[2] = Some(milliseconds);
-    t.entries[5] = Some(cvar_set);
+    t.entries[5] = Some(cvar_set::<true, true>);
     t.entries[6] = Some(cvar_integer);
     t.entries[7] = Some(cvar_string);
     t.entries[8] = Some(argc);
@@ -159,7 +159,7 @@ const fn client() -> CallTable {
     t.entries[0] = Some(print);
     t.entries[1] = Some(abort);
     t.entries[2] = Some(milliseconds);
-    t.entries[5] = Some(cvar_set);
+    t.entries[5] = Some(cvar_set::<true, true>);
     t.entries[6] = Some(cvar_string);
     t.entries[7] = Some(argc);
     t.entries[8] = Some(argv);
@@ -175,7 +175,7 @@ const fn ui() -> CallTable {
     t.entries[0] = Some(abort);
     t.entries[1] = Some(print);
     t.entries[2] = Some(milliseconds);
-    t.entries[3] = Some(cvar_set);
+    t.entries[3] = Some(cvar_set::<true, true>);
     t.entries[4] = Some(cvar_number);
     t.entries[5] = Some(cvar_string);
     t.entries[10] = Some(argc);
@@ -289,7 +289,7 @@ const fn quakec() -> CallTable {
     t.entries[38] = Some(ceil::<false>);
     t.entries[43] = Some(absolute::<false>);
     t.entries[45] = Some(cvar_number);
-    t.entries[72] = Some(cvar_set);
+    t.entries[72] = Some(cvar_set::<false, false>);
     t
 }
 pub const QUAKEC: CallTable = quakec();
@@ -494,16 +494,27 @@ fn milliseconds(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn native_server_frame(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(u64::from(c.context.server_frame as u32))
 }
-fn cvar_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let name = c.text(0)?;
-    let view = c
-        .services
-        .cvars
-        .bind(name, c.context.console)
-        .ok_or(CallError::Cvar)?;
+fn cvar_set<const REGISTER: bool, const FORCE: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    let name =
+        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
     let value =
         std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
-    (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
+    let view = match c.services.cvars.bind(name, c.context.console) {
+        Some(view) => view,
+        None if REGISTER => {
+            (ENGINE_CALLS.cvar_register)(c.services, c.context.console, name, Some(value), 0)?
+        }
+        None => return Err(CallError::Cvar),
+    };
+    if FORCE {
+        // Q3 game/cgame/ui call Cvar_Set -> Cvar_Set2(force=true), while
+        // QuakeC keeps its existing normal-write boundary policy.
+        (ENGINE_CALLS.cvar_force)(c.services, view, value)?;
+    } else {
+        (ENGINE_CALLS.cvar_set)(c.services, view, value)?;
+    }
     Ok(0)
 }
 fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
