@@ -128,7 +128,7 @@ fn lifecycle_host_in(
             entries: (0..=10).collect(),
             frame: Export::clocked(CallbackId(frame)),
             prepare: Vec::new(),
-            initialize: Some(Export {
+            initialize: vec![Export {
                 callback: CallbackId(initialize),
                 arguments: [
                     Argument::ClockMilliseconds,
@@ -141,7 +141,7 @@ fn lifecycle_host_in(
                     Argument::Word(0),
                     Argument::Word(0),
                 ],
-            }),
+            }],
             shutdown: vec![Export {
                 callback: CallbackId(shutdown),
                 arguments: [
@@ -472,7 +472,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             entries: vec![8],
             frame: Export::clocked(CallbackId(0)),
             prepare: Vec::new(),
-            initialize: None,
+            initialize: Vec::new(),
             shutdown: Vec::new(),
             instruction_budget: qvm_budget,
             configstrings: 0,
@@ -498,7 +498,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             entries: vec![1, 5],
             frame: Export::clocked(CallbackId(0)),
             prepare: Vec::new(),
-            initialize: None,
+            initialize: Vec::new(),
             shutdown: Vec::new(),
             instruction_budget: 1000,
             configstrings: 0,

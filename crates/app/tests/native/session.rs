@@ -287,7 +287,7 @@ fn request(
         entries: vec![0],
         frame: Export::clocked(CallbackId(0)),
         prepare: Vec::new(),
-        initialize: None,
+        initialize: Vec::new(),
         api: None,
         shutdown: Vec::new(),
         instruction_budget: 100,
@@ -2892,7 +2892,7 @@ fn returned_native_tables_bind_once_and_isolate_bad_apis() {
                 arguments: [Argument::Word(0); 9],
             };
             request.api = Some(ApiCheck::NativeTable { export: export(0) });
-            request.initialize = Some(export(first));
+            request.initialize = vec![export(first)];
             request.shutdown = vec![export(first + 1)];
             requests.push(request);
         }
@@ -2923,6 +2923,101 @@ fn returned_native_tables_bind_once_and_isolate_bad_apis() {
         host.shutdown_modules();
         assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 5);
     }
+}
+
+fn native_initialization_sequences_follow_api_binding_and_isolate_failure() {
+    use qa_app::modules::ApiCheck;
+    use qa_compat::native::{ReturnedTable, TableFunction};
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut requests = Vec::new();
+    for id in [ModuleId(1), ModuleId(2)] {
+        let mut file = q2_table_file();
+        for (index, offset) in [8, 24, 32, 112, 16].into_iter().enumerate() {
+            let rva = 0x1400 + index * 0x40;
+            pe_rva(&mut file, 0x1800 + offset, 0x180000000 + rva as u64, 8);
+            let mut code = vec![0x83, 0x3d]; // cmp counter, expected
+            code.extend_from_slice(&((0x1900 - (rva + 7)) as i32).to_le_bytes());
+            code.extend_from_slice(&[index as u8, 0x75, 11, 0xc7, 0x05]);
+            code.extend_from_slice(&((0x1900 - (rva + 19)) as i32).to_le_bytes());
+            code.extend_from_slice(&((index + 1) as u32).to_le_bytes());
+            code.extend_from_slice(&[0xc3, 0x0f, 0x0b]);
+            if id == ModuleId(1) && index == 1 {
+                code[..2].copy_from_slice(&[0x0f, 0x0b]);
+            }
+            pe_text(&mut file, rva, &code);
+        }
+        let mut vm = Vm::map_image(
+            Image::parse(&file, None, LoadRole::Library).unwrap(),
+            &[NamedExport {
+                name: b"GetGameAPI",
+                command: None,
+                parameters: &[NativeScalar::Word],
+                result: NativeScalar::Word,
+            }],
+            &[],
+            Duration::from_secs(3),
+        )
+        .unwrap();
+        let first = vm
+            .declare_table(ReturnedTable {
+                version: 3,
+                bytes: 152,
+                functions: [8, 24, 32, 112, 16]
+                    .map(|offset| TableFunction {
+                        offset,
+                        parameters: &[],
+                        result: NativeScalar::Void,
+                    })
+                    .into(),
+            })
+            .unwrap();
+        let mut request = request(
+            &mut runtime,
+            id,
+            RuleSetId::Quake2,
+            TickRate::fixed(100).unwrap(),
+            vm,
+        );
+        let export = |callback| Export {
+            callback: CallbackId(callback),
+            arguments: [Argument::Word(0); 9],
+        };
+        request.entries = (0..first + 5).collect();
+        request.api = Some(ApiCheck::NativeTable { export: export(0) });
+        request.initialize = (first..first + 3).map(export).collect();
+        request.frame = export(first + 3);
+        request.shutdown = vec![export(first + 4)];
+        requests.push(request);
+    }
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.initialize_modules(Phase::Server);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 4);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    host.initialize_modules(Phase::Server);
+    let mut source = Source {
+        time: EventTime(0),
+        polls: 0,
+    };
+    host.frame(&mut source, true);
+    source.time = EventTime(100_000_000);
+    host.frame(&mut source, true);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 5);
+    host.shutdown_modules();
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Stopped));
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 6);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 6);
 }
 struct Source {
     time: EventTime,
@@ -3172,6 +3267,7 @@ pub fn run() {
     elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_module();
     elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets();
     returned_native_tables_bind_once_and_isolate_bad_apis();
+    native_initialization_sequences_follow_api_binding_and_isolate_failure();
     q2_api_layouts_bind_the_full_table_and_name_missing_engine_services();
     println!("native session dispatch checks passed");
 }

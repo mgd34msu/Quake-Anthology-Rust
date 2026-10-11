@@ -316,10 +316,10 @@ pub fn load_q3(
             entries,
             frame: Export::clocked(CallbackId(frame)),
             prepare,
-            initialize: Some(Export {
+            initialize: vec![Export {
                 callback: CallbackId(init),
                 arguments: initialize,
-            }),
+            }],
             shutdown: finalize,
             api,
             instruction_budget: 10_000_000,
@@ -397,7 +397,7 @@ pub fn load_quakec(
             entries,
             frame: Export::clocked(CallbackId(frame)),
             prepare: Vec::new(),
-            initialize: None,
+            initialize: Vec::new(),
             api: None,
             shutdown: Vec::new(),
             instruction_budget: 1_000_000,

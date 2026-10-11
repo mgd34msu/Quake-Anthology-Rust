@@ -66,7 +66,8 @@ pub struct ModuleRequest {
     pub frame: Export,
     /// Load-selected callbacks, before version checks and game initialization.
     pub prepare: Vec<Export>,
-    pub initialize: Option<Export>,
+    /// Ordered callbacks after the checked API has been bound.
+    pub initialize: Vec<Export>,
     pub api: Option<ApiCheck>,
     pub shutdown: Vec<Export>,
     pub instruction_budget: u64,
@@ -74,13 +75,19 @@ pub struct ModuleRequest {
     pub files: usize,
 }
 impl ModuleRequest {
-    fn sequence(&self, shutdown: bool) -> &[Export] {
-        if shutdown {
-            &self.shutdown
-        } else {
-            &self.prepare
+    fn sequence(&self, sequence: LifecycleSequence) -> &[Export] {
+        match sequence {
+            LifecycleSequence::Prepare => &self.prepare,
+            LifecycleSequence::Initialize => &self.initialize,
+            LifecycleSequence::Shutdown => &self.shutdown,
         }
     }
+}
+#[derive(Clone, Copy)]
+enum LifecycleSequence {
+    Prepare,
+    Initialize,
+    Shutdown,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
@@ -216,9 +223,9 @@ impl FrameHost {
                 || request
                     .prepare
                     .iter()
+                    .chain(&request.initialize)
                     .chain(&request.shutdown)
                     .copied()
-                    .chain(request.initialize)
                     .chain(request.api.map(ApiCheck::export))
                     .any(|export| export.callback.0 as usize >= request.entries.len())
                 || request.instruction_budget == 0
@@ -259,7 +266,7 @@ impl FrameHost {
             )
             .map_err(|e| format!("module services: {e:?}"))?;
             let state = if !request.prepare.is_empty()
-                || request.initialize.is_some()
+                || !request.initialize.is_empty()
                 || request.api.is_some()
             {
                 State::Pending
@@ -384,18 +391,20 @@ impl FrameHost {
                 continue;
             }
             let api = (!shutdown).then_some(row.request.api).flatten();
-            let initialize = row.request.initialize;
             let time = module_time(row.request.context.clock, self.time);
             let module = ModuleId(index as u16);
-            let result = self.module_sequence(module, shutdown, time).and_then(|()| {
+            let sequence = if shutdown {
+                LifecycleSequence::Shutdown
+            } else {
+                LifecycleSequence::Prepare
+            };
+            let result = self.module_sequence(module, sequence, time).and_then(|()| {
                 if shutdown {
                     return Ok(());
                 }
                 api.map_or(Ok(()), |api| self.check_module_api(module, api, time))
                     .and_then(|()| {
-                        initialize.map_or(Ok(()), |export| {
-                            self.call_module_export(module, export, time)
-                        })
+                        self.module_sequence(module, LifecycleSequence::Initialize, time)
                     })
             });
             if let Some(row) = self.modules.as_mut().and_then(|m| m.rows[index].as_mut()) {
@@ -450,20 +459,20 @@ impl FrameHost {
     fn module_sequence(
         &mut self,
         module: ModuleId,
-        shutdown: bool,
+        sequence: LifecycleSequence,
         time: ThinkTime,
     ) -> Result<(), CallError> {
         let count = self
             .modules
             .as_ref()
             .and_then(|m| m.rows[module.0 as usize].as_ref())
-            .map_or(0, |row| row.request.sequence(shutdown).len());
+            .map_or(0, |row| row.request.sequence(sequence).len());
         for index in 0..count {
             let export = self
                 .modules
                 .as_ref()
                 .and_then(|m| m.rows[module.0 as usize].as_ref())
-                .and_then(|row| row.request.sequence(shutdown).get(index))
+                .and_then(|row| row.request.sequence(sequence).get(index))
                 .copied()
                 .ok_or(CallError::MissingModule)?;
             self.call_module_export(module, export, time)?;
