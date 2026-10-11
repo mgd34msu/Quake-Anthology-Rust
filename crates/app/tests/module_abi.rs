@@ -27,6 +27,211 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
+    use qa_core::primitives::{NativeEntity, PlayerTail, UserCmd, Vec3, WeaponId, buttons};
+    use qa_gameplay::registry::Registry;
+    use qa_session::clients::Connection;
+    for addresses in [
+        Addresses::Qvm { mask: 127 },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        let mut runtime = Runtime::load(3, []).unwrap();
+        let clients = [
+            NativeEntity {
+                module: ModuleId(8),
+                slot: 0,
+            },
+            NativeEntity {
+                module: ModuleId(7),
+                slot: 0,
+            },
+        ]
+        .map(|native| {
+            runtime
+                .server
+                .connect(
+                    Connection::Bot,
+                    native.module,
+                    PlayerTail::None,
+                    Some(native),
+                )
+                .unwrap()
+        });
+        assert_eq!(clients[1].0, 1);
+        let target = clients[1];
+        let own = runtime
+            .catalog
+            .registry
+            .native_weapon(Registry::QUAKE3_SOURCE, 7)
+            .unwrap();
+        let foreign = runtime
+            .catalog
+            .registry
+            .native_weapon(ModuleId(2), 7)
+            .unwrap();
+        assert_ne!(own, WeaponId(7));
+        let command = UserCmd {
+            server_time_ms: i32::MIN,
+            view_angles: Vec3([90.0, -90.0, 360.0]),
+            movement: [f32::MAX, -f32::MAX, 0.0],
+            buttons: buttons::ATTACK | buttons::TALK | buttons::ANY | buttons::JUMP,
+            weapon: Some(own),
+            ..UserCmd::default()
+        };
+        runtime.server.clients[clients[0].0 as usize]
+            .command
+            .server_time_ms = 999;
+        let mut console = Console::new(Context::default()).unwrap();
+        let maximum = console
+            .cvars
+            .bind("sv_maxclients", Context::default())
+            .unwrap();
+        console.cvars.force_write(maximum, "4").unwrap();
+        let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+        let mut scratch = runtime.geometry.scratch();
+        let base = if matches!(addresses, Addresses::Qvm { .. }) {
+            0
+        } else {
+            1 << 40
+        };
+        let mut memory = ModuleMemory::load(base, 128, &[0xa5; 128]).unwrap();
+        let mut unknown = UnknownCalls::load(1).unwrap();
+        for (weapon, native_weapon) in [
+            (Some(own), 7u8),
+            (Some(foreign), 0),
+            (None, 0),
+            (Some(WeaponId(u32::MAX)), 0),
+        ] {
+            runtime.server.clients[target.0 as usize].command = UserCmd { weapon, ..command };
+            let arguments = [0, base + 32 + if base == 0 { 128 } else { 0 }];
+            {
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                assert_eq!(
+                    Q3_SERVER.invoke(
+                        36,
+                        &mut Invocation {
+                            services: &mut services,
+                            memory: &mut memory,
+                            native_cvars: None,
+                            native_resources: None,
+                            native_entities: None,
+                            native_surfaces: None,
+                            native_command: None,
+                            native_configs: None,
+                            context: CallContext {
+                                module: ModuleId(7),
+                                ..context()
+                            },
+                            platform_time: EventTime(0),
+                            command: &[],
+                            addresses,
+                            arguments: &arguments,
+                        },
+                        &mut unknown
+                    ),
+                    Ok(0)
+                );
+            }
+            let mut expected = Vec::new();
+            for word in [i32::MIN, 16384, 49152, 0, 2051] {
+                expected.extend(word.to_le_bytes());
+            }
+            expected.extend([native_weapon, 127, 128, 127]);
+            assert_eq!(memory.read(base + 32, 24).unwrap(), expected);
+            assert_eq!(memory.read(base + 31, 1).unwrap(), &[0xa5]);
+            assert_eq!(memory.read(base + 56, 1).unwrap(), &[0xa5]);
+        }
+        for (slot, address, expected) in [
+            (3, base + 32, Ok(0)), // native-valid unused client, despite smaller common capacity
+            (4, base + 32, Err(CallError::Entity)),
+            (u64::MAX, base + 32, Err(CallError::Entity)),
+            (0, base + 120, Err(CallError::Memory)),
+        ] {
+            memory.write(base, &[0xa5; 128]).unwrap();
+            let arguments = [slot, address];
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            assert_eq!(
+                Q3_SERVER.invoke(
+                    36,
+                    &mut Invocation {
+                        services: &mut services,
+                        memory: &mut memory,
+                        native_cvars: None,
+                        native_resources: None,
+                        native_entities: None,
+                        native_surfaces: None,
+                        native_command: None,
+                        native_configs: None,
+                        context: CallContext {
+                            module: ModuleId(7),
+                            ..context()
+                        },
+                        platform_time: EventTime(0),
+                        command: &[],
+                        addresses,
+                        arguments: &arguments,
+                    },
+                    &mut unknown
+                ),
+                expected
+            );
+            if expected.is_ok() {
+                assert_eq!(memory.read(base + 32, 24).unwrap(), &[0; 24]);
+            } else {
+                assert_eq!(memory.read(base, 128).unwrap(), &[0xa5; 128]);
+            }
+        }
+        if matches!(addresses, Addresses::Qvm { .. }) {
+            use qa_formats::program::qvm::Opcode::*;
+            let mut vm = service_program::program(
+                &[
+                    (Enter, 64),
+                    (Const, 0),
+                    (Arg, 8),
+                    (Const, 32),
+                    (Arg, 12),
+                    (Const, -37),
+                    (Call, 0),
+                    (Pop, 0),
+                    (Const, 32),
+                    (Load4, 0),
+                    (Leave, 64),
+                ],
+                &[],
+            );
+            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            assert_eq!(
+                vm.call(
+                    &mut QvmCalls {
+                        services: &mut services,
+                        table: &Q3_SERVER,
+                        context: CallContext {
+                            module: ModuleId(7),
+                            ..context()
+                        },
+                        platform_time: EventTime(0),
+                        command: &[],
+                        unknown: &mut unknown,
+                    },
+                    [0; 10],
+                    128,
+                    false
+                ),
+                Ok(i32::MIN)
+            );
+        }
+        assert_eq!(unknown.calls, 0);
+        assert!(runtime.server.events.is_empty());
+    }
+}
+
+#[test]
 fn module_console_prints_do_not_wait_for_client_consumers() {
     use qa_core::{
         events::{OutputSubmission, OutputTarget},

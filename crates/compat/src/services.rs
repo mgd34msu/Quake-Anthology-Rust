@@ -11,7 +11,8 @@ use qa_core::{
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionShape, CvarHandle, EffectEvent, EntityId, GeometryId,
-        ModelRules, ModuleId, NameId, NativeDelivery, PrintKind, SoundEvent, Vec3,
+        ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity, PrintKind, SoundEvent, UserCmd,
+        Vec3,
     },
     text::FixedText,
 };
@@ -96,6 +97,7 @@ pub struct ServiceStorage {
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
     no_areas: CvarHandle,
+    pub(crate) max_clients: CvarHandle,
 }
 
 impl ServiceStorage {
@@ -138,6 +140,7 @@ impl ServiceStorage {
                 .map_err(|_| CallError::Capacity)?,
             reader: qa_formats::archive::ArchiveReader::default(),
             no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
+            max_clients: cvars.find("sv_maxclients").ok_or(CallError::Cvar)?,
         })
     }
     fn range(&self, module: ModuleId) -> Option<&ConfigRange> {
@@ -303,6 +306,7 @@ pub struct EngineServices<'a> {
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub vfs: &'a Vfs,
+    pub registry: &'a qa_gameplay::registry::Registry,
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
     pub world: Option<(GeometryId, u32)>,
@@ -370,6 +374,7 @@ pub struct EngineCallTable {
     ) -> Result<qa_world::leaves::BoxLeaves, CallError>,
     pub print: PrintCall,
     pub console: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
+    pub usercmd: fn(&EngineServices<'_>, NativeEntity) -> Option<UserCmd>,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
     pub trace: fn(
@@ -485,6 +490,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     },
     print: |s, target, c, k, l, t| s.print(target, c, k, l, t),
     console: |s, text| s.console(text),
+    usercmd: |s, native| s.usercmd(native),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
@@ -540,6 +546,10 @@ impl EngineServices<'_> {
             .events
             .console_bytes(text)
             .map_err(|_| CallError::Capacity)
+    }
+    pub fn usercmd(&self, native: NativeEntity) -> Option<UserCmd> {
+        let client = self.server.client_for_native(native)?;
+        Some(self.server.clients[client.0 as usize].command)
     }
     pub fn sound(&mut self, event: SoundEvent) -> Result<u64, CallError> {
         self.server

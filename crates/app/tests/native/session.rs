@@ -422,6 +422,114 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
     ));
 }
 
+fn native_usercmd_uses_session_dispatch_and_native_client_identity() {
+    use qa_core::primitives::{NativeEntity, PlayerTail, UserCmd};
+    use qa_session::clients::Connection;
+    for encoding in [Encoding::Elf, Encoding::Pe] {
+        // GetUsercmd(0, stack_buffer), then return stack_buffer.serverTime.
+        // Microsoft uses shadow space; both callbacks receive owned-child memory.
+        let microsoft = encoding == Encoding::Pe;
+        let local = if microsoft { 32 } else { 16 };
+        let code = [
+            0x48,
+            0x83,
+            0xec,
+            56,
+            0x48,
+            0x8b,
+            0x05,
+            0xf5,
+            0x06,
+            0,
+            0,
+            if microsoft { 0xb9 } else { 0xbf },
+            36,
+            0,
+            0,
+            0,
+            0x31,
+            if microsoft { 0xd2 } else { 0xf6 },
+            if microsoft { 0x4c } else { 0x48 },
+            0x8d,
+            if microsoft { 0x44 } else { 0x54 },
+            0x24,
+            local,
+            0xff,
+            0xd0,
+            0x8b,
+            0x44,
+            0x24,
+            local,
+            0x48,
+            0x83,
+            0xc4,
+            56,
+            0xc3,
+        ];
+        let image = function_image(encoding, &code);
+        let name = if microsoft {
+            b"GetGameAPI".as_slice()
+        } else {
+            b"vmMain".as_slice()
+        };
+        let at = (image.symbol(name).unwrap().address - image.base) as usize;
+        let mut runtime = Runtime::load(2, []).unwrap();
+        let clients = [ModuleId(8), ModuleId(7)].map(|module| {
+            runtime
+                .server
+                .connect(
+                    Connection::Bot,
+                    module,
+                    PlayerTail::None,
+                    Some(NativeEntity { module, slot: 0 }),
+                )
+                .unwrap()
+        });
+        assert_eq!(clients[1].0, 1);
+        runtime.server.clients[clients[0].0 as usize]
+            .command
+            .server_time_ms = 999;
+        let mut request = module(
+            &mut runtime,
+            ModuleId(7),
+            RuleSetId::Quake3,
+            TickRate::fixed(50).unwrap(),
+            b"unused\0",
+            encoding,
+            &[],
+        );
+        let Program::Native { vm, .. } = &mut request.program else {
+            panic!()
+        };
+        vm.process.memory_mut().unwrap()[at..at + code.len()].copy_from_slice(&code);
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![request],
+        )
+        .unwrap();
+        host.initialize_modules(Phase::Server);
+        assert_eq!(host.module_state(ModuleId(7)), Some(State::Running));
+        for time in [1234, 5432] {
+            host.runtime.server.clients[clients[1].0 as usize].command = UserCmd {
+                server_time_ms: time,
+                ..UserCmd::default()
+            };
+            host.call_module_export(
+                ModuleId(7),
+                Export::clocked(CallbackId(0)),
+                ThinkTime::Milliseconds(0),
+            )
+            .unwrap();
+            let counts = host.module_counts(ModuleId(7)).unwrap();
+            assert_eq!(counts.last_result, Some(ModuleResult::Native(time as u64)));
+            assert_eq!(counts.traps, 0);
+        }
+        assert!(host.runtime.server.events.is_empty());
+    }
+}
+
 fn elf_relro_protects_complete_pages_and_keeps_adjacent_pages_writable() {
     use std::os::unix::process::ExitStatusExt;
     // mov [rdi],rsi; mov rax,rsi; ret
@@ -4222,6 +4330,7 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
 }
 
 pub fn run() {
+    native_usercmd_uses_session_dispatch_and_native_client_identity();
     pe_lifecycle_uses_session_order_and_rejects_false_attach();
     pe_lifecycle_rejects_unmapped_callbacks_and_read_only_tls_indices();
     native_windows_counter_uses_host_event_time_in_session_dispatch();

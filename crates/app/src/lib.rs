@@ -109,6 +109,7 @@ impl Runtime {
             cvars,
             commands,
             vfs: &self.vfs,
+            registry: &self.catalog.registry,
             storage,
             geometry: &self.geometry,
             world: identity,

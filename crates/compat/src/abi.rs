@@ -271,6 +271,7 @@ const fn server() -> CallTable {
     t.entries[14] = scalar!(command);
     t.entries[18] = scalar!(config_set);
     t.entries[19] = scalar!(config_get);
+    t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
     t.entries[42] = scalar!(snap_vector);
     t.entries[45] = scalar!(file_seek);
@@ -638,11 +639,7 @@ fn qc_print<const BROADCAST: bool>(
     first: Option<usize>,
 ) -> Result<CallValue, CallError> {
     let first = first.ok_or(CallError::Memory)?;
-    let level = if first != 0 {
-        crate::numbers::native_integer(float::<false>(c, 0)?) as u8
-    } else {
-        PrintKind::Console.default_level()
-    };
+    let level = qc_print_level(c, first, 0)?;
     let text = qc_var_string(c, first)?;
     (ENGINE_CALLS.print)(
         c.services,
@@ -671,6 +668,13 @@ fn qc_var_string(c: &Invocation<'_, '_, '_>, first: usize) -> Result<FixedText<1
     }
     Ok(text)
 }
+fn qc_print_level(c: &Invocation<'_, '_, '_>, first: usize, base: usize) -> Result<u8, CallError> {
+    Ok(if first > base {
+        crate::numbers::native_integer(float::<false>(c, base)?) as u8
+    } else {
+        PrintKind::Console.default_level()
+    })
+}
 fn qc_client_print<const CENTER: bool>(
     c: &mut Invocation<'_, '_, '_>,
     first: Option<usize>,
@@ -690,11 +694,7 @@ fn qc_client_print<const CENTER: bool>(
         (ENGINE_CALLS.console)(c.services, b"tried to sprint to a non-client\n")?;
         return Ok(CallValue::Word(0));
     };
-    let level = if first == 2 {
-        crate::numbers::native_integer(float::<false>(c, 1)?) as u8
-    } else {
-        PrintKind::Console.default_level()
-    };
+    let level = qc_print_level(c, first, 1)?;
     (ENGINE_CALLS.print)(
         c.services,
         None,
@@ -1302,6 +1302,52 @@ fn qc_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let (_, rules) = qa_world::collision::trace_policy(c.context.console.source);
     let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
     Ok(bits::<false>(f64::from(contents.to_q1())))
+}
+
+fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let slot = c.arg(0)? as i32;
+    let limit = c.services.cvars.integer_in(
+        c.services.storage.max_clients,
+        qa_core::primitives::RuleSetId::Quake3,
+    );
+    if slot < 0 || slot >= limit {
+        return Err(CallError::Entity);
+    }
+    // Valid unused native client rows contain a zero lastUsercmd in qsrc.
+    let command = (ENGINE_CALLS.usercmd)(
+        c.services,
+        qa_core::primitives::NativeEntity {
+            module: c.context.module,
+            slot,
+        },
+    )
+    .unwrap_or_default();
+    let weapon = command
+        .weapon
+        .and_then(|id| {
+            c.services
+                .registry
+                .native_weapon_number(qa_gameplay::registry::Registry::QUAKE3_SOURCE, id)
+        })
+        .and_then(|number| u8::try_from(number).ok())
+        .unwrap_or(0);
+    let native = qa_network::commands::to_q3_usercmd(&command, weapon);
+    let target = c.pointer(1)?;
+    let output = c.memory.read_mut(target, 24)?;
+    for (bytes, word) in output[..20].chunks_exact_mut(4).zip([
+        native.server_time as u32,
+        native.angles[0] as u32,
+        native.angles[1] as u32,
+        native.angles[2] as u32,
+        native.buttons,
+    ]) {
+        bytes.copy_from_slice(&word.to_le_bytes());
+    }
+    output[20] = native.weapon;
+    for (byte, movement) in output[21..].iter_mut().zip(native.movement) {
+        *byte = movement as u8;
+    }
+    Ok(0)
 }
 
 fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

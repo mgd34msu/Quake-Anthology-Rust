@@ -118,6 +118,8 @@ const AMMO_GROUPS: &[&[(u16, &str)]] = &[
 ];
 
 impl Registry {
+    /// Stock catalog provenance, not a loaded module's execution identity.
+    pub const QUAKE3_SOURCE: ModuleId = ModuleId(3);
     pub fn names_needed() -> impl Iterator<Item = &'static [u8]> {
         generated::ITEMS
             .iter()
@@ -260,6 +262,11 @@ impl Registry {
             .binary_search_by_key(&(module.0, number), |weapon| (weapon.0.0, weapon.1))
             .ok()
             .map(|index| self.native_weapons[index].2)
+    }
+    pub fn native_weapon_number(&self, module: ModuleId, id: WeaponId) -> Option<u16> {
+        self.weapon(id)
+            .filter(|weapon| weapon.module == module)
+            .map(|weapon| weapon.native)
     }
     pub fn classname(&self, module: ModuleId, name: NameId) -> Option<ItemId> {
         self.classnames
