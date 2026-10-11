@@ -352,18 +352,12 @@ impl Renderer {
                 continue;
             };
             let basis = angle_vectors(client.angles);
-            let fov_x = if client.fov_x.is_finite() {
-                client.fov_x.clamp(1.0, 179.0)
-            } else {
-                90.0
-            };
-            let aspect = viewport.height as f32 / viewport.width.max(1) as f32;
-            let fov_y = (2.0 * ((fov_x.to_radians() * 0.5).tan() * aspect).atan()).to_degrees();
+            let fov = qa_render::scene::fov_from_x(client.fov_x, viewport.width, viewport.height);
             let mut refdef = Refdef {
                 viewport,
                 origin: client.origin,
                 axes: basis.axes(),
-                fov: [fov_x, fov_y],
+                fov,
                 time_ms: client.time_ms,
                 ..Refdef::default()
             };

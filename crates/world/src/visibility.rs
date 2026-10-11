@@ -6,11 +6,7 @@ use qa_core::stamps::StampSet;
 mod load;
 mod query;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SurfaceSpan {
-    pub first: u32,
-    pub count: u32,
-}
+pub use qa_core::primitives::IndexSpan as SurfaceSpan;
 
 #[derive(Clone, Copy, Debug)]
 pub struct VisNode {

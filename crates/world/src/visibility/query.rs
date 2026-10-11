@@ -144,8 +144,7 @@ impl ViewVisibility {
                 continue;
             }
             self.leaf_marks.mark(index);
-            let first = leaf.surfaces.first as usize;
-            for &surface in &world.leaf_surfaces[first..first + leaf.surfaces.count as usize] {
+            for &surface in &world.leaf_surfaces[leaf.surfaces.range()] {
                 self.surface_marks.mark(surface as usize);
             }
             self.mark_ancestors(world, index)?;
@@ -166,8 +165,8 @@ impl ViewVisibility {
             let step = self.walk[pending];
             if step.emit_node {
                 let node = &world.nodes[step.child as usize];
-                for surface in node.surfaces.first..node.surfaces.first + node.surfaces.count {
-                    self.emit_surface(surface, key)?;
+                for surface in node.surfaces.range() {
+                    self.emit_surface(surface as u32, key)?;
                 }
                 if node.surfaces.count != 0 {
                     key += 1;
@@ -226,8 +225,7 @@ impl ViewVisibility {
                 }
                 self.walk_marks.mark(walk_index);
                 self.counters.leaves_visited += 1;
-                let first = leaf.surfaces.first as usize;
-                for &surface in &world.leaf_surfaces[first..first + leaf.surfaces.count as usize] {
+                for &surface in &world.leaf_surfaces[leaf.surfaces.range()] {
                     if world.surface_owners[surface as usize].is_none() {
                         self.emit_surface(surface, key)?;
                     }

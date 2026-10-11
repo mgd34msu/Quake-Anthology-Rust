@@ -1,5 +1,16 @@
 //! Engine-owned values. Game formats and module ABIs convert at their boundaries.
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IndexSpan {
+    pub first: u32,
+    pub count: u32,
+}
+impl IndexSpan {
+    pub fn range(self) -> std::ops::Range<usize> {
+        self.first as usize..self.first as usize + self.count as usize
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(transparent)]
 pub struct Vec3(pub [f32; 3]);
@@ -283,6 +294,13 @@ pub enum ThinkTime {
     Milliseconds(i64),
 }
 impl ThinkTime {
+    pub const fn module_clock(rules: RuleSetId) -> Self {
+        match rules {
+            RuleSetId::Quake | RuleSetId::QuakeWorld | RuleSetId::Quake2 => Self::Seconds(0.0),
+            RuleSetId::Quake2Rerelease | RuleSetId::Quake3 => Self::Milliseconds(0),
+        }
+    }
+
     pub fn at(self, time: crate::sys_events::EventTime) -> Self {
         match self {
             Self::Seconds(_) => Self::Seconds(time.seconds()),
@@ -716,6 +734,10 @@ impl CommandIntent {
 }
 
 impl PlayerState {
+    pub fn eye(&self) -> Vec3 {
+        self.body.position + self.view_offset
+    }
+
     pub fn with_capacity(items: usize, powerups: usize, values: usize) -> Self {
         Self {
             values: ValueBank::load(values),

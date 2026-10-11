@@ -4,7 +4,6 @@ use crate::surface_cache::IndexedLighting;
 use crate::world::{VisibleSurface, WorldId};
 use qa_core::primitives::Vec3;
 use std::cmp::Ordering as SortOrdering;
-use std::ops::Range;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
@@ -120,6 +119,17 @@ pub struct Refdef {
     pub palette_transform: Option<PaletteTransform>,
     pub lightstyles: [LightStyle; 256],
 }
+pub fn fov_from_x(fov_x: f32, width: u32, height: u32) -> [f32; 2] {
+    let fov_x = if fov_x.is_finite() {
+        fov_x.clamp(1.0, 179.0)
+    } else {
+        90.0
+    };
+    let aspect = height as f32 / width.max(1) as f32;
+    let fov_y = (2.0 * ((fov_x.to_radians() * 0.5).tan() * aspect).atan()).to_degrees();
+    [fov_x, fov_y]
+}
+
 impl Refdef {
     /// Shared view boundary for visibility and both drawing backends.
     /// Returns the native half-FOV tangents in the original operation order.
@@ -241,16 +251,7 @@ pub struct Draw2d {
     pub color: [u8; 4],
     pub material: MaterialId,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Span {
-    pub first: u32,
-    pub count: u32,
-}
-impl Span {
-    pub fn range(self) -> Range<usize> {
-        self.first as usize..self.first as usize + self.count as usize
-    }
-}
+pub use qa_core::primitives::IndexSpan as Span;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SceneRanges {
     pub entities: Span,

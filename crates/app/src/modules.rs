@@ -165,6 +165,20 @@ pub struct Counts {
     pub traps: u64,
     pub last_result: Option<ModuleResult>,
 }
+impl Counts {
+    fn record(&mut self, result: Result<ModuleResult, ()>) -> bool {
+        match result {
+            Ok(value) => {
+                self.last_result = Some(value);
+                true
+            }
+            Err(()) => {
+                self.traps += 1;
+                false
+            }
+        }
+    }
+}
 struct Module {
     request: ModuleRequest,
     storage: ServiceStorage,
@@ -531,7 +545,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let qa_session::timing::TickTarget::Provider(module) = tick.target else {
         return;
     };
-    let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) else {
+    let Some(row) = host.module_row_mut(module) else {
         return;
     };
     // qsrc advances the SERVER frame number after RunFrame. Loading calls
@@ -540,12 +554,12 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     row.request.context.server_frame = tick.index - 1;
     let time = row.request.context.clock.at(tick.end);
     invoke_frame(host, module, time);
-    if let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) {
+    if let Some(row) = host.module_row_mut(module) {
         row.request.context.server_frame = tick.index;
     }
 }
 fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
-    let Some(row) = host.modules.as_ref().and_then(|m| m.row(module)) else {
+    let Some(row) = host.module_row(module) else {
         return;
     };
     if row.state != State::Running {
@@ -575,7 +589,11 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         } => (time, arguments),
         _ => return false,
     };
-    let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) else {
+    let Some(row) = host
+        .modules
+        .as_mut()
+        .and_then(|modules| modules.row_mut(module))
+    else {
         return false;
     };
     if matches!(row.request.program, Program::QuakeC(_)) {
@@ -626,16 +644,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         }
         Program::QuakeC(_) => return false,
     };
-    match result {
-        Ok(result) => {
-            row.counts.last_result = Some(result);
-            true
-        }
-        Err(_) => {
-            row.counts.traps += 1;
-            false
-        }
-    }
+    row.counts.record(result)
 }
 fn native_self(
     runtime: &Runtime,
@@ -659,7 +668,11 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     else {
         return false;
     };
-    let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) else {
+    let Some(row) = host
+        .modules
+        .as_mut()
+        .and_then(|modules| modules.row_mut(module))
+    else {
         return false;
     };
     let Program::QuakeC(qc) = &mut row.request.program else {
@@ -686,17 +699,10 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         unknown: &mut row.unknown,
     };
     row.counts.calls += 1;
-    match qc
+    let result = qc
         .vm
         .call(&mut calls, entry, row.request.instruction_budget, false)
-    {
-        Ok(result) => {
-            row.counts.last_result = Some(ModuleResult::QuakeC(result));
-            true
-        }
-        Err(_) => {
-            row.counts.traps += 1;
-            false
-        }
-    }
+        .map(ModuleResult::QuakeC)
+        .map_err(|_| ());
+    row.counts.record(result)
 }

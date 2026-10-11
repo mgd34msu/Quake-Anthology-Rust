@@ -515,13 +515,7 @@ fn run() -> Result<(), String> {
     let basis = angle_vectors(player.view_angles);
     let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
     let fov_x = console.cvars.value(fov);
-    let fov_x = if fov_x.is_finite() {
-        fov_x.clamp(1.0, 179.0)
-    } else {
-        90.0
-    };
-    let aspect = HEIGHT as f32 / WIDTH as f32;
-    let fov_y = (2.0 * ((fov_x.to_radians() * 0.5).tan() * aspect).atan()).to_degrees();
+    let fov = qa_render::scene::fov_from_x(fov_x, WIDTH, HEIGHT);
     let mut refdef = Refdef {
         viewport: Viewport {
             x: 0,
@@ -529,9 +523,9 @@ fn run() -> Result<(), String> {
             width: WIDTH,
             height: HEIGHT,
         },
-        origin: player.body.position + player.view_offset,
+        origin: player.eye(),
         axes: basis.axes(),
-        fov: [fov_x, fov_y],
+        fov,
         time_ms: 0,
         ..Refdef::default()
     };

@@ -65,6 +65,14 @@ pub struct AllocationPolicy {
 }
 
 impl AllocationPolicy {
+    pub fn for_rules(rules: qa_core::primitives::RuleSetId, level_start_ms: i64) -> Self {
+        match rules {
+            qa_core::primitives::RuleSetId::QuakeWorld => Self::QUAKEWORLD,
+            qa_core::primitives::RuleSetId::Quake3 => Self::q3(level_start_ms),
+            _ => Self::EDICT,
+        }
+    }
+
     pub const EDICT: Self = Self {
         reuse: ReuseDelay::EDICT,
         full: FullTable::Reject,

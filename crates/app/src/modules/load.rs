@@ -93,14 +93,52 @@ fn module_bytes(
     runtime
         .vfs
         .read_file(path.as_bytes(), 256 * 1024 * 1024, reader)
-        .map_err(|error| match error {
-            qa_content::vfs::VfsError::Missing => format!("module not found: {path}"),
-            qa_content::vfs::VfsError::Size
-            | qa_content::vfs::VfsError::Limit
-            | qa_content::vfs::VfsError::Allocation => "module too large".into(),
-            qa_content::vfs::VfsError::ShortRead => "incomplete module".into(),
-            error => format!("module: {error:?}"),
-        })
+        .map_err(|error| format!("module {path}: {error}"))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn parse_native(bytes: &[u8]) -> Result<qa_formats::program::native::Image, String> {
+    let base = bytes.starts_with(b"\x7fELF").then_some(0x2000_0000);
+    qa_formats::program::native::Image::parse(
+        bytes,
+        base,
+        qa_formats::program::native::LoadRole::Library,
+    )
+    .map_err(|error| format!("native module: {error:?}"))
+}
+fn module_id(requests: &[ModuleRequest]) -> Result<ModuleId, String> {
+    Ok(ModuleId(
+        u16::try_from(requests.len() + 1).map_err(|_| "too many modules")?,
+    ))
+}
+fn allocate_anchor(
+    runtime: &mut Runtime,
+    module: ModuleId,
+    clock: ThinkTime,
+    allocation: AllocationPolicy,
+) -> Result<qa_core::primitives::EntityId, String> {
+    Ok(runtime
+        .server
+        .entities
+        .allocate(clock, module, allocation)
+        .ok_or("no module anchor slot")?
+        .id)
+}
+fn call_context(
+    module: ModuleId,
+    clock: ThinkTime,
+    allocation: AllocationPolicy,
+    rules: RuleSetId,
+    console: Context,
+) -> CallContext {
+    CallContext {
+        server_frame: 0,
+        module,
+        clock,
+        console,
+        allocation,
+        link_order: qa_gameplay::rules::link_order(rules),
+    }
 }
 
 pub fn load_q3(
@@ -112,16 +150,11 @@ pub fn load_q3(
 ) -> Result<(), String> {
     let mut reader = ArchiveReader::default();
     for spec in specs {
-        let module = ModuleId(u16::try_from(requests.len() + 1).map_err(|_| "too many modules")?);
+        let module = module_id(requests)?;
         let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
-        let allocation = AllocationPolicy::q3(0);
-        let clock = ThinkTime::Milliseconds(0);
-        let anchor = runtime
-            .server
-            .entities
-            .allocate(clock, module, allocation)
-            .ok_or("no module anchor slot")?
-            .id;
+        let allocation = AllocationPolicy::for_rules(RuleSetId::Quake3, 0);
+        let clock = ThinkTime::module_clock(RuleSetId::Quake3);
+        let anchor = allocate_anchor(runtime, module, clock, allocation)?;
         // Native export ordinals live in game/g_public.h, cgame/cg_public.h,
         // and ui/ui_public.h. Each role selects its own import table and phase.
         let mut initialize = [Argument::Word(0); 9];
@@ -205,10 +238,8 @@ pub fn load_q3(
                 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                 {
                     use qa_compat::native::{NamedExport, Vm};
-                    use qa_formats::program::native::{Encoding, Image, LoadRole};
-                    let base = bytes.starts_with(b"\x7fELF").then_some(0x2000_0000);
-                    let image = Image::parse(&bytes, base, LoadRole::Library)
-                        .map_err(|e| format!("native module: {e:?}"))?;
+                    use qa_formats::program::native::Encoding;
+                    let image = parse_native(&bytes)?;
                     if image.target.encoding == Encoding::Elf && image.tls.is_some() {
                         return Err("native TLS provider is not bound".into());
                     }
@@ -273,11 +304,12 @@ pub fn load_q3(
             },
         );
         requests.push(ModuleRequest {
-            context: CallContext {
-                server_frame: 0,
+            context: call_context(
                 module,
                 clock,
-                console: Context {
+                allocation,
+                RuleSetId::Quake3,
+                Context {
                     source: RuleSetId::Quake3,
                     side,
                     role,
@@ -288,9 +320,7 @@ pub fn load_q3(
                     },
                     ..Context::default()
                 },
-                allocation,
-                link_order: qa_gameplay::rules::link_order(RuleSetId::Quake3),
-            },
+            ),
             timing_rules: RuleSetId::Quake3,
             phase,
             rate: if phase == Phase::Server {
@@ -353,35 +383,25 @@ pub fn load_quakec(
             },
         )
         .map_err(|e| format!("QuakeC memory: {e:?}"))?;
-        let allocation = if spec.rules == RuleSetId::QuakeWorld {
-            AllocationPolicy::QUAKEWORLD
-        } else {
-            AllocationPolicy::EDICT
-        };
-        let clock = ThinkTime::Seconds(0.0);
-        let anchor = runtime
-            .server
-            .entities
-            .allocate(clock, module, allocation)
-            .ok_or("no module anchor slot")?
-            .id;
+        let allocation = AllocationPolicy::for_rules(spec.rules, 0);
+        let clock = ThinkTime::module_clock(spec.rules);
+        let anchor = allocate_anchor(runtime, module, clock, allocation)?;
         // Native world edict zero is an explicit ABI binding, not this slot.
         runtime.server.entities.columns.native_entity[anchor.slot as usize] =
             Some(NativeEntity { module, slot: 0 });
         requests.push(ModuleRequest {
-            context: CallContext {
-                server_frame: 0,
+            context: call_context(
                 module,
                 clock,
-                console: Context {
+                allocation,
+                spec.rules,
+                Context {
                     source: spec.rules,
                     side: Scope::Server,
                     role: Role::Game,
                     ..Context::default()
                 },
-                allocation,
-                link_order: qa_gameplay::rules::link_order(spec.rules),
-            },
+            ),
             timing_rules: spec.rules,
             phase: Phase::Server,
             rate: TickRate::FrameDriven,

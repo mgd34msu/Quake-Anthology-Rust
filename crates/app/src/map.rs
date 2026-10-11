@@ -119,14 +119,6 @@ const Q3_NAME_FIELDS: &[NameField] = &[
     NameField::raw(b"noise"),
 ];
 
-fn entity_syntax(source: RuleSetId) -> EntitySyntax {
-    match source {
-        RuleSetId::Quake | RuleSetId::QuakeWorld => EntitySyntax::Quake,
-        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => EntitySyntax::Quake2,
-        RuleSetId::Quake3 => EntitySyntax::Quake3,
-    }
-}
-
 fn level_string(bytes: &[u8]) -> Cow<'_, [u8]> {
     if !bytes.contains(&b'\\') {
         return Cow::Borrowed(bytes);
@@ -224,16 +216,11 @@ pub fn read(vfs: &Vfs, name: &str) -> Result<MapInput, String> {
         .ok_or_else(|| format!("map not found in VFS: {path}"))?;
     let bytes = vfs
         .read_to_vec(file, usize::MAX, &mut ArchiveReader::default())
-        .map_err(|error| match error {
-            qa_content::vfs::VfsError::Size => "map too large for this platform".into(),
-            qa_content::vfs::VfsError::Allocation => "map allocation failed".into(),
-            qa_content::vfs::VfsError::ShortRead => "incomplete map read".into(),
-            error => format!("map read: {error:?}"),
-        })?;
+        .map_err(|error| format!("map {path}: {error}"))?;
     let bsp = Bsp::parse(&bytes).map_err(|e| format!("BSP directory: {e:?}"))?;
     let source = bsp.format.rule_set();
     let entity_source = NativeEntityText {
-        syntax: entity_syntax(source),
+        syntax: EntitySyntax::for_rules(source),
         bytes: bsp.bytes(Lump::Entities).into(),
     };
     let origin = vfs.origin(file).ok_or("missing map origin")?;
@@ -406,7 +393,7 @@ fn spawns(
     source: RuleSetId,
 ) -> Result<(Box<[SpawnAnchor]>, usize, SkyEnvironment), String> {
     let rules = map.bsp.format.rule_set();
-    let syntax = entity_syntax(source);
+    let syntax = EntitySyntax::for_rules(source);
     let entities =
         EntityLump::parse(map.entity_text(), syntax).map_err(|e| format!("entity lump: {e:?}"))?;
     let mut preferred = None;

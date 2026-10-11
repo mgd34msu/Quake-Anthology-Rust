@@ -181,11 +181,7 @@ fn native_faces(
     }
 }
 fn spawn_origins(map: &Map<'_>) -> Result<Vec<Vec3>, &'static str> {
-    let syntax = match map.bsp.format.rule_set() {
-        RuleSetId::Quake => EntitySyntax::Quake,
-        RuleSetId::Quake2 => EntitySyntax::Quake2,
-        _ => EntitySyntax::Quake3,
-    };
+    let syntax = EntitySyntax::for_rules(map.bsp.format.rule_set());
     let entities = EntityLump::parse(map.entity_text(), syntax).map_err(|_| "entity lump parse")?;
     let find = |name: &[u8]| {
         if syntax == EntitySyntax::Quake {

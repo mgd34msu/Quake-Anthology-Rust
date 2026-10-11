@@ -66,6 +66,23 @@ pub enum VfsError {
     Io(io::Error),
     Format(FormatError),
 }
+impl std::fmt::Display for VfsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => f.write_str("not found"),
+            Self::Size => f.write_str("too large for this platform"),
+            Self::Limit => f.write_str("size limit exceeded"),
+            Self::Allocation => f.write_str("allocation failed"),
+            Self::ShortRead => f.write_str("short read"),
+            Self::Path => f.write_str("invalid path"),
+            Self::Capacity => f.write_str("capacity exceeded"),
+            Self::Range => f.write_str("invalid range"),
+            Self::Handle => f.write_str("invalid handle"),
+            Self::Io(error) => error.fmt(f),
+            Self::Format(error) => write!(f, "{error:?}"),
+        }
+    }
+}
 impl From<FormatError> for VfsError {
     fn from(error: FormatError) -> Self {
         Self::Format(error)

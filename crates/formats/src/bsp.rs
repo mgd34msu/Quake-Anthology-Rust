@@ -269,6 +269,15 @@ impl IndexRange {
         self.first as usize..self.first as usize + self.count as usize
     }
 }
+impl From<IndexRange> for qa_core::primitives::IndexSpan {
+    fn from(range: IndexRange) -> Self {
+        Self {
+            first: range.first,
+            count: range.count,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex {
     pub position: Vec3,

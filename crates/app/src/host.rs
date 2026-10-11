@@ -327,23 +327,30 @@ impl FrameHost {
     )]
     pub fn client_views(&self) -> [Option<ClientView>; SeatId::COUNT] {
         std::array::from_fn(|seat| {
-            let client = self.local_clients[seat]?;
+            let (_, _, player) = self.local_seat(seat)?;
             let world = self.local_worlds[seat]?;
-            if self.runtime.server.clients[client.0 as usize]
-                .connection
-                .is_none()
-            {
-                return None;
-            }
-            let player = &self.runtime.prediction[seat].player;
             Some(ClientView {
                 world,
-                origin: player.body.position + player.view_offset,
+                origin: player.eye(),
                 angles: player.view_angles,
                 fov_x: self.console.cvars.value(self.fov),
                 time_ms: self.time.milliseconds(),
             })
         })
+    }
+
+    fn local_seat(
+        &self,
+        seat: usize,
+    ) -> Option<(
+        qa_core::primitives::ClientId,
+        &qa_session::clients::Client,
+        &qa_core::primitives::PlayerState,
+    )> {
+        let client = self.local_clients.get(seat).copied().flatten()?;
+        let row = self.runtime.server.clients.get(client.0 as usize)?;
+        row.connection?;
+        Some((client, row, &self.runtime.prediction.get(seat)?.player))
     }
 
     pub fn native_input_policy_active(&self) -> bool {
@@ -352,14 +359,11 @@ impl FrameHost {
 
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
         let listeners = std::array::from_fn(|seat| {
-            let client = self.local_clients[seat]?;
-            let row = self.runtime.server.clients.get(client.0 as usize)?;
-            row.connection?;
-            let player = &self.runtime.prediction[seat].player;
+            let (client, row, player) = self.local_seat(seat)?;
             Some(qa_audio::Listener {
                 client,
                 entity: Some(row.entity),
-                origin: player.body.position + player.view_offset,
+                origin: player.eye(),
                 right: qa_core::math::angle_vectors(player.view_angles).right,
             })
         });
@@ -565,14 +569,8 @@ impl FrameHost {
         }
         if self.runtime.collision.is_some() {
             let mut predicted_poses = std::array::from_fn::<_, { SeatId::COUNT }, _>(|seat| {
-                let client = self.local_clients[seat]?;
-                let client = &self.runtime.server.clients[client.0 as usize];
-                client.connection.map(|_| {
-                    (
-                        client.entity,
-                        self.runtime.prediction[seat].player.body.position,
-                    )
-                })
+                self.local_seat(seat)
+                    .map(|(_, client, player)| (client.entity, player.body.position))
             });
             self.runtime
                 .server

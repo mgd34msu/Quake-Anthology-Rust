@@ -7,7 +7,7 @@ use qa_core::{
     math::length,
     primitives::{Bounds, Plane, RuleSetId, Vec3},
 };
-use qa_formats::bsp::{BspFormat, IndexRange as FileRange, LightmapSource, Lump, Map, SurfaceKind};
+use qa_formats::bsp::{BspFormat, LightmapSource, Lump, Map, SurfaceKind};
 
 pub mod grid;
 mod patch;
@@ -708,14 +708,6 @@ fn span(first: usize, count: usize) -> Result<Span, GeometryError> {
         first: first as u32,
         count: count as u32,
     })
-}
-impl From<FileRange> for Span {
-    fn from(range: FileRange) -> Self {
-        Self {
-            first: range.first,
-            count: range.count,
-        }
-    }
 }
 
 fn section<'a, T>(

@@ -3,7 +3,7 @@ mod assets;
 #[path = "support/retail.rs"]
 mod retail;
 use qa_formats::{
-    bsp::{Bsp, BspFormat, Lump},
+    bsp::{Bsp, Lump},
     entities::{EntityLump, EntitySyntax},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -28,13 +28,7 @@ fn main() -> Result<(), String> {
         vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let bsp = Bsp::parse(&bytes).map_err(|e| format!("{e:?}"))?;
-        let syntax = match bsp.format {
-            BspFormat::Quake2 | BspFormat::Qbsp => EntitySyntax::Quake2,
-            BspFormat::Quake3 | BspFormat::Quake3Test | BspFormat::QuakeLive => {
-                EntitySyntax::Quake3
-            }
-            _ => EntitySyntax::Quake,
-        };
+        let syntax = EntitySyntax::for_rules(bsp.format.rule_set());
         maps += 1;
         match EntityLump::parse(bsp.bytes(Lump::Entities), syntax) {
             Ok(lump) => {

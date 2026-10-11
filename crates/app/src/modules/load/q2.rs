@@ -33,24 +33,19 @@ pub fn load_q2(
     {
         use super::{module_bytes, native_export};
         use crate::modules::{ApiCheck, Argument, Export, Phase, Program};
-        use qa_compat::{native::q2::Game, services::CallContext};
+        use qa_compat::native::q2::Game;
         use qa_console::{
             catalog::Scope,
             views::{Context, Role},
         };
-        use qa_core::primitives::{CallbackId, ModuleId, ThinkTime};
-        use qa_formats::{
-            archive::ArchiveReader,
-            program::native::{Image, LoadRole},
-        };
+        use qa_core::primitives::{CallbackId, ThinkTime};
+        use qa_formats::archive::ArchiveReader;
         use qa_session::timing::TickRate;
         use qa_world::entities::AllocationPolicy;
         let mut reader = ArchiveReader::default();
         for spec in specs {
             let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
-            let base = bytes.starts_with(b"\x7fELF").then_some(0x2000_0000);
-            let mut image = Image::parse(&bytes, base, LoadRole::Library)
-                .map_err(|e| format!("Q2 native module: {e:?}"))?;
+            let mut image = super::parse_native(&bytes)?;
             let source = runtime
                 .entity_sources
                 .get(entity_source)
@@ -92,36 +87,25 @@ pub fn load_q2(
             shutdown.extend(game.vm.finalizers().iter().map(native_export));
             let prepare = game.vm.initializers().iter().map(native_export).collect();
             let count = game.vm.export_count();
-            let module =
-                ModuleId(u16::try_from(requests.len() + 1).map_err(|_| "too many modules")?);
-            let clock = if spec.rules == RuleSetId::Quake2 {
-                ThinkTime::Seconds(0.0)
-            } else {
-                ThinkTime::Milliseconds(0)
-            };
-            let allocation = AllocationPolicy::EDICT;
-            let anchor = runtime
-                .server
-                .entities
-                .allocate(clock, module, allocation)
-                .ok_or("no module anchor slot")?
-                .id;
+            let module = super::module_id(requests)?;
+            let clock = ThinkTime::module_clock(spec.rules);
+            let allocation = AllocationPolicy::for_rules(spec.rules, 0);
+            let anchor = super::allocate_anchor(runtime, module, clock, allocation)?;
             let mut api_arguments = [Argument::Word(0); 9];
             api_arguments[0] = Argument::Word(game.imports_address);
             requests.push(ModuleRequest {
-                context: CallContext {
-                    server_frame: 0,
+                context: super::call_context(
                     module,
                     clock,
-                    console: Context {
+                    allocation,
+                    spec.rules,
+                    Context {
                         source: spec.rules,
                         side: Scope::Server,
                         role: Role::Game,
                         ..Context::default()
                     },
-                    allocation,
-                    link_order: qa_gameplay::rules::link_order(spec.rules),
-                },
+                ),
                 phase: Phase::Server,
                 timing_rules: spec.rules,
                 rate: TickRate::FixedMilliseconds(interval),

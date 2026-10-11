@@ -647,20 +647,30 @@ impl EntityProjection {
         address: u64,
     ) -> Result<(CollisionShape, Bounds), CallError> {
         let model = memory.read_word(address + 40)? as u32;
+        self.cache_model(services, context, model, None)
+    }
+    fn cache_model(
+        &mut self,
+        services: &EngineServices<'_>,
+        context: CallContext,
+        model: u32,
+        name: Option<&[u8]>,
+    ) -> Result<(CollisionShape, Bounds), CallError> {
         let cached = self
             .model_handles
             .get_mut(model as usize)
             .ok_or(CallError::Geometry)?;
-        let (name, revision) = services
+        let (registered, revision) = services
             .storage
             .configstring(context.module, self.models.first + model as usize)?;
         let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
-        if let Some(cached) =
-            cached.filter(|entry| entry.revision == revision && entry.geometry == geometry)
+        if name.is_none()
+            && let Some(entry) =
+                cached.filter(|entry| entry.revision == revision && entry.geometry == geometry)
         {
-            return Ok((cached.shape, cached.bounds));
+            return Ok((entry.shape, entry.bounds));
         }
-        let (shape, bounds) = Self::inline_model(services, name)?;
+        let (shape, bounds) = Self::inline_model(services, geometry, name.unwrap_or(registered))?;
         *cached = Some(CachedModel {
             revision,
             geometry,
@@ -669,6 +679,7 @@ impl EntityProjection {
         });
         Ok((shape, bounds))
     }
+
     pub(crate) fn clip_target(
         &mut self,
         services: &EngineServices<'_>,
@@ -700,6 +711,7 @@ impl EntityProjection {
     }
     fn inline_model(
         services: &EngineServices<'_>,
+        geometry: qa_core::primitives::GeometryId,
         name: &[u8],
     ) -> Result<(CollisionShape, Bounds), CallError> {
         let suffix = std::str::from_utf8(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
@@ -708,7 +720,6 @@ impl EntityProjection {
         if index == 0 {
             return Err(CallError::Geometry);
         }
-        let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
         let bounds = services
             .geometry
             .model_bounds(geometry, index)
@@ -727,26 +738,13 @@ impl EntityProjection {
         self.entity(services, memory, context, table, address)?;
         let name = memory.cstring(name)?;
         let model = (ENGINE_CALLS.resource_index)(services, context.module, self.models, name)?;
-        let inline = name
-            .starts_with(b"*")
-            .then(|| Self::inline_model(services, name))
-            .transpose()?;
-        let cached = self
-            .model_handles
-            .get_mut(model as usize)
-            .ok_or(CallError::Geometry)?;
-        *cached = if let Some((shape, bounds)) = inline {
-            let (_, revision) = services
-                .storage
-                .configstring(context.module, self.models.first + model as usize)?;
-            let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
-            Some(CachedModel {
-                revision,
-                geometry,
-                shape,
-                bounds,
-            })
+        let inline = if name.starts_with(b"*") {
+            Some(self.cache_model(services, context, model, Some(name))?)
         } else {
+            *self
+                .model_handles
+                .get_mut(model as usize)
+                .ok_or(CallError::Geometry)? = None;
             None
         };
         memory.write_word(address + 40, model as i32)?;

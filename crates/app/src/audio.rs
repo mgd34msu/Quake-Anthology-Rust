@@ -68,14 +68,7 @@ pub fn load_bank(
     for path in paths {
         let bytes = vfs
             .read_file(path.as_bytes(), 256 * 1024 * 1024, &mut reader)
-            .map_err(|error| match error {
-                qa_content::vfs::VfsError::Missing => format!("sound not found: {path}"),
-                qa_content::vfs::VfsError::Size
-                | qa_content::vfs::VfsError::Limit
-                | qa_content::vfs::VfsError::Allocation => "sound too large".into(),
-                qa_content::vfs::VfsError::ShortRead => "short sound read".into(),
-                error => format!("sound: {error:?}"),
-            })?;
+            .map_err(|error| format!("sound {path}: {error}"))?;
         let policy = if rules == RuleSetId::Quake3 {
             qa_formats::sound::WavPolicy::Quake3
         } else {

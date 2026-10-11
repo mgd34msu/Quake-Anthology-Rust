@@ -9,6 +9,16 @@ pub enum EntitySyntax {
     Quake2,
     Quake3,
 }
+impl EntitySyntax {
+    pub const fn for_rules(rules: qa_core::primitives::RuleSetId) -> Self {
+        use qa_core::primitives::RuleSetId;
+        match rules {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => Self::Quake,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => Self::Quake2,
+            RuleSetId::Quake3 => Self::Quake3,
+        }
+    }
+}
 /// The same byte tokenizer used by cold entity conversion and module reads.
 pub struct EntityTokens<'a> {
     tokens: Tokens<'a>,

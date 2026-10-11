@@ -41,41 +41,16 @@ unsafe impl GlobalAlloc for Counter {
 #[global_allocator]
 static ALLOCATOR: Counter = Counter;
 
-#[derive(Clone, Copy)]
-enum Family {
-    Q1,
-    Qw,
-    Q2,
-    Q3,
-}
-
-impl Family {
-    fn parse(text: &str) -> Result<Self, &'static str> {
-        match text {
-            "q1" => Ok(Self::Q1),
-            "qw" => Ok(Self::Qw),
-            "q2" => Ok(Self::Q2),
-            "q3" => Ok(Self::Q3),
-            _ => Err("unknown allocation boundary"),
-        }
-    }
-
-    fn time(self, text: &str) -> Result<ThinkTime, Box<dyn std::error::Error>> {
-        Ok(match self {
-            Self::Q3 => ThinkTime::Milliseconds(text.parse()?),
-            // Q2's level.time is float, whereas Q1/QW's sv.time is double.
-            Self::Q2 => ThinkTime::Seconds(text.parse::<f32>()? as f64),
-            Self::Q1 | Self::Qw => ThinkTime::Seconds(text.parse()?),
-        })
-    }
-
-    fn policy(self, start: i64) -> AllocationPolicy {
-        match self {
-            Self::Q1 | Self::Q2 => AllocationPolicy::EDICT,
-            Self::Qw => AllocationPolicy::QUAKEWORLD,
-            Self::Q3 => AllocationPolicy::q3(start),
-        }
-    }
+fn native_time(
+    rules: qa_core::primitives::RuleSetId,
+    text: &str,
+) -> Result<ThinkTime, Box<dyn std::error::Error>> {
+    use qa_core::primitives::RuleSetId;
+    Ok(match rules {
+        RuleSetId::Quake2 => ThinkTime::Seconds(text.parse::<f32>()? as f64),
+        RuleSetId::Quake | RuleSetId::QuakeWorld => ThinkTime::Seconds(text.parse()?),
+        RuleSetId::Quake2Rerelease | RuleSetId::Quake3 => ThinkTime::Milliseconds(text.parse()?),
+    })
 }
 
 struct Case<'a> {
@@ -202,7 +177,10 @@ impl<'a> Case<'a> {
     }
 }
 
-fn schedule(family: Family, input: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn schedule(
+    family: qa_core::primitives::RuleSetId,
+    input: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut case: Option<Case<'_>> = None;
     for line in input.lines() {
         let mut words = line.split_ascii_whitespace();
@@ -222,10 +200,15 @@ fn schedule(family: Family, input: &str) -> Result<(), Box<dyn std::error::Error
                 let capacity = next()?.parse()?;
                 let reserved = next()?.parse()?;
                 let start = next()?.parse()?;
-                case = Some(Case::new(name, capacity, reserved, family.policy(start))?);
+                case = Some(Case::new(
+                    name,
+                    capacity,
+                    reserved,
+                    AllocationPolicy::for_rules(family, start),
+                )?);
             }
             "alloc" => {
-                let now = family.time(next()?)?;
+                let now = native_time(family, next()?)?;
                 let count: usize = next()?.parse()?;
                 if count > MAX_ENTITIES {
                     return Err("allocation count outside workload boundary".into());
@@ -236,7 +219,7 @@ fn schedule(family: Family, input: &str) -> Result<(), Box<dyn std::error::Error
                 }
             }
             "free" => {
-                let now = family.time(next()?)?;
+                let now = native_time(family, next()?)?;
                 let slot = next()?.parse()?;
                 case.as_mut()
                     .ok_or("free before reset")?
@@ -348,5 +331,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 3 {
         return Err("expected family and load-only schedule, or --churn".into());
     }
-    schedule(Family::parse(&args[1])?, &args[2])
+    schedule(
+        qa_core::primitives::RuleSetId::parse(&args[1]).ok_or("unknown allocation boundary")?,
+        &args[2],
+    )
 }
