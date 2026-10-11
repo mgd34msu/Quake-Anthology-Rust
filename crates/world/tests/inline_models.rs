@@ -39,8 +39,7 @@ fn empty(store: &mut CollisionStore) -> GeometryId {
                 nodes: Vec::new(),
                 leaves: vec![CollisionLeaf {
                     stored_contents: Some(Contents::EMPTY),
-                    first_brush: 0,
-                    brush_count: 0,
+                    brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
                 }],
                 leaf_brushes: Vec::new(),
                 models: vec![ModelRoot::Leaf(0)],
@@ -90,8 +89,7 @@ fn brush_model(
         .load_brushes(
             planes,
             vec![Brush {
-                first_plane: 0,
-                plane_count: 6,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },
                 contents,
             }],
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default(); 6]),
@@ -101,15 +99,13 @@ fn brush_model(
                 leaves: vec![
                     CollisionLeaf {
                         stored_contents: Some(Contents::EMPTY),
-                        first_brush: 0,
-                        brush_count: 0,
+                        brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
                     },
                     CollisionLeaf {
                         // Analytic membership has no native BSP leaf contents;
                         // both caller families classify its convex sides.
                         stored_contents: None,
-                        first_brush: 0,
-                        brush_count: 1,
+                        brushes: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                     },
                 ],
                 leaf_brushes: vec![0],

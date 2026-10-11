@@ -614,7 +614,7 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
     let mut brushes = Vec::new();
     for source in &map.brushes {
         let first_plane = u32::try_from(planes.len()).map_err(|_| "collision plane count")?;
-        for side in &map.brush_sides[source.sides.indices()] {
+        for side in &map.brush_sides[source.sides.range()] {
             planes.push(map.planes[side.plane as usize]);
             surfaces.sides.push(if q2 {
                 side.texture_info.map_or(0, |id| id + 1)
@@ -636,8 +636,10 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
             });
         }
         brushes.push(Brush {
-            first_plane,
-            plane_count: source.sides.count,
+            sides: qa_core::primitives::IndexSpan {
+                first: first_plane,
+                count: source.sides.count,
+            },
             contents: if matches!(map.bsp.format.rule_set(), RuleSetId::Quake2) {
                 Contents::from_q2(source.contents as u32)
             } else {
@@ -651,8 +653,7 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
         .map(|leaf| CollisionLeaf {
             stored_contents: matches!(map.bsp.format.rule_set(), RuleSetId::Quake2)
                 .then(|| Contents::from_q2(leaf.contents as u32)),
-            first_brush: leaf.brushes.first,
-            brush_count: leaf.brushes.count,
+            brushes: leaf.brushes,
         })
         .collect();
     let mut leaf_brushes = map.leaf_brushes.clone();
@@ -667,12 +668,13 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
                 let first_brush =
                     u32::try_from(leaf_brushes.len()).map_err(|_| "leaf brush count")?;
                 let leaf = u32::try_from(leaves.len()).map_err(|_| "collision leaf count")?;
-                leaf_brushes
-                    .extend(source.brushes.first..source.brushes.first + source.brushes.count);
+                leaf_brushes.extend(source.brushes.range().map(|index| index as u32));
                 leaves.push(CollisionLeaf {
                     stored_contents: None,
-                    first_brush,
-                    brush_count: source.brushes.count,
+                    brushes: qa_core::primitives::IndexSpan {
+                        first: first_brush,
+                        count: source.brushes.count,
+                    },
                 });
                 models.push(ModelRoot::Leaf(leaf));
             }

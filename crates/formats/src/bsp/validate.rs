@@ -7,12 +7,12 @@ fn index(value: i64, length: usize, field: &'static str, record: usize) -> Resul
     Ok(())
 }
 fn range(
-    value: IndexRange,
+    value: IndexSpan,
     length: usize,
     field: &'static str,
     record: usize,
 ) -> Result<(), FormatError> {
-    if u64::from(value.first) + u64::from(value.count) > length as u64 {
+    if !value.fits(length) {
         return Err(FormatError::InvalidReference(field, record));
     }
     Ok(())
@@ -22,7 +22,7 @@ fn child(value: i32, map: &Map<'_>, record: usize) -> Result<(), FormatError> {
         index(i64::from(value), map.nodes.len(), "node child", record)
     } else {
         index(
-            -1 - i64::from(value),
+            i64::from(qa_core::primitives::leaf_from_child(value)),
             map.leaves.len(),
             "leaf child",
             record,
@@ -300,7 +300,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
         {
             return Err(FormatError::InvalidReference("triangle count", i));
         }
-        for at in surface.indices.indices() {
+        for at in surface.indices.range() {
             index(
                 i64::from(map.indices[at]),
                 surface.vertices.count as usize,
@@ -310,7 +310,7 @@ pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {
         }
         // Retail unlit vertices have unused NaN lightmap coordinates.
         if embedded_lightmap
-            && map.vertices[surface.vertices.indices()]
+            && map.vertices[surface.vertices.range()]
                 .iter()
                 .any(|v| v.lightmap_coord.iter().any(|c| !c.is_finite()))
         {

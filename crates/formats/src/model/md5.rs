@@ -84,14 +84,14 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             native_index: 0,
         });
         mesh.texcoords.resize(vertices, [0.0; 2]);
-        mesh.vertex_weights.resize(vertices, WeightRange::default());
+        mesh.vertex_weights.resize(vertices, IndexSpan::default());
         let mut seen = vec![false; vertices];
         for _ in 0..vertices {
             let index = record(&mut t, b"vert", &mut seen)?;
             t.require(b"(")?;
             mesh.texcoords[index] = [t.scalar()?, t.scalar()?];
             t.require(b")")?;
-            mesh.vertex_weights[index] = WeightRange {
+            mesh.vertex_weights[index] = IndexSpan {
                 first: t.integer(0, i32::MAX)? as u32,
                 count: t.integer(0, i32::MAX)? as u32,
             };
@@ -113,7 +113,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
         let weights = count(&mut t, b"numweights", 1048576)?;
         decoded_bytes += vertices
             * (std::mem::size_of::<Vertex>()
-                + std::mem::size_of::<WeightRange>()
+                + std::mem::size_of::<IndexSpan>()
                 + std::mem::size_of::<Vec3>()
                 + 8)
             + weights * std::mem::size_of::<Weight>()
@@ -224,9 +224,7 @@ fn bind_normals(mesh: &mut Mesh<'_>, bones: &[Bone<'_>]) -> Result<(), FormatErr
     for (vertex, range) in mesh.vertex_weights.iter().enumerate() {
         let normal = normals[groups[vertex]];
         let mut local = Vec3::default();
-        for weight in
-            &mesh.weights[range.first as usize..range.first as usize + range.count as usize]
-        {
+        for weight in &mesh.weights[range.range()] {
             let q = bones[weight.bone as usize].orientation;
             local = local + rotate_quaternion([-q[0], -q[1], -q[2], q[3]], normal) * weight.bias;
         }
@@ -235,9 +233,7 @@ fn bind_normals(mesh: &mut Mesh<'_>, bones: &[Bone<'_>]) -> Result<(), FormatErr
         // Keep the common vertex array ready for bind-pose upload. Animation
         // uses bind_normals and the retained numeric weight ranges.
         let mut output = Vec3::default();
-        for weight in
-            &mesh.weights[range.first as usize..range.first as usize + range.count as usize]
-        {
+        for weight in &mesh.weights[range.range()] {
             output = output
                 + rotate_quaternion(bones[weight.bone as usize].orientation, local) * weight.bias;
         }

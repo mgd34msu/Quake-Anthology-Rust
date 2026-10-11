@@ -1,6 +1,6 @@
 use super::collision;
 use qa_core::primitives::{Axis, Bounds, Plane, SurfaceFlags, Vec3};
-use qa_formats::bsp::{Brush, BrushSide, IndexRange, Map, Node, Shader};
+use qa_formats::bsp::{Brush, BrushSide, IndexSpan, Map, Node, Shader};
 use qa_world::collision::{CollisionStore, Contents, TraceQuery, TraceRules};
 
 fn put(bytes: &mut [u8], at: usize, value: i32) {
@@ -80,7 +80,7 @@ fn add_box(map: &mut Map<'_>, center: f32) {
         }
     }
     map.brushes.push(Brush {
-        sides: IndexRange { first, count: 6 },
+        sides: IndexSpan { first, count: 6 },
         contents: 1,
         shader: None,
     });
@@ -90,7 +90,7 @@ fn two_models(map: &mut Map<'_>) {
     add_box(map, 0.0);
     add_box(map, 100.0);
     map.leaf_brushes = vec![0, 1];
-    map.leaves[0].brushes = IndexRange { first: 0, count: 1 };
+    map.leaves[0].brushes = IndexSpan { first: 0, count: 1 };
     map.leaves[0].contents = 1;
     let mut inline_leaf = map.leaves[0];
     inline_leaf.brushes.first = 1;
@@ -100,16 +100,16 @@ fn two_models(map: &mut Map<'_>) {
             plane: 0,
             children: [-1, -1],
             bounds: Bounds::default(),
-            faces: IndexRange::default(),
+            faces: IndexSpan::default(),
         },
         Node {
             plane: 0,
             children: [-2, -2],
             bounds: Bounds::default(),
-            faces: IndexRange::default(),
+            faces: IndexSpan::default(),
         },
     ];
-    map.models[0].brushes = IndexRange { first: 0, count: 1 };
+    map.models[0].brushes = IndexSpan { first: 0, count: 1 };
     let mut inline = map.models[0];
     if map.bsp.format == qa_formats::bsp::BspFormat::Quake3 {
         // IBSP46 has no inline headnode. Only its brush range identifies it;

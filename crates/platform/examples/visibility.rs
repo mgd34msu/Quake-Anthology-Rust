@@ -174,7 +174,7 @@ fn native_faces(
                     || secondary_row.is_some_and(|row| row[byte] & mask != 0)
             });
         if visible {
-            for &face in &map.leaf_faces[leaf.faces.indices()] {
+            for &face in &map.leaf_faces[leaf.faces.range()] {
                 marked[face as usize] = true;
             }
         }

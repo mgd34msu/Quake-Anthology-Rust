@@ -74,8 +74,10 @@ fn query(rules: TraceRules, start: [f32; 3], end: [f32; 3]) -> TraceQuery<'stati
 fn leaf(contents: Option<Contents>, first: u32, count: u32) -> CollisionLeaf {
     CollisionLeaf {
         stored_contents: contents,
-        first_brush: first,
-        brush_count: count,
+        brushes: qa_core::primitives::IndexSpan {
+            first: first,
+            count: count,
+        },
     }
 }
 
@@ -89,18 +91,15 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
         ],
         vec![
             Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             },
             Brush {
-                first_plane: 1,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 1, count: 1 },
                 contents: Contents::WATER,
             },
             Brush {
-                first_plane: 2,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 2, count: 1 },
                 contents: Contents::PLAYER_CLIP,
             },
         ],
@@ -217,13 +216,11 @@ fn ordered_leaf_references_preserve_ties_and_each_query_has_its_own_stamps() {
         vec![plane([1.0, 0.0, 0.0], 0.0); 2],
         vec![
             Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             },
             Brush {
-                first_plane: 1,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 1, count: 1 },
                 contents: Contents::PLAYER_CLIP,
             },
         ],
@@ -270,13 +267,11 @@ fn near_first_and_front_first_position_order_keep_the_native_first_contact() {
         vec![plane([1.0, 0.0, 0.0], 0.0); 2],
         vec![
             Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             },
             Brush {
-                first_plane: 1,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 1, count: 1 },
                 contents: Contents::PLAYER_CLIP,
             },
         ],
@@ -326,8 +321,7 @@ fn brush_clipping_uses_the_original_full_segment_after_tree_splitting() {
     let map = load_tree(
         vec![plane([1.0, 0.0, 0.0], 5.0)],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
         vec![SurfaceFlags(7)],
@@ -367,8 +361,7 @@ fn q2_leaf_gate_precedes_stamp_and_q3_ignores_that_gate_on_the_same_tree() {
     let map = load_tree(
         vec![plane([1.0, 0.0, 0.0], 0.0)],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
         vec![SurfaceFlags(7)],
@@ -427,8 +420,7 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
     let map = load_tree(
         vec![plane([1.0, 0.0, 0.0], 1.0)],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
         vec![SurfaceFlags::default()],
@@ -549,8 +541,7 @@ fn axial_position_bounds_accept_both_native_prefix_orders_and_foreign_sides_fall
         let map = load(
             planes,
             vec![Brush {
-                first_plane: 0,
-                plane_count: 6,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },
                 contents: Contents::SOLID,
             }],
         )
@@ -589,8 +580,7 @@ fn axial_position_bounds_accept_both_native_prefix_orders_and_foreign_sides_fall
     let map = load(
         vec![plane([1.0, 1.0, 0.0], -1.0); 6],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 6,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },
             contents: Contents::SOLID,
         }],
     )
@@ -633,8 +623,7 @@ fn caller_side_margin_and_nonaxial_offset_select_visitation_on_one_graph() {
         let map = load_tree(
             vec![plane([1.0, 0.0, 0.0], side_distance)],
             vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
             vec![SurfaceFlags::default()],
@@ -692,8 +681,7 @@ fn centered_min_only_tree_point_classification_does_not_remove_brush_support() {
     let map = load_tree(
         vec![plane([-1.0, 0.0, 0.0], -(origin + 2.0))],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
         vec![SurfaceFlags::default()],
@@ -771,7 +759,7 @@ fn load_rejects_bad_ranges_cycles_nonfinite_and_inconsistent_axis_metadata() {
         Err(StoreError::Brush(GeometryError::TreeRange))
     ));
     let mut bad_range = minimal_tree();
-    bad_range.leaves[0].brush_count = 1;
+    bad_range.leaves[0].brushes.count = 1;
     assert!(matches!(
         load_tree(vec![], vec![], vec![], bad_range),
         Err(StoreError::Brush(GeometryError::TreeRange))

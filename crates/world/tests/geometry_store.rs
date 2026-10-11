@@ -15,8 +15,7 @@ fn contact_rows_keep_exact_names_native_fields_and_resource_lifetimes() -> Resul
         store.load_brushes(
             vec![wall_plane()],
             vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
             SurfaceTable {
@@ -125,8 +124,7 @@ fn add_brush(store: &mut CollisionStore) -> Result<GeometryId, StoreError> {
     store.load_brushes(
         vec![wall_plane()],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
         qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(77)]),
@@ -136,13 +134,11 @@ fn add_brush(store: &mut CollisionStore) -> Result<GeometryId, StoreError> {
             leaves: vec![
                 CollisionLeaf {
                     stored_contents: None,
-                    first_brush: 0,
-                    brush_count: 0,
+                    brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
                 },
                 CollisionLeaf {
                     stored_contents: None,
-                    first_brush: 0,
-                    brush_count: 1,
+                    brushes: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 },
             ],
             leaf_brushes: vec![0],

@@ -7,6 +7,7 @@ mod normals;
 mod read;
 
 use crate::FormatError;
+pub use qa_core::primitives::IndexSpan;
 use qa_core::primitives::{Bounds, Vec3};
 use std::ops::Range;
 
@@ -42,12 +43,6 @@ pub struct Weight {
     pub bias: f32,
     pub offset: Vec3,
 }
-#[derive(Clone, Copy, Debug, Default)]
-pub struct WeightRange {
-    pub first: u32,
-    pub count: u32,
-}
-
 #[derive(Debug, Default)]
 pub struct Mesh<'a> {
     /// Native surface name. Material bindings normalise names once at load.
@@ -60,7 +55,7 @@ pub struct Mesh<'a> {
     pub triangles: Vec<Triangle>,
     pub shaders: Vec<Shader<'a>>,
     pub weights: Vec<Weight>,
-    pub vertex_weights: Vec<WeightRange>,
+    pub vertex_weights: Vec<IndexSpan>,
     /// Bone-local normals for skeletal deformation; vertices hold bind output.
     pub bind_normals: Vec<Vec3>,
 }

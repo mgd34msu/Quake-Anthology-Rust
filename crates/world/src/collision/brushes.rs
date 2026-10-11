@@ -10,8 +10,7 @@ use qa_core::primitives::{Bounds, Plane, SurfaceFlags, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
-    pub first_plane: u32,
-    pub plane_count: u32,
+    pub sides: qa_core::primitives::IndexSpan,
     pub contents: Contents,
 }
 
@@ -46,22 +45,13 @@ impl BrushMap {
             return Err(GeometryError::Plane);
         }
         let surfaces = SurfaceStorage::load(surfaces, planes.len())?;
-        if brushes.iter().any(|brush| {
-            (brush.first_plane as usize)
-                .checked_add(brush.plane_count as usize)
-                .is_none_or(|end| end > planes.len())
-        }) {
+        if brushes.iter().any(|brush| !brush.sides.fits(planes.len())) {
             return Err(GeometryError::BrushRange);
         }
         let (topology, models) = Topology::load(tree, &brushes)?;
         let axial_bounds = brushes
             .iter()
-            .map(|brush| {
-                axial_prefix(
-                    &planes[brush.first_plane as usize
-                        ..brush.first_plane as usize + brush.plane_count as usize],
-                )
-            })
+            .map(|brush| axial_prefix(&planes[brush.sides.range()]))
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Ok((
@@ -104,8 +94,7 @@ impl BrushMap {
         let mut contents = Contents::EMPTY;
         for &id in self.topology.members(leaf) {
             let brush = self.brushes[id as usize];
-            let planes = &self.planes[brush.first_plane as usize
-                ..brush.first_plane as usize + brush.plane_count as usize];
+            let planes = &self.planes[brush.sides.range()];
             if !planes
                 .iter()
                 .any(|plane| plane.signed_distance(point) > 0.0)
@@ -229,7 +218,7 @@ pub(super) fn position_brush(
     bounds: Option<Bounds>,
     trace: &mut Trace,
 ) {
-    if brush.plane_count == 0 {
+    if brush.sides.count == 0 {
         return;
     }
     let mut first = 0;
@@ -241,9 +230,7 @@ pub(super) fn position_brush(
         }
         first = 6;
     }
-    for &plane in &planes[brush.first_plane as usize + first
-        ..brush.first_plane as usize + brush.plane_count as usize]
-    {
+    for &plane in &planes[brush.sides.range()][first..] {
         if work.start.dot(plane.normal) - work.distance(plane, false) > 0.0 {
             return;
         }
@@ -261,11 +248,10 @@ pub(super) fn clip_brush(
     surfaces: SurfaceRows<'_>,
     trace: &mut Trace,
 ) {
-    if brush.plane_count == 0 {
+    if brush.sides.count == 0 {
         return;
     }
-    let sides = &planes
-        [brush.first_plane as usize..brush.first_plane as usize + brush.plane_count as usize];
+    let sides = &planes[brush.sides.range()];
     let rules = work.query.rules;
     let mut enter = -1.0f32;
     let mut second_enter = -1.0f32;
@@ -300,7 +286,7 @@ pub(super) fn clip_brush(
             if fraction > enter {
                 enter = fraction;
                 contact = plane;
-                (surface, surface_id) = surfaces.contact(brush.first_plane as usize + index);
+                (surface, surface_id) = surfaces.contact(brush.sides.first as usize + index);
             } else if rules.secondary_contact && fraction > second_enter {
                 // Native KEX only records this else branch; it does not move
                 // the previous primary plane into the secondary slot.
@@ -354,8 +340,7 @@ pub(super) fn trace_brushes(
             continue;
         }
         if query.start == query.end {
-            let sides = &planes[brush.first_plane as usize
-                ..brush.first_plane as usize + brush.plane_count as usize];
+            let sides = &planes[brush.sides.range()];
             position_brush(&work, planes, brush, axial_prefix(sides), &mut trace);
         } else {
             clip_brush(&work, planes, brush, surfaces, &mut trace);

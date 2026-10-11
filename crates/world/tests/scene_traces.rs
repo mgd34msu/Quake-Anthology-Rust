@@ -31,8 +31,10 @@ fn brush_world(planes: Vec<Plane>, brushes: Vec<Brush>) -> FixtureWorld {
                 nodes: Vec::new(),
                 leaves: vec![CollisionLeaf {
                     stored_contents: None,
-                    first_brush: 0,
-                    brush_count: count,
+                    brushes: qa_core::primitives::IndexSpan {
+                        first: 0,
+                        count: count,
+                    },
                 }],
                 leaf_brushes: (0..count).collect(),
                 models: vec![ModelRoot::Leaf(0)],
@@ -620,8 +622,7 @@ fn native_world_zero_fraction_returns_before_linked_body_merging() {
             axis: None,
         }],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
     );

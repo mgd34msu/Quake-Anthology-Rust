@@ -2195,8 +2195,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     nodes: vec![],
                     leaves: vec![qa_world::collision::brushes::CollisionLeaf {
                         stored_contents: None,
-                        first_brush: 0,
-                        brush_count: 0,
+                        brushes: qa_core::primitives::IndexSpan { first: 0, count: 0 },
                     }],
                     leaf_brushes: vec![],
                     models: vec![qa_world::collision::brushes::ModelRoot::Leaf(0); 2],

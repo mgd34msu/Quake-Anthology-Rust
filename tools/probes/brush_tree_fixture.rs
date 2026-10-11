@@ -117,8 +117,10 @@ pub fn load(
                 return Err("fixture side arena exceeds native capacity");
             }
             brushes.push(Brush {
-                first_plane: side_planes.len() as u32,
-                plane_count: plane_count as u32,
+                sides: qa_core::primitives::IndexSpan {
+                    first: side_planes.len() as u32,
+                    count: plane_count as u32,
+                },
                 contents,
             });
             for _ in 0..plane_count {
@@ -147,8 +149,10 @@ pub fn load(
             }
             leaves.push(CollisionLeaf {
                 stored_contents: Some(contents(word(&mut data)?)?),
-                first_brush: word(&mut data)?,
-                brush_count: word(&mut data)?,
+                brushes: qa_core::primitives::IndexSpan {
+                    first: word(&mut data)?,
+                    count: word(&mut data)?,
+                },
             });
         }
         let refs = count(&mut data, 0, 512)?;

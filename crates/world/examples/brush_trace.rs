@@ -78,8 +78,10 @@ fn load(
                 return Err("invalid fixture brush bounds");
             }
             brushes.push(Brush {
-                first_plane: planes.len() as u32,
-                plane_count,
+                sides: qa_core::primitives::IndexSpan {
+                    first: planes.len() as u32,
+                    count: plane_count,
+                },
                 contents: brush_contents,
             });
             for _ in 0..plane_count {

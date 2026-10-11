@@ -122,8 +122,7 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) ->
         },
         &planes,
         &[Brush {
-            first_plane: 0,
-            plane_count: 6,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },
             contents: Contents::BODY,
         }],
         SurfaceRows {

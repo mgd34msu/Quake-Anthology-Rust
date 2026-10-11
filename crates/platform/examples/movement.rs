@@ -37,8 +37,10 @@ fn box_brush(planes: &mut Vec<Plane>, brushes: &mut Vec<Brush>, mins: Vec3, maxs
         }
     }
     brushes.push(Brush {
-        first_plane,
-        plane_count: 6,
+        sides: qa_core::primitives::IndexSpan {
+            first: first_plane,
+            count: 6,
+        },
         contents: Contents::SOLID,
     });
 }
@@ -51,8 +53,7 @@ fn scene(store: &mut CollisionStore) -> Result<GeometryId, String> {
         axis: None,
     }];
     let mut brushes = vec![Brush {
-        first_plane: 0,
-        plane_count: 1,
+        sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
         contents: Contents::SOLID,
     }];
     for room in 0..64 {

@@ -8,12 +8,6 @@ fn valid_child(child: i32, nodes: usize, leaves: usize) -> bool {
     }
 }
 
-fn valid_span(span: SurfaceSpan, count: usize) -> bool {
-    (span.first as usize)
-        .checked_add(span.count as usize)
-        .is_some_and(|end| end <= count)
-}
-
 impl VisibilityWorld {
     #[allow(clippy::too_many_arguments)]
     pub fn load(
@@ -60,7 +54,7 @@ impl VisibilityWorld {
             {
                 return Err(VisibilityError::Child(index));
             }
-            if !valid_span(node.surfaces, surface_count) {
+            if !node.surfaces.fits(surface_count) {
                 return Err(VisibilityError::SurfaceRange(index));
             }
             let first = node.surfaces.first as usize;
@@ -78,7 +72,7 @@ impl VisibilityWorld {
             if !leaf.bounds.is_valid() {
                 return Err(VisibilityError::Bounds(nodes.len() + index));
             }
-            if !valid_span(leaf.surfaces, leaf_surfaces.len()) {
+            if !leaf.surfaces.fits(leaf_surfaces.len()) {
                 return Err(VisibilityError::SurfaceRange(nodes.len() + index));
             }
             if leaf

@@ -99,8 +99,7 @@ fn box_map() -> Case {
     load(
         planes,
         vec![Brush {
-            first_plane: 0,
-            plane_count: 6,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 6 },
             contents: Contents::SOLID,
         }],
     )
@@ -211,8 +210,10 @@ fn half_spaces(normals: &[Vec3]) -> Case {
             })
             .collect(),
         vec![Brush {
-            first_plane: 0,
-            plane_count: normals.len() as u32,
+            sides: qa_core::primitives::IndexSpan {
+                first: 0,
+                count: normals.len() as u32,
+            },
             contents: Contents::SOLID,
         }],
     )
@@ -272,13 +273,11 @@ fn nearer_brush_without_secondary_preserves_previous_native_second_slot() {
             .collect(),
         vec![
             Brush {
-                first_plane: 0,
-                plane_count: 2,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 2 },
                 contents: Contents::SOLID,
             },
             Brush {
-                first_plane: 2,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 2, count: 1 },
                 contents: Contents::SOLID,
             },
         ],
@@ -306,8 +305,7 @@ fn rerelease_uses_brush_contents_instead_of_stale_native_leaf_contents() {
         .load_brushes(
             vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)],
             vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
@@ -316,8 +314,7 @@ fn rerelease_uses_brush_contents_instead_of_stale_native_leaf_contents() {
                 nodes: vec![],
                 leaves: vec![CollisionLeaf {
                     stored_contents: Some(Contents::EMPTY),
-                    first_brush: 0,
-                    brush_count: 1,
+                    brushes: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 }],
                 leaf_brushes: vec![0],
                 models: vec![ModelRoot::Leaf(0)],
@@ -502,8 +499,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
             axis: None,
         }],
         vec![Brush {
-            first_plane: 0,
-            plane_count: 1,
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
             contents: Contents::SOLID,
         }],
     )
@@ -555,13 +551,11 @@ fn overlapping_contents() -> Case {
         ],
         vec![
             Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             },
             Brush {
-                first_plane: 1,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 1, count: 1 },
                 contents: Contents::PLAYER_CLIP,
             },
         ],

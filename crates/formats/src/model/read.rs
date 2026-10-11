@@ -11,10 +11,11 @@ pub(super) fn finite(value: f32) -> Result<(), FormatError> {
     }
 }
 pub(super) fn finite_vec(value: Vec3) -> Result<(), FormatError> {
-    for v in value.0 {
-        finite(v)?;
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(FormatError::InvalidValue)
     }
-    Ok(())
 }
 pub(super) fn bounded_index(index: usize, count: usize) -> Result<u32, FormatError> {
     if index >= count {

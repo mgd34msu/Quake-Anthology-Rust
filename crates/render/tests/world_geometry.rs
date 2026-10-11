@@ -1,6 +1,6 @@
 use qa_core::primitives::{Bounds, Plane, Vec3};
 use qa_formats::bsp::{
-    Bsp, Face, IndexRange, Map, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
+    Bsp, Face, IndexSpan, Map, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
 };
 use qa_render::scene::Span;
 use qa_render::world::geometry::{
@@ -93,7 +93,7 @@ fn legacy_map(bytes: &[u8]) -> Map<'_> {
     map.faces.push(Face {
         plane: 0,
         flags: 1,
-        edges: IndexRange { first: 0, count: 4 },
+        edges: IndexSpan { first: 0, count: 4 },
         texture_info: 0,
         styles: [0, 7, 255, 255],
         lighting_offset: 2,
@@ -164,8 +164,8 @@ fn q3_surface(kind: SurfaceKind, first: u32, count: u32) -> Surface<'static> {
         shader_name: &[],
         brush_side: -1,
         fog: -1,
-        vertices: IndexRange { first, count },
-        indices: IndexRange::default(),
+        vertices: IndexSpan { first, count },
+        indices: IndexSpan::default(),
         lightmap: -3,
         lightmap_rect: [0; 4],
         lightmap_origin: Vec3::default(),
@@ -202,7 +202,7 @@ fn q3_preserves_source_surface_ids_page_coordinates_colors_and_flare_metadata() 
     map.vertices[0].color = [5, 6, 7, 8];
     map.indices = vec![2, 0, 1];
     let mut face = q3_surface(SurfaceKind::Planar, 0, 3);
-    face.indices = IndexRange { first: 0, count: 3 };
+    face.indices = IndexSpan { first: 0, count: 3 };
     face.lightmap = 0;
     face.lightmap_rect = [10, 20, 30, 40];
     let mut flare = q3_surface(SurfaceKind::Flare, 0, 0);

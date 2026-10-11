@@ -1,5 +1,5 @@
 use qa_core::primitives::{Plane, Vec3};
-use qa_formats::bsp::{Bsp, Face, IndexRange, Map, TextureInfo, Vertex};
+use qa_formats::bsp::{Bsp, Face, IndexSpan, Map, TextureInfo, Vertex};
 use qa_render::world::geometry::grid::{GridFan, GridOptions, subdivide_surface};
 use qa_render::world::geometry::{GeometryOptions, WorldGeometry, load_geometry};
 
@@ -36,7 +36,7 @@ fn geometry(points: &[[f32; 3]], offset: [f32; 2]) -> WorldGeometry {
         faces: vec![Face {
             plane: 0,
             flags: 0,
-            edges: IndexRange { first: 0, count },
+            edges: IndexSpan { first: 0, count },
             texture_info: 0,
             styles: [255; 4],
             lighting_offset: -1,

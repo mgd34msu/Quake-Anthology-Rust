@@ -6,8 +6,7 @@ use qa_core::stamps::StampSet;
 #[derive(Clone, Copy, Debug)]
 pub struct CollisionLeaf {
     pub stored_contents: Option<Contents>,
-    pub first_brush: u32,
-    pub brush_count: u32,
+    pub brushes: qa_core::primitives::IndexSpan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,8 +35,10 @@ impl BrushTree {
             nodes: Vec::new(),
             leaves: vec![CollisionLeaf {
                 stored_contents: None,
-                first_brush: 0,
-                brush_count: count,
+                brushes: qa_core::primitives::IndexSpan {
+                    first: 0,
+                    count: count,
+                },
             }],
             leaf_brushes: (0..count).collect(),
             models: vec![ModelRoot::Leaf(0)],
@@ -130,11 +131,10 @@ impl Topology {
                 ModelRoot::Tree(child) => !valid_child(child),
                 ModelRoot::Leaf(leaf) => leaf as usize >= tree.leaves.len(),
             })
-            || tree.leaves.iter().any(|leaf| {
-                (leaf.first_brush as usize)
-                    .checked_add(leaf.brush_count as usize)
-                    .is_none_or(|end| end > tree.leaf_brushes.len())
-            })
+            || tree
+                .leaves
+                .iter()
+                .any(|leaf| !leaf.brushes.fits(tree.leaf_brushes.len()))
             || tree
                 .leaf_brushes
                 .iter()
@@ -171,8 +171,7 @@ impl Topology {
             .iter()
             .map(|leaf| {
                 leaf.stored_contents.unwrap_or_else(|| {
-                    tree.leaf_brushes[leaf.first_brush as usize
-                        ..leaf.first_brush as usize + leaf.brush_count as usize]
+                    tree.leaf_brushes[leaf.brushes.range()]
                         .iter()
                         .fold(Contents::EMPTY, |contents, &id| {
                             contents | brushes[id as usize].contents
@@ -195,8 +194,7 @@ impl Topology {
     }
 
     pub(super) fn members(&self, leaf: &CollisionLeaf) -> &[u32] {
-        &self.leaf_brushes
-            [leaf.first_brush as usize..leaf.first_brush as usize + leaf.brush_count as usize]
+        &self.leaf_brushes[leaf.brushes.range()]
     }
 
     pub(super) fn scratch_capacity(&self) -> usize {
@@ -460,8 +458,7 @@ mod tests {
                 axis: None,
             }],
             vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
             crate::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),

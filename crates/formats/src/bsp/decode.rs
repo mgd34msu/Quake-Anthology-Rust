@@ -10,8 +10,8 @@ impl Row<'_> {
             self.u16().map(u32::from)
         }
     }
-    fn range(&mut self, wide: bool) -> Result<IndexRange, FormatError> {
-        Ok(IndexRange {
+    fn range(&mut self, wide: bool) -> Result<IndexSpan, FormatError> {
+        Ok(IndexSpan {
             first: self.index(wide)?,
             count: self.index(wide)?,
         })
@@ -136,7 +136,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             0
         })?;
         let faces = if matches!(rules, RuleSetId::Quake3) {
-            IndexRange::default()
+            IndexSpan::default()
         } else {
             r.range(wide)?
         };
@@ -154,8 +154,8 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             area: -1,
             visibility_offset: -1,
             bounds: Bounds::default(),
-            faces: IndexRange::default(),
-            brushes: IndexRange::default(),
+            faces: IndexSpan::default(),
+            brushes: IndexSpan::default(),
             ambient: [0; 4],
         };
         if matches!(rules, RuleSetId::Quake) {
@@ -194,7 +194,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         if matches!(rules, RuleSetId::Quake) && flags > 1 {
             return Err(FormatError::InvalidValue);
         }
-        let edges = IndexRange {
+        let edges = IndexSpan {
             first: r.u32()?,
             count: r.index(wide)?,
         };
@@ -255,8 +255,8 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
             origin: Vec3::default(),
             headnodes: [0; 4],
             visible_leaves: 0,
-            faces: IndexRange::default(),
-            brushes: IndexRange::default(),
+            faces: IndexSpan::default(),
+            brushes: IndexSpan::default(),
             membership_from_tree: format == BspFormat::Quake3Test,
         };
         if format.modern_q3() {
@@ -331,7 +331,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     let indices = records(&bsp, Indices, Row::i32)?;
     let areas = records(&bsp, Areas, |r| {
         let count = r.u32()?;
-        Ok(IndexRange {
+        Ok(IndexSpan {
             first: r.u32()?,
             count,
         })

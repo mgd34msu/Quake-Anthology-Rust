@@ -1,7 +1,7 @@
 use qa_content::vfs::Vfs;
 use qa_core::primitives::{Bounds, Plane, Vec3};
 use qa_formats::{
-    bsp::{Bsp, Face, IndexRange, Leaf, Map, Model, TextureInfo, Vertex},
+    bsp::{Bsp, Face, IndexSpan, Leaf, Map, Model, TextureInfo, Vertex},
     image::MipTexture,
 };
 use qa_render::{
@@ -111,7 +111,7 @@ fn legacy_map<'a>(bytes: &'a [u8], family: u8) -> Result<Map<'a>, String> {
         map.faces.push(Face {
             plane: 0,
             flags: 0,
-            edges: IndexRange { first: 0, count: 4 },
+            edges: IndexSpan { first: 0, count: 4 },
             texture_info: index as u32,
             styles: [0, 255, 255, 255],
             lighting_offset: (index * if family == 1 { 4 } else { 12 }) as i32,
@@ -124,8 +124,8 @@ fn legacy_map<'a>(bytes: &'a [u8], family: u8) -> Result<Map<'a>, String> {
         area: -1,
         visibility_offset: -1,
         bounds,
-        faces: IndexRange { first: 0, count: 2 },
-        brushes: IndexRange { first: 0, count: 0 },
+        faces: IndexSpan { first: 0, count: 2 },
+        brushes: IndexSpan { first: 0, count: 0 },
         ambient: [0; 4],
     });
     map.models.push(Model {
@@ -133,8 +133,8 @@ fn legacy_map<'a>(bytes: &'a [u8], family: u8) -> Result<Map<'a>, String> {
         origin: Vec3([0.0; 3]),
         headnodes: [-1; 4],
         visible_leaves: 0,
-        faces: IndexRange { first: 0, count: 2 },
-        brushes: IndexRange { first: 0, count: 0 },
+        faces: IndexSpan { first: 0, count: 2 },
+        brushes: IndexSpan { first: 0, count: 0 },
         membership_from_tree: false,
     });
     Ok(map)

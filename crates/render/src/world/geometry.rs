@@ -207,7 +207,7 @@ pub fn load_geometry(
             .map(|model| WorldModel {
                 bounds: model.bounds,
                 origin: model.origin,
-                surfaces: model.faces.into(),
+                surfaces: model.faces,
             })
             .collect(),
         patch_stats: PatchStats::default(),
@@ -525,7 +525,7 @@ fn load_modern(
         let no_draw = flags & 0x80 != 0;
         let boundary_start = out.boundaries.len();
         let index_start = out.indices.len();
-        let mut vertices: Span = source.vertices.into();
+        let mut vertices: Span = source.vertices;
         let mut patch = None;
         let kind = match source.kind {
             SurfaceKind::Patch => {
@@ -546,7 +546,7 @@ fn load_modern(
                     return Err(GeometryError::NonFinite("patch LOD", id));
                 }
                 patch = Some(PatchGrid {
-                    control_vertices: source.vertices.into(),
+                    control_vertices: source.vertices,
                     control_dimensions: [source.patch[0] as u16, source.patch[1] as u16],
                     dimensions: grid.dimensions,
                     width_lod_error: grid.width_lod_error,
@@ -706,16 +706,15 @@ fn span(first: usize, count: usize) -> Result<Span, GeometryError> {
 
 fn section<'a, T>(
     values: &'a [T],
-    range: impl Into<Span>,
+    range: Span,
     field: &'static str,
     id: u32,
 ) -> Result<&'a [T], GeometryError> {
-    let range = range.into();
-    let end = (range.first as usize)
-        .checked_add(range.count as usize)
-        .ok_or(GeometryError::Reference(field, id))?;
+    if !range.fits(values.len()) {
+        return Err(GeometryError::Reference(field, id));
+    }
     values
-        .get(range.first as usize..end)
+        .get(range.range())
         .ok_or(GeometryError::Reference(field, id))
 }
 fn vertex_bounds(vertices: &[WorldVertex]) -> Result<Bounds, GeometryError> {

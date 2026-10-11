@@ -199,8 +199,7 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
                 axis: None,
             }],
             vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(0)]),

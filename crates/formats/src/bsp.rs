@@ -2,6 +2,7 @@
 //! Layouts: original qfiles.h/bspfile.h; v44 directly follows the C port reader.
 pub use crate::image::MipTexture;
 use crate::{FormatError, span, word};
+pub use qa_core::primitives::IndexSpan;
 use qa_core::primitives::{Bounds, ClipNode, Plane, RuleSetId, Vec3};
 
 mod decode;
@@ -259,25 +260,6 @@ impl<'a> Bsp<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct IndexRange {
-    pub first: u32,
-    pub count: u32,
-}
-impl IndexRange {
-    pub fn indices(self) -> std::ops::Range<usize> {
-        self.first as usize..self.first as usize + self.count as usize
-    }
-}
-impl From<IndexRange> for qa_core::primitives::IndexSpan {
-    fn from(range: IndexRange) -> Self {
-        Self {
-            first: range.first,
-            count: range.count,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex {
     pub position: Vec3,
@@ -292,7 +274,7 @@ pub struct Node {
     /// Negative children encode leaf = -1 - child.
     pub children: [i32; 2],
     pub bounds: Bounds,
-    pub faces: IndexRange,
+    pub faces: IndexSpan,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Leaf {
@@ -301,15 +283,15 @@ pub struct Leaf {
     pub area: i64,
     pub visibility_offset: i32,
     pub bounds: Bounds,
-    pub faces: IndexRange,
-    pub brushes: IndexRange,
+    pub faces: IndexSpan,
+    pub brushes: IndexSpan,
     pub ambient: [u8; 4],
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Face {
     pub plane: u32,
     pub flags: u32,
-    pub edges: IndexRange,
+    pub edges: IndexSpan,
     pub texture_info: u32,
     pub styles: [u8; 4],
     pub lighting_offset: i32,
@@ -329,13 +311,13 @@ pub struct Model {
     pub origin: Vec3,
     pub headnodes: [i32; 4],
     pub visible_leaves: i32,
-    pub faces: IndexRange,
-    pub brushes: IndexRange,
+    pub faces: IndexSpan,
+    pub brushes: IndexSpan,
     pub membership_from_tree: bool,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Brush {
-    pub sides: IndexRange,
+    pub sides: IndexSpan,
     pub contents: i32,
     pub shader: Option<u32>,
 }
@@ -381,8 +363,8 @@ pub struct Surface<'a> {
     pub shader_name: &'a [u8],
     pub brush_side: i32,
     pub fog: i32,
-    pub vertices: IndexRange,
-    pub indices: IndexRange,
+    pub vertices: IndexSpan,
+    pub indices: IndexSpan,
     pub lightmap: i32,
     pub lightmap_rect: [i32; 4],
     pub lightmap_origin: Vec3,
@@ -422,7 +404,7 @@ pub struct Map<'a> {
     pub fogs: Vec<Fog<'a>>,
     pub surfaces: Vec<Surface<'a>>,
     pub indices: Vec<i32>,
-    pub areas: Vec<IndexRange>,
+    pub areas: Vec<IndexSpan>,
     pub area_portals: Vec<AreaPortal>,
     pub extensions: Vec<Extension<'a>>,
 }

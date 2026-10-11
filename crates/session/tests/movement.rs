@@ -27,8 +27,7 @@ fn floor() -> (CollisionStore, GeometryId) {
                 axis: None,
             }],
             vec![Brush {
-                first_plane: 0,
-                plane_count: 1,
+                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
                 contents: Contents::SOLID,
             }],
             qa_world::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags(0)]),
@@ -353,8 +352,10 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
                 .collect(),
             (0..2)
                 .map(|first_plane| Brush {
-                    first_plane,
-                    plane_count: 1,
+                    sides: qa_core::primitives::IndexSpan {
+                        first: first_plane,
+                        count: 1,
+                    },
                     contents: Contents::SOLID,
                 })
                 .collect(),
@@ -365,8 +366,10 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
                 leaves: (0..2)
                     .map(|first_brush| CollisionLeaf {
                         stored_contents: None,
-                        first_brush,
-                        brush_count: 1,
+                        brushes: qa_core::primitives::IndexSpan {
+                            first: first_brush,
+                            count: 1,
+                        },
                     })
                     .collect(),
                 leaf_brushes: vec![0, 1],

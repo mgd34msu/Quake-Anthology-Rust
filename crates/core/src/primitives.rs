@@ -9,6 +9,11 @@ impl IndexSpan {
     pub fn range(self) -> std::ops::Range<usize> {
         self.first as usize..self.first as usize + self.count as usize
     }
+    pub fn fits(self, length: usize) -> bool {
+        (self.first as usize)
+            .checked_add(self.count as usize)
+            .is_some_and(|end| end <= length)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
