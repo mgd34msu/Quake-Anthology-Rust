@@ -821,12 +821,16 @@ fn quakec_vlen_uses_three_words_of_one_parameter_through_session_dispatch() {
     }
 }
 
-fn with_quakec_calls(rules: RuleSetId, run: impl FnOnce(&mut qa_compat::abi::QuakeCCalls<'_, '_>)) {
+fn with_quakec_calls(
+    rules: RuleSetId,
+    clients: usize,
+    run: impl FnOnce(&mut qa_compat::abi::QuakeCCalls<'_, '_>),
+) {
     use qa_compat::{
         abi::{QUAKEC, QuakeCCalls, UnknownCalls},
         services::ServiceStorage,
     };
-    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut runtime = Runtime::load(clients, []).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
     let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
@@ -855,12 +859,258 @@ fn with_quakec_calls(rules: RuleSetId, run: impl FnOnce(&mut qa_compat::abi::Qua
 }
 
 #[test]
+fn quakec_client_prints_resolve_native_namespaces_and_keep_native_payloads() {
+    use qa_core::events::OutputSubmission;
+    use qa_network::commands::packet::Protocol;
+    use qa_session::clients::Connection;
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for (builtin, level) in [(24, 1.75f32), (24, 2.0), (24, 3.0), (73, 2.0)] {
+            with_quakec_calls(rules, 3, |calls| {
+                let identities = [
+                    NativeEntity {
+                        module: ModuleId(2),
+                        slot: 3,
+                    },
+                    NativeEntity {
+                        module: ModuleId(1),
+                        slot: 3,
+                    },
+                    NativeEntity {
+                        module: ModuleId(1),
+                        slot: 1,
+                    },
+                ];
+                let clients = identities.map(|native| {
+                    calls
+                        .services
+                        .server
+                        .connect(
+                            Connection::Remote,
+                            native.module,
+                            PlayerTail::None,
+                            Some(native),
+                        )
+                        .unwrap()
+                });
+                let target = clients[1];
+                assert_ne!(target.0, identities[1].slot as u32);
+                assert_ne!(
+                    calls.services.server.clients[target.0 as usize].entity.slot,
+                    3
+                );
+                let qw_level = rules == RuleSetId::QuakeWorld && builtin == 24;
+                let operations = [
+                    (StoreF, 48, 4, 0),
+                    (StoreF, 49, 7, 0),
+                    (StoreF, 50, 10, 0),
+                    (StoreF, 51, 13, 0),
+                    (if qw_level { Call4 } else { Call3 }, 27, 0, 0),
+                    (Return, 1, 0, 0),
+                ];
+                let mut vm = Vm::load(
+                    Image::parse(
+                        &quakec_program::program(&operations, &[0, 1, -builtin]),
+                        Some(5927),
+                    )
+                    .unwrap(),
+                    Layout {
+                        entities: 4,
+                        header_bytes: 16,
+                        extra_string_bytes: 2048,
+                        state_step: 0.1,
+                    },
+                )
+                .unwrap();
+                let first = vm.insert_string(b"\x82seat").unwrap() as u32;
+                let second = vm.insert_string(b"\n").unwrap() as u32;
+                vm.image.globals[27] = 2;
+                vm.image.globals[48] = (vm.stride * 3) as u32;
+                let arguments = if qw_level {
+                    [level.to_bits(), first, second]
+                } else {
+                    [first, second, 0]
+                };
+                vm.image.globals[49..52].copy_from_slice(&arguments);
+                let returns = [0x12345678, 0x87654321, 0x11223344];
+                vm.image.globals[1..4].copy_from_slice(&returns);
+                assert_eq!(vm.call(calls, 1, 100, false), Ok(returns));
+                let presentation = calls.services.server.presentation;
+                let events = &mut calls.services.server.events;
+                let mut batch = events.batch(presentation).unwrap();
+                let record = events.next(&mut batch).unwrap();
+                let FrameEvent::Print(print) = record.event else {
+                    panic!()
+                };
+                assert_eq!(print.client, Some(target));
+                let wire_level = if qw_level { level as u8 } else { 2 };
+                let kind = if builtin == 73 {
+                    PrintKind::Center
+                } else {
+                    PrintKind::from_level(wire_level)
+                };
+                assert_eq!((print.kind, print.level), (kind, wire_level));
+                let text = events.texts.get(print.text).unwrap();
+                assert_eq!(text, b"\x82seat\n");
+                for protocol in [
+                    Protocol::NetQuake15,
+                    Protocol::QuakeWorld28,
+                    Protocol::Quake2_34,
+                    Protocol::Quake2Repro1038,
+                    Protocol::Quake3_68,
+                ] {
+                    let mut output = [0; 64];
+                    let count =
+                        qa_network::outputs::print(protocol, kind, wire_level, text, &mut output)
+                            .unwrap();
+                    let mut expected = match protocol {
+                        Protocol::NetQuake15 | Protocol::QuakeWorld28 => {
+                            vec![if builtin == 73 { 26 } else { 8 }]
+                        }
+                        Protocol::Quake2_34 | Protocol::Quake2Repro1038 => {
+                            vec![if builtin == 73 { 15 } else { 10 }]
+                        }
+                        Protocol::Quake3_68 => match kind {
+                            PrintKind::Center => b"cp \"".to_vec(),
+                            PrintKind::Chat => b"chat \"".to_vec(),
+                            _ => b"print \"".to_vec(),
+                        },
+                    };
+                    if builtin != 73
+                        && matches!(
+                            protocol,
+                            Protocol::QuakeWorld28
+                                | Protocol::Quake2_34
+                                | Protocol::Quake2Repro1038
+                        )
+                    {
+                        expected.push(wire_level);
+                    }
+                    if protocol == Protocol::NetQuake15 && kind == PrintKind::Chat {
+                        expected.push(1);
+                    }
+                    expected.extend(text);
+                    if protocol == Protocol::Quake3_68 {
+                        expected.push(b'"');
+                    }
+                    expected.push(0);
+                    assert_eq!(
+                        &output[..count],
+                        expected,
+                        "{rules:?} builtin {builtin} {protocol:?}"
+                    );
+                }
+                assert!(events.submit(presentation, record.sequence, OutputSubmission::BestEffort));
+                assert!(!events.is_empty());
+                for client in clients {
+                    let consumer = calls.services.server.clients[client.0 as usize]
+                        .output
+                        .unwrap();
+                    let events = &mut calls.services.server.events;
+                    let mut batch = events.batch(consumer).unwrap();
+                    if client == target {
+                        assert_eq!(events.next(&mut batch).unwrap().sequence, record.sequence);
+                        assert!(events.submit(
+                            consumer,
+                            record.sequence,
+                            OutputSubmission::BestEffort
+                        ));
+                    } else {
+                        assert!(events.next(&mut batch).is_none());
+                    }
+                }
+                assert!(calls.services.server.events.is_empty());
+                // A misaligned or out-of-range edict offset traps only on use.
+                for entity in [1, vm.entities.len() as u32] {
+                    vm.image.globals[48] = entity;
+                    assert_eq!(
+                        vm.call(calls, 1, 100, false),
+                        Err(qa_compat::quakec::Trap::Memory)
+                    );
+                    assert_eq!(&vm.image.globals[1..4], &returns);
+                    assert!(calls.services.server.events.is_empty());
+                }
+                // Removing the binding cannot redirect an old offset to the
+                // other module's client with the same native ordinal.
+                assert!(calls.services.server.disconnect(target));
+                vm.image.globals[48] = (vm.stride * 3) as u32;
+                assert_eq!(vm.call(calls, 1, 100, false), Ok(returns));
+                let events = &mut calls.services.server.events;
+                let mut batch = events.batch(presentation).unwrap();
+                let record = events.next(&mut batch).unwrap();
+                let FrameEvent::Print(print) = record.event else {
+                    panic!()
+                };
+                assert_eq!((print.client, print.kind), (None, PrintKind::Console));
+                assert_eq!(
+                    events.texts.get(print.text).unwrap(),
+                    b"tried to sprint to a non-client\n"
+                );
+                for client in [clients[0], clients[2]] {
+                    let mut batch = events
+                        .batch(
+                            calls.services.server.clients[client.0 as usize]
+                                .output
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    assert!(events.next(&mut batch).is_none());
+                }
+                assert!(events.submit(presentation, record.sequence, OutputSubmission::BestEffort));
+                assert!(events.is_empty());
+                assert_eq!(calls.unknown.calls, 0);
+                let mut host = quakec_host(rules, vm);
+                let target = host
+                    .runtime
+                    .server
+                    .connect(
+                        Connection::Remote,
+                        ModuleId(1),
+                        PlayerTail::None,
+                        Some(identities[1]),
+                    )
+                    .unwrap();
+                host.call_module_export(
+                    ModuleId(1),
+                    Export::clocked(CallbackId(0)),
+                    ThinkTime::module_clock(rules),
+                )
+                .unwrap();
+                assert_eq!(
+                    host.module_counts(ModuleId(1)).unwrap().last_result,
+                    Some(ModuleResult::QuakeC(returns))
+                );
+                assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+                let mut batch = host
+                    .runtime
+                    .server
+                    .events
+                    .batch(host.runtime.server.presentation)
+                    .unwrap();
+                let FrameEvent::Print(print) =
+                    host.runtime.server.events.next(&mut batch).unwrap().event
+                else {
+                    panic!()
+                };
+                assert_eq!(
+                    (print.client, print.kind, print.level),
+                    (Some(target), kind, wire_level)
+                );
+                assert_eq!(
+                    host.runtime.server.events.texts.get(print.text).unwrap(),
+                    b"\x82seat\n"
+                );
+            });
+        }
+    }
+}
+
+#[test]
 fn quakec_developer_prints_stay_local_while_broadcasts_reach_client_consumers() {
     use qa_core::events::{OutputSubmission, OutputTarget};
     use qa_core::primitives::ClientId;
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         for (builtin, enabled) in [(23, true), (25, true), (25, false)] {
-            with_quakec_calls(rules, |calls| {
+            with_quakec_calls(rules, 1, |calls| {
                 let context = calls.context.console;
                 let developer = calls.services.cvars.bind("developer", context).unwrap();
                 (qa_compat::services::ENGINE_CALLS.cvar_force)(
@@ -925,7 +1175,7 @@ fn quakec_developer_prints_stay_local_while_broadcasts_reach_client_consumers() 
 #[test]
 fn quakec_cvar_signature_reads_both_strings_and_preserves_void_returns() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
-        with_quakec_calls(rules, |calls| {
+        with_quakec_calls(rules, 1, |calls| {
             let mut vm = quakec_math_program(72);
             vm.image.globals[4] = vm.insert_string(b"fov").unwrap() as u32;
             vm.image.globals[7] = vm.insert_string(b"83").unwrap() as u32;
@@ -957,7 +1207,7 @@ fn quakec_makevectors_matches_original_rows_and_preserves_void_returns() {
     let rows =
         std::env::var_os("QA_QC_MAKEVECTORS_REFERENCE").map(|path| std::fs::read(path).unwrap());
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
-        with_quakec_calls(rules, |calls| {
+        with_quakec_calls(rules, 1, |calls| {
             let mut vm = quakec_math_program(1);
             for definition in vm.image.globaldefs.iter_mut() {
                 if definition.value_type == 3 {
@@ -1028,7 +1278,7 @@ fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
     ] {
         let rows = std::env::var_os(key).map(|path| std::fs::read(path).unwrap());
         for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
-            with_quakec_calls(rules, |calls| {
+            with_quakec_calls(rules, 1, |calls| {
                 let mut vm = quakec_math_program(builtin);
                 if let Some(rows) = &rows {
                     assert!(!rows.is_empty());

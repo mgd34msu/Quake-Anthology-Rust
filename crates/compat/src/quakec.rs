@@ -186,6 +186,10 @@ impl Vm {
     }
     /// Native entity values are byte offsets into this backing, never common
     /// EntityIds or client ordinals. Engine views read these same bytes.
+    pub fn entity_number(&self, entity: u32) -> Result<u32, Trap> {
+        self.field_address(entity, 0, 0)?;
+        Ok((entity as usize / self.stride) as u32)
+    }
     pub fn field_address(&self, entity: u32, field: u32, width: usize) -> Result<u64, Trap> {
         let row = entity as usize;
         if !row.is_multiple_of(self.stride)

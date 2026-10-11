@@ -178,6 +178,18 @@ impl Server {
         Some(ClientId(slot as u32))
     }
 
+    pub fn client_for_native(&self, native: NativeEntity) -> Option<ClientId> {
+        self.clients
+            .iter()
+            .position(|client| {
+                client.connection.is_some()
+                    && self.entities.resolve(client.entity).is_some()
+                    && self.entities.columns.native_entity[client.entity.slot as usize]
+                        == Some(native)
+            })
+            .map(|slot| ClientId(slot as u32))
+    }
+
     pub fn disconnect(&mut self, id: ClientId) -> bool {
         let Some(client) = self
             .clients

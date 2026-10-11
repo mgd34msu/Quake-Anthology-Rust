@@ -88,11 +88,12 @@ enum QcArgs {
     Scalars,
     Vector,
     Strings { from: usize, qw_from: usize },
+    ClientStrings { from: usize, qw_from: usize },
 }
 impl QcArgs {
     fn string_start(self, rules: qa_core::primitives::RuleSetId) -> Option<usize> {
         match self {
-            Self::Strings { from, qw_from } => {
+            Self::Strings { from, qw_from } | Self::ClientStrings { from, qw_from } => {
                 Some(if rules == qa_core::primitives::RuleSetId::QuakeWorld {
                     qw_from
                 } else {
@@ -451,6 +452,28 @@ const fn quakec() -> CallTable {
         call: qc_print::<false>,
         quakec: Some(QcSignature::new(QcArgc::Variadic, strings.args, false).developer()),
     });
+    t.entries[24] = Some(CallEntry {
+        call: qc_client_print::<false>,
+        quakec: Some(QcSignature::new(
+            QcArgc::Variadic,
+            QcArgs::ClientStrings {
+                from: 1,
+                qw_from: 2,
+            },
+            false,
+        )),
+    });
+    t.entries[73] = Some(CallEntry {
+        call: qc_client_print::<true>,
+        quakec: Some(QcSignature::new(
+            QcArgc::Variadic,
+            QcArgs::ClientStrings {
+                from: 1,
+                qw_from: 1,
+            },
+            false,
+        )),
+    });
     t.entries[36] = scalar!(rint, Some(scalar));
     t.entries[37] = scalar!(floor::<false>, Some(scalar));
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
@@ -499,13 +522,16 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         let (words, stride) = signature.args.layout(argc);
         let string_start = signature.args.string_start(self.context.console.source);
         for (index, to) in arguments[..words].iter_mut().enumerate() {
-            let word = *vm
+            let mut word = *vm
                 .image
                 .globals
                 .get(4 + index * stride)
                 .ok_or(quakec::Trap::Memory)?;
             if string_start.is_some_and(|first| index >= first) {
                 vm.string(word as i32)?;
+            }
+            if index == 0 && matches!(signature.args, QcArgs::ClientStrings { .. }) {
+                word = vm.entity_number(word)?;
             }
             *to = u64::from(word);
         }
@@ -620,12 +646,7 @@ fn qc_print<const BROADCAST: bool>(
     } else {
         PrintKind::Console.default_level()
     };
-    let mut text = FixedText::<1024>::default();
-    for index in first..c.arguments.len() {
-        let bytes = c.memory.cstring(c.pointer(index)?)?;
-        // QuakeC's VarString joins raw bytes rather than decoding UTF-8.
-        text.append_bytes(bytes).map_err(|_| CallError::Text)?;
-    }
+    let text = qc_var_string(c, first)?;
     (ENGINE_CALLS.print)(
         c.services,
         if BROADCAST {
@@ -638,6 +659,64 @@ fn qc_print<const BROADCAST: bool>(
             PrintKind::from_level(level)
         } else {
             PrintKind::Console
+        },
+        level,
+        text.as_bytes(),
+    )?;
+    Ok(CallValue::Word(0))
+}
+fn qc_var_string(c: &Invocation<'_, '_, '_>, first: usize) -> Result<FixedText<1024>, CallError> {
+    let mut text = FixedText::<1024>::default();
+    for index in first..c.arguments.len() {
+        let bytes = c.memory.cstring(c.pointer(index)?)?;
+        // QuakeC's VarString joins raw bytes rather than decoding UTF-8.
+        text.append_bytes(bytes).map_err(|_| CallError::Text)?;
+    }
+    Ok(text)
+}
+fn qc_client_print<const CENTER: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+    signature: Option<QcSignature>,
+) -> Result<CallValue, CallError> {
+    let first = signature
+        .ok_or(CallError::Memory)?
+        .args
+        .string_start(c.context.console.source)
+        .ok_or(CallError::Memory)?;
+    let text = qc_var_string(c, first)?;
+    let native = qa_core::primitives::NativeEntity {
+        module: c.context.module,
+        slot: i32::try_from(c.arg(0)?).map_err(|_| CallError::Entity)?,
+    };
+    let Some(client) = c
+        .services
+        .server
+        .client_for_native(native)
+        .filter(|_| native.slot > 0)
+    else {
+        (ENGINE_CALLS.print)(
+            c.services,
+            Some(qa_core::events::OutputTarget::Presentation),
+            None,
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            b"tried to sprint to a non-client\n",
+        )?;
+        return Ok(CallValue::Word(0));
+    };
+    let level = if first == 2 {
+        crate::numbers::native_integer(float::<false>(c, 1)?) as u8
+    } else {
+        PrintKind::Console.default_level()
+    };
+    (ENGINE_CALLS.print)(
+        c.services,
+        None,
+        Some(client),
+        if CENTER {
+            PrintKind::Center
+        } else {
+            PrintKind::from_level(level)
         },
         level,
         text.as_bytes(),
@@ -1347,17 +1426,7 @@ fn native_client(
 ) -> Result<Option<qa_core::primitives::ClientId>, CallError> {
     let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
     let native = entities.identity(c.memory, c.context, *table, address)?;
-    Ok(c.services
-        .server
-        .clients
-        .iter()
-        .position(|client| {
-            client.connection.is_some()
-                && c.services.server.entities.resolve(client.entity).is_some()
-                && c.services.server.entities.columns.native_entity[client.entity.slot as usize]
-                    == Some(native)
-        })
-        .map(|slot| qa_core::primitives::ClientId(slot as u32)))
+    Ok(c.services.server.client_for_native(native))
 }
 fn native_delivery<const WIDE: bool>(
     c: &Invocation<'_, '_, '_>,
