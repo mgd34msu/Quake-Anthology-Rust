@@ -347,7 +347,13 @@ impl Commands {
                         at = scratch.len() - prints.remaining().len();
                         consume(Incoming::Print(print));
                     }
-                    // Signon/configstrings, native sounds/effects, inventory and
+                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 1 | 2 | 9 | 32) => {
+                        let (cue, count) = crate::outputs::read_cue(self.protocol, &scratch[at..])
+                            .map_err(|_| packet::Error::Opcode)?;
+                        at += count;
+                        consume(Incoming::Cue(cue));
+                    }
+                    // Signon/configstrings, temp entities, inventory and
                     // stuffed commands require their own service bindings later.
                     _ => return Err(packet::Error::Opcode),
                 }

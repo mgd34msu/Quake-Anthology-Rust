@@ -5,6 +5,9 @@ use crate::{
 };
 use qa_core::primitives::{PrintKind, RuleSetId};
 
+mod cues;
+pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, write_cue};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Message(MessageError),

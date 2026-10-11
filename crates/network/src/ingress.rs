@@ -71,6 +71,7 @@ pub enum Incoming<'a> {
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
     PlayerInfo(crate::states::QwPlayerInfo),
     Print(crate::outputs::Print<'a>),
+    Cue(crate::outputs::Cue),
     Command {
         command: qa_core::primitives::UserCmd,
         output: Option<OutputConsumerId>,
