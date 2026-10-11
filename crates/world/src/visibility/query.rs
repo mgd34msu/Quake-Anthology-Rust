@@ -13,7 +13,7 @@ fn remaining_planes(bounds: Bounds, frustum: &[Plane], mut mask: u8) -> Option<u
                 bounds.mins.0[axis]
             }
         }));
-        if plane.normal.dot(positive) < plane.distance {
+        if plane.signed_distance(positive) < 0.0 {
             return None;
         }
         let negative = Vec3(std::array::from_fn(|axis| {
@@ -23,7 +23,7 @@ fn remaining_planes(bounds: Bounds, frustum: &[Plane], mut mask: u8) -> Option<u
                 bounds.maxs.0[axis]
             }
         }));
-        if plane.normal.dot(negative) >= plane.distance {
+        if plane.signed_distance(negative) >= 0.0 {
             mask &= !bit;
         }
     }
@@ -207,7 +207,7 @@ impl ViewVisibility {
                 self.walk_marks.mark(index);
                 self.counters.nodes_visited += 1;
                 let plane = world.planes[node.plane as usize];
-                let front = usize::from(plane.normal.dot(origin) < plane.distance);
+                let front = usize::from(plane.signed_distance(origin) < 0.0);
                 // Native r_bsp.c: near child, splitting-node surfaces, far child.
                 self.push_step(
                     &mut pending,

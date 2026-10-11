@@ -85,6 +85,6 @@ fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
             bounds.mins.0[axis]
         }
     }));
-    u8::from(plane.normal.dot(far) >= plane.distance)
-        | (u8::from(plane.normal.dot(near) < plane.distance) << 1)
+    u8::from(plane.signed_distance(far) >= 0.0)
+        | (u8::from(plane.signed_distance(near) < 0.0) << 1)
 }

@@ -220,7 +220,7 @@ impl VisibilityWorld {
         while child >= 0 {
             let node = &self.nodes[child as usize];
             let plane = self.planes[node.plane as usize];
-            let side = usize::from(plane.normal.dot(point) <= plane.distance);
+            let side = usize::from(plane.signed_distance(point) <= 0.0);
             child = node.children[side];
         }
         Some((-1 - i64::from(child)) as u32)

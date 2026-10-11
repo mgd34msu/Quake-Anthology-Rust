@@ -231,3 +231,11 @@ EntityTime and its rounding conversion are deleted; `app/src/modules.rs:535`
 assigns the clock directly. Seconds-to-ms truncation remains in ThinkTime alone.
 `render/src/cpu/world.rs:1883` uses Vec3::dot for cached-surface projection,
 preserving addition, subtraction and division order. No audited copy remains.
+
+## TA-3280: plane-side tests
+
+`core/src/primitives.rs:75` Plane::signed_distance supplies the side tests in
+`world/src/visibility.rs:223`, `world/src/leaves.rs:88` and
+`world/src/visibility/query.rs:16`, `:26`, `:210`. Each caller retains its
+original tie comparison. All six local dot/distance comparisons are deleted;
+the crate source scan finds no remaining copy of that comparison pattern.
