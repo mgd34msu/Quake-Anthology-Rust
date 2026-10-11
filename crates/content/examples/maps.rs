@@ -6,6 +6,7 @@ use qa_formats::bsp::Map;
 use std::{collections::BTreeMap, path::Path};
 
 fn main() -> Result<(), String> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::args_os().nth(1).ok_or("qfiles root required")?;
     let root = Path::new(&root);
     let vfs = assets::mount(root)?;
@@ -19,7 +20,7 @@ fn main() -> Result<(), String> {
         maps += 1;
         let length = vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize;
         let mut bytes = vec![0; length];
-        vfs.read_at(reference, 0, &mut bytes)
+        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let origin = vfs.origin(reference).ok_or("origin")?;
         match Map::parse(&bytes) {

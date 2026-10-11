@@ -93,6 +93,7 @@ fn zip(payload: &[u8], deflate: bool, descriptor: bool, prefix: &[u8]) -> Vec<u8
 
 #[test]
 fn stored_deflate_descriptors_and_stub_prefix_read_into_bounded_buffers() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     for deflate in [false, true] {
         for descriptor in [false, true] {
             let bytes = zip(b"123456789", deflate, descriptor, b"stub prefix");
@@ -101,10 +102,15 @@ fn stored_deflate_descriptors_and_stub_prefix_read_into_bounded_buffers() {
             assert_eq!(archive.kind, ArchiveKind::Zip);
             assert_eq!(archive.entries[0].crc32, Some(0xcbf43926));
             let mut out = [0; 9];
-            assert_eq!(archive.read_into(0, &mut out).unwrap(), 9);
+            assert_eq!(
+                archive
+                    .read_into_reusing(0, &mut out, &mut archive_reader)
+                    .unwrap(),
+                9
+            );
             assert_eq!(&out, b"123456789");
             assert_eq!(
-                archive.read_into(0, &mut [0; 8]),
+                archive.read_into_reusing(0, &mut [0; 8], &mut archive_reader),
                 Err(FormatError::InvalidRange)
             );
         }
@@ -152,11 +158,14 @@ fn reused_decoder_range_reads_preserve_large_members_and_check_unread_tail_crc()
 
 #[test]
 fn corrupt_crc_truncation_and_local_name_disagreement_are_scoped_errors() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let mut crc = zip(b"123456789", false, false, b"");
     crc[30 + b"maps/fixture.bsp".len()] ^= 1;
     let (_fixture, archive) = Fixture::parse(&crc);
     assert_eq!(
-        archive.unwrap().read_into(0, &mut [0; 9]),
+        archive
+            .unwrap()
+            .read_into_reusing(0, &mut [0; 9], &mut archive_reader),
         Err(FormatError::Checksum)
     );
     let mut wrong_name = zip(b"123456789", true, true, b"");

@@ -46,6 +46,7 @@ fn check(name: &[u8], bytes: &[u8]) -> Result<(String, usize), qa_formats::Forma
     Ok((format!("{format:?}"), 1))
 }
 fn main() -> Result<(), String> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::args_os().nth(1).ok_or("qfiles root required")?;
     let vfs = assets::mount(Path::new(&root))?;
     let mut counts = BTreeMap::new();
@@ -61,7 +62,7 @@ fn main() -> Result<(), String> {
         }
         files += 1;
         let mut bytes = vec![0; vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize];
-        vfs.read_at(reference, 0, &mut bytes)
+        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let origin = vfs.origin(reference).ok_or("origin")?;
         match check(name, &bytes) {

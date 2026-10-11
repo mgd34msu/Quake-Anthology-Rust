@@ -5,6 +5,14 @@
 pub struct Vec3(pub [f32; 3]);
 
 impl Vec3 {
+    pub const fn axis(index: usize, sign: f32) -> Self {
+        Self([
+            if index == 0 { sign } else { 0.0 },
+            if index == 1 { sign } else { 0.0 },
+            if index == 2 { sign } else { 0.0 },
+        ])
+    }
+
     pub fn dot(self, other: Self) -> f32 {
         self.0[0] * other.0[0] + self.0[1] * other.0[1] + self.0[2] * other.0[2]
     }
@@ -384,6 +392,27 @@ pub struct Bounds {
 }
 
 impl Bounds {
+    pub fn swept(start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3, margin: f32) -> Self {
+        Self {
+            mins: Vec3(std::array::from_fn(|axis| {
+                (if start.0[axis] < end.0[axis] {
+                    start.0[axis]
+                } else {
+                    end.0[axis]
+                }) + mins.0[axis]
+                    - margin
+            })),
+            maxs: Vec3(std::array::from_fn(|axis| {
+                (if start.0[axis] < end.0[axis] {
+                    end.0[axis]
+                } else {
+                    start.0[axis]
+                }) + maxs.0[axis]
+                    + margin
+            })),
+        }
+    }
+
     pub fn is_valid(self) -> bool {
         (0..3).all(|axis| {
             self.mins.0[axis].is_finite()

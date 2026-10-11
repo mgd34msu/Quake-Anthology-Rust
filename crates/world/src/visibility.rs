@@ -243,10 +243,12 @@ impl VisibilityWorld {
         output: &mut [u32],
         scratch: &mut crate::leaves::LeafScratch,
     ) -> Option<crate::leaves::BoxLeaves> {
-        scratch.query(self.root, bounds, output, |child| {
-            let node = self.nodes[child as usize];
-            (self.planes[node.plane as usize], node.children)
-        })
+        scratch.query(
+            self.root,
+            bounds,
+            output,
+            crate::bsp::node_view(&self.planes, &self.nodes),
+        )
     }
 
     pub fn point_in_leaf(&self, point: Vec3) -> Option<u32> {
@@ -254,10 +256,12 @@ impl VisibilityWorld {
             return None;
         }
         // qsrc model.c Mod_PointInLeaf uses > 0, including the back-side tie.
-        let child = crate::bsp::descend(self.root, point, true, |child| {
-            let node = &self.nodes[child as usize];
-            (self.planes[node.plane as usize], node.children)
-        });
+        let child = crate::bsp::descend(
+            self.root,
+            point,
+            true,
+            crate::bsp::node_view(&self.planes, &self.nodes),
+        );
         Some(qa_core::primitives::leaf_from_child(child))
     }
 

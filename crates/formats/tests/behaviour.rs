@@ -31,6 +31,7 @@ impl Drop for Fixture {
 
 #[test]
 fn pack_uses_first_duplicate_and_caller_member_buffer() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let mut bytes = vec![0; 144];
     bytes[..4].copy_from_slice(b"PACK");
     bytes[4..8].copy_from_slice(&16u32.to_le_bytes());
@@ -45,7 +46,7 @@ fn pack_uses_first_duplicate_and_caller_member_buffer() {
     let pak = fixture.parse().unwrap();
     let mut member = [0; 2];
     assert_eq!(
-        pak.read_into(pak.find(b"dup").unwrap(), &mut member)
+        pak.read_into_reusing(pak.find(b"dup").unwrap(), &mut member, &mut archive_reader)
             .unwrap(),
         2
     );
@@ -75,12 +76,14 @@ fn malformed_bsp_records_are_rejected_at_admission() {
 #[test]
 #[ignore = "requires an owned retail PAK; set QA_RETAIL_PAK and use --include-ignored"]
 fn retail_e1m1_lumps_and_player_frames_match_observed_data() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let path = std::env::var_os("QA_RETAIL_PAK").expect("QA_RETAIL_PAK");
     let pak = Archive::parse(Arc::new(File::open(path).unwrap())).unwrap();
-    let load = |name: &[u8]| {
+    let mut load = |name: &[u8]| {
         let entry = pak.find(name).unwrap();
         let mut bytes = vec![0; pak.entries[entry].length as usize];
-        pak.read_into(entry, &mut bytes).unwrap();
+        pak.read_into_reusing(entry, &mut bytes, &mut archive_reader)
+            .unwrap();
         bytes
     };
     let map = load(b"maps/e1m1.bsp");

@@ -125,14 +125,7 @@ impl Vm {
                             Err(Trap::Return)
                         };
                     }
-                    let ordinal = self
-                        .image
-                        .byte_to_instruction
-                        .get(target as usize)
-                        .copied()
-                        .filter(|&i| i != u32::MAX)
-                        .ok_or(Trap::Target)?;
-                    pc = ordinal as usize;
+                    pc = self.image.instruction_at(target).ok_or(Trap::Target)?;
                 }
                 Const | Local | Push => {
                     depth += 1;
@@ -179,13 +172,7 @@ impl Vm {
                             depth += 1;
                             *stack.get_mut(depth).ok_or(Trap::OperandStack)? = result;
                             let target = self.memory.read_word(program_stack as u64)?;
-                            pc = self
-                                .image
-                                .byte_to_instruction
-                                .get(target as usize)
-                                .copied()
-                                .filter(|&i| i != u32::MAX)
-                                .ok_or(Trap::Target)? as usize;
+                            pc = self.image.instruction_at(target).ok_or(Trap::Target)?;
                             continue;
                         }
                     }

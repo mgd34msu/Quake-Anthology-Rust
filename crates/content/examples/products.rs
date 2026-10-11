@@ -3,6 +3,7 @@ mod assets;
 #[path = "support/retail.rs"]
 mod retail;
 fn main() -> Result<(), String> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::args_os().nth(1).ok_or("qfiles root required")?;
     let vfs = assets::mount(std::path::Path::new(&root))?;
     let products = qa_content::products::detect(&vfs);
@@ -29,7 +30,7 @@ fn main() -> Result<(), String> {
             .ok_or("isolated default map missing")?;
         let mut bytes = vec![0; alone.length(reference).map_err(|e| format!("{e:?}"))? as usize];
         alone
-            .read_at(reference, 0, &mut bytes)
+            .read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         qa_formats::bsp::Map::parse(&bytes)
             .map_err(|e| format!("{} default geometry: {e:?}", spec.key))?;

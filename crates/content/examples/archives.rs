@@ -6,6 +6,7 @@ use retail::{chromium_resources, visit};
 use std::{fs::File, path::Path, sync::Arc};
 
 fn main() -> Result<(), String> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::args_os().nth(1).ok_or("qfiles root required")?;
     let root = Path::new(&root);
     let mut paths = Vec::new();
@@ -37,7 +38,7 @@ fn main() -> Result<(), String> {
         {
             let mut bytes = vec![0; metadata.length as usize];
             archive
-                .read_into(entry, &mut bytes)
+                .read_into_reusing(entry, &mut bytes, &mut archive_reader)
                 .map_err(|e| format!("{} member {entry}: {e:?}", path.display()))?;
             samples += 1;
         }
@@ -75,7 +76,7 @@ fn main() -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         let mut bytes = vec![0; length];
         products
-            .read_at(reference, 0, &mut bytes)
+            .read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let origin = products.origin(reference).ok_or("origin")?;
         println!(
@@ -102,7 +103,7 @@ fn main() -> Result<(), String> {
         }
         let mut bytes = vec![0; products.length(skin).map_err(|e| format!("{e:?}"))? as usize];
         products
-            .read_at(skin, 0, &mut bytes)
+            .read_range_reusing(skin, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         if bytes.len() != expected {
             return Err("ctank payload length differs".into());

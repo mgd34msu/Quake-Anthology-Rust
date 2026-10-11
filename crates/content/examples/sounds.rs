@@ -6,6 +6,7 @@ use qa_formats::sound::{self, Wav, WavPolicy};
 use std::{collections::BTreeMap, path::Path};
 
 fn main() -> Result<(), String> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::args_os().nth(1).ok_or("qfiles root required")?;
     let evidence = std::env::args_os().nth(2).map(std::path::PathBuf::from);
     if let Some(ref path) = evidence {
@@ -22,7 +23,7 @@ fn main() -> Result<(), String> {
             continue;
         }
         let mut bytes = vec![0; vfs.length(reference).map_err(|e| format!("{e:?}"))? as usize];
-        vfs.read_at(reference, 0, &mut bytes)
+        vfs.read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
             .map_err(|e| format!("{e:?}"))?;
         let origin = vfs.origin(reference).ok_or("origin")?;
         match sound::decode(&bytes, WavPolicy::Quake) {

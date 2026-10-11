@@ -424,19 +424,16 @@ impl Vfs {
         if let EntrySource::Archive { archive, entry } = &entry.source {
             return Ok(archive.read_into_reusing(*entry, destination, reader)?);
         }
-        self.read_at(reference, 0, destination)
+        self.read_loose(reference, 0, destination)
     }
 
-    pub fn read_at(
+    fn read_loose(
         &self,
         reference: FileRef,
         offset: u64,
         destination: &mut [u8],
     ) -> Result<usize, VfsError> {
         let entry = self.entry(reference)?;
-        if let EntrySource::Archive { archive, entry } = &entry.source {
-            return Ok(archive.read_at(*entry, offset, destination)?);
-        }
         let EntrySource::Loose(file) = &entry.source else {
             return Err(VfsError::Handle);
         };
@@ -461,7 +458,7 @@ impl Vfs {
         if let EntrySource::Archive { archive, entry } = &entry.source {
             return Ok(archive.read_range_reusing(*entry, offset, destination, reader)?);
         }
-        self.read_at(reference, offset, destination)
+        self.read_loose(reference, offset, destination)
     }
 
     /// The product mount loader reuses loose archive handles already opened by

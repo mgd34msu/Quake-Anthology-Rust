@@ -123,14 +123,12 @@ fn axial_prefix(planes: &[Plane]) -> Option<Bounds> {
     }
     let mut bounds = Bounds::default();
     for axis in 0..3 {
-        let mut negative = [0.0; 3];
-        negative[axis] = -1.0;
-        let mut positive = [0.0; 3];
-        positive[axis] = 1.0;
+        let negative = Vec3::axis(axis, -1.0);
+        let positive = Vec3::axis(axis, 1.0);
         let pair = &planes[axis * 2..axis * 2 + 2];
-        let (min, max) = if pair[0].normal == Vec3(negative) && pair[1].normal == Vec3(positive) {
+        let (min, max) = if pair[0].normal == negative && pair[1].normal == positive {
             (-pair[0].distance, pair[1].distance)
-        } else if pair[0].normal == Vec3(positive) && pair[1].normal == Vec3(negative) {
+        } else if pair[0].normal == positive && pair[1].normal == negative {
             (-pair[1].distance, pair[0].distance)
         } else {
             return None;
@@ -185,22 +183,7 @@ impl<'a> BrushWork<'a> {
                 (-mins.0[axis]).max(maxs.0[axis])
             }))
         };
-        let bounds = Bounds {
-            mins: Vec3(std::array::from_fn(|axis| {
-                (if start.0[axis] < end.0[axis] {
-                    start.0[axis]
-                } else {
-                    end.0[axis]
-                }) + mins.0[axis]
-            })),
-            maxs: Vec3(std::array::from_fn(|axis| {
-                (if start.0[axis] < end.0[axis] {
-                    end.0[axis]
-                } else {
-                    start.0[axis]
-                }) + maxs.0[axis]
-            })),
-        };
+        let bounds = Bounds::swept(start, end, mins, maxs, 0.0);
         Self {
             query,
             start,

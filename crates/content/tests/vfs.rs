@@ -39,6 +39,7 @@ fn normalized_paths_reject_traversal_and_native_absolute_paths() {
 
 #[test]
 fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("profile-filter");
     for name in [
         "q1/id1/view.JSON",
@@ -68,17 +69,29 @@ fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
     let winning = vfs.open(b"q1/id1/view.json").unwrap();
     assert_ne!(saved, winning);
     let mut bytes = [0; 8];
-    assert_eq!(vfs.read_at(saved, 0, &mut bytes).unwrap(), 5);
+    assert_eq!(
+        vfs.read_range_reusing(saved, 0, &mut bytes, &mut archive_reader)
+            .unwrap(),
+        5
+    );
     assert_eq!(&bytes[..5], b"saved");
-    assert_eq!(vfs.read_at(winning, 0, &mut bytes).unwrap(), 8);
+    assert_eq!(
+        vfs.read_range_reusing(winning, 0, &mut bytes, &mut archive_reader)
+            .unwrap(),
+        8
+    );
     assert_eq!(&bytes, b"impostor");
     assert!(vfs.unmount(profile));
     assert!(vfs.files_in_mount(profile).next().is_none());
-    assert!(vfs.read_at(saved, 0, &mut bytes).is_err());
+    assert!(
+        vfs.read_range_reusing(saved, 0, &mut bytes, &mut archive_reader)
+            .is_err()
+    );
 }
 
 #[test]
 fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("products");
     let mut vfs = Vfs::default();
     for (product, map) in [("id1", "e1m1"), ("baseq2", "base1"), ("baseq3", "q3dm1")] {
@@ -91,7 +104,11 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     assert_eq!(vfs.take_lookup_count(), 1);
     let mut buffer = [0; 16];
     for _ in 0..10_000 {
-        assert_eq!(vfs.read_at(reference, 0, &mut buffer).unwrap(), 4);
+        assert_eq!(
+            vfs.read_range_reusing(reference, 0, &mut buffer, &mut archive_reader)
+                .unwrap(),
+            4
+        );
         assert_eq!(&buffer[..4], b"e1m1");
     }
     assert_eq!(vfs.take_lookup_count(), 0);
@@ -107,15 +124,23 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     let mod_id = vfs.mount_directory(&mod_dir, 100).unwrap();
     let modified = vfs.open(b"maps/e1m1.bsp").unwrap();
     assert_ne!(reference, modified);
-    assert_eq!(vfs.read_at(modified, 0, &mut buffer).unwrap(), 3);
+    assert_eq!(
+        vfs.read_range_reusing(modified, 0, &mut buffer, &mut archive_reader)
+            .unwrap(),
+        3
+    );
     assert_eq!(&buffer[..3], b"mod");
     assert!(vfs.unmount(mod_id));
-    assert!(vfs.read_at(modified, 0, &mut buffer).is_err());
+    assert!(
+        vfs.read_range_reusing(modified, 0, &mut buffer, &mut archive_reader)
+            .is_err()
+    );
     assert_eq!(vfs.open(b"maps/e1m1.bsp"), Some(reference));
 }
 
 #[test]
 fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = Fixture::new("ranges");
     let path = root.0.join("pak0.pak");
     fn pack(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
@@ -147,7 +172,11 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
         .unwrap();
     let mut buffer = [0; 8];
     let first = vfs.open(b"a").unwrap();
-    assert_eq!(vfs.read_at(first, 0, &mut buffer).unwrap(), 5);
+    assert_eq!(
+        vfs.read_range_reusing(first, 0, &mut buffer, &mut archive_reader)
+            .unwrap(),
+        5
+    );
     assert_eq!(&buffer[..5], b"first");
     let mut reader = qa_formats::archive::ArchiveReader::default();
     assert_eq!(vfs.read_to_vec(first, 5, &mut reader).unwrap(), b"first");
@@ -159,7 +188,11 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     let skin_ref = vfs.open(skin).unwrap();
     assert_eq!(vfs.open(b"models/monsters/ctank/skin.pcx"), Some(skin_ref));
     assert_eq!(vfs.origin(skin_ref).unwrap().member, skin);
-    assert_eq!(vfs.read_at(skin_ref, 0, &mut buffer).unwrap(), 4);
+    assert_eq!(
+        vfs.read_range_reusing(skin_ref, 0, &mut buffer, &mut archive_reader)
+            .unwrap(),
+        4
+    );
     assert_eq!(&buffer[..4], b"skin");
     let bad_path = root.0.join("escape.pak");
     std::fs::write(&bad_path, pack(&[(b"models/../../escape", b"bad")])).unwrap();
@@ -173,7 +206,11 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
         .mount_archive(&next, 1, Arc::new(Archive::parse(next_file).unwrap()))
         .unwrap();
     let last = vfs.open(b"A").unwrap();
-    assert_eq!(vfs.read_at(last, 0, &mut buffer).unwrap(), 4);
+    assert_eq!(
+        vfs.read_range_reusing(last, 0, &mut buffer, &mut archive_reader)
+            .unwrap(),
+        4
+    );
     assert_eq!(&buffer[..4], b"last");
     assert_eq!(vfs.origin(last).unwrap().kind, MountKind::Pak);
     let listing: Vec<_> = vfs
@@ -190,7 +227,10 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     assert!(vfs.unmount(next_mount));
     assert_eq!(vfs.open(b"A"), Some(first));
     assert_eq!(vfs.files().count(), 3);
-    assert!(vfs.read_at(last, 0, &mut buffer).is_err());
+    assert!(
+        vfs.read_range_reusing(last, 0, &mut buffer, &mut archive_reader)
+            .is_err()
+    );
 }
 
 #[test]

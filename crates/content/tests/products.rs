@@ -1,6 +1,7 @@
 use qa_content::{products::detect, vfs::Vfs};
 #[test]
 fn standalone_products_and_two_rogue_packs_keep_their_own_default_sources() {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::temp_dir().join(format!("qa-rust-product-mix-{}", std::process::id()));
     let recipes = [
         ("id1", "start"),
@@ -20,7 +21,9 @@ fn standalone_products_and_two_rogue_packs_keep_their_own_default_sources() {
     assert_eq!(products.len(), 6); // Five installations plus the shared QW recipe.
     for product in products {
         let mut content = [0; 32];
-        let n = vfs.read_at(product.start_map, 0, &mut content).unwrap();
+        let n = vfs
+            .read_range_reusing(product.start_map, 0, &mut content, &mut archive_reader)
+            .unwrap();
         let expected = match product.spec().key {
             "q1-classic-id1" | "q1-quakeworld" => "id1",
             "q2-classic-baseq2" => "baseq2",

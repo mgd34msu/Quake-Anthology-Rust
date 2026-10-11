@@ -3,6 +3,7 @@ mod allocation_counter;
 use qa_content::vfs::Vfs;
 
 fn main() -> Result<(), &'static str> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::temp_dir().join(format!("qa-rust-vfs-probe-{}", std::process::id()));
     std::fs::create_dir_all(root.join("maps")).map_err(|_| "create fixture")?;
     std::fs::write(root.join("maps/fixture.bsp"), [42; 256]).map_err(|_| "write fixture")?;
@@ -16,7 +17,12 @@ fn main() -> Result<(), &'static str> {
     allocation_counter::start();
     for _ in 0..10_000 {
         let bytes = vfs
-            .read_at(reference, 0, std::hint::black_box(&mut buffer))
+            .read_range_reusing(
+                reference,
+                0,
+                std::hint::black_box(&mut buffer),
+                &mut archive_reader,
+            )
             .map_err(|_| "read")?;
         if bytes != 256 || buffer != [42; 256] {
             return Err("fixture bytes differ");

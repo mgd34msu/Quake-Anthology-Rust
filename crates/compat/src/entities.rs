@@ -89,6 +89,13 @@ impl NativeTraceView<'_, '_> {
     }
 }
 
+fn slot_address(entities: Entities, slot: u32) -> Option<u64> {
+    (slot < entities.capacity).then_some(())?;
+    entities
+        .address
+        .checked_add(u64::from(slot) * entities.stride)
+}
+
 pub(crate) fn native_address(
     native: Entities,
     module: ModuleId,
@@ -101,10 +108,7 @@ pub(crate) fn native_address(
         return None;
     }
     let slot = u32::try_from(identity.slot).ok()?;
-    if slot >= native.capacity {
-        return None;
-    }
-    native.address.checked_add(u64::from(slot) * native.stride)
+    slot_address(native, slot)
 }
 impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     fn module(&self) -> ModuleId {
@@ -112,13 +116,7 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     }
     fn fields(&self, slot: i32) -> Option<(CollisionOwner, CollisionTags)> {
         let slot = u32::try_from(slot).ok()?;
-        if slot >= self.entities.capacity {
-            return None;
-        }
-        let address = self
-            .entities
-            .address
-            .checked_add(u64::from(slot) * self.entities.stride)?;
+        let address = slot_address(self.entities, slot)?;
         Some((
             read_owner(
                 self.memory,

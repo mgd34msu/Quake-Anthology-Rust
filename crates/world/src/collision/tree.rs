@@ -204,10 +204,12 @@ impl Topology {
     }
 
     pub(super) fn point_leaf(&self, root: ModelRoot, point: Vec3) -> &CollisionLeaf {
-        let child = crate::bsp::descend(root_child(root), point, false, |child| {
-            let node = self.nodes[child as usize];
-            (self.planes[node.plane as usize], node.children)
-        });
+        let child = crate::bsp::descend(
+            root_child(root),
+            point,
+            false,
+            crate::bsp::node_view(&self.planes, &self.nodes),
+        );
         &self.leaves[leaf_from_child(child) as usize]
     }
 
@@ -234,14 +236,7 @@ impl Topology {
                     if limit > scratch.position_leaves.len() {
                         return trace;
                     }
-                    let bounds = Bounds {
-                        mins: Vec3(std::array::from_fn(|axis| {
-                            work.start.0[axis] + work.mins.0[axis] - 1.0
-                        })),
-                        maxs: Vec3(std::array::from_fn(|axis| {
-                            work.start.0[axis] + work.maxs.0[axis] + 1.0
-                        })),
-                    };
+                    let bounds = Bounds::swept(work.start, work.start, work.mins, work.maxs, 1.0);
                     let count = self.position_leaves(child, bounds, limit, scratch);
                     for index in 0..count {
                         self.visit_leaf(
@@ -312,10 +307,7 @@ impl Topology {
                 root,
                 bounds,
                 &mut scratch.position_leaves[..limit],
-                |child| {
-                    let node = self.nodes[child as usize];
-                    (self.planes[node.plane as usize], node.children)
-                },
+                crate::bsp::node_view(&self.planes, &self.nodes),
             )
             .map_or(0, |result| result.count)
     }

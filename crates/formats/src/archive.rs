@@ -264,23 +264,6 @@ impl Archive {
         })
     }
 
-    /// Whole-member read into an admitted caller buffer. No snapshot/digest cache.
-    pub fn read_into(&self, index: usize, destination: &mut [u8]) -> Result<usize, FormatError> {
-        let entry = self.entries.get(index).ok_or(FormatError::InvalidRange)?;
-        if entry.compression == Compression::Stored {
-            let length = usize::try_from(entry.length).map_err(|_| FormatError::InvalidRange)?;
-            let out = destination
-                .get_mut(..length)
-                .ok_or(FormatError::InvalidRange)?;
-            read_exact_at(&self.file, entry.offset, out)?;
-            if entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc) {
-                return Err(FormatError::Checksum);
-            }
-            return Ok(length);
-        }
-        self.read_into_reusing(index, destination, &mut ArchiveReader::default())
-    }
-
     pub fn read_into_reusing(
         &self,
         index: usize,
@@ -387,32 +370,6 @@ impl Archive {
                 }
             }
         }
-        Ok(count)
-    }
-
-    /// Stored members support range reads. Deflated assets load as whole members;
-    /// audio/rendering retain decoded data, rather than reopening compressed files.
-    pub fn read_at(
-        &self,
-        index: usize,
-        offset: u64,
-        destination: &mut [u8],
-    ) -> Result<usize, FormatError> {
-        let entry = self.entries.get(index).ok_or(FormatError::InvalidRange)?;
-        if offset == 0 && destination.len() as u64 >= entry.length {
-            return self.read_into(index, destination);
-        }
-        if entry.compression != Compression::Stored {
-            return Err(FormatError::InvalidRange);
-        }
-        let remaining = entry
-            .length
-            .checked_sub(offset)
-            .ok_or(FormatError::InvalidRange)?;
-        let count = destination
-            .len()
-            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        read_exact_at(&self.file, entry.offset + offset, &mut destination[..count])?;
         Ok(count)
     }
 }

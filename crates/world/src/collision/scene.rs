@@ -87,14 +87,7 @@ impl<'a> WorldTrace<'a> {
         } else {
             (query.mins, query.maxs)
         };
-        let bounds = Bounds {
-            mins: Vec3(std::array::from_fn(|axis| {
-                query.start.0[axis].min(query.end.0[axis]) + mins.0[axis] - 1.0
-            })),
-            maxs: Vec3(std::array::from_fn(|axis| {
-                query.start.0[axis].max(query.end.0[axis]) + maxs.0[axis] + 1.0
-            })),
-        };
+        let bounds = Bounds::swept(query.start, query.end, mins, maxs, 1.0);
         let columns = &self.entities.columns;
         let pass_slot = match query.pass {
             CollisionOwner::Lifetime(id) => self.entities.resolve(id),

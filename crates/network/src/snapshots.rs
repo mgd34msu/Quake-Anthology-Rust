@@ -333,9 +333,13 @@ impl NqStorage {
             overflow: false,
         };
         if let Some(old) = old {
-            let start = old.sequence.map_or(0, |n| n as usize & (SLOTS - 1)) * self.ring.capacity;
-            self.ring.scratch[..old.count]
-                .copy_from_slice(&self.ring.entities[start..start + old.count]);
+            let index = old.sequence.map_or(0, |n| n as usize & (SLOTS - 1));
+            self.ring.scratch[..old.count].copy_from_slice(rows(
+                &self.ring.entities,
+                self.ring.capacity,
+                index,
+                old.count,
+            ));
             packet.count = old.count;
             let seconds = old.time.seconds();
             for (index, entity) in self.ring.scratch[..old.count].iter().enumerate() {

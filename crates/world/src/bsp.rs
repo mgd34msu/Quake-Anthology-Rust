@@ -1,5 +1,35 @@
 //! BSP operations shared by collision and visibility.
-use qa_core::primitives::{Plane, Vec3};
+use qa_core::primitives::{ClipNode, Plane, Vec3};
+
+pub(crate) trait SplitNode {
+    fn plane(&self) -> u32;
+    fn children(&self) -> [i32; 2];
+}
+impl SplitNode for ClipNode {
+    fn plane(&self) -> u32 {
+        self.plane
+    }
+    fn children(&self) -> [i32; 2] {
+        self.children
+    }
+}
+impl SplitNode for crate::visibility::VisNode {
+    fn plane(&self) -> u32 {
+        self.plane
+    }
+    fn children(&self) -> [i32; 2] {
+        self.children
+    }
+}
+pub(crate) fn node_view<'a, N: SplitNode>(
+    planes: &'a [Plane],
+    nodes: &'a [N],
+) -> impl Fn(i32) -> (Plane, [i32; 2]) + 'a {
+    move |child| {
+        let node = &nodes[child as usize];
+        (planes[node.plane() as usize], node.children())
+    }
+}
 
 pub(crate) fn descend(
     mut child: i32,

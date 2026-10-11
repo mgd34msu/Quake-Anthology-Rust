@@ -191,6 +191,12 @@ pub struct AngleBasis {
     pub up: Vec3,
 }
 
+impl AngleBasis {
+    pub fn axes(self) -> [Vec3; 3] {
+        [self.forward, -self.right, self.up]
+    }
+}
+
 /// mathlib.c and Q2 q_shared.c multiply by an unsuffixed M_PI expression,
 /// storing the result into a float before calling sin(double)/cos(double).
 pub fn radians_from_degrees(angles: Vec3) -> Vec3 {

@@ -7,7 +7,7 @@ use crate::{
 use qa_core::{events::NativeReceipt, loopback::Endpoint};
 
 const SLOTS: usize = 64;
-const STRING_BYTES: usize = 1024;
+pub(crate) const STRING_BYTES: usize = 1024;
 
 struct Slot {
     text: [u8; STRING_BYTES],

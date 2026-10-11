@@ -134,7 +134,7 @@ impl Commands {
         let scratch = &mut self.scratch[..length];
         // Keys borrow retained native strings. Scratch keeps that key stable
         // while optional incoming commands update the opposite direction.
-        let mut command_text = [0; 1024];
+        let mut command_text = [0; crate::channel::commands::STRING_BYTES];
         let mut message_acknowledged = 0;
         let key = if self.protocol == Protocol::Quake3_68 {
             let ack = packet::acknowledgements(scratch)?;

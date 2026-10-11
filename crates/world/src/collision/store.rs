@@ -414,7 +414,7 @@ impl CollisionStore {
             && angles.0.iter().any(|&angle| angle != 0.0);
         let matrix = if rotated {
             let basis = basis(angles, rules.rotation);
-            let matrix = [basis.forward, -basis.right, basis.up];
+            let matrix = basis.axes();
             if rules.rotation == ModelRotation::TransposeBasis {
                 local.start = inverse_transform_point(Vec3::default(), matrix, local.start);
                 local.end = inverse_transform_point(Vec3::default(), matrix, local.end);

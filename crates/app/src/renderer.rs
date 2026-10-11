@@ -362,7 +362,7 @@ impl Renderer {
             let mut refdef = Refdef {
                 viewport,
                 origin: client.origin,
-                axes: [basis.forward, -basis.right, basis.up],
+                axes: basis.axes(),
                 fov: [fov_x, fov_y],
                 time_ms: client.time_ms,
                 ..Refdef::default()

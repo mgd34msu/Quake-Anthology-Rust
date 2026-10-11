@@ -121,6 +121,14 @@ fn section(bytes: &[u8], offset: i32, count: usize) -> Result<&[u8], FormatError
 }
 
 impl Image {
+    pub fn instruction_at(&self, byte_pc: i32) -> Option<usize> {
+        self.byte_to_instruction
+            .get(byte_pc as usize)
+            .copied()
+            .filter(|&i| i != u32::MAX)
+            .map(|i| i as usize)
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, FormatError> {
         let mut header = Reader::new(bytes);
         if header.u32()? != MAGIC {

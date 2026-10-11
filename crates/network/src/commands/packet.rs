@@ -494,7 +494,7 @@ pub fn read_with_commands(
             for _ in 0..3 {
                 r.read_bits(32)?;
             }
-            let mut text = [0; 1024];
+            let mut text = [0; crate::channel::commands::STRING_BYTES];
             let mut opcode = r.read_bits(8)?;
             let mut command_count = 0;
             while opcode == 4 {

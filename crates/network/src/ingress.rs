@@ -274,14 +274,6 @@ impl Connections {
                     } else if !payload.is_empty()
                         && endpoint == Endpoint::Client
                         && let Some(commands) = &mut connection.commands
-                        && matches!(
-                            commands.protocol,
-                            crate::commands::packet::Protocol::Quake3_68
-                                | crate::commands::packet::Protocol::NetQuake15
-                                | crate::commands::packet::Protocol::Quake2_34
-                                | crate::commands::packet::Protocol::Quake2Repro1038
-                                | crate::commands::packet::Protocol::QuakeWorld28
-                        )
                     {
                         let sequence = received.header.sequence;
                         let length = commands.stage(payload);

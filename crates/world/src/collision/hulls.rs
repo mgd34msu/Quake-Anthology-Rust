@@ -40,10 +40,12 @@ pub(crate) struct Hull<'a> {
 
 impl Hull<'_> {
     fn point_contents(&self, point: Vec3, node: i32) -> i32 {
-        crate::bsp::descend(node, point, false, |child| {
-            let node = self.nodes[child as usize];
-            (self.planes[node.plane as usize], node.children)
-        })
+        crate::bsp::descend(
+            node,
+            point,
+            false,
+            crate::bsp::node_view(&self.planes, &self.nodes),
+        )
     }
 
     fn blocked(&self, point: Vec3, node: i32, mask: Contents) -> bool {
@@ -224,8 +226,7 @@ impl Q1Hulls {
             }
             let axis = plane.axis.map(Axis::index);
             if let Some(axis) = axis
-                && plane.normal.0
-                    != std::array::from_fn(|index| if index == axis { 1.0 } else { 0.0 })
+                && plane.normal != Vec3::axis(axis, 1.0)
             {
                 return Err(HullError::Plane);
             }

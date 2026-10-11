@@ -95,7 +95,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
                     .map(|v| (f64::from(v) * (360.0 / 32700.0)) as f32),
             );
             let basis = angle_vectors_radians(radians_from_degrees_f32(angles));
-            (name, origin, [basis.forward, -basis.right, basis.up])
+            (name, origin, basis.axes())
         } else {
             (
                 s.name(64)?,

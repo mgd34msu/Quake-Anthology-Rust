@@ -36,9 +36,7 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Tr
     let planes: [Plane; 6] = std::array::from_fn(|index| {
         let axis = index / 2;
         Plane::oriented(
-            Vec3(std::array::from_fn(|coordinate| {
-                if coordinate == axis { 1.0 } else { 0.0 }
-            })),
+            Vec3::axis(axis, 1.0),
             if index & 1 == 0 {
                 body.maxs.0[axis] - mins.0[axis]
             } else {
@@ -102,13 +100,7 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) ->
                     0
                 },
             ]),
-            normal: Vec3(std::array::from_fn(|coordinate| {
-                if coordinate == axis {
-                    if positive { 1.0 } else { -1.0 }
-                } else {
-                    0.0
-                }
-            })),
+            normal: Vec3::axis(axis, if positive { 1.0 } else { -1.0 }),
             distance: if positive {
                 body.maxs.0[axis]
             } else {

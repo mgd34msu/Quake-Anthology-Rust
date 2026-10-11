@@ -530,7 +530,7 @@ fn run() -> Result<(), String> {
             height: HEIGHT,
         },
         origin: player.body.position + player.view_offset,
-        axes: [basis.forward, -basis.right, basis.up],
+        axes: basis.axes(),
         fov: [fov_x, fov_y],
         time_ms: 0,
         ..Refdef::default()

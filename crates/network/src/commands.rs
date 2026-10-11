@@ -106,6 +106,16 @@ fn vertical(command: &UserCmd, amount: f32) -> f32 {
     }
 }
 
+fn vertical_buttons(up: f32, jump_at: f32) -> u32 {
+    if up > 0.0 && up >= jump_at {
+        b::JUMP
+    } else if up < 0.0 {
+        b::CROUCH
+    } else {
+        0
+    }
+}
+
 pub fn to_q1_move(command: &UserCmd) -> Q1Move {
     Q1Move {
         view_angles: command.view_angles,
@@ -127,24 +137,26 @@ pub fn from_q1_move(command: Q1Move, duration_ms: u16, server_time_ms: i32) -> U
 }
 
 pub fn to_qw_usercmd(command: &UserCmd) -> QwCmd {
+    let q = to_q1_move(command);
     QwCmd {
         msec: command.duration_ms.min(255) as u8,
-        view_angles: command.view_angles,
-        movement: command.movement.map(|value| value as i32 as i16),
-        buttons: to_buttons(command.buttons, &Q1_BITS) as u8,
-        impulse: command.impulse,
+        view_angles: q.view_angles,
+        movement: q.movement,
+        buttons: q.buttons,
+        impulse: q.impulse,
     }
 }
 pub fn from_qw_usercmd(command: QwCmd, server_time_ms: i32) -> UserCmd {
-    UserCmd {
-        duration_ms: u16::from(command.msec),
+    from_q1_move(
+        Q1Move {
+            view_angles: command.view_angles,
+            movement: command.movement,
+            buttons: command.buttons,
+            impulse: command.impulse,
+        },
+        u16::from(command.msec),
         server_time_ms,
-        view_angles: command.view_angles,
-        movement: command.movement.map(f32::from),
-        buttons: from_buttons(u32::from(command.buttons), &Q1_BITS),
-        impulse: command.impulse,
-        ..UserCmd::default()
-    }
+    )
 }
 
 pub fn to_q2_usercmd(command: &UserCmd) -> Q2Cmd {
@@ -163,13 +175,7 @@ pub fn to_q2_usercmd(command: &UserCmd) -> Q2Cmd {
     }
 }
 pub fn from_q2_usercmd(command: Q2Cmd, server_time_ms: i32) -> UserCmd {
-    let vertical = if command.movement[2] > 0 {
-        b::JUMP
-    } else if command.movement[2] < 0 {
-        b::CROUCH
-    } else {
-        0
-    };
+    let vertical = vertical_buttons(f32::from(command.movement[2]), 0.0);
     UserCmd {
         duration_ms: u16::from(command.msec),
         server_time_ms,
@@ -184,12 +190,7 @@ pub fn from_q2_usercmd(command: Q2Cmd, server_time_ms: i32) -> UserCmd {
 
 pub fn to_q2_rr_usercmd(command: &UserCmd, server_frame: u32) -> Q2RrCmd {
     let mut buttons = command.buttons;
-    if command.movement[2] > 0.0 {
-        buttons |= b::JUMP;
-    }
-    if command.movement[2] < 0.0 {
-        buttons |= b::CROUCH;
-    }
+    buttons |= vertical_buttons(command.movement[2], 0.0);
     Q2RrCmd {
         msec: command.duration_ms.min(255) as u8,
         buttons: to_buttons(buttons, &Q2_RR_BITS) as u8,
@@ -225,13 +226,7 @@ pub fn to_q3_usercmd(command: &UserCmd, weapon: u8) -> Q3Cmd {
     }
 }
 pub fn from_q3_usercmd(command: Q3Cmd, previous_server_time: i32, weapon: WeaponId) -> UserCmd {
-    let vertical = if command.movement[2] >= 10 {
-        b::JUMP
-    } else if command.movement[2] < 0 {
-        b::CROUCH
-    } else {
-        0
-    };
+    let vertical = vertical_buttons(f32::from(command.movement[2]), 10.0);
     UserCmd {
         duration_ms: command
             .server_time

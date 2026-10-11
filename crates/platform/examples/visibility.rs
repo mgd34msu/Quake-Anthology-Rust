@@ -257,6 +257,7 @@ struct Loaded {
     last_leaf: u32,
 }
 fn load(spec: Spec) -> Result<Loaded, Box<dyn std::error::Error>> {
+    let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let file = Arc::new(File::open(&spec.archive)?);
     let archive = Arc::new(Archive::parse(file).map_err(|e| format!("archive: {e:?}"))?);
     let mut vfs = Vfs::default();
@@ -271,7 +272,7 @@ fn load(spec: Spec) -> Result<Loaded, Box<dyn std::error::Error>> {
     )?;
     let mut bytes = vec![0; length];
     if vfs
-        .read_at(reference, 0, &mut bytes)
+        .read_range_reusing(reference, 0, &mut bytes, &mut archive_reader)
         .map_err(|e| format!("map read: {e:?}"))?
         != length
     {
