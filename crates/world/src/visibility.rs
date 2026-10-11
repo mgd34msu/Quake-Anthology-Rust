@@ -78,6 +78,11 @@ pub enum VisibilityChannel {
 }
 
 impl PvsRows {
+    pub fn row_contains(row: &[u8], bit: u32) -> bool {
+        row.get(bit as usize / 8)
+            .is_some_and(|b| b & (1 << (bit & 7)) != 0)
+    }
+
     pub fn load(offsets: Vec<Option<u32>>, encoded: Vec<u8>) -> Result<Self, VisibilityError> {
         if offsets.len() > u32::MAX as usize || encoded.len() > u32::MAX as usize {
             return Err(VisibilityError::Size);
@@ -214,10 +219,7 @@ impl VisibilityWorld {
         match (first.selector, second.selector) {
             (Some(from), Some(to)) => {
                 self.pvs().read_channel(policy.channel, Some(from), row)?;
-                if row
-                    .get(to as usize / 8)
-                    .is_none_or(|b| b & (1 << (to % 8)) == 0)
-                {
+                if !PvsRows::row_contains(row, to) {
                     return Ok(false);
                 }
             }
@@ -259,7 +261,7 @@ impl VisibilityWorld {
             let side = usize::from(plane.signed_distance(point) <= 0.0);
             child = node.children[side];
         }
-        Some((-1 - i64::from(child)) as u32)
+        Some(qa_core::primitives::leaf_from_child(child))
     }
 
     pub fn leaf(&self, index: u32) -> Option<&VisLeaf> {

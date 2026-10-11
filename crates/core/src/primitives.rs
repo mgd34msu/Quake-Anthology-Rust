@@ -58,7 +58,21 @@ pub struct ClipNode {
     pub children: [i32; 2],
 }
 
+/// Admitted BSP callers supply a negative leaf child.
+pub const fn leaf_from_child(child: i32) -> u32 {
+    (-1i64 - child as i64) as u32
+}
+pub const fn child_from_leaf(leaf: u32) -> i32 {
+    (-1i64 - leaf as i64) as i32
+}
+
 impl Plane {
+    pub fn is_valid(self) -> bool {
+        self.distance.is_finite()
+            && self.normal.0.iter().all(|value| value.is_finite())
+            && self.normal != Vec3::default()
+    }
+
     pub fn oriented(normal: Vec3, distance: f32) -> Self {
         let axis = (0..3)
             .find(|&a| normal.0[a] == 1.0 && (0..3).all(|b| b == a || normal.0[b] == 0.0))

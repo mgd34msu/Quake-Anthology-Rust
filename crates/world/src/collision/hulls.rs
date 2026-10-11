@@ -39,13 +39,8 @@ pub(crate) struct Hull<'a> {
 }
 
 impl Hull<'_> {
-    fn point_contents(&self, point: Vec3, mut node: i32) -> i32 {
-        while node >= 0 {
-            let clip = self.nodes[node as usize];
-            let side = usize::from(self.planes[clip.plane as usize].signed_distance(point) < 0.0);
-            node = clip.children[side];
-        }
-        node
+    fn point_contents(&self, point: Vec3, node: i32) -> i32 {
+        super::descend(self.nodes, self.planes, node, point)
     }
 
     fn blocked(&self, point: Vec3, node: i32, mask: Contents) -> bool {
@@ -168,7 +163,7 @@ impl Hull<'_> {
     }
 }
 
-fn validate(nodes: &[ClipNode], plane_count: usize) -> Result<Vec<usize>, HullError> {
+fn validate(nodes: &[ClipNode], plane_count: usize) -> Result<Box<[usize]>, HullError> {
     if nodes.len() > i32::MAX as usize {
         return Err(HullError::Node);
     }
@@ -182,45 +177,11 @@ fn validate(nodes: &[ClipNode], plane_count: usize) -> Result<Vec<usize>, HullEr
             return Err(HullError::Node);
         }
     }
-    let mut colors = vec![0u8; nodes.len()];
-    let mut depths = vec![0usize; nodes.len()];
-    let mut pending = Vec::new();
-    for root in 0..nodes.len() {
-        if colors[root] == 2 {
-            continue;
-        }
-        pending.push((root, false));
-        while let Some((index, finish)) = pending.pop() {
-            if finish {
-                depths[index] = 1 + nodes[index]
-                    .children
-                    .iter()
-                    .filter(|child| **child >= 0)
-                    .map(|child| depths[*child as usize])
-                    .max()
-                    .unwrap_or(0);
-                colors[index] = 2;
-                continue;
-            }
-            if colors[index] == 2 {
-                continue;
-            }
-            if colors[index] == 1 {
-                return Err(HullError::Cycle);
-            }
-            colors[index] = 1;
-            pending.push((index, true));
-            for child in nodes[index]
-                .children
-                .iter()
-                .rev()
-                .filter(|child| **child >= 0)
-            {
-                pending.push((*child as usize, false));
-            }
-        }
-    }
-    Ok(depths)
+    crate::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| match error
+    {
+        crate::bsp::NodeError::Cycle => HullError::Cycle,
+        crate::bsp::NodeError::Depth => HullError::Node,
+    })
 }
 
 pub(super) struct Q1Hulls {
@@ -255,10 +216,7 @@ impl Q1Hulls {
             return Err(HullError::EmptyModels);
         }
         for plane in &planes {
-            if !plane.distance.is_finite()
-                || !plane.normal.0.iter().all(|value| value.is_finite())
-                || plane.normal.dot(plane.normal) == 0.0
-            {
+            if !plane.is_valid() {
                 return Err(HullError::Plane);
             }
             let axis = plane.axis.map(Axis::index);

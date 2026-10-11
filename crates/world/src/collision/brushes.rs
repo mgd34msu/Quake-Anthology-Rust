@@ -42,7 +42,7 @@ impl BrushMap {
         surfaces: SurfaceTable<'_>,
         tree: BrushTree,
     ) -> Result<(Self, Vec<ModelRoot>), GeometryError> {
-        if planes.iter().any(|plane| !valid_plane(*plane)) {
+        if planes.iter().any(|plane| !plane.is_valid()) {
             return Err(GeometryError::Plane);
         }
         let surfaces = SurfaceStorage::load(surfaces, planes.len())?;
@@ -117,12 +117,6 @@ impl BrushMap {
     }
 }
 
-pub(super) fn valid_plane(plane: Plane) -> bool {
-    plane.distance.is_finite()
-        && plane.normal.0.iter().all(|value| value.is_finite())
-        && plane.normal != Vec3::default()
-}
-
 fn axial_prefix(planes: &[Plane]) -> Option<Bounds> {
     if planes.len() < 6 {
         return None;
@@ -167,20 +161,18 @@ pub(super) struct BrushWork<'a> {
 
 impl<'a> BrushWork<'a> {
     pub fn new(query: TraceQuery<'a>) -> Self {
-        let mut start = query.start;
-        let mut end = query.end;
-        let mut mins = query.mins;
-        let mut maxs = query.maxs;
-        if query.rules.bounds_origin == BoundsOrigin::Centered {
-            for axis in 0..3 {
-                let center = (mins.0[axis] + maxs.0[axis]) * 0.5;
-                mins.0[axis] -= center;
-                maxs.0[axis] -= center;
-                start.0[axis] += center;
-                end.0[axis] += center;
-            }
-        }
         let centered = query.rules.bounds_origin == BoundsOrigin::Centered;
+        let mut centered_query = query;
+        if centered {
+            centered_query.center_box();
+        }
+        let TraceQuery {
+            start,
+            end,
+            mins,
+            maxs,
+            ..
+        } = centered_query;
         // Q3's tree classification tests size[0] alone. Support planes still
         // use both actual centered bounds, including asymmetric f32 rounding.
         let tree_point = mins == Vec3::default() && (centered || maxs == Vec3::default());

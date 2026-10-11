@@ -232,3 +232,8 @@ pub fn angle_vectors_radians(angles: Vec3) -> AngleBasis {
 pub fn anglemod(angle: f32) -> f32 {
     short_to_angle(angle_to_short(angle, AngleShortForm::Double) & 65535)
 }
+
+/// Keep native sum-before-half rounding in bounds and body centers.
+pub fn midpoint(a: Vec3, b: Vec3) -> Vec3 {
+    (a + b) * 0.5
+}

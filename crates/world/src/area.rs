@@ -402,18 +402,14 @@ impl AreaGrid {
                     bodies.position(follow.anchor, anchor)
                 };
                 let columns = &bodies.table().columns;
-                let position = Vec3(std::array::from_fn(|axis| {
-                    let offset = match follow.follow {
-                        BodyFollow::Translation => follow.offset.0[axis],
-                        BodyFollow::Center => {
-                            (columns.mins[anchor].0[axis] + columns.maxs[anchor].0[axis]) * 0.5
-                        }
-                        BodyFollow::BoundsMin => {
-                            columns.mins[anchor].0[axis] + follow.offset.0[axis]
-                        }
-                    };
-                    anchor_position.0[axis] + offset
-                }));
+                let offset = match follow.follow {
+                    BodyFollow::Translation => follow.offset,
+                    BodyFollow::Center => {
+                        qa_core::math::midpoint(columns.mins[anchor], columns.maxs[anchor])
+                    }
+                    BodyFollow::BoundsMin => columns.mins[anchor] + follow.offset,
+                };
+                let position = anchor_position + offset;
                 if !position.0.iter().all(|value| value.is_finite()) {
                     result.rejected += 1;
                     continue;

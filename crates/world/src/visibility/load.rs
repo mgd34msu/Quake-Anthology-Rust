@@ -4,7 +4,7 @@ fn valid_child(child: i32, nodes: usize, leaves: usize) -> bool {
     if child >= 0 {
         (child as usize) < nodes
     } else {
-        (-1 - i64::from(child)) < leaves as i64
+        (qa_core::primitives::leaf_from_child(child) as usize) < leaves
     }
 }
 
@@ -12,40 +12,6 @@ fn valid_span(span: SurfaceSpan, count: usize) -> bool {
     (span.first as usize)
         .checked_add(span.count as usize)
         .is_some_and(|end| end <= count)
-}
-
-fn validate_cycles(nodes: &[VisNode]) -> Result<(), VisibilityError> {
-    let mut marks = vec![0u8; nodes.len()];
-    let mut stack = Vec::with_capacity(nodes.len());
-    for root in 0..nodes.len() {
-        if marks[root] == 2 {
-            continue;
-        }
-        marks[root] = 1;
-        stack.push((root, 0));
-        while let Some((node, side)) = stack.last_mut() {
-            if *side == 2 {
-                marks[*node] = 2;
-                stack.pop();
-                continue;
-            }
-            let child = nodes[*node].children[*side];
-            *side += 1;
-            if child < 0 {
-                continue;
-            }
-            let child = child as usize;
-            match marks[child] {
-                1 => return Err(VisibilityError::Cycle),
-                0 => {
-                    marks[child] = 1;
-                    stack.push((child, 0));
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(())
 }
 
 impl VisibilityWorld {
@@ -75,10 +41,7 @@ impl VisibilityWorld {
             return Err(VisibilityError::Root);
         }
         for (index, plane) in planes.iter().enumerate() {
-            if !plane.distance.is_finite()
-                || plane.normal.0.iter().any(|value| !value.is_finite())
-                || plane.normal == Vec3::default()
-            {
+            if !plane.is_valid() {
                 return Err(VisibilityError::Plane(index));
             }
         }
@@ -130,7 +93,12 @@ impl VisibilityWorld {
                 return Err(VisibilityError::SurfaceReference(index));
             }
         }
-        validate_cycles(&nodes)?;
+        crate::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| {
+            match error {
+                crate::bsp::NodeError::Cycle => VisibilityError::Cycle,
+                crate::bsp::NodeError::Depth => VisibilityError::Size,
+            }
+        })?;
 
         // C port world.c:519: a validated BSP may share children; retain every parent.
         let mut parent_heads = vec![u32::MAX; nodes.len() + leaves.len()];
@@ -140,7 +108,7 @@ impl VisibilityWorld {
                 let child_index = if child >= 0 {
                     child as usize
                 } else {
-                    nodes.len() + (-1 - i64::from(child)) as usize
+                    nodes.len() + qa_core::primitives::leaf_from_child(child) as usize
                 };
                 let edge = parent_edges.len() as u32;
                 parent_edges.push(ParentEdge {

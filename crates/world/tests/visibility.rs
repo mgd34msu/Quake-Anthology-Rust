@@ -384,3 +384,15 @@ fn load_rejects_bad_topology_ownership_and_external_ranges() {
         VisibilityError::Bounds(0)
     );
 }
+
+#[test]
+fn row_membership_retains_byte_boundaries_and_missing_rows() {
+    let row = [0b1000_0001, 0b0000_0010];
+    for bit in 0..24 {
+        assert_eq!(
+            qa_world::visibility::PvsRows::row_contains(&row, bit),
+            matches!(bit, 0 | 7 | 9)
+        );
+    }
+    assert!(!qa_world::visibility::PvsRows::row_contains(&[], u32::MAX));
+}

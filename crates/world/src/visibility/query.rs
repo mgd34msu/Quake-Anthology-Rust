@@ -34,13 +34,7 @@ impl ViewVisibility {
         if origin.0.iter().any(|value| !value.is_finite()) {
             return Err(VisibilityQueryError::Origin);
         }
-        if frustum.len() > 6
-            || frustum.iter().any(|plane| {
-                !plane.distance.is_finite()
-                    || plane.normal.0.iter().any(|value| !value.is_finite())
-                    || plane.normal == Vec3::default()
-            })
-        {
+        if frustum.len() > 6 || frustum.iter().any(|plane| !plane.is_valid()) {
             return Err(VisibilityQueryError::Frustum);
         }
         if self.node_marks.len() != world.nodes.len()
@@ -139,15 +133,13 @@ impl ViewVisibility {
     ) -> Result<(), VisibilityQueryError> {
         for (index, leaf) in world.leaves.iter().enumerate() {
             if leaf.solid
-                || leaf.area.is_some_and(|area| {
-                    hidden_areas
-                        .get(area as usize / 8)
-                        .is_some_and(|bits| bits & (1 << (area & 7)) != 0)
-                })
+                || leaf
+                    .area
+                    .is_some_and(|area| PvsRows::row_contains(hidden_areas, area))
                 || !all_visible
-                    && !leaf.selector.is_some_and(|selector| {
-                        self.primary[selector as usize / 8] & (1 << (selector & 7)) != 0
-                    })
+                    && !leaf
+                        .selector
+                        .is_some_and(|selector| PvsRows::row_contains(&self.primary, selector))
             {
                 continue;
             }
@@ -222,7 +214,7 @@ impl ViewVisibility {
                     },
                 )?;
             } else {
-                let index = (-1 - i64::from(step.child)) as usize;
+                let index = qa_core::primitives::leaf_from_child(step.child) as usize;
                 let walk_index = world.nodes.len() + index;
                 if !self.leaf_marks.contains(index) || self.walk_marks.contains(walk_index) {
                     continue;

@@ -1,4 +1,5 @@
 pub mod area;
+mod bsp;
 pub mod collision;
 pub mod entities;
 pub mod leaves;

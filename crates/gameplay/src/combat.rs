@@ -228,9 +228,7 @@ pub(crate) fn impulse(target: &mut DamageTarget<'_>, direction: Vec3, force: f32
 }
 
 pub(crate) fn center(body: Body) -> Vec3 {
-    Vec3(std::array::from_fn(|axis| {
-        body.position.0[axis] + (body.mins.0[axis] + body.maxs.0[axis]) * 0.5
-    }))
+    body.position + qa_core::math::midpoint(body.mins, body.maxs)
 }
 
 pub(crate) fn center_falloff(blast: Blast, target: BlastTarget, radius: f32) -> Option<f32> {

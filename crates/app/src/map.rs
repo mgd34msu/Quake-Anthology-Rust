@@ -552,7 +552,7 @@ pub fn collision(map: &Map<'_>, store: &mut CollisionStore) -> Result<(GeometryI
             if child >= 0 {
                 child
             } else {
-                map.leaves[(-1i64 - i64::from(child)) as usize].contents
+                map.leaves[qa_core::primitives::leaf_from_child(child) as usize].contents
             }
         };
         let drawing = map

@@ -1,5 +1,5 @@
 //! Ordered box-to-leaf collection over admitted BSP nodes.
-use qa_core::primitives::{Bounds, Plane};
+use qa_core::primitives::{Bounds, Plane, leaf_from_child};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoxLeaves {
@@ -35,7 +35,7 @@ impl LeafScratch {
             top -= 1;
             let child = self.nodes[top];
             if child < 0 {
-                output[result.count] = (-1i64 - i64::from(child)) as u32;
+                output[result.count] = leaf_from_child(child);
                 result.count += 1;
                 continue;
             }

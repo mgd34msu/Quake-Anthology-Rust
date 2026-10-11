@@ -9,10 +9,19 @@ pub mod tree;
 
 pub use contents::Contents;
 use qa_core::primitives::{
-    CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
+    ClipNode, CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
 };
 pub use scene::{NativeTraceEntities, WorldTrace};
 pub use store::{CollisionStore, StoreError, TraceScratch};
+
+pub(super) fn descend(nodes: &[ClipNode], planes: &[Plane], mut child: i32, point: Vec3) -> i32 {
+    while child >= 0 {
+        let node = nodes[child as usize];
+        child =
+            node.children[usize::from(planes[node.plane as usize].signed_distance(point) < 0.0)];
+    }
+    child
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuakeTraceKind {
@@ -351,12 +360,12 @@ impl TraceQuery<'_> {
     pub(crate) fn center_box(&mut self) {
         // CM_TransformedBoxTrace centers world endpoints before translation;
         // doing those f32 operations in reverse loses native rounding.
+        let center = qa_core::math::midpoint(self.mins, self.maxs);
         for axis in 0..3 {
-            let center = (self.mins.0[axis] + self.maxs.0[axis]) * 0.5;
-            self.start.0[axis] += center;
-            self.end.0[axis] += center;
-            self.mins.0[axis] -= center;
-            self.maxs.0[axis] -= center;
+            self.start.0[axis] += center.0[axis];
+            self.end.0[axis] += center.0[axis];
+            self.mins.0[axis] -= center.0[axis];
+            self.maxs.0[axis] -= center.0[axis];
         }
     }
 

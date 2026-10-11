@@ -1,8 +1,6 @@
-use super::brushes::{
-    Brush, BrushMap, BrushWork, GeometryError, clip_brush, position_brush, valid_plane,
-};
+use super::brushes::{Brush, BrushMap, BrushWork, GeometryError, clip_brush, position_brush};
 use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceQuery};
-use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3};
+use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3, child_from_leaf, leaf_from_child};
 use qa_core::stamps::StampSet;
 
 #[derive(Clone, Copy, Debug)]
@@ -84,14 +82,10 @@ impl BrushScratch {
     }
 }
 
-fn leaf_index(child: i32) -> usize {
-    (-1i64 - i64::from(child)) as usize
-}
-
 fn root_child(root: ModelRoot) -> i32 {
     match root {
         ModelRoot::Tree(child) => child,
-        ModelRoot::Leaf(leaf) => (-1i64 - i64::from(leaf)) as i32,
+        ModelRoot::Leaf(leaf) => child_from_leaf(leaf),
     }
 }
 
@@ -107,7 +101,7 @@ impl Topology {
             return Err(GeometryError::Capacity);
         }
         if tree.planes.iter().any(|plane| {
-            if !valid_plane(*plane) {
+            if !plane.is_valid() {
                 return true;
             }
             if let Some(axis) = plane.axis {
@@ -122,7 +116,7 @@ impl Topology {
         }
         let valid_child = |child: i32| {
             if child < 0 {
-                leaf_index(child) < tree.leaves.len()
+                (leaf_from_child(child) as usize) < tree.leaves.len()
             } else {
                 (child as usize) < tree.nodes.len()
             }
@@ -149,44 +143,16 @@ impl Topology {
             return Err(GeometryError::TreeRange);
         }
 
-        // Memoized depth admits shared children while an active-node mark
-        // rejects cycles. Validate disconnected nodes as well as model roots.
-        let mut colors = vec![0u8; tree.nodes.len()];
-        let mut depths = vec![0usize; tree.nodes.len()];
-        let mut stack = Vec::with_capacity(tree.nodes.len());
-        for root in 0..tree.nodes.len() {
-            if colors[root] == 2 {
-                continue;
-            }
-            colors[root] = 1;
-            stack.push((root, 0usize));
-            while let Some(&mut (node, ref mut next)) = stack.last_mut() {
-                if *next < 2 {
-                    let child = tree.nodes[node].children[*next];
-                    *next += 1;
-                    if child < 0 {
-                        continue;
-                    }
-                    let child = child as usize;
-                    if colors[child] == 1 {
-                        return Err(GeometryError::TreeCycle);
-                    }
-                    if colors[child] == 0 {
-                        colors[child] = 1;
-                        stack.push((child, 0));
-                    }
-                } else {
-                    let children = tree.nodes[node].children;
-                    let depth = children
-                        .into_iter()
-                        .map(|child| if child < 0 { 1 } else { depths[child as usize] })
-                        .max()
-                        .unwrap_or(1);
-                    depths[node] = depth.checked_add(1).ok_or(GeometryError::Capacity)?;
-                    colors[node] = 2;
-                    stack.pop();
-                }
-            }
+        let mut depths =
+            crate::bsp::node_depths(tree.nodes.len(), |index| tree.nodes[index].children).map_err(
+                |error| match error {
+                    crate::bsp::NodeError::Cycle => GeometryError::TreeCycle,
+                    crate::bsp::NodeError::Depth => GeometryError::Capacity,
+                },
+            )?;
+        // Collision stacks include the terminal leaf, unlike raw node depth.
+        for depth in &mut depths {
+            *depth = depth.checked_add(1).ok_or(GeometryError::Capacity)?;
         }
         let max_depth = tree
             .models
@@ -238,13 +204,8 @@ impl Topology {
     }
 
     pub(super) fn point_leaf(&self, root: ModelRoot, point: Vec3) -> &CollisionLeaf {
-        let mut child = root_child(root);
-        while child >= 0 {
-            let node = self.nodes[child as usize];
-            let distance = self.planes[node.plane as usize].signed_distance(point);
-            child = node.children[usize::from(distance < 0.0)];
-        }
-        &self.leaves[leaf_index(child)]
+        let child = super::descend(&self.nodes, &self.planes, root_child(root), point);
+        &self.leaves[leaf_from_child(child) as usize]
     }
 
     pub(super) fn trace(
@@ -381,7 +342,7 @@ impl Topology {
             if frame.node < 0 {
                 self.visit_leaf(
                     map,
-                    leaf_index(frame.node) as u32,
+                    leaf_from_child(frame.node),
                     work,
                     false,
                     trace,

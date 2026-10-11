@@ -193,7 +193,7 @@ impl Step<'_> {
         self.player.movement.water_level = 1;
         self.player.movement.water_contents = contents.0;
         let middle = if self.nq() || self.qw() {
-            (body.mins.0[2] + body.maxs.0[2]) * 0.5
+            qa_core::math::midpoint(body.mins, body.maxs).0[2]
         } else {
             body.mins.0[2] + ((self.player.view_offset.0[2] - body.mins.0[2]) as i32 / 2) as f32
         };

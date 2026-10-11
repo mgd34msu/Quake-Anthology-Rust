@@ -311,3 +311,30 @@ fn bounds_corners_cover_octants_and_zero_normal_components() {
         );
     }
 }
+
+#[test]
+fn leaf_encoding_plane_validity_and_midpoint_keep_native_values() {
+    use qa_core::primitives::{child_from_leaf, leaf_from_child};
+    for leaf in [0, 1, 63, 65535, i32::MAX as u32] {
+        let child = child_from_leaf(leaf);
+        assert_eq!(child, (-1i64 - i64::from(leaf)) as i32);
+        assert_eq!(leaf_from_child(child), leaf);
+    }
+    let tiny = Vec3([f32::from_bits(1), 0.0, 0.0]);
+    assert_eq!(tiny.dot(tiny), 0.0);
+    assert!(Plane::oriented(tiny, 0.0).is_valid());
+    for (normal, distance) in [
+        (Vec3::default(), 0.0),
+        (Vec3([-0.0; 3]), 0.0),
+        (Vec3([f32::NAN, 0.0, 1.0]), 0.0),
+        (Vec3([1.0, 0.0, 0.0]), f32::INFINITY),
+    ] {
+        assert!(!Plane::oriented(normal, distance).is_valid());
+    }
+    for a in [Vec3([0.0, -0.0, 1.0]), Vec3([-97.375, 1234.625, f32::MAX])] {
+        for b in [Vec3([-0.0, 0.0, -1.0]), Vec3([73.125, -177.75, f32::MAX])] {
+            let old = Vec3(std::array::from_fn(|i| (a.0[i] + b.0[i]) * 0.5));
+            assert_eq!(midpoint(a, b).0.map(f32::to_bits), old.0.map(f32::to_bits));
+        }
+    }
+}
