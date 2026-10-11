@@ -322,7 +322,8 @@ Native-module, stock HUD and installed acceptance remains THE-3169.
 References are relative to `crates/`. `core/sys_events.rs` owns queued Text;
 SDL's private text remainder and the unused Char event are deleted.
 `input/lib.rs` reads drift, clamp, key-state and look choices from CommandRules.
-The host calls that one drift gate; physical pump Duration remains pacing-only.
+The host gates drift assignment with InputPolicy::pitch_drift; physical pump
+Duration remains pacing-only.
 
 `core/primitives.rs:4`, `:19`, `:295`, `:411`, `:735`, `math.rs:52`, `:199`
 and `text/numbers.rs:242` own ranges, axis vectors, module clocks, swept bounds,

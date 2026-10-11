@@ -46,10 +46,13 @@ fn native_time(
     text: &str,
 ) -> Result<ThinkTime, Box<dyn std::error::Error>> {
     use qa_core::primitives::RuleSetId;
-    Ok(match rules {
-        RuleSetId::Quake2 => ThinkTime::Seconds(text.parse::<f32>()? as f64),
-        RuleSetId::Quake | RuleSetId::QuakeWorld => ThinkTime::Seconds(text.parse()?),
-        RuleSetId::Quake2Rerelease | RuleSetId::Quake3 => ThinkTime::Milliseconds(text.parse()?),
+    Ok(match ThinkTime::module_clock(rules) {
+        ThinkTime::Seconds(_) => ThinkTime::Seconds(if rules == RuleSetId::Quake2 {
+            f64::from(text.parse::<f32>()?)
+        } else {
+            text.parse()?
+        }),
+        ThinkTime::Milliseconds(_) => ThinkTime::Milliseconds(text.parse()?),
     })
 }
 

@@ -293,6 +293,90 @@ fn client_frame_transports_followers_over_predicted_anchors_without_relinking_wo
 }
 
 #[test]
+fn server_set_angles_survive_q2_and_q3_client_prediction() {
+    use qa_app::{WorldCollision, client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::primitives::{Bounds, Vec3};
+    use qa_network::commands::packet::Protocol;
+    use qa_world::collision::{brushes::BrushTree, surfaces::SurfaceTable};
+
+    let mut runtime = Runtime::load(64, []).unwrap();
+    let geometry = runtime
+        .geometry
+        .load_brushes(
+            vec![],
+            vec![],
+            SurfaceTable::flags(vec![]),
+            BrushTree::direct(0).unwrap(),
+            vec![Bounds {
+                mins: Vec3([-1024.0; 3]),
+                maxs: Vec3([1024.0; 3]),
+            }],
+        )
+        .unwrap();
+    runtime.collision = Some(WorldCollision::new(&runtime.geometry, geometry, 0));
+    let mut local = [None; SeatId::COUNT];
+    let server_angles = [Vec3([22.5, 90.0, 0.0]), Vec3([-22.5, 135.0, 0.0])];
+    for (seat, rules, protocol) in [
+        (SeatId::FIRST, RuleSetId::Quake2, Protocol::Quake2_34),
+        (
+            SeatId::new(1).unwrap(),
+            RuleSetId::Quake3,
+            Protocol::Quake3_68,
+        ),
+    ] {
+        let client = runtime
+            .connect_local(
+                seat,
+                SpawnAnchor {
+                    position: Vec3([0.0, seat.index() as f32 * 128.0, 64.0]),
+                    angles: Vec3::default(),
+                    entity: seat.index() + 1,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                protocol,
+                seat.index() as u32,
+            )
+            .unwrap();
+        let player = &mut runtime.server.clients[client.0 as usize].player;
+        // Native teleport/set-angle adjusts delta_angles relative to the
+        // client's unchanged raw command angles. Deliver it in a snapshot.
+        player.movement.delta_angles = server_angles[seat.index()];
+        player.view_angles = server_angles[seat.index()];
+        local[seat.index()] = Some(client);
+    }
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    host.local_clients = local;
+    host.local_worlds[..2].fill(Some(qa_render::world::WorldId(0)));
+    assert!(host.native_input_policy_active());
+    let mut source = Source::default();
+    for ms in [100, 116, 132] {
+        source.time = ms;
+        let frame = host.frame(&mut source, true);
+        assert_eq!(frame.drains, 2);
+        for (seat, angles) in server_angles.iter().enumerate() {
+            let client = local[seat].unwrap();
+            assert!(
+                host.runtime.local_snapshots[client.0 as usize]
+                    .as_ref()
+                    .unwrap()
+                    .applied
+                    > 0
+            );
+            assert_eq!(frame.commands[seat].view_angles, Vec3::default());
+            assert_eq!(host.runtime.prediction[seat].player.view_angles, *angles);
+            assert_eq!(host.client_views()[seat].unwrap().angles, *angles);
+        }
+    }
+}
+
+#[test]
 fn commands_server_second_packets_and_client_share_the_com_frame_path() {
     let mut host = host();
     let id = host
