@@ -120,6 +120,39 @@ pub struct Refdef {
     pub palette_transform: Option<PaletteTransform>,
     pub lightstyles: [LightStyle; 256],
 }
+impl Refdef {
+    /// Shared view boundary for visibility and both drawing backends.
+    /// Returns the native half-FOV tangents in the original operation order.
+    pub fn validate(&self, width: u32, height: u32) -> Option<[f32; 2]> {
+        if !self.viewport.fits(width, height)
+            || (self.blend_phase == BlendPhase::FinalPalette
+                && self.blend_viewport.is_some_and(|v| !v.fits(width, height)))
+            || !self
+                .origin
+                .0
+                .iter()
+                .chain(self.axes.iter().flat_map(|axis| axis.0.iter()))
+                .chain(self.fov.iter())
+                .chain(self.blend.iter())
+                .all(|value| value.is_finite())
+            || self.fov.iter().any(|&fov| fov <= 0.0 || fov >= 180.0)
+            || !self.near.is_finite()
+            || self.near <= 0.0
+            || !(1.0 / self.near).is_finite()
+            || !self.far.is_finite()
+            || self.far <= self.near
+            || !self.identity_light.is_finite()
+            || !(0.0..=1.0).contains(&self.identity_light)
+        {
+            return None;
+        }
+        let tangent = self.fov.map(|fov| (fov.to_radians() * 0.5).tan());
+        tangent
+            .iter()
+            .all(|&t| t > 0.0 && t.is_finite())
+            .then_some(tangent)
+    }
+}
 impl Default for Refdef {
     fn default() -> Self {
         Self {

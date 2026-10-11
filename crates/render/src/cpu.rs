@@ -119,40 +119,16 @@ struct RasterPass<'a> {
 
 impl Camera {
     fn load(refdef: Refdef, width: u32, height: u32) -> Option<Self> {
-        if !refdef.viewport.fits(width, height)
-            || (refdef.blend_phase == BlendPhase::FinalPalette
-                && refdef
-                    .blend_viewport
-                    .is_some_and(|viewport| !viewport.fits(width, height)))
-            || !refdef
-                .origin
-                .0
-                .iter()
-                .chain(refdef.axes.iter().flat_map(|axis| axis.0.iter()))
-                .chain(refdef.fov.iter())
-                .chain(refdef.blend.iter())
-                .all(|f| f.is_finite())
-            || !refdef.identity_light.is_finite()
-            || refdef.palette_transform.is_some_and(|transform| {
-                transform.shifts.iter().any(|shift| {
-                    !(0..=256).contains(&shift.percent)
-                        || shift
-                            .destination
-                            .iter()
-                            .any(|value| !(0..=255).contains(value))
-                })
+        let tangent = refdef.validate(width, height)?;
+        if refdef.palette_transform.is_some_and(|transform| {
+            transform.shifts.iter().any(|shift| {
+                !(0..=256).contains(&shift.percent)
+                    || shift
+                        .destination
+                        .iter()
+                        .any(|value| !(0..=255).contains(value))
             })
-            || !refdef.near.is_finite()
-            || !refdef.far.is_finite()
-            || refdef.near <= 0.0
-            || !(1.0 / refdef.near).is_finite()
-            || refdef.far <= refdef.near
-            || refdef.fov.iter().any(|&f| f <= 0.0 || f >= 179.0)
-        {
-            return None;
-        }
-        let tangent = refdef.fov.map(|f| (f.to_radians() * 0.5).tan());
-        if tangent.iter().any(|&t| t <= 0.0 || !t.is_finite()) {
+        }) {
             return None;
         }
         let viewport = refdef.viewport;

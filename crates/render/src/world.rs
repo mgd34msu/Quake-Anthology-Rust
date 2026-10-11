@@ -133,18 +133,10 @@ impl WorldView {
 }
 
 pub fn frustum(view: Refdef) -> Result<[Plane; 6], VisibilityQueryError> {
-    if view
-        .fov
-        .iter()
-        .any(|&f| !f.is_finite() || f <= 0.0 || f >= 179.0)
-        || !view.near.is_finite()
-        || view.near <= 0.0
-        || !view.far.is_finite()
-        || view.far <= view.near
-    {
-        return Err(VisibilityQueryError::Frustum);
-    }
-    let tangent = view.fov.map(|f| (f.to_radians() * 0.5).tan());
+    // Visibility has no framebuffer; validate the view's own bounded extents.
+    let tangent = view
+        .validate(u32::MAX, u32::MAX)
+        .ok_or(VisibilityQueryError::Frustum)?;
     let normals = [
         view.axes[0] * tangent[0] + view.axes[1],
         view.axes[0] * tangent[0] - view.axes[1],

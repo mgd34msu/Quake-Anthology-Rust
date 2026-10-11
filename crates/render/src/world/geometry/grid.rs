@@ -142,9 +142,7 @@ pub fn subdivide_surface(
                 vertices.push(center(&polygon));
                 vertices.extend_from_slice(&polygon);
                 vertices.push(polygon[0]);
-                for i in 0..polygon.len() as u32 {
-                    triangles.extend_from_slice(&[first, first + i + 1, first + i + 2]);
-                }
+                super::push_fan(&mut triangles, first, polygon.len() as u32 + 2);
             }
         }
         stats.fragments += 1;

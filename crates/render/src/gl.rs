@@ -697,17 +697,17 @@ impl GlBackend {
                 Command::Empty => {}
                 Command::Clear(color) => self.clear(color),
                 Command::View(view) => {
-                    if !valid_refdef(view.refdef, self.width, self.height) {
+                    let Some(tangent) = view.refdef.validate(self.width, self.height) else {
                         stats.rejected = stats.rejected.saturating_add(1);
                         continue;
-                    }
+                    };
                     stats.views = stats.views.saturating_add(1);
                     stats.pending_lights =
                         stats.pending_lights.saturating_add(view.scene.lights.count);
                     self.viewport(view.refdef.viewport, true);
                     self.depth_state(true, true);
                     unsafe { (self.gl.clear)(DEPTH_BUFFER_BIT) };
-                    let projection = view_projection(view.refdef);
+                    let projection = view_projection(view.refdef, tangent);
                     inputs = DrawInputs {
                         time_ms: view.refdef.time_ms,
                         view_origin: view.refdef.origin,
@@ -811,7 +811,7 @@ impl GlBackend {
         for command in list.commands() {
             if let Command::View(view) = command {
                 if view.refdef.blend_phase == BlendPhase::FinalPalette
-                    && valid_refdef(view.refdef, self.width, self.height)
+                    && view.refdef.validate(self.width, self.height).is_some()
                 {
                     // Palette shifts change RGB without changing coverage.
                     unsafe {
@@ -1885,34 +1885,12 @@ unsafe fn shader_log(gl: &Gl, object: u32, program: bool) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn valid_refdef(view: Refdef, width: u32, height: u32) -> bool {
-    view.viewport.fits(width, height)
-        && (view.blend_phase != BlendPhase::FinalPalette
-            || view
-                .blend_viewport
-                .is_none_or(|viewport| viewport.fits(width, height)))
-        && view
-            .origin
-            .0
-            .iter()
-            .chain(view.axes.iter().flat_map(|axis| axis.0.iter()))
-            .chain(view.fov.iter())
-            .chain(view.blend.iter())
-            .all(|f| f.is_finite())
-        && view.fov.iter().all(|&f| f > 0.0 && f < 180.0)
-        && view.near.is_finite()
-        && view.near > 0.0
-        && view.far.is_finite()
-        && view.far > view.near
-        && view.identity_light.is_finite()
-        && (0.0..=1.0).contains(&view.identity_light)
-}
 fn rgba(color: [u8; 4]) -> [f32; 4] {
     color.map(|v| v as f32 / 255.0)
 }
-fn view_projection(view: Refdef) -> [f32; 16] {
-    let x = 1.0 / (view.fov[0].to_radians() * 0.5).tan();
-    let y = 1.0 / (view.fov[1].to_radians() * 0.5).tan();
+fn view_projection(view: Refdef, tangent: [f32; 2]) -> [f32; 16] {
+    let x = 1.0 / tangent[0];
+    let y = 1.0 / tangent[1];
     let a = (view.far + view.near) / (view.far - view.near);
     let b = -2.0 * view.far * view.near / (view.far - view.near);
     let (forward, left, up) = (view.axes[0], view.axes[1], view.axes[2]);

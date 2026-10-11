@@ -151,3 +151,125 @@ fn shared_view_point_keeps_post_dot_sign_with_caller_axes() {
         }
     }
 }
+
+#[test]
+fn shared_refdef_boundary_and_tangents_match_camera_and_frustum() {
+    let base = Refdef {
+        viewport: Viewport {
+            x: 7,
+            y: 3,
+            width: 640,
+            height: 400,
+        },
+        ..Refdef::default()
+    };
+    for fov in [
+        0.0,
+        -0.0,
+        1.0,
+        90.0,
+        178.0,
+        179.0,
+        179.5,
+        180.0,
+        f32::NAN,
+        f32::INFINITY,
+    ] {
+        let view = Refdef {
+            fov: [fov; 2],
+            ..base
+        };
+        let expected = fov > 0.0 && fov < 180.0;
+        let tangent = view.validate(1024, 768);
+        assert_eq!(tangent.is_some(), expected, "fov {fov}");
+        assert_eq!(Camera::load(view, 1024, 768).is_some(), expected);
+        assert_eq!(crate::world::frustum(view).is_ok(), expected);
+        if let Some(tangent) = tangent {
+            let original = (fov.to_radians() * 0.5).tan();
+            assert_eq!(tangent.map(f32::to_bits), [original.to_bits(); 2]);
+        }
+    }
+    for identity_light in [-0.01, 0.0, 0.5, 1.0, 1.01, f32::NAN, f32::INFINITY] {
+        let view = Refdef {
+            identity_light,
+            ..base
+        };
+        let expected = (0.0..=1.0).contains(&identity_light);
+        assert_eq!(view.validate(1024, 768).is_some(), expected);
+        assert_eq!(Camera::load(view, 1024, 768).is_some(), expected);
+        assert_eq!(crate::world::frustum(view).is_ok(), expected);
+    }
+    for view in [
+        Refdef {
+            near: f32::from_bits(1),
+            ..base
+        },
+        Refdef {
+            far: base.near,
+            ..base
+        },
+        Refdef {
+            origin: Vec3([f32::NAN, 0.0, 0.0]),
+            ..base
+        },
+        Refdef {
+            axes: [Vec3([f32::INFINITY; 3]); 3],
+            ..base
+        },
+        Refdef {
+            viewport: Viewport::default(),
+            ..base
+        },
+        Refdef {
+            viewport: Viewport {
+                x: u32::MAX,
+                width: 1,
+                ..base.viewport
+            },
+            ..base
+        },
+    ] {
+        assert!(view.validate(1024, 768).is_none());
+        assert!(Camera::load(view, 1024, 768).is_none());
+        assert!(crate::world::frustum(view).is_err());
+    }
+}
+
+#[test]
+fn palette_validation_stays_in_cpu_and_blend_bounds_stay_shared() {
+    let base = Refdef {
+        viewport: Viewport {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 400,
+        },
+        ..Refdef::default()
+    };
+    let mut transform = crate::scene::PaletteTransform::default();
+    transform.shifts[0].percent = 257;
+    let palette = Refdef {
+        palette_transform: Some(transform),
+        ..base
+    };
+    assert!(palette.validate(640, 400).is_some());
+    assert!(Camera::load(palette, 640, 400).is_none());
+    let blend = Refdef {
+        blend_phase: crate::scene::BlendPhase::FinalPalette,
+        blend_viewport: Some(Viewport {
+            width: 641,
+            ..base.viewport
+        }),
+        ..base
+    };
+    assert!(blend.validate(640, 400).is_none());
+    assert!(Camera::load(blend, 640, 400).is_none());
+    assert!(
+        Refdef {
+            blend_phase: crate::scene::BlendPhase::AfterView,
+            ..blend
+        }
+        .validate(640, 400)
+        .is_some()
+    );
+}

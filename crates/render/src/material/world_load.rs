@@ -289,6 +289,7 @@ pub fn load_world(
     }
     // GPU interpolation matches native pre-fragmented liquid/sky polygons;
     // the original convex boundaries remain the CPU edge-scanner input.
+    let mut legacy_kinds = Vec::with_capacity(geometry.surfaces.len());
     for source in 0..geometry.surfaces.len() {
         let surface = &geometry.surfaces[source];
         let legacy_name = if matches!(rules, RuleSetId::Quake) {
@@ -300,9 +301,9 @@ pub fn load_world(
         } else {
             None
         };
-        let warp = legacy_name.is_some_and(|name| name.starts_with(b"*"))
-            || (matches!(rules, RuleSetId::Quake2) && surface.source_flags & 8 != 0);
-        let sky = legacy_name.is_some_and(|name| name.starts_with(b"sky"));
+        let kind = legacy_kind(rules, legacy_name.unwrap_or_default(), surface.source_flags);
+        legacy_kinds.push(kind);
+        let (warp, sky) = kind;
         if warp || sky {
             let texture_offset = if warp {
                 [
@@ -333,7 +334,8 @@ pub fn load_world(
         }
     }
     let mut bindings = Vec::with_capacity(geometry.surfaces.len());
-    for surface in &geometry.surfaces {
+    for (surface, &kind) in geometry.surfaces.iter().zip(&legacy_kinds) {
+        let (warp, sky) = kind;
         if surface.no_draw {
             bindings.push(SurfaceMaterial::default());
             continue;
@@ -364,7 +366,7 @@ pub fn load_world(
             let name = std::str::from_utf8(info.name)
                 .map_err(|_| WorldMaterialError::Boundary("invalid texture name"))?
                 .to_owned();
-            let image = if surface.source_flags & 4 != 0 {
+            let image = if sky {
                 ImageId(0)
             } else {
                 images.wal(
@@ -396,7 +398,7 @@ pub fn load_world(
                 .and_then(|index| layered_skies.get(index as usize))
                 .copied()
                 .flatten()
-        } else if matches!(rules, RuleSetId::Quake2) && flags & 4 != 0 {
+        } else if matches!(rules, RuleSetId::Quake2) && sky {
             Some(Sky::Cube {
                 outer_box: Some(load_indexed_box(
                     options.sky_environment,
@@ -434,9 +436,7 @@ pub fn load_world(
         } else {
             None
         };
-        if (matches!(rules, RuleSetId::Quake) && name.starts_with('*'))
-            || (matches!(rules, RuleSetId::Quake2) && flags & 8 != 0)
-        {
+        if warp {
             scale = [1.0 / 64.0; 2];
         }
         let legacy_shader_name = (!matches!(rules, RuleSetId::Quake3))
@@ -457,6 +457,7 @@ pub fn load_world(
                     image,
                     flags,
                     rules,
+                    kind,
                     surface.light_source,
                     legacy_sky,
                     &mut images,
@@ -876,19 +877,27 @@ fn load_box_with_suffix(
     Ok(Some(result))
 }
 
+fn legacy_kind(rules: RuleSetId, name: &[u8], flags: u32) -> (bool, bool) {
+    match rules {
+        RuleSetId::Quake | RuleSetId::QuakeWorld => {
+            (name.starts_with(b"*"), name.starts_with(b"sky"))
+        }
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (flags & 8 != 0, flags & 4 != 0),
+        RuleSetId::Quake3 => (false, false),
+    }
+}
+
 fn legacy_material(
     name: &str,
     image: ImageId,
     flags: u32,
     rules: RuleSetId,
+    kind: (bool, bool),
     light: LightSource,
     sky_material: Option<Sky>,
     images: &mut Images<'_>,
 ) -> Result<MaterialId, WorldMaterialError> {
-    let warp = (matches!(rules, RuleSetId::Quake) && name.starts_with('*'))
-        || (matches!(rules, RuleSetId::Quake2) && flags & 8 != 0);
-    let sky = (matches!(rules, RuleSetId::Quake) && name.starts_with("sky"))
-        || (matches!(rules, RuleSetId::Quake2) && flags & 4 != 0);
+    let (warp, sky) = kind;
     if sky {
         let sky =
             sky_material.ok_or(WorldMaterialError::Boundary("missing native sky resources"))?;
@@ -1053,3 +1062,7 @@ fn load_layered_sky(
         sphere: LayeredSphere::NATIVE,
     })
 }
+
+#[cfg(test)]
+#[path = "../../tests/legacy_kind/oracle.rs"]
+mod legacy_kind_tests;
