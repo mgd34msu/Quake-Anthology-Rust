@@ -214,13 +214,16 @@ pub fn load_visibility(map: &Map<'_>) -> Result<VisibilityWorld, WorldLoadError>
             .collect::<Result<Vec<_>, _>>()?;
         PvsRows::load(offsets, bytes.to_vec())?
     } else if matches!(rules, RuleSetId::Quake2) {
-        let offsets = (0..count)
+        let (offsets, hearing): (Vec<_>, Vec<_>) = (0..count)
             .map(|cluster| {
                 let offset = word(bytes, 4 + cluster * 8)? as i32;
-                Ok(u32::try_from(offset).ok())
+                let hearing = word(bytes, 8 + cluster * 8)? as i32;
+                Ok((u32::try_from(offset).ok(), u32::try_from(hearing).ok()))
             })
-            .collect::<Result<Vec<_>, WorldLoadError>>()?;
-        PvsRows::load(offsets, bytes.to_vec())?
+            .collect::<Result<Vec<_>, WorldLoadError>>()?
+            .into_iter()
+            .unzip();
+        PvsRows::load(offsets, bytes.to_vec())?.with_hearing(hearing)?
     } else {
         let stride = word(bytes, 4)? as usize;
         let length = count.div_ceil(8);

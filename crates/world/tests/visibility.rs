@@ -4,6 +4,42 @@ use qa_world::visibility::{
     VisibilityWorld,
 };
 
+#[test]
+fn hearing_rows_share_encoded_data_and_keep_independent_offsets() {
+    use qa_world::visibility::VisibilityChannel::{Hearing, Sight};
+    let rows = PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 3, 0, 1])
+        .unwrap()
+        .with_hearing(vec![Some(2), Some(3)])
+        .unwrap();
+    let mut row = [0];
+    for (channel, selector, expected) in [
+        (Sight, 0, 1),
+        (Sight, 1, 2),
+        (Hearing, 0, 3),
+        (Hearing, 1, 0),
+    ] {
+        rows.read_channel(channel, Some(selector), &mut row)
+            .unwrap();
+        assert_eq!(row, [expected]);
+    }
+    assert!(PvsRows::all_visible(2).with_hearing(vec![None]).is_err());
+    assert!(
+        PvsRows::load(vec![Some(0)], vec![1])
+            .unwrap()
+            .with_hearing(vec![Some(2)])
+            .is_err()
+    );
+    assert!(
+        PvsRows::load(vec![Some(0)], vec![1, 0, 0])
+            .unwrap()
+            .with_hearing(vec![Some(1)])
+            .is_err()
+    );
+    let rows = PvsRows::all_visible(2);
+    rows.read_channel(Hearing, Some(1), &mut row).unwrap();
+    assert_eq!(row, [255]);
+}
+
 fn bounds(mins: [f32; 3], maxs: [f32; 3]) -> Bounds {
     Bounds {
         mins: Vec3(mins),

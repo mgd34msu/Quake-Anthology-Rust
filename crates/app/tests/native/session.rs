@@ -1701,7 +1701,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             vec![],
             0,
             0,
-            qa_world::visibility::PvsRows::all_visible(6),
+            qa_world::visibility::PvsRows::load(vec![Some(0); 6], vec![0, 1, 32])
+                .unwrap()
+                .with_hearing(vec![Some(2); 6])
+                .unwrap(),
         )
         .unwrap();
         runtime.collision = Some(
@@ -1731,6 +1734,30 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let pointers = (0..service_count)
             .map(|n| game.vm.process.import_pointer(n).unwrap())
             .collect::<Vec<_>>();
+        let write_slots = [
+            b"WriteChar".as_slice(),
+            b"WriteByte",
+            b"WriteShort",
+            b"WriteLong",
+            b"WriteFloat",
+            b"WriteString",
+        ]
+        .map(|name| game.import_ordinal(name).unwrap());
+        assert_eq!(
+            write_slots,
+            if rr {
+                [26, 27, 28, 29, 30, 31]
+            } else {
+                [24, 25, 26, 27, 28, 29]
+            }
+        );
+        let unicast_slot = game.import_ordinal(b"unicast").unwrap();
+        assert_eq!(unicast_slot, if rr { 25 } else { 23 });
+        assert!(
+            game.vm
+                .unresolved_imports()
+                .any(|i| i.name == Some(b"unicast".as_slice()))
+        );
         let memory = game.vm.process.memory_mut().unwrap();
         if rr {
             assert_eq!(&memory[first..first + 4], &40u32.to_le_bytes());
@@ -1843,7 +1870,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // Force the real loaded API frame to reach a named engine trap. No
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
-        let pointer = pointers[if rr { 17 } else { 14 }]; // inPVS
+        let trap_name = if rr {
+            b"clip".as_slice()
+        } else {
+            b"bprintf".as_slice()
+        };
+        let pointer = pointers[if rr { 15 } else { 0 }];
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -1882,7 +1914,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let import = game
             .vm
             .unresolved_imports()
-            .find(|i| i.name == Some(b"inPVS".as_slice()))
+            .find(|i| i.name == Some(trap_name))
             .unwrap();
         assert_eq!(import.calls, 3);
         let mut batch = runtime.server.events.batch(observer).unwrap();
@@ -1894,10 +1926,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 if text == b"API 2023 print" {
                     prints += 1;
                 } else {
-                    assert!(
-                        text.windows(b"native import inPVS at".len())
-                            .any(|s| s == b"native import inPVS at")
-                    );
+                    assert!(text.windows(trap_name.len()).any(|s| s == trap_name));
                     logs += 1;
                 }
             }
@@ -2021,11 +2050,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || slot == area_slot
                 || slot == contents_slot
                 || slot == connected_slot
+                || (if rr { 17..=18 } else { 14..=15 }).contains(&slot)
                 || (rr && slot == 67)
                 || (index_slot..index_slot + 3).contains(&slot);
             let stack = if a.len() > 4 { 0x48 } else { 0x28 };
             let mut code = vec![0x48, 0x83, 0xec, stack];
-            if slot == if rr { 30 } else { 27 } {
+            if slot == write_slots[4] {
                 code.push(0xb8);
                 code.extend((a[0] as u32).to_le_bytes());
                 code.extend([0x66, 0x0f, 0x6e, 0xc0]); // native float in XMM0
@@ -2590,8 +2620,31 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(invoke_import(&mut game, contents_slot, &[start]), expected);
         }
         assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 0);
+        let sight_slot = if rr { 17 } else { 14 };
+        let hearing_slot = sight_slot + 1;
+        for (point, from) in [(start, [1.0, 0.0, 0.0]), (end, [-1.0, 0.0, 0.0])] {
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .write_vec3(point, qa_core::primitives::Vec3(from))
+                .unwrap();
+        }
+        for slot in [sight_slot, hearing_slot] {
+            assert_eq!(invoke_import(&mut game, slot, &[start, end, 1]), 0);
+            if rr {
+                assert_eq!(
+                    invoke_import(&mut game, slot, &[start, end, 0]),
+                    u64::from(slot == hearing_slot)
+                );
+            }
+        }
         invoke_import(&mut game, portal_slot, &[2, 1]);
         assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 1);
+        for slot in [sight_slot, hearing_slot] {
+            assert_eq!(
+                invoke_import(&mut game, slot, &[start, end, 1]),
+                u64::from(slot == hearing_slot)
+            );
+        }
         invoke_import(&mut game, portal_slot, &[2, 1]);
         invoke_import(&mut game, portal_slot, &[2, 0]);
         assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 0);
@@ -2611,11 +2664,17 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         memory[0x1e88..0x1e8c].copy_from_slice(b"0.5\0");
         let force_slot = if rr { 41 } else { 38 };
         invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e80]);
+        assert_eq!(invoke_import(&mut game, sight_slot, &[start, end, 1]), 0);
+        assert_eq!(invoke_import(&mut game, hearing_slot, &[start, end, 1]), 1);
         assert_eq!(invoke_import(&mut game, connected_slot, &[0, 0]), 1);
         assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 1);
         invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e84]);
         assert_eq!(invoke_import(&mut game, connected_slot, &[7, 9]), 0);
         invoke_import(&mut game, force_slot, &[base + 0x1e40, base + 0x1e88]);
+        assert_eq!(
+            invoke_import(&mut game, hearing_slot, &[start, end, 1]),
+            u64::from(!rr)
+        );
         assert_eq!(
             invoke_import(&mut game, connected_slot, &[7, 9]),
             u64::from(!rr)
@@ -2683,7 +2742,6 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // Unlinking a never-published native slot must not create a common entity.
         invoke_import(&mut game, unlink_slot, &[entity_address + stride, 0]);
         invoke_import(&mut game, unlink_slot, &[base + 0x3000, 0]);
-        let first_write = if rr { 26 } else { 23 };
         for (offset, word) in [
             (0, 0x1234_ffff),
             (1, 0x80),
@@ -2693,7 +2751,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             (5, base + 0x1720),
             (5, 0),
         ] {
-            invoke_import(&mut game, first_write + offset, &[word]);
+            invoke_import(&mut game, write_slots[offset], &[word]);
         }
         drop(invoke_import);
         let mut expected = vec![

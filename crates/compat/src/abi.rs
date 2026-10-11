@@ -197,17 +197,19 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[11] = Some(native_set_model);
     table.entries[12] = Some(native_trace::<false>);
     table.entries[13] = Some(native_point_contents::<false>);
+    table.entries[14] = Some(native_visibility::<false, false>);
+    table.entries[15] = Some(native_visibility::<false, true>);
     table.entries[16] = Some(native_portal_set::<false>);
     table.entries[17] = Some(native_areas_connected::<false>);
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[20] = Some(native_area_query::<false>);
-    table.entries[23] = Some(native_message_bits::<8>);
     table.entries[24] = Some(native_message_bits::<8>);
-    table.entries[25] = Some(native_message_bits::<16>);
-    table.entries[26] = Some(native_message_bits::<32>);
+    table.entries[25] = Some(native_message_bits::<8>);
+    table.entries[26] = Some(native_message_bits::<16>);
     table.entries[27] = Some(native_message_bits::<32>);
-    table.entries[28] = Some(native_message_string);
+    table.entries[28] = Some(native_message_bits::<32>);
+    table.entries[29] = Some(native_message_string);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -225,6 +227,8 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[13] = Some(native_set_model);
     table.entries[14] = Some(native_trace::<true>);
     table.entries[16] = Some(native_point_contents::<true>);
+    table.entries[17] = Some(native_visibility::<true, false>);
+    table.entries[18] = Some(native_visibility::<true, true>);
     table.entries[19] = Some(native_portal_set::<true>);
     table.entries[20] = Some(native_areas_connected::<true>);
     table.entries[21] = Some(native_link);
@@ -699,6 +703,22 @@ fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn native_message_bits<const WIDTH: u8>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.message_bits)(c.services, c.context.module, c.arg(0)? as u32, WIDTH)?;
     Ok(0)
+}
+fn native_visibility<const WIDE: bool, const HEARING: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    let first = c.memory.read_vec3(c.pointer(0)?)?;
+    let second = c.memory.read_vec3(c.pointer(1)?)?;
+    let channel = if HEARING {
+        qa_world::visibility::VisibilityChannel::Hearing
+    } else {
+        qa_world::visibility::VisibilityChannel::Sight
+    };
+    let portals =
+        (!WIDE || c.arg(2)? != 0) && !c.services.ignore_areas(c.context.console.source, WIDE);
+    Ok(u64::from((ENGINE_CALLS.in_visibility)(
+        c.services, first, second, channel, false, portals, !WIDE,
+    )?))
 }
 fn native_message_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let pointer = c.pointer(0)?;

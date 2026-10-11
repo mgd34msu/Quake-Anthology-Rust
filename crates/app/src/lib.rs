@@ -47,6 +47,7 @@ pub struct WorldCollision {
     pub scratch: qa_world::collision::TraceScratch,
     pub visibility: Option<std::sync::Arc<qa_world::visibility::VisibilityWorld>>,
     pub leaves: qa_world::leaves::LeafScratch,
+    pub visibility_row: Box<[u8]>,
     pub portals: Option<qa_world::portals::AreaPortals>,
 }
 
@@ -63,6 +64,7 @@ impl WorldCollision {
             scratch,
             visibility: None,
             leaves: qa_world::leaves::LeafScratch::new(1),
+            visibility_row: Box::default(),
             portals: None,
         }
     }
@@ -71,6 +73,7 @@ impl WorldCollision {
         world: std::sync::Arc<qa_world::visibility::VisibilityWorld>,
     ) -> Self {
         self.leaves = qa_world::leaves::LeafScratch::new(world.node_count() + 1);
+        self.visibility_row = vec![0; world.pvs().row_bytes()].into_boxed_slice();
         self.visibility = Some(world);
         self
     }
@@ -95,7 +98,7 @@ impl Runtime {
                 world
                     .visibility
                     .as_deref()
-                    .map(|visibility| (visibility, &mut world.leaves)),
+                    .map(|visibility| (visibility, &mut world.leaves, &mut *world.visibility_row)),
                 world.portals.as_mut(),
             ),
             None => (None, None, None),

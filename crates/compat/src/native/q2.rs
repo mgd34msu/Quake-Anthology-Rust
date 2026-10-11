@@ -515,6 +515,25 @@ impl Game {
                         ][..],
                         NativeScalar::Word,
                     ))
+                } else if (if layout.version == 2023 {
+                    17..=18
+                } else {
+                    14..=15
+                })
+                .contains(&ordinal)
+                {
+                    Some((
+                        if layout.version == 2023 {
+                            &[NativeScalar::Word, NativeScalar::Word, NativeScalar::U8][..]
+                        } else {
+                            &[NativeScalar::Word, NativeScalar::Word][..]
+                        },
+                        if layout.version == 2023 {
+                            NativeScalar::U8
+                        } else {
+                            NativeScalar::I32
+                        },
+                    ))
                 } else if ordinal == if layout.version == 2023 { 19 } else { 16 } {
                     Some((
                         if layout.version == 2023 {
@@ -568,14 +587,14 @@ impl Game {
                 } else if (if layout.version == 2023 {
                     26..=31
                 } else {
-                    23..=28
+                    24..=29
                 })
                 .contains(&ordinal)
                 {
                     Some((
-                        if ordinal == if layout.version == 2023 { 30 } else { 27 } {
+                        if ordinal == if layout.version == 2023 { 30 } else { 28 } {
                             &[NativeScalar::Float][..]
-                        } else if ordinal == if layout.version == 2023 { 31 } else { 28 } {
+                        } else if ordinal == if layout.version == 2023 { 31 } else { 29 } {
                             &[NativeScalar::Word][..]
                         } else {
                             &[NativeScalar::I32][..]
@@ -692,5 +711,8 @@ impl Game {
     }
     pub fn entities(&mut self) -> Result<Entities, Error> {
         self.vm.entities()
+    }
+    pub fn import_ordinal(&self, name: &[u8]) -> Option<usize> {
+        self.layout.imports.iter().position(|n| *n == name)
     }
 }

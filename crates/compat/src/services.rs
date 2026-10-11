@@ -262,6 +262,7 @@ pub struct EngineServices<'a> {
     pub visibility: Option<(
         &'a qa_world::visibility::VisibilityWorld,
         &'a mut qa_world::leaves::LeafScratch,
+        &'a mut [u8],
     )>,
     pub portals: Option<&'a mut qa_world::portals::AreaPortals>,
     pub scratch: &'a mut TraceScratch,
@@ -280,6 +281,15 @@ pub type ResourceIndexCall =
 pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
 pub struct EngineCallTable {
+    pub in_visibility: fn(
+        &mut EngineServices<'_>,
+        Vec3,
+        Vec3,
+        qa_world::visibility::VisibilityChannel,
+        bool,
+        bool,
+        bool,
+    ) -> Result<bool, CallError>,
     pub message_bits: fn(&mut EngineServices<'_>, ModuleId, u32, u8) -> Result<(), CallError>,
     pub message_string: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(), CallError>,
     pub area_query: AreaQueryCall,
@@ -322,6 +332,42 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    in_visibility: |s, first, second, channel, missing_visible, check_portals, area_zero| {
+        let (world, _, row) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
+        let first = world
+            .point_in_leaf(first)
+            .and_then(|index| world.leaf(index))
+            .ok_or(CallError::Geometry)?;
+        let second = world
+            .point_in_leaf(second)
+            .and_then(|index| world.leaf(index))
+            .ok_or(CallError::Geometry)?;
+        match (first.selector, second.selector) {
+            (Some(from), Some(to)) => {
+                world
+                    .pvs()
+                    .read_channel(channel, Some(from), row)
+                    .map_err(|_| CallError::Geometry)?;
+                if row
+                    .get(to as usize / 8)
+                    .is_none_or(|b| b & (1 << (to % 8)) == 0)
+                {
+                    return Ok(false);
+                }
+            }
+            _ if !missing_visible => return Ok(false),
+            _ => {}
+        }
+        if check_portals && let Some(portals) = &s.portals {
+            let first = first.area.unwrap_or(0);
+            let second = second.area.unwrap_or(0);
+            if !area_zero && (first == 0 || second == 0) {
+                return Ok(false);
+            }
+            return Ok(portals.connected(first, second).unwrap_or(false));
+        }
+        Ok(true)
+    },
     message_bits: |s, module, value, width| {
         s.storage
             .write_message(module, |w| w.write_bits(value, width))
@@ -362,7 +408,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         }
     },
     box_leaves: |s, bounds, output| {
-        let (world, scratch) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
+        let (world, scratch, _) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
         world
             .box_leaves(bounds, output, scratch)
             .ok_or(CallError::Capacity)

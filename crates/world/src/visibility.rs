@@ -60,7 +60,14 @@ pub enum VisibilityQueryError {
 #[derive(Debug)]
 pub struct PvsRows {
     offsets: Box<[Option<u32>]>,
+    hearing: Option<Box<[Option<u32>]>>,
     encoded: Box<[u8]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum VisibilityChannel {
+    Sight,
+    Hearing,
 }
 
 impl PvsRows {
@@ -74,6 +81,7 @@ impl PvsRows {
         }
         Ok(Self {
             offsets: offsets.into_boxed_slice(),
+            hearing: None,
             encoded: encoded.into_boxed_slice(),
         })
     }
@@ -81,6 +89,7 @@ impl PvsRows {
     pub fn all_visible(selector_count: usize) -> Self {
         Self {
             offsets: vec![None; selector_count].into_boxed_slice(),
+            hearing: None,
             encoded: Box::default(),
         }
     }
@@ -92,10 +101,31 @@ impl PvsRows {
     pub fn row_bytes(&self) -> usize {
         self.offsets.len().div_ceil(8)
     }
+    /// Compiled PHS rows share the same encoded lump and selector namespace.
+    /// Formats without a separate hearing column use their sight rows.
+    pub fn with_hearing(mut self, offsets: Vec<Option<u32>>) -> Result<Self, VisibilityError> {
+        if offsets.len() != self.offsets.len() {
+            return Err(VisibilityError::Size);
+        }
+        let mut row = vec![0; self.row_bytes()];
+        for &offset in offsets.iter().flatten() {
+            decode_rle(&self.encoded, offset, &mut row)?;
+        }
+        self.hearing = Some(offsets.into_boxed_slice());
+        Ok(self)
+    }
 
     /// Missing rows follow qsrc Mod_DecompressVis's all-visible fallback.
     pub fn read_into(
         &self,
+        selector: Option<u32>,
+        destination: &mut [u8],
+    ) -> Result<(), VisibilityQueryError> {
+        self.read_channel(VisibilityChannel::Sight, selector, destination)
+    }
+    pub fn read_channel(
+        &self,
+        channel: VisibilityChannel,
         selector: Option<u32>,
         destination: &mut [u8],
     ) -> Result<(), VisibilityQueryError> {
@@ -106,7 +136,11 @@ impl PvsRows {
             destination.fill(255);
             return Ok(());
         };
-        let Some(&offset) = self.offsets.get(selector as usize) else {
+        let offsets = match channel {
+            VisibilityChannel::Sight => &self.offsets,
+            VisibilityChannel::Hearing => self.hearing.as_ref().unwrap_or(&self.offsets),
+        };
+        let Some(&offset) = offsets.get(selector as usize) else {
             return Err(VisibilityQueryError::Selector(selector));
         };
         if let Some(offset) = offset {

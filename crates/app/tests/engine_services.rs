@@ -239,6 +239,119 @@ fn module_leaf_queries_share_the_immutable_world_and_reject_missing_geometry() {
 }
 
 #[test]
+fn module_visibility_selects_compiled_rows_and_caller_portal_policy() {
+    use qa_core::primitives::{Bounds, GeometryId, Plane, Vec3};
+    use qa_world::visibility::{
+        PvsRows, SurfaceSpan, VisLeaf, VisNode,
+        VisibilityChannel::{Hearing, Sight},
+        VisibilityWorld,
+    };
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let a = Vec3([1.0, 0.0, 0.0]);
+    let b = Vec3([-1.0, 0.0, 0.0]);
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Sight, false, true, true),
+        Err(CallError::Geometry)
+    );
+    drop(services);
+    let bounds = Bounds {
+        mins: Vec3([-10.0; 3]),
+        maxs: Vec3([10.0; 3]),
+    };
+    let world = VisibilityWorld::load(
+        vec![Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0)],
+        vec![VisNode {
+            plane: 0,
+            children: [-1, -2],
+            bounds,
+            surfaces: SurfaceSpan::default(),
+        }],
+        (0..2)
+            .map(|i| VisLeaf {
+                selector: Some(i),
+                area: Some(i),
+                solid: false,
+                bounds,
+                surfaces: SurfaceSpan::default(),
+            })
+            .collect(),
+        vec![],
+        0,
+        0,
+        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2, 3])
+            .unwrap()
+            .with_hearing(vec![Some(2); 2])
+            .unwrap(),
+    )
+    .unwrap();
+    runtime.collision = Some(
+        qa_app::WorldCollision::new(
+            &runtime.geometry,
+            GeometryId {
+                slot: 0,
+                generation: 1,
+            },
+            0,
+        )
+        .with_visibility(std::sync::Arc::new(world))
+        .with_portals(Some(
+            qa_world::portals::AreaPortals::load(
+                2,
+                1,
+                vec![qa_world::portals::Portal {
+                    number: 0,
+                    first: 0,
+                    second: 1,
+                }],
+            )
+            .unwrap(),
+        )),
+    );
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, a, Sight, false, true, true),
+        Ok(true)
+    );
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Sight, false, false, true),
+        Ok(false)
+    );
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, false, false),
+        Ok(true)
+    );
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, true, true),
+        Ok(false)
+    );
+    (ENGINE_CALLS.portal_set)(&mut services, 0, true, true).unwrap();
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, true, true),
+        Ok(true)
+    );
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(&mut services, a, b, Hearing, false, true, false),
+        Ok(false)
+    );
+    assert_eq!(
+        (ENGINE_CALLS.in_visibility)(
+            &mut services,
+            Vec3([f32::NAN; 3]),
+            b,
+            Hearing,
+            false,
+            false,
+            false
+        ),
+        Err(CallError::Geometry)
+    );
+}
+
+#[test]
 fn native_resource_indexes_share_configstrings_and_keep_exact_first_gap_order() {
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();
