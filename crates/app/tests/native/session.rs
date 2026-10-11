@@ -2181,12 +2181,19 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let contents_slot = if rr { 16 } else { 13 };
         let portal_slot = if rr { 19 } else { 16 };
         let connected_slot = if rr { 20 } else { 17 };
+        let argc_slot = game.import_ordinal(b"argc").unwrap();
+        let append_slot = game.import_ordinal(b"AddCommandString").unwrap();
+        assert_eq!(
+            (argc_slot, append_slot),
+            if rr { (42, 45) } else { (39, 42) }
+        );
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
                 || slot == area_slot
                 || slot == contents_slot
                 || slot == connected_slot
+                || slot == argc_slot
                 || (if rr { 17..=18 } else { 14..=15 }).contains(&slot)
                 || (rr && slot == 67)
                 || (index_slot..index_slot + 3).contains(&slot);
@@ -2229,7 +2236,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         table: game.imports,
                         context,
                         platform_time: EventTime(0),
-                        command: &[],
+                        command: &[b"_qa_native_command", b"\x80", b"third"],
                         unknown: &mut unknown,
                     },
                     run,
@@ -2890,7 +2897,18 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         ] {
             invoke_import(&mut game, write_slots[offset], &[word]);
         }
+        assert_eq!(invoke_import(&mut game, argc_slot, &[]), 3);
+        for (at, text) in [
+            (0x1e00, b"sensitivity 7\0".as_slice()),
+            (0x1e40, b" extra\n\0"),
+        ] {
+            game.vm.process.memory_mut().unwrap()[at..at + text.len()].copy_from_slice(text);
+            invoke_import(&mut game, append_slot, &[base + at as u64]);
+        }
         drop(invoke_import);
+        console.execute_frame(&mut runtime);
+        let view = console.cvars.bind("sensitivity", context.console).unwrap();
+        assert_eq!(console.cvars.read(view).unwrap().as_str(), "7");
         let mut expected = vec![
             0xff, 0x80, 0xbf, 0xfe, 0x78, 0x56, 0x34, 0x12, 0x45, 0x23, 0xa1, 0x7f,
         ];

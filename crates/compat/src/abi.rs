@@ -213,6 +213,8 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
+    table.entries[39] = Some(argc);
+    table.entries[42] = Some(command_append);
     table
 };
 pub const Q2_RERELEASE: CallTable = {
@@ -246,6 +248,8 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[39] = Some(q2_cvar);
     table.entries[40] = Some(q2_cvar_set::<false>);
     table.entries[41] = Some(q2_cvar_set::<true>);
+    table.entries[42] = Some(argc);
+    table.entries[45] = Some(command_append);
     table.entries[67] = Some(native_info_value);
     table
 };

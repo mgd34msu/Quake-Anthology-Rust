@@ -461,6 +461,10 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Word,
                     ))
+                } else if ordinal == cvar + 3 {
+                    Some((&[][..], NativeScalar::I32))
+                } else if ordinal == cvar + 6 {
+                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else if (if layout.version == 2023 {
                     21..23
                 } else {
