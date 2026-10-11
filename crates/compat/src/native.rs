@@ -4,7 +4,7 @@ use crate::{
     memory::ModuleMemory,
     services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
 };
-use qa_core::{names::NameTable, primitives::PrintKind, sys_events::EventTime, text::FixedText};
+use qa_core::{names::NameTable, sys_events::EventTime, text::FixedText};
 use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{
     NativeAbi, NativeEntry, NativeError, NativeImage, NativeImport, NativeProcess, NativeRegion,
@@ -468,14 +468,7 @@ impl Vm {
                         writeln!(text, " at {address:#x}")
                     })();
                     if format.is_ok() {
-                        let _ = (ENGINE_CALLS.print)(
-                            calls.services,
-                            Some(qa_core::events::OutputTarget::Presentation),
-                            None,
-                            PrintKind::Console,
-                            PrintKind::Console.default_level(),
-                            text.as_bytes(),
-                        );
+                        let _ = (ENGINE_CALLS.console)(calls.services, text.as_bytes());
                     }
                 }
             }

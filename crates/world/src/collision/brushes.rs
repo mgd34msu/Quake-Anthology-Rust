@@ -108,7 +108,7 @@ impl BrushMap {
                 ..brush.first_plane as usize + brush.plane_count as usize];
             if !planes
                 .iter()
-                .any(|plane| point.dot(plane.normal) > plane.distance)
+                .any(|plane| plane.signed_distance(point) > 0.0)
             {
                 contents |= brush.contents;
             }

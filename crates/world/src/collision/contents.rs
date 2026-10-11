@@ -38,6 +38,21 @@ impl Contents {
         }
     }
 
+    /// QuakeC pointcontents has one native value. Currents remain water;
+    /// overlapping combined-game volumes resolve solid, sky, then fluids.
+    pub fn to_q1(self) -> i32 {
+        [
+            (Self::SOLID, -2),
+            (Self::SKY, -6),
+            (Self::LAVA, -5),
+            (Self::SLIME, -4),
+            (Self::WATER, -3),
+        ]
+        .into_iter()
+        .find_map(|(mask, native)| self.intersects(mask).then_some(native))
+        .unwrap_or(-1)
+    }
+
     pub fn from_q2(raw: u32) -> Self {
         let mut bits = u64::from(raw & Self::Q2_SHARED);
         if raw & 2 != 0 {

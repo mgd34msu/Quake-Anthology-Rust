@@ -369,6 +369,7 @@ pub struct EngineCallTable {
         &mut [u32],
     ) -> Result<qa_world::leaves::BoxLeaves, CallError>,
     pub print: PrintCall,
+    pub console: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
     pub effect: fn(&mut EngineServices<'_>, EffectEvent) -> Result<u64, CallError>,
     pub trace: fn(
@@ -483,6 +484,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             .ok_or(CallError::Capacity)
     },
     print: |s, target, c, k, l, t| s.print(target, c, k, l, t),
+    console: |s, text| s.console(text),
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
@@ -531,6 +533,12 @@ impl EngineServices<'_> {
         self.server
             .events
             .print_level_bytes(target, client, kind, level, text)
+            .map_err(|_| CallError::Capacity)
+    }
+    pub fn console(&mut self, text: &[u8]) -> Result<u64, CallError> {
+        self.server
+            .events
+            .console_bytes(text)
             .map_err(|_| CallError::Capacity)
     }
     pub fn sound(&mut self, event: SoundEvent) -> Result<u64, CallError> {
@@ -702,13 +710,7 @@ impl EngineServices<'_> {
         writeln!(text, "{} is {reason}.", self.cvars.name(view)).map_err(|_| CallError::Text)?;
         // Native protection rejects the write, not the calling module. A full
         // output ring counts its dropped warning without aborting the import.
-        let _ = self.print(
-            Some(qa_core::events::OutputTarget::Presentation),
-            None,
-            PrintKind::Console,
-            PrintKind::Console.default_level(),
-            text.as_bytes(),
-        );
+        let _ = self.console(text.as_bytes());
         Ok(())
     }
     pub fn command(&mut self, context: Context, text: &str) -> Result<(), CallError> {

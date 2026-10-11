@@ -379,6 +379,15 @@ impl EventRing {
     ) -> Result<u64, EventStorageError> {
         self.publish_print(target, client, kind, level, |texts| texts.insert(text))
     }
+    pub fn console_bytes(&mut self, text: &[u8]) -> Result<u64, EventStorageError> {
+        self.print_level_bytes(
+            Some(OutputTarget::Presentation),
+            None,
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            text,
+        )
+    }
     fn publish_print(
         &mut self,
         target: Option<OutputTarget>,

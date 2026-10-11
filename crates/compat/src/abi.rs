@@ -91,14 +91,10 @@ enum QcArgs {
     ClientStrings { from: usize, qw_from: usize },
 }
 impl QcArgs {
-    fn string_start(self, rules: qa_core::primitives::RuleSetId) -> Option<usize> {
+    fn string_start(self, quakeworld: bool) -> Option<usize> {
         match self {
             Self::Strings { from, qw_from } | Self::ClientStrings { from, qw_from } => {
-                Some(if rules == qa_core::primitives::RuleSetId::QuakeWorld {
-                    qw_from
-                } else {
-                    from
-                })
+                Some(if quakeworld { qw_from } else { from })
             }
             _ => None,
         }
@@ -115,7 +111,7 @@ struct QcSignature {
     argc: QcArgc,
     args: QcArgs,
     returns: bool,
-    developer: [bool; 2],
+    developer_nq_only: bool,
 }
 impl QcSignature {
     const fn new(argc: QcArgc, args: QcArgs, returns: bool) -> Self {
@@ -123,7 +119,7 @@ impl QcSignature {
             argc,
             args,
             returns,
-            developer: [false; 2],
+            developer_nq_only: false,
         }
     }
     const fn void(mut self) -> Self {
@@ -131,19 +127,23 @@ impl QcSignature {
         self
     }
     const fn developer(mut self) -> Self {
-        self.developer = [true, false];
+        self.developer_nq_only = true;
         self
     }
 }
-type Entry = fn(&mut Invocation<'_, '_, '_>, Option<QcSignature>) -> Result<CallValue, CallError>;
+type Entry = fn(&mut Invocation<'_, '_, '_>, Option<usize>) -> Result<CallValue, CallError>;
 #[derive(Clone, Copy)]
 struct CallEntry {
     call: Entry,
     quakec: Option<QcSignature>,
 }
 impl CallEntry {
-    fn invoke(self, call: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
-        (self.call)(call, self.quakec)
+    fn invoke(
+        self,
+        call: &mut Invocation<'_, '_, '_>,
+        string_start: Option<usize>,
+    ) -> Result<CallValue, CallError> {
+        (self.call)(call, string_start)
     }
 }
 macro_rules! scalar {
@@ -205,7 +205,12 @@ impl CallTable {
         unknown: &mut UnknownCalls,
     ) -> Result<CallValue, CallError> {
         if let Some(Some(entry)) = self.entries.get(number as usize) {
-            return entry.invoke(call);
+            let string_start = entry.quakec.and_then(|signature| {
+                signature.args.string_start(
+                    call.context.console.source == qa_core::primitives::RuleSetId::QuakeWorld,
+                )
+            });
+            return entry.invoke(call, string_start);
         }
         unknown.calls = unknown.calls.saturating_add(1);
         let key = number.to_le_bytes();
@@ -220,14 +225,7 @@ impl CallTable {
                 .map_err(|_| CallError::Text)?;
                 // A full output ring counts its loss; an unsupported import
                 // still returns zero without aborting the module or engine.
-                let _ = (ENGINE_CALLS.print)(
-                    call.services,
-                    Some(qa_core::events::OutputTarget::Presentation),
-                    None,
-                    PrintKind::Console,
-                    PrintKind::Console.default_level(),
-                    text.as_bytes(),
-                );
+                let _ = (ENGINE_CALLS.console)(call.services, text.as_bytes());
             } else {
                 unknown.capacity_drops = unknown.capacity_drops.saturating_add(1);
             }
@@ -477,6 +475,7 @@ const fn quakec() -> CallTable {
     t.entries[36] = scalar!(rint, Some(scalar));
     t.entries[37] = scalar!(floor::<false>, Some(scalar));
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
+    t.entries[41] = scalar!(qc_point_contents, Some(vector));
     t.entries[43] = scalar!(absolute::<false>, Some(scalar));
     t.entries[45] = scalar!(cvar_number, Some(strings));
     t.entries[46] = scalar!(command_append, Some(strings.void()));
@@ -520,7 +519,8 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         }
         let mut arguments = [0u64; 8];
         let (words, stride) = signature.args.layout(argc);
-        let string_start = signature.args.string_start(self.context.console.source);
+        let quakeworld = self.context.console.source == qa_core::primitives::RuleSetId::QuakeWorld;
+        let string_start = signature.args.string_start(quakeworld);
         for (index, to) in arguments[..words].iter_mut().enumerate() {
             let mut word = *vm
                 .image
@@ -535,9 +535,10 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             }
             *to = u64::from(word);
         }
-        let column =
-            usize::from(self.context.console.source == qa_core::primitives::RuleSetId::QuakeWorld);
-        if signature.developer[column] && self.services.cvars.value(self.developer) == 0.0 {
+        if signature.developer_nq_only
+            && !quakeworld
+            && self.services.cvars.value(self.developer) == 0.0
+        {
             return Ok(());
         }
         let mut invocation = Invocation {
@@ -558,7 +559,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             arguments: &arguments[..words],
         };
         let value = entry
-            .invoke(&mut invocation)
+            .invoke(&mut invocation, string_start)
             .map_err(|_| quakec::Trap::Builtin)?;
         match value {
             CallValue::Word(value) => {
@@ -634,13 +635,9 @@ fn vector_angles(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError>
 }
 fn qc_print<const BROADCAST: bool>(
     c: &mut Invocation<'_, '_, '_>,
-    signature: Option<QcSignature>,
+    first: Option<usize>,
 ) -> Result<CallValue, CallError> {
-    let first = signature
-        .ok_or(CallError::Memory)?
-        .args
-        .string_start(c.context.console.source)
-        .ok_or(CallError::Memory)?;
+    let first = first.ok_or(CallError::Memory)?;
     let level = if first != 0 {
         crate::numbers::native_integer(float::<false>(c, 0)?) as u8
     } else {
@@ -676,13 +673,9 @@ fn qc_var_string(c: &Invocation<'_, '_, '_>, first: usize) -> Result<FixedText<1
 }
 fn qc_client_print<const CENTER: bool>(
     c: &mut Invocation<'_, '_, '_>,
-    signature: Option<QcSignature>,
+    first: Option<usize>,
 ) -> Result<CallValue, CallError> {
-    let first = signature
-        .ok_or(CallError::Memory)?
-        .args
-        .string_start(c.context.console.source)
-        .ok_or(CallError::Memory)?;
+    let first = first.ok_or(CallError::Memory)?;
     let text = qc_var_string(c, first)?;
     let native = qa_core::primitives::NativeEntity {
         module: c.context.module,
@@ -694,14 +687,7 @@ fn qc_client_print<const CENTER: bool>(
         .client_for_native(native)
         .filter(|_| native.slot > 0)
     else {
-        (ENGINE_CALLS.print)(
-            c.services,
-            Some(qa_core::events::OutputTarget::Presentation),
-            None,
-            PrintKind::Console,
-            PrintKind::Console.default_level(),
-            b"tried to sprint to a non-client\n",
-        )?;
+        (ENGINE_CALLS.console)(c.services, b"tried to sprint to a non-client\n")?;
         return Ok(CallValue::Word(0));
     };
     let level = if first == 2 {
@@ -775,14 +761,7 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
 
 fn print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let text = c.memory.cstring(c.pointer(0)?)?;
-    (ENGINE_CALLS.print)(
-        c.services,
-        Some(qa_core::events::OutputTarget::Presentation),
-        None,
-        PrintKind::Console,
-        PrintKind::Console.default_level(),
-        text,
-    )?;
+    (ENGINE_CALLS.console)(c.services, text)?;
     Ok(0)
 }
 fn native_print<const TARGET: bool, const CENTER: bool>(
@@ -907,14 +886,7 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             text.as_bytes().len()
         )
         .map_err(|_| CallError::Text)?;
-        let _ = (ENGINE_CALLS.print)(
-            c.services,
-            Some(qa_core::events::OutputTarget::Presentation),
-            None,
-            PrintKind::Console,
-            PrintKind::Console.default_level(),
-            warning.as_bytes(),
-        );
+        let _ = (ENGINE_CALLS.console)(c.services, warning.as_bytes());
     }
     let name = text_at(c.memory, c.pointer(0)?)?;
     write_cvar::<true, true>(
@@ -1045,14 +1017,7 @@ fn q2_cvar_set<const FORCE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
         (ENGINE_CALLS.cvar_set)(c.services, view, value)
     };
     if result == Err(CallError::Cvar) {
-        let _ = (ENGINE_CALLS.print)(
-            c.services,
-            Some(qa_core::events::OutputTarget::Presentation),
-            None,
-            PrintKind::Console,
-            PrintKind::Console.default_level(),
-            b"cvar write rejected\n",
-        );
+        let _ = (ENGINE_CALLS.console)(c.services, b"cvar write rejected\n");
     } else {
         result?;
     }
@@ -1070,14 +1035,7 @@ fn publish_cvar(
         flags,
     ) {
         Err(CallError::Capacity) => {
-            let _ = (ENGINE_CALLS.print)(
-                c.services,
-                Some(qa_core::events::OutputTarget::Presentation),
-                None,
-                PrintKind::Console,
-                PrintKind::Console.default_level(),
-                b"native cvar capacity exceeded\n",
-            );
+            let _ = (ENGINE_CALLS.console)(c.services, b"native cvar capacity exceeded\n");
             Ok(0)
         }
         result => result,
@@ -1337,6 +1295,13 @@ fn native_point_contents<const WIDE: bool>(
     });
     let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
     Ok(u64::from(contents.to_q2()))
+}
+
+fn qc_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let point = argument_vector(c)?;
+    let (_, rules) = qa_world::collision::trace_policy(c.context.console.source);
+    let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
+    Ok(bits::<false>(f64::from(contents.to_q1())))
 }
 
 fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

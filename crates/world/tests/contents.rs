@@ -1,6 +1,24 @@
 use qa_world::collision::Contents;
 
 #[test]
+fn quake_point_contents_keeps_native_values_and_strips_currents() {
+    for native in -6..=-1 {
+        assert_eq!(Contents::from_q1(native).to_q1(), native);
+    }
+    for native in -14..=-9 {
+        assert_eq!(Contents::from_q1(native).to_q1(), -3);
+    }
+    assert_eq!((Contents::WATER | Contents::SLIME).to_q1(), -4);
+    assert_eq!((Contents::SLIME | Contents::LAVA).to_q1(), -5);
+    assert_eq!((Contents::LAVA | Contents::SKY).to_q1(), -6);
+    assert_eq!((Contents::SKY | Contents::SOLID).to_q1(), -2);
+    assert_eq!(
+        (Contents::BODY | Contents::LADDER | Contents::AUX).to_q1(),
+        -1
+    );
+}
+
+#[test]
 fn auxiliary_contents_survives_native_q2_conversion_and_masks() {
     assert_eq!(Contents::from_q2(4), Contents::AUX);
     assert_eq!(Contents::from_q2(4 | 32), Contents::AUX | Contents::WATER);

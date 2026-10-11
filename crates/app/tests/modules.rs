@@ -702,8 +702,11 @@ fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameH
 }
 
 fn quakec_host(rules: RuleSetId, vm: Vm) -> FrameHost {
+    quakec_runtime_host(rules, vm, Runtime::load(1, []).unwrap())
+}
+
+fn quakec_runtime_host(rules: RuleSetId, vm: Vm, mut runtime: Runtime) -> FrameHost {
     let module = ModuleId(1);
-    let mut runtime = Runtime::load(1, []).unwrap();
     let anchor = runtime
         .server
         .entities
@@ -786,6 +789,113 @@ fn quakec_math_program_with_vectors(builtin: i32, vectors: &[(u16, &[u8])]) -> V
     vm.image.globals[7..10].fill(f32::MAX.to_bits());
     vm.image.globals[1..4].copy_from_slice(&[0x12345678, 0x87654321, 0x11223344]);
     vm
+}
+
+#[test]
+fn quakec_pointcontents_uses_module_rules_over_all_collision_topologies() {
+    use qa_app::WorldCollision;
+    use qa_world::collision::{
+        Contents,
+        brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+        hulls::HullModel,
+        surfaces::SurfaceTable,
+    };
+    let plane = Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0);
+    let bounds = Bounds {
+        mins: Vec3([-512.0; 3]),
+        maxs: Vec3([512.0; 3]),
+    };
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for native in [-1, -2, -3, -4, -5, -6, -9, -10, -11, -12, -13, -14] {
+            for topology in 0..3 {
+                for x in [-1.0f32, -0.0, 0.0, 1.0] {
+                    let mut runtime = Runtime::load(1, []).unwrap();
+                    let geometry = if topology == 0 {
+                        let node = ClipNode {
+                            plane: 0,
+                            children: [-1, native],
+                        };
+                        runtime
+                            .geometry
+                            .load_hulls(
+                                vec![plane],
+                                vec![node],
+                                vec![node],
+                                vec![HullModel { roots: [0; 3] }],
+                                vec![bounds],
+                            )
+                            .unwrap()
+                    } else {
+                        let contents = Contents::from_q1(native);
+                        runtime
+                            .geometry
+                            .load_brushes(
+                                vec![plane],
+                                vec![Brush {
+                                    first_plane: 0,
+                                    plane_count: 1,
+                                    contents,
+                                }],
+                                SurfaceTable::flags(vec![SurfaceFlags::default()]),
+                                BrushTree {
+                                    planes: vec![plane],
+                                    nodes: vec![ClipNode {
+                                        plane: 0,
+                                        children: [child_from_leaf(0), child_from_leaf(1)],
+                                    }],
+                                    leaves: vec![
+                                        CollisionLeaf {
+                                            stored_contents: (topology == 1)
+                                                .then_some(Contents::EMPTY),
+                                            first_brush: 0,
+                                            brush_count: 0,
+                                        },
+                                        CollisionLeaf {
+                                            stored_contents: (topology == 1).then_some(contents),
+                                            first_brush: 0,
+                                            brush_count: 1,
+                                        },
+                                    ],
+                                    leaf_brushes: vec![0],
+                                    models: vec![ModelRoot::Tree(0)],
+                                },
+                                vec![bounds],
+                            )
+                            .unwrap()
+                    };
+                    runtime.collision = Some(WorldCollision::new(&runtime.geometry, geometry, 0));
+                    let mut vm = quakec_math_program(41);
+                    vm.image.globals[48..51].copy_from_slice(&[x, 7.0, -9.0].map(f32::to_bits));
+                    let mut host = quakec_runtime_host(rules, vm, runtime);
+                    host.call_module_export(
+                        ModuleId(1),
+                        Export::clocked(CallbackId(0)),
+                        ThinkTime::module_clock(rules),
+                    )
+                    .unwrap();
+                    let expected = if x >= 0.0 {
+                        -1
+                    } else if native <= -9 {
+                        -3
+                    } else {
+                        native
+                    };
+                    let counts = host.module_counts(ModuleId(1)).unwrap();
+                    assert_eq!(
+                        counts.last_result,
+                        Some(ModuleResult::QuakeC([
+                            (expected as f32).to_bits(),
+                            0x87654321,
+                            0x11223344
+                        ])),
+                        "{rules:?} native={native} topology={topology} x={x}"
+                    );
+                    assert_eq!(counts.traps, 0);
+                    assert!(host.runtime.server.events.is_empty());
+                }
+            }
+        }
+    }
 }
 
 #[test]
