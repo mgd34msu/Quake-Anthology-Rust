@@ -62,6 +62,31 @@ impl PaletteLighting {
         self.colors[index as usize]
     }
 
+    /// Cold conversion for truecolor assets with no native indexed resource.
+    /// Equal distances retain the first palette entry; an opaque pixel never
+    /// chooses the caller's reserved transparent index.
+    pub fn nearest_index(&self, rgb: [u8; 3], transparent_index: Option<u8>) -> u8 {
+        let mut best = 0;
+        let mut distance = u32::MAX;
+        for (index, color) in self.colors.iter().enumerate() {
+            if transparent_index == Some(index as u8) {
+                continue;
+            }
+            let rgba = color.to_le_bytes();
+            let squared = (0..3)
+                .map(|axis| {
+                    let delta = i32::from(rgb[axis]) - i32::from(rgba[axis]);
+                    (delta * delta) as u32
+                })
+                .sum();
+            if squared < distance {
+                best = index as u8;
+                distance = squared;
+            }
+        }
+        best
+    }
+
     pub fn rgba_table(&self) -> [[u8; 4]; 256] {
         std::array::from_fn(|index| self.color(index as u8).to_le_bytes())
     }

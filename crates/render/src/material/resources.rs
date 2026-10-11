@@ -480,8 +480,9 @@ impl<'a> Images<'a> {
         Ok(id)
     }
     /// Retain original PCX indices and select the presentation's global palette.
-    /// A separate native RGBA resource can supply GL pixels (Q2 sky TGA) without
-    /// quantizing it or replacing the software resource's dimensions.
+    /// A separate native RGBA resource supplies GL pixels (Q2 sky TGA). If the
+    /// indexed resource is absent, quantize that resource once into the selected
+    /// software palette; existing PCX indices/dimensions always remain intact.
     pub fn indexed_pcx(
         &mut self,
         name: &str,
@@ -508,21 +509,24 @@ impl<'a> Images<'a> {
         if let Some(index) = self.find(key) {
             return Ok(self.resolved[index].1.id);
         }
-        let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
-        let DecodedImage::Indexed(decoded) =
-            decode(&bytes, ImageFormat::Pcx, RuleSetId::Quake2.lineage())?
-        else {
-            return Err(ResourceError::Asset("PCX resource must retain indices"));
+        let bytes = self
+            .vfs
+            .open(name.as_bytes())
+            .map(|_| read_file(self.vfs, name.as_bytes(), &mut self.reader))
+            .transpose()?;
+        let decoded = if let Some(bytes) = &bytes {
+            let DecodedImage::Indexed(decoded) =
+                decode(bytes, ImageFormat::Pcx, RuleSetId::Quake2.lineage())?
+            else {
+                return Err(ResourceError::Asset("PCX resource must retain indices"));
+            };
+            Some(decoded)
+        } else {
+            None
         };
-        let texture = IndexedTexture::load_base(
-            decoded.width,
-            decoded.height,
-            &decoded.indices,
-            transparent_index,
-        )
-        .map_err(ResourceError::Asset)?;
-        let mut gl_pixels = None;
-        let id = if let Some(path) = rgba_override {
+        let rgba = if let Some(path) =
+            rgba_override.filter(|path| self.vfs.open(path.as_bytes()).is_some())
+        {
             let format = ImageFormat::from_path(path.as_bytes())
                 .ok_or(ResourceError::Asset("unknown RGBA override format"))?;
             let bytes = read_file(self.vfs, path.as_bytes(), &mut self.reader)?;
@@ -532,13 +536,46 @@ impl<'a> Images<'a> {
                     "RGBA override must have original color pixels",
                 ));
             };
+            Some(rgba)
+        } else {
+            None
+        };
+        let colors = self
+            .assets
+            .palette(palette)
+            .ok_or(ResourceError::Asset("missing image palette"))?;
+        let texture = if let Some(decoded) = &decoded {
+            IndexedTexture::load_base(
+                decoded.width,
+                decoded.height,
+                &decoded.indices,
+                transparent_index,
+            )
+        } else if let Some(rgba) = &rgba {
+            let indices: Vec<_> = rgba
+                .pixels
+                .chunks_exact(4)
+                .map(|color| {
+                    if color[3] == 0
+                        && let Some(index) = transparent_index
+                    {
+                        index
+                    } else {
+                        colors.nearest_index([color[0], color[1], color[2]], transparent_index)
+                    }
+                })
+                .collect();
+            IndexedTexture::load_base(rgba.width, rgba.height, &indices, transparent_index)
+        } else {
+            return Err(ResourceError::Missing(name.to_owned()));
+        }
+        .map_err(ResourceError::Asset)?;
+        let mut gl_pixels = None;
+        let id = if let Some(rgba) = rgba {
             self.assets
                 .register_rgba_with_indexed(rgba.width, rgba.height, &rgba.pixels, texture)
         } else {
-            let colors = self
-                .assets
-                .palette(palette)
-                .ok_or(ResourceError::Asset("missing image palette"))?;
+            let decoded = decoded.ok_or(ResourceError::Asset("missing indexed image"))?;
             let rgba = decoded.expand(
                 &Palette(Box::new(colors.rgba_table())),
                 &PaletteOptions {

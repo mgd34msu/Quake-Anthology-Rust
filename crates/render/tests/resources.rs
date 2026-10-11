@@ -225,6 +225,112 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
 }
 
 #[test]
+fn tga_only_q2_sky_keeps_truecolor_gl_and_selected_palette_cpu_pixels() {
+    let root = Fixture::new();
+    std::fs::remove_file(root.0.join("env/native.pcx")).unwrap();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut assets = Assets::load().unwrap();
+        let mut colors = vec![0; 256 * 3];
+        colors[17 * 3..18 * 3].copy_from_slice(&[3, 4, 5]);
+        colors[18 * 3..19 * 3].copy_from_slice(&[3, 4, 5]);
+        let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+        let palette = assets
+            .register_palette(PaletteLighting::load(&colors, &shades, None, 256).unwrap())
+            .unwrap();
+        let mut images =
+            Images::new(&vfs, &mut assets, rules, ImageSettings::native(rules)).unwrap();
+        let usage = ImageUse {
+            role: ImageRole::CubeSky,
+            ..ImageUse::pic()
+        };
+        let id = images
+            .indexed_pcx(
+                "env/native.pcx",
+                palette,
+                None,
+                Some("env/native.tga"),
+                usage,
+            )
+            .unwrap();
+        assert_eq!(
+            images
+                .indexed_pcx(
+                    "env/native.pcx",
+                    palette,
+                    None,
+                    Some("env/native.tga"),
+                    usage
+                )
+                .unwrap(),
+            id
+        );
+        let image = images.assets.image(id).unwrap();
+        assert_eq!(image.rgba.as_ref(), &[3, 4, 5, 255]);
+        assert_eq!(
+            image.prepared.as_ref().unwrap().levels[0].rgba.as_ref(),
+            image.rgba.as_ref()
+        );
+        let indexed = image.indexed.as_ref().unwrap();
+        assert_eq!(indexed.mip(0).unwrap().indices(), &[17]);
+        assert_eq!(indexed.transparent_index(), None);
+        let lighting = images.assets.palette(palette).unwrap();
+        assert_eq!(lighting.nearest_index([3, 4, 5], Some(17)), 18);
+    }
+}
+
+#[test]
+fn q2_sky_uses_existing_pcx_when_the_truecolor_alternate_is_missing() {
+    let root = Fixture::new();
+    std::fs::remove_file(root.0.join("env/native.tga")).unwrap();
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palette = assets.register_palette(palette()).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake2,
+        ImageSettings::native(RuleSetId::Quake2),
+    )
+    .unwrap();
+    let id = images
+        .indexed_pcx(
+            "env/native.pcx",
+            palette,
+            None,
+            Some("env/native.tga"),
+            ImageUse::pic(),
+        )
+        .unwrap();
+    assert_eq!(
+        images
+            .assets
+            .image(id)
+            .unwrap()
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        &[17, 255]
+    );
+    assert!(
+        images
+            .indexed_pcx(
+                "env/absent.pcx",
+                palette,
+                None,
+                Some("env/absent.tga"),
+                ImageUse::pic()
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
     let root = Fixture::new();
     root.tga("env/first.tga", 4, 4, [20, 30, 40]);
