@@ -477,10 +477,14 @@ impl CpuBackend {
         // The GL clear value and depthRange(1,1) both represent the view's far
         // plane. Keep that equality in the shared inverse-depth surface.
         let far_depth = 1.0 / far;
-        for y in viewport.y..viewport.y + viewport.height {
-            let start = y as usize * self.frame.width as usize + viewport.x as usize;
-            self.frame.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
-            self.frame.depth_ranks[start..start + viewport.width as usize].fill(0);
+        let width = self.frame.width;
+        let buffers = self.frame.buffers();
+        if let Some(rows) = buffers.rows(width, viewport) {
+            for y in rows {
+                let start = buffers.offset(width, viewport.x, y);
+                buffers.inverse_depth[start..start + viewport.width as usize].fill(far_depth);
+                buffers.depth_ranks[start..start + viewport.width as usize].fill(0);
+            }
         }
     }
 
@@ -961,12 +965,16 @@ impl CpuBackend {
                 } else {
                     refdef.viewport
                 };
-                for y in viewport.y..viewport.y + viewport.height {
-                    let start = y as usize * self.frame.width as usize + viewport.x as usize;
-                    for index in start..start + viewport.width as usize {
-                        if self.frame.palettes[index] == palette.0 {
-                            self.frame.pixels[index] =
-                                transformed[self.frame.indices[index] as usize];
+                let width = self.frame.width;
+                let buffers = self.frame.buffers();
+                if let Some(rows) = buffers.rows(width, viewport) {
+                    for y in rows {
+                        let start = buffers.offset(width, viewport.x, y);
+                        for index in start..start + viewport.width as usize {
+                            if buffers.palettes[index] == palette.0 {
+                                buffers.pixels[index] =
+                                    transformed[buffers.indices[index] as usize];
+                            }
                         }
                     }
                 }
@@ -984,13 +992,17 @@ impl CpuBackend {
         } else {
             refdef.viewport
         };
-        for y in viewport.y..viewport.y + viewport.height {
-            let start = y as usize * self.frame.width as usize + viewport.x as usize;
-            for pixel in &mut self.frame.pixels[start..start + viewport.width as usize] {
-                let alpha = *pixel & 0xff00_0000;
-                *pixel = composite(*pixel, source, Some(StageBlend::ALPHA));
-                if preserve_alpha {
-                    *pixel = (*pixel & 0x00ff_ffff) | alpha;
+        let width = self.frame.width;
+        let buffers = self.frame.buffers();
+        if let Some(rows) = buffers.rows(width, viewport) {
+            for y in rows {
+                let start = buffers.offset(width, viewport.x, y);
+                for pixel in &mut buffers.pixels[start..start + viewport.width as usize] {
+                    let alpha = *pixel & 0xff00_0000;
+                    *pixel = composite(*pixel, source, Some(StageBlend::ALPHA));
+                    if preserve_alpha {
+                        *pixel = (*pixel & 0x00ff_ffff) | alpha;
+                    }
                 }
             }
         }

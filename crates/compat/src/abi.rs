@@ -78,14 +78,94 @@ enum CallValue {
     Vector(qa_core::primitives::Vec3),
     Basis(qa_core::math::AngleBasis),
 }
-type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError>;
+#[derive(Clone, Copy)]
+enum QcArgc {
+    Fixed(usize),
+    Variadic,
+}
+#[derive(Clone, Copy)]
+enum QcArgs {
+    Scalars,
+    Vector,
+    Strings { from: usize, qw_from: usize },
+}
+impl QcArgs {
+    fn string_start(self, rules: qa_core::primitives::RuleSetId) -> Option<usize> {
+        match self {
+            Self::Strings { from, qw_from } => {
+                Some(if rules == qa_core::primitives::RuleSetId::QuakeWorld {
+                    qw_from
+                } else {
+                    from
+                })
+            }
+            _ => None,
+        }
+    }
+    fn layout(self, argc: usize) -> (usize, usize) {
+        match self {
+            Self::Vector => (3, 1),
+            _ => (argc, 3),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct QcSignature {
+    argc: QcArgc,
+    args: QcArgs,
+    returns: bool,
+    developer: bool,
+}
+impl QcSignature {
+    const fn new(argc: QcArgc, args: QcArgs, returns: bool) -> Self {
+        Self {
+            argc,
+            args,
+            returns,
+            developer: false,
+        }
+    }
+    const fn void(mut self) -> Self {
+        self.returns = false;
+        self
+    }
+    const fn developer(mut self) -> Self {
+        self.developer = true;
+        self
+    }
+}
+type Entry = fn(&mut Invocation<'_, '_, '_>, Option<QcSignature>) -> Result<CallValue, CallError>;
+#[derive(Clone, Copy)]
+struct CallEntry {
+    call: Entry,
+    quakec: Option<QcSignature>,
+}
+impl CallEntry {
+    fn invoke(self, call: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+        (self.call)(call, self.quakec)
+    }
+}
 macro_rules! scalar {
     ($handler:expr) => {
-        Some(|call| ($handler)(call).map(CallValue::Word))
+        scalar!($handler, None)
+    };
+    ($handler:expr, $signature:expr) => {
+        Some(CallEntry {
+            call: |call, _| ($handler)(call).map(CallValue::Word),
+            quakec: $signature,
+        })
+    };
+}
+macro_rules! vector {
+    ($handler:expr, $signature:expr) => {
+        Some(CallEntry {
+            call: |call, _| ($handler)(call),
+            quakec: Some($signature),
+        })
     };
 }
 pub struct CallTable {
-    entries: [Option<Entry>; 256],
+    entries: [Option<CallEntry>; 256],
 }
 pub struct UnknownCalls {
     numbers: NameTable,
@@ -124,7 +204,7 @@ impl CallTable {
         unknown: &mut UnknownCalls,
     ) -> Result<CallValue, CallError> {
         if let Some(Some(entry)) = self.entries.get(number as usize) {
-            return entry(call);
+            return entry.invoke(call);
         }
         unknown.calls = unknown.calls.saturating_add(1);
         let key = number.to_le_bytes();
@@ -341,20 +421,49 @@ const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
     };
-    t.entries[1] = Some(angle_basis);
-    t.entries[9] = Some(vector_normalize);
-    t.entries[12] = scalar!(vector_length);
-    t.entries[13] = scalar!(vector_yaw);
-    t.entries[23] = scalar!(qc_print::<true>);
-    t.entries[25] = scalar!(qc_print::<false>);
-    t.entries[36] = scalar!(rint);
-    t.entries[37] = scalar!(floor::<false>);
-    t.entries[38] = scalar!(ceil::<false>);
-    t.entries[43] = scalar!(absolute::<false>);
-    t.entries[45] = scalar!(cvar_number);
-    t.entries[46] = scalar!(command_append);
-    t.entries[51] = Some(vector_angles);
-    t.entries[72] = scalar!(cvar_set::<false, false>);
+    let vector = QcSignature::new(QcArgc::Fixed(1), QcArgs::Vector, true);
+    let scalar = QcSignature::new(QcArgc::Fixed(1), QcArgs::Scalars, true);
+    let strings = QcSignature::new(
+        QcArgc::Fixed(1),
+        QcArgs::Strings {
+            from: 0,
+            qw_from: 0,
+        },
+        true,
+    );
+    t.entries[1] = vector!(angle_basis, vector.void());
+    t.entries[9] = vector!(vector_normalize, vector);
+    t.entries[12] = scalar!(vector_length, Some(vector));
+    t.entries[13] = scalar!(vector_yaw, Some(vector));
+    t.entries[23] = Some(CallEntry {
+        call: qc_print::<true>,
+        quakec: Some(QcSignature::new(
+            QcArgc::Variadic,
+            QcArgs::Strings {
+                from: 0,
+                qw_from: 1,
+            },
+            false,
+        )),
+    });
+    t.entries[25] = Some(CallEntry {
+        call: qc_print::<false>,
+        quakec: Some(QcSignature::new(QcArgc::Variadic, strings.args, false).developer()),
+    });
+    t.entries[36] = scalar!(rint, Some(scalar));
+    t.entries[37] = scalar!(floor::<false>, Some(scalar));
+    t.entries[38] = scalar!(ceil::<false>, Some(scalar));
+    t.entries[43] = scalar!(absolute::<false>, Some(scalar));
+    t.entries[45] = scalar!(cvar_number, Some(strings));
+    t.entries[46] = scalar!(command_append, Some(strings.void()));
+    t.entries[51] = vector!(vector_angles, vector);
+    t.entries[72] = scalar!(
+        cvar_set::<false, false>,
+        Some(QcSignature {
+            argc: QcArgc::Fixed(2),
+            ..strings.void()
+        })
+    );
     t
 }
 pub const QUAKEC: CallTable = quakec();
@@ -371,44 +480,35 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
     fn call(&mut self, vm: &mut quakec::Vm, number: u32, argc: usize) -> Result<(), quakec::Trap> {
         // Unsupported native builtins trap only when executed; they never
         // inherit the Q3 convention of reporting an unknown import as zero.
-        if self
+        let entry = self
             .table
             .entries
             .get(number as usize)
-            .is_none_or(Option::is_none)
-            || argc > 8
-        {
+            .copied()
+            .flatten()
+            .ok_or(quakec::Trap::Builtin)?;
+        let signature = entry.quakec.ok_or(quakec::Trap::Builtin)?;
+        if argc > 8 {
             return Err(quakec::Trap::Builtin);
         }
-        let expected = match number {
-            23 | 25 => argc,
-            72 => 2,
-            _ => 1,
-        };
-        if argc != expected {
+        if matches!(signature.argc, QcArgc::Fixed(expected) if argc != expected) {
             return Err(quakec::Trap::Builtin);
         }
         let mut arguments = [0u64; 8];
-        let (words, stride) = if matches!(number, 1 | 9 | 12 | 13 | 51) {
-            (3, 1)
-        } else {
-            (argc, 3)
-        };
-        let string_start = qc_print_offset(number == 23, self.context.console.source);
+        let (words, stride) = signature.args.layout(argc);
+        let string_start = signature.args.string_start(self.context.console.source);
         for (index, to) in arguments[..words].iter_mut().enumerate() {
             let word = *vm
                 .image
                 .globals
                 .get(4 + index * stride)
                 .ok_or(quakec::Trap::Memory)?;
-            if (matches!(number, 23 | 25) && index >= string_start)
-                || matches!(number, 45 | 46 | 72)
-            {
+            if string_start.is_some_and(|first| index >= first) {
                 vm.string(word as i32)?;
             }
             *to = u64::from(word);
         }
-        if number == 25 && self.services.cvars.value(self.developer) == 0.0 {
+        if signature.developer && self.services.cvars.value(self.developer) == 0.0 {
             return Ok(());
         }
         let mut invocation = Invocation {
@@ -428,26 +528,26 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             },
             arguments: &arguments[..words],
         };
-        let value = self
-            .table
-            .invoke_value(number, &mut invocation, self.unknown)
+        let value = entry
+            .invoke(&mut invocation)
             .map_err(|_| quakec::Trap::Builtin)?;
         match value {
             CallValue::Word(value) => {
-                if !matches!(number, 23 | 25 | 46 | 72) {
+                if signature.returns {
                     *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
                 }
             }
-            CallValue::Vector(vector) => vm.write_global_vector(1, vector)?,
+            CallValue::Vector(vector) => {
+                if signature.returns {
+                    vm.write_global_vector(1, vector)?;
+                }
+            }
             CallValue::Basis(basis) => vm.write_basis(basis)?,
         }
         Ok(())
     }
 }
 
-fn qc_print_offset(broadcast: bool, rules: qa_core::primitives::RuleSetId) -> usize {
-    usize::from(broadcast && rules == qa_core::primitives::RuleSetId::QuakeWorld)
-}
 fn argument_vector(c: &Invocation<'_, '_, '_>) -> Result<qa_core::primitives::Vec3, CallError> {
     Ok(qa_core::primitives::Vec3([
         float::<false>(c, 0)? as f32,
@@ -503,8 +603,15 @@ fn vector_angles(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError>
         pitch, yaw, 0.0,
     ])))
 }
-fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let first = qc_print_offset(BROADCAST, c.context.console.source);
+fn qc_print<const BROADCAST: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+    signature: Option<QcSignature>,
+) -> Result<CallValue, CallError> {
+    let first = signature
+        .ok_or(CallError::Memory)?
+        .args
+        .string_start(c.context.console.source)
+        .ok_or(CallError::Memory)?;
     let level = if first != 0 {
         crate::numbers::native_integer(float::<false>(c, 0)?) as u8
     } else {
@@ -527,7 +634,7 @@ fn qc_print<const BROADCAST: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64
         level,
         text.as_bytes(),
     )?;
-    Ok(0)
+    Ok(CallValue::Word(0))
 }
 fn absolute<const DOUBLE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let value = c.arg(0)?;
@@ -680,8 +787,8 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let mut text = FixedText::<64>::default();
     // Cvar_SetValue uses an integral form only when the f32 fits its native
     // signed int; all other values use %f after promotion to double.
-    if (-2147483648.0..2147483648.0).contains(&value) && value == value.trunc() {
-        write!(text, "{}", value as i32).map_err(|_| CallError::Text)?;
+    if crate::numbers::fits_native_integer(value) && value == value.trunc() {
+        write!(text, "{}", crate::numbers::native_integer(value)).map_err(|_| CallError::Text)?;
     } else if value.is_nan() {
         text.set(if value.is_sign_negative() {
             "-nan"

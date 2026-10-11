@@ -776,7 +776,7 @@ fn quakec_math_program_with_vectors(builtin: i32, vectors: &[(u16, &[u8])]) -> V
         Layout {
             entities: 4,
             header_bytes: 16,
-            extra_string_bytes: 0,
+            extra_string_bytes: 64,
             state_step: 0.1,
         },
     )
@@ -852,6 +852,36 @@ fn with_quakec_calls(rules: RuleSetId, run: impl FnOnce(&mut qa_compat::abi::Qua
         unknown: &mut unknown,
     };
     run(&mut calls);
+}
+
+#[test]
+fn quakec_cvar_signature_reads_both_strings_and_preserves_void_returns() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_quakec_calls(rules, |calls| {
+            let mut vm = quakec_math_program(72);
+            vm.image.globals[4] = vm.insert_string(b"fov").unwrap() as u32;
+            vm.image.globals[7] = vm.insert_string(b"83").unwrap() as u32;
+            let returns = [0x12345678, 0x87654321, 0x11223344];
+            assert_eq!(vm.call(calls, 4, 100, false), Ok(returns));
+            let fov = calls.services.cvars.find("fov").unwrap();
+            assert_eq!(calls.services.cvars.value_in(fov, rules), 83.0);
+            for function in [1, 3] {
+                assert_eq!(
+                    vm.call(calls, function, 100, false),
+                    Err(qa_compat::quakec::Trap::Builtin)
+                );
+                assert_eq!(&vm.image.globals[1..4], &returns);
+                assert_eq!(calls.services.cvars.value_in(fov, rules), 83.0);
+            }
+            vm.image.globals[7] = u32::MAX;
+            assert_eq!(
+                vm.call(calls, 4, 100, false),
+                Err(qa_compat::quakec::Trap::String)
+            );
+            assert_eq!(&vm.image.globals[1..4], &returns);
+            assert_eq!(calls.services.cvars.value_in(fov, rules), 83.0);
+        });
+    }
 }
 
 #[test]
