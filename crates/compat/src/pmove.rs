@@ -1,18 +1,17 @@
 //! game.h memory projections; all physics executes in qa_movement.
-use crate::{memory::ModuleMemory, services::CallError};
+use crate::{
+    memory::{ModuleMemory, Width},
+    services::CallError,
+};
 use qa_core::primitives::{PlayerState, UserCmd};
-use qa_network::projection::{PlayerContext, PlayerProjection};
+use qa_network::projection::{
+    GRAVITY_WORD, MOVEMENT_WORDS, PM_FLAGS_WORD, PlayerContext, PlayerProjection,
+};
 
-#[derive(Clone, Copy)]
-enum Width {
-    Byte,
-    Short,
-    Word,
-}
 use Width::*;
 /// Original x86-64 game.h offsets, checked with sizeof/offsetof on qsrc.
 pub(crate) struct Layout {
-    state: [(usize, Width); 13],
+    state: [(usize, Width); MOVEMENT_WORDS],
     pub bytes: usize,
     pub command: usize,
     pub touches: usize,
@@ -123,23 +122,11 @@ impl Pmove {
         player: &mut PlayerState,
     ) -> Result<(), CallError> {
         for (word, &(offset, width)) in self.words.iter_mut().zip(&self.layout.state) {
-            let bytes = memory.read(
-                address + offset as u64,
-                match width {
-                    Byte => 1,
-                    Short => 2,
-                    Word => 4,
-                },
-            )?;
-            *word = match width {
-                Byte => u32::from(bytes[0]),
-                Short => u32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
-                Word => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            };
+            *word = memory.read_field(address + offset as u64, width)?;
         }
         // Gravity is a signed short even though positions/angles are carried
         // as raw wire words by the shared projection.
-        self.words[9] = self.words[9] as i16 as i32 as u32;
+        self.words[GRAVITY_WORD] = self.words[GRAVITY_WORD] as i16 as i32 as u32;
         let ground = player.movement.ground;
         let mut context = PlayerContext::default();
         self.projection
@@ -149,7 +136,7 @@ impl Pmove {
             player.movement.ground = ground;
         }
         if self.layout.wide {
-            player.movement.ladder = self.words[8] & 128 != 0;
+            player.movement.ladder = self.words[PM_FLAGS_WORD] & 128 != 0;
         }
         Ok(())
     }
@@ -159,27 +146,24 @@ impl Pmove {
         address: u64,
         player: &PlayerState,
     ) -> Result<(), CallError> {
-        let flags = self.words[8];
+        let flags = self.words[PM_FLAGS_WORD];
         let context = PlayerContext {
             gravity: player.movement.tuning.gravity.unwrap_or(800.0),
             ..Default::default()
         };
         self.projection.reduce(player, &context, &mut self.words);
-        self.words[8] |= flags & !63;
+        self.words[PM_FLAGS_WORD] |= flags & !63;
         if self.layout.wide {
-            self.words[8] = (self.words[8] & !128) | (u32::from(player.movement.ladder) << 7);
-            memory.write(address + 48, &[player.view_offset.0[2] as i8 as u8])?;
+            self.words[PM_FLAGS_WORD] =
+                (self.words[PM_FLAGS_WORD] & !128) | (u32::from(player.movement.ladder) << 7);
+            memory.write_field(
+                address + 48,
+                Byte,
+                player.view_offset.0[2] as i8 as u8 as u32,
+            )?;
         }
         for (&word, &(offset, width)) in self.words.iter().zip(&self.layout.state) {
-            let bytes = word.to_le_bytes();
-            memory.write(
-                address + offset as u64,
-                &bytes[..match width {
-                    Byte => 1,
-                    Short => 2,
-                    Word => 4,
-                }],
-            )?;
+            memory.write_field(address + offset as u64, width, word)?;
         }
         Ok(())
     }
@@ -202,7 +186,7 @@ impl Pmove {
         player.view_angles = memory.read_vec3(pointer + self.layout.client_view as u64)?;
         player.view_offset = memory.read_vec3(pointer + self.layout.client_offset as u64)?;
         if self.layout.wide {
-            player.view_offset.0[2] += f32::from(memory.read(pointer + 48, 1)?[0] as i8);
+            player.view_offset.0[2] += f32::from(memory.read_field(pointer + 48, Byte)? as i8);
         }
         player.punch_angles = memory.read_vec3(pointer + self.layout.client_punch as u64)?;
         Ok(())

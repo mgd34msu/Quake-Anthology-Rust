@@ -3,6 +3,22 @@ use qa_core::heap::extent;
 pub use qa_core::heap::{Heap, MemoryError};
 use qa_core::primitives::Vec3;
 
+#[derive(Clone, Copy)]
+pub enum Width {
+    Byte,
+    Short,
+    Word,
+}
+impl Width {
+    pub const fn len(self) -> usize {
+        match self {
+            Self::Byte => 1,
+            Self::Short => 2,
+            Self::Word => 4,
+        }
+    }
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[derive(Debug)]
 pub enum ProcessMemoryError {
@@ -118,11 +134,26 @@ impl<'a> ModuleMemory<'a> {
         Ok(())
     }
     pub fn read_word(&self, address: u64) -> Result<i32, MemoryError> {
-        let b = self.read(address, 4)?;
-        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(self.read_field(address, Width::Word)? as i32)
     }
     pub fn write_word(&mut self, address: u64, word: i32) -> Result<(), MemoryError> {
-        self.write(address, &word.to_le_bytes())
+        self.write_field(address, Width::Word, word as u32)
+    }
+    pub fn read_field(&self, address: u64, width: Width) -> Result<u32, MemoryError> {
+        let bytes = self.read(address, width.len())?;
+        Ok(match width {
+            Width::Byte => u32::from(bytes[0]),
+            Width::Short => u32::from(u16::from_le_bytes([bytes[0], bytes[1]])),
+            Width::Word => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        })
+    }
+    pub fn write_field(
+        &mut self,
+        address: u64,
+        width: Width,
+        value: u32,
+    ) -> Result<(), MemoryError> {
+        self.write(address, &value.to_le_bytes()[..width.len()])
     }
     pub fn read_u64(&self, address: u64) -> Result<u64, MemoryError> {
         Ok(u64::from_le_bytes(

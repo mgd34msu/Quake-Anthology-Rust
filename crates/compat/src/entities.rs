@@ -1,6 +1,6 @@
 //! Native entity-address projection onto common lifetime handles.
 use crate::{
-    memory::ModuleMemory,
+    memory::{ModuleMemory, Width},
     services::{CallContext, CallError, ClipTarget, ENGINE_CALLS, EngineServices},
 };
 use qa_core::primitives::{
@@ -809,12 +809,10 @@ fn field(
     address: u64,
     (offset, byte): (usize, bool),
 ) -> Result<u32, CallError> {
-    let at = address + offset as u64;
-    Ok(if byte {
-        u32::from(memory.read(at, 1)?[0])
-    } else {
-        memory.read_word(at)? as u32
-    })
+    Ok(memory.read_field(
+        address + offset as u64,
+        if byte { Width::Byte } else { Width::Word },
+    )?)
 }
 fn pack_solid(bounds: Bounds, wide: bool) -> u32 {
     if !wide {

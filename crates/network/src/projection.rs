@@ -8,6 +8,10 @@ use qa_core::{
     },
 };
 
+pub const MOVEMENT_WORDS: usize = 13;
+pub const PM_FLAGS_WORD: usize = 8;
+pub const GRAVITY_WORD: usize = 9;
+
 /// These are native values, never common entity, client or registry handles.
 #[derive(Default)]
 pub struct PlayerContext {
@@ -118,8 +122,8 @@ const Q2: &[Field] = &[
     f(5, Velocity(1), Eighth),
     f(6, Velocity(2), Eighth),
     f(7, Timer, TimerEighth),
-    f(8, Flags, Bits),
-    f(9, Gravity, FloatInteger),
+    f(PM_FLAGS_WORD, Flags, Bits),
+    f(GRAVITY_WORD, Gravity, FloatInteger),
     f(10, DeltaAngle(0), ShortAngle),
     f(11, DeltaAngle(1), ShortAngle),
     f(12, DeltaAngle(2), ShortAngle),
@@ -211,7 +215,7 @@ impl PlayerProjection {
             .fields
             .iter()
             .copied()
-            .filter(|field| field.word <= 12)
+            .filter(|field| field.word < MOVEMENT_WORDS)
             .collect();
         projection
     }

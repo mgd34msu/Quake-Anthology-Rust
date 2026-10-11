@@ -1,7 +1,7 @@
 //! Native numeric stats enter the same player/value projection as snapshots.
 use crate::{
     entities::{Entities, EntityProjection, native_address},
-    memory::ModuleMemory,
+    memory::{ModuleMemory, Width},
     services::CallError,
 };
 use qa_core::primitives::{ClientId, IndexSpan, ModuleId, ValueBinding};
@@ -75,9 +75,11 @@ impl PlayerStats {
                 .checked_add(self.layout.offset as u64)
                 .ok_or(CallError::Memory)?;
             let words = &mut self.words[self.stats.range()];
-            let bytes = memory.read(address, words.len() * 2)?;
-            for (word, bytes) in words.iter_mut().zip(bytes.chunks_exact(2)) {
-                *word = i16::from_le_bytes([bytes[0], bytes[1]]) as i32 as u32;
+            memory.read(address, words.len() * Width::Short.len())?;
+            for (index, word) in words.iter_mut().enumerate() {
+                *word = memory
+                    .read_field(address + (index * Width::Short.len()) as u64, Width::Short)?
+                    as i16 as i32 as u32;
             }
             projection.apply(
                 &self.words,
