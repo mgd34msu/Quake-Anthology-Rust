@@ -1,5 +1,15 @@
 use super::{determinant, fit3, widest_fan_basis};
 
+#[test]
+fn sliver_culling_retains_f32_fan_rounding_independently_of_winding() {
+    let points = [[0.0, 0.0], [4096.5, 4096.0], [4096.0, 4095.5]];
+    assert_eq!(super::cull_area(3, |index| points[index]), 0.0);
+    assert_eq!(
+        super::signed_area(3, |index| points[index].map(f64::from)),
+        -0.25
+    );
+}
+
 // Coefficient arithmetic before consolidation, with each caller's prepared points.
 fn previous(points: [[f64; 2]; 3], values: [f64; 3], area: f64) -> [f64; 3] {
     let [a, b, c] = points;

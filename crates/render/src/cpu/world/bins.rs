@@ -76,7 +76,8 @@ impl CoverageBins {
             } else {
                 DepthPolicy::PlaneDepth
             };
-            let certified = crate::edges::certified_rows(vertices, viewport, depth_policy);
+            let certified =
+                crate::edges::certified_rows(vertices, viewport, depth_policy, primitive.winding);
             for id in 0..self.count {
                 let start = self.rows[id][0].max(viewport.y);
                 let end = self.rows[id][1].min(viewport.y + viewport.height);

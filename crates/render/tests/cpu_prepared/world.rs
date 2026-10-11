@@ -2080,16 +2080,18 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
     let mut primitives = Vec::new();
     let mut coverage = Vec::new();
     let mut append = |points: [[f32; 2]; 4]| {
-        primitives.push(Primitive {
-            first_coverage: coverage.len(),
-            coverage_count: points.len(),
-            ..Primitive::default()
-        });
-        coverage.extend(points.map(|xy| ProjectedVertex {
+        let vertices = points.map(|xy| ProjectedVertex {
             xy,
             inverse_depth: 0.25,
             texcoord_over_depth: [0.0; 2],
-        }));
+        });
+        primitives.push(Primitive {
+            first_coverage: coverage.len(),
+            coverage_count: vertices.len(),
+            winding: crate::edges::polygon_winding(&vertices).ok(),
+            ..Primitive::default()
+        });
+        coverage.extend(vertices);
     };
     append([[5.0, 4.0], [20.0, 4.0], [20.0, 7.0], [5.0, 7.0]]);
     append([[5.0, -2.0], [20.0, -2.0], [20.0, 24.0], [5.0, 24.0]]);

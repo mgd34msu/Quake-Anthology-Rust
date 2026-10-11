@@ -223,6 +223,7 @@ impl WorldBand {
                     primitive.depth_key,
                     primitive.draw_rank,
                     vertices,
+                    primitive.winding,
                 ) {
                     self.stats.rejected = self.stats.rejected.saturating_add(1);
                 }

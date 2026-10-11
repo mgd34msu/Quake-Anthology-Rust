@@ -2,9 +2,48 @@ pub(crate) fn fan(count: usize) -> impl Iterator<Item = [usize; 3]> + Clone {
     (1..count.saturating_sub(1)).map(|at| [0, at, at + 1])
 }
 
+pub(crate) fn cross2<T: Copy + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>>(
+    a: [T; 2],
+    b: [T; 2],
+    p: [T; 2],
+) -> T {
+    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+}
+
 pub(crate) fn determinant(points: [[f64; 2]; 3]) -> f64 {
-    (points[1][0] - points[0][0]) * (points[2][1] - points[0][1])
-        - (points[2][0] - points[0][0]) * (points[1][1] - points[0][1])
+    cross2(points[0], points[1], points[2])
+}
+
+pub(crate) fn eval<T: Copy + std::ops::Add<Output = T> + std::ops::Mul<Output = T>>(
+    field: [T; 3],
+    coordinate: [T; 2],
+) -> T {
+    field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
+}
+
+pub(crate) fn signed_area(count: usize, point: impl Fn(usize) -> [f64; 2]) -> f64 {
+    let Some(last) = count.checked_sub(1) else {
+        return 0.0;
+    };
+    let mut previous = point(last);
+    let mut area = 0.0;
+    for index in 0..count {
+        let current = point(index);
+        area += previous[0] * current[1] - current[0] * previous[1];
+        previous = current;
+    }
+    area
+}
+
+/// Keep the native f32 fan cull, which differs from shoelace winding on slivers.
+pub(crate) fn cull_area(count: usize, point: impl Fn(usize) -> [f32; 2]) -> f32 {
+    if count < 3 {
+        return 0.0;
+    }
+    let origin = point(0);
+    fan(count)
+        .map(|indices| cross2(origin, point(indices[1]), point(indices[2])))
+        .sum()
 }
 
 /// Callers prepare their own coordinate offsets before widening to f64.

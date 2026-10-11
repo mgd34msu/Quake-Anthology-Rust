@@ -579,7 +579,7 @@ fn static_color_fields_retain_precision_at_large_texture_origins() {
         .unwrap();
     for local in [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0], [0.5, 3.5]] {
         let chart = [8388608.0 + local[0], local[1]];
-        let red = super::at64(prepared.colors[0][0], chart);
+        let red = crate::affine::eval(prepared.colors[0][0], chart);
         let expected = (64.0 + 8.0 * (local[0] + local[1])) / 255.0;
         assert!((red - expected).abs() < 1.0e-9);
     }

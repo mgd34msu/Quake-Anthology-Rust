@@ -132,6 +132,12 @@ struct RasterPass<'a> {
     draw_rank: u32,
 }
 
+#[derive(Clone, Copy)]
+enum GradientForm {
+    ScaleThenFactor,
+    FactorFolded,
+}
+
 impl Camera {
     fn load(refdef: Refdef, width: u32, height: u32) -> Option<Self> {
         let tangent = refdef.validate(width, height)?;
@@ -169,11 +175,15 @@ impl Camera {
     fn screen_center(&self) -> [f32; 2] {
         self.screen_center
     }
-    fn gradient(&self, axis: Vec3, factor: f32) -> world::Affine {
+    fn gradient(&self, axis: Vec3, factor: f32, form: GradientForm) -> world::Affine {
         let scale = self.screen_scale();
         let center = self.screen_center();
-        let x = axis.0[0] * ((1.0 / scale[0]) * factor);
-        let y = -axis.0[1] * ((1.0 / scale[1]) * factor);
+        let component = |value: f32, scale: f32| match form {
+            GradientForm::ScaleThenFactor => value * (1.0 / scale) * factor,
+            GradientForm::FactorFolded => value * ((1.0 / scale) * factor),
+        };
+        let x = component(axis.0[0], scale[0]);
+        let y = component(-axis.0[1], scale[1]);
         world::Affine {
             x,
             y,
@@ -699,7 +709,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        let mut area = edge(vertices[0].xy, vertices[1].xy, vertices[2].xy);
+        let mut area = crate::affine::cross2(vertices[0].xy, vertices[1].xy, vertices[2].xy);
         // Q3 CT_FRONT_SIDED culls GL_FRONT with GL_CCW. The retained winding
         // therefore has positive area in this top-left-origin framebuffer.
         if culled(pass.material.settings.cull, area) {
@@ -756,7 +766,7 @@ impl CpuBackend {
             let texels = TexelView::image(pass.image, mip, pass.stage.stage.texture_intensity);
             for x in x_start..x_end {
                 let sample = [x as f32 + 0.5, y as f32 + 0.5];
-                let weights = edges.map(|(a, b)| edge(a, b, sample));
+                let weights = edges.map(|(a, b)| crate::affine::cross2(a, b, sample));
                 if weights
                     .iter()
                     .zip(include_edge)
@@ -1089,10 +1099,6 @@ fn culled(cull: Cull, area: f32) -> bool {
             Cull::Back => area > 0.0,
             Cull::None => false,
         }
-}
-
-fn edge(a: [f32; 2], b: [f32; 2], point: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0])
 }
 
 fn top_left(a: [f32; 2], b: [f32; 2]) -> bool {

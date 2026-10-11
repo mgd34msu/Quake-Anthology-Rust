@@ -607,7 +607,9 @@ impl Product {
             for values in [&texture, &lights] {
                 for axis in 0..2 {
                     let affine = fit(basis_coordinates, basis.map(|i| values[i][axis]));
-                    if (at64(affine, coordinates[index]) - values[index][axis]).abs() > 1.0e-5 {
+                    if (crate::affine::eval(affine, coordinates[index]) - values[index][axis]).abs()
+                        > 1.0e-5
+                    {
                         return None;
                     }
                 }
@@ -619,8 +621,9 @@ impl Product {
                         basis.map(|i| f64::from(vertices[i].color[channel])),
                     );
                     if affine.iter().any(|&value| !(value as f32).is_finite())
-                        || (at64(affine, coordinates[index]) - f64::from(vertex.color[channel]))
-                            .abs()
+                        || (crate::affine::eval(affine, coordinates[index])
+                            - f64::from(vertex.color[channel]))
+                        .abs()
                             > 1.0e-5
                     {
                         return None;
@@ -834,7 +837,7 @@ impl Product {
         for &(vertex, coordinate) in &self.color_checks {
             let value = evaluator.evaluate(&prepared, &vertex).color;
             if fields.iter().zip(value).any(|(&field, channel)| {
-                (at64(field, coordinate) - f64::from(channel) / 255.0).abs() > 1.0e-7
+                (crate::affine::eval(field, coordinate) - f64::from(channel) / 255.0).abs() > 1.0e-7
             }) {
                 return None;
             }
@@ -918,9 +921,9 @@ impl Product {
                     + f64::from(index as u32 / width) * f64::from(step)
                     + 0.5 * f64::from(step),
             ];
-            let colors = prepared
-                .colors
-                .map(|stage| stage.map(|field| at64(field, coordinate).clamp(0.0, 1.0) as f32));
+            let colors = prepared.colors.map(|stage| {
+                stage.map(|field| crate::affine::eval(field, coordinate).clamp(0.0, 1.0) as f32)
+            });
             let coordinate = coordinate.map(|value| value as f32);
             let mut samples = [[0.0; 4]; 2];
             let sample_colors = match self.combination {
@@ -929,12 +932,12 @@ impl Product {
             };
             samples[self.base_stage] = base_sample(
                 base_pixels,
-                self.texture.map(|p| at(p, coordinate)),
+                self.texture.map(|p| crate::affine::eval(p, coordinate)),
                 sample_colors[self.base_stage],
             );
             samples[1 - self.base_stage] = light_sample(
                 light_pixels,
-                self.lightcoord.map(|p| at(p, coordinate)),
+                self.lightcoord.map(|p| crate::affine::eval(p, coordinate)),
                 sample_colors[1 - self.base_stage],
             );
             let pixel = match self.combination {
@@ -981,9 +984,6 @@ pub(super) fn multiply_pixel(first: u32, second: [f32; 4]) -> u32 {
     }))
 }
 
-fn at(field: [f32; 3], coordinate: [f32; 2]) -> f32 {
-    field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
-}
 fn chart_coordinate(chart: [[f64; 4]; 2], position: qa_core::primitives::Vec3) -> [f32; 2] {
     chart.map(|p| {
         (p[3]
@@ -993,21 +993,15 @@ fn chart_coordinate(chart: [[f64; 4]; 2], position: qa_core::primitives::Vec3) -
     })
 }
 
-fn at64(field: [f64; 3], coordinate: [f64; 2]) -> f64 {
-    field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
-}
 fn geometric_basis(vertices: &[Vertex]) -> Option<([usize; 2], [usize; 3])> {
-    vertices.first()?;
     let mut largest = 0.0;
     let mut result = None;
     for axes in [[0, 1], [0, 2], [1, 2]] {
-        for basis in crate::affine::fan(vertices.len()) {
-            let area = determinant(
-                basis.map(|i| axes.map(|axis| f64::from(vertices[i].position.0[axis]))),
-            )
-            .abs();
-            if area > largest {
-                largest = area;
+        if let Some((basis, area)) = crate::affine::widest_fan_basis(vertices.len(), |index| {
+            axes.map(|axis| f64::from(vertices[index].position.0[axis]))
+        }) {
+            if area.abs() > largest {
+                largest = area.abs();
                 result = Some((axes, basis));
             }
         }

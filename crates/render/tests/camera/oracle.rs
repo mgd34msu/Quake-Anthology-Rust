@@ -1,4 +1,4 @@
-use super::{Camera, Refdef, Vec3, Viewport};
+use super::{Camera, GradientForm, Refdef, Vec3, Viewport};
 
 #[test]
 fn cached_gradients_keep_previous_float_operation_order() {
@@ -48,20 +48,30 @@ fn cached_gradients_keep_previous_float_operation_order() {
                 Vec3([0.713, -0.371, 12.375]),
                 Vec3([-1047.3, 777.1, -17.3]),
             ] {
-                for factor in [1.0, 0.5, 0.25, 0.125] {
-                    let x = axis.0[0] * ((1.0 / scale[0]) * factor);
-                    let y = -axis.0[1] * ((1.0 / scale[1]) * factor);
-                    let origin = axis.0[2] * factor - center[0] * x - center[1] * y;
-                    let actual = camera.gradient(axis, factor);
-                    assert_eq!(
-                        [actual.x, actual.y, actual.origin].map(f32::to_bits),
-                        [x, y, origin].map(f32::to_bits)
-                    );
-                    for [px, py] in [[0.0, 0.0], [127.0, 81.0], [301.0, 177.0]] {
+                for factor in [1.0, 0.5, 0.25, 0.125, 0.31717] {
+                    for form in [GradientForm::FactorFolded, GradientForm::ScaleThenFactor] {
+                        let (x, y) = match form {
+                            GradientForm::FactorFolded => (
+                                axis.0[0] * ((1.0 / scale[0]) * factor),
+                                -axis.0[1] * ((1.0 / scale[1]) * factor),
+                            ),
+                            GradientForm::ScaleThenFactor => (
+                                axis.0[0] * (1.0 / scale[0]) * factor,
+                                -axis.0[1] * (1.0 / scale[1]) * factor,
+                            ),
+                        };
+                        let origin = axis.0[2] * factor - center[0] * x - center[1] * y;
+                        let actual = camera.gradient(axis, factor, form);
                         assert_eq!(
-                            actual.at(px, py).to_bits(),
-                            (origin + y * py + x * px).to_bits()
+                            [actual.x, actual.y, actual.origin].map(f32::to_bits),
+                            [x, y, origin].map(f32::to_bits)
                         );
+                        for [px, py] in [[0.0, 0.0], [127.0, 81.0], [301.0, 177.0]] {
+                            assert_eq!(
+                                actual.at(px, py).to_bits(),
+                                (origin + y * py + x * px).to_bits()
+                            );
+                        }
                     }
                 }
             }

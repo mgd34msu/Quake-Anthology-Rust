@@ -1,6 +1,6 @@
 //! The single world edge/span consumer. Map topology never falls back to mesh
 //! triangles; polygon and tessellated-patch boundaries enter the same scanner.
-use super::{Camera, ClipVertex, ScreenVertex};
+use super::{Camera, ClipVertex, GradientForm, ScreenVertex};
 use crate::assets::{
     Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Sky, StageTexture, Vertex,
 };
@@ -302,6 +302,7 @@ struct Primitive {
     deforms: [DeformOp; 3],
     first_coverage: usize,
     coverage_count: usize,
+    winding: Option<bool>,
     depth_override: Option<f32>,
     patch: bool,
     rgba: Option<usize>,
@@ -1457,7 +1458,7 @@ impl SurfacePrepare {
                 if count < 3 {
                     continue;
                 }
-                let area = polygon_area(&self.screen[..count]);
+                let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
                 if super::culled(material.settings.cull, area) {
                     continue;
                 }
@@ -1621,7 +1622,7 @@ impl SurfacePrepare {
         if count < 3 {
             return;
         }
-        let area = polygon_area(&self.screen[..count]);
+        let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
         if super::culled(cull, area) {
             return;
         }
@@ -1706,7 +1707,7 @@ impl SurfacePrepare {
             if count < 3 {
                 continue;
             }
-            let area = polygon_area(&self.screen[..count]);
+            let area = crate::affine::cull_area(count, |index| self.screen[index].xy);
             if super::culled(material.settings.cull, area) {
                 continue;
             }
@@ -1800,10 +1801,11 @@ impl SurfacePrepare {
         };
         target.copy_from_slice(&self.projected[..count]);
         if let Some(depth) = primitive.depth_override {
-            for vertex in target {
+            for vertex in target.iter_mut() {
                 vertex.inverse_depth = depth;
             }
         }
+        primitive.winding = crate::edges::polygon_winding(target).ok();
         primitive.first_coverage = self.coverage_count;
         primitive.coverage_count = count;
         self.coverage_count = end;
@@ -1893,20 +1895,12 @@ fn native_planes(
     mip: u8,
 ) -> Option<(Planes, [i64; 2])> {
     let plane = surface.plane?;
-    let scale = camera.screen_scale();
-    let center = camera.screen_center();
     let normal = camera.direction_to_view(plane.normal);
     let inverse_distance = 1.0 / (plane.distance - plane.normal.dot(camera.refdef.origin));
     if !inverse_distance.is_finite() {
         return None;
     }
-    let x = normal.0[0] * (1.0 / scale[0]) * inverse_distance;
-    let y = -normal.0[1] * (1.0 / scale[1]) * inverse_distance;
-    let inverse_depth = Affine {
-        x,
-        y,
-        origin: normal.0[2] * inverse_distance - center[0] * x - center[1] * y,
-    };
+    let inverse_depth = camera.gradient(normal, inverse_distance, GradientForm::ScaleThenFactor);
     let mip_scale = 1.0 / (1u32 << mip) as f32;
     let axes = surface.texture_projection.map(|projection| {
         let axis = crate::world::geometry::projection_axis(projection);
@@ -1915,7 +1909,7 @@ fn native_planes(
     // Preserve D_CalcGradients' division/multiply order, transformed model
     // origin and post-transform mip scaling. Rotated views can otherwise
     // cross a fixed16 texel boundary despite mathematical equivalence.
-    let texture = axes.map(|axis| camera.gradient(axis, mip_scale));
+    let texture = axes.map(|axis| camera.gradient(axis, mip_scale, GradientForm::FactorFolded));
     let transformed_origin = camera.direction_to_view(camera.refdef.origin);
     let scaled_origin = transformed_origin * mip_scale;
     let adjust = std::array::from_fn(|i| {
@@ -1930,14 +1924,6 @@ fn native_planes(
         ..Planes::default()
     };
     planes.finite().then_some((planes, adjust))
-}
-
-fn polygon_area(vertices: &[ScreenVertex]) -> f32 {
-    let a = vertices[0];
-    vertices[1..]
-        .windows(2)
-        .map(|pair| super::edge(a.xy, pair[0].xy, pair[1].xy))
-        .sum()
 }
 
 fn cached_material(material: &Material) -> bool {

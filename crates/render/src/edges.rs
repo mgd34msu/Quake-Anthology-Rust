@@ -56,6 +56,7 @@ pub fn certified_rows(
     vertices: &[ProjectedVertex],
     viewport: Viewport,
     policy: DepthPolicy,
+    winding: Option<bool>,
 ) -> Result<std::ops::Range<u32>, ()> {
     if viewport.width == 0
         || viewport.height == 0
@@ -64,7 +65,8 @@ pub fn certified_rows(
     {
         return Err(());
     }
-    let clockwise = polygon_winding(vertices)?;
+    valid_polygon(vertices)?;
+    let clockwise = winding.ok_or(())?;
     let mut start = viewport.y + viewport.height;
     let mut end = viewport.y;
     let mut previous = vertices[vertices.len() - 1];
@@ -269,12 +271,13 @@ impl Edges {
         key: u32,
         draw_rank: u32,
         vertices: &[ProjectedVertex],
+        winding: Option<bool>,
     ) -> bool {
         if !self.collecting {
             self.stats.rejected += 1;
             return false;
         }
-        let Ok(clockwise) = polygon_winding(vertices) else {
+        let Some(clockwise) = winding.filter(|_| valid_polygon(vertices).is_ok()) else {
             self.stats.rejected += 1;
             return false;
         };
@@ -637,7 +640,7 @@ fn depth_plane(vertices: &[ProjectedVertex]) -> Option<DepthPlane> {
         .then_some(DepthPlane { x, y, origin })
 }
 
-fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<bool, ()> {
+fn valid_polygon(vertices: &[ProjectedVertex]) -> Result<(), ()> {
     if vertices.len() < 3
         || vertices.iter().any(|vertex| {
             !vertex
@@ -651,13 +654,17 @@ fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<bool, ()> {
     {
         return Err(());
     }
-    let mut area = 0.0_f64;
-    let mut previous = vertices[vertices.len() - 1];
-    for &vertex in vertices {
-        area += f64::from(previous.xy[0]) * f64::from(vertex.xy[1])
-            - f64::from(vertex.xy[0]) * f64::from(previous.xy[1]);
-        previous = vertex;
-    }
+    Ok(())
+}
+
+#[expect(
+    clippy::result_unit_err,
+    reason = "Invalid winding is a scoped geometry rejection."
+)]
+pub fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<bool, ()> {
+    valid_polygon(vertices)?;
+    let area =
+        crate::affine::signed_area(vertices.len(), |index| vertices[index].xy.map(f64::from));
     (area != 0.0 && area.is_finite())
         .then_some(area > 0.0)
         .ok_or(())
