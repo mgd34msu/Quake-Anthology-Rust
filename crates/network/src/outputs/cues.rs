@@ -27,6 +27,14 @@ pub struct Sound {
     pub channel: u8,
     pub position: Vec3,
 }
+impl Sound {
+    pub fn entity(self) -> Option<u16> {
+        (self.flags & ENTITY != 0).then_some(self.entity)
+    }
+    pub fn position(self) -> Option<Vec3> {
+        (self.flags & POSITION != 0).then_some(self.position)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuzzleFormat {
     Player,

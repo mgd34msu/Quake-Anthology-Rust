@@ -424,25 +424,34 @@ impl FrameHost {
             use qa_network::ingress::Incoming;
             match endpoint {
                 qa_core::loopback::Endpoint::Client => {
-                    let server = &mut self.runtime.server;
-                    if let Some(binding) = self.runtime.local_snapshots[id.0 as usize].as_mut()
+                    let server = &self.runtime.server;
+                    if let Some(binding) = self.runtime.local_snapshots[id.0 as usize].as_ref()
                         && server.clients[id.0 as usize].connection
                             == Some(qa_session::clients::Connection::Local)
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
-                        if let Incoming::Print(print) = incoming {
-                            let _ = server.events.print_level_bytes(
-                                None,
-                                Some(id),
-                                print.kind,
-                                print.level.unwrap_or(print.kind.default_level()),
-                                print.text,
-                            );
-                        } else {
-                            binding.apply(
-                                incoming,
-                                &mut self.runtime.prediction[binding.seat.index()].player,
-                            );
+                        let seat = binding.seat;
+                        match incoming {
+                            Incoming::Print(print) => {
+                                let _ = self.runtime.server.events.print_level_bytes(
+                                    None,
+                                    Some(id),
+                                    print.kind,
+                                    print.level.unwrap_or(print.kind.default_level()),
+                                    print.text,
+                                );
+                            }
+                            Incoming::Cue(cue) => self.received_cue(id, cue),
+                            incoming => {
+                                if let Some(binding) =
+                                    self.runtime.local_snapshots[id.0 as usize].as_mut()
+                                {
+                                    binding.apply(
+                                        incoming,
+                                        &mut self.runtime.prediction[seat.index()].player,
+                                    );
+                                }
+                            }
                         }
                     }
                 }

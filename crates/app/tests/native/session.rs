@@ -25,6 +25,7 @@ use std::time::Duration;
 #[allow(dead_code)]
 mod native_image;
 use native_image::*;
+mod cues;
 #[path = "../support/visibility_world.rs"]
 mod visibility_world;
 

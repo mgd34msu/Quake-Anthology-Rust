@@ -51,6 +51,8 @@ pub(super) fn commands_move_a_native_client_once() {
                 8,
             );
         }
+        let init_offset = if rr { 16 } else { 8 };
+        pe_rva(&mut file, 0x1800 + init_offset, 0x180001500, 8);
         pe_rva(&mut file, 0x1800 + if rr { 88 } else { 64 }, 0x180001720, 8);
         pe_rva(
             &mut file,
@@ -133,6 +135,35 @@ pub(super) fn commands_move_a_native_client_once() {
             .unwrap();
         let mut game =
             Game::map(image, rules, 25, &runtime.geometry, Duration::from_secs(3)).unwrap();
+        let mut init = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0xb9];
+        init.extend(0x180001b40u64.to_le_bytes());
+        init.extend([0x48, 0xb8]);
+        init.extend(
+            game.vm
+                .process
+                .import_pointer(if rr { 11 } else { 9 })
+                .unwrap()
+                .to_le_bytes(),
+        );
+        init.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0xc3]);
+        let precache = Export::words(CallbackId(game.entry(b"Init").unwrap()), &[]);
+        let configstrings = game
+            .vm
+            .resource_ranges()
+            .unwrap()
+            .iter()
+            .map(|range| range.range().end)
+            .max()
+            .unwrap();
+        {
+            let mut memory = ModuleMemory::borrow(
+                game.vm.process.base(),
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            memory.write(0x180001500, &init).unwrap();
+            memory.write(0x180001b40, b"_qa_cue.wav\0").unwrap();
+        }
         let api = Q2Clients {
             module: ModuleId(1),
             rules,
@@ -238,6 +269,15 @@ pub(super) fn commands_move_a_native_client_once() {
             memory
                 .write_word(0x180001af0, 0.125f32.to_bits() as i32)
                 .unwrap();
+            assert_eq!(
+                memory.read_u64(0x180001800 + init_offset as u64).unwrap(),
+                0x180001500
+            );
+            assert_eq!(
+                memory.read(0x180001500, init.len()).unwrap(),
+                init.as_slice()
+            );
+            assert_eq!(memory.read(0x180001b40, 12).unwrap(), b"_qa_cue.wav\0");
         }
         let imports = game.imports;
         let imports_address = game.imports_address;
@@ -253,6 +293,8 @@ pub(super) fn commands_move_a_native_client_once() {
             *table = imports;
         }
         request.entries = (0..count as u32).collect();
+        request.initialize = vec![precache];
+        request.configstrings = configstrings;
         request.api = Some(ApiCheck::NativeTable {
             export: Export::words(CallbackId(0), &[imports_address]),
         });
@@ -267,6 +309,24 @@ pub(super) fn commands_move_a_native_client_once() {
         let maxclients = host.console.cvars.bind("sv_maxclients", context).unwrap();
         host.console.cvars.force_write(maxclients, "1").unwrap();
         host.initialize_modules(Phase::Server);
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 2);
+        let bank = std::sync::Arc::new(
+            qa_audio::Bank::load(
+                std::num::NonZeroU32::new(44100).unwrap(),
+                vec![(
+                    "sound/_qa_cue.wav".into(),
+                    qa_core::primitives::Pcm {
+                        rate: std::num::NonZeroU32::new(44100).unwrap(),
+                        channels: qa_core::primitives::PcmChannels::Mono,
+                        samples: vec![12000; 1024],
+                        loop_start: None,
+                    },
+                    rules,
+                )],
+            )
+            .unwrap(),
+        );
+        host.bind_native_sounds(&bank).unwrap();
         host.connect_q2_client(&api, id, b"\\name\\once").unwrap();
         let mut expected = PlayerState::default();
         expected.movement_rules = rules;
@@ -338,6 +398,7 @@ pub(super) fn commands_move_a_native_client_once() {
             );
         }
         assert_eq!(host.runtime.network.commands, 2);
+        super::cues::received_sounds_use_precache_and_the_presentation_ring(&mut host, id, bank);
         host.shutdown_modules();
     }
 }

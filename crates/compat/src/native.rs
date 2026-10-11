@@ -537,6 +537,15 @@ impl Vm {
 }
 
 impl Vm {
+    /// Resolve through the existing lifetime-checked native slot table without
+    /// reading child memory or inventing an entity from a wire ordinal.
+    pub fn entity_binding(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        native: qa_core::primitives::NativeEntity,
+    ) -> Option<qa_core::primitives::EntityId> {
+        self.entities.as_ref()?.binding(entities, native).ok()?
+    }
     pub fn bind_client(
         &mut self,
         entities: &qa_world::entities::EntityTable,

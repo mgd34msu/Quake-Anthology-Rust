@@ -243,6 +243,17 @@ impl ServiceStorage {
         let row = &self.configs[self.config(module, ordinal)?];
         Ok((row.text.as_bytes(), row.revision))
     }
+    /// Native ordinals share the load-bound cache with module sound imports.
+    pub fn sound_id(
+        &self,
+        module: ModuleId,
+        range: IndexSpan,
+        index: i32,
+    ) -> Result<Option<qa_core::primitives::SoundId>, CallError> {
+        let index = usize::try_from(index).map_err(|_| CallError::Text)?;
+        let ordinal = range.get(index).ok_or(CallError::Text)?;
+        Ok(self.sounds[self.config(module, ordinal)?])
+    }
     /// Attach the load-owned bank and bind each native sound row through the
     /// same path used when gamecode changes a registered name later.
     pub fn bind_sound_bank(
@@ -606,12 +617,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     console_formatted: |s, text| EngineServices::console_formatted(&mut s.server.events, text),
     usercmd: |s, native| s.usercmd(native),
     sound: |s, e| s.sound(e),
-    sound_id: |s, module, range, index| {
-        let index = usize::try_from(index).map_err(|_| CallError::Text)?;
-        let ordinal = range.get(index).ok_or(CallError::Text)?;
-        let row = s.storage.config(module, ordinal)?;
-        Ok(s.storage.sounds[row])
-    },
+    sound_id: |s, module, range, index| s.storage.sound_id(module, range, index),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
     clip: |s, q, target| s.clip(q, target),

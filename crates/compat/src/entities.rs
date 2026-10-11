@@ -274,6 +274,22 @@ impl EntityProjection {
         let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
         self.borrow_slot(entities, slot, entity)
     }
+    pub(crate) fn binding(
+        &self,
+        entities: &EntityTable,
+        native: NativeEntity,
+    ) -> Result<Option<EntityId>, CallError> {
+        if self.owner != Some(native.module) {
+            return Err(CallError::Entity);
+        }
+        let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
+        let binding = self.bindings.get(slot).ok_or(CallError::Entity)?;
+        Ok(binding.and_then(|binding| {
+            let entity = binding.entity;
+            let slot = entities.resolve(entity)?;
+            (entities.columns.native_entity[slot] == Some(native)).then_some(entity)
+        }))
+    }
     pub(crate) fn read(
         &self,
         memory: &ModuleMemory<'_>,
@@ -332,19 +348,11 @@ impl EntityProjection {
         let entities = self.read(memory, table)?;
         let native = native_identity(entities, context.module, address)?;
         let slot = native.slot as usize;
-        if self.owner != Some(context.module) {
-            return Err(CallError::Entity);
-        }
-        let bound = self.bindings[slot].filter(|binding| {
-            let entity = binding.entity;
-            services.server.entities.resolve(entity).is_some()
-                && services.server.entities.columns.native_entity[entity.slot as usize]
-                    == Some(native)
-        });
+        let bound = self.binding(&services.server.entities, native)?;
         if bound.is_none() {
             self.bindings[slot] = None;
         }
-        Ok((entities, slot, bound.map(|binding| binding.entity)))
+        Ok((entities, slot, bound))
     }
     pub fn trace_view<'a, 'memory>(
         &self,
