@@ -44,6 +44,26 @@ fn input() -> Input {
 }
 
 #[test]
+fn quake3_uses_integer_event_milliseconds_for_keyboard_angles_and_mouse_acceleration() {
+    let mut input = input();
+    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    policy.sensitivity = 0.0;
+    policy.acceleration = 1.0;
+    policy.mouse_scale = [1.0; 2];
+    held(&mut input, Action::TurnLeft, true, 0);
+    mouse(&mut input, 0, 3, 4);
+    let command = input.build_frame_with_policy(EventTime(1_999_999), &[policy; SeatId::COUNT])[0];
+    // qsrc CL_AdjustAngles uses .001 * cls.frametime; CL_MouseMove uses
+    // sqrt(3*3+4*4) / frame_msec. The precise command span stays independent.
+    assert_eq!(
+        command.view_angles.0[1].to_bits(),
+        (0.001_f32 * 140.0 - 15.0).to_bits()
+    );
+    assert_eq!(command.view_angles.0[0], 20.0);
+    assert_eq!((command.duration_ms, command.duration_ns), (1, 1_999_999));
+}
+
+#[test]
 fn quake_keyboard_transitions_remain_native_at_arbitrary_event_times() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let mut input = input();

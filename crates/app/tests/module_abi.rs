@@ -364,12 +364,12 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
         let own = runtime
             .catalog
             .registry
-            .native_weapon(Registry::QUAKE3_SOURCE, 7)
+            .native_weapon(RuleSetId::Quake3, 7)
             .unwrap();
         let foreign = runtime
             .catalog
             .registry
-            .native_weapon(ModuleId(2), 7)
+            .native_weapon(RuleSetId::Quake2, 7)
             .unwrap();
         assert_ne!(own, WeaponId(7));
         let command = UserCmd {

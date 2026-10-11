@@ -19,7 +19,10 @@ fn main() -> Result<(), &'static str> {
         let weapon = registry
             .weapons
             .iter()
-            .find(|weapon| weapon.module == ModuleId(index as u16 + 1) && weapon.ammo.is_some())
+            .find(|weapon| {
+                weapon.source == [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3][index]
+                    && weapon.ammo.is_some()
+            })
             .ok_or("weapon")?;
         player.weapon = weapon.id;
         player.inventory[weapon.item.0 as usize] = 1;

@@ -1331,7 +1331,7 @@ fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         .and_then(|id| {
             c.services
                 .registry
-                .native_weapon_number(qa_gameplay::registry::Registry::QUAKE3_SOURCE, id)
+                .native_weapon_number(qa_core::primitives::RuleSetId::Quake3, id)
         })
         .and_then(|number| u8::try_from(number).ok())
         .unwrap_or(0);

@@ -127,16 +127,16 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
     let highest_item = registry.items.last().unwrap().id;
     let highest_weapon = registry.weapons.last().unwrap().id;
     let loadouts: [Loadout; 3] = std::array::from_fn(|family| {
-        let module = ModuleId(family as u16 + 1);
+        let source = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3][family];
         let weapon = registry
             .weapons
             .iter()
-            .find(|weapon| weapon.module == module && weapon.ammo.is_some())
+            .find(|weapon| weapon.source == source && weapon.ammo.is_some())
             .unwrap();
         let timer = registry
             .items
             .iter()
-            .find(|item| item.module == module && item.kind == ItemKind::Powerup)
+            .find(|item| item.source == source && item.kind == ItemKind::Powerup)
             .unwrap()
             .id;
         Loadout {

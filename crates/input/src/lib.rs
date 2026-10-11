@@ -221,6 +221,7 @@ pub(crate) struct CommandRules {
     noclip_disables_drift: bool,
     drift_threshold: Option<f32>,
     drift_uses_ideal_pitch: bool,
+    integer_frame_time: bool,
 }
 const Q1_INPUT: CommandRules = CommandRules {
     speed: [200.0, 350.0, 200.0],
@@ -245,6 +246,7 @@ const Q1_INPUT: CommandRules = CommandRules {
     noclip_disables_drift: true,
     drift_threshold: None,
     drift_uses_ideal_pitch: true,
+    integer_frame_time: false,
 };
 const Q2_INPUT: CommandRules = CommandRules {
     speed: [200.0; 3],
@@ -285,6 +287,7 @@ const INPUT_RULES: [CommandRules; 5] = [
         keyboard_look: false,
         lookspring: Lookspring::NotFreelook,
         pitch_clamp: PitchClamp::RelativeToPrevious(90.0),
+        integer_frame_time: true,
         ..Q2_INPUT
     },
 ];
@@ -827,6 +830,18 @@ impl Input {
         std::array::from_fn(|index| {
             let policy = policies[index];
             let rules = policy.command_rules();
+            let span = EventTime(period);
+            let frame_time = if rules.integer_frame_time {
+                EventTime::from_milliseconds(span.milliseconds())
+            } else {
+                span
+            };
+            let frame_seconds = frame_time.seconds();
+            let frame_milliseconds = if rules.integer_frame_time {
+                frame_time.milliseconds() as f32
+            } else {
+                (frame_seconds * 1000.0) as f32
+            };
             let seat = &mut self.seats[index];
             let look_released = seat.actions[Action::MouseLook as usize].released;
             let spring = look_released
@@ -861,7 +876,7 @@ impl Input {
             };
             seat.mouse_previous = raw;
             let rate = qa_core::math::length(Vec3([mouse[0], mouse[1], 0.0]))
-                / (period as f32 * 1e-6).max(1.0);
+                / frame_milliseconds.max(1.0);
             let gain = policy.sensitivity + rate * policy.acceleration;
             mouse.iter_mut().for_each(|value| *value *= gain);
             let horizontal_strafe = strafe || policy.look_strafe && look;
@@ -875,7 +890,7 @@ impl Input {
             {
                 seat.drift.stop(time);
             }
-            let seconds = period as f32 * 1e-9;
+            let seconds = frame_seconds as f32;
             let angle_scale = if speed_key {
                 policy.angle_multiplier
             } else {

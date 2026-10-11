@@ -2,7 +2,7 @@ mod generated;
 pub use generated::SOURCE_COUNTS;
 use qa_core::{
     names::NameTable,
-    primitives::{CallbackId, ItemId, ModuleId, NameId, WeaponId},
+    primitives::{CallbackId, ItemId, NameId, RuleSetId, WeaponId},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub enum ItemKind {
 
 pub struct ItemDef {
     pub id: ItemId,
-    pub module: ModuleId,
+    pub source: RuleSetId,
     pub native: u16,
     pub classname: NameId,
     pub kind: ItemKind,
@@ -38,7 +38,7 @@ pub struct WeaponRecipe {
 pub struct WeaponDef {
     pub id: WeaponId,
     pub item: ItemId,
-    pub module: ModuleId,
+    pub source: RuleSetId,
     pub native: u16,
     pub ammo: Option<ItemId>,
     pub fire_name: NameId,
@@ -47,7 +47,7 @@ pub struct WeaponDef {
 }
 
 struct ItemSource {
-    module: u16,
+    source: RuleSetId,
     native: u16,
     classname: &'static str,
     kind: ItemKind,
@@ -80,46 +80,51 @@ pub struct Registry {
     pub items: Box<[ItemDef]>,
     pub weapons: Box<[WeaponDef]>,
     pub ammo_conversions: Box<[AmmoConversion]>,
-    native_items: Box<[(ModuleId, u16, ItemId)]>,
-    native_weapons: Box<[(ModuleId, u16, WeaponId)]>,
-    classnames: Box<[(ModuleId, NameId, ItemId)]>,
+    native_items: Box<[(RuleSetId, u16, ItemId)]>,
+    native_weapons: Box<[(RuleSetId, u16, WeaponId)]>,
+    classnames: Box<[(RuleSetId, NameId, ItemId)]>,
 }
 
 // Cross-module ammo equivalence is authored data. Pickup rules select the
 // target weapon's ammo entry; no map/movement family is consulted.
-const AMMO_GROUPS: &[&[(u16, &str)]] = &[
-    &[(1, "item_shells"), (2, "ammo_shells"), (3, "ammo_shells")],
+const AMMO_GROUPS: &[&[(RuleSetId, &str)]] = &[
     &[
-        (1, "item_spikes"),
-        (2, "ammo_bullets"),
-        (3, "ammo_bullets"),
-        (3, "ammo_nails"),
-        (3, "ammo_belt"),
+        (RuleSetId::Quake, "item_shells"),
+        (RuleSetId::Quake2, "ammo_shells"),
+        (RuleSetId::Quake3, "ammo_shells"),
     ],
     &[
-        (1, "item_rockets"),
-        (2, "ammo_rockets"),
-        (3, "ammo_rockets"),
+        (RuleSetId::Quake, "item_spikes"),
+        (RuleSetId::Quake2, "ammo_bullets"),
+        (RuleSetId::Quake3, "ammo_bullets"),
+        (RuleSetId::Quake3, "ammo_nails"),
+        (RuleSetId::Quake3, "ammo_belt"),
     ],
     &[
-        (1, "item_rockets"),
-        (2, "ammo_grenades"),
-        (3, "ammo_grenades"),
-        (3, "ammo_mines"),
+        (RuleSetId::Quake, "item_rockets"),
+        (RuleSetId::Quake2, "ammo_rockets"),
+        (RuleSetId::Quake3, "ammo_rockets"),
     ],
     &[
-        (1, "item_cells"),
-        (2, "ammo_cells"),
-        (3, "ammo_cells"),
-        (3, "ammo_lightning"),
-        (3, "ammo_bfg"),
+        (RuleSetId::Quake, "item_rockets"),
+        (RuleSetId::Quake2, "ammo_grenades"),
+        (RuleSetId::Quake3, "ammo_grenades"),
+        (RuleSetId::Quake3, "ammo_mines"),
     ],
-    &[(2, "ammo_slugs"), (3, "ammo_slugs")],
+    &[
+        (RuleSetId::Quake, "item_cells"),
+        (RuleSetId::Quake2, "ammo_cells"),
+        (RuleSetId::Quake3, "ammo_cells"),
+        (RuleSetId::Quake3, "ammo_lightning"),
+        (RuleSetId::Quake3, "ammo_bfg"),
+    ],
+    &[
+        (RuleSetId::Quake2, "ammo_slugs"),
+        (RuleSetId::Quake3, "ammo_slugs"),
+    ],
 ];
 
 impl Registry {
-    /// Stock catalog provenance, not a loaded module's execution identity.
-    pub const QUAKE3_SOURCE: ModuleId = ModuleId(3);
     pub fn names_needed() -> impl Iterator<Item = &'static [u8]> {
         generated::ITEMS
             .iter()
@@ -143,11 +148,11 @@ impl Registry {
         let name = |value: &str| names.find(value.as_bytes()).ok_or(RegistryError::Name);
         let mut items = Vec::with_capacity(sources.len());
         let mut weapons = Vec::new();
-        let source_id = |module: u16, classname: &str| {
+        let source_id = |provenance: RuleSetId, classname: &str| {
             sources
                 .iter()
                 .position(|item| {
-                    item.module == module && item.classname.eq_ignore_ascii_case(classname)
+                    item.source == provenance && item.classname.eq_ignore_ascii_case(classname)
                 })
                 .map(|index| ItemId(index as u32 + 1))
         };
@@ -155,7 +160,7 @@ impl Registry {
             let id = ItemId(index as u32 + 1);
             items.push(ItemDef {
                 id,
-                module: ModuleId(source.module),
+                source: source.source,
                 native: source.native,
                 classname: name(source.classname)?,
                 kind: source.kind,
@@ -175,12 +180,12 @@ impl Registry {
                 weapons.push(WeaponDef {
                     id: WeaponId(weapons.len() as u32 + 1),
                     item: id,
-                    module: ModuleId(source.module),
+                    source: source.source,
                     native: source.native_weapon,
                     ammo: if source.ammo.is_empty() {
                         None
                     } else {
-                        Some(source_id(source.module, source.ammo).ok_or(RegistryError::Ammo)?)
+                        Some(source_id(source.source, source.ammo).ok_or(RegistryError::Ammo)?)
                     },
                     fire_name: name(source.fire)?,
                     recipe: None,
@@ -189,9 +194,9 @@ impl Registry {
         }
         let mut native_items: Vec<_> = items
             .iter()
-            .map(|item| (item.module, item.native, item.id))
+            .map(|item| (item.source, item.native, item.id))
             .collect();
-        native_items.sort_unstable_by_key(|item| (item.0.0, item.1));
+        native_items.sort_unstable_by_key(|item| (item.0 as u8, item.1));
         if native_items
             .windows(2)
             .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1)
@@ -200,9 +205,9 @@ impl Registry {
         }
         let mut native_weapons: Vec<_> = weapons
             .iter()
-            .map(|weapon| (weapon.module, weapon.native, weapon.id))
+            .map(|weapon| (weapon.source, weapon.native, weapon.id))
             .collect();
-        native_weapons.sort_unstable_by_key(|weapon| (weapon.0.0, weapon.1));
+        native_weapons.sort_unstable_by_key(|weapon| (weapon.0 as u8, weapon.1));
         if native_weapons
             .windows(2)
             .any(|pair| pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1)
@@ -212,9 +217,9 @@ impl Registry {
         let mut classnames: Vec<_> = items
             .iter()
             .filter(|item| item.classname != NameId(0))
-            .map(|item| (item.module, item.classname, item.id))
+            .map(|item| (item.source, item.classname, item.id))
             .collect();
-        classnames.sort_unstable_by_key(|item| (item.0.0, item.1.0));
+        classnames.sort_unstable_by_key(|item| (item.0 as u8, item.1.0));
         let mut ammo_conversions = Vec::new();
         for group in AMMO_GROUPS {
             for &(source_module, source_name) in *group {
@@ -251,26 +256,26 @@ impl Registry {
         id.0.checked_sub(1)
             .and_then(|index| self.weapons.get(index as usize))
     }
-    pub fn native_item(&self, module: ModuleId, number: u16) -> Option<ItemId> {
+    pub fn native_item(&self, source: RuleSetId, number: u16) -> Option<ItemId> {
         self.native_items
-            .binary_search_by_key(&(module.0, number), |item| (item.0.0, item.1))
+            .binary_search_by_key(&(source as u8, number), |item| (item.0 as u8, item.1))
             .ok()
             .map(|index| self.native_items[index].2)
     }
-    pub fn native_weapon(&self, module: ModuleId, number: u16) -> Option<WeaponId> {
+    pub fn native_weapon(&self, source: RuleSetId, number: u16) -> Option<WeaponId> {
         self.native_weapons
-            .binary_search_by_key(&(module.0, number), |weapon| (weapon.0.0, weapon.1))
+            .binary_search_by_key(&(source as u8, number), |weapon| (weapon.0 as u8, weapon.1))
             .ok()
             .map(|index| self.native_weapons[index].2)
     }
-    pub fn native_weapon_number(&self, module: ModuleId, id: WeaponId) -> Option<u16> {
+    pub fn native_weapon_number(&self, source: RuleSetId, id: WeaponId) -> Option<u16> {
         self.weapon(id)
-            .filter(|weapon| weapon.module == module)
+            .filter(|weapon| weapon.source == source)
             .map(|weapon| weapon.native)
     }
-    pub fn classname(&self, module: ModuleId, name: NameId) -> Option<ItemId> {
+    pub fn classname(&self, source: RuleSetId, name: NameId) -> Option<ItemId> {
         self.classnames
-            .binary_search_by_key(&(module.0, name.0), |item| (item.0.0, item.1.0))
+            .binary_search_by_key(&(source as u8, name.0), |item| (item.0 as u8, item.1.0))
             .ok()
             .map(|index| self.classnames[index].2)
     }
