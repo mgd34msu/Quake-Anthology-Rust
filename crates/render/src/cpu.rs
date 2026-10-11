@@ -741,6 +741,16 @@ impl CpuBackend {
                 }),
             )
         });
+        let width = self.width;
+        let mut buffers = world::Buffers {
+            first_row: 0,
+            frame_height: self.height,
+            pixels: &mut self.pixels,
+            inverse_depth: &mut self.inverse_depth,
+            depth_ranks: &mut self.depth_ranks,
+            indices: &mut self.indices,
+            palettes: &mut self.palettes,
+        };
         for y in y_start..y_end {
             let mip = triangle_mip(
                 pass.image,
@@ -768,13 +778,13 @@ impl CpuBackend {
                 } else {
                     inverse_depth
                 };
-                let index = y as usize * self.width as usize + x as usize;
+                let index = y as usize * width as usize + x as usize;
                 if !depth_passes(
                     pass.stage.stage.depth_func,
                     depth_score,
-                    self.inverse_depth[index],
+                    buffers.inverse_depth[index],
                     pass.draw_rank,
-                    self.depth_ranks[index],
+                    buffers.depth_ranks[index],
                 ) {
                     continue;
                 }
@@ -795,12 +805,15 @@ impl CpuBackend {
                 if !alpha_pass(pass.stage.stage.alpha_test, source[3]) {
                     continue;
                 }
-                self.pixels[index] = composite(self.pixels[index], source, pass.stage.stage.blend);
-                self.palettes[index] = u32::MAX;
-                if pass.stage.stage.depth_write {
-                    self.inverse_depth[index] = depth_score;
-                    self.depth_ranks[index] = pass.draw_rank;
-                }
+                let color = composite(buffers.pixels[index], source, pass.stage.stage.blend);
+                buffers.write_rgba(
+                    index,
+                    color,
+                    pass.stage
+                        .stage
+                        .depth_write
+                        .then_some((depth_score, pass.draw_rank)),
+                );
             }
         }
     }
@@ -900,11 +913,21 @@ impl CpuBackend {
                 }),
             );
             let texels = TexelView::image(image, mip, stage.texture_intensity);
+            let width = self.width;
+            let mut buffers = world::Buffers {
+                first_row: 0,
+                frame_height: self.height,
+                pixels: &mut self.pixels,
+                inverse_depth: &mut self.inverse_depth,
+                depth_ranks: &mut self.depth_ranks,
+                indices: &mut self.indices,
+                palettes: &mut self.palettes,
+            };
             for y in y_start..y_end {
                 for x in x_start..x_end {
                     let vertex = draw_vertex(draw, [x as f32, y as f32]);
                     let evaluated = self.evaluator.evaluate(&prepared, &vertex);
-                    let index = y as usize * self.width as usize + x as usize;
+                    let index = y as usize * width as usize + x as usize;
                     if let Some((palette_id, palette, texture, mip)) = indexed {
                         if evaluated.color != [255; 4] {
                             continue;
@@ -915,9 +938,9 @@ impl CpuBackend {
                         if texture.transparent_index() == Some(color) {
                             continue;
                         }
-                        self.pixels[index] = palette.color(color);
-                        self.indices[index] = color;
-                        self.palettes[index] = palette_id.0;
+                        buffers.pixels[index] = palette.color(color);
+                        buffers.indices[index] = color;
+                        buffers.palettes[index] = palette_id.0;
                     } else {
                         let source = sampler(
                             texels,
@@ -926,8 +949,8 @@ impl CpuBackend {
                         );
                         if alpha_pass(stage.alpha_test, source[3]) {
                             let blend = stage.blend.or(Some(StageBlend::ALPHA));
-                            self.pixels[index] = composite(self.pixels[index], source, blend);
-                            self.palettes[index] = u32::MAX;
+                            let color = composite(buffers.pixels[index], source, blend);
+                            buffers.write_rgba(index, color, None);
                         }
                     }
                 }

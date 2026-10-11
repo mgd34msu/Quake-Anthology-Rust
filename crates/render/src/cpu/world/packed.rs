@@ -77,10 +77,7 @@ fn scalar_span(
         let chart = planes
             .texture
             .map(|plane| plane.at(x as f32, span.y as f32) / zi);
-        buffers.pixels[index] = grid.pixel(chart);
-        buffers.palettes[index] = u32::MAX;
-        buffers.inverse_depth[index] = zi;
-        buffers.depth_ranks[index] = draw_rank;
+        buffers.write_rgba(index, grid.pixel(chart), Some((zi, draw_rank)));
         written += 1;
     }
     written

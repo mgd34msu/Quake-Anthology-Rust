@@ -451,6 +451,16 @@ impl<'a> Buffers<'a> {
         self.depth_ranks[index] = rank;
     }
 
+    #[inline(always)]
+    pub(super) fn write_rgba(&mut self, index: usize, color: u32, depth: Option<(f32, u32)>) {
+        self.pixels[index] = color;
+        self.palettes[index] = u32::MAX;
+        if let Some((depth, rank)) = depth {
+            self.inverse_depth[index] = depth;
+            self.depth_ranks[index] = rank;
+        }
+    }
+
     fn reborrow(&mut self) -> Buffers<'_> {
         Buffers {
             first_row: self.first_row,
@@ -2234,13 +2244,15 @@ fn stage_span(
             if !alpha_pass(prepared.stage.alpha_test, source[3]) {
                 continue;
             }
-            buffers.pixels[index] =
-                super::composite(buffers.pixels[index], source, prepared.stage.blend);
-            buffers.palettes[index] = u32::MAX;
-            if prepared.stage.depth_write {
-                buffers.inverse_depth[index] = depth;
-                buffers.depth_ranks[index] = primitive.draw_rank;
-            }
+            let color = super::composite(buffers.pixels[index], source, prepared.stage.blend);
+            buffers.write_rgba(
+                index,
+                color,
+                prepared
+                    .stage
+                    .depth_write
+                    .then_some((depth, primitive.draw_rank)),
+            );
             stats.pixels = stats.pixels.saturating_add(1);
         }
         let written = stats.pixels.saturating_sub(before);
@@ -2400,10 +2412,7 @@ fn factor_spans(
                     } else {
                         first_pixel
                     };
-                    buffers.pixels[index] = color;
-                    buffers.palettes[index] = u32::MAX;
-                    buffers.inverse_depth[index] = zi_a;
-                    buffers.depth_ranks[index] = primitive.draw_rank;
+                    buffers.write_rgba(index, color, Some((zi_a, primitive.draw_rank)));
                     stats.pixels = stats.pixels.saturating_add(1);
                 }
                 stats.factor_spans = stats.factor_spans.saturating_add(1);
