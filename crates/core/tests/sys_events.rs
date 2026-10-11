@@ -127,3 +127,72 @@ fn packet_and_utf8_console_bytes_are_owned_and_capacity_is_scoped() {
     assert!(queue.has_ordinary_room());
     assert!(SysEventQueue::load(1, 20).is_err());
 }
+
+#[test]
+fn text_payload_is_owned_atomic_and_keeps_the_final_time_slot() {
+    use qa_core::sys_events::DeviceId;
+    let mut queue = SysEventQueue::load(2, 8).unwrap();
+    let mut text = String::from("λ🦀");
+    fn kind(text: &str) -> EventKind<'_> {
+        EventKind::Text {
+            device: DeviceId::Keyboard,
+            text,
+        }
+    }
+    queue
+        .push(SysEvent {
+            time: EventTime(1),
+            kind: kind(&text),
+        })
+        .unwrap();
+    text.clear();
+    assert_eq!(
+        queue.push(SysEvent {
+            time: EventTime(2),
+            kind: kind("x")
+        }),
+        Err(QueueError::Full)
+    );
+    queue
+        .push(SysEvent {
+            time: EventTime(3),
+            kind: EventKind::Time,
+        })
+        .unwrap();
+    assert_eq!(
+        queue.pop(),
+        Some(SysEvent {
+            time: EventTime(1),
+            kind: kind("λ🦀")
+        })
+    );
+    assert_eq!(
+        queue.pop(),
+        Some(SysEvent {
+            time: EventTime(3),
+            kind: EventKind::Time
+        })
+    );
+    assert_eq!(
+        queue.push(SysEvent {
+            time: EventTime(4),
+            kind: kind("123456789")
+        }),
+        Err(QueueError::PayloadFull)
+    );
+    assert!(queue.is_empty());
+    queue
+        .push(SysEvent {
+            time: EventTime(5),
+            kind: kind("ok"),
+        })
+        .unwrap();
+    assert_eq!(
+        queue.pop(),
+        Some(SysEvent {
+            time: EventTime(5),
+            kind: kind("ok")
+        })
+    );
+    assert_eq!(queue.rejected(), 2);
+}

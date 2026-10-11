@@ -1,6 +1,6 @@
 //! SDL3 ABI definitions follow SDL 3.4 headers, never SDL2 byte offsets.
 use crate::clock::Clock;
-use qa_core::sys_events::{DeviceId, EventKind, EventTime, SysEvent, SysEventQueue};
+use qa_core::sys_events::{DeviceId, EventKind, SysEvent, SysEventQueue};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr::NonNull;
 
@@ -297,10 +297,6 @@ pub struct Window {
     window: NonNull<c_void>,
     presentation: Presentation,
     gamepads: [Option<(u32, NonNull<c_void>)>; 16],
-    text: Box<[u8; 8192]>,
-    text_cursor: usize,
-    text_len: usize,
-    text_time: EventTime,
     dropped_text: u64,
     mouse_fraction: [f32; 2],
 }
@@ -440,10 +436,6 @@ impl Window {
                 window,
                 presentation,
                 gamepads: [None; 16],
-                text: Box::new([0; 8192]),
-                text_cursor: 0,
-                text_len: 0,
-                text_time: EventTime(0),
                 dropped_text: 0,
                 mouse_fraction: [0.0; 2],
             };
@@ -488,32 +480,7 @@ impl Window {
     pub fn dropped_text_events(&self) -> u64 {
         self.dropped_text
     }
-    fn drain_text(&mut self, queue: &mut SysEventQueue) {
-        // Validated once at the SDL boundary, cursor always follows a char.
-        for value in
-            unsafe { std::str::from_utf8_unchecked(&self.text[self.text_cursor..self.text_len]) }
-                .chars()
-        {
-            if queue
-                .push(SysEvent {
-                    time: self.text_time,
-                    kind: EventKind::Char {
-                        device: DeviceId::Keyboard,
-                        value,
-                    },
-                })
-                .is_err()
-            {
-                break;
-            }
-            self.text_cursor += value.len_utf8();
-        }
-    }
     pub(crate) fn poll(&mut self, queue: &mut SysEventQueue, clock: &Clock) {
-        self.drain_text(queue);
-        if self.text_cursor < self.text_len {
-            return;
-        }
         let mut event = SdlEvent { padding: [0; 128] };
         while queue.has_ordinary_room() && unsafe { SDL_PollEvent(&mut event) } {
             let time = clock.now();
@@ -538,20 +505,14 @@ impl Window {
                         if e.text.is_null() {
                             continue;
                         }
-                        let bytes = CStr::from_ptr(e.text).to_bytes();
-                        if bytes.len() > self.text.len() || std::str::from_utf8(bytes).is_err() {
-                            self.dropped_text += 1;
+                        let Ok(text) = CStr::from_ptr(e.text).to_str() else {
+                            self.dropped_text = self.dropped_text.saturating_add(1);
                             continue;
+                        };
+                        EventKind::Text {
+                            device: DeviceId::Keyboard,
+                            text,
                         }
-                        self.text[..bytes.len()].copy_from_slice(bytes);
-                        self.text_cursor = 0;
-                        self.text_len = bytes.len();
-                        self.text_time = time;
-                        self.drain_text(queue);
-                        if self.text_cursor < self.text_len {
-                            break;
-                        }
-                        continue;
                     }
                     0x400 => {
                         let e = event.motion;
@@ -618,7 +579,11 @@ impl Window {
                     _ => continue,
                 }
             };
-            let _ = queue.push(SysEvent { time, kind });
+            if queue.push(SysEvent { time, kind }).is_err()
+                && matches!(kind, EventKind::Text { .. })
+            {
+                self.dropped_text = self.dropped_text.saturating_add(1);
+            }
         }
     }
     pub fn present(&mut self) {

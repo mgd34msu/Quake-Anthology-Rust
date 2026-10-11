@@ -318,3 +318,40 @@ fn two_devices_route_independently_and_disconnect_releases_actions() {
     );
     assert_eq!(frame(&mut input, 40)[1].movement, [0.0; 3]);
 }
+
+#[test]
+fn queued_text_dispatches_unicode_without_a_private_remainder() {
+    use qa_core::sys_events::SysEventQueue;
+    let mut queue = SysEventQueue::load(2, 32).unwrap();
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    queue
+        .push(SysEvent {
+            time: EventTime(1),
+            kind: EventKind::Text {
+                device: DeviceId::Keyboard,
+                text: "aλ🦀",
+            },
+        })
+        .unwrap();
+    while let Some(event) = queue.pop() {
+        input.dispatch(event, &mut sink);
+    }
+    assert_eq!(sink.characters, "aλ🦀");
+    input.dispatch(
+        SysEvent {
+            time: EventTime(2),
+            kind: EventKind::Text {
+                device: DeviceId::Mouse(99),
+                text: "ignored",
+            },
+        },
+        &mut sink,
+    );
+    assert_eq!(sink.characters, "aλ🦀");
+    assert_eq!(qa_input::keys::mouse_button(0), None);
+    assert_eq!(qa_input::keys::mouse_button(1), Some(513));
+    assert_eq!(qa_input::keys::mouse_button(31), Some(543));
+    assert_eq!(qa_input::keys::mouse_button(32), Some(580));
+    assert_eq!(qa_input::keys::mouse_button(33), None);
+}

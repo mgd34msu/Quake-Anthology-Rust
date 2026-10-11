@@ -312,3 +312,12 @@ pub fn write_name(control: u16, output: &mut impl std::fmt::Write) -> std::fmt::
         write!(output, "control{control}")
     }
 }
+
+/// SDL physical mouse buttons are numbered from one.
+pub fn mouse_button(button: u8) -> Option<u16> {
+    (1..=32).contains(&button).then_some(if button == 32 {
+        580
+    } else {
+        512 + u16::from(button)
+    })
+}

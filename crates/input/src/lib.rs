@@ -101,12 +101,12 @@ impl Button {
             }
         }
     }
-    fn sample(&mut self, time: EventTime, period: u64, q1: bool) -> (f32, bool) {
+    fn sample(&mut self, time: EventTime, period: u64, key_state: KeyState) -> (f32, bool) {
         if self.active() {
             self.elapsed = self.elapsed.saturating_add(time.since(self.down_at));
             self.down_at = time;
         }
-        let fraction = if q1 {
+        let fraction = if matches!(key_state, KeyState::TransitionBits) {
             // NQ/QW CL_KeyState uses transition bits, not elapsed milliseconds.
             match (self.pressed, self.released, self.active()) {
                 (true, true, true) => 0.75,
@@ -178,6 +178,29 @@ impl Accumulation {
     }
 }
 #[derive(Clone, Copy)]
+enum KeyState {
+    TransitionBits,
+    Elapsed,
+}
+#[derive(Clone, Copy)]
+enum Lookspring {
+    Enabled,
+    NotFreelook,
+    NotFreelookAndEnabled,
+}
+#[derive(Clone, Copy)]
+enum Center {
+    Drift,
+    DeltaPitch,
+}
+#[derive(Clone, Copy)]
+enum PitchClamp {
+    None,
+    Fixed { pitch: [f32; 2], roll: f32 },
+    RelativeToPrevious(f32),
+    DeltaAngle(f32),
+}
+#[derive(Clone, Copy)]
 pub(crate) struct CommandRules {
     speed: [f32; 3],
     pitch_speed: f32,
@@ -189,6 +212,15 @@ pub(crate) struct CommandRules {
     accumulation: Accumulation,
     vertical_actions: bool,
     pitch_drift: bool,
+    key_state: KeyState,
+    yaw_anglemod: bool,
+    keyboard_look: bool,
+    lookspring: Lookspring,
+    center: Center,
+    pitch_clamp: PitchClamp,
+    noclip_disables_drift: bool,
+    drift_threshold: Option<f32>,
+    drift_uses_ideal_pitch: bool,
 }
 const Q1_INPUT: CommandRules = CommandRules {
     speed: [200.0, 350.0, 200.0],
@@ -201,17 +233,37 @@ const Q1_INPUT: CommandRules = CommandRules {
     accumulation: Accumulation::Float,
     vertical_actions: false,
     pitch_drift: true,
+    key_state: KeyState::TransitionBits,
+    yaw_anglemod: true,
+    keyboard_look: true,
+    lookspring: Lookspring::Enabled,
+    center: Center::Drift,
+    pitch_clamp: PitchClamp::Fixed {
+        pitch: [-70.0, 80.0],
+        roll: 50.0,
+    },
+    noclip_disables_drift: true,
+    drift_threshold: None,
+    drift_uses_ideal_pitch: true,
 };
 const Q2_INPUT: CommandRules = CommandRules {
     speed: [200.0; 3],
     vertical_actions: true,
     pitch_drift: false,
+    key_state: KeyState::Elapsed,
+    yaw_anglemod: false,
+    lookspring: Lookspring::NotFreelookAndEnabled,
+    center: Center::DeltaPitch,
+    pitch_clamp: PitchClamp::DeltaAngle(89.0),
     ..Q1_INPUT
 };
 const INPUT_RULES: [CommandRules; 5] = [
     Q1_INPUT,
     CommandRules {
         accumulation: Accumulation::Short,
+        noclip_disables_drift: false,
+        drift_threshold: Some(200.0),
+        drift_uses_ideal_pitch: false,
         ..Q1_INPUT
     },
     CommandRules {
@@ -230,6 +282,9 @@ const INPUT_RULES: [CommandRules; 5] = [
         key_scale: Some([64.0, 127.0]),
         key_limit: Some([-128.0, 127.0]),
         accumulation: Accumulation::Int,
+        keyboard_look: false,
+        lookspring: Lookspring::NotFreelook,
+        pitch_clamp: PitchClamp::RelativeToPrevious(90.0),
         ..Q2_INPUT
     },
 ];
@@ -258,9 +313,22 @@ impl InputPolicy {
             center_delay: 0.15,
         }
     }
+    pub fn pitch_drift(self) -> bool {
+        self.rules.is_some() && self.command_rules().pitch_drift
+    }
     pub(crate) fn command_rules(self) -> CommandRules {
-        self.rules
-            .map_or(Q1_INPUT, |rules| INPUT_RULES[rules as usize])
+        self.rules.map_or(
+            CommandRules {
+                key_state: KeyState::Elapsed,
+                yaw_anglemod: false,
+                lookspring: Lookspring::NotFreelookAndEnabled,
+                center: Center::DeltaPitch,
+                pitch_clamp: PitchClamp::None,
+                pitch_drift: false,
+                ..Q1_INPUT
+            },
+            |rules| INPUT_RULES[rules as usize],
+        )
     }
 }
 #[derive(Clone, Copy)]
@@ -391,28 +459,25 @@ impl Input {
         forward: f32,
     ) -> Vec3 {
         let state = &mut self.seats[seat.index()];
-        if policy.rules.is_some() && policy.command_rules().pitch_drift {
+        if policy.pitch_drift() {
+            let rules = policy.command_rules();
             state.angles.0[0] = state.drift.advance(
                 time,
                 EventTime(self.frame_ns).seconds(),
                 state.angles.0[0],
                 view::DriftInput {
                     grounded: player.movement.grounded,
-                    disabled: policy.rules != Some(RuleSetId::QuakeWorld)
+                    disabled: rules.noclip_disables_drift
                         && matches!(
                             player.movement.mode,
                             qa_core::primitives::MovementMode::Noclip
                         ),
                     forward,
-                    threshold: if policy.rules == Some(RuleSetId::QuakeWorld) {
-                        200.0
-                    } else {
-                        policy.speed[0]
-                    },
-                    ideal_pitch: if policy.rules == Some(RuleSetId::QuakeWorld) {
-                        0.0
-                    } else {
+                    threshold: rules.drift_threshold.unwrap_or(policy.speed[0]),
+                    ideal_pitch: if rules.drift_uses_ideal_pitch {
                         player.ideal_pitch
+                    } else {
+                        0.0
                     },
                     speed: policy.center_speed,
                     delay: policy.center_delay,
@@ -555,18 +620,11 @@ impl Input {
                 device,
                 button,
                 down,
-            } if button <= 32 => self.key(
-                device,
-                if button == 32 {
-                    580
-                } else {
-                    512 + u16::from(button)
-                },
-                down,
-                false,
-                event.time,
-                target,
-            ),
+            } => {
+                if let Some(control) = keys::mouse_button(button) {
+                    self.key(device, control, down, false, event.time, target);
+                }
+            }
             EventKind::ControllerButton {
                 device,
                 button,
@@ -612,8 +670,11 @@ impl Input {
                 }
             }
             EventKind::Char { device, value } => {
-                if let Some(seat) = self.device_seat(device) {
-                    target.character(seat, value);
+                self.character(device, value, target);
+            }
+            EventKind::Text { device, text } => {
+                for value in text.chars() {
+                    self.character(device, value, target);
                 }
             }
             EventKind::Time => self.seed(event.time),
@@ -644,6 +705,11 @@ impl Input {
             .iter()
             .find(|entry| entry.id == Some(id))
             .and_then(|device| device.seat)
+    }
+    fn character(&self, device: DeviceId, value: char, target: &mut impl Target) {
+        if let Some(seat) = self.device_seat(device) {
+            target.character(seat, value);
+        }
     }
     pub fn release_device(&mut self, id: DeviceId, time: EventTime, target: &mut impl Target) {
         let Some(index) = self.devices.iter().position(|device| device.id == Some(id)) else {
@@ -760,23 +826,19 @@ impl Input {
         self.frame_ns = period;
         std::array::from_fn(|index| {
             let policy = policies[index];
-            let q3 = policy.rules == Some(RuleSetId::Quake3);
-            let q1 = matches!(policy.rules, Some(RuleSetId::Quake | RuleSetId::QuakeWorld));
+            let rules = policy.command_rules();
             let seat = &mut self.seats[index];
             let look_released = seat.actions[Action::MouseLook as usize].released;
             let spring = look_released
-                && if q1 {
-                    policy.lookspring
-                } else if q3 {
-                    !policy.freelook
-                } else {
-                    !policy.freelook && policy.lookspring
+                && match rules.lookspring {
+                    Lookspring::Enabled => policy.lookspring,
+                    Lookspring::NotFreelook => !policy.freelook,
+                    Lookspring::NotFreelookAndEnabled => !policy.freelook && policy.lookspring,
                 };
             if std::mem::take(&mut seat.center) || spring {
-                if q1 {
-                    seat.drift.start(time, policy.center_speed);
-                } else {
-                    seat.angles.0[0] = -policy.delta_pitch;
+                match rules.center {
+                    Center::Drift => seat.drift.start(time, policy.center_speed),
+                    Center::DeltaPitch => seat.angles.0[0] = -policy.delta_pitch,
                 }
             }
             // Modifiers use native held state; action buttons also retain taps.
@@ -784,11 +846,11 @@ impl Input {
             let sampled = seat
                 .actions
                 .each_mut()
-                .map(|button| button.sample(time, period, q1));
+                .map(|button| button.sample(time, period, rules.key_state));
             let fraction = |action: Action| sampled[action as usize].0;
             let strafe = held[Action::Strafe as usize];
             let look = held[Action::MouseLook as usize];
-            let klook = held[Action::KeyboardLook as usize] && !q3;
+            let klook = held[Action::KeyboardLook as usize] && rules.keyboard_look;
             let speed_key = held[Action::Walk as usize];
             let previous_pitch = seat.angles.0[0];
             let raw = seat.mouse.map(|value| value as f32);
@@ -804,7 +866,7 @@ impl Input {
             mouse.iter_mut().for_each(|value| *value *= gain);
             let horizontal_strafe = strafe || policy.look_strafe && look;
             let mouse_pitch = !strafe && (policy.freelook || look);
-            if q1
+            if rules.pitch_drift
                 && (klook
                     || look
                     || fraction(Action::LookUp) != 0.0
@@ -825,7 +887,7 @@ impl Input {
                     angle_speed * policy.angle_speed[0] * fraction(Action::TurnRight);
                 seat.angles.0[1] +=
                     angle_speed * policy.angle_speed[0] * fraction(Action::TurnLeft);
-                if q1 {
+                if rules.yaw_anglemod {
                     seat.angles.0[1] = qa_core::math::anglemod(seat.angles.0[1]);
                 }
             }
@@ -837,9 +899,9 @@ impl Input {
             seat.angles.0[0] += angle_speed * policy.angle_speed[1] * fraction(Action::LookDown);
             seat.mouse = [0; 2];
             // CL_AdjustAngles precedes the platform mouse contribution.
-            if q1 {
-                seat.angles.0[0] = seat.angles.0[0].clamp(-70.0, 80.0);
-                seat.angles.0[2] = seat.angles.0[2].clamp(-50.0, 50.0);
+            if let PitchClamp::Fixed { pitch, roll } = rules.pitch_clamp {
+                seat.angles.0[0] = seat.angles.0[0].clamp(pitch[0], pitch[1]);
+                seat.angles.0[2] = seat.angles.0[2].clamp(-roll, roll);
             }
 
             let mut intent = CommandIntent {
@@ -871,18 +933,25 @@ impl Input {
             } else {
                 intent.mouse_movement[1] = mouse[1];
             }
-            if q1 {
-                seat.angles.0[0] = seat.angles.0[0].clamp(-70.0, 80.0);
-            } else if q3 {
-                seat.angles.0[0] =
-                    seat.angles.0[0].clamp(previous_pitch - 90.0, previous_pitch + 90.0);
-            } else if policy.rules.is_some() {
-                let delta = if policy.delta_pitch > 180.0 {
-                    policy.delta_pitch - 360.0
-                } else {
-                    policy.delta_pitch
-                };
-                seat.angles.0[0] = seat.angles.0[0].clamp(-89.0 - delta, 89.0 - delta);
+            match rules.pitch_clamp {
+                PitchClamp::None => {}
+                PitchClamp::Fixed { pitch, .. } => {
+                    seat.angles.0[0] = seat.angles.0[0].clamp(pitch[0], pitch[1]);
+                }
+                PitchClamp::RelativeToPrevious(limit) => {
+                    seat.angles.0[0] =
+                        seat.angles.0[0].clamp(previous_pitch - limit, previous_pitch + limit);
+                }
+                PitchClamp::DeltaAngle(limit) => {
+                    if policy.rules.is_some() {
+                        let delta = if policy.delta_pitch > 180.0 {
+                            policy.delta_pitch - 360.0
+                        } else {
+                            policy.delta_pitch
+                        };
+                        seat.angles.0[0] = seat.angles.0[0].clamp(-limit - delta, limit - delta);
+                    }
+                }
             }
             for device in &self.devices {
                 if device.seat.is_some_and(|seat| seat.index() == index) {

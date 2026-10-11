@@ -71,6 +71,10 @@ pub enum EventKind<'a> {
         device: DeviceId,
         value: char,
     },
+    Text {
+        device: DeviceId,
+        text: &'a str,
+    },
     Mouse {
         device: DeviceId,
         dx: i32,
@@ -117,6 +121,7 @@ pub struct SysEvent<'a> {
 enum StoredKind {
     Plain(EventKind<'static>),
     Console,
+    Text { device: DeviceId },
     Packet { socket: u16, from: Peer },
 }
 #[derive(Clone, Copy)]
@@ -173,6 +178,7 @@ impl SysEventQueue {
         };
         let (kind, payload) = match event.kind {
             EventKind::ConsoleLine(text) => (StoredKind::Console, text.as_bytes()),
+            EventKind::Text { device, text } => (StoredKind::Text { device }, text.as_bytes()),
             EventKind::Packet {
                 socket,
                 from,
@@ -263,6 +269,10 @@ impl SysEventQueue {
         let kind = match slot.kind {
             StoredKind::Plain(kind) => kind,
             StoredKind::Console => EventKind::ConsoleLine(std::str::from_utf8(payload).ok()?),
+            StoredKind::Text { device } => EventKind::Text {
+                device,
+                text: std::str::from_utf8(payload).ok()?,
+            },
             StoredKind::Packet { socket, from } => EventKind::Packet {
                 socket,
                 from,

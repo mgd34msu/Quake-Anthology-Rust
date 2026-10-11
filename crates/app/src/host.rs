@@ -548,11 +548,8 @@ impl FrameHost {
                         Some(client.entity),
                     );
                     prediction.advance(commands[seat], &mut trace);
-                    if matches!(
-                        prediction.player.movement_rules,
-                        qa_core::primitives::RuleSetId::Quake
-                            | qa_core::primitives::RuleSetId::QuakeWorld
-                    ) && let Some(policies) = &policies
+                    if let Some(policies) = &policies
+                        && policies[seat].pitch_drift()
                         && let Some(seat_id) = SeatId::new(seat as u8)
                     {
                         prediction.player.view_angles = self.runtime.input.drift_view(
@@ -640,6 +637,7 @@ fn event_name(kind: EventKind<'_>) -> &'static str {
         EventKind::Time => "time",
         EventKind::Key { .. } => "key",
         EventKind::Char { .. } => "char",
+        EventKind::Text { .. } => "text",
         EventKind::Mouse { .. } => "mouse",
         EventKind::MouseButton { .. } => "mouse_button",
         EventKind::MouseWheel { .. } => "mouse_wheel",

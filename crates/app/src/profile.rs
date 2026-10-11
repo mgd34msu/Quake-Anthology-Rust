@@ -113,11 +113,7 @@ fn control(input: &Value) -> Option<u16> {
         }
         "mouse-button" => {
             let button = input.get("button")?.as_u64()?;
-            (1..=32).contains(&button).then_some(if button == 32 {
-                580
-            } else {
-                512 + button as u16
-            })
+            keys::mouse_button(u8::try_from(button).ok()?)
         }
         // Device-specific pad/axis tuning needs the later device settings gate.
         _ => None,
