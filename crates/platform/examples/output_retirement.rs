@@ -162,11 +162,15 @@ fn emit(host: &mut FrameHost, tick: Tick) {
         format_args!("{}:{}", tick.source_slot, tick.index),
     );
 }
-fn consume(host: &mut FrameHost, tick: Tick, record: OutputRecord) -> OutputSubmission {
-    let runtime = &mut host.runtime;
-    let player = &mut runtime.server.clients[10 + tick.source_slot].player;
+fn consume(
+    clients: &mut [qa_session::clients::Client],
+    tick: Tick,
+    record: OutputRecord,
+    texts: &mut qa_core::events::TextStore,
+) -> OutputSubmission {
+    let player = &mut clients[10 + tick.source_slot].player;
     if let FrameEvent::Print(p) = record.event
-        && runtime.server.events.texts.get(p.text).is_none()
+        && texts.get(p.text).is_none()
     {
         player.armor += 1;
     }

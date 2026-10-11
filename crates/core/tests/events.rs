@@ -108,7 +108,12 @@ fn only_stalled_consumers_resync_and_old_epoch_receipts_cannot_retire_new_record
         [4]
     );
     assert!(ring.is_empty());
-    let resumed = ring.resume(stalled).unwrap();
+    let mut resumed = stalled;
+    assert!(ring.resume_if_needed(&mut resumed));
+    assert_ne!(resumed, stalled);
+    let unchanged = resumed;
+    assert!(ring.resume_if_needed(&mut resumed));
+    assert_eq!(resumed, unchanged);
     ring.push(sound(5)).unwrap();
     consume(
         &mut ring,

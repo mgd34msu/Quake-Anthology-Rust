@@ -47,56 +47,53 @@ pub fn dispatch(
     let now = time.seconds();
     let mut counts = OutputCounts::default();
     // In-process presentation resynchronization needs no native channel reset.
-    if server.events.needs_resync(server.presentation)
-        && let Some(id) = server.events.resume(server.presentation)
-    {
-        server.presentation = id;
-    }
-    qa_core::events::dispatch_consumer(
-        &mut server.events,
-        server.presentation,
-        &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
-            let submitted = match record.event {
-                FrameEvent::Sound(event) => {
-                    counts.sounds += 1;
-                    let sent = source.sound(event);
-                    counts.unhandled_sounds += u64::from(!sent);
-                    sent
-                }
-                FrameEvent::Effect(event) => {
-                    counts.effects += 1;
-                    let sent = source.effect(event);
-                    counts.unhandled_effects += u64::from(!sent);
-                    sent
-                }
-                FrameEvent::Print(event) => {
-                    counts.prints += 1;
-                    if let Some(text) = texts.get(event.text) {
-                        if event.client.is_none_or(|id| local.contains(&Some(id)))
-                            && matches!(
-                                event.kind,
-                                PrintKind::Console | PrintKind::Notify | PrintKind::Chat
-                            )
-                        {
-                            qa_console::logger::console_bytes(text);
-                        }
-                    } else {
-                        counts.stale_texts += 1;
+    if server.events.resume_if_needed(&mut server.presentation) {
+        qa_core::events::dispatch_consumer(
+            &mut server.events,
+            server.presentation,
+            &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
+                let submitted = match record.event {
+                    FrameEvent::Sound(event) => {
+                        counts.sounds += 1;
+                        let sent = source.sound(event);
+                        counts.unhandled_sounds += u64::from(!sent);
+                        sent
                     }
-                    true
+                    FrameEvent::Effect(event) => {
+                        counts.effects += 1;
+                        let sent = source.effect(event);
+                        counts.unhandled_effects += u64::from(!sent);
+                        sent
+                    }
+                    FrameEvent::Print(event) => {
+                        counts.prints += 1;
+                        if let Some(text) = texts.get(event.text) {
+                            if event.client.is_none_or(|id| local.contains(&Some(id)))
+                                && matches!(
+                                    event.kind,
+                                    PrintKind::Console | PrintKind::Notify | PrintKind::Chat
+                                )
+                            {
+                                qa_console::logger::console_bytes(text);
+                            }
+                        } else {
+                            counts.stale_texts += 1;
+                        }
+                        true
+                    }
+                    // Native messages have per-client channel delivery below;
+                    // there is no second presentation copy of their payload.
+                    FrameEvent::Native(_) => true,
+                    FrameEvent::Hud(_) => true,
+                };
+                if submitted {
+                    OutputSubmission::BestEffort
+                } else {
+                    OutputSubmission::Unsent
                 }
-                // Native messages have per-client channel delivery below;
-                // there is no second presentation copy of their payload.
-                FrameEvent::Native(_) => true,
-                FrameEvent::Hud(_) => true,
-            };
-            if submitted {
-                OutputSubmission::BestEffort
-            } else {
-                OutputSubmission::Unsent
-            }
-        },
-    );
+            },
+        );
+    }
     for slot in 0..server.clients.len() {
         let client = &mut server.clients[slot];
         let Some(mut id) = client.output else {
@@ -117,12 +114,11 @@ pub fn dispatch(
             counts.native_disconnected += 1;
             continue;
         }
-        if server.events.needs_resync(id) && is_local {
-            let Some(resumed) = server.events.resume(id) else {
+        if is_local {
+            if !server.events.resume_if_needed(&mut id) {
                 continue;
-            };
-            client.output = Some(resumed);
-            id = resumed;
+            }
+            client.output = Some(id);
         }
         if let Some(connection) = runtime
             .network

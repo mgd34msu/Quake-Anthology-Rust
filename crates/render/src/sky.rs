@@ -19,20 +19,7 @@ pub(crate) fn item_material(
     list: &CommandList,
     assets: &Assets,
 ) -> Option<MaterialId> {
-    match item.kind {
-        DrawKind::Surface => {
-            let reference = list.surface(item.index);
-            Some(
-                assets
-                    .world(reference.world)?
-                    .bindings()
-                    .get(reference.surface as usize)?
-                    .material,
-            )
-        }
-        DrawKind::Entity => list.entity(item.index).material(assets),
-        DrawKind::Poly => Some(list.poly(item.index).material),
-    }
+    crate::scene::item_material_lightmap(list, assets, item).map(|(material, _)| material)
 }
 
 #[expect(

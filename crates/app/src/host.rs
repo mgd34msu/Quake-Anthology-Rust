@@ -98,9 +98,10 @@ pub struct Provider {
     pub frame: fn(&mut FrameHost, Tick),
     pub output: Option<
         fn(
-            &mut FrameHost,
+            &mut [qa_session::clients::Client],
             Tick,
             qa_core::events::OutputRecord,
+            &mut qa_core::events::TextStore,
         ) -> qa_core::events::OutputSubmission,
     >,
 }
@@ -267,26 +268,21 @@ impl FrameHost {
                     let slot = tick.source_slot - 1;
                     let provider = self.providers[slot];
                     (provider.frame)(self, tick);
-                    if let (Some(consume), Some(id)) = (provider.output, self.module_outputs[slot])
+                    if let (Some(consume), Some(id)) =
+                        (provider.output, self.module_outputs[slot].as_mut())
                     {
-                        let id = if self.runtime.server.events.needs_resync(id) {
-                            let Some(id) = self.runtime.server.events.resume(id) else {
-                                continue;
-                            };
-                            self.module_outputs[slot] = Some(id);
-                            id
-                        } else {
-                            id
-                        };
-                        if let Some(mut batch) = self.runtime.server.events.batch(id) {
-                            while let Some(record) = self.runtime.server.events.next(&mut batch) {
-                                let submission = consume(self, tick, record);
-                                self.runtime
-                                    .server
-                                    .events
-                                    .submit(id, record.sequence, submission);
-                            }
+                        let server = &mut self.runtime.server;
+                        if !server.events.resume_if_needed(id) {
+                            continue;
                         }
+                        let clients = &mut server.clients;
+                        qa_core::events::dispatch_consumer(
+                            &mut server.events,
+                            *id,
+                            &mut |record, texts: &mut qa_core::events::TextStore| {
+                                consume(clients, tick, record, texts)
+                            },
+                        );
                     }
                 }
             }

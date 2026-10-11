@@ -184,12 +184,12 @@ impl<'a> Iterator for Prints<'a> {
         } else {
             (None, rest)
         };
-        let Some(n) = rest.iter().position(|&b| b == 0) else {
+        let Some(text) = qa_core::text::terminated(rest) else {
             self.rest = &[];
             return Some(Err(Error::Truncated));
         };
-        let mut text = &rest[..n];
-        self.rest = &rest[n + 1..];
+        self.rest = &rest[text.len() + 1..];
+        let mut text = text;
         if format.chat_prefix && kind == PrintKind::Console && text.first() == Some(&1) {
             kind = PrintKind::Chat;
             text = &text[1..];

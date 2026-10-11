@@ -1400,14 +1400,8 @@ impl SurfacePrepare {
                     patch: surface.patch.is_some(),
                     rgba: if native.is_none() {
                         self.catalog
-                            .boundary_offsets
-                            .get(reference.world.0 as usize)
-                            .map(|offset| offset + boundary)
-                            .filter(|&index| {
-                                self.catalog.rgba[index]
-                                    .as_ref()
-                                    .is_some_and(|recipe| recipe.current(assets))
-                            })
+                            .current_rgba(reference.world, boundary, assets)
+                            .map(|(index, _)| index)
                     } else {
                         None
                     },
@@ -2819,21 +2813,9 @@ impl WorldPrepare {
             let Some(surface) = world.geometry().surfaces.get(reference.surface as usize) else {
                 continue;
             };
-            let Some(offset) = self
-                .catalog
-                .boundary_offsets
-                .get(reference.world.0 as usize)
-            else {
-                continue;
-            };
             for boundary in surface.boundaries.indices() {
-                let index = offset + boundary;
-                let Some(recipe) = self
-                    .catalog
-                    .rgba
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .filter(|recipe| recipe.current(assets))
+                let Some((index, recipe)) =
+                    self.catalog.current_rgba(reference.world, boundary, assets)
                 else {
                     continue;
                 };
@@ -2852,6 +2834,19 @@ impl WorldCatalog {
         self.skies
             .get(material.0 as usize)
             .is_some_and(|batch| batch.enabled)
+    }
+    fn current_rgba(
+        &self,
+        world: WorldId,
+        boundary: usize,
+        assets: &Assets,
+    ) -> Option<(usize, &super::rgba::Recipe)> {
+        let index = self
+            .boundary_offsets
+            .get(world.0 as usize)?
+            .checked_add(boundary)?;
+        let recipe = self.rgba.get(index)?.as_ref()?;
+        recipe.current(assets).then_some((index, recipe))
     }
     fn surface_info(&self, world: WorldId, surface: u32) -> Option<&SurfaceInfo> {
         self.surfaces

@@ -512,10 +512,7 @@ pub(crate) fn read<
                 Presence::LastChanged(bits) if STATE => {
                     count = reader.read_bits(bits)? as usize;
                     if count > group.fields.len() {
-                        return Err(Error {
-                            byte: reader.byte_position(),
-                            kind: ErrorKind::Width,
-                        });
+                        return Err(reader.error(ErrorKind::Width));
                     }
                     0
                 }

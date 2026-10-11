@@ -171,6 +171,19 @@ impl EventRing {
             generation: c.generation,
         })
     }
+    /// The caller must have completed native resync, as for `resume`.
+    pub fn resume_if_needed(&mut self, id: &mut OutputConsumerId) -> bool {
+        if !self.valid(*id) {
+            return false;
+        }
+        if self.needs_resync(*id) {
+            let Some(resumed) = self.resume(*id) else {
+                return false;
+            };
+            *id = resumed;
+        }
+        true
+    }
     pub fn unbind(&mut self, id: OutputConsumerId) {
         if self.valid(id) {
             self.cancel_pending(id.slot);

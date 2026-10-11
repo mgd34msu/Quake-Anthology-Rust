@@ -257,17 +257,17 @@ fn quit_flushes_console_output_once() {
 }
 
 fn consume_module(
-    host: &mut FrameHost,
+    clients: &mut [qa_session::clients::Client],
     tick: Tick,
     record: qa_core::events::OutputRecord,
+    texts: &mut qa_core::events::TextStore,
 ) -> qa_core::events::OutputSubmission {
-    let runtime = &mut host.runtime;
     let FrameEvent::Print(print) = record.event else {
         return qa_core::events::OutputSubmission::BestEffort;
     };
-    assert!(runtime.server.events.texts.get(print.text).is_some());
+    assert!(texts.get(print.text).is_some());
     // Unconnected fixture rows count delivery, never infer native entity numbers.
-    runtime.server.clients[10 + tick.source_slot].player.health += 1;
+    clients[10 + tick.source_slot].player.health += 1;
     qa_core::events::OutputSubmission::BestEffort
 }
 fn emit_print(host: &mut FrameHost, tick: Tick) {

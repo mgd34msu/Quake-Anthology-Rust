@@ -148,7 +148,7 @@ impl NativeCvars {
         } else {
             0
         };
-        memory.write(address + 16, &latch_address.to_le_bytes())?;
+        memory.write_u64(address + 16, latch_address)?;
         row.update_generation = cvars.view_update_generation(row.view);
         self.updates = self.updates.saturating_add(1);
         Ok(())

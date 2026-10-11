@@ -676,21 +676,30 @@ impl Frame {
         self.command(Command::Draw2d(draw))
     }
 }
-fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawKey> {
-    let (material, instance, lightmap) = match draw.kind {
+pub(crate) fn item_material_lightmap(
+    list: &CommandList,
+    assets: &Assets,
+    draw: DrawItem,
+) -> Option<(MaterialId, u32)> {
+    match draw.kind {
         DrawKind::Surface => {
             let surface = list.surface(draw.index);
             let binding = assets
                 .world(surface.world)?
                 .bindings()
                 .get(surface.surface as usize)?;
-            (binding.material, u32::MAX, binding.lightmap.0)
+            Some((binding.material, binding.lightmap.0))
         }
-        DrawKind::Entity => {
-            let entity = list.entity(draw.index);
-            (entity.material(assets)?, draw.index, 0)
-        }
-        DrawKind::Poly => (list.poly(draw.index).material, u32::MAX, 0),
+        DrawKind::Entity => Some((list.entity(draw.index).material(assets)?, 0)),
+        DrawKind::Poly => Some((list.poly(draw.index).material, 0)),
+    }
+}
+fn draw_key(list: &CommandList, assets: &Assets, draw: DrawItem) -> Option<DrawKey> {
+    let (material, lightmap) = item_material_lightmap(list, assets, draw)?;
+    let instance = if draw.kind == DrawKind::Entity {
+        draw.index
+    } else {
+        u32::MAX
     };
     Some(DrawKey {
         sort: assets.material(material)?.settings.sort,
