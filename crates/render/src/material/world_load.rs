@@ -269,7 +269,7 @@ pub fn load_world(
             textures.push(match texture {
                 // R_InitSky uploads the two split layers directly, rather
                 // than uploading the original 256x128 texture as a surface.
-                Some(mip) if mip.name.starts_with(b"sky") => ImageId(0),
+                Some(mip) if legacy_sky_name(&mip.name) => ImageId(0),
                 Some(mip) => images.embedded(
                     mip,
                     palette.ok_or(WorldMaterialError::Boundary("missing legacy palette"))?,
@@ -278,7 +278,7 @@ pub fn load_world(
                 None => ImageId(0),
             });
             layered_skies.push(match texture {
-                Some(mip) if mip.name.starts_with(b"sky") => Some(load_layered_sky(
+                Some(mip) if legacy_sky_name(&mip.name) => Some(load_layered_sky(
                     mip,
                     palette.ok_or(WorldMaterialError::Boundary("missing sky palette"))?,
                     &mut images,
@@ -877,11 +877,13 @@ fn load_box_with_suffix(
     Ok(Some(result))
 }
 
+fn legacy_sky_name(name: &[u8]) -> bool {
+    name.starts_with(b"sky")
+}
+
 fn legacy_kind(rules: RuleSetId, name: &[u8], flags: u32) -> (bool, bool) {
     match rules {
-        RuleSetId::Quake | RuleSetId::QuakeWorld => {
-            (name.starts_with(b"*"), name.starts_with(b"sky"))
-        }
+        RuleSetId::Quake | RuleSetId::QuakeWorld => (name.starts_with(b"*"), legacy_sky_name(name)),
         RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => (flags & 8 != 0, flags & 4 != 0),
         RuleSetId::Quake3 => (false, false),
     }

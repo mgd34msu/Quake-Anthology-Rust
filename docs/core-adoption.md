@@ -292,7 +292,9 @@ acceptance remain THE-3169; these engine checks do not claim those features.
 References are relative to `crates/`. Renderer callers share `affine.rs:1`
 fan/plane fitting, `cpu/span.rs:45` perspective stepping, `scene.rs:126` view
 validation and `scene.rs:245` ranges, plus the sky collection/geometry helpers.
-`render/material/world_load.rs:880` classifies legacy surfaces once at load.
+`render/material/world_load.rs:880` shares sky-name checks with texture upload;
+`:884` classifies legacy surfaces once at load. Sky polygon collection also
+uses the shared fan iterator.
 CPU/GL and geometry callers are migrated; local validators, fan loops, range
 types, clippers, sky generation and load-conversion copies are deleted.
 

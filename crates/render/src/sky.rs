@@ -74,14 +74,10 @@ pub(crate) fn for_each_sky_triangle(
             }
             DrawKind::Poly => {
                 let vertices = list.vertices(list.poly(item.index).vertices);
-                for pair in vertices[1..].windows(2) {
+                for triangle in crate::affine::fan(vertices.len()) {
                     visit(
                         material,
-                        SkySubmission::Triangle([
-                            vertices[0].position,
-                            pair[0].position,
-                            pair[1].position,
-                        ]),
+                        SkySubmission::Triangle(triangle.map(|index| vertices[index].position)),
                     );
                 }
             }
