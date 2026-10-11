@@ -2,7 +2,7 @@
 //! 32-pixel flattened screen ray and an integer-shifted masked layer.
 //! ref_soft r_rast.c/r_edge.c use one unlit cube background per view.
 use super::Camera;
-use super::world::{Buffers, WorldStats};
+use super::world::{Affine, Buffers, WorldStats};
 use crate::assets::{Assets, CubeSkyParams, DepthFunc, ImageId, Material, Sky, StageTexture};
 use crate::edges::Span;
 use crate::scene::{CpuPresentation, Viewport};
@@ -233,7 +233,7 @@ pub(super) fn layered_span(
     source: Source,
     camera: &Camera,
     assets: &Assets,
-    depth: [f32; 3],
+    depth: Affine,
     rank: u32,
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
@@ -279,7 +279,7 @@ pub(super) fn layered_span(
                 foreground
             };
             let px = x + offset;
-            let zi = depth[2] + depth[1] * span.y as f32 + depth[0] * px as f32;
+            let zi = depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
             if zi.is_finite()
                 && zi > 0.0
@@ -305,21 +305,10 @@ pub(super) fn layered_span(
         .saturating_add(stats.pixels.saturating_sub(before));
 }
 
-#[derive(Clone, Copy, Default)]
-struct CubeGradient {
-    x: f32,
-    y: f32,
-    origin: f32,
-}
-impl CubeGradient {
-    fn at(self, x: u32, y: u32) -> f32 {
-        self.origin + self.y * y as f32 + self.x * x as f32
-    }
-}
 #[derive(Clone, Copy)]
 struct CubePlanes {
-    depth: CubeGradient,
-    texture: [CubeGradient; 2],
+    depth: Affine,
+    texture: [Affine; 2],
     adjust: [i64; 2],
 }
 
@@ -348,22 +337,10 @@ fn cube_planes(
         [[0., -1., 0.], [1., 0., 0.]],
         [[0., -1., 0.], [-1., 0., 0.]],
     ];
-    let scale = [
-        camera.refdef.viewport.width as f32 / (2.0 * camera.tangent[0]),
-        camera.refdef.viewport.height as f32 / (2.0 * camera.tangent[1]),
-    ];
-    let center = [
-        camera.refdef.viewport.x as f32 + camera.refdef.viewport.width as f32 * 0.5 - 0.5,
-        camera.refdef.viewport.y as f32 + camera.refdef.viewport.height as f32 * 0.5 - 0.5,
-    ];
     let plane = |axis: Vec3, factor: f32| {
-        let x = -axis.dot(axes[1]) * ((1.0 / scale[0]) * factor);
-        let y = -axis.dot(axes[2]) * ((1.0 / scale[1]) * factor);
-        CubeGradient {
-            x,
-            y,
-            origin: axis.dot(axes[0]) * factor - center[0] * x - center[1] * y,
-        }
+        // Sky axes may be independently rotated; preserve post-dot negation.
+        let axis = Vec3([-axis.dot(axes[1]), axis.dot(axes[2]), axis.dot(axes[0])]);
+        camera.gradient(axis, factor)
     };
     CubePlanes {
         depth: plane(Vec3(NORMAL[face]), 1.0 / 128.0),
@@ -433,7 +410,9 @@ pub(super) fn background(
     let face_at = |x, y| {
         let mut face = 0;
         for candidate in 1..6 {
-            if planes[candidate].depth.at(x, y) > planes[face].depth.at(x, y) {
+            if planes[candidate].depth.at(x as f32, y as f32)
+                > planes[face].depth.at(x as f32, y as f32)
+            {
                 face = candidate;
             }
         }
@@ -470,8 +449,8 @@ pub(super) fn background(
                 })
             };
             let mut cursor = start;
-            let mut zi = plane.depth.at(cursor, y);
-            let mut divided = plane.texture.map(|value| value.at(cursor, y));
+            let mut zi = plane.depth.at(cursor as f32, y as f32);
+            let mut divided = plane.texture.map(|value| value.at(cursor as f32, y as f32));
             let mut current = endpoint(divided, zi, 0);
             while cursor < x {
                 let count = chunk.min(x - cursor);

@@ -14,6 +14,14 @@ pub struct Viewport {
     pub width: u32,
     pub height: u32,
 }
+impl Viewport {
+    pub fn fits(self, width: u32, height: u32) -> bool {
+        self.width != 0
+            && self.height != 0
+            && self.x.checked_add(self.width).is_some_and(|x| x <= width)
+            && self.y.checked_add(self.height).is_some_and(|y| y <= height)
+    }
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlendPhase {
     #[default]

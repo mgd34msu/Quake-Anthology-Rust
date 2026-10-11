@@ -157,27 +157,22 @@ struct SurfaceInfo {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Affine {
-    x: f32,
-    y: f32,
-    origin: f32,
+pub(super) struct Affine {
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) origin: f32,
 }
 impl Affine {
-    fn at(self, x: f32, y: f32) -> f32 {
+    pub(super) fn at(self, x: f32, y: f32) -> f32 {
         self.origin + self.y * y + self.x * x
     }
     fn load(vertices: [ScreenVertex; 3], values: [f32; 3], area: f64) -> Self {
-        let [a, b, c] = vertices.map(|v| v.xy.map(|value| f64::from(value - 0.5)));
-        let ab = [b[0] - a[0], b[1] - a[1]];
-        let ac = [c[0] - a[0], c[1] - a[1]];
-        let vb = f64::from(values[1]) - f64::from(values[0]);
-        let vc = f64::from(values[2]) - f64::from(values[0]);
-        let x = (vb * ac[1] - vc * ab[1]) / area;
-        let y = (ab[0] * vc - ac[0] * vb) / area;
+        let points = vertices.map(|v| v.xy.map(|value| f64::from(value - 0.5)));
+        let [x, y, origin] = crate::affine::fit3(points, values.map(f64::from), area);
         Self {
             x: x as f32,
             y: y as f32,
-            origin: (f64::from(values[0]) - x * a[0] - y * a[1]) as f32,
+            origin: origin as f32,
         }
     }
 }
@@ -211,25 +206,10 @@ impl Planes {
         super::image_mip(image, sampler, self.derivatives(x, y))
     }
     fn load(vertices: &[ScreenVertex]) -> Option<Self> {
-        let a = vertices[0];
-        let mut largest = 0.0_f64;
-        let mut basis = None;
-        for pair in vertices[1..].windows(2) {
-            let ab = [
-                f64::from(pair[0].xy[0] - 0.5) - f64::from(a.xy[0] - 0.5),
-                f64::from(pair[0].xy[1] - 0.5) - f64::from(a.xy[1] - 0.5),
-            ];
-            let ac = [
-                f64::from(pair[1].xy[0] - 0.5) - f64::from(a.xy[0] - 0.5),
-                f64::from(pair[1].xy[1] - 0.5) - f64::from(a.xy[1] - 0.5),
-            ];
-            let area = ab[0] * ac[1] - ac[0] * ab[1];
-            if area.abs() > largest {
-                largest = area.abs();
-                basis = Some(([a, pair[0], pair[1]], area));
-            }
-        }
-        let (triangle, area) = basis?;
+        let (indices, area) = crate::affine::widest_fan_basis(vertices.len(), |index| {
+            vertices[index].xy.map(|value| f64::from(value - 0.5))
+        })?;
+        let triangle = indices.map(|index| vertices[index]);
         let planes = Self {
             inverse_depth: Affine::load(triangle, triangle.map(|v| v.inverse_depth), area),
             texture: std::array::from_fn(|axis| {
@@ -1576,8 +1556,8 @@ impl SurfacePrepare {
                         .iter()
                         .map(|v| v.inverse_depth)
                         .fold(0.0, f32::max);
-                    let scale = (camera.refdef.viewport.width as f32 / (2.0 * camera.tangent[0]))
-                        .max(camera.refdef.viewport.height as f32 / (2.0 * camera.tangent[1]));
+                    let scale = camera.screen_scale();
+                    let scale = scale[0].max(scale[1]);
                     let distance = nearzi * scale * info.mip_adjust;
                     primitive.mip = if distance >= 1.0 {
                         0
@@ -2041,27 +2021,19 @@ fn native_planes(
     mip: u8,
 ) -> Option<(Planes, [i64; 2])> {
     let plane = surface.plane?;
-    let scale = [
-        camera.refdef.viewport.width as f32 / (2.0 * camera.tangent[0]),
-        camera.refdef.viewport.height as f32 / (2.0 * camera.tangent[1]),
-    ];
-    let center = [
-        camera.refdef.viewport.x as f32 + camera.refdef.viewport.width as f32 * 0.5 - 0.5,
-        camera.refdef.viewport.y as f32 + camera.refdef.viewport.height as f32 * 0.5 - 0.5,
-    ];
-    let right = -camera.refdef.axes[1];
+    let scale = camera.screen_scale();
+    let center = camera.screen_center();
+    let normal = camera.direction_to_view(plane.normal);
     let inverse_distance = 1.0 / (plane.distance - plane.normal.dot(camera.refdef.origin));
     if !inverse_distance.is_finite() {
         return None;
     }
-    let x = plane.normal.dot(right) * inverse_distance / scale[0];
-    let y = -plane.normal.dot(camera.refdef.axes[2]) * inverse_distance / scale[1];
+    let x = normal.0[0] * inverse_distance / scale[0];
+    let y = -normal.0[1] * inverse_distance / scale[1];
     let inverse_depth = Affine {
         x,
         y,
-        origin: plane.normal.dot(camera.refdef.axes[0]) * inverse_distance
-            - center[0] * x
-            - center[1] * y,
+        origin: normal.0[2] * inverse_distance - center[0] * x - center[1] * y,
     };
     let mip_scale = 1.0 / (1u32 << mip) as f32;
     let axes = surface.texture_projection.map(|projection| {
@@ -2071,15 +2043,7 @@ fn native_planes(
     // Preserve D_CalcGradients' division/multiply order, transformed model
     // origin and post-transform mip scaling. Rotated views can otherwise
     // cross a fixed16 texel boundary despite mathematical equivalence.
-    let texture = axes.map(|axis| {
-        let x = axis.0[0] * ((1.0 / scale[0]) * mip_scale);
-        let y = -axis.0[1] * ((1.0 / scale[1]) * mip_scale);
-        Affine {
-            x,
-            y,
-            origin: axis.0[2] * mip_scale - center[0] * x - center[1] * y,
-        }
-    });
+    let texture = axes.map(|axis| camera.gradient(axis, mip_scale));
     let transformed_origin = camera.direction_to_view(camera.refdef.origin);
     let scaled_origin = transformed_origin * mip_scale;
     let adjust = std::array::from_fn(|i| {
@@ -2222,7 +2186,7 @@ fn consume_spans(
                 source,
                 camera,
                 assets,
-                [depth.x, depth.y, depth.origin],
+                depth,
                 primitive.draw_rank,
                 buffers,
                 stats,

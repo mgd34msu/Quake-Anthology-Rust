@@ -676,32 +676,15 @@ impl Edges {
 }
 
 fn depth_plane(vertices: &[ProjectedVertex]) -> Option<DepthPlane> {
-    let origin = vertices[0];
-    let mut largest_area = 0.0_f64;
-    let mut basis = None;
-    for index in 1..vertices.len() - 1 {
-        let first = vertices[index];
-        let second = vertices[index + 1];
-        let ax = f64::from(first.xy[0]) - f64::from(origin.xy[0]);
-        let ay = f64::from(first.xy[1]) - f64::from(origin.xy[1]);
-        let az = f64::from(first.inverse_depth) - f64::from(origin.inverse_depth);
-        let bx = f64::from(second.xy[0]) - f64::from(origin.xy[0]);
-        let by = f64::from(second.xy[1]) - f64::from(origin.xy[1]);
-        let bz = f64::from(second.inverse_depth) - f64::from(origin.inverse_depth);
-        let determinant = ax * by - bx * ay;
-        // The first nonzero fan triangle may be nearly collinear. Its rounded
-        // f32 depth samples can lose a slope entirely. Use the widest projected
-        // basis without an epsilon that would discard legitimate thin geometry.
-        if determinant.abs() > largest_area {
-            largest_area = determinant.abs();
-            basis = Some([ax, ay, az, bx, by, bz, determinant]);
-        }
-    }
-    let [ax, ay, az, bx, by, bz, determinant] = basis?;
-    let x = (az * by - bz * ay) / determinant;
-    let y = (ax * bz - bx * az) / determinant;
-    let origin =
-        f64::from(origin.inverse_depth) - x * f64::from(origin.xy[0]) - y * f64::from(origin.xy[1]);
+    // Keep the widest fan basis without an epsilon that would discard thin geometry.
+    let (indices, area) =
+        crate::affine::widest_fan_basis(vertices.len(), |index| vertices[index].xy.map(f64::from))?;
+    let triangle = indices.map(|index| vertices[index]);
+    let [x, y, origin] = crate::affine::fit3(
+        triangle.map(|v| v.xy.map(f64::from)),
+        triangle.map(|v| f64::from(v.inverse_depth)),
+        area,
+    );
     [x, y, origin]
         .iter()
         .all(|coefficient| coefficient.is_finite())

@@ -2017,11 +2017,11 @@ unsafe fn shader_log(gl: &Gl, object: u32, program: bool) -> String {
 }
 
 fn valid_refdef(view: Refdef, width: u32, height: u32) -> bool {
-    valid_viewport(view.viewport, width, height)
+    view.viewport.fits(width, height)
         && (view.blend_phase != BlendPhase::FinalPalette
             || view
                 .blend_viewport
-                .is_none_or(|viewport| valid_viewport(viewport, width, height)))
+                .is_none_or(|viewport| viewport.fits(width, height)))
         && view
             .origin
             .0
@@ -2037,18 +2037,6 @@ fn valid_refdef(view: Refdef, width: u32, height: u32) -> bool {
         && view.far > view.near
         && view.identity_light.is_finite()
         && (0.0..=1.0).contains(&view.identity_light)
-}
-fn valid_viewport(viewport: Viewport, width: u32, height: u32) -> bool {
-    viewport.width != 0
-        && viewport.height != 0
-        && viewport
-            .x
-            .checked_add(viewport.width)
-            .is_some_and(|x| x <= width)
-        && viewport
-            .y
-            .checked_add(viewport.height)
-            .is_some_and(|y| y <= height)
 }
 fn rgba(color: [u8; 4]) -> [f32; 4] {
     color.map(|v| v as f32 / 255.0)

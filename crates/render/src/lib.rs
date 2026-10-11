@@ -1,4 +1,5 @@
 //! One scene interface and owned frame packets for every client module.
+mod affine;
 pub mod assets;
 pub mod cpu;
 pub mod edges;

@@ -2,6 +2,7 @@
 //! in the shared rover. Spans copy packed cache pixels on that texture lattice.
 //! Non-affine attributes and oversized charts retain the scoped pair fallback.
 use super::{TexelView, sampler_function};
+use crate::affine::{determinant, fit};
 use crate::assets::{
     Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Stage, StageTexture, Vertex,
 };
@@ -994,20 +995,6 @@ fn chart_coordinate(chart: [[f64; 4]; 2], position: qa_core::primitives::Vec3) -
 
 fn at64(field: [f64; 3], coordinate: [f64; 2]) -> f64 {
     field[2] + field[0] * coordinate[0] + field[1] * coordinate[1]
-}
-fn determinant(points: [[f64; 2]; 3]) -> f64 {
-    (points[1][0] - points[0][0]) * (points[2][1] - points[0][1])
-        - (points[2][0] - points[0][0]) * (points[1][1] - points[0][1])
-}
-fn fit(points: [[f64; 2]; 3], values: [f64; 3]) -> [f64; 3] {
-    let ab = [points[1][0] - points[0][0], points[1][1] - points[0][1]];
-    let ac = [points[2][0] - points[0][0], points[2][1] - points[0][1]];
-    let vb = values[1] - values[0];
-    let vc = values[2] - values[0];
-    let area = determinant(points);
-    let x = (vb * ac[1] - vc * ab[1]) / area;
-    let y = (ab[0] * vc - ac[0] * vb) / area;
-    [x, y, values[0] - x * points[0][0] - y * points[0][1]]
 }
 fn geometric_basis(vertices: &[Vertex]) -> Option<([usize; 2], [usize; 3])> {
     vertices.first()?;

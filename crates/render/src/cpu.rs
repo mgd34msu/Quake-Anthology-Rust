@@ -101,6 +101,8 @@ impl ScreenVertex {
 struct Camera {
     refdef: Refdef,
     tangent: [f32; 2],
+    screen_scale: [f32; 2],
+    screen_center: [f32; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -116,11 +118,11 @@ struct RasterPass<'a> {
 
 impl Camera {
     fn load(refdef: Refdef, width: u32, height: u32) -> Option<Self> {
-        if !valid_viewport(refdef.viewport, width, height)
+        if !refdef.viewport.fits(width, height)
             || (refdef.blend_phase == BlendPhase::FinalPalette
                 && refdef
                     .blend_viewport
-                    .is_some_and(|viewport| !valid_viewport(viewport, width, height)))
+                    .is_some_and(|viewport| !viewport.fits(width, height)))
             || !refdef
                 .origin
                 .0
@@ -152,7 +154,39 @@ impl Camera {
         if tangent.iter().any(|&t| t <= 0.0 || !t.is_finite()) {
             return None;
         }
-        Some(Self { refdef, tangent })
+        let viewport = refdef.viewport;
+        let screen_scale = [
+            viewport.width as f32 / (2.0 * tangent[0]),
+            viewport.height as f32 / (2.0 * tangent[1]),
+        ];
+        let screen_center = [
+            viewport.x as f32 + viewport.width as f32 * 0.5 - 0.5,
+            viewport.y as f32 + viewport.height as f32 * 0.5 - 0.5,
+        ];
+        Some(Self {
+            refdef,
+            tangent,
+            screen_scale,
+            screen_center,
+        })
+    }
+
+    fn screen_scale(&self) -> [f32; 2] {
+        self.screen_scale
+    }
+    fn screen_center(&self) -> [f32; 2] {
+        self.screen_center
+    }
+    fn gradient(&self, axis: Vec3, factor: f32) -> world::Affine {
+        let scale = self.screen_scale();
+        let center = self.screen_center();
+        let x = axis.0[0] * ((1.0 / scale[0]) * factor);
+        let y = -axis.0[1] * ((1.0 / scale[1]) * factor);
+        world::Affine {
+            x,
+            y,
+            origin: axis.0[2] * factor - center[0] * x - center[1] * y,
+        }
     }
 
     fn vertex(&self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
@@ -994,13 +1028,6 @@ fn draw_vertex(draw: Draw2d, at: [f32; 2]) -> Vertex {
     }
 }
 
-fn valid_viewport(viewport: Viewport, width: u32, height: u32) -> bool {
-    viewport.width > 0
-        && viewport.height > 0
-        && viewport.x as u64 + viewport.width as u64 <= width as u64
-        && viewport.y as u64 + viewport.height as u64 <= height as u64
-}
-
 fn clip_plane(
     camera: &Camera,
     input: &[ClipVertex],
@@ -1433,3 +1460,7 @@ fn composite(destination: u32, source: [f32; 4], blend: Option<StageBlend>) -> u
 #[cfg(test)]
 #[path = "../tests/cpu_sampling/oracle.rs"]
 mod sampling_tests;
+
+#[cfg(test)]
+#[path = "../tests/camera/oracle.rs"]
+mod camera_tests;
