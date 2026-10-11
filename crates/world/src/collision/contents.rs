@@ -94,6 +94,16 @@ impl Contents {
     pub fn from_q3(raw: u32) -> Self {
         Self(u64::from(raw))
     }
+    pub fn to_q3(self) -> u32 {
+        let mut raw = self.0 as u32;
+        if self.intersects(Self::WINDOW | Self::SKY) {
+            raw |= 1;
+        }
+        if self.intersects(Self::PLAYER) {
+            raw |= Self::BODY.0 as u32;
+        }
+        raw
+    }
 }
 
 impl BitOr for Contents {

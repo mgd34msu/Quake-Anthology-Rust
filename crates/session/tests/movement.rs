@@ -1,7 +1,7 @@
 use qa_core::{
     primitives::{
-        Bounds, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId, SurfaceFlags,
-        UserCmd, Vec3,
+        Bounds, CollisionOwner, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId,
+        SurfaceFlags, UserCmd, Vec3,
     },
     sys_events::EventTime,
 };
@@ -195,7 +195,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
             &server.entities,
             &server.area,
             &mut scratch,
-            Some(client.entity),
+            CollisionOwner::Lifetime(client.entity),
         );
         prediction.advance(client.command, &mut trace);
         assert_eq!(client.player.body.position, prediction.player.body.position);
@@ -276,7 +276,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
             &server.entities,
             &server.area,
             &mut scratch,
-            Some(mover_entity),
+            CollisionOwner::Lifetime(mover_entity),
         );
         let own_position = trace.trace(TraceQuery {
             end: query.start,
@@ -320,7 +320,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         &server.entities,
         &server.area,
         &mut scratch,
-        Some(mover_entity),
+        CollisionOwner::Lifetime(mover_entity),
     );
     let after_disconnect = trace.trace(TraceQuery {
         start: moved,
@@ -415,7 +415,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         &server.entities,
         &server.area,
         &mut scratch,
-        Some(entity),
+        CollisionOwner::Lifetime(entity),
     )
     .trace(query);
     assert!(!selected.start_solid && selected.fraction > 0.0 && selected.fraction < 1.0);
@@ -427,7 +427,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
             &server.entities,
             &server.area,
             &mut scratch,
-            Some(entity),
+            CollisionOwner::Lifetime(entity),
         )
         .trace(query)
         .all_solid
@@ -450,7 +450,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         &server.entities,
         &server.area,
         &mut scratch,
-        Some(entity),
+        CollisionOwner::Lifetime(entity),
     );
     prediction.advance(command, &mut trace);
     let player = &server.clients[id.0 as usize].player;
@@ -525,7 +525,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
             &server.entities,
             &server.area,
             &mut scratch,
-            Some(entity),
+            CollisionOwner::Lifetime(entity),
         );
         assert!(prediction.advance(command, &mut trace).traces > 0);
         let player = &server.clients[id.0 as usize].player;

@@ -27,6 +27,169 @@ fn context() -> CallContext {
 }
 
 #[test]
+fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
+    use qa_app::WorldCollision;
+    use qa_core::primitives::{
+        Body, Bounds, ClipNode, CollisionShape, NativeEntity, Plane, SurfaceFlags, Vec3,
+    };
+    use qa_world::{
+        area::{LinkFlags, LinkIntent},
+        collision::{
+            Contents,
+            brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+            hulls::HullModel,
+            surfaces::SurfaceTable,
+        },
+    };
+    for addresses in [
+        Addresses::Qvm { mask: 127 },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::SystemV,
+        },
+        Addresses::Native {
+            abi: qa_platform::native::NativeAbi::Microsoft,
+        },
+    ] {
+        for hull in [true, false] {
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let bounds = Bounds {
+                mins: Vec3([-512.0; 3]),
+                maxs: Vec3([512.0; 3]),
+            };
+            let geometry = if hull {
+                let plane = Plane::oriented(Vec3([1.0, 0.0, 0.0]), 0.0);
+                let node = ClipNode {
+                    plane: 0,
+                    children: [-3, -1],
+                };
+                runtime
+                    .geometry
+                    .load_hulls(
+                        vec![plane],
+                        vec![node],
+                        vec![node],
+                        vec![HullModel { roots: [0; 3] }],
+                        vec![bounds],
+                    )
+                    .unwrap()
+            } else {
+                runtime
+                    .geometry
+                    .load_brushes(
+                        vec![Plane::oriented(Vec3([-1.0, 0.0, 0.0]), 0.0)],
+                        vec![Brush {
+                            first_plane: 0,
+                            plane_count: 1,
+                            contents: Contents::WATER,
+                        }],
+                        SurfaceTable::flags(vec![SurfaceFlags::default()]),
+                        BrushTree {
+                            planes: vec![],
+                            nodes: vec![],
+                            leaves: vec![CollisionLeaf {
+                                stored_contents: Some(Contents::SOLID),
+                                first_brush: 0,
+                                brush_count: 1,
+                            }],
+                            leaf_brushes: vec![0],
+                            models: vec![ModelRoot::Leaf(0)],
+                        },
+                        vec![bounds],
+                    )
+                    .unwrap()
+            };
+            runtime.collision = Some(WorldCollision::new(&runtime.geometry, geometry, 0));
+            let bodies = [ModuleId(7), ModuleId(8)].map(|module| {
+                let entity = runtime
+                    .server
+                    .entities
+                    .allocate(ThinkTime::Milliseconds(0), module, AllocationPolicy::EDICT)
+                    .unwrap()
+                    .id;
+                let slot = entity.slot as usize;
+                runtime.server.entities.columns.set_body(
+                    slot,
+                    Body {
+                        position: Vec3([1.0, 0.0, 0.0]),
+                        mins: Vec3([-1.0; 3]),
+                        maxs: Vec3([1.0; 3]),
+                        ..Body::default()
+                    },
+                );
+                runtime.server.entities.columns.collision_shape[slot] = CollisionShape::Box;
+                runtime.server.entities.columns.native_entity[slot] =
+                    Some(NativeEntity { module, slot: 0 });
+                assert!(runtime.server.area.link(
+                    &runtime.server.entities,
+                    entity,
+                    LinkFlags::SOLID,
+                    LinkOrder::Head,
+                    LinkIntent::Explicit
+                ));
+                entity
+            });
+            assert_ne!(bodies[0].slot, 0);
+            let mut console = Console::new(Context::default()).unwrap();
+            let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+            let mut scratch = runtime.geometry.scratch();
+            let base = if matches!(addresses, Addresses::Qvm { .. }) {
+                0
+            } else {
+                1 << 40
+            };
+            let mut memory = ModuleMemory::load(base, 128, &[]).unwrap();
+            memory.write_vec3(base + 16, Vec3([1.0, 0.0, 0.0])).unwrap();
+            let mut unknown = UnknownCalls::load(1).unwrap();
+            // Another module with the same native number remains included.
+            for (foreign_linked, pass, expected) in [
+                (true, 0i32, 32 | Contents::BODY.0 as u32),
+                (false, 0, 32),
+                (false, -1, 32 | Contents::BODY.0 as u32),
+                (false, 1, 32 | Contents::BODY.0 as u32),
+            ] {
+                if !foreign_linked {
+                    runtime.server.area.unlink(bodies[1]);
+                }
+                let arguments = [base + 16 + if base == 0 { 128 } else { 0 }, pass as u64];
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                assert_eq!(
+                    Q3_SERVER.invoke(
+                        25,
+                        &mut Invocation {
+                            services: &mut services,
+                            memory: &mut memory,
+                            native_cvars: None,
+                            native_resources: None,
+                            native_entities: None,
+                            native_surfaces: None,
+                            native_command: None,
+                            native_configs: None,
+                            context: CallContext {
+                                module: ModuleId(7),
+                                ..context()
+                            },
+                            platform_time: EventTime(0),
+                            command: &[],
+                            addresses,
+                            arguments: &arguments,
+                        },
+                        &mut unknown
+                    ),
+                    Ok(u64::from(expected))
+                );
+            }
+            assert_eq!(unknown.calls, 0);
+            assert!(runtime.server.events.is_empty());
+            assert_eq!(
+                runtime.server.entities.columns.position[bodies[0].slot as usize],
+                Vec3([1.0, 0.0, 0.0])
+            );
+        }
+    }
+}
+
+#[test]
 fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
     use qa_core::primitives::{NativeEntity, PlayerTail, UserCmd, Vec3, WeaponId, buttons};
     use qa_gameplay::registry::Registry;

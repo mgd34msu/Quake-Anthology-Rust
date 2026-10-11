@@ -1,7 +1,7 @@
 use qa_core::primitives::ThinkTime;
 use qa_core::primitives::{
-    Axis, Body, Bounds, ClipNode, CollisionShape, EntityId, EntityPose, GeometryId, ModelRotation,
-    ModelRules, ModuleId, Plane, RotatedLinkBounds, SurfaceFlags, Vec3,
+    Axis, Body, Bounds, ClipNode, CollisionOwner, CollisionShape, EntityId, EntityPose, GeometryId,
+    ModelRotation, ModelRules, ModuleId, Plane, RotatedLinkBounds, SurfaceFlags, Vec3,
 };
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
@@ -236,7 +236,15 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
         )
     };
-    let mut scene = WorldTrace::new(&store, second, 1, &table, &area, &mut scratch, None);
+    let mut scene = WorldTrace::new(
+        &store,
+        second,
+        1,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    );
     let result = scene.trace(input);
     assert_eq!(result.contents, Contents::WATER);
     assert_eq!(result.entity, table.id_at(0));
@@ -257,9 +265,25 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
         ),
         Contents::EMPTY
     );
-    let mut scene = WorldTrace::new(&store, second, 0, &table, &area, &mut scratch, None);
+    let mut scene = WorldTrace::new(
+        &store,
+        second,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    );
     assert_eq!(scene.trace(input).fraction, 1.0);
-    let mut scene = WorldTrace::new(&store, first, 1, &table, &area, &mut scratch, None);
+    let mut scene = WorldTrace::new(
+        &store,
+        first,
+        1,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    );
     assert_eq!(scene.trace(input).contents, Contents::SOLID);
 }
 
@@ -325,29 +349,64 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
                 .with_quake_kind(Some(QuakeTraceKind::IgnoreBoxes)),
         )
     };
-    let result = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).trace(input);
+    let result = WorldTrace::new(
+        &store,
+        world,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .trace(input);
     assert_eq!(result.entity, Some(hull_entity));
     assert!(result.brush_solid);
     assert_eq!(result.end.0[0].to_bits(), (10.0f32 + 0.03125).to_bits());
     let excluded = [hull_entity];
-    let result =
-        WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).trace(TraceQuery {
-            excluded: &excluded,
-            ..input
-        });
+    let result = WorldTrace::new(
+        &store,
+        world,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .trace(TraceQuery {
+        excluded: &excluded,
+        ..input
+    });
     assert_eq!(result.entity, Some(brush_entity));
     assert!(store.remove(hull));
     let replacement = hull_model(&mut store);
     assert_ne!(replacement, hull);
     assert!(store.model_bounds(hull, 1).is_none());
     // The stale candidate cannot silently bind to the replacement geometry.
-    let result = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).trace(input);
+    let result = WorldTrace::new(
+        &store,
+        world,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .trace(input);
     assert_eq!(result.entity, Some(brush_entity));
     table.columns.collision_shape[brush_entity.slot as usize] = CollisionShape::Model {
         geometry: brush,
         index: u32::MAX,
     };
-    let result = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).trace(input);
+    let result = WorldTrace::new(
+        &store,
+        world,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    )
+    .trace(input);
     assert_eq!(result.fraction, 1.0);
 }
 
@@ -385,7 +444,15 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         ] {
-            let mut scene = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None);
+            let mut scene = WorldTrace::new(
+                &store,
+                world,
+                0,
+                &table,
+                &area,
+                &mut scratch,
+                CollisionOwner::None,
+            );
             let result = scene.trace(TraceQuery {
                 mask: Contents::WATER,
                 ..query(Vec3([40.0, 40.0, 50.0]), Vec3([20.0, 40.0, 50.0]), caller)
@@ -609,7 +676,16 @@ fn unchanged_rotated_link_cube_does_not_freeze_the_narrow_phase_pose() {
     let mut scratch = store.scratch();
     let point = Vec3([30.0, 44.0, 50.0]);
     assert_eq!(
-        WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
+        WorldTrace::new(
+            &store,
+            world,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None
+        )
+        .point_contents(
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             &[]
@@ -625,7 +701,16 @@ fn unchanged_rotated_link_cube_does_not_freeze_the_narrow_phase_pose() {
         LinkIntent::Commit
     ));
     assert_eq!(
-        WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
+        WorldTrace::new(
+            &store,
+            world,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None
+        )
+        .point_contents(
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             &[]
@@ -660,7 +745,16 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
     let mut scratch = store.scratch();
     let point = Vec3([36.0, 40.0, 50.0]);
     assert_eq!(
-        WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
+        WorldTrace::new(
+            &store,
+            world,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None
+        )
+        .point_contents(
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
@@ -673,7 +767,15 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
     });
     // qsrc Q3 sv_world.c:678-683 uses the published s.origin/s.angles after
     // querying the physical r.currentOrigin/currentAngles area bounds.
-    let mut scene = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None);
+    let mut scene = WorldTrace::new(
+        &store,
+        world,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    );
     assert_eq!(
         scene.point_contents(
             point,
@@ -699,7 +801,16 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
         angles: Vec3::default(),
     });
     assert_eq!(
-        WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
+        WorldTrace::new(
+            &store,
+            world,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None
+        )
+        .point_contents(
             Vec3([300.0, 40.0, 50.0]),
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
@@ -762,7 +873,16 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
     let mut scratch = store.scratch();
     let point = Vec3([24.0, 40.0, 50.0]);
     assert_eq!(
-        WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None).point_contents(
+        WorldTrace::new(
+            &store,
+            world,
+            0,
+            &table,
+            &area,
+            &mut scratch,
+            CollisionOwner::None
+        )
+        .point_contents(
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
@@ -773,7 +893,15 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
         position: Vec3([33.0, 40.0, 50.0]),
         angles: Vec3([75.0, 90.0, 65.0]),
     });
-    let scene = WorldTrace::new(&store, world, 0, &table, &area, &mut scratch, None);
+    let scene = WorldTrace::new(
+        &store,
+        world,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    );
     assert_eq!(
         scene.point_contents(
             point,

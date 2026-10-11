@@ -1,7 +1,7 @@
 use qa_core::events::{EventRing, OutputConsumerId, OutputTarget};
 use qa_core::primitives::{
-    Bounds, ClientId, CollisionShape, CommandIntent, EntityId, GeometryId, HudState, ModuleId,
-    NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3,
+    Bounds, ClientId, CollisionOwner, CollisionShape, CommandIntent, EntityId, GeometryId,
+    HudState, ModuleId, NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
@@ -268,7 +268,7 @@ impl Server {
                         &self.entities,
                         &self.area,
                         scratch,
-                        Some(client.entity),
+                        CollisionOwner::Lifetime(client.entity),
                     );
                     qa_movement::pmove(client.command, &mut client.player, &mut trace)
                 };

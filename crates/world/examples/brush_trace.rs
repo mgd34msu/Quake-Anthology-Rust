@@ -2,7 +2,7 @@
 //! Build with `cargo build --release -p qa-world --example brush_trace`, then
 //! run through tools/check_brush_trace.py. File transport is cold; the measured
 //! allocation scope contains only analytic traces and fixed result writes.
-use qa_core::primitives::{Axis, Bounds, GeometryId, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{Axis, Bounds, CollisionOwner, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::area::AreaGrid;
 use qa_world::collision::brushes::{Brush, BrushTree};
 use qa_world::collision::{
@@ -145,7 +145,7 @@ fn load(
                 mask,
                 rules,
                 entity_rules,
-                pass: qa_core::primitives::CollisionOwner::None,
+                pass: CollisionOwner::None,
                 excluded: &[],
             },
         });
@@ -198,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &entities,
                 &area,
                 &mut scratch,
-                None,
+                CollisionOwner::None,
             )
             .trace(black_box(query.trace)),
         );

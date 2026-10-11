@@ -25,7 +25,7 @@ pub struct WorldTrace<'a> {
     entities: &'a EntityTable,
     area: &'a AreaGrid,
     scratch: &'a mut TraceScratch,
-    pass: Option<EntityId>,
+    pass: CollisionOwner,
     native_entities: Option<(ModuleId, &'a dyn NativeTraceEntities)>,
 }
 
@@ -37,7 +37,7 @@ impl<'a> WorldTrace<'a> {
         entities: &'a EntityTable,
         area: &'a AreaGrid,
         scratch: &'a mut TraceScratch,
-        pass: Option<EntityId>,
+        pass: CollisionOwner,
     ) -> Self {
         Self {
             store,
@@ -58,9 +58,7 @@ impl<'a> WorldTrace<'a> {
 
     pub fn trace(&mut self, mut query: TraceQuery) -> Trace {
         if query.pass == CollisionOwner::None {
-            query.pass = self
-                .pass
-                .map_or(CollisionOwner::None, CollisionOwner::Lifetime);
+            query.pass = self.pass;
         }
         if let CollisionOwner::Lifetime(id) = query.pass
             && self.entities.resolve(id).is_none()
@@ -234,7 +232,7 @@ impl<'a> WorldTrace<'a> {
             if rules
                 .filtering
                 .contains(EntityTraceFlags::EXCLUDE_CONTENTS_PASS)
-                && Some(linked.id) == self.pass
+                && self.same_owner(CollisionOwner::Lifetime(linked.id), self.pass)
                 || excluded.contains(&linked.id)
             {
                 continue;

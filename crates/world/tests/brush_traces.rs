@@ -1,4 +1,4 @@
-use qa_core::primitives::{Bounds, GeometryId, Plane, SurfaceFlags, Vec3};
+use qa_core::primitives::{Bounds, CollisionOwner, GeometryId, Plane, SurfaceFlags, Vec3};
 use qa_world::area::AreaGrid;
 use qa_world::collision::brushes::{Brush, BrushTree};
 use qa_world::collision::{
@@ -55,7 +55,7 @@ fn trace_world(geometry: &Case, query: TraceQuery<'_>) -> Trace {
         &entities,
         &area,
         &mut scratch,
-        None,
+        CollisionOwner::None,
     )
     .trace(query)
 }
@@ -78,7 +78,7 @@ fn point_contents(geometry: &Case, point: Vec3, rules: EntityTracePolicy) -> Con
         &entities,
         &area,
         &mut scratch,
-        None,
+        CollisionOwner::None,
     )
     .point_contents(point, rules, &[])
 }
@@ -123,7 +123,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
                     mask: Contents::SOLID,
                     rules,
                     entity_rules: entity_rules(rules),
-                    pass: qa_core::primitives::CollisionOwner::None,
+                    pass: CollisionOwner::None,
                     excluded: &[],
                 },
             );
@@ -154,7 +154,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
                     mask: Contents::WATER,
                     rules,
                     entity_rules: entity_rules(rules),
-                    pass: qa_core::primitives::CollisionOwner::None,
+                    pass: CollisionOwner::None,
                     excluded: &[],
                 }
             )
@@ -180,7 +180,7 @@ fn embedded_motion_keeps_original_brush_trace_semantics() {
             mask: Contents::SOLID,
             rules,
             entity_rules: entity_rules(rules),
-            pass: qa_core::primitives::CollisionOwner::None,
+            pass: CollisionOwner::None,
             excluded: &[],
         };
         let trace = trace_world(&world, query);
@@ -516,7 +516,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
         mask: Contents::SOLID,
         rules: TraceRules::ARENA,
         entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-        pass: qa_core::primitives::CollisionOwner::None,
+        pass: CollisionOwner::None,
         excluded: &[],
     };
     // Native centering adds1 to both positions. Those additions round to

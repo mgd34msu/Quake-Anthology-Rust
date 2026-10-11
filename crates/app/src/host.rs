@@ -2,7 +2,9 @@
 use crate::Runtime;
 use qa_console::commands::Console;
 use qa_core::{
-    primitives::{ClientId, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd},
+    primitives::{
+        ClientId, CollisionOwner, CvarHandle, EffectEvent, ModuleId, SoundEvent, UserCmd,
+    },
     sys_events::{EventKind, EventTime, SeatId, SysEventQueue},
 };
 use qa_input::Target;
@@ -550,7 +552,7 @@ impl FrameHost {
                         &self.runtime.server.entities,
                         &self.runtime.server.area,
                         &mut world.scratch,
-                        Some(client.entity),
+                        CollisionOwner::Lifetime(client.entity),
                     );
                     prediction.advance(commands[seat], &mut trace);
                     if let Some(policies) = &policies

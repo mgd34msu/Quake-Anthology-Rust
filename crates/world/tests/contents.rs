@@ -1,6 +1,28 @@
 use qa_world::collision::Contents;
 
 #[test]
+fn q3_contents_preserve_native_words_and_project_combined_volumes() {
+    for bit in 0..32 {
+        let raw = 1u32 << bit;
+        assert_eq!(Contents::from_q3(raw).to_q3(), raw);
+    }
+    let mut seed = 0x3169u32;
+    for _ in 0..65536 {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        assert_eq!(Contents::from_q3(seed).to_q3(), seed);
+    }
+    assert_eq!(Contents::WINDOW.to_q3(), 1);
+    assert_eq!(Contents::SKY.to_q3(), 1);
+    assert_eq!(Contents::PLAYER.to_q3(), Contents::BODY.0 as u32);
+    assert_eq!(Contents::LADDER.to_q3(), 0);
+    assert_eq!(Contents::PROJECTILE.to_q3(), 0);
+    assert_eq!(Contents::from_q2(0x10000000).to_q3(), 0x20000000);
+    for native in -14..=-9 {
+        assert_eq!(Contents::from_q1(native).to_q3(), 32);
+    }
+}
+
+#[test]
 fn quake_point_contents_keeps_native_values_and_strips_currents() {
     for native in -6..=-1 {
         assert_eq!(Contents::from_q1(native).to_q1(), native);

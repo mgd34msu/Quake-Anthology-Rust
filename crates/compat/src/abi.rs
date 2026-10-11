@@ -271,6 +271,7 @@ const fn server() -> CallTable {
     t.entries[14] = scalar!(command);
     t.entries[18] = scalar!(config_set);
     t.entries[19] = scalar!(config_get);
+    t.entries[25] = scalar!(q3_point_contents);
     t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
     t.entries[42] = scalar!(snap_vector);
@@ -1293,14 +1294,24 @@ fn native_point_contents<const WIDE: bool>(
     } else {
         RuleSetId::Quake2
     });
-    let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
+    let contents = (ENGINE_CALLS.point_contents)(
+        c.services,
+        point,
+        rules,
+        qa_core::primitives::CollisionOwner::None,
+    )?;
     Ok(u64::from(contents.to_q2()))
 }
 
 fn qc_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let point = argument_vector(c)?;
     let (_, rules) = qa_world::collision::trace_policy(c.context.console.source);
-    let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules)?;
+    let contents = (ENGINE_CALLS.point_contents)(
+        c.services,
+        point,
+        rules,
+        qa_core::primitives::CollisionOwner::None,
+    )?;
     Ok(bits::<false>(f64::from(contents.to_q1())))
 }
 
@@ -1348,6 +1359,17 @@ fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         *byte = movement as u8;
     }
     Ok(0)
+}
+
+fn q3_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let point = c.memory.read_vec3(c.pointer(0)?)?;
+    let pass = qa_core::primitives::CollisionOwner::Native(qa_core::primitives::NativeEntity {
+        module: c.context.module,
+        slot: c.arg(1)? as i32,
+    });
+    let rules = qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1;
+    let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules, pass)?;
+    Ok(u64::from(contents.to_q3()))
 }
 
 fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

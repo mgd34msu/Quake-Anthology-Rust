@@ -1,8 +1,8 @@
 //! Developer allocation checks and pinned timing of shared movement primitives.
 use qa_core::{
     primitives::{
-        Bounds, ClientId, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId,
-        SurfaceFlags, Vec3,
+        Bounds, ClientId, CollisionOwner, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail,
+        RuleSetId, SurfaceFlags, Vec3,
     },
     sys_events::EventTime,
 };
@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &server.entities,
                 &server.area,
                 &mut scratch,
-                Some(client.entity),
+                CollisionOwner::Lifetime(client.entity),
             );
             prediction.advance(client.command, &mut trace);
         }

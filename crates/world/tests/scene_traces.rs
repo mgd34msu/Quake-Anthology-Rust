@@ -126,7 +126,7 @@ fn trace(world: &FixtureWorld, table: &EntityTable, area: &AreaGrid, query: Trac
         table,
         area,
         &mut scratch,
-        None,
+        CollisionOwner::None,
     )
     .trace(query)
 }
@@ -505,7 +505,7 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         &table,
         &area,
         &mut scratch,
-        None,
+        CollisionOwner::None,
     );
     assert_eq!(
         service.point_contents(
@@ -562,7 +562,7 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         &table,
         &area,
         &mut scratch,
-        Some(target),
+        CollisionOwner::Lifetime(target),
     );
     assert_eq!(
         pass_service.point_contents(

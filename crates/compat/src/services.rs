@@ -10,9 +10,9 @@ use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{
-        Body, Bounds, ClientId, CollisionShape, CvarHandle, EffectEvent, EntityId, GeometryId,
-        ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity, PrintKind, SoundEvent, UserCmd,
-        Vec3,
+        Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
+        GeometryId, ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity, PrintKind,
+        SoundEvent, UserCmd, Vec3,
     },
     text::FixedText,
 };
@@ -383,8 +383,12 @@ pub struct EngineCallTable {
         Option<&dyn NativeTraceEntities>,
     ) -> Result<Trace, CallError>,
     pub clip: fn(&mut EngineServices<'_>, TraceQuery<'_>, ClipTarget) -> Result<Trace, CallError>,
-    pub point_contents:
-        fn(&mut EngineServices<'_>, Vec3, EntityTracePolicy) -> Result<Contents, CallError>,
+    pub point_contents: fn(
+        &mut EngineServices<'_>,
+        Vec3,
+        EntityTracePolicy,
+        CollisionOwner,
+    ) -> Result<Contents, CallError>,
     pub link:
         fn(&mut EngineServices<'_>, CallContext, EntityId, LinkFlags) -> Result<bool, CallError>,
     pub unlink: fn(&mut EngineServices<'_>, EntityId) -> Result<(), CallError>,
@@ -495,7 +499,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
     clip: |s, q, target| s.clip(q, target),
-    point_contents: |s, p, rules| s.point_contents(p, rules),
+    point_contents: |s, p, rules, pass| s.point_contents(p, rules, pass),
     link: |s, c, e, f| s.link(c, e, f),
     unlink: |s, e| s.unlink(e),
     bot_registration: |s, e, registered| s.bot_registration(e, registered),
@@ -576,7 +580,7 @@ impl EngineServices<'_> {
             &self.server.entities,
             &self.server.area,
             self.scratch,
-            None,
+            CollisionOwner::None,
         )
         .with_native_entities(native)
         .trace(query))
@@ -602,6 +606,7 @@ impl EngineServices<'_> {
         &mut self,
         point: Vec3,
         rules: EntityTracePolicy,
+        pass: CollisionOwner,
     ) -> Result<Contents, CallError> {
         let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
         Ok(WorldTrace::new(
@@ -611,7 +616,7 @@ impl EngineServices<'_> {
             &self.server.entities,
             &self.server.area,
             self.scratch,
-            None,
+            pass,
         )
         .point_contents(point, rules, &[]))
     }
