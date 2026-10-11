@@ -19,7 +19,7 @@ use qa_session::timing::TickRate;
 use qa_world::entities::AllocationPolicy;
 
 mod q2;
-pub use q2::{Q2Spec, load_q2};
+pub use q2::{Q2Clients, Q2Spec, load_q2};
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn native_export(call: &qa_compat::native::LifecycleCall) -> Export {

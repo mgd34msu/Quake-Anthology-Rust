@@ -17,7 +17,8 @@ use qa_session::{
 use std::sync::Arc;
 
 mod load;
-pub use load::{Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
+pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
+mod clients;
 
 pub enum Program {
     Qvm {
@@ -186,6 +187,7 @@ struct Module {
     unknown: UnknownCalls,
     counts: Counts,
     state: State,
+    client_disconnect: Option<CallbackId>,
 }
 impl Module {
     fn native_sounds(&self) -> Option<qa_compat::services::ResourceRange> {
@@ -346,6 +348,7 @@ impl FrameHost {
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
                 state,
+                client_disconnect: None,
             });
         }
         host.modules = Some(Modules {
@@ -453,6 +456,7 @@ impl FrameHost {
     }
     /// Called for ordinary quit and frame-limit exit; repeating it is a no-op.
     pub fn shutdown_modules(&mut self) {
+        self.disconnect_module_clients();
         self.module_lifecycle(None);
     }
     fn module_lifecycle(&mut self, phase: Option<Phase>) {

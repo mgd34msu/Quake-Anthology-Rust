@@ -2191,6 +2191,171 @@ fn native_import_code(
     code
 }
 
+fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
+    use qa_app::modules::{ApiCheck, Q2Clients};
+    use qa_compat::native::q2::Game;
+    use qa_core::primitives::{NativeEntity, PlayerTail};
+    use qa_session::clients::Connection;
+    for rr in [false, true] {
+        for accepted in [false, true] {
+            let rules = if rr {
+                RuleSetId::Quake2Rerelease
+            } else {
+                RuleSetId::Quake2
+            };
+            let stride = if rr { 1472 } else { 280 };
+            let target = 0x180003000 + stride * 2;
+            let mut file = q2_table_file();
+            pe_rva(&mut file, 0x1800, if rr { 2023 } else { 3 }, 4);
+            pe_text(&mut file, 0x1700, &[0xc3]);
+            for index in 0..if rr { 29 } else { 15 } {
+                let offset = if !rr || index < 19 {
+                    8 + index * 8
+                } else {
+                    192 + (index - 19) * 8
+                };
+                pe_rva(&mut file, 0x1800 + offset, 0x180001700, 8);
+            }
+            let metadata = 0x1800 + if rr { 160 } else { 128 };
+            pe_rva(&mut file, metadata, 0x180003000, 8);
+            pe_rva(&mut file, metadata + 8, stride, if rr { 8 } else { 4 });
+            pe_rva(&mut file, metadata + if rr { 16 } else { 12 }, 3, 4);
+            pe_rva(&mut file, metadata + if rr { 20 } else { 16 }, 3, 4);
+            for (offset, at, expected, result) in [
+                (
+                    if rr { 88 } else { 64 },
+                    0x1500,
+                    0,
+                    if accepted { if rr { 1 } else { 2 } } else { 0 },
+                ),
+                (if rr { 96 } else { 72 }, 0x1560, 1, 0),
+                (if rr { 112 } else { 88 }, 0x15c0, 2, 0),
+                (
+                    if rr { 24 } else { 16 },
+                    0x1620,
+                    if accepted { 3 } else { 1 },
+                    0,
+                ),
+            ] {
+                pe_rva(&mut file, 0x1800 + offset, 0x180000000 + at, 8);
+                let mut code = Vec::new();
+                if at != 0x1620 {
+                    code.extend([0x48, 0xb8]);
+                    code.extend(target.to_le_bytes());
+                    code.extend([0x48, 0x39, 0xc1, 0x74, 2, 0x0f, 0x0b]);
+                }
+                if at == 0x1500 {
+                    code.extend([0x80, 0x3a, b'\\', 0x74, 2, 0x0f, 0x0b]);
+                    if rr {
+                        code.extend([0x41, 0x80, 0x38, 0, 0x74, 2, 0x0f, 0x0b]);
+                        code.extend([0x45, 0x84, 0xc9, 0x74, 2, 0x0f, 0x0b]);
+                    }
+                }
+                let start = at as usize + code.len();
+                code.extend([0x83, 0x3d]);
+                code.extend((0x1b00i32 - (start + 7) as i32).to_le_bytes());
+                code.extend([expected, 0x74, 2, 0x0f, 0x0b]);
+                let start = at as usize + code.len();
+                code.extend([0x83, 0x05]);
+                code.extend((0x1b00i32 - (start + 7) as i32).to_le_bytes());
+                code.extend([1, 0xb8]);
+                code.extend((result as u32).to_le_bytes());
+                code.push(0xc3);
+                pe_text(&mut file, at as usize, &code);
+            }
+            let mut image = Image::parse(&file, None, LoadRole::Library).unwrap();
+            let mut bytes = std::mem::take(&mut image.bytes).into_vec();
+            bytes.resize(0x6000, 0);
+            image.bytes = bytes.into_boxed_slice();
+            let mut regions = std::mem::take(&mut image.regions).into_vec();
+            regions.push(qa_formats::program::native::Region {
+                offset: 0x3000,
+                length: 0x3000,
+                read: true,
+                write: true,
+                execute: false,
+            });
+            image.regions = regions.into_boxed_slice();
+            let mut runtime = Runtime::load(2, []).unwrap();
+            let id = runtime
+                .server
+                .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+                .unwrap();
+            runtime.server.clients[id.0 as usize].player.movement_rules = RuleSetId::Quake3;
+            runtime.server.clients[id.0 as usize].player.trace_rules = RuleSetId::Quake;
+            let game =
+                Game::map(image, rules, 25, &runtime.geometry, Duration::from_secs(3)).unwrap();
+            let api = Q2Clients {
+                module: ModuleId(1),
+                rules,
+                connect: CallbackId(game.entry(b"ClientConnect").unwrap()),
+                begin: CallbackId(game.entry(b"ClientBegin").unwrap()),
+                disconnect: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
+                userinfo: 0x180005000,
+                userinfo_bytes: if rr { 2048 } else { 512 },
+                social: 0x180005800,
+            };
+            let imports = game.imports;
+            let imports_address = game.imports_address;
+            let count = game.vm.export_count();
+            let shutdown = Export::words(CallbackId(game.entry(b"Shutdown").unwrap()), &[]);
+            let mut request = request(
+                &mut runtime,
+                ModuleId(1),
+                rules,
+                TickRate::FrameDriven,
+                game.vm,
+            );
+            if let Program::Native { imports: table, .. } = &mut request.program {
+                *table = imports;
+            }
+            request.entries = (0..count as u32).collect();
+            request.api = Some(ApiCheck::NativeTable {
+                export: Export::words(CallbackId(0), &[imports_address]),
+            });
+            request.shutdown.push(shutdown);
+            let context = request.context.console;
+            let mut host = FrameHost::load_modules(
+                Console::new(Context::default()).unwrap(),
+                runtime,
+                TickRate::FrameDriven,
+                vec![request],
+            )
+            .unwrap();
+            let maxclients = host.console.cvars.bind("sv_maxclients", context).unwrap();
+            host.console.cvars.force_write(maxclients, "2").unwrap();
+            host.initialize_modules(Phase::Server);
+            let result = host.connect_q2_client(&api, id, 1, b"\\name\\NativeClient");
+            assert_eq!(result.is_ok(), accepted, "{rules:?}: {result:?}");
+            if accepted {
+                let client = &host.runtime.server.clients[id.0 as usize];
+                assert_eq!(
+                    host.runtime.server.entities.columns.native_entity[client.entity.slot as usize],
+                    Some(NativeEntity {
+                        module: ModuleId(1),
+                        slot: 2
+                    })
+                );
+                assert_eq!(client.player.movement_rules, RuleSetId::Quake3);
+                assert_eq!(client.player.trace_rules, RuleSetId::Quake);
+            } else {
+                assert!(
+                    host.runtime.server.clients[id.0 as usize]
+                        .connection
+                        .is_none()
+                );
+                assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+            }
+            host.shutdown_modules();
+            let calls = if accepted { 5 } else { 3 };
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+            host.shutdown_modules();
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
+        }
+    }
+}
+
 fn native_snap_imports_execute_through_session_dispatch() {
     use qa_compat::abi::Q3_CLIENT;
     use qa_console::views::Role;
@@ -4787,5 +4952,6 @@ pub fn run() {
     native_initialization_sequences_follow_api_binding_and_isolate_failure();
     q2_api_layouts_bind_the_full_table_and_name_missing_engine_services();
     q2_normal_loader_selects_native_roles_and_copies_spawn_strings();
+    q2_clients_bind_after_initialization_and_disconnect_before_shutdown();
     println!("native session dispatch checks passed");
 }

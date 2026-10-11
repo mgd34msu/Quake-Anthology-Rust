@@ -12,6 +12,46 @@ fn context(source: RuleSetId) -> Context {
 }
 
 #[test]
+fn native_info_uses_selected_scope_source_names_and_module_rows_once() {
+    use qa_console::catalog::Scope;
+    use qa_core::text::info_value;
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let mut cvars = Cvars::new().unwrap();
+        let client = Context {
+            source,
+            ..Context::default()
+        };
+        let server = Context {
+            side: Scope::Server,
+            role: Role::Game,
+            ..client
+        };
+        for (context, value, flags) in [(client, "client-secret", 2), (server, "server-secret", 4)]
+        {
+            let password = cvars.bind("password", context).unwrap();
+            cvars.full_set(password, value, flags).unwrap();
+        }
+        cvars
+            .register("_qa_info", Some("module-value"), 2, client)
+            .unwrap();
+        cvars.register("_qa_empty", Some(""), 2, client).unwrap();
+        let info = cvars.info_string::<2047>(client, 2).unwrap();
+        let bytes = info.as_bytes();
+        let password = info_value(bytes, b"password", false).unwrap();
+        assert_eq!(&bytes[password], b"client-secret");
+        assert_eq!(info.as_str().matches("\\password\\").count(), 1);
+        let module = info_value(bytes, b"_qa_info", false).unwrap();
+        assert_eq!(&bytes[module], b"module-value");
+        assert!(info_value(bytes, b"_qa_empty", false).is_none());
+        assert!(info_value(bytes, b"skin", false).is_some());
+        assert_eq!(
+            cvars.info_string::<1>(client, 2).unwrap_err(),
+            WriteError::Capacity
+        );
+    }
+}
+
+#[test]
 fn native_reset_uses_source_and_alias_defaults_without_resetting_other_sources() {
     for source in RuleSetId::ALL {
         for name in ["sensitivity", "gamma"] {

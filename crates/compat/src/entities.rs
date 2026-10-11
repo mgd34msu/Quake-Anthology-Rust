@@ -230,19 +230,49 @@ impl EntityProjection {
                 && native.module == owner
             {
                 let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
-                let row = self.bindings.get_mut(slot).ok_or(CallError::Entity)?;
-                if row.is_some() {
-                    return Err(CallError::Entity);
-                }
-                *row = Some(Binding {
-                    entity,
-                    owned: false,
-                    published: false,
-                });
+                self.borrow_slot(entities, slot, entity)?;
             }
         }
         self.owner = Some(owner);
         Ok(())
+    }
+    fn borrow_slot(
+        &mut self,
+        entities: &EntityTable,
+        slot: usize,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        let row = self.bindings.get_mut(slot).ok_or(CallError::Entity)?;
+        if let Some(binding) = *row
+            && entities.resolve(binding.entity).is_some()
+        {
+            return if binding.entity == entity && !binding.owned {
+                Ok(())
+            } else {
+                Err(CallError::Entity)
+            };
+        }
+        *row = Some(Binding {
+            entity,
+            owned: false,
+            published: false,
+        });
+        Ok(())
+    }
+    pub(crate) fn bind_client(
+        &mut self,
+        entities: &EntityTable,
+        native: NativeEntity,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        if self.owner != Some(native.module)
+            || entities.resolve(entity).is_none()
+            || entities.columns.native_entity[entity.slot as usize] != Some(native)
+        {
+            return Err(CallError::Entity);
+        }
+        let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
+        self.borrow_slot(entities, slot, entity)
     }
     pub(crate) fn read(
         &self,

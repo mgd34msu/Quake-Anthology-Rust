@@ -52,6 +52,7 @@ fn run() -> Result<(), String> {
     // explicit transport default is independent of map and movement identity.
     let mut local_protocol = qa_network::commands::packet::Protocol::QuakeWorld28;
     let mut seat_protocols = [None; SeatId::COUNT];
+    let mut seat_game_modules = [None; SeatId::COUNT];
     let mut seat_count = 1;
     let mut max_clients = 64usize;
     let mut console_source_explicit = false;
@@ -159,6 +160,29 @@ fn run() -> Result<(), String> {
                 )?;
                 if seat_policies[seat.index()].replace(policy).is_some() {
                     return Err("seat-policy was supplied more than once for a seat".into());
+                }
+                seat_count = seat_count.max(seat.index() + 1);
+            }
+            "--seat-game-module" => {
+                let value = args
+                    .next()
+                    .ok_or("--seat-game-module needs seat:module-number")?;
+                let (seat, module) = value
+                    .split_once(':')
+                    .ok_or("--seat-game-module needs seat:module-number")?;
+                let seat = seat
+                    .parse()
+                    .ok()
+                    .and_then(SeatId::new)
+                    .ok_or("seat-game-module needs a seat in 0..4")?;
+                let module = module
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|&id| id != 0)
+                    .map(qa_core::primitives::ModuleId)
+                    .ok_or("game module number needs 1..65536")?;
+                if seat_game_modules[seat.index()].replace(module).is_some() {
+                    return Err("duplicate seat-game-module".into());
                 }
                 seat_count = seat_count.max(seat.index() + 1);
             }
@@ -475,15 +499,17 @@ fn run() -> Result<(), String> {
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
     let mut module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
-    if !q2_modules.is_empty() {
+    let q2_clients = if !q2_modules.is_empty() {
         qa_app::modules::load_q2(
             &mut runtime,
             &q2_modules,
             &mut module_requests,
             map_path.as_deref().ok_or("Q2 module needs a loaded map")?,
             native_entity_source.ok_or("Q2 module needs a native entity source")?,
-        )?;
-    }
+        )?
+    } else {
+        Vec::new()
+    };
     if !q3_modules.is_empty() {
         let rate = qa_app::client_policy::tick_rate(RuleSetId::Quake3, &mut console.cvars)?;
         qa_app::modules::load_q3(
@@ -534,6 +560,46 @@ fn run() -> Result<(), String> {
         });
     let bank = qa_app::audio::load_bank(&mut host, &precache_sounds, sound_rules)?;
     host.runtime.sound_bank = Some(std::sync::Arc::clone(&bank));
+    for (seat, id) in local_clients
+        .iter()
+        .enumerate()
+        .filter_map(|(seat, id)| id.map(|id| (seat, id)))
+    {
+        // A sole provider is unambiguous. Combined providers require the
+        // connection's explicit module number, independent of map/physics.
+        let selected = seat_game_modules[seat].or_else(|| {
+            (q2_clients.len() == 1
+                && quakec_modules.is_empty()
+                && q3_modules
+                    .iter()
+                    .all(|module| module.role != qa_app::modules::Q3Role::Game))
+            .then(|| q2_clients[0].module)
+        });
+        let Some(module) = selected else {
+            continue;
+        };
+        let api = q2_clients
+            .iter()
+            .find(|api| api.module == module)
+            .ok_or("seat-game-module needs a loaded Q2 client lifecycle")?;
+        let info = host
+            .console
+            .cvars
+            .info_string::<2047>(
+                Context {
+                    source: api.rules,
+                    seat: SeatId::new(seat as u8).ok_or("invalid local seat")?,
+                    ..Context::default()
+                },
+                2,
+            )
+            .map_err(|e| format!("native userinfo: {e:?}"))?;
+        host.connect_q2_client(api, id, seat as u32, info.as_bytes())?;
+        println!(
+            "{{\"event\":\"module_client_begin\",\"seat\":{seat},\"module\":{},\"native_client\":{seat},\"native_signon\":false,\"gameplay_accepted\":false}}",
+            module.0
+        );
+    }
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
     for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {
@@ -792,7 +858,7 @@ fn run() -> Result<(), String> {
         }
     }
     host.shutdown_modules();
-    for index in 0..quakec_modules.len() + q3_modules.len() {
+    for index in 0..quakec_modules.len() + q2_modules.len() + q3_modules.len() {
         if let Some(counts) = host.module_counts(qa_core::primitives::ModuleId((index + 1) as u16))
         {
             println!(

@@ -1170,6 +1170,43 @@ impl Cvars {
             )
         })
     }
+    /// Native info keys use their source names and converted values. Build at
+    /// connect or info-change boundaries, never while reading module cvars.
+    pub fn info_string<const N: usize>(
+        &self,
+        context: Context,
+        flag: u32,
+    ) -> Result<FixedText<N>, WriteError> {
+        let mut text = FixedText::default();
+        let mut append = |view: View| -> Result<(), WriteError> {
+            if self.flags(view) & flag == 0 {
+                return Ok(());
+            }
+            let name = self.name(view);
+            let value = self.read(view)?;
+            if value.as_str().is_empty() {
+                return Ok(());
+            }
+            if !info_text(name) || !info_text(value.as_str()) {
+                return Err(WriteError::InvalidInfo);
+            }
+            write!(text, "\\{name}\\{}", value.as_str()).map_err(|_| WriteError::Capacity)
+        };
+        for (index, binding) in BINDINGS.iter().enumerate() {
+            if binding.native_sources & (1 << context.source as u8) != 0
+                && let Some(view) = self.bind_id(self.binding_names[index], context)
+                && view.binding as usize == index
+            {
+                append(view)?;
+            }
+        }
+        for value in &self.values[self.catalog_values..] {
+            if let Some(view) = self.bind_id(value.name_id, context) {
+                append(view)?;
+            }
+        }
+        Ok(text)
+    }
     fn refresh_number_at(&mut self, index: usize) {
         let numbers = std::array::from_fn(|s| {
             number(

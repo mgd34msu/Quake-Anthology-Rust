@@ -6,6 +6,17 @@ pub struct Q2Spec {
     pub rules: RuleSetId,
     pub path: String,
 }
+/// Native boundary data selected once; every call enters session dispatch.
+pub struct Q2Clients {
+    pub module: qa_core::primitives::ModuleId,
+    pub rules: RuleSetId,
+    pub connect: qa_core::primitives::CallbackId,
+    pub begin: qa_core::primitives::CallbackId,
+    pub disconnect: qa_core::primitives::CallbackId,
+    pub userinfo: u64,
+    pub userinfo_bytes: usize,
+    pub social: u64,
+}
 impl Q2Spec {
     pub fn parse(value: &str) -> Result<Self, &'static str> {
         let (rules, path) = value
@@ -28,7 +39,7 @@ pub fn load_q2(
     requests: &mut Vec<ModuleRequest>,
     map: &str,
     entity_source: usize,
-) -> Result<(), String> {
+) -> Result<Vec<Q2Clients>, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         use super::{module_bytes, native_export};
@@ -43,6 +54,7 @@ pub fn load_q2(
         use qa_session::timing::TickRate;
         use qa_world::entities::AllocationPolicy;
         let mut reader = ArchiveReader::default();
+        let mut clients = Vec::new();
         for spec in specs {
             let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
             let mut image = super::parse_native(&bytes)?;
@@ -52,7 +64,8 @@ pub fn load_q2(
                 .ok_or("missing native entity source")?;
             let map = map.strip_prefix("maps/").unwrap_or(map);
             let map = map.strip_suffix(".bsp").unwrap_or(map);
-            let spawn_arguments = spawn_strings(&mut image, [map.as_bytes(), &source.bytes, b""])?;
+            let (spawn_arguments, userinfo) =
+                spawn_strings(&mut image, [map.as_bytes(), &source.bytes, b""])?;
             let interval = qa_gameplay::rules::tick_millis(spec.rules, std::num::NonZeroU32::MIN)
                 .ok_or("Q2 module needs a fixed native rate")?;
             let game = Game::map(
@@ -88,6 +101,25 @@ pub fn load_q2(
             let prepare = game.vm.initializers().iter().map(native_export).collect();
             let count = game.vm.export_count();
             let module = super::module_id(requests)?;
+            let client_entry = |name| {
+                game.entry(name)
+                    .map(CallbackId)
+                    .ok_or("missing Q2 client export")
+            };
+            clients.push(Q2Clients {
+                module,
+                rules: spec.rules,
+                connect: client_entry(b"ClientConnect")?,
+                begin: client_entry(b"ClientBegin")?,
+                disconnect: client_entry(b"ClientDisconnect")?,
+                userinfo,
+                userinfo_bytes: if spec.rules == RuleSetId::Quake2 {
+                    512
+                } else {
+                    2048
+                },
+                social: spawn_arguments[2],
+            });
             let clock = ThinkTime::module_clock(spec.rules);
             let allocation = AllocationPolicy::for_rules(spec.rules, 0);
             let anchor = super::allocate_anchor(runtime, module, clock, allocation)?;
@@ -135,13 +167,13 @@ pub fn load_q2(
                 entity_source: None,
             });
         }
-        Ok(())
+        Ok(clients)
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
         let _ = (runtime, requests, map, entity_source);
         if specs.is_empty() {
-            Ok(())
+            Ok(Vec::new())
         } else {
             Err("native child backend unsupported on this host".into())
         }
@@ -152,7 +184,7 @@ pub fn load_q2(
 fn spawn_strings(
     image: &mut qa_formats::program::native::Image,
     strings: [&[u8]; 3],
-) -> Result<[u64; 3], String> {
+) -> Result<([u64; 3], u64), String> {
     use qa_formats::program::native::Region;
     use qa_platform::native::PAGE_BYTES;
     let offset = image
@@ -166,6 +198,7 @@ fn spawn_strings(
         .try_fold(0usize, |total, string| {
             total.checked_add(string.len())?.checked_add(1)
         })
+        .and_then(|size| size.checked_add(2048))
         .ok_or("Q2 spawn strings too large")?;
     let length = size
         .div_ceil(PAGE_BYTES)
@@ -188,6 +221,7 @@ fn spawn_strings(
         at += string.len() + 1;
         address
     });
+    let userinfo = image.base + at as u64;
     image.bytes = bytes.into_boxed_slice();
     let mut regions = std::mem::take(&mut image.regions).into_vec();
     regions.push(Region {
@@ -198,5 +232,5 @@ fn spawn_strings(
         execute: false,
     });
     image.regions = regions.into_boxed_slice();
-    Ok(arguments)
+    Ok((arguments, userinfo))
 }

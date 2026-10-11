@@ -486,6 +486,18 @@ impl Vm {
 }
 
 impl Vm {
+    pub fn bind_client(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        native: qa_core::primitives::NativeEntity,
+        entity: qa_core::primitives::EntityId,
+    ) -> Result<(), Error> {
+        self.entities
+            .as_mut()
+            .ok_or(Error::Export)?
+            .bind_client(entities, native, entity)
+            .map_err(Error::Service)
+    }
     pub fn entities(&mut self) -> Result<Entities, Error> {
         let table = self.table_address().ok_or(Error::Export)?;
         let layout = self.entities.as_ref().ok_or(Error::Export)?;

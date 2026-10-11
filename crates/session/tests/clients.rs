@@ -2,6 +2,39 @@ use qa_core::primitives::{ClientId, ModuleId, NativeEntity, PlayerTail, WeaponId
 use qa_session::clients::{Connection, Server};
 
 #[test]
+fn post_load_native_binding_rejects_duplicate_lifetimes_without_changing_roles() {
+    use qa_core::primitives::RuleSetId;
+    let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
+    let first = server
+        .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+        .unwrap();
+    let second = server
+        .connect(Connection::Bot, ModuleId(0), PlayerTail::None, None)
+        .unwrap();
+    let native = NativeEntity {
+        module: ModuleId(10),
+        slot: 7,
+    };
+    server.clients[first.0 as usize].player.movement_rules = RuleSetId::Quake3;
+    server.clients[first.0 as usize].player.trace_rules = RuleSetId::Quake;
+    assert!(server.bind_client_native(first, native));
+    assert!(!server.bind_client_native(second, native));
+    assert_eq!(server.clients[second.0 as usize].module, ModuleId(0));
+    assert_eq!(
+        server.clients[first.0 as usize].player.movement_rules,
+        RuleSetId::Quake3
+    );
+    assert_eq!(
+        server.clients[first.0 as usize].player.trace_rules,
+        RuleSetId::Quake
+    );
+    assert!(server.disconnect(first));
+    assert!(!server.bind_client_native(first, native));
+    assert!(server.bind_client_native(second, native));
+    assert_eq!(server.client_for_native(native), Some(second));
+}
+
+#[test]
 fn authoritative_attachment_commit_updates_local_remote_and_bot_hot_state() {
     use qa_core::primitives::{BodyAttachment, BodyFollow, Vec3};
     use qa_world::area::{LinkFlags, LinkIntent, LinkOrder};

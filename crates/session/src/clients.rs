@@ -196,6 +196,28 @@ impl Server {
             .map(|slot| ClientId(slot as u32))
     }
 
+    /// A module supplies its namespace after its API and entity table bind.
+    pub fn bind_client_native(&mut self, id: ClientId, native: NativeEntity) -> bool {
+        let Some(client) = self.clients.get(id.0 as usize) else {
+            return false;
+        };
+        if client.connection.is_none() || self.entities.resolve(client.entity).is_none() {
+            return false;
+        }
+        if self.entities.active().any(|entity| {
+            entity != client.entity
+                && self.entities.columns.native_entity[entity.slot as usize] == Some(native)
+        }) {
+            return false;
+        }
+        let client = &mut self.clients[id.0 as usize];
+        client.module = native.module;
+        let slot = client.entity.slot as usize;
+        self.entities.columns.owner[slot] = native.module;
+        self.entities.columns.native_entity[slot] = Some(native);
+        true
+    }
+
     pub fn disconnect(&mut self, id: ClientId) -> bool {
         let Some(client) = self
             .clients
