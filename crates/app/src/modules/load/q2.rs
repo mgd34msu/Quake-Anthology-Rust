@@ -58,8 +58,9 @@ pub fn load_q2(
         for spec in specs {
             let bytes = module_bytes(runtime, &spec.path, &mut reader)?;
             let mut image = super::parse_native(&bytes)?;
-            let userinfo_bytes = qa_compat::q2_abi::userinfo_bytes(spec.rules)
-                .ok_or("unsupported Q2 userinfo ABI")?;
+            let userinfo_bytes = qa_compat::q2_abi::info_layout(spec.rules)
+                .ok_or("unsupported Q2 userinfo ABI")?
+                .userinfo_bytes;
             let source = runtime
                 .entity_sources
                 .get(entity_source)

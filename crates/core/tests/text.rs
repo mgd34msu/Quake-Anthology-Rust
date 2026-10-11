@@ -2,6 +2,35 @@ use qa_core::text::FixedText;
 use std::fmt::Write;
 
 #[test]
+fn info_key_and_value_limits_are_independent_and_validate_before_removal() {
+    use qa_core::text::{InfoBytes, InfoError, InfoRules, info_set};
+    for value_bytes in [64, 256] {
+        let rules = InfoRules {
+            bytes: 2048,
+            key_bytes: 64,
+            value_bytes,
+            filter: InfoBytes::Ascii7Printable,
+        };
+        let mut buffer = [0; 2048];
+        let mut len = 0;
+        let key = [b'k'; 63];
+        let value = vec![b'v'; value_bytes - 1];
+        info_set(&mut buffer, &mut len, &key, &value, rules).unwrap();
+        let before = buffer;
+        assert_eq!(
+            info_set(&mut buffer, &mut len, &key, &vec![b'v'; value_bytes], rules),
+            Err(InfoError::Invalid)
+        );
+        assert_eq!(buffer, before);
+        assert_eq!(
+            info_set(&mut buffer, &mut len, &[b'k'; 64], b"value", rules),
+            Err(InfoError::Invalid)
+        );
+        assert_eq!(buffer, before);
+    }
+}
+
+#[test]
 fn info_writer_keeps_native_validation_filtering_and_failed_replacement_rules() {
     use qa_core::text::{InfoBytes, InfoError, InfoRules, info_set};
     let mut buffer = [0xcc; 64];
@@ -10,7 +39,8 @@ fn info_writer_keeps_native_validation_filtering_and_failed_replacement_rules() 
     let mut len = original.len();
     let native = InfoRules {
         bytes: 64,
-        field_bytes: 64,
+        key_bytes: 64,
+        value_bytes: 64,
         filter: InfoBytes::Ascii7Printable,
     };
     assert_eq!(

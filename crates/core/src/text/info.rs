@@ -9,7 +9,8 @@ pub enum InfoBytes {
 pub struct InfoRules {
     /// Includes the native terminating byte.
     pub bytes: usize,
-    pub field_bytes: usize,
+    pub key_bytes: usize,
+    pub value_bytes: usize,
     pub filter: InfoBytes,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,8 +48,8 @@ pub struct InfoUpdate<'a> {
 }
 impl<'a> InfoUpdate<'a> {
     pub fn new(key: &'a [u8], value: &'a [u8], rules: InfoRules) -> Result<Self, InfoError> {
-        if key.len() >= rules.field_bytes
-            || value.len() >= rules.field_bytes
+        if key.len() >= rules.key_bytes
+            || value.len() >= rules.value_bytes
             || !info_valid_field(key, rules.filter)
             || !info_valid_field(value, rules.filter)
         {

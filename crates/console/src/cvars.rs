@@ -1181,7 +1181,8 @@ impl Cvars {
         let mut length = 0;
         let rules = qa_core::text::InfoRules {
             bytes: output.len(),
-            field_bytes: MAX_TEXT + 1,
+            key_bytes: MAX_TEXT + 1,
+            value_bytes: MAX_TEXT + 1,
             filter: qa_core::text::InfoBytes::Exact,
         };
         let mut append = |view: View| -> Result<(), WriteError> {

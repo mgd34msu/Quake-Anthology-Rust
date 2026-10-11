@@ -1557,25 +1557,21 @@ fn remove_native_info(
 fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     // q2repro Info_SubValidate checks raw lengths and masked delimiters before
     // removing a key. Append then strips high bits and non-printable bytes.
-    use crate::q2_abi::{INFO_FIELD_BYTES, userinfo_bytes};
+    use crate::q2_abi::{INFO_KEY_BYTES, INFO_VALUE_BYTES, info_layout};
     use qa_core::text::{InfoBytes, InfoRules, InfoUpdate};
-    let mut fields = [
-        FixedText::<INFO_FIELD_BYTES>::default(),
-        FixedText::<INFO_FIELD_BYTES>::default(),
-    ];
-    for (index, field) in fields.iter_mut().enumerate() {
-        let text = c.string(index + 1)?;
-        if field.set_bytes(text).is_err() {
-            return Ok(0);
-        }
+    let mut key = FixedText::<INFO_KEY_BYTES>::default();
+    let mut value = FixedText::<INFO_VALUE_BYTES>::default();
+    if key.set_bytes(c.string(1)?).is_err() || value.set_bytes(c.string(2)?).is_err() {
+        return Ok(0);
     }
-    let bytes = userinfo_bytes(c.context.console.source).ok_or(CallError::Text)?;
+    let layout = info_layout(c.context.console.source).ok_or(CallError::Text)?;
     let Ok(update) = InfoUpdate::new(
-        fields[0].as_bytes(),
-        fields[1].as_bytes(),
+        key.as_bytes(),
+        value.as_bytes(),
         InfoRules {
-            bytes,
-            field_bytes: INFO_FIELD_BYTES,
+            bytes: layout.userinfo_bytes,
+            key_bytes: INFO_KEY_BYTES,
+            value_bytes: layout.value_bytes,
             filter: InfoBytes::Ascii7Printable,
         },
     ) else {
@@ -1583,7 +1579,7 @@ fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     };
     let source = c.pointer(0)?;
     let mut length = c.memory.cstring(source)?.len();
-    let output = c.memory.read_mut(source, bytes)?;
+    let output = c.memory.read_mut(source, layout.userinfo_bytes)?;
     Ok(u64::from(update.apply(output, &mut length).is_ok()))
 }
 

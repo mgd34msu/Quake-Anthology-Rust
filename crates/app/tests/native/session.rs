@@ -3363,7 +3363,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .unwrap();
                 memory.write_string(info_address, info_bytes, info).unwrap();
                 memory.write_string(key_address, 128, key).unwrap();
-                memory.write_string(value_address, 128, value).unwrap();
+                memory.write_string(value_address, 257, value).unwrap();
                 drop(memory);
                 let result = if set {
                     invoke_import(game, 69, &[info_address, key_address, value_address])
@@ -3455,7 +3455,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 true,
                 b"\\name\\Mike",
                 b"name",
-                &[b'a'; 64],
+                &[b'a'; 256],
                 0,
                 b"\\name\\Mike",
             );
@@ -3464,9 +3464,18 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 true,
                 b"",
                 &[b'k'; 63],
-                &[b'v'; 63],
+                &[b'v'; 255],
                 1,
-                &[b"\\".as_slice(), &[b'k'; 63], b"\\", &[b'v'; 63]].concat(),
+                &[b"\\".as_slice(), &[b'k'; 63], b"\\", &[b'v'; 255]].concat(),
+            );
+            mutate_info(
+                &mut game,
+                true,
+                b"\\name\\Mike",
+                &[b'k'; 64],
+                b"value",
+                0,
+                b"\\name\\Mike",
             );
             let mut large = b"\\name\\old\\keep\\".to_vec();
             large.extend(std::iter::repeat_n(b'x', info_bytes - 16));
