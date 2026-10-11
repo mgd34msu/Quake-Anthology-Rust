@@ -76,6 +76,7 @@ fn text_at<'a>(memory: &'a ModuleMemory<'_>, address: u64) -> Result<&'a str, Ca
 enum CallValue {
     Word(u64),
     Vector(qa_core::primitives::Vec3),
+    Basis(qa_core::math::AngleBasis),
 }
 type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError>;
 macro_rules! scalar {
@@ -113,7 +114,7 @@ impl CallTable {
     ) -> Result<u64, CallError> {
         match self.invoke_value(number, call, unknown)? {
             CallValue::Word(value) => Ok(value),
-            CallValue::Vector(_) => Err(CallError::Memory),
+            CallValue::Vector(_) | CallValue::Basis(_) => Err(CallError::Memory),
         }
     }
     fn invoke_value(
@@ -340,6 +341,7 @@ const fn quakec() -> CallTable {
     let mut t = CallTable {
         entries: [None; 256],
     };
+    t.entries[1] = Some(angle_basis);
     t.entries[9] = Some(vector_normalize);
     t.entries[12] = scalar!(vector_length);
     t.entries[13] = scalar!(vector_yaw);
@@ -387,7 +389,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             return Err(quakec::Trap::Builtin);
         }
         let mut arguments = [0u64; 8];
-        let (words, stride) = if matches!(number, 9 | 12 | 13 | 51) {
+        let (words, stride) = if matches!(number, 1 | 9 | 12 | 13 | 51) {
             (3, 1)
         } else {
             (argc, 3)
@@ -430,18 +432,14 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
             .table
             .invoke_value(number, &mut invocation, self.unknown)
             .map_err(|_| quakec::Trap::Builtin)?;
-        if !matches!(number, 23 | 25 | 46 | 72) {
-            match value {
-                CallValue::Word(value) => {
+        match value {
+            CallValue::Word(value) => {
+                if !matches!(number, 23 | 25 | 46 | 72) {
                     *vm.image.globals.get_mut(1).ok_or(quakec::Trap::Memory)? = value as u32;
                 }
-                CallValue::Vector(vector) => vm
-                    .image
-                    .globals
-                    .get_mut(1..4)
-                    .ok_or(quakec::Trap::Memory)?
-                    .copy_from_slice(&vector.0.map(f32::to_bits)),
             }
+            CallValue::Vector(vector) => vm.write_global_vector(1, vector)?,
+            CallValue::Basis(basis) => vm.write_basis(basis)?,
         }
         Ok(())
     }
@@ -464,6 +462,11 @@ fn vector_length(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn vector_normalize(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
     Ok(CallValue::Vector(qa_core::math::normalized_or_zero(
+        argument_vector(c)?,
+    )))
+}
+fn angle_basis(c: &mut Invocation<'_, '_, '_>) -> Result<CallValue, CallError> {
+    Ok(CallValue::Basis(qa_core::math::angle_vectors(
         argument_vector(c)?,
     )))
 }

@@ -1,6 +1,13 @@
 use qa_formats::program::quakec::Opcode;
 
 pub fn program(operations: &[(Opcode, i16, i16, i16)], function_entries: &[i32]) -> Vec<u8> {
+    program_with_vectors(operations, function_entries, &[])
+}
+pub fn program_with_vectors(
+    operations: &[(Opcode, i16, i16, i16)],
+    function_entries: &[i32],
+    vectors: &[(u16, &[u8])],
+) -> Vec<u8> {
     let mut statements = vec![0; 8];
     for &(op, a, b, c) in operations {
         statements.extend((op as u16).to_le_bytes());
@@ -8,13 +15,20 @@ pub fn program(operations: &[(Opcode, i16, i16, i16)], function_entries: &[i32])
             statements.extend(n.to_le_bytes());
         }
     }
-    let strings = b"\0self\0time\0nextthink\0frame\0think\0";
+    let mut strings = b"\0self\0time\0nextthink\0frame\0think\0".to_vec();
     let mut globaldefs = Vec::new();
     let mut fielddefs = Vec::new();
     for (kind, offset, name) in [(4u16, 34u16, 1i32), (2, 35, 6)] {
         globaldefs.extend(kind.to_le_bytes());
         globaldefs.extend(offset.to_le_bytes());
         globaldefs.extend(name.to_le_bytes());
+    }
+    for &(offset, name) in vectors {
+        globaldefs.extend(3u16.to_le_bytes());
+        globaldefs.extend(offset.to_le_bytes());
+        globaldefs.extend((strings.len() as i32).to_le_bytes());
+        strings.extend(name);
+        strings.push(0);
     }
     for (kind, offset, name) in [(2u16, 0u16, 11i32), (2, 1, 21), (6, 2, 27)] {
         fielddefs.extend(kind.to_le_bytes());

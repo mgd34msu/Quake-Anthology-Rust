@@ -59,6 +59,7 @@ pub struct Vm {
     pub stride: usize,
     pub header_bytes: usize,
     state: Option<StateFields>,
+    vector_globals: Option<[usize; 3]>,
     state_step: f64,
     stack: [Frame; 32],
     locals: [u32; 2048],
@@ -106,6 +107,21 @@ impl Vm {
             .checked_mul(4)
             .and_then(|b| b.checked_add(extent))
             .ok_or(Trap::Memory)?;
+        let vector_globals = (|| {
+            let offsets = [
+                image.global(b"v_forward")?,
+                image.global(b"v_right")?,
+                image.global(b"v_up")?,
+            ];
+            offsets
+                .iter()
+                .all(|&offset| {
+                    offset
+                        .checked_add(3)
+                        .is_some_and(|end| end <= image.globals.len())
+                })
+                .then_some(offsets)
+        })();
         Ok(Self {
             image,
             entities,
@@ -117,6 +133,7 @@ impl Vm {
             stride,
             header_bytes: layout.header_bytes,
             state,
+            vector_globals,
             state_step: layout.state_step,
             stack: [Frame::default(); 32],
             locals: [0; 2048],
@@ -124,6 +141,25 @@ impl Vm {
             locals_used: 0,
             string_used,
         })
+    }
+    pub(crate) fn write_global_vector(&mut self, offset: usize, value: Vec3) -> Result<(), Trap> {
+        let end = offset.checked_add(3).ok_or(Trap::Memory)?;
+        self.image
+            .globals
+            .get_mut(offset..end)
+            .ok_or(Trap::Memory)?
+            .copy_from_slice(&value.0.map(f32::to_bits));
+        Ok(())
+    }
+    pub(crate) fn write_basis(&mut self, basis: qa_core::math::AngleBasis) -> Result<(), Trap> {
+        let offsets = self.vector_globals.ok_or(Trap::Memory)?;
+        for (offset, value) in offsets
+            .into_iter()
+            .zip([basis.forward, basis.right, basis.up])
+        {
+            self.write_global_vector(offset, value)?;
+        }
+        Ok(())
     }
     pub fn string(&self, offset: i32) -> Result<&[u8], Trap> {
         let address = u64::try_from(offset).map_err(|_| Trap::String)?;

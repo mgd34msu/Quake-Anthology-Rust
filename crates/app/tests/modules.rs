@@ -749,7 +749,16 @@ fn quakec_host(rules: RuleSetId, vm: Vm) -> FrameHost {
 }
 
 fn quakec_math_program(builtin: i32) -> Vm {
-    let bytes = quakec_program::program(
+    let vectors: &[(u16, &[u8])] = if builtin == 1 {
+        &[(52, b"v_forward"), (55, b"v_right"), (58, b"v_up")]
+    } else {
+        &[]
+    };
+    quakec_math_program_with_vectors(builtin, vectors)
+}
+
+fn quakec_math_program_with_vectors(builtin: i32, vectors: &[(u16, &[u8])]) -> Vm {
+    let bytes = quakec_program::program_with_vectors(
         &[
             (StoreV, 48, 4, 0),
             (Call1, 27, 0, 0),
@@ -760,6 +769,7 @@ fn quakec_math_program(builtin: i32) -> Vm {
             (Return, 1, 0, 0),
         ],
         &[0, 1, -builtin, 4, 6],
+        vectors,
     );
     let mut vm = Vm::load(
         Image::parse(&bytes, Some(5927)).unwrap(),
@@ -811,12 +821,106 @@ fn quakec_vlen_uses_three_words_of_one_parameter_through_session_dispatch() {
     }
 }
 
-#[test]
-fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
+fn with_quakec_calls(rules: RuleSetId, run: impl FnOnce(&mut qa_compat::abi::QuakeCCalls<'_, '_>)) {
     use qa_compat::{
         abi::{QUAKEC, QuakeCCalls, UnknownCalls},
         services::ServiceStorage,
     };
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let developer = console.cvars.find("developer").unwrap();
+    let mut unknown = UnknownCalls::load(1).unwrap();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let mut calls = QuakeCCalls {
+        services: &mut services,
+        table: &QUAKEC,
+        context: CallContext {
+            module: ModuleId(1),
+            clock: ThinkTime::Seconds(0.0),
+            server_frame: 0,
+            console: Context {
+                source: rules,
+                ..Context::default()
+            },
+            allocation: AllocationPolicy::EDICT,
+            link_order: qa_gameplay::rules::link_order(rules),
+        },
+        platform_time: EventTime(0),
+        developer,
+        unknown: &mut unknown,
+    };
+    run(&mut calls);
+}
+
+#[test]
+fn quakec_makevectors_matches_original_rows_and_preserves_void_returns() {
+    let rows =
+        std::env::var_os("QA_QC_MAKEVECTORS_REFERENCE").map(|path| std::fs::read(path).unwrap());
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_quakec_calls(rules, |calls| {
+            let mut vm = quakec_math_program(1);
+            for definition in vm.image.globaldefs.iter_mut() {
+                if definition.value_type == 3 {
+                    definition.offset = 63;
+                }
+            }
+            let returns = [0x12345678, 0x87654321, 0x11223344];
+            if let Some(rows) = &rows {
+                assert!(!rows.is_empty());
+                assert_eq!(rows.len() % 48, 0);
+                for (index, row) in rows.chunks_exact(48).enumerate() {
+                    let words: [u32; 12] = std::array::from_fn(|i| {
+                        u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap())
+                    });
+                    vm.image.globals[48..51].copy_from_slice(&words[..3]);
+                    assert_eq!(vm.call(calls, 1, 100, false), Ok(returns));
+                    assert_eq!(
+                        &vm.image.globals[52..61],
+                        &words[3..],
+                        "{rules:?} row {index}"
+                    );
+                }
+            }
+            vm.image.globals[48..51].fill(0);
+            vm.call(calls, 1, 100, false).unwrap();
+            let expected = [1.0f32, 0.0, -0.0, 0.0, -1.0, -0.0, 0.0, 0.0, 1.0];
+            assert_eq!(&vm.image.globals[52..61], &expected.map(f32::to_bits));
+            let before = vm.image.globals[52..61].to_vec();
+            for function in [3, 4] {
+                assert_eq!(
+                    vm.call(calls, function, 100, false),
+                    Err(qa_compat::quakec::Trap::Builtin)
+                );
+                assert_eq!(&vm.image.globals[1..4], &returns);
+                assert_eq!(&vm.image.globals[52..61], &before);
+            }
+            let mut missing = quakec_math_program_with_vectors(1, &[]);
+            assert_eq!(
+                missing.call(calls, 1, 100, false),
+                Err(qa_compat::quakec::Trap::Memory)
+            );
+            assert_eq!(&missing.image.globals[1..4], &returns);
+            assert_eq!(calls.unknown.calls, 0);
+        });
+        let mut host = quakec_host(rules, quakec_math_program(1));
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(0)),
+            ThinkTime::Seconds(0.1),
+        )
+        .unwrap();
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([0x12345678, 0x87654321, 0x11223344]))
+        );
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    }
+}
+
+#[test]
+fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
     for (builtin, key) in [
         (9, "QA_QC_NORMALIZE_REFERENCE"),
         (12, "QA_QC_VLEN_REFERENCE"),
@@ -826,93 +930,70 @@ fn quakec_math_matches_original_rows_and_rejects_wrong_parameter_counts() {
     ] {
         let rows = std::env::var_os(key).map(|path| std::fs::read(path).unwrap());
         for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
-            let mut runtime = Runtime::load(1, []).unwrap();
-            let mut console = Console::new(Context::default()).unwrap();
-            let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
-            let mut scratch = runtime.geometry.scratch();
-            let developer = console.cvars.find("developer").unwrap();
-            let mut unknown = UnknownCalls::load(1).unwrap();
-            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-            let mut calls = QuakeCCalls {
-                services: &mut services,
-                table: &QUAKEC,
-                context: CallContext {
-                    module: ModuleId(1),
-                    clock: ThinkTime::Seconds(0.0),
-                    server_frame: 0,
-                    console: Context {
-                        source: rules,
-                        ..Context::default()
-                    },
-                    allocation: AllocationPolicy::EDICT,
-                    link_order: qa_gameplay::rules::link_order(rules),
-                },
-                platform_time: EventTime(0),
-                developer,
-                unknown: &mut unknown,
-            };
-            let mut vm = quakec_math_program(builtin);
-            if let Some(rows) = &rows {
-                assert!(!rows.is_empty());
-                assert_eq!(rows.len() % 24, 0);
-                for (index, row) in rows.chunks_exact(24).enumerate() {
-                    let words: [u32; 6] = std::array::from_fn(|i| {
-                        u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap())
-                    });
-                    vm.image.globals[48..51].copy_from_slice(&words[..3]);
-                    assert_eq!(
-                        vm.call(&mut calls, 1, 100, false),
-                        Ok(words[3..].try_into().unwrap()),
-                        "builtin {builtin}, {rules:?} row {index}"
-                    );
+            with_quakec_calls(rules, |calls| {
+                let mut vm = quakec_math_program(builtin);
+                if let Some(rows) = &rows {
+                    assert!(!rows.is_empty());
+                    assert_eq!(rows.len() % 24, 0);
+                    for (index, row) in rows.chunks_exact(24).enumerate() {
+                        let words: [u32; 6] = std::array::from_fn(|i| {
+                            u32::from_le_bytes(row[i * 4..i * 4 + 4].try_into().unwrap())
+                        });
+                        vm.image.globals[48..51].copy_from_slice(&words[..3]);
+                        assert_eq!(
+                            vm.call(calls, 1, 100, false),
+                            Ok(words[3..].try_into().unwrap()),
+                            "builtin {builtin}, {rules:?} row {index}"
+                        );
+                    }
                 }
-            }
-            for vector in [
-                [f32::NAN, 1.0, 0.0],
-                [f32::INFINITY, f32::NEG_INFINITY, 0.0],
-            ] {
-                vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
-                let result = vm.call(&mut calls, 1, 100, false).unwrap();
-                if builtin == 9 {
-                    if vector[0].is_nan() {
-                        assert!(result.into_iter().all(|word| f32::from_bits(word).is_nan()));
-                    } else {
+                for vector in [
+                    [f32::NAN, 1.0, 0.0],
+                    [f32::INFINITY, f32::NEG_INFINITY, 0.0],
+                ] {
+                    vm.image.globals[48..51].copy_from_slice(&vector.map(f32::to_bits));
+                    let result = vm.call(calls, 1, 100, false).unwrap();
+                    if builtin == 9 {
+                        if vector[0].is_nan() {
+                            assert!(result.into_iter().all(|word| f32::from_bits(word).is_nan()));
+                        } else {
+                            assert!(f32::from_bits(result[0]).is_nan());
+                            assert!(f32::from_bits(result[1]).is_nan());
+                            assert_eq!(result[2], 0.0f32.to_bits());
+                        }
+                    } else if matches!(builtin, 13 | 51) {
+                        let yaw = if vector[0].is_nan() {
+                            i32::MIN as f32 + 360.0
+                        } else {
+                            315.0
+                        };
+                        if builtin == 13 {
+                            assert_eq!(result[0], yaw.to_bits());
+                        } else {
+                            let pitch = if vector[0].is_nan() { yaw } else { 0.0 };
+                            assert_eq!(result, [pitch, yaw, 0.0].map(f32::to_bits));
+                        }
+                    } else if builtin == 36 {
+                        assert_eq!(result[0], (i32::MIN as f32).to_bits());
+                    } else if vector[0].is_nan() {
                         assert!(f32::from_bits(result[0]).is_nan());
-                        assert!(f32::from_bits(result[1]).is_nan());
-                        assert_eq!(result[2], 0.0f32.to_bits());
-                    }
-                } else if matches!(builtin, 13 | 51) {
-                    let yaw = if vector[0].is_nan() {
-                        i32::MIN as f32 + 360.0
                     } else {
-                        315.0
-                    };
-                    if builtin == 13 {
-                        assert_eq!(result[0], yaw.to_bits());
-                    } else {
-                        let pitch = if vector[0].is_nan() { yaw } else { 0.0 };
-                        assert_eq!(result, [pitch, yaw, 0.0].map(f32::to_bits));
+                        assert_eq!(result[0], f32::INFINITY.to_bits());
                     }
-                } else if builtin == 36 {
-                    assert_eq!(result[0], (i32::MIN as f32).to_bits());
-                } else if vector[0].is_nan() {
-                    assert!(f32::from_bits(result[0]).is_nan());
-                } else {
-                    assert_eq!(result[0], f32::INFINITY.to_bits());
+                    if !matches!(builtin, 9 | 51) {
+                        assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
+                    }
                 }
-                if !matches!(builtin, 9 | 51) {
-                    assert_eq!(&result[1..], &[0x87654321, 0x11223344]);
+                let before: [u32; 3] = vm.image.globals[1..4].try_into().unwrap();
+                for function in [3, 4] {
+                    assert_eq!(
+                        vm.call(calls, function, 100, false),
+                        Err(qa_compat::quakec::Trap::Builtin)
+                    );
+                    assert_eq!(&vm.image.globals[1..4], &before);
                 }
-            }
-            let before: [u32; 3] = vm.image.globals[1..4].try_into().unwrap();
-            for function in [3, 4] {
-                assert_eq!(
-                    vm.call(&mut calls, function, 100, false),
-                    Err(qa_compat::quakec::Trap::Builtin)
-                );
-                assert_eq!(&vm.image.globals[1..4], &before);
-            }
-            assert_eq!(calls.unknown.calls, 0);
+                assert_eq!(calls.unknown.calls, 0);
+            });
         }
     }
 }
