@@ -1,4 +1,7 @@
 //! Load-sized storage for engine text. Mutation never grows it.
+mod numbers;
+pub use numbers::atof_prefix;
+
 use std::fmt::{self, Write};
 
 /// A strict native string requires a terminator within the supplied boundary.

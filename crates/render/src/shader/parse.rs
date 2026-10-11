@@ -984,129 +984,13 @@ fn native_number(text: &str) -> (f32, bool) {
         (0.0, true)
     }
 }
-#[expect(
-    clippy::collapsible_if,
-    reason = "The qsrc atof boundary tries the hexadecimal prefix before falling back to decimal-prefix conversion."
-)]
 fn native_double(text: &str) -> (f64, bool) {
     let text = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
-    let bytes = text.as_bytes();
-    let sign_at = usize::from(
-        bytes
-            .first()
-            .is_some_and(|byte| matches!(byte, b'+' | b'-')),
-    );
-    if bytes
-        .get(sign_at..)
-        .is_some_and(|tail| tail.starts_with(b"0x") || tail.starts_with(b"0X"))
-    {
-        if let Some((number, end)) = hexadecimal(bytes, sign_at) {
-            return if number.is_finite() {
-                (number, end != bytes.len())
-            } else {
-                (0.0, true)
-            };
-        }
-    }
-    let mut at = sign_at;
-    let mut digits = 0;
-    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-        at += 1;
-        digits += 1
-    }
-    if bytes.get(at) == Some(&b'.') {
-        at += 1;
-        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-            at += 1;
-            digits += 1
-        }
-    }
-    if digits == 0 {
-        return (0.0, true);
-    }
-    if bytes
-        .get(at)
-        .is_some_and(|byte| matches!(byte, b'e' | b'E'))
-    {
-        let exponent = at;
-        at += 1;
-        if bytes
-            .get(at)
-            .is_some_and(|byte| matches!(byte, b'+' | b'-'))
-        {
-            at += 1
-        }
-        let first_digit = at;
-        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-            at += 1
-        }
-        if at == first_digit {
-            at = exponent
-        }
-    }
-    match text[..at].parse::<f64>() {
-        Ok(number) if number.is_finite() => (number, at != bytes.len()),
-        _ => (0.0, true),
-    }
-}
-fn hexadecimal(bytes: &[u8], sign_at: usize) -> Option<(f64, usize)> {
-    let mut at = sign_at + 2;
-    let mut number = 0.0;
-    let mut digits = 0;
-    while let Some(digit) = bytes.get(at).and_then(|byte| hex_digit(*byte)) {
-        number = number * 16.0 + f64::from(digit);
-        at += 1;
-        digits += 1;
-    }
-    if bytes.get(at) == Some(&b'.') {
-        at += 1;
-        let mut scale = 1.0 / 16.0;
-        while let Some(digit) = bytes.get(at).and_then(|byte| hex_digit(*byte)) {
-            number += f64::from(digit) * scale;
-            scale /= 16.0;
-            at += 1;
-            digits += 1;
-        }
-    }
-    if digits == 0 {
-        return None;
-    }
-    if bytes
-        .get(at)
-        .is_some_and(|byte| matches!(byte, b'p' | b'P'))
-    {
-        let exponent_start = at;
-        at += 1;
-        let negative = bytes.get(at) == Some(&b'-');
-        if bytes
-            .get(at)
-            .is_some_and(|byte| matches!(byte, b'+' | b'-'))
-        {
-            at += 1
-        }
-        let first_digit = at;
-        let mut exponent = 0_i32;
-        while let Some(byte) = bytes.get(at).filter(|byte| byte.is_ascii_digit()) {
-            exponent = (exponent * 10 + i32::from(*byte - b'0')).min(4096);
-            at += 1;
-        }
-        if at == first_digit {
-            at = exponent_start
-        } else {
-            number *= 2.0_f64.powi(if negative { -exponent } else { exponent })
-        }
-    }
-    if bytes.first() == Some(&b'-') {
-        number = -number
-    }
-    Some((number, at))
-}
-fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
+    let (number, consumed) = qa_core::text::atof_prefix(text);
+    if number.is_finite() {
+        (number, consumed == 0 || consumed != text.len())
+    } else {
+        (0.0, true)
     }
 }
 fn surface_parm(value: &str) -> Option<(u32, u32)> {
