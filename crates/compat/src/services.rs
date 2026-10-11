@@ -72,6 +72,17 @@ pub struct ResourceRange {
     pub first: usize,
     pub count: usize,
 }
+impl ResourceRange {
+    pub fn contains(self, ordinal: usize) -> bool {
+        ordinal
+            .checked_sub(self.first)
+            .is_some_and(|index| index < self.count)
+    }
+    pub fn ordinal(self, index: usize) -> Option<usize> {
+        (index < self.count).then_some(())?;
+        self.first.checked_add(index)
+    }
+}
 /// Native Q2 resource names select player-relative or explicit file paths.
 pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, CallError> {
     if name.is_empty() || name.starts_with(b"*") {
@@ -171,10 +182,23 @@ impl ServiceStorage {
     }
     fn config(&self, module: ModuleId, ordinal: usize) -> Result<usize, CallError> {
         let range = self.range(module).ok_or(CallError::ConfigString)?;
-        if ordinal >= range.count {
+        ResourceRange {
+            first: range.first,
+            count: range.count,
+        }
+        .ordinal(ordinal)
+        .ok_or(CallError::ConfigString)
+    }
+    fn check_range(&self, module: ModuleId, resource: ResourceRange) -> Result<usize, CallError> {
+        let range = self.range(module).ok_or(CallError::ConfigString)?;
+        let end = resource
+            .first
+            .checked_add(resource.count)
+            .ok_or(CallError::ConfigString)?;
+        if end > range.count {
             return Err(CallError::ConfigString);
         }
-        Ok(range.first + ordinal)
+        Ok(range.first + resource.first)
     }
     pub fn bind_entity_text(
         &mut self,
@@ -249,13 +273,10 @@ impl ServiceStorage {
         sounds: ResourceRange,
         bank: std::sync::Arc<qa_audio::Bank>,
     ) -> Result<(), CallError> {
-        let end = sounds
-            .first
-            .checked_add(sounds.count)
-            .ok_or(CallError::ConfigString)?;
-        if sounds.count == 0 || end > self.range(module).ok_or(CallError::ConfigString)?.count {
+        if sounds.count == 0 {
             return Err(CallError::ConfigString);
         }
+        self.check_range(module, sounds)?;
         self.range_mut(module)
             .ok_or(CallError::ConfigString)?
             .sounds = Some(sounds);
@@ -265,7 +286,7 @@ impl ServiceStorage {
         for i in 0..self.ranges.len() {
             let owner = self.ranges[i].module;
             if let Some(range) = self.ranges[i].sounds {
-                for ordinal in range.first..range.first + range.count {
+                for ordinal in (0..range.count).filter_map(|index| range.ordinal(index)) {
                     self.bind_sound(owner, ordinal)?;
                 }
             }
@@ -277,7 +298,7 @@ impl ServiceStorage {
         let Some(range) = self.range(module).and_then(|range| range.sounds) else {
             return Ok(());
         };
-        if !(range.first..range.first + range.count).contains(&ordinal) {
+        if !range.contains(ordinal) {
             return Ok(());
         }
         self.sounds[index] = None;
@@ -333,15 +354,10 @@ impl ServiceStorage {
         if name.is_empty() {
             return Ok(0);
         }
-        let end = range
-            .first
-            .checked_add(range.count)
-            .ok_or(CallError::ConfigString)?;
         if range.count < 2 || name.len() > 8192 {
             return Err(CallError::ConfigString);
         }
-        let first = self.config(module, range.first)?;
-        self.config(module, end - 1)?;
+        let first = self.check_range(module, range)?;
         let name_id = self
             .resource_names
             .intern(name)
@@ -351,7 +367,11 @@ impl ServiceStorage {
         for ordinal in 1..range.count {
             let row = &mut self.configs[first + ordinal];
             if row.text.as_bytes().is_empty() {
-                self.set_configstring(module, range.first + ordinal, name)?;
+                self.set_configstring(
+                    module,
+                    range.ordinal(ordinal).ok_or(CallError::ConfigString)?,
+                    name,
+                )?;
                 self.configs[first + ordinal].resource_name = Some(name_id);
                 return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
             }
@@ -594,10 +614,8 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     sound: |s, e| s.sound(e),
     sound_id: |s, module, range, index| {
         let index = usize::try_from(index).map_err(|_| CallError::Text)?;
-        if index >= range.count {
-            return Err(CallError::Text);
-        }
-        let row = s.storage.config(module, range.first + index)?;
+        let ordinal = range.ordinal(index).ok_or(CallError::Text)?;
+        let row = s.storage.config(module, ordinal)?;
         Ok(s.storage.sounds[row])
     },
     effect: |s, e| s.effect(e),

@@ -1917,6 +1917,36 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
     let mut scratch = runtime.geometry.scratch();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     let range = ResourceRange { first: 2, count: 4 };
+    assert!(!range.contains(1));
+    assert!(range.contains(2));
+    assert!(range.contains(5));
+    assert!(!range.contains(6));
+    assert_eq!(range.ordinal(0), Some(2));
+    assert_eq!(range.ordinal(3), Some(5));
+    assert_eq!(range.ordinal(4), None);
+    assert_eq!(
+        ResourceRange {
+            first: usize::MAX,
+            count: 2
+        }
+        .ordinal(1),
+        None
+    );
+    for bad in [
+        ResourceRange { first: 2, count: 0 },
+        ResourceRange { first: 6, count: 3 },
+        ResourceRange {
+            first: usize::MAX,
+            count: 2,
+        },
+    ] {
+        assert!(matches!(
+            services
+                .storage
+                .bind_sound_bank(module, bad, Arc::clone(&bank)),
+            Err(qa_compat::services::CallError::ConfigString)
+        ));
+    }
     services.configstring(module, 3, b"world/amb.wav").unwrap();
     services
         .storage
