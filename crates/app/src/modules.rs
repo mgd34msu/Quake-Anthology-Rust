@@ -177,6 +177,22 @@ pub struct Modules {
     functions: Arc<FunctionTable<FrameHost>>,
     rows: Box<[Option<Module>]>,
 }
+impl Modules {
+    fn row(&self, id: ModuleId) -> Option<&Module> {
+        self.rows.get(id.0 as usize)?.as_ref()
+    }
+    fn row_mut(&mut self, id: ModuleId) -> Option<&mut Module> {
+        self.rows.get_mut(id.0 as usize)?.as_mut()
+    }
+}
+impl FrameHost {
+    fn module_row(&self, id: ModuleId) -> Option<&Module> {
+        self.modules.as_ref()?.row(id)
+    }
+    fn module_row_mut(&mut self, id: ModuleId) -> Option<&mut Module> {
+        self.modules.as_mut()?.row_mut(id)
+    }
+}
 impl ThinkWorld for FrameHost {
     fn entities(&mut self) -> &mut qa_world::entities::EntityTable {
         &mut self.runtime.server.entities
@@ -340,10 +356,7 @@ impl FrameHost {
         module: ModuleId,
     ) -> Result<qa_compat::entities::Entities, CallError> {
         let row = self
-            .modules
-            .as_mut()
-            .and_then(|m| m.rows.get_mut(module.0 as usize))
-            .and_then(Option::as_mut)
+            .module_row_mut(module)
             .ok_or(CallError::MissingModule)?;
         if row.state != State::Running {
             return Err(CallError::Rejected);
@@ -360,12 +373,7 @@ impl FrameHost {
         export: Export,
         time: ThinkTime,
     ) -> Result<(), CallError> {
-        let row = self
-            .modules
-            .as_ref()
-            .and_then(|m| m.rows.get(module.0 as usize))
-            .and_then(Option::as_ref)
-            .ok_or(CallError::MissingModule)?;
+        let row = self.module_row(module).ok_or(CallError::MissingModule)?;
         let entity = row.request.anchor;
         let slot = self
             .runtime
@@ -402,7 +410,7 @@ impl FrameHost {
         let shutdown = phase.is_none();
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
         for index in 0..count {
-            let Some(row) = self.modules.as_ref().and_then(|m| m.rows[index].as_ref()) else {
+            let Some(row) = self.module_row(ModuleId(index as u16)) else {
                 continue;
             };
             if row.state
@@ -434,7 +442,7 @@ impl FrameHost {
                         self.module_sequence(module, LifecycleSequence::Initialize, time)
                     })
             });
-            if let Some(row) = self.modules.as_mut().and_then(|m| m.rows[index].as_mut()) {
+            if let Some(row) = self.module_row_mut(ModuleId(index as u16)) {
                 if result.is_err() {
                     row.counts.rejected += 1;
                 }
@@ -456,9 +464,7 @@ impl FrameHost {
     ) -> Result<(), CallError> {
         self.call_module_export(module, api.export(), time)?;
         let row = self
-            .modules
-            .as_mut()
-            .and_then(|modules| modules.rows[module.0 as usize].as_mut())
+            .module_row_mut(module)
             .ok_or(CallError::MissingModule)?;
         match api {
             ApiCheck::Version { accepted, .. } => {
@@ -490,15 +496,11 @@ impl FrameHost {
         time: ThinkTime,
     ) -> Result<(), CallError> {
         let count = self
-            .modules
-            .as_ref()
-            .and_then(|m| m.rows[module.0 as usize].as_ref())
+            .module_row(module)
             .map_or(0, |row| row.request.sequence(sequence).len());
         for index in 0..count {
             let export = self
-                .modules
-                .as_ref()
-                .and_then(|m| m.rows[module.0 as usize].as_ref())
+                .module_row(module)
                 .and_then(|row| row.request.sequence(sequence).get(index))
                 .copied()
                 .ok_or(CallError::MissingModule)?;
@@ -510,7 +512,7 @@ impl FrameHost {
         self.initialize_modules(Phase::Client);
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
         for index in 0..count {
-            let Some(row) = self.modules.as_ref().and_then(|m| m.rows[index].as_ref()) else {
+            let Some(row) = self.module_row(ModuleId(index as u16)) else {
                 continue;
             };
             if row.request.phase != Phase::Client {
@@ -541,12 +543,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let qa_session::timing::TickTarget::Provider(module) = tick.target else {
         return;
     };
-    let Some(row) = host
-        .modules
-        .as_mut()
-        .and_then(|m| m.rows.get_mut(module.0 as usize))
-        .and_then(Option::as_mut)
-    else {
+    let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) else {
         return;
     };
     // qsrc advances the SERVER frame number after RunFrame. Loading calls
@@ -555,22 +552,12 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     row.request.context.server_frame = tick.index - 1;
     let time = row.request.context.clock.at(tick.end);
     invoke_frame(host, module, time);
-    if let Some(row) = host
-        .modules
-        .as_mut()
-        .and_then(|m| m.rows.get_mut(module.0 as usize))
-        .and_then(Option::as_mut)
-    {
+    if let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) {
         row.request.context.server_frame = tick.index;
     }
 }
 fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
-    let Some(row) = host
-        .modules
-        .as_ref()
-        .and_then(|m| m.rows.get(module.0 as usize))
-        .and_then(Option::as_ref)
-    else {
+    let Some(row) = host.modules.as_ref().and_then(|m| m.row(module)) else {
         return;
     };
     if row.state != State::Running {
@@ -578,10 +565,7 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
     }
     let export = row.request.frame;
     if host.call_module_export(module, export, time).is_err()
-        && let Some(row) = host
-            .modules
-            .as_mut()
-            .and_then(|m| m.rows[module.0 as usize].as_mut())
+        && let Some(row) = host.module_row_mut(module)
     {
         row.counts.rejected += 1;
     }
@@ -603,12 +587,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         } => (time, arguments),
         _ => return false,
     };
-    let Some(row) = host
-        .modules
-        .as_mut()
-        .and_then(|m| m.rows.get_mut(module.0 as usize))
-        .and_then(Option::as_mut)
-    else {
+    let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) else {
         return false;
     };
     if matches!(row.request.program, Program::QuakeC(_)) {
@@ -692,12 +671,7 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     else {
         return false;
     };
-    let Some(row) = host
-        .modules
-        .as_mut()
-        .and_then(|m| m.rows.get_mut(module.0 as usize))
-        .and_then(Option::as_mut)
-    else {
+    let Some(row) = host.modules.as_mut().and_then(|m| m.row_mut(module)) else {
         return false;
     };
     let Program::QuakeC(qc) = &mut row.request.program else {

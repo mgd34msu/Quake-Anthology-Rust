@@ -140,12 +140,14 @@ impl ServiceStorage {
             no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
         })
     }
+    fn range(&self, module: ModuleId) -> Option<&ConfigRange> {
+        self.ranges.iter().find(|range| range.module == module)
+    }
+    fn range_mut(&mut self, module: ModuleId) -> Option<&mut ConfigRange> {
+        self.ranges.iter_mut().find(|range| range.module == module)
+    }
     fn config(&self, module: ModuleId, ordinal: usize) -> Result<usize, CallError> {
-        let range = self
-            .ranges
-            .iter()
-            .find(|r| r.module == module)
-            .ok_or(CallError::ConfigString)?;
+        let range = self.range(module).ok_or(CallError::ConfigString)?;
         if ordinal >= range.count {
             return Err(CallError::ConfigString);
         }
@@ -183,10 +185,7 @@ impl ServiceStorage {
         Ok(token)
     }
     fn entity_range(&mut self, module: ModuleId) -> Result<&mut ConfigRange, CallError> {
-        self.ranges
-            .iter_mut()
-            .find(|r| r.module == module)
-            .ok_or(CallError::Text)
+        self.range_mut(module).ok_or(CallError::Text)
     }
     pub fn reset_message(&mut self, module: ModuleId) -> Result<(), CallError> {
         self.entity_range(module)?.written = 0;
@@ -199,11 +198,7 @@ impl ServiceStorage {
             &mut qa_network::message::Writer<'_>,
         ) -> Result<(), qa_network::message::Error>,
     ) -> Result<(), CallError> {
-        let row = self
-            .ranges
-            .iter_mut()
-            .find(|r| r.module == module)
-            .ok_or(CallError::Memory)?;
+        let row = self.range_mut(module).ok_or(CallError::Memory)?;
         let mut writer = qa_network::message::Writer::append_bytes(&mut row.message, row.written)
             .map_err(|_| CallError::Capacity)?;
         write(&mut writer).map_err(|_| CallError::Capacity)?;
@@ -211,9 +206,7 @@ impl ServiceStorage {
         Ok(())
     }
     pub fn config_revision(&self, module: ModuleId) -> Result<u64, CallError> {
-        self.ranges
-            .iter()
-            .find(|range| range.module == module)
+        self.range(module)
             .map(|range| range.revision)
             .ok_or(CallError::ConfigString)
     }
@@ -249,11 +242,7 @@ impl ServiceStorage {
             row.text.set_bytes(text).map_err(|_| CallError::Text)?;
             row.resource_name = name;
             row.revision = row.revision.wrapping_add(1);
-            let range = self
-                .ranges
-                .iter_mut()
-                .find(|range| range.module == module)
-                .ok_or(CallError::ConfigString)?;
+            let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
             range.revision = range.revision.wrapping_add(1);
         }
         Ok(())

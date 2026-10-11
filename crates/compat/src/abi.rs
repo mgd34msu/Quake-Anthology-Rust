@@ -65,8 +65,12 @@ impl Invocation<'_, '_, '_> {
         Ok(self.memory.cstring(self.pointer(index)?)?)
     }
     fn text(&self, index: usize) -> Result<&str, CallError> {
-        std::str::from_utf8(self.string(index)?).map_err(|_| CallError::Text)
+        text_at(self.memory, self.pointer(index)?)
     }
+}
+
+fn text_at<'a>(memory: &'a ModuleMemory<'_>, address: u64) -> Result<&'a str, CallError> {
+    std::str::from_utf8(memory.cstring(address)?).map_err(|_| CallError::Text)
 }
 
 type Entry = fn(&mut Invocation<'_, '_, '_>) -> Result<u64, CallError>;
@@ -516,16 +520,14 @@ fn native_server_frame(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError>
 fn cvar_set<const REGISTER: bool, const FORCE: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    let name =
-        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    let name = text_at(c.memory, c.pointer(0)?)?;
     if REGISTER && c.null_pointer(1)? {
         if let Some(view) = c.services.cvars.bind(name, c.context.console) {
             (ENGINE_CALLS.cvar_reset)(c.services, view, FORCE)?;
         }
         return Ok(0);
     }
-    let value =
-        std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
+    let value = text_at(c.memory, c.pointer(1)?)?;
     write_cvar::<REGISTER, FORCE>(c.services, c.context.console, name, value)
 }
 fn write_cvar<const REGISTER: bool, const FORCE: bool>(
@@ -590,8 +592,7 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             warning.as_bytes(),
         );
     }
-    let name =
-        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    let name = text_at(c.memory, c.pointer(0)?)?;
     write_cvar::<true, true>(
         c.services,
         c.context.console,
@@ -600,18 +601,15 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     )
 }
 fn cvar_reset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let name =
-        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    let name = text_at(c.memory, c.pointer(0)?)?;
     if let Some(view) = c.services.cvars.bind(name, c.context.console) {
         (ENGINE_CALLS.cvar_reset)(c.services, view, false)?;
     }
     Ok(0)
 }
 fn cvar_create(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let name =
-        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
-    let value =
-        std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
+    let name = text_at(c.memory, c.pointer(0)?)?;
+    let value = text_at(c.memory, c.pointer(1)?)?;
     (ENGINE_CALLS.cvar_register)(
         c.services,
         c.context.console,
@@ -625,11 +623,11 @@ fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name_address = c.pointer(0)?;
     let default_address = c.pointer(1)?;
     let flags = c.arg(2)? as u32;
-    let name = std::str::from_utf8(c.memory.cstring(name_address)?).map_err(|_| CallError::Text)?;
+    let name = text_at(c.memory, name_address)?;
     let default = if default_address == 0 {
         None
     } else {
-        Some(std::str::from_utf8(c.memory.cstring(default_address)?).map_err(|_| CallError::Text)?)
+        Some(text_at(c.memory, default_address)?)
     };
     let view = match (ENGINE_CALLS.cvar_register)(
         c.services,
@@ -647,9 +645,8 @@ fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 fn q2_cvar_set<const FORCE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name_address = c.pointer(0)?;
     let value_address = c.pointer(1)?;
-    let name = std::str::from_utf8(c.memory.cstring(name_address)?).map_err(|_| CallError::Text)?;
-    let value =
-        std::str::from_utf8(c.memory.cstring(value_address)?).map_err(|_| CallError::Text)?;
+    let name = text_at(c.memory, name_address)?;
+    let value = text_at(c.memory, value_address)?;
     let view = (ENGINE_CALLS.cvar_register)(c.services, c.context.console, name, Some(value), 0)?;
     let flags = c.services.cvars.flags(view);
     // Q2 NOSET applies even before the console's command-line INIT boundary.
@@ -747,8 +744,7 @@ fn native_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.native_command.ok_or(CallError::Memory)?.args())
 }
 fn command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let text =
-        std::str::from_utf8(c.memory.cstring(c.pointer(1)?)?).map_err(|_| CallError::Text)?;
+    let text = text_at(c.memory, c.pointer(1)?)?;
     match c.arg(0)? as u32 {
         1 => (ENGINE_CALLS.command_insert)(c.services, c.context.console, text)?,
         2 => (ENGINE_CALLS.command)(c.services, c.context.console, text)?,
@@ -758,8 +754,7 @@ fn command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(0)
 }
 fn command_append(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let text =
-        std::str::from_utf8(c.memory.cstring(c.pointer(0)?)?).map_err(|_| CallError::Text)?;
+    let text = text_at(c.memory, c.pointer(0)?)?;
     (ENGINE_CALLS.command)(c.services, c.context.console, text)?;
     Ok(0)
 }
@@ -887,7 +882,6 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
         mask |= Contents::SKY;
     }
     let surfaces = c.native_surfaces.ok_or(CallError::Geometry)?;
-    let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
     let (rules, entity_rules) = trace_policy(if WIDE {
         RuleSetId::Quake2Rerelease
     } else {
@@ -906,9 +900,11 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     };
     let (result, entity) = if CLIP {
         let address = c.pointer(1)?;
+        let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
         let target = entities.clip_target(c.services, c.memory, c.context, *table, address)?;
         ((ENGINE_CALLS.clip)(c.services, query, target)?, address)
     } else {
+        let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
         let view = entities.trace_view(c.memory, c.context, *table)?;
         let query = TraceQuery {
             pass: view.pass(c.pointer(5)?)?,

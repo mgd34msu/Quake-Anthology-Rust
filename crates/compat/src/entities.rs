@@ -180,11 +180,19 @@ struct Binding {
     published: bool,
 }
 
+#[derive(Clone, Copy)]
+struct CachedModel {
+    revision: u64,
+    geometry: qa_core::primitives::GeometryId,
+    shape: CollisionShape,
+    bounds: Bounds,
+}
 pub struct EntityProjection {
     table_offset: usize,
     wide_stride: bool,
     layout: EntityLayout,
     models: crate::services::ResourceRange,
+    model_handles: Box<[Option<CachedModel>]>,
     owner: Option<ModuleId>,
     bindings: Box<[Option<Binding>]>,
     leaves: [u32; 128],
@@ -201,6 +209,7 @@ impl EntityProjection {
             wide_stride,
             layout,
             models,
+            model_handles: vec![None; models.count].into_boxed_slice(),
             owner: None,
             bindings: vec![None; MAX_ENTITIES].into_boxed_slice(),
             leaves: [0; 128],
@@ -633,23 +642,37 @@ impl EntityProjection {
         Ok((body, angles))
     }
     fn model(
-        &self,
+        &mut self,
         services: &EngineServices<'_>,
         memory: &ModuleMemory<'_>,
         context: CallContext,
         address: u64,
     ) -> Result<(CollisionShape, Bounds), CallError> {
         let model = memory.read_word(address + 40)? as u32;
-        if model as usize >= self.models.count {
-            return Err(CallError::Geometry);
-        }
-        let (name, _) = services
+        let cached = self
+            .model_handles
+            .get_mut(model as usize)
+            .ok_or(CallError::Geometry)?;
+        let (name, revision) = services
             .storage
             .configstring(context.module, self.models.first + model as usize)?;
-        Self::inline_model(services, name)
+        let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
+        if let Some(cached) =
+            cached.filter(|entry| entry.revision == revision && entry.geometry == geometry)
+        {
+            return Ok((cached.shape, cached.bounds));
+        }
+        let (shape, bounds) = Self::inline_model(services, name)?;
+        *cached = Some(CachedModel {
+            revision,
+            geometry,
+            shape,
+            bounds,
+        });
+        Ok((shape, bounds))
     }
     pub(crate) fn clip_target(
-        &self,
+        &mut self,
         services: &EngineServices<'_>,
         memory: &ModuleMemory<'_>,
         context: CallContext,
@@ -709,6 +732,24 @@ impl EntityProjection {
             .starts_with(b"*")
             .then(|| Self::inline_model(services, name))
             .transpose()?;
+        let cached = self
+            .model_handles
+            .get_mut(model as usize)
+            .ok_or(CallError::Geometry)?;
+        *cached = if let Some((shape, bounds)) = inline {
+            let (_, revision) = services
+                .storage
+                .configstring(context.module, self.models.first + model as usize)?;
+            let (geometry, _) = services.world.ok_or(CallError::Geometry)?;
+            Some(CachedModel {
+                revision,
+                geometry,
+                shape,
+                bounds,
+            })
+        } else {
+            None
+        };
         memory.write_word(address + 40, model as i32)?;
         if let Some((_, bounds)) = inline {
             memory.write_vec3(address + self.layout.mins as u64, bounds.mins)?;
