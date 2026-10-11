@@ -523,7 +523,7 @@ impl CpuBackend {
             inputs,
             false,
             draw_rank,
-            vertices,
+            |index| vertices[index],
             crate::affine::fan(vertices.len()),
             |position| position,
             assets,
@@ -544,6 +544,10 @@ impl CpuBackend {
         stats: &mut BackendStats,
     ) {
         let Some(model) = assets.model(entity.model) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -574,7 +578,7 @@ impl CpuBackend {
             inputs,
             entity.depth_hack,
             draw_rank,
-            &model.vertices,
+            |index| frames.vertex(index),
             model.indices.chunks_exact(3).map(|indices| {
                 [
                     indices[0] as usize,
@@ -599,7 +603,7 @@ impl CpuBackend {
         inputs: DrawInputs,
         depth_hack: bool,
         draw_rank: u32,
-        vertices: &[Vertex],
+        vertex: impl Fn(usize) -> Vertex,
         triangles: impl Iterator<Item = [usize; 3]> + Clone,
         to_world: impl Fn(Vec3) -> Vec3,
         assets: &Assets,
@@ -630,7 +634,7 @@ impl CpuBackend {
             stats.stages = stats.stages.saturating_add(1);
             for indices in triangles.clone() {
                 let triangle = indices.map(|i| {
-                    let vertex = self.evaluator.apply_deforms(deforms, vertices[i]);
+                    let vertex = self.evaluator.apply_deforms(deforms, vertex(i));
                     let evaluated = self.evaluator.evaluate(&stage, &vertex);
                     camera.vertex(
                         Vertex {
