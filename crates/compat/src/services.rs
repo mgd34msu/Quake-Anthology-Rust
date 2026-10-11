@@ -107,6 +107,7 @@ struct EntityText {
 pub struct ServiceStorage {
     files: Box<[Option<OpenFile>]>,
     configs: Box<[ConfigString]>,
+    sounds: Box<[Option<qa_core::primitives::SoundId>]>,
     ranges: Box<[ConfigRange]>,
     resource_names: NameTable,
     reader: qa_formats::archive::ArchiveReader,
@@ -149,6 +150,7 @@ impl ServiceStorage {
             })
             .take(total)
             .collect(),
+            sounds: vec![None; total].into_boxed_slice(),
             ranges: ranges.into_boxed_slice(),
             resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
                 .map_err(|_| CallError::Capacity)?,
@@ -235,6 +237,16 @@ impl ServiceStorage {
         let row = &self.configs[self.config(module, ordinal)?];
         Ok((row.text.as_bytes(), row.revision))
     }
+    pub fn bind_sound(
+        &mut self,
+        module: ModuleId,
+        ordinal: usize,
+        sound: Option<qa_core::primitives::SoundId>,
+    ) -> Result<(), CallError> {
+        let index = self.config(module, ordinal)?;
+        self.sounds[index] = sound;
+        Ok(())
+    }
     fn set_configstring(
         &mut self,
         module: ModuleId,
@@ -258,6 +270,7 @@ impl ServiceStorage {
             };
             row.text.set_bytes(text).map_err(|_| CallError::Text)?;
             row.resource_name = name;
+            self.sounds[index] = None;
             row.revision = row.revision.wrapping_add(1);
             let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
             range.revision = range.revision.wrapping_add(1);
@@ -321,7 +334,6 @@ pub struct EngineServices<'a> {
     pub commands: &'a mut CommandBuffer,
     pub vfs: &'a Vfs,
     pub localization: &'a qa_content::localization::Catalog,
-    pub sound_bank: Option<&'a qa_audio::Bank>,
     pub registry: &'a qa_gameplay::registry::Registry,
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
@@ -538,12 +550,8 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         if index >= range.count {
             return Err(CallError::Text);
         }
-        let (name, _) = s.storage.configstring(module, range.first + index)?;
-        let Some(path) = sound_path(name)? else {
-            return Ok(None);
-        };
-        let path = std::str::from_utf8(path.as_bytes()).map_err(|_| CallError::Text)?;
-        Ok(s.sound_bank.and_then(|bank| bank.find(path)))
+        let row = s.storage.config(module, range.first + index)?;
+        Ok(s.storage.sounds[row])
     },
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),

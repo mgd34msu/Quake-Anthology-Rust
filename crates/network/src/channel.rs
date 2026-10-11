@@ -127,7 +127,7 @@ pub struct Received<'a> {
 
 pub struct Channel {
     policy: Policy,
-    direction: Direction,
+    endpoint: Endpoint,
     state: State,
     counts: Counts,
     assembly: Box<[u8]>,
@@ -154,10 +154,7 @@ impl Channel {
         }
         Ok(Self {
             policy,
-            direction: match endpoint {
-                Endpoint::Client => Direction::ToClient,
-                Endpoint::Server => Direction::ToServer,
-            },
+            endpoint,
             state: State::default(),
             counts: Counts::default(),
             assembly: vec![0; maximum_message].into_boxed_slice(),
@@ -368,10 +365,7 @@ impl Channel {
         ))
     }
     pub fn endpoint(&self) -> Endpoint {
-        match self.direction {
-            Direction::ToClient => Endpoint::Client,
-            Direction::ToServer => Endpoint::Server,
-        }
+        self.endpoint
     }
     pub fn counts(&self) -> Counts {
         self.counts
@@ -391,7 +385,11 @@ impl Channel {
         time: EventTime,
     ) -> Result<Received<'a>, Error> {
         self.transmit.receipt_count = 0;
-        let (header, payload) = match headers::decode(self.policy.format, self.direction, packet) {
+        let (header, payload) = match headers::decode(
+            self.policy.format,
+            Direction::received_at(self.endpoint),
+            packet,
+        ) {
             Ok(decoded) => decoded,
             Err(error) => {
                 self.counts.malformed = self.counts.malformed.saturating_add(1);

@@ -79,7 +79,7 @@ impl UserCmdBuilder {
             });
             let value = movement[axis].clamp(low, high);
             if policy.rules.is_none() {
-                (value as i32) as f32
+                crate::Accumulation::Int.narrow(value)
             } else {
                 value
             }

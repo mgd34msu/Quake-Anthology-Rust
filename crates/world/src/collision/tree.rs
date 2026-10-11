@@ -404,20 +404,24 @@ impl Topology {
             } else {
                 (0, 1.0, 0.0)
             };
-            let near = unit_fraction(near);
-            let far = unit_fraction(far);
+            let near = near.clamp(0.0, 1.0);
+            let far = far.clamp(0.0, 1.0);
+            let (nearf, near_point) =
+                super::split_segment(frame.p1f, frame.p2f, frame.p1, frame.p2, near);
+            let (farf, far_point) =
+                super::split_segment(frame.p1f, frame.p2f, frame.p1, frame.p2, far);
             let near_frame = Frame {
                 node: node.children[side],
                 p1f: frame.p1f,
-                p2f: qa_core::math::lerp(frame.p1f, frame.p2f, near),
+                p2f: nearf,
                 p1: frame.p1,
-                p2: frame.p1.lerp(frame.p2, near),
+                p2: near_point,
             };
             let far_frame = Frame {
                 node: node.children[side ^ 1],
-                p1f: qa_core::math::lerp(frame.p1f, frame.p2f, far),
+                p1f: farf,
                 p2f: frame.p2f,
-                p1: frame.p1.lerp(frame.p2, far),
+                p1: far_point,
                 p2: frame.p2,
             };
             scratch.frames[top] = far_frame;
@@ -425,20 +429,6 @@ impl Topology {
             top += 2;
         }
     }
-}
-
-#[expect(
-    clippy::manual_clamp,
-    reason = "Retain the original hull trace's ordered float comparisons"
-)]
-fn unit_fraction(mut fraction: f32) -> f32 {
-    if fraction < 0.0 {
-        fraction = 0.0;
-    }
-    if fraction > 1.0 {
-        fraction = 1.0;
-    }
-    fraction
 }
 
 #[cfg(test)]

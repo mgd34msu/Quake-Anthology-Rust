@@ -1,5 +1,9 @@
 use super::*;
 
+fn bgra(p: &[u8], alpha: bool) -> [u8; 4] {
+    [p[2], p[1], p[0], if alpha { p[3] } else { 255 }]
+}
+
 fn color(r: &mut Reader<'_>, bits: u8, descriptor: u8) -> Result<[u8; 4], FormatError> {
     let p = r.take(usize::from(bits).div_ceil(8))?;
     if bits == 15 || bits == 16 {
@@ -14,7 +18,7 @@ fn color(r: &mut Reader<'_>, bits: u8, descriptor: u8) -> Result<[u8; 4], Format
         }
         Ok(rgba)
     } else {
-        Ok([p[2], p[1], p[0], if bits == 32 { p[3] } else { 255 }])
+        Ok(bgra(p, bits == 32))
     }
 }
 pub(super) fn tga(bytes: &[u8], policy: Lineage) -> Result<RgbaImage, FormatError> {
@@ -165,7 +169,7 @@ pub(super) fn bmp(bytes: &[u8], policy: Lineage) -> Result<RgbaImage, FormatErro
     r.remaining_records(palette_count, 4)?;
     for _ in 0..palette_count {
         let p = r.take(4)?;
-        palette.push([p[2], p[1], p[0], 255]);
+        palette.push(bgra(p, false));
     }
     let offset = if legacy { r.at } else { pixel_at };
     let row = width as usize * (usize::from(depth) / 8);
@@ -185,7 +189,7 @@ pub(super) fn bmp(bytes: &[u8], policy: Lineage) -> Result<RgbaImage, FormatErro
                     .get(usize::from(p[0]))
                     .ok_or(FormatError::InvalidRange)?
             } else {
-                [p[2], p[1], p[0], if depth == 32 { p[3] } else { 255 }]
+                bgra(p, depth == 32)
             };
             let dest = (y * width as usize + x) * 4;
             pixels[dest..dest + 4].copy_from_slice(&rgba);

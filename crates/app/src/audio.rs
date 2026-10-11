@@ -116,7 +116,9 @@ pub fn load_bank(
         sources.push((path, pcm, rules));
     }
     let rate = NonZeroU32::new(44100).ok_or("invalid device rate")?;
-    Ok(Arc::new(Bank::load(rate, sources)?))
+    let bank = Arc::new(Bank::load(rate, sources)?);
+    host.bind_native_sounds(&bank)?;
+    Ok(bank)
 }
 
 pub fn play(

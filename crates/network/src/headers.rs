@@ -7,6 +7,20 @@ pub enum Direction {
     ToServer,
     ToClient,
 }
+impl Direction {
+    pub(crate) const fn received_at(endpoint: qa_core::loopback::Endpoint) -> Self {
+        match endpoint {
+            qa_core::loopback::Endpoint::Client => Self::ToClient,
+            qa_core::loopback::Endpoint::Server => Self::ToServer,
+        }
+    }
+    pub(crate) const fn sent_from(endpoint: qa_core::loopback::Endpoint) -> Self {
+        match Self::received_at(endpoint) {
+            Self::ToClient => Self::ToServer,
+            Self::ToServer => Self::ToClient,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QPort {

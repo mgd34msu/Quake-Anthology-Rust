@@ -211,7 +211,9 @@ impl Affine {
         Self::fit(points, values, area)
     }
     pub(super) fn fit(points: [[f64; 2]; 3], values: [f32; 3], area: f64) -> Self {
-        let [x, y, origin] = crate::affine::fit3(points, values.map(f64::from), area);
+        Self::from_coefficients(crate::affine::fit3(points, values.map(f64::from), area))
+    }
+    fn from_coefficients([x, y, origin]: [f64; 3]) -> Self {
         Self {
             x: x as f32,
             y: y as f32,
@@ -240,13 +242,18 @@ impl Planes {
     ) -> u8 {
         super::image_mip(image, sampler, self.derivatives(x, y))
     }
-    fn load(vertices: &[ScreenVertex]) -> Option<Self> {
+    fn load(vertices: &[ScreenVertex]) -> Option<(Self, [f64; 3])> {
         let (indices, area) = crate::affine::widest_fan_basis(vertices.len(), |index| {
             vertices[index].xy.map(|value| f64::from(value - 0.5))
         })?;
         let triangle = indices.map(|index| vertices[index]);
+        let depth_fit = crate::affine::fit3(
+            triangle.map(|v| v.xy.map(|value| f64::from(value - 0.5))),
+            triangle.map(|v| f64::from(v.inverse_depth)),
+            area,
+        );
         let planes = Self {
-            inverse_depth: Affine::load(triangle, triangle.map(|v| v.inverse_depth), area),
+            inverse_depth: Affine::from_coefficients(depth_fit),
             texture: std::array::from_fn(|axis| {
                 Affine::load(
                     triangle,
@@ -265,7 +272,7 @@ impl Planes {
                 Affine::load(triangle, triangle.map(|v| v.color_over_depth[axis]), area)
             }),
         };
-        planes.finite().then_some(planes)
+        planes.finite().then_some((planes, depth_fit))
     }
     fn finite(self) -> bool {
         std::iter::once(self.inverse_depth)
@@ -297,6 +304,7 @@ struct Primitive {
     mip: u8,
     fixed_adjust: [i64; 2],
     planes: Planes,
+    depth_fit: Option<[f64; 3]>,
     overlay: bool,
     stages: qa_core::primitives::IndexSpan,
     deforms: [DeformOp; 3],
@@ -1390,11 +1398,14 @@ impl SurfacePrepare {
             };
             // An eye-plane wall has no coverage. Projected f32 rounding can
             // produce a tiny area, but native gradients have no finite depth.
-            if native.is_some()
-                && surface
+            let eye = if native.is_some() {
+                surface
                     .plane
-                    .is_some_and(|plane| plane.distance == plane.normal.dot(camera.refdef.origin))
-            {
+                    .map(|plane| plane.distance - plane.normal.dot(camera.refdef.origin))
+            } else {
+                None
+            };
+            if eye == Some(0.0) {
                 continue;
             }
             let overlay = material.stages[0].blend.is_some()
@@ -1497,7 +1508,8 @@ impl SurfacePrepare {
                     } else {
                         3
                     };
-                    let Some((planes, adjust)) = native_planes(camera, surface, primitive.mip)
+                    let Some((planes, adjust)) =
+                        eye.and_then(|eye| native_planes(camera, surface, primitive.mip, eye))
                     else {
                         self.reject(stats);
                         continue;
@@ -1505,11 +1517,12 @@ impl SurfacePrepare {
                     primitive.planes = planes;
                     primitive.fixed_adjust = adjust;
                 } else if product {
-                    let Some(planes) = Planes::load(&self.screen[..count]) else {
+                    let Some((planes, depth_fit)) = Planes::load(&self.screen[..count]) else {
                         self.reject(stats);
                         continue;
                     };
                     primitive.planes = planes;
+                    primitive.depth_fit = Some(depth_fit);
                     stats.stages = stats.stages.saturating_add(2);
                 } else {
                     if self.stage_count + material.stages.len() > self.stages.len() {
@@ -1666,7 +1679,7 @@ impl SurfacePrepare {
         let Some(count) = count else {
             return false;
         };
-        let Some(planes) = Planes::load(&self.screen[..count]) else {
+        let Some((planes, depth_fit)) = Planes::load(&self.screen[..count]) else {
             return false;
         };
         self.stages[self.stage_count] = StagePlanes {
@@ -1676,6 +1689,9 @@ impl SurfacePrepare {
         };
         self.stage_count += 1;
         primitive.stages.count += 1;
+        if stage_index == 0 {
+            primitive.depth_fit = Some(depth_fit);
+        }
         true
     }
 
@@ -1746,7 +1762,7 @@ impl SurfacePrepare {
                 visible = true;
                 continue;
             }
-            let Some(planes) = Planes::load(&self.screen[..count]) else {
+            let Some((planes, depth_fit)) = Planes::load(&self.screen[..count]) else {
                 self.reject(stats);
                 continue;
             };
@@ -1756,6 +1772,7 @@ impl SurfacePrepare {
                 break;
             }
             primitive.planes = planes;
+            primitive.depth_fit = Some(depth_fit);
             if self.commit_primitive(primitive, count, stats) {
                 visible = true;
             }
@@ -1922,10 +1939,11 @@ fn native_planes(
     camera: &Camera,
     surface: &crate::world::geometry::WorldSurface,
     mip: u8,
+    eye: f32,
 ) -> Option<(Planes, [i64; 2])> {
     let plane = surface.plane?;
     let normal = camera.direction_to_view(plane.normal);
-    let inverse_distance = 1.0 / (plane.distance - plane.normal.dot(camera.refdef.origin));
+    let inverse_distance = 1.0 / eye;
     if !inverse_distance.is_finite() {
         return None;
     }
@@ -2654,7 +2672,7 @@ mod tests {
         assert_eq!(vertices[2].inverse_depth, 0.5);
         let result = Planes::load(&vertices);
         assert!(result.is_some());
-        let Some(planes) = result else {
+        let Some((planes, _)) = result else {
             return;
         };
         assert_eq!(planes.inverse_depth.at(1.0, 1.0), 0.625);

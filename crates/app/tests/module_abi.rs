@@ -1879,3 +1879,39 @@ fn server_and_client_console_imports_keep_their_different_arguments() {
         );
     }
 }
+
+#[test]
+fn cached_native_sound_ordinal_survives_equal_text_and_retires_on_change() {
+    use qa_compat::services::{ENGINE_CALLS, ResourceRange};
+    use qa_core::primitives::SoundId;
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let module = ModuleId(1);
+    let mut storage = ServiceStorage::load(&[(module, 8)], 0, &console.cvars).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let range = ResourceRange { first: 2, count: 4 };
+    services.configstring(module, 3, b"world/amb.wav").unwrap();
+    services
+        .storage
+        .bind_sound(module, 3, Some(SoundId(19)))
+        .unwrap();
+    let read = |services: &qa_compat::services::EngineServices<'_>, index| {
+        (ENGINE_CALLS.sound_id)(services, module, range, index)
+    };
+    assert_eq!(read(&services, 1), Ok(Some(SoundId(19))));
+    services.configstring(module, 3, b"world/amb.wav").unwrap();
+    assert_eq!(read(&services, 1), Ok(Some(SoundId(19))));
+    services.configstring(module, 3, b"world/new.wav").unwrap();
+    assert_eq!(read(&services, 1), Ok(None));
+    services
+        .storage
+        .bind_sound(module, 3, Some(SoundId(27)))
+        .unwrap();
+    assert_eq!(read(&services, 1), Ok(Some(SoundId(27))));
+    services.configstring(module, 3, b"").unwrap();
+    assert_eq!(read(&services, 1), Ok(None));
+    assert_eq!(read(&services, 0), Ok(None));
+    assert!(read(&services, -1).is_err());
+    assert!(read(&services, 4).is_err());
+}

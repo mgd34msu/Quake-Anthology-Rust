@@ -101,10 +101,7 @@ pub(super) struct Transmit {
 impl Transmit {
     pub(super) fn load(policy: Policy, maximum: usize, endpoint: Endpoint) -> Result<Self, Error> {
         Ok(Self {
-            direction: match endpoint {
-                Endpoint::Client => Direction::ToServer,
-                Endpoint::Server => Direction::ToClient,
-            },
+            direction: Direction::sent_from(endpoint),
             qport: 0,
             state: SendState {
                 sequence: u32::from(!policy.datagram),
@@ -238,7 +235,11 @@ impl Channel {
         self.transmit.qport = qport;
     }
     pub(crate) fn routing_qport(&self) -> Option<u16> {
-        match self.policy.format.port(self.direction) {
+        match self
+            .policy
+            .format
+            .port(Direction::received_at(self.endpoint))
+        {
             crate::headers::QPort::None => None,
             crate::headers::QPort::Byte => Some(u16::from(self.transmit.qport as u8)),
             crate::headers::QPort::Short => Some(self.transmit.qport),

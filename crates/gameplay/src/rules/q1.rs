@@ -20,9 +20,7 @@ fn prepare(target: &mut DamageTarget<'_>, event: DamageEvent, ctx: DamageContext
     let take = (event.amount - save as f32).ceil() as i32;
     if event.inflictor.is_some() && target.traits.motion == Motion::Walk {
         let dir = normalized(difference(target.traits.position, ctx.inflictor_center));
-        for axis in 0..3 {
-            target.velocity.0[axis] += dir.0[axis] * event.amount * 8.0;
-        }
+        impulse(target, dir * event.amount, 8.0);
     }
     if target.traits.god || target.traits.invincible || (ctx.prevent_team_damage && ctx.same_team) {
         return DamageResult {

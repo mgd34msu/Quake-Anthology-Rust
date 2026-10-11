@@ -1,6 +1,14 @@
 use super::{read::*, *};
 use qa_core::math::{angle_vectors_radians, radians_from_degrees_f32};
 
+fn fixed_vector(r: &mut Reader<'_>) -> Result<Vec3, FormatError> {
+    Ok(Vec3([
+        f32::from(r.i16()?) / 64.0,
+        f32::from(r.i16()?) / 64.0,
+        f32::from(r.i16()?) / 64.0,
+    ]))
+}
+
 pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, FormatError> {
     let compressed = m.format == ModelFormat::Mdc;
     let header = if compressed { 112 } else { 108 };
@@ -85,11 +93,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
         let mut s = Reader::new(data);
         let (name, origin, axes) = if compressed {
             let name = Reader::new(&tag_names[(index % tags) * 64..]).name(64)?;
-            let origin = Vec3([
-                f32::from(s.i16()?) / 64.0,
-                f32::from(s.i16()?) / 64.0,
-                f32::from(s.i16()?) / 64.0,
-            ]);
+            let origin = fixed_vector(&mut s)?;
             let angles = Vec3(
                 [s.i16()? as f32, s.i16()? as f32, s.i16()? as f32]
                     .map(|v| (f64::from(v) * (360.0 / 32700.0)) as f32),
@@ -219,11 +223,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             for vertex in 0..vertices {
                 let at = (base * vertices + vertex) * 8;
                 let mut t = Reader::new(&vert_data[at..at + 8]);
-                let mut position = Vec3([
-                    f32::from(t.i16()?) / 64.0,
-                    f32::from(t.i16()?) / 64.0,
-                    f32::from(t.i16()?) / 64.0,
-                ]);
+                let mut position = fixed_vector(&mut t)?;
                 let mut normal = normals::packed(t.i16()? as u16);
                 if comp >= 0 {
                     let at = (comp as usize * vertices + vertex) * 4;

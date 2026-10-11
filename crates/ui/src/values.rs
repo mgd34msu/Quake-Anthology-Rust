@@ -96,12 +96,10 @@ impl ValueLayout {
     /// Disconnect and
     /// session replacement clear the whole bank through PlayerState::reset.
     pub fn reset_life(&self, bank: &mut ValueBank) {
-        for binding in self
-            .native
-            .iter()
-            .flat_map(|table| table.stats.iter().chain(&table.persistent))
-            .chain(self.extensions.iter().map(|(_, binding)| binding))
-        {
+        for table in &self.native {
+            table.reset_life(bank);
+        }
+        for (_, binding) in &self.extensions {
             binding.reset_life(bank);
         }
     }

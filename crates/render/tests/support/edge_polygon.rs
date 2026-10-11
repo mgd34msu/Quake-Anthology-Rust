@@ -17,6 +17,7 @@ pub fn add_polygon(
         viewport,
         policy,
         polygon_winding(vertices).ok(),
+        None,
         &mut storage,
     );
     let (count, winding) = match prepared {
@@ -38,6 +39,7 @@ pub fn certified_rows(
         viewport,
         policy,
         polygon_winding(vertices).ok(),
+        None,
         &mut storage,
     )?;
     qa_render::edges::certified_rows(&storage[..count], viewport, policy, Some(winding))

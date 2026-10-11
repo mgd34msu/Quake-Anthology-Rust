@@ -2714,7 +2714,9 @@ fn native_inverse_depth_uses_winquake_reciprocal_multiply_order() {
         let x = normal.0[0] * (1.0 / scale[0]) * inverse_distance;
         let y = -normal.0[1] * (1.0 / scale[1]) * inverse_distance;
         let origin = normal.0[2] * inverse_distance - center[0] * x - center[1] * y;
-        let (actual, _) = native_planes(&camera, &surface, 0).unwrap();
+        let plane = surface.plane.unwrap();
+        let eye = plane.distance - plane.normal.dot(camera.refdef.origin);
+        let (actual, _) = native_planes(&camera, &surface, 0, eye).unwrap();
         assert_eq!(
             [
                 actual.inverse_depth.x,

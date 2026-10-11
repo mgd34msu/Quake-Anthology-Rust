@@ -3863,6 +3863,17 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             )
             .unwrap(),
         ));
+        storage
+            .bind_sound(
+                ModuleId(1),
+                if rr { 8255 } else { 289 },
+                runtime
+                    .sound_bank
+                    .as_ref()
+                    .unwrap()
+                    .find("sound/_qa_child_cvar"),
+            )
+            .unwrap();
         let source = {
             let memory = qa_compat::memory::ModuleMemory::borrow(
                 base,
@@ -3939,6 +3950,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         )
         .unwrap();
         emit_sound(&mut game, 4, &[0, 18, 1, volume, attenuation, offset]).unwrap();
+        emit_sound(
+            &mut game,
+            5,
+            &[0, entity_address, 3, 1, volume, attenuation, offset],
+        )
+        .unwrap();
         drop(emit_sound);
         let mut batch = runtime
             .server
@@ -3951,8 +3968,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 sounds.push(sound);
             }
         }
-        assert_eq!(sounds.len(), 2);
+        assert_eq!(sounds.len(), 3);
         assert_eq!(sounds[0].position, source);
+        assert_eq!(sounds[2].position, source);
         assert_eq!(
             sounds[1].position,
             qa_core::primitives::Vec3([1.0625, -2.125, 4096.0])

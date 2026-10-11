@@ -101,6 +101,11 @@ impl CoverageBins {
                 viewport,
                 primitive.depth_policy,
                 primitive.winding,
+                if primitive.depth_override.is_none() {
+                    primitive.depth_fit
+                } else {
+                    None
+                },
                 &mut self.edges[edge_count..],
             ) {
                 Ok((count, winding)) => {

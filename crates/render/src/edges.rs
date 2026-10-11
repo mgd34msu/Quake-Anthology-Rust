@@ -110,6 +110,12 @@ struct DepthPlane {
 }
 
 impl DepthPlane {
+    fn from_coefficients([x, y, origin]: [f64; 3]) -> Option<Self> {
+        [x, y, origin]
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(Self { x, y, origin })
+    }
     fn at(self, x: u32, y: u32) -> f64 {
         self.x * f64::from(x) + self.row_origin(y)
     }
@@ -601,15 +607,12 @@ fn depth_plane(vertices: &[ProjectedVertex]) -> Option<DepthPlane> {
     let (indices, area) =
         crate::affine::widest_fan_basis(vertices.len(), |index| vertices[index].xy.map(f64::from))?;
     let triangle = indices.map(|index| vertices[index]);
-    let [x, y, origin] = crate::affine::fit3(
+    let coefficients = crate::affine::fit3(
         triangle.map(|v| v.xy.map(f64::from)),
         triangle.map(|v| f64::from(v.inverse_depth)),
         area,
     );
-    [x, y, origin]
-        .iter()
-        .all(|coefficient| coefficient.is_finite())
-        .then_some(DepthPlane { x, y, origin })
+    DepthPlane::from_coefficients(coefficients)
 }
 
 fn valid_polygon(vertices: &[ProjectedVertex]) -> Result<(), ()> {
@@ -656,6 +659,7 @@ pub fn prepare_polygon(
     viewport: Viewport,
     policy: DepthPolicy,
     winding: Option<Winding>,
+    precomputed_depth: Option<[f64; 3]>,
     storage: &mut [Edge],
 ) -> Result<(usize, Winding), ()> {
     let mut winding = winding.ok_or(())?;
@@ -669,7 +673,10 @@ pub fn prepare_polygon(
         previous = vertex;
     }
     winding.depth = if policy == DepthPolicy::PlaneDepth && count != 0 {
-        depth_plane(vertices)
+        match precomputed_depth {
+            Some(coefficients) => DepthPlane::from_coefficients(coefficients),
+            None => depth_plane(vertices),
+        }
     } else {
         None
     };

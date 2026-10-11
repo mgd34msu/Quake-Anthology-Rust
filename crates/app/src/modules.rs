@@ -187,6 +187,15 @@ struct Module {
     counts: Counts,
     state: State,
 }
+impl Module {
+    fn native_sounds(&self) -> Option<qa_compat::services::ResourceRange> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Program::Native { vm, .. } = &self.request.program {
+            return vm.resource_ranges().map(|ranges| ranges[1]);
+        }
+        None
+    }
+}
 pub struct Modules {
     functions: Arc<FunctionTable<FrameHost>>,
     rows: Box<[Option<Module>]>,
@@ -359,10 +368,7 @@ impl FrameHost {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if let Some(modules) = &self.modules {
             for row in modules.rows.iter().flatten() {
-                if let Program::Native { vm, .. } = &row.request.program
-                    && let Some(ranges) = vm.resource_ranges()
-                {
-                    let sounds = ranges[1];
+                if let Some(sounds) = row.native_sounds() {
                     for ordinal in 1..sounds.count {
                         let (name, _) = row
                             .storage
@@ -377,6 +383,35 @@ impl FrameHost {
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         let _ = &mut visit;
+        Ok(())
+    }
+    /// Resolve native ordinals only after the load-owned PCM bank is complete.
+    pub fn bind_native_sounds(&mut self, bank: &qa_audio::Bank) -> Result<(), String> {
+        if let Some(modules) = &mut self.modules {
+            for row in modules.rows.iter_mut().flatten() {
+                if let Some(sounds) = row.native_sounds() {
+                    let module = row.request.context.module;
+                    for ordinal in 0..sounds.count {
+                        let index = sounds.first + ordinal;
+                        let (name, _) = row
+                            .storage
+                            .configstring(module, index)
+                            .map_err(|e| format!("native sound binding: {e:?}"))?;
+                        let sound = match qa_compat::services::sound_path(name)
+                            .map_err(|e| format!("sound path: {e:?}"))?
+                        {
+                            Some(path) => bank.find(
+                                std::str::from_utf8(path.as_bytes()).map_err(|e| e.to_string())?,
+                            ),
+                            None => None,
+                        };
+                        row.storage
+                            .bind_sound(module, index, sound)
+                            .map_err(|e| format!("native sound binding: {e:?}"))?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
     /// Read the existing native entity view only at its stopped-child boundary.

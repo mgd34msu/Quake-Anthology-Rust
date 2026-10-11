@@ -14,6 +14,14 @@ use qa_core::primitives::{
 pub use scene::{NativeTraceEntities, WorldTrace};
 pub use store::{CollisionStore, StoreError, TraceScratch};
 
+#[inline]
+pub(super) fn split_segment(p1f: f32, p2f: f32, p1: Vec3, p2: Vec3, fraction: f32) -> (f32, Vec3) {
+    (
+        qa_core::math::lerp(p1f, p2f, fraction),
+        p1.lerp(p2, fraction),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuakeTraceKind {
     Normal,

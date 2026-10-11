@@ -960,7 +960,10 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
     let (entity, mut position) =
         entities.sound_source(c.services, c.memory, c.context, *table, address)?;
     if POSITIONED && !LOCAL {
-        position = c.memory.read_vec3(c.pointer(0)?)?;
+        let origin = c.pointer(0)?;
+        if origin != 0 {
+            position = c.memory.read_vec3(origin)?;
+        }
     }
     let dupe_key = if LOCAL { c.arg(8)? as u32 } else { 0 };
     match (ENGINE_CALLS.sound)(
@@ -1372,7 +1375,7 @@ fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u
 fn native_trace<const WIDE: bool, const CLIP: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    use qa_core::primitives::{RuleSetId, Vec3};
+    use qa_core::primitives::Vec3;
     use qa_world::collision::{Contents, TraceQuery, trace_policy};
     let output = c.pointer(0)?;
     c.memory.read(output, if WIDE { 96 } else { 72 })?;
@@ -1399,11 +1402,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
         mask |= Contents::SKY;
     }
     let surfaces = c.native_surfaces.ok_or(CallError::Geometry)?;
-    let (rules, entity_rules) = trace_policy(if WIDE {
-        RuleSetId::Quake2Rerelease
-    } else {
-        RuleSetId::Quake2
-    });
+    let (rules, entity_rules) = trace_policy(c.context.console.source);
     let query = TraceQuery {
         start,
         end,
@@ -1437,16 +1436,11 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
 fn native_point_contents<const WIDE: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    use qa_core::primitives::RuleSetId;
     let point = c.memory.read_vec3(c.pointer(0)?)?;
     if !point.is_finite() {
         return Err(CallError::Geometry);
     }
-    let (_, rules) = qa_world::collision::trace_policy(if WIDE {
-        RuleSetId::Quake2Rerelease
-    } else {
-        RuleSetId::Quake2
-    });
+    let (_, rules) = qa_world::collision::trace_policy(c.context.console.source);
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
@@ -1621,11 +1615,7 @@ fn native_delivery<const WIDE: bool>(
     reliable: bool,
     dupe_key: u32,
 ) -> qa_core::primitives::NativeDelivery {
-    let source = if WIDE {
-        qa_core::primitives::RuleSetId::Quake2Rerelease
-    } else {
-        qa_core::primitives::RuleSetId::Quake2
-    };
+    let source = c.context.console.source;
     qa_core::primitives::NativeDelivery {
         module: c.context.module,
         source,

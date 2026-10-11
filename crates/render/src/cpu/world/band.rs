@@ -6,6 +6,12 @@ use super::{
 };
 use qa_core::primitives::IndexSpan;
 
+fn fold_rejected(stats: &mut crate::BackendStats, delta: u64) {
+    stats.rejected = stats
+        .rejected
+        .saturating_add(delta.min(u32::MAX as u64) as u32);
+}
+
 impl WorldBand {
     pub(super) fn load(
         width: u32,
@@ -63,9 +69,7 @@ impl WorldBand {
                 &mut self.stats,
             );
         }
-        stats.rejected = stats
-            .rejected
-            .saturating_add((self.stats.rejected - before).min(u32::MAX as u64) as u32);
+        fold_rejected(stats, self.stats.rejected - before);
         self.raster_range(
             prepared,
             camera,
@@ -211,7 +215,6 @@ impl WorldBand {
             return;
         };
         let old_rejected = self.stats.rejected;
-        let backend_rejected = stats.rejected;
         if !self.edges.begin_band(camera.refdef.viewport, rows, policy) {
             self.stats.rejected = self.stats.rejected.saturating_add(1);
         } else {
@@ -257,7 +260,6 @@ impl WorldBand {
             });
             add_edge_stats(&mut self.stats, edge_stats);
         }
-        stats.rejected = backend_rejected
-            .saturating_add((self.stats.rejected - old_rejected).min(u32::MAX as u64) as u32);
+        fold_rejected(stats, self.stats.rejected - old_rejected);
     }
 }
