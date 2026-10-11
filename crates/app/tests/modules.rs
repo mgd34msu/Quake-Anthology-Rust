@@ -813,3 +813,26 @@ fn a_provider_anchor_transferred_to_another_module_cannot_call_its_new_owner() {
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 3);
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 1);
 }
+
+#[test]
+fn missing_module_lookups_are_bounded() {
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        Runtime::load(1, std::iter::empty()).unwrap(),
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    for module in [ModuleId(0), ModuleId(u16::MAX)] {
+        assert!(host.module_counts(module).is_none());
+        assert!(host.module_state(module).is_none());
+        let export = Export {
+            callback: CallbackId(0),
+            arguments: [qa_app::modules::Argument::Word(0); 9],
+        };
+        assert_eq!(
+            host.call_module_export(module, export, ThinkTime::Milliseconds(0)),
+            Err(CallError::MissingModule)
+        );
+    }
+}

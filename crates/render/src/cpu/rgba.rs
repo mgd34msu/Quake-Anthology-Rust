@@ -441,7 +441,7 @@ impl Product {
         .region(binding.lightmap_region)?;
         let indices = geometry
             .indices
-            .get(geometry.boundaries.get(boundary)?.indices())?;
+            .get(geometry.boundaries.get(boundary)?.range())?;
         let vertices: Vec<_> = indices
             .iter()
             .map(|&index| {
@@ -651,7 +651,7 @@ impl Product {
         let surface = geometry
             .surfaces
             .iter()
-            .find(|surface| surface.boundaries.indices().contains(&boundary))?;
+            .find(|surface| surface.boundaries.range().contains(&boundary))?;
         // qsrc gl_rsurf.c styled grids retain styles; tr_bsp.c:199-205
         // authored pages are static and have no lightstyle dependency.
         let styles = match surface.light_source {
@@ -1001,8 +1001,7 @@ fn geometric_basis(vertices: &[Vertex]) -> Option<([usize; 2], [usize; 3])> {
     let mut largest = 0.0;
     let mut result = None;
     for axes in [[0, 1], [0, 2], [1, 2]] {
-        for index in 1..vertices.len().saturating_sub(1) {
-            let basis = [0, index, index + 1];
+        for basis in crate::affine::fan(vertices.len()) {
             let area = determinant(
                 basis.map(|i| axes.map(|axis| f64::from(vertices[i].position.0[axis]))),
             )

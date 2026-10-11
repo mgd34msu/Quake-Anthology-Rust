@@ -48,3 +48,15 @@ fn fan_selection_keeps_first_equal_area_and_no_thin_geometry_epsilon() {
     assert_eq!(widest_fan_basis(2, |i| square[i]), None);
     assert_eq!(widest_fan_basis(3, |i| [i as f64, 0.0]), None);
 }
+
+#[test]
+fn fan_iterator_keeps_polygon_anchor_and_order() {
+    for count in [0, 1, 2] {
+        assert!(super::fan(count).next().is_none());
+    }
+    assert_eq!(super::fan(3).collect::<Vec<_>>(), [[0, 1, 2]]);
+    assert_eq!(
+        super::fan(5).collect::<Vec<_>>(),
+        [[0, 1, 2], [0, 2, 3], [0, 3, 4]]
+    );
+}

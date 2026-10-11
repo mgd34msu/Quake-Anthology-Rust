@@ -1,5 +1,5 @@
 use qa_core::primitives::{Bounds, Plane, Vec3};
-use qa_formats::bsp::IndexRange;
+use qa_render::scene::Span;
 use qa_render::{
     Assets, BlendPhase, CommandList, CpuPresentation, Draw2d, FrontEnd, ImageId, Limits, PaletteId,
     PaletteOperation, PaletteShift, PaletteTransform, PerspectiveStep, Refdef, Viewport,
@@ -587,13 +587,13 @@ fn world_bound(
         world_has_lightdata: light.is_some(),
         vertices,
         indices: vec![0, 1, 2, 0, 2, 3, 0, 1, 2, 3],
-        boundaries: vec![IndexRange { first: 6, count: 4 }],
+        boundaries: vec![Span { first: 6, count: 4 }],
         surfaces: vec![WorldSurface {
             source_id: 0,
             kind: GeometryKind::Polygon,
-            vertices: IndexRange { first: 0, count: 4 },
-            indices: IndexRange { first: 0, count: 6 },
-            boundaries: IndexRange { first: 0, count: 1 },
+            vertices: Span { first: 0, count: 4 },
+            indices: Span { first: 0, count: 6 },
+            boundaries: Span { first: 0, count: 1 },
             plane: Some(Plane {
                 encoding: None,
                 normal: Vec3([-1.0, 0.0, 0.0]),
@@ -613,7 +613,7 @@ fn world_bound(
                 LightSource::None
             },
             light_encoding: LightEncoding::Luminance,
-            light_samples: IndexRange {
+            light_samples: Span {
                 first: 0,
                 count: if light.is_some() { 4 } else { 0 },
             },
@@ -1659,7 +1659,7 @@ fn positional_bulge_keeps_raw_collinear_world_vertices_drawable() {
                 vertex.normal = vertex.vertex.normal;
             }
             geometry.indices = vec![0, 1, 2, 0, 1, 2];
-            geometry.boundaries[0] = IndexRange { first: 3, count: 3 };
+            geometry.boundaries[0] = Span { first: 3, count: 3 };
             let surface = &mut geometry.surfaces[0];
             surface.vertices.count = 3;
             surface.indices.count = 3;

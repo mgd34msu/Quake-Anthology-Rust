@@ -2,11 +2,12 @@
 //! Legacy extents follow WinQuake/model.c and Q2/ref_gl/gl_model.c;
 //! patch subdivision follows Q3/renderer/tr_curve.c.
 use crate::assets::Vertex;
+use crate::scene::Span;
 use qa_core::{
     math::length,
     primitives::{Bounds, Plane, RuleSetId, Vec3},
 };
-use qa_formats::bsp::{BspFormat, IndexRange, LightmapSource, Lump, Map, SurfaceKind};
+use qa_formats::bsp::{BspFormat, IndexRange as FileRange, LightmapSource, Lump, Map, SurfaceKind};
 
 pub mod grid;
 mod patch;
@@ -95,7 +96,7 @@ pub enum LightSource {
 /// View-dependent grid simplification remains a frontend operation.
 #[derive(Clone, Debug)]
 pub struct PatchGrid {
-    pub control_vertices: IndexRange,
+    pub control_vertices: Span,
     pub control_dimensions: [u16; 2],
     pub dimensions: [u16; 2],
     pub width_lod_error: Box<[f32]>,
@@ -109,12 +110,12 @@ pub struct WorldSurface {
     /// Equal to the original BSP face/surface index, including non-drawing ones.
     pub source_id: u32,
     pub kind: GeometryKind,
-    pub vertices: IndexRange,
+    pub vertices: Span,
     /// Triangle draw indices in WorldGeometry::indices, all globally addressed.
-    pub indices: IndexRange,
+    pub indices: Span,
     /// Entries in WorldGeometry::boundaries. Polygon loops or individual
     /// triangle loops keep the topology needed by the CPU edge renderer.
-    pub boundaries: IndexRange,
+    pub boundaries: Span,
     pub plane: Option<Plane>,
     pub bounds: Bounds,
     pub texture_coordinates: TextureCoordinates,
@@ -126,7 +127,7 @@ pub struct WorldSurface {
     pub light_source: LightSource,
     pub light_encoding: LightEncoding,
     /// Samples are RGB triples; each active legacy style has a full grid.
-    pub light_samples: IndexRange,
+    pub light_samples: Span,
     pub source_texture: Option<u32>,
     pub source_texture_info: Option<u32>,
     pub source_shader: Option<u32>,
@@ -146,7 +147,7 @@ pub struct WorldSurface {
 pub struct WorldModel {
     pub bounds: Bounds,
     pub origin: Vec3,
-    pub surfaces: IndexRange,
+    pub surfaces: Span,
 }
 pub struct WorldGeometry {
     /// Only split, node-owned surfaces provide a BSP depth certificate. Other
@@ -156,7 +157,7 @@ pub struct WorldGeometry {
     pub vertices: Vec<WorldVertex>,
     pub indices: Vec<u32>,
     /// Each range indexes an ordered loop in `indices`.
-    pub boundaries: Vec<IndexRange>,
+    pub boundaries: Vec<Span>,
     pub surfaces: Vec<WorldSurface>,
     pub light_samples: Vec<[u8; 3]>,
     pub models: Vec<WorldModel>,
@@ -206,7 +207,7 @@ pub fn load_geometry(
             .map(|model| WorldModel {
                 bounds: model.bounds,
                 origin: model.origin,
-                surfaces: model.faces,
+                surfaces: model.faces.into(),
             })
             .collect(),
         patch_stats: PatchStats::default(),
@@ -229,7 +230,7 @@ pub fn prepare_patches(
     let mut partitions = vec![0u32; geometry.surfaces.len()];
     for (index, model) in geometry.models.iter().enumerate().skip(1) {
         let owner = u32::try_from(index).map_err(|_| GeometryError::SizeLimit)?;
-        for at in model.surfaces.indices() {
+        for at in model.surfaces.range() {
             let partition = partitions
                 .get_mut(at)
                 .ok_or(GeometryError::Reference("model surfaces", owner))?;
@@ -336,7 +337,7 @@ fn load_legacy(
         let boundary_start = out.boundaries.len();
         let loop_start = out.indices.len();
         out.indices
-            .extend(vertices.indices().map(|value| value as u32));
+            .extend(vertices.range().map(|value| value as u32));
         out.boundaries.push(span(loop_start, count)?);
         let index_start = out.indices.len();
         push_fan(&mut out.indices, vertices.first, count as u32);
@@ -363,7 +364,7 @@ fn load_legacy(
             indices: span(index_start, out.indices.len() - index_start)?,
             boundaries: span(boundary_start, 1)?,
             plane: Some(plane),
-            bounds: vertex_bounds(&out.vertices[vertices.indices()])?,
+            bounds: vertex_bounds(&out.vertices[vertices.range()])?,
             texture_coordinates: TextureCoordinates::Texels,
             texture_projection: info.projection,
             texture_minima: minima,
@@ -412,9 +413,9 @@ fn legacy_samples(
     id: u32,
     options: GeometryOptions,
     out: &mut Vec<[u8; 3]>,
-) -> Result<IndexRange, GeometryError> {
+) -> Result<Span, GeometryError> {
     if offset < 0 || bytes.is_empty() {
-        return Ok(IndexRange::default());
+        return Ok(Span::default());
     }
     let style_count = styles.iter().take_while(|&&style| style != 255).count();
     let count = (grid[0] as usize)
@@ -530,7 +531,7 @@ fn load_modern(
         let no_draw = flags & 0x80 != 0;
         let boundary_start = out.boundaries.len();
         let index_start = out.indices.len();
-        let mut vertices = source.vertices;
+        let mut vertices: Span = source.vertices.into();
         let mut patch = None;
         let kind = match source.kind {
             SurfaceKind::Patch => {
@@ -551,7 +552,7 @@ fn load_modern(
                     return Err(GeometryError::NonFinite("patch LOD", id));
                 }
                 patch = Some(PatchGrid {
-                    control_vertices: source.vertices,
+                    control_vertices: source.vertices.into(),
                     control_dimensions: [source.patch[0] as u16, source.patch[1] as u16],
                     dimensions: grid.dimensions,
                     width_lod_error: grid.width_lod_error,
@@ -568,7 +569,7 @@ fn load_modern(
                 }
                 push_fan(&mut out.indices, vertices.first, controls.len() as u32);
                 let boundary_first = out.indices.len();
-                out.indices.extend(vertices.indices().map(|v| v as u32));
+                out.indices.extend(vertices.range().map(|v| v as u32));
                 out.boundaries
                     .push(span(boundary_first, vertices.count as usize)?);
                 GeometryKind::Polygon
@@ -620,13 +621,11 @@ fn load_modern(
                 LightSource::Page(source.lightmap as u32),
                 span(source.lightmap as usize * 128 * 128, 128 * 128)?,
             ),
-            LightmapSource::External(page) => {
-                (LightSource::ExternalPage(page), IndexRange::default())
-            }
-            LightmapSource::Vertex => (LightSource::Vertex, IndexRange::default()),
-            LightmapSource::White => (LightSource::White, IndexRange::default()),
-            LightmapSource::TwoDimensional => (LightSource::TwoDimensional, IndexRange::default()),
-            LightmapSource::None => (LightSource::None, IndexRange::default()),
+            LightmapSource::External(page) => (LightSource::ExternalPage(page), Span::default()),
+            LightmapSource::Vertex => (LightSource::Vertex, Span::default()),
+            LightmapSource::White => (LightSource::White, Span::default()),
+            LightmapSource::TwoDimensional => (LightSource::TwoDimensional, Span::default()),
+            LightmapSource::None => (LightSource::None, Span::default()),
         };
         // Polygon fan boundaries were appended after triangles; draw only triangles.
         let index_count = if source.triangle_fan {
@@ -687,8 +686,8 @@ pub(super) fn push_grid_triangles(
 }
 
 pub(super) fn push_fan(out: &mut Vec<u32>, first: u32, count: u32) {
-    for at in 1..count - 1 {
-        out.extend_from_slice(&[first, first + at, first + at + 1]);
+    for triangle in crate::affine::fan(count as usize) {
+        out.extend_from_slice(&triangle.map(|index| first + index as u32));
     }
 }
 
@@ -698,24 +697,34 @@ fn push_triangle(out: &mut WorldGeometry, vertices: [u32; 3]) -> Result<(), Geom
     out.boundaries.push(span(at, 3)?);
     Ok(())
 }
-fn span(first: usize, count: usize) -> Result<IndexRange, GeometryError> {
+fn span(first: usize, count: usize) -> Result<Span, GeometryError> {
     if first
         .checked_add(count)
         .is_none_or(|n| n > u32::MAX as usize)
     {
         return Err(GeometryError::SizeLimit);
     }
-    Ok(IndexRange {
+    Ok(Span {
         first: first as u32,
         count: count as u32,
     })
 }
+impl From<FileRange> for Span {
+    fn from(range: FileRange) -> Self {
+        Self {
+            first: range.first,
+            count: range.count,
+        }
+    }
+}
+
 fn section<'a, T>(
     values: &'a [T],
-    range: IndexRange,
+    range: impl Into<Span>,
     field: &'static str,
     id: u32,
 ) -> Result<&'a [T], GeometryError> {
+    let range = range.into();
     let end = (range.first as usize)
         .checked_add(range.count as usize)
         .ok_or(GeometryError::Reference(field, id))?;

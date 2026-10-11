@@ -528,8 +528,8 @@ impl CpuBackend {
                 draw_rank,
             };
             stats.stages = stats.stages.saturating_add(1);
-            for i in 1..vertices.len().saturating_sub(1) {
-                let triangle = [vertices[0], vertices[i], vertices[i + 1]].map(|v| {
+            for indices in crate::affine::fan(vertices.len()) {
+                let triangle = indices.map(|i| vertices[i]).map(|v| {
                     let v = self.evaluator.apply_deforms(deforms, v);
                     let evaluated = self.evaluator.evaluate(&stage, &v);
                     camera.vertex(
@@ -642,7 +642,7 @@ impl CpuBackend {
     fn mesh_supported(&self, camera: &Camera, material: &Material) -> bool {
         // Native indexed model/light shading is a separate native kernel; an
         // RGB model must not masquerade as stock indexed presentation.
-        matches!(camera.refdef.cpu_presentation, CpuPresentation::Rgb)
+        camera.rgb()
             && material.settings.sky.is_none()
             && material.settings.fog.is_none()
             && !material.settings.portal
@@ -677,13 +677,13 @@ impl CpuBackend {
             count = next_count;
         }
         let first = camera.project(vertices[0]);
-        for i in 1..count - 1 {
+        for [_, i, j] in crate::affine::fan(count) {
             self.raster_triangle(
                 camera,
                 [
                     first,
                     camera.project(vertices[i]),
-                    camera.project(vertices[i + 1]),
+                    camera.project(vertices[j]),
                 ],
                 pass,
                 stats,

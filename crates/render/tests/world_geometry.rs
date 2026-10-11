@@ -2,6 +2,7 @@ use qa_core::primitives::{Bounds, Plane, Vec3};
 use qa_formats::bsp::{
     Bsp, Face, IndexRange, Map, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
 };
+use qa_render::scene::Span;
 use qa_render::world::geometry::{
     GeometryError, GeometryKind, GeometryOptions, LightEncoding, LightSource, PatchGrid,
     TextureCoordinates, WorldGeometry, WorldVertex, load_geometry, prepare_patches,
@@ -123,12 +124,9 @@ fn signed_edges_plane_side_extents_and_full_style_spans_follow_qsrc() {
         geometry.light_samples,
         (0..24).map(|v| [v; 3]).collect::<Vec<_>>()
     );
-    assert_eq!(
-        &geometry.indices[face.indices.indices()],
-        &[0, 1, 2, 0, 2, 3]
-    );
+    assert_eq!(&geometry.indices[face.indices.range()], &[0, 1, 2, 0, 2, 3]);
     let boundary = geometry.boundaries[face.boundaries.first as usize];
-    assert_eq!(&geometry.indices[boundary.indices()], &[0, 1, 2, 3]);
+    assert_eq!(&geometry.indices[boundary.range()], &[0, 1, 2, 3]);
     assert_eq!(geometry.vertices[1].vertex.position, Vec3([17.0, 3.0, 2.0]));
     assert_eq!(
         face.bounds,
@@ -227,7 +225,7 @@ fn q3_preserves_source_surface_ids_page_coordinates_colors_and_flare_metadata() 
     assert_eq!(geometry.vertices[0].vertex.texcoord, [0.2, 0.3]);
     assert_eq!(geometry.vertices[0].vertex.lightmap_coord, [0.1, 0.8]);
     assert_eq!(geometry.vertices[0].vertex.color, [5, 6, 7, 8]);
-    assert_eq!(&geometry.indices[face.indices.indices()], &[2, 0, 1]);
+    assert_eq!(&geometry.indices[face.indices.range()], &[2, 0, 1]);
     assert_eq!(geometry.surfaces[1].kind, GeometryKind::Flare);
     assert_eq!(geometry.surfaces[1].indices.count, 0);
     assert_eq!(geometry.surfaces[1].bounds.mins, Vec3([-2.0, 3.0, 4.0]));
@@ -264,10 +262,10 @@ fn q3_patch_uses_native_curve_deviation_collinear_pruning_and_triangle_order() {
     let grid = face.patch.as_ref().unwrap();
     assert_eq!(grid.dimensions, [9, 2]);
     assert_eq!(grid.control_dimensions, [3, 3]);
-    assert_eq!(grid.control_vertices, IndexRange { first: 0, count: 9 });
+    assert_eq!(grid.control_vertices, Span { first: 0, count: 9 });
     assert_eq!(face.vertices.count, 18);
     assert_eq!(face.indices.count, 48);
-    let vertices = &geometry.vertices[face.vertices.indices()];
+    let vertices = &geometry.vertices[face.vertices.range()];
     let expected = [0.0, 14.0, 24.0, 30.0, 32.0, 30.0, 24.0, 14.0, 0.0];
     for column in 0..9 {
         assert_eq!(
@@ -480,7 +478,7 @@ fn native_seam_insertion_retains_controls_ids_and_triangle_boundaries() {
         assert_eq!(surface.source_id, 1);
         let patch = surface.patch.as_ref().unwrap();
         assert_eq!(patch.control_dimensions, [2, 2]);
-        assert_eq!(patch.control_vertices, IndexRange { first: 6, count: 4 });
+        assert_eq!(patch.control_vertices, Span { first: 6, count: 4 });
         assert_eq!(patch.dimensions, if rotated { [2, 3] } else { [3, 2] });
         assert_eq!(surface.indices.count, 12);
         assert_eq!(surface.boundaries.count, 4);
@@ -511,12 +509,12 @@ fn patch_lod_groups_exclude_different_bounds_merged_edges_and_inline_owners() {
         qa_render::world::geometry::WorldModel {
             bounds: geometry.surfaces[0].bounds,
             origin: Vec3::default(),
-            surfaces: IndexRange { first: 0, count: 1 },
+            surfaces: Span { first: 0, count: 1 },
         },
         qa_render::world::geometry::WorldModel {
             bounds: geometry.surfaces[1].bounds,
             origin: Vec3::default(),
-            surfaces: IndexRange { first: 1, count: 1 },
+            surfaces: Span { first: 1, count: 1 },
         },
     ];
     assert_eq!(
@@ -683,7 +681,7 @@ fn original_patch_comparison_fixtures() {
                 }
                 output.push('\n');
             }
-            for v in &geometry.vertices[surface.vertices.indices()] {
+            for v in &geometry.vertices[surface.vertices.range()] {
                 write!(output, "V").unwrap();
                 for value in v
                     .vertex

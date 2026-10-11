@@ -50,8 +50,7 @@ pub(crate) fn for_each_sky_triangle(
                     visit(material, SkySubmission::MissingSurface);
                     continue;
                 };
-                for triangle in world.geometry().indices[surface.indices.indices()].chunks_exact(3)
-                {
+                for triangle in world.geometry().indices[surface.indices.range()].chunks_exact(3) {
                     let points = [triangle[0], triangle[1], triangle[2]]
                         .map(|index| world.geometry().vertices[index as usize].vertex.position);
                     visit(material, SkySubmission::Triangle(points));

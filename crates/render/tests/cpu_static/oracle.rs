@@ -6,12 +6,12 @@ use crate::assets::{
 };
 use crate::lightmap::AtlasRegion;
 use crate::scene::Refdef;
+use crate::scene::Span as RangeSpan;
 use crate::shader::{BlendFactor, RgbGen, StageBlend, TexCoordGen};
 use crate::stage::StageEvaluator;
 use crate::surface_cache::{CacheSpan, SurfaceCache};
 use crate::world::{SurfaceBinding, geometry::*};
 use qa_core::primitives::{Bounds, Vec3};
-use qa_formats::bsp::IndexRange;
 
 struct Fixture {
     assets: Assets,
@@ -157,13 +157,13 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
         world_has_lightdata: true,
         vertices,
         indices: vec![0, 1, 2, 3],
-        boundaries: vec![IndexRange { first: 0, count: 4 }],
+        boundaries: vec![RangeSpan { first: 0, count: 4 }],
         surfaces: vec![WorldSurface {
             source_id: 0,
             kind: GeometryKind::Polygon,
-            vertices: IndexRange { first: 0, count: 4 },
-            indices: IndexRange { first: 0, count: 4 },
-            boundaries: IndexRange { first: 0, count: 1 },
+            vertices: RangeSpan { first: 0, count: 4 },
+            indices: RangeSpan { first: 0, count: 4 },
+            boundaries: RangeSpan { first: 0, count: 1 },
             plane: None,
             bounds,
             texture_coordinates: TextureCoordinates::Normalized,
@@ -174,7 +174,7 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
             styles: [0, 255, 255, 255],
             light_source: LightSource::Page(0),
             light_encoding: LightEncoding::Rgb,
-            light_samples: IndexRange { first: 0, count: 0 },
+            light_samples: RangeSpan { first: 0, count: 0 },
             source_texture: None,
             source_texture_info: None,
             source_shader: None,
@@ -797,7 +797,7 @@ fn cold_source_chart_preserves_original_coordinate_bits_and_corner_order() {
         }
         let product = product(&fixture, 65536).unwrap();
         let boundary = fixture.geometry.boundaries[0];
-        for (corner, &index) in fixture.geometry.indices[boundary.indices()]
+        for (corner, &index) in fixture.geometry.indices[boundary.range()]
             .iter()
             .enumerate()
         {

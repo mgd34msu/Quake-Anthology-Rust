@@ -253,7 +253,7 @@ pub fn load_world(
         if !matches!(rules, RuleSetId::Quake3)
             && let Some(region) = regions[surface.source_id as usize]
         {
-            for vertex in &mut geometry.vertices[surface.vertices.indices()] {
+            for vertex in &mut geometry.vertices[surface.vertices.range()] {
                 vertex.vertex.lightmap_coord =
                     region.uv_from_texture(vertex.vertex.texcoord, surface.texture_minima);
             }
@@ -517,7 +517,7 @@ fn prepare_lightmaps(
         if surface.no_draw {
             continue;
         }
-        let rgb: Vec<_> = geometry.light_samples[surface.light_samples.indices()]
+        let rgb: Vec<_> = geometry.light_samples[surface.light_samples.range()]
             .iter()
             .flatten()
             .copied()

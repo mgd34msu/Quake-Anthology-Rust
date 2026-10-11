@@ -599,7 +599,7 @@ impl Assets {
         let mut indices = Vec::new();
         let mut bindings = Vec::with_capacity(materials.len());
         for (source, surface) in geometry.surfaces.iter().enumerate() {
-            let range = surface.indices.indices();
+            let range = surface.indices.range();
             if source != surface.source_id as usize
                 || range.end > geometry.indices.len()
                 || !range.len().is_multiple_of(3)

@@ -286,3 +286,28 @@ No audited bypass remains. Raw Q2/Q2RR output uses its matching native protocol;
 foreign raw forms and capacity failures retire as counted unsupported output.
 Native effect/inventory presentation, stock HUD drawing and installed gameplay
 acceptance remain THE-3169; these engine checks do not claim those features.
+
+## TA-3367: shared internal operations
+
+References are relative to `crates/`. Renderer callers share `affine.rs:1`
+fan/plane fitting, `cpu/span.rs:1` perspective stepping, `scene.rs:126` view
+validation and `scene.rs:245` ranges, plus the sky collection/geometry helpers.
+`render/material/world_load.rs:880` classifies legacy surfaces once at load.
+CPU/GL and geometry callers are migrated; local validators, fan loops, range
+types, clippers, sky generation and load-conversion copies are deleted.
+
+`core/text/numbers.rs:5`, `core/bits.rs:3`, `core/math.rs:93` and
+`core/primitives.rs:62` supply numeric parsing, membership scans, vector helpers
+and BSP encodings/plane validity. `world/bsp.rs:10`, `world/collision/mod.rs:17`
+and `world/visibility.rs:81` supply cycle checks, point descent and row tests.
+`content/vfs.rs:374` and `formats/archive.rs:80` replace whole-file and exact
+offset reader copies. All audited console, shader, entity, HUD and load callers
+use these implementations; native comparison ties and arithmetic stay at callers.
+
+`app/modules.rs:181`, `compat/services.rs:143`, `compat/abi.rs:72` and
+`compat/entities.rs:644` consolidate module/config lookups, text decoding and
+revision-bound inline-model handles. `core/events.rs:175` and `:657` supply
+resync and bounded dispatch; app output/provider callers use them. Text-lease,
+native-output completion/counter and JSON-report copies are deleted. All 87
+audited items are addressed, with no remaining copy at the audited sites.
+Native-module, stock HUD and installed acceptance remains THE-3169.

@@ -332,22 +332,10 @@ impl FrameHost {
         Ok(host)
     }
     pub fn module_counts(&self, module: ModuleId) -> Option<&Counts> {
-        self.modules
-            .as_ref()?
-            .rows
-            .get(module.0 as usize)?
-            .as_ref()
-            .map(|m| &m.counts)
+        Some(&self.module_row(module)?.counts)
     }
     pub fn module_state(&self, module: ModuleId) -> Option<State> {
-        Some(
-            self.modules
-                .as_ref()?
-                .rows
-                .get(module.0 as usize)?
-                .as_ref()?
-                .state,
-        )
+        Some(self.module_row(module)?.state)
     }
     /// Read the existing native entity view only at its stopped-child boundary.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

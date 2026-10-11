@@ -1,5 +1,5 @@
 use qa_core::primitives::{Bounds, Vec3};
-use qa_formats::bsp::IndexRange;
+use qa_render::scene::Span;
 use qa_render::{
     Assets, Vertex,
     lightmap::{AtlasBuilder, AtlasRegion, PAGE_SIZE},
@@ -32,14 +32,14 @@ fn inputs(count: usize) -> (WorldGeometry, VisibilityWorld) {
             })
             .into(),
         indices: vec![0, 1, 2],
-        boundaries: vec![IndexRange { first: 0, count: 3 }],
+        boundaries: vec![Span { first: 0, count: 3 }],
         surfaces: (0..count)
             .map(|index| WorldSurface {
                 source_id: index as u32,
                 kind: GeometryKind::Triangles,
-                vertices: IndexRange { first: 0, count: 3 },
-                indices: IndexRange { first: 0, count: 3 },
-                boundaries: IndexRange { first: 0, count: 1 },
+                vertices: Span { first: 0, count: 3 },
+                indices: Span { first: 0, count: 3 },
+                boundaries: Span { first: 0, count: 1 },
                 plane: None,
                 bounds,
                 texture_coordinates: TextureCoordinates::Normalized,
@@ -50,7 +50,7 @@ fn inputs(count: usize) -> (WorldGeometry, VisibilityWorld) {
                 styles: [0, 255, 255, 255],
                 light_source: LightSource::Page(0),
                 light_encoding: LightEncoding::Rgb,
-                light_samples: IndexRange::default(),
+                light_samples: Span::default(),
                 source_texture: None,
                 source_texture_info: None,
                 source_shader: None,

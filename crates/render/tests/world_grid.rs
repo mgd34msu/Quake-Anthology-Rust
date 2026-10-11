@@ -122,7 +122,7 @@ fn grid_subdivision_replaces_gl_triangles_and_preserves_cpu_polygon() {
             assert_eq!(point.vertex.color, [255; 4]);
         }
         assert!(
-            world.indices[world.surfaces[0].indices.indices()]
+            world.indices[world.surfaces[0].indices.range()]
                 .iter()
                 .all(|&i| i as usize >= vertices.len())
         );

@@ -536,7 +536,7 @@ impl WorldRaster {
                 let lightmap = if cache_supported && surface.light_samples.count != 0 {
                     let samples = geometry
                         .light_samples
-                        .get(surface.light_samples.indices())
+                        .get(surface.light_samples.range())
                         .ok_or("invalid world light sample range")?;
                     Some(LightGrid::rgb(
                         surface.lightmap_grid[0],
@@ -569,7 +569,7 @@ impl WorldRaster {
                 });
                 let loops = geometry
                     .boundaries
-                    .get(surface.boundaries.indices())
+                    .get(surface.boundaries.range())
                     .ok_or("invalid world polygon boundary range")?;
                 let binding = world
                     .bindings()
@@ -611,7 +611,7 @@ impl WorldRaster {
                     }
                     let indices = geometry
                         .indices
-                        .get(boundary.indices())
+                        .get(boundary.range())
                         .ok_or("invalid world polygon index range")?;
                     if indices.len() < 3
                         || indices
@@ -1369,7 +1369,7 @@ impl SurfacePrepare {
                         .and_then(|i| i.indexed.as_ref())
                         .is_some_and(|t| t.cutout())
                 });
-            let loops = surface.boundaries.indices();
+            let loops = surface.boundaries.range();
             if loops.is_empty() {
                 self.reject(stats);
                 continue;
@@ -1669,7 +1669,7 @@ impl SurfacePrepare {
         };
         let surface = &world.geometry().surfaces[reference.surface as usize];
         let mut visible = false;
-        for boundary in surface.boundaries.indices() {
+        for boundary in surface.boundaries.range() {
             let mut primitive = Primitive {
                 world: reference.world,
                 surface: reference.surface,
@@ -1727,7 +1727,7 @@ impl SurfacePrepare {
         let geometry = world.geometry();
         let surface = &geometry.surfaces[primitive.surface as usize];
         let boundary = geometry.boundaries[primitive.boundary as usize];
-        let indices = &geometry.indices[boundary.indices()];
+        let indices = &geometry.indices[boundary.range()];
         let vertices = self.clip.sources(indices.len())?;
         // Recipe ids map to this immutable boundary, whose source corner order
         // is the same order used at recipe registration. Intersections still
@@ -2813,7 +2813,7 @@ impl WorldPrepare {
             let Some(surface) = world.geometry().surfaces.get(reference.surface as usize) else {
                 continue;
             };
-            for boundary in surface.boundaries.indices() {
+            for boundary in surface.boundaries.range() {
                 let Some((index, recipe)) =
                     self.catalog.current_rgba(reference.world, boundary, assets)
                 else {

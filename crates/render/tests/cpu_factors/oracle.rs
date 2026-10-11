@@ -5,11 +5,11 @@ use crate::assets::{
 };
 use crate::cpu::{CpuBackend, CpuLimits};
 use crate::lightmap::AtlasRegion;
+use crate::scene::Span as RangeSpan;
 use crate::scene::{CommandList, CpuPresentation, FrontEnd, Limits, Refdef, Viewport};
 use crate::shader::{BlendFactor, Cull, RgbGen, StageBlend, TexCoordGen};
 use crate::world::{SurfaceMaterial, VisibleSurface, WorldId, geometry::*};
 use qa_core::primitives::{Bounds, Vec3};
-use qa_formats::bsp::IndexRange;
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 fn fixture_world(
@@ -58,13 +58,13 @@ fn fixture_world(
         world_has_lightdata: false,
         vertices,
         indices: vec![0, 1, 2, 0, 2, 3, 0, 1, 2, 3],
-        boundaries: vec![IndexRange { first: 6, count: 4 }],
+        boundaries: vec![RangeSpan { first: 6, count: 4 }],
         surfaces: vec![WorldSurface {
             source_id: 0,
             kind: GeometryKind::Polygon,
-            vertices: IndexRange { first: 0, count: 4 },
-            indices: IndexRange { first: 0, count: 6 },
-            boundaries: IndexRange { first: 0, count: 1 },
+            vertices: RangeSpan { first: 0, count: 4 },
+            indices: RangeSpan { first: 0, count: 6 },
+            boundaries: RangeSpan { first: 0, count: 1 },
             plane: None,
             bounds,
             texture_coordinates: TextureCoordinates::Normalized,
@@ -75,7 +75,7 @@ fn fixture_world(
             styles: [255; 4],
             light_source: LightSource::Page(0),
             light_encoding: LightEncoding::Rgb,
-            light_samples: IndexRange { first: 0, count: 0 },
+            light_samples: RangeSpan { first: 0, count: 0 },
             source_texture: None,
             source_texture_info: None,
             source_shader: None,

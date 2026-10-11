@@ -1,7 +1,7 @@
 use qa_core::primitives::{Bounds, Vec3};
-use qa_formats::bsp::IndexRange;
 use qa_render::assets::{MaterialSettings, Stage};
 use qa_render::scene::DrawKind;
+use qa_render::scene::Span;
 use qa_render::shader::{AlphaGen, BlendFactor, RgbGen, StageBlend};
 use qa_render::world::geometry::*;
 use qa_render::world::{SurfaceMaterial, VisibleSurface, WorldId};
@@ -87,14 +87,14 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
             })
             .into(),
         indices: vec![0, 1, 2],
-        boundaries: vec![IndexRange { first: 0, count: 3 }],
+        boundaries: vec![Span { first: 0, count: 3 }],
         surfaces: (0..materials.len())
             .map(|source| WorldSurface {
                 source_id: source as u32,
                 kind: GeometryKind::Triangles,
-                vertices: IndexRange { first: 0, count: 3 },
-                indices: IndexRange { first: 0, count: 3 },
-                boundaries: IndexRange { first: 0, count: 1 },
+                vertices: Span { first: 0, count: 3 },
+                indices: Span { first: 0, count: 3 },
+                boundaries: Span { first: 0, count: 1 },
                 plane: None,
                 bounds,
                 texture_coordinates: TextureCoordinates::Normalized,
@@ -105,7 +105,7 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
                 styles: [255; 4],
                 light_source: LightSource::None,
                 light_encoding: LightEncoding::Rgb,
-                light_samples: IndexRange::default(),
+                light_samples: Span::default(),
                 source_texture: None,
                 source_texture_info: None,
                 source_shader: None,

@@ -1,12 +1,12 @@
 use super::super::CpuBackend;
 use super::*;
 use crate::assets::{CubeSkyParams, Filter, Sampler};
+use crate::scene::Span as RangeSpan;
 use crate::scene::{Command, FrontEnd, Limits, Refdef, Viewport};
 use crate::shader::{StageBlend, TexMod};
 use crate::world::geometry::*;
 use crate::world::{SurfaceMaterial, VisibleSurface};
 use qa_core::primitives::{Bounds, Plane, Vec3};
-use qa_formats::bsp::IndexRange;
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
 fn fixture_world(
@@ -46,13 +46,13 @@ fn fixture_world(
         world_has_lightdata: light.is_some(),
         vertices,
         indices: vec![0, 1, 2, 0, 2, 3, 0, 1, 2, 3],
-        boundaries: vec![IndexRange { first: 6, count: 4 }],
+        boundaries: vec![RangeSpan { first: 6, count: 4 }],
         surfaces: vec![WorldSurface {
             source_id: 0,
             kind: GeometryKind::Polygon,
-            vertices: IndexRange { first: 0, count: 4 },
-            indices: IndexRange { first: 0, count: 6 },
-            boundaries: IndexRange { first: 0, count: 1 },
+            vertices: RangeSpan { first: 0, count: 4 },
+            indices: RangeSpan { first: 0, count: 6 },
+            boundaries: RangeSpan { first: 0, count: 1 },
             plane: Some(Plane {
                 encoding: None,
                 normal: Vec3([-1.0, 0.0, 0.0]),
@@ -72,7 +72,7 @@ fn fixture_world(
                 LightSource::None
             },
             light_encoding: LightEncoding::Luminance,
-            light_samples: IndexRange {
+            light_samples: RangeSpan {
                 first: 0,
                 count: if light.is_some() { 4 } else { 0 },
             },
@@ -681,7 +681,7 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
                     let a = 9 + row * 3 + column;
                     let b = a + 3;
                     for triangle in [[a, b, a + 1], [a + 1, b, b + 1]] {
-                        g.boundaries.push(IndexRange {
+                        g.boundaries.push(RangeSpan {
                             first: g.indices.len() as u32,
                             count: 3,
                         });
@@ -691,17 +691,17 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
             }
             let surface = &mut g.surfaces[0];
             surface.kind = GeometryKind::Patch;
-            surface.vertices = IndexRange { first: 9, count: 9 };
-            surface.indices = IndexRange {
+            surface.vertices = RangeSpan { first: 9, count: 9 };
+            surface.indices = RangeSpan {
                 first: 0,
                 count: 24,
             };
-            surface.boundaries = IndexRange { first: 0, count: 8 };
+            surface.boundaries = RangeSpan { first: 0, count: 8 };
             surface.plane = None;
             surface.bounds.maxs.0[0] = 2.125;
             surface.texture_coordinates = TextureCoordinates::Normalized;
             surface.patch = Some(PatchGrid {
-                control_vertices: IndexRange { first: 0, count: 9 },
+                control_vertices: RangeSpan { first: 0, count: 9 },
                 control_dimensions: [3, 3],
                 dimensions: [3, 3],
                 width_lod_error: vec![0.0, 4.0, 0.0].into_boxed_slice(),
@@ -961,7 +961,7 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
             |g| {
                 g.surfaces[0].texture_coordinates = TextureCoordinates::Normalized;
                 let boundary = g.boundaries[0];
-                g.indices[boundary.indices()].rotate_left(2);
+                g.indices[boundary.range()].rotate_left(2);
                 for (index, vertex) in g.vertices.iter_mut().enumerate() {
                     let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][index];
                     vertex.vertex.texcoord = [uv[0] - 0.375, uv[1] + 0.25];
@@ -1074,7 +1074,7 @@ fn product_color_memo_keeps_camera_motion_and_identity_refresh_output() {
                 let geometry = assets.world(world).unwrap().geometry();
                 let boundary = geometry.boundaries[0];
                 let recipe = prepared.catalog.rgba[recipe_id].as_ref().unwrap();
-                let expected = geometry.indices[boundary.indices()]
+                let expected = geometry.indices[boundary.range()]
                     .iter()
                     .map(|&index| {
                         recipe
