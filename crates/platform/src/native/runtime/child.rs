@@ -222,7 +222,11 @@ pub(super) fn initialize(
     };
     for binding in &imports {
         if let ImportBinding::Engine(Some((_, filter))) = binding {
-            memory.range(filter.buffer, filter.bytes(), 3)?;
+            memory.range(
+                filter.buffer,
+                filter.byte_length().ok_or(NativeError::Extent)?,
+                3,
+            )?;
         }
     }
     if let Some(teb) = config.and_then(|c| c.teb) {

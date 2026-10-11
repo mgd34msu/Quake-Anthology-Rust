@@ -352,6 +352,14 @@ pub struct Bounds {
 }
 
 impl Bounds {
+    pub fn is_valid(self) -> bool {
+        (0..3).all(|axis| {
+            self.mins.0[axis].is_finite()
+                && self.maxs.0[axis].is_finite()
+                && self.mins.0[axis] <= self.maxs.0[axis]
+        })
+    }
+
     pub fn empty() -> Self {
         Self {
             mins: Vec3([f32::INFINITY; 3]),

@@ -83,20 +83,31 @@ impl NativeTraceView<'_, '_> {
     pub fn address(&self, entities: &EntityTable, hit: Option<EntityId>) -> Result<u64, CallError> {
         // A protocol cannot expose another module's pointer. A blocking foreign
         // body is represented by the caller's native world edict.
-        let slot = hit
-            .and_then(|id| entities.resolve(id))
-            .and_then(|slot| entities.columns.native_entity[slot])
-            .filter(|native| native.module == self.module)
-            .map_or(0, |native| native.slot);
-        let slot = u32::try_from(slot).map_err(|_| CallError::Entity)?;
-        if slot >= self.entities.capacity {
+        if self.entities.capacity == 0 {
             return Err(CallError::Entity);
         }
-        self.entities
-            .address
-            .checked_add(u64::from(slot) * self.entities.stride)
-            .ok_or(CallError::Memory)
+        Ok(hit
+            .and_then(|id| native_address(self.entities, self.module, entities, id))
+            .unwrap_or(self.entities.address))
     }
+}
+
+pub(crate) fn native_address(
+    native: Entities,
+    module: ModuleId,
+    entities: &EntityTable,
+    id: EntityId,
+) -> Option<u64> {
+    let slot = entities.resolve(id)?;
+    let identity = entities.columns.native_entity[slot]?;
+    if identity.module != module {
+        return None;
+    }
+    let slot = u32::try_from(identity.slot).ok()?;
+    if slot >= native.capacity {
+        return None;
+    }
+    native.address.checked_add(u64::from(slot) * native.stride)
 }
 impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     fn module(&self) -> ModuleId {
@@ -316,15 +327,23 @@ impl EntityProjection {
         context: CallContext,
         table: u64,
     ) -> Result<NativeTraceView<'a, 'memory>, CallError> {
-        if self.owner != Some(context.module) {
-            return Err(CallError::Entity);
-        }
         Ok(NativeTraceView {
             memory,
-            entities: self.read(memory, table)?,
+            entities: self.boundary(memory, context, table)?,
             module: context.module,
             layout: self.layout,
         })
+    }
+    pub(crate) fn boundary(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+    ) -> Result<Entities, CallError> {
+        if self.owner != Some(context.module) {
+            return Err(CallError::Entity);
+        }
+        self.read(memory, table)
     }
     fn observe(
         &mut self,
@@ -454,15 +473,7 @@ impl EntityProjection {
             mins: memory.read_vec3(address + layout.mins as u64)?,
             maxs: memory.read_vec3(address + layout.maxs as u64)?,
         };
-        if origin
-            .0
-            .iter()
-            .chain(&angles.0)
-            .chain(&bounds.mins.0)
-            .chain(&bounds.maxs.0)
-            .any(|v| !v.is_finite())
-            || (0..3).any(|axis| bounds.mins.0[axis] > bounds.maxs.0[axis])
-        {
+        if origin.0.iter().chain(&angles.0).any(|v| !v.is_finite()) || !bounds.is_valid() {
             return Err(CallError::Entity);
         }
         let solid = field(memory, address, layout.solid)?;

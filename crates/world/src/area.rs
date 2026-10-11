@@ -173,11 +173,7 @@ impl AreaGrid {
         if capacity == 0 || capacity > MAX_ENTITIES {
             return Err(AreaError::Capacity);
         }
-        if (0..3).any(|axis| {
-            !bounds.mins.0[axis].is_finite()
-                || !bounds.maxs.0[axis].is_finite()
-                || bounds.mins.0[axis] > bounds.maxs.0[axis]
-        }) {
+        if !bounds.is_valid() {
             return Err(AreaError::Bounds);
         }
         let mut nodes = [Node::default(); 31];

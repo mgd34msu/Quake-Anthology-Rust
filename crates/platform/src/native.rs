@@ -39,8 +39,10 @@ impl NativeListFilter {
             && slots.iter().all(|&slot| usize::from(slot) < arguments)
             && (0..slots.len()).all(|i| (i + 1..slots.len()).all(|j| slots[i] != slots[j]))
     }
-    pub(crate) fn bytes(self) -> usize {
-        self.capacity as usize * usize::from(self.depth) * 8
+    pub fn byte_length(self) -> Option<usize> {
+        (self.capacity as usize)
+            .checked_mul(usize::from(self.depth))?
+            .checked_mul(8)
     }
 }
 

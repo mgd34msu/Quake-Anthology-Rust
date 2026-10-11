@@ -198,6 +198,7 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[12] = Some(native_trace::<false>);
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
+    table.entries[20] = Some(native_area_query::<false>);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -216,6 +217,7 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[14] = Some(native_trace::<true>);
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
+    table.entries[23] = Some(native_area_query::<true>);
     table.entries[48] = Some(native_register_observer);
     table.entries[49] = Some(native_forget_observer);
     table.entries[9] = Some(abort);
@@ -610,14 +612,8 @@ fn native_trace<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
     };
     let mins = bounds(c.pointer(2)?)?;
     let maxs = bounds(c.pointer(3)?)?;
-    if start
-        .0
-        .iter()
-        .chain(&end.0)
-        .chain(&mins.0)
-        .chain(&maxs.0)
-        .any(|v| !v.is_finite())
-        || (0..3).any(|axis| mins.0[axis] > maxs.0[axis])
+    if start.0.iter().chain(&end.0).any(|v| !v.is_finite())
+        || !(qa_core::primitives::Bounds { mins, maxs }).is_valid()
     {
         return Err(CallError::Geometry);
     }
@@ -648,6 +644,62 @@ fn native_trace<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64,
     let result = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
     let entity = view.address(&c.services.server.entities, result.entity)?;
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
+}
+
+fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_core::primitives::Bounds;
+    use qa_world::area::LinkFlags;
+    let bounds = Bounds {
+        mins: c.memory.read_vec3(c.pointer(0)?)?,
+        maxs: c.memory.read_vec3(c.pointer(1)?)?,
+    };
+    if !bounds.is_valid() {
+        return Err(CallError::Geometry);
+    }
+    let role = match c.arg(4)? as u32 as i32 {
+        1 => LinkFlags::SOLID,
+        2 => LinkFlags::TRIGGER,
+        _ => return Err(CallError::Geometry),
+    };
+    let max = if WIDE {
+        c.length(3)?
+    } else {
+        usize::try_from(c.arg(3)? as u32 as i32).map_err(|_| CallError::Memory)?
+    };
+    // The owned child requests unfiltered candidates, then applies the
+    // callback after the engine's shared-memory borrows have ended.
+    if WIDE && c.pointer(5)? != 0 {
+        return Err(CallError::Aborted);
+    }
+    if !WIDE && max == 0 {
+        return Ok(0);
+    }
+    let output = c.pointer(2)?;
+    let (projection, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let native = projection.boundary(c.memory, c.context, *table)?;
+    let list = if max != 0 && output != 0 {
+        c.memory
+            .read_mut(output, max.min(c.services.server.entities.capacity()) * 8)?
+    } else {
+        &mut []
+    };
+    let mut count = 0;
+    (ENGINE_CALLS.area_query)(c.services, bounds, role, &mut |id| {
+        let Some(address) = crate::entities::native_address(
+            native,
+            c.context.module,
+            &c.services.server.entities,
+            id,
+        ) else {
+            return true;
+        };
+        if !list.is_empty() {
+            list[count * 8..count * 8 + 8].copy_from_slice(&address.to_le_bytes());
+        }
+        count += 1;
+        max == 0 || count < max
+    });
+    Ok(count as u64)
 }
 
 fn native_set_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

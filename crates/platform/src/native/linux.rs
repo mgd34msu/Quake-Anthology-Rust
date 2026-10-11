@@ -606,7 +606,7 @@ impl NativeProcess {
         .ok_or(NativeError::Extent)?;
         let millis = self
             .epoch_millis
-            .checked_add(i64::try_from(time.0 / 1_000_000).map_err(|_| NativeError::Extent)?)
+            .checked_add(i64::try_from(time.milliseconds()).map_err(|_| NativeError::Extent)?)
             .ok_or(NativeError::Extent)?;
         let bytes = self
             .memory_mut()?
@@ -888,12 +888,7 @@ extern "C" fn import(
     )
 }
 
-fn host_import(
-    number: u64,
-    arguments: [u64; 13],
-    floats: [u64; 8],
-    typed: u64,
-) -> ImportResult {
+fn host_import(number: u64, arguments: [u64; 13], floats: [u64; 8], typed: u64) -> ImportResult {
     let sequence = CHILD_SEQUENCE.load(Ordering::Relaxed);
     // SAFETY: borrowed wrapper for inherited fd 0, never closed here. This
     // single-thread child alone uses the channel; clone/fork are not admitted.

@@ -240,7 +240,10 @@ pub type CvarRegisterCall =
     fn(&mut EngineServices<'_>, Context, &str, Option<&str>, u32) -> Result<View, CallError>;
 pub type ResourceIndexCall =
     fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
+pub type AreaQueryCall =
+    fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
 pub struct EngineCallTable {
+    pub area_query: AreaQueryCall,
     pub box_leaves: fn(
         &mut EngineServices<'_>,
         Bounds,
@@ -275,6 +278,13 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    area_query: |s, bounds, flags, accept| {
+        for row in s.server.area.query(&s.server.entities, bounds, flags) {
+            if !accept(row.id) {
+                break;
+            }
+        }
+    },
     box_leaves: |s, bounds, output| {
         let (world, scratch) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
         world

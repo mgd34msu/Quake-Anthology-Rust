@@ -368,8 +368,29 @@ impl Game {
                 .div_ceil(PAGE_BYTES)
                 .checked_mul(PAGE_BYTES)
                 .ok_or(Error::Export)?;
-        let end = offset
+        let filter_offset = offset
             .checked_add(PAGE_BYTES + cvar_bytes + surface_bytes)
+            .ok_or(Error::Export)?;
+        let filter_address = image
+            .base
+            .checked_add(filter_offset as u64)
+            .ok_or(Error::Export)?;
+        let filter = (layout.version == 2023).then_some(qa_platform::native::NativeListFilter {
+            buffer: filter_address,
+            capacity: qa_world::entities::MAX_ENTITIES as u32,
+            depth: 8,
+            list: 2,
+            limit: 3,
+            callback: 5,
+            data: 6,
+            keep: 0,
+            end: 64,
+        });
+        let filter_bytes = filter
+            .map_or(Some(0), |filter| filter.byte_length())
+            .ok_or(Error::Export)?;
+        let end = filter_offset
+            .checked_add(filter_bytes)
             .filter(|&n| n <= 512 * 1024 * 1024)
             .ok_or(Error::Export)?;
         let address = image.base.checked_add(offset as u64).ok_or(Error::Export)?;
@@ -389,7 +410,7 @@ impl Game {
         let mut regions = std::mem::take(&mut image.regions).into_vec();
         regions.push(Region {
             offset,
-            length: PAGE_BYTES + cvar_bytes + surface_bytes,
+            length: PAGE_BYTES + cvar_bytes + surface_bytes + filter_bytes,
             read: true,
             write: true,
             execute: false,
@@ -475,6 +496,33 @@ impl Game {
                         ][..],
                         NativeScalar::Word,
                     ))
+                } else if ordinal == if layout.version == 2023 { 23 } else { 20 } {
+                    Some((
+                        if layout.version == 2023 {
+                            &[
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::I32,
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                            ][..]
+                        } else {
+                            &[
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::Word,
+                                NativeScalar::I32,
+                                NativeScalar::I32,
+                            ][..]
+                        },
+                        if layout.version == 2023 {
+                            NativeScalar::Word
+                        } else {
+                            NativeScalar::I32
+                        },
+                    ))
                 } else if ordinal == if layout.version == 2023 { 7 } else { 6 } {
                     Some((
                         &[NativeScalar::I32, NativeScalar::Word][..],
@@ -486,7 +534,7 @@ impl Game {
                     None
                 };
                 Ok(NativeImport {
-                    filter: None,
+                    filter: if ordinal == 23 { filter } else { None },
                     trap: signature.is_none(),
                     number: ordinal as u32,
                     abi,

@@ -1827,7 +1827,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // Force the real loaded API frame to reach a named engine trap. No
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
-        let pointer = pointers[if rr { 23 } else { 20 }]; // BoxEdicts
+        let pointer = pointers[if rr { 17 } else { 14 }]; // inPVS
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -1866,7 +1866,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let import = game
             .vm
             .unresolved_imports()
-            .find(|i| i.name == Some(b"BoxEdicts".as_slice()))
+            .find(|i| i.name == Some(b"inPVS".as_slice()))
             .unwrap();
         assert_eq!(import.calls, 3);
         let mut batch = runtime.server.events.batch(observer).unwrap();
@@ -1879,8 +1879,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     prints += 1;
                 } else {
                     assert!(
-                        text.windows(b"native import BoxEdicts at".len())
-                            .any(|s| s == b"native import BoxEdicts at")
+                        text.windows(b"native import inPVS at".len())
+                            .any(|s| s == b"native import inPVS at")
                     );
                     logs += 1;
                 }
@@ -1995,9 +1995,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut observer_entity = None;
         let mut owned_entity = None;
         let trace_slot = if rr { 14 } else { 12 };
+        let area_slot = if rr { 23 } else { 20 };
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
+                || slot == area_slot
                 || (index_slot..index_slot + 3).contains(&slot);
             let stack = if a.len() > 4 { 0x48 } else { 0x28 };
             let mut code = vec![0x48, 0x83, 0xec, stack];
@@ -2469,6 +2471,47 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(result_entity(&mut game), expected);
         }
         set_fields(&mut game, 0, 0, 0);
+        let list = base + 0x1e00;
+        let predicate = base + 0x1780;
+        for (limit, role, callback, decision, expected) in [
+            (3, 1, 0, 0, 1),
+            (1, 1, 0, 0, 1),
+            (3, 2, 0, 0, 0),
+            (0, 1, 0, 0, if rr { 1 } else { 0 }),
+            (3, 1, predicate, 64, 1),
+            (3, 1, predicate, 1, 0),
+            (0, 1, predicate, 64, 1),
+        ] {
+            if !rr && callback != 0 {
+                continue;
+            }
+            game.vm.process.memory_mut().unwrap()[0x1e00..0x1e18].fill(0xcc);
+            let mut code = vec![0xb8];
+            code.extend((decision as u32).to_le_bytes());
+            code.push(0xc3);
+            game.vm.process.memory_mut().unwrap()[0x1780..0x1780 + code.len()]
+                .copy_from_slice(&code);
+            let words = [
+                start,
+                end,
+                if limit == 0 { 0 } else { list },
+                limit,
+                role,
+                callback,
+                0,
+            ];
+            assert_eq!(
+                invoke_import(&mut game, area_slot, &words[..if rr { 7 } else { 5 }]),
+                expected
+            );
+            let memory = game.vm.process.memory().unwrap();
+            if expected != 0 && limit != 0 {
+                assert_eq!(&memory[0x1e00..0x1e08], &entity_address.to_le_bytes());
+                assert_eq!(&memory[0x1e08..0x1e18], &[0xcc; 16]);
+            } else {
+                assert_eq!(&memory[0x1e00..0x1e18], &[0xcc; 24]);
+            }
+        }
         invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
         invoke_import(&mut game, link_slot, &[entity_address + stride, 0]);
         qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
