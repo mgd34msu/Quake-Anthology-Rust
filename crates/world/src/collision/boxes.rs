@@ -83,15 +83,7 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) ->
         .filtering
         .contains(EntityTraceFlags::CENTER_BOX)
     {
-        // CM_TransformedBoxTrace centers world endpoints before translation;
-        // doing those f32 operations in reverse loses native rounding.
-        for axis in 0..3 {
-            let center = (query.mins.0[axis] + query.maxs.0[axis]) * 0.5;
-            query.start.0[axis] += center;
-            query.end.0[axis] += center;
-            query.mins.0[axis] -= center;
-            query.maxs.0[axis] -= center;
-        }
+        query.center_box();
     }
     // Native CM_InitBoxHull pairs +max/-min planes in X/Y/Z order. Its
     // temporary brush is MONSTER (Q2) / BODY (Q3), independently of r.contents.

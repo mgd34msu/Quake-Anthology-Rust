@@ -67,13 +67,7 @@ fn validate_bounds(count: usize, bounds: &[Bounds]) -> Result<(), StoreError> {
     if count == 0 || bounds.len() != count {
         return Err(StoreError::Models);
     }
-    if bounds.iter().any(|bounds| {
-        (0..3).any(|axis| {
-            !bounds.mins.0[axis].is_finite()
-                || !bounds.maxs.0[axis].is_finite()
-                || bounds.mins.0[axis] > bounds.maxs.0[axis]
-        })
-    }) {
+    if bounds.iter().any(|bounds| !bounds.is_valid()) {
         return Err(StoreError::Bounds);
     }
     Ok(())
@@ -405,13 +399,7 @@ impl CollisionStore {
         };
         let mut local = query;
         if rules.rotation == ModelRotation::TransposeBasis {
-            for axis in 0..3 {
-                let center = (query.mins.0[axis] + query.maxs.0[axis]) * 0.5;
-                local.mins.0[axis] = query.mins.0[axis] - center;
-                local.maxs.0[axis] = query.maxs.0[axis] - center;
-                local.start.0[axis] = query.start.0[axis] + center;
-                local.end.0[axis] = query.end.0[axis] + center;
-            }
+            local.center_box();
         }
         let offset = match geometry {
             Geometry::Hulls(_) => Q1Hulls::clip_offset(local) + origin,

@@ -348,6 +348,18 @@ pub struct TraceQuery<'a> {
 }
 
 impl TraceQuery<'_> {
+    pub(crate) fn center_box(&mut self) {
+        // CM_TransformedBoxTrace centers world endpoints before translation;
+        // doing those f32 operations in reverse loses native rounding.
+        for axis in 0..3 {
+            let center = (self.mins.0[axis] + self.maxs.0[axis]) * 0.5;
+            self.start.0[axis] += center;
+            self.end.0[axis] += center;
+            self.mins.0[axis] -= center;
+            self.maxs.0[axis] -= center;
+        }
+    }
+
     pub fn point(
         start: Vec3,
         end: Vec3,

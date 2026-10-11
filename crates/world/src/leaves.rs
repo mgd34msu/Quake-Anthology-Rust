@@ -1,5 +1,5 @@
 //! Ordered box-to-leaf collection over admitted BSP nodes.
-use qa_core::primitives::{Axis, Bounds, Plane, Vec3};
+use qa_core::primitives::{Axis, Bounds, Plane};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoxLeaves {
@@ -71,20 +71,7 @@ fn box_sides(bounds: Bounds, plane: Plane) -> u8 {
         }
         return 3;
     }
-    let far = Vec3(std::array::from_fn(|axis| {
-        if plane.normal.0[axis] < 0.0 {
-            bounds.mins.0[axis]
-        } else {
-            bounds.maxs.0[axis]
-        }
-    }));
-    let near = Vec3(std::array::from_fn(|axis| {
-        if plane.normal.0[axis] < 0.0 {
-            bounds.maxs.0[axis]
-        } else {
-            bounds.mins.0[axis]
-        }
-    }));
-    u8::from(plane.signed_distance(far) >= 0.0)
-        | (u8::from(plane.signed_distance(near) < 0.0) << 1)
+    let far = bounds.corner(plane.normal, true);
+    let near = bounds.corner(plane.normal, false);
+    u8::from(plane.signed_distance(far) >= 0.0) | (u8::from(plane.signed_distance(near) < 0.0) << 1)
 }

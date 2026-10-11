@@ -239,3 +239,13 @@ preserving addition, subtraction and division order. No audited copy remains.
 `world/src/visibility/query.rs:16`, `:26`, `:210`. Each caller retains its
 original tie comparison. All six local dot/distance comparisons are deleted;
 the crate source scan finds no remaining copy of that comparison pattern.
+
+## TA-3312: bounds and box centering
+
+`core/src/primitives.rs:363` Bounds::corner supplies far/near corners for
+`world/src/leaves.rs:74` and `world/src/visibility/query.rs:9`; both local
+selection loops are deleted. `world/src/collision/mod.rs:351` centers trace
+boxes before translation for `collision/store.rs:402` and `collision/boxes.rs:86`,
+preserving the native f32 operations and CM_TransformedBoxTrace note.
+`collision/store.rs:70` uses Bounds::is_valid; its local validator is deleted.
+No audited copy remains. Corner tests cover all octants and signed zero.

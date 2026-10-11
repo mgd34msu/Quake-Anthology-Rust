@@ -360,6 +360,16 @@ impl Bounds {
         })
     }
 
+    pub fn corner(self, normal: Vec3, far: bool) -> Vec3 {
+        Vec3(std::array::from_fn(|axis| {
+            if (normal.0[axis] < 0.0) == far {
+                self.mins.0[axis]
+            } else {
+                self.maxs.0[axis]
+            }
+        }))
+    }
+
     pub fn empty() -> Self {
         Self {
             mins: Vec3([f32::INFINITY; 3]),

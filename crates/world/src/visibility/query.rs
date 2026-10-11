@@ -6,23 +6,11 @@ fn remaining_planes(bounds: Bounds, frustum: &[Plane], mut mask: u8) -> Option<u
         if mask & bit == 0 {
             continue;
         }
-        let positive = Vec3(std::array::from_fn(|axis| {
-            if plane.normal.0[axis] >= 0.0 {
-                bounds.maxs.0[axis]
-            } else {
-                bounds.mins.0[axis]
-            }
-        }));
+        let positive = bounds.corner(plane.normal, true);
         if plane.signed_distance(positive) < 0.0 {
             return None;
         }
-        let negative = Vec3(std::array::from_fn(|axis| {
-            if plane.normal.0[axis] >= 0.0 {
-                bounds.mins.0[axis]
-            } else {
-                bounds.maxs.0[axis]
-            }
-        }));
+        let negative = bounds.corner(plane.normal, false);
         if plane.signed_distance(negative) >= 0.0 {
             mask &= !bit;
         }

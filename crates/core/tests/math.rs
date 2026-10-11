@@ -188,3 +188,37 @@ fn bounds_union_retains_point_order_and_signed_zero() {
     union.add_bounds(accumulated);
     assert_eq!(union, accumulated);
 }
+
+#[test]
+fn bounds_corners_cover_octants_and_zero_normal_components() {
+    let bounds = Bounds {
+        mins: Vec3([-8.0, -0.0, -32.0]),
+        maxs: Vec3([16.0, 0.0, 64.0]),
+    };
+    for signs in 0..8 {
+        let normal = Vec3(std::array::from_fn(|axis| {
+            if signs & (1 << axis) == 0 { 1.0 } else { -1.0 }
+        }));
+        let far = bounds.corner(normal, true);
+        let near = bounds.corner(normal, false);
+        for axis in 0..3 {
+            let (far_value, near_value) = if signs & (1 << axis) == 0 {
+                (bounds.maxs.0[axis], bounds.mins.0[axis])
+            } else {
+                (bounds.mins.0[axis], bounds.maxs.0[axis])
+            };
+            assert_eq!(far.0[axis].to_bits(), far_value.to_bits());
+            assert_eq!(near.0[axis].to_bits(), near_value.to_bits());
+        }
+    }
+    for normal in [Vec3([0.0; 3]), Vec3([-0.0; 3])] {
+        assert_eq!(
+            bounds.corner(normal, true).0.map(f32::to_bits),
+            bounds.maxs.0.map(f32::to_bits)
+        );
+        assert_eq!(
+            bounds.corner(normal, false).0.map(f32::to_bits),
+            bounds.mins.0.map(f32::to_bits)
+        );
+    }
+}
