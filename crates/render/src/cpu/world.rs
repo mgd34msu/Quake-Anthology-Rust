@@ -1859,7 +1859,7 @@ impl SurfacePrepare {
     }
 }
 
-fn evaluated_vertex(
+pub(super) fn evaluated_vertex(
     vertex: Vertex,
     deforms: [DeformOp; 3],
     prepared: Option<PreparedStage>,

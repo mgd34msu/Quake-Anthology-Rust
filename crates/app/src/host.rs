@@ -272,6 +272,7 @@ impl FrameHost {
         }
         self.initialize_modules(crate::modules::Phase::Server);
         let server_time = self.time;
+        let frame_span = EventTime(server_time.since(self.previous.unwrap_or_default()));
         let simulation = Stopwatch::start();
         while let Some(tick) = self.timeline.next_tick(server_time) {
             result.server_ticks += 1;
@@ -284,14 +285,7 @@ impl FrameHost {
                         .build_bot_commands(tick.start, tick.end, |rules| {
                             self.input_handles.policy(&self.console.cvars, rules)
                         });
-                    if let Some(world) = &mut self.runtime.collision {
-                        self.runtime.server.move_pending_clients(
-                            &self.runtime.geometry,
-                            world.geometry,
-                            world.index,
-                            &mut world.scratch,
-                        );
-                    }
+                    self.run_pending_commands(frame_span);
                 }
                 TickTarget::Provider(_) => {
                     let slot = tick.source_slot - 1;
@@ -316,14 +310,7 @@ impl FrameHost {
                 }
             }
         }
-        if let Some(world) = &mut self.runtime.collision {
-            self.runtime.server.move_pending_clients(
-                &self.runtime.geometry,
-                world.geometry,
-                world.index,
-                &mut world.scratch,
-            );
-        }
+        self.run_pending_commands(frame_span);
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         for id in self.local_clients.iter().flatten() {
             self.runtime.send_local_snapshot(*id, server_time);
@@ -458,11 +445,15 @@ impl FrameHost {
                     }
                 }
                 qa_core::loopback::Endpoint::Server => match incoming {
-                    Incoming::Command { command, output } => {
+                    Incoming::Command {
+                        command,
+                        execution,
+                        output,
+                    } => {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
                         {
-                            self.received_command(id, command);
+                            self.received_command(id, command, execution);
                         }
                     }
                     Incoming::Acknowledged {
@@ -524,8 +515,6 @@ impl FrameHost {
                         from,
                         bytes,
                     } => {
-                        self.runtime.network.frame_ns =
-                            event.time.since(self.previous.unwrap_or_default());
                         self.receive_packet(socket, from, bytes, event.time);
                     }
                     _ => self.runtime.input.dispatch(

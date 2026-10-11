@@ -630,16 +630,9 @@ impl CpuBackend {
             stats.stages = stats.stages.saturating_add(1);
             for indices in triangles.clone() {
                 let triangle = indices.map(|i| {
-                    let vertex = self.evaluator.apply_deforms(deforms, vertices[i]);
-                    let evaluated = self.evaluator.evaluate(&stage, &vertex);
-                    camera.vertex(
-                        Vertex {
-                            texcoord: evaluated.texcoord,
-                            color: evaluated.color,
-                            ..vertex
-                        },
-                        to_world(evaluated.position),
-                    )
+                    let vertex =
+                        world::evaluated_vertex(vertices[i], deforms, Some(stage), &self.evaluator);
+                    camera.vertex(vertex, to_world(vertex.position))
                 });
                 self.triangle(camera, triangle, pass, stats);
             }

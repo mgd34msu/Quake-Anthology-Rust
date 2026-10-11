@@ -47,13 +47,45 @@ impl std::error::Error for ClientCommandError {}
 impl FrameHost {
     /// Called once for every command admitted by the native channel. Modules
     /// never share the engine's deferred movement pass with their ClientThink.
-    pub(crate) fn received_command(&mut self, id: ClientId, command: UserCmd) {
+    pub(crate) fn received_command(
+        &mut self,
+        id: ClientId,
+        command: UserCmd,
+        execution: qa_network::commands::packet::CommandExecution,
+    ) {
         let rules = self.runtime.server.clients[id.0 as usize]
             .player
             .movement_rules;
-        let command = qa_movement::prepare_command(rules, command);
-        self.runtime.server.submit_command(id, command);
+        let command = if execution == qa_network::commands::packet::CommandExecution::PerCommand {
+            qa_movement::prepare_command(rules, command)
+        } else {
+            command
+        };
+        self.runtime.server.submit_command(id, command, execution);
+        if execution == qa_network::commands::packet::CommandExecution::PerCommand {
+            self.consume_pending_command(id);
+            self.runtime.server.commit_attachments();
+        }
+    }
+
+    /// The host calls this ordered batch for frame-latest commands and bots.
+    /// Packet-command protocols already consumed their commands during ingress.
+    pub(crate) fn run_pending_commands(&mut self, span: qa_core::sys_events::EventTime) {
+        for slot in 0..self.runtime.server.clients.len() {
+            let id = ClientId(slot as u32);
+            self.runtime
+                .server
+                .resolve_frame_command(id, span, self.time);
+            self.consume_pending_command(id);
+        }
+        self.runtime.server.commit_attachments();
+    }
+
+    fn consume_pending_command(&mut self, id: ClientId) {
         if let Some(native) = self.runtime.server.module_moves(id) {
+            let Some(command) = self.runtime.server.take_pending_command(id) else {
+                return;
+            };
             if let Some(api) = self
                 .module_row(native.module)
                 .and_then(|row| row.client_api)
@@ -65,6 +97,14 @@ impl FrameHost {
                     .events
                     .console_formatted(format_args!("ClientThink: {error}\n"));
             }
+        } else if let Some(world) = &mut self.runtime.collision {
+            self.runtime.server.move_pending_client(
+                id,
+                &self.runtime.geometry,
+                world.geometry,
+                world.index,
+                &mut world.scratch,
+            );
         }
     }
     /// Native client numbers are supplied by the connection boundary. They are

@@ -164,6 +164,43 @@ fn native_eight_unit_margin_and_exact_plane_vertices_are_retained() {
 }
 
 #[test]
+fn center_fan_keeps_native_position_reciprocal_and_normal_division() {
+    let mut world = geometry(
+        &[[1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [4.0, 0.0, 0.0]],
+        [0.0; 2],
+    );
+    for (vertex, normal) in
+        world
+            .vertices
+            .iter_mut()
+            .zip([[-1.0, 1.0, 0.0], [-2.0, 1.0, 0.0], [-4.0, 3.0, 0.0]])
+    {
+        vertex.normal = Vec3(normal);
+        vertex.vertex.normal = vertex.normal;
+    }
+    let stats = subdivide_surface(
+        &mut world,
+        0,
+        GridOptions {
+            fan: GridFan::CenterFan,
+            ..GridOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(stats.fragments, 1);
+    let center = world.vertices[3];
+    assert_eq!(
+        center.vertex.position.0.map(f32::to_bits),
+        [0x4015_5555, 0x3eaa_aaab, 0]
+    );
+    assert_eq!(
+        center.normal.0.map(f32::to_bits),
+        [0xc015_5555, 0x3fd5_5555, 0]
+    );
+    assert_eq!(center.vertex.normal, center.normal);
+}
+
+#[test]
 fn generic_vertex_attributes_use_the_same_edge_fraction() {
     let points = [
         [-16.0, -4.0, 0.0],

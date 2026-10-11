@@ -63,18 +63,18 @@ fn qw_delta_requests_are_outside_crc_and_replace_per_message()
     )?;
     let mut connection = Commands::load(Protocol::QuakeWorld28);
     let n = connection.stage(&message)?;
-    assert!(connection.decode(n, 17, 0, 0, &mut channel)?.is_some());
+    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_| {})?, 1);
     assert_eq!(connection.delta_request(), Some(23));
     // The next message omits clc_delta and must not retain its predecessor.
     let n = connection.stage(&bytes[..length - 2])?;
-    assert!(connection.decode(n, 17, 0, 0, &mut channel)?.is_some());
+    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_| {})?, 1);
     assert_eq!(connection.delta_request(), None);
     let n = connection.stage(&message)?;
-    connection.decode(n, 17, 0, 0, &mut channel)?;
+    connection.decode(n, 17, 0, &mut channel, |_| {})?;
     assert_eq!(connection.delta_request(), Some(23));
     message.push(5);
     let n = connection.stage(&message)?;
-    assert!(connection.decode(n, 17, 0, 0, &mut channel).is_err());
+    assert!(connection.decode(n, 17, 0, &mut channel, |_| {}).is_err());
     assert_eq!(connection.delta_request(), None);
 
     for end in 0..length - 2 {

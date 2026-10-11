@@ -3,11 +3,12 @@
 use super::{
     Assets, Buffers, Camera, MAX_BANDS, PreparedDraw, WorldBand, WorldPrepare, WorldRaster,
 };
+use qa_core::primitives::IndexSpan;
 
 #[derive(Clone, Copy)]
 enum BandPass {
     Opaque,
-    DrawRange([usize; 2]),
+    DrawRange(IndexSpan),
 }
 
 struct BandWork<'a> {
@@ -305,7 +306,10 @@ impl WorldRaster {
                 camera,
                 assets,
                 buffers,
-                BandPass::DrawRange([rank, end]),
+                BandPass::DrawRange(IndexSpan {
+                    first: rank as u32,
+                    count: (end - rank) as u32,
+                }),
                 stats,
                 dispatch,
             )?;

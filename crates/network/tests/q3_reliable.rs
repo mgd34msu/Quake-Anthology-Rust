@@ -45,10 +45,14 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
         panic!("complete move")
     };
     let n = codec.stage(payload).unwrap();
-    let cmd = codec
-        .decode(n, sequence, time, 16_000_000, server)
-        .unwrap()
-        .unwrap();
+    let mut decoded = None;
+    assert_eq!(
+        codec
+            .decode(n, sequence, time, server, |cmd| decoded = Some(cmd))
+            .unwrap(),
+        1
+    );
+    let cmd = decoded.unwrap();
     assert_eq!(cmd.server_time_ms, time);
     assert_eq!(cmd.movement, command.movement);
 }

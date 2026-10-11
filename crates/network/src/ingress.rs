@@ -74,6 +74,7 @@ pub enum Incoming<'a> {
     Cue(crate::outputs::Cue),
     Command {
         command: qa_core::primitives::UserCmd,
+        execution: crate::commands::packet::CommandExecution,
         output: Option<OutputConsumerId>,
     },
     Acknowledged {
@@ -97,7 +98,6 @@ pub struct Connections {
     pub commands: u64,
     pub command_errors: u64,
     pub command_duplicates: u64,
-    pub frame_ns: u64,
 }
 impl Connections {
     pub fn load(clients: usize) -> Self {
@@ -116,7 +116,6 @@ impl Connections {
             commands: 0,
             command_errors: 0,
             command_duplicates: 0,
-            frame_ns: 0,
         }
     }
     /// Handshake/load supplies the endpoint and negotiated Channel explicitly.
@@ -248,28 +247,30 @@ impl Connections {
                     {
                         let sequence = received.header.sequence;
                         let length = commands.stage(payload);
+                        let execution = commands.protocol.command_execution();
+                        let output = connection.output;
                         let decoded = length.and_then(|length| {
                             commands.decode(
                                 length,
                                 sequence,
                                 time.milliseconds() as i32,
-                                self.frame_ns,
                                 &mut connection.channel,
+                                |command| {
+                                    consume(
+                                        client,
+                                        endpoint,
+                                        Incoming::Command {
+                                            command,
+                                            execution,
+                                            output,
+                                        },
+                                    );
+                                },
                             )
                         });
                         match decoded {
-                            Ok(Some(command)) => {
-                                self.commands += 1;
-                                consume(
-                                    client,
-                                    endpoint,
-                                    Incoming::Command {
-                                        command,
-                                        output: connection.output,
-                                    },
-                                );
-                            }
-                            Ok(None) => self.command_duplicates += 1,
+                            Ok(0) => self.command_duplicates += 1,
+                            Ok(accepted) => self.commands += accepted as u64,
                             Err(_) => self.command_errors += 1,
                         }
                     } else if !payload.is_empty()

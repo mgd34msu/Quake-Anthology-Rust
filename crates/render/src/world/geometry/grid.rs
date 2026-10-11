@@ -1,7 +1,7 @@
 //! Cold axial polygon subdivision, Q1/WinQuake/gl_warp.c:55-137 and
 //! Q2/ref_gl/gl_warp.c:54-153. Source boundaries remain the CPU polygons.
 use super::{GeometryError, GeometryKind, WorldGeometry, WorldVertex, section, span};
-use qa_core::primitives::Vec3;
+use qa_core::primitives::{Bounds, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridFan {
@@ -175,14 +175,17 @@ fn split_plane(
     spacing: f32,
     id: u32,
 ) -> Result<Option<(usize, f32)>, GeometryError> {
+    let first = points[0].vertex.position;
+    let mut bounds = Bounds {
+        mins: first,
+        maxs: first,
+    };
+    for point in &points[1..] {
+        bounds.add_point(point.vertex.position);
+    }
     for axis in 0..3 {
-        let mut minimum = points[0].vertex.position.0[axis];
-        let mut maximum = minimum;
-        for point in &points[1..] {
-            let value = point.vertex.position.0[axis];
-            minimum = minimum.min(value);
-            maximum = maximum.max(value);
-        }
+        let minimum = bounds.mins.0[axis];
+        let maximum = bounds.maxs.0[axis];
         let middle = (minimum + maximum) * 0.5;
         // Native division is f32; its .5 and floor operation are double.
         let middle = (f64::from(spacing) * (f64::from(middle / spacing) + 0.5).floor()) as f32;
@@ -235,16 +238,14 @@ fn interpolate(a: WorldVertex, b: WorldVertex, fraction: f32) -> WorldVertex {
 
 fn center(points: &[WorldVertex]) -> WorldVertex {
     let mut out = points[0];
-    let mut position = [0.0; 3];
-    let mut normal = [0.0; 3];
+    let mut position = Vec3::default();
+    let mut normal = Vec3::default();
     let mut uv = [0.0; 2];
     let mut lightmap = [0.0; 2];
     let mut color = [0.0; 4];
     for point in points {
-        for i in 0..3 {
-            position[i] += point.vertex.position.0[i];
-            normal[i] += point.normal.0[i];
-        }
+        position = position + point.vertex.position;
+        normal = normal + point.normal;
         for i in 0..2 {
             uv[i] += point.vertex.texcoord[i];
             lightmap[i] += point.vertex.lightmap_coord[i];
@@ -255,8 +256,8 @@ fn center(points: &[WorldVertex]) -> WorldVertex {
     }
     // Q2 VectorScale(total, 1.0/numverts) multiplies by a double reciprocal.
     let inverse = 1.0 / points.len() as f64;
-    out.vertex.position = Vec3(position.map(|n| (f64::from(n) * inverse) as f32));
-    out.normal = Vec3(normal.map(|n| n / points.len() as f32));
+    out.vertex.position = Vec3(position.0.map(|n| (f64::from(n) * inverse) as f32));
+    out.normal = normal / points.len() as f32;
     out.vertex.normal = out.normal;
     out.vertex.texcoord = uv.map(|n| n / points.len() as f32);
     out.vertex.lightmap_coord = lightmap.map(|n| n / points.len() as f32);

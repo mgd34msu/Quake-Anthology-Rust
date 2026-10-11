@@ -339,10 +339,7 @@ impl Assets {
         height: u32,
         rgba: &[u8],
     ) -> Result<ImageId, &'static str> {
-        if width == 0
-            || height == 0
-            || width > 8192
-            || height > 8192
+        if upload::validate_dimensions(width, height).is_err()
             || rgba.len() != width as usize * height as usize * 4
         {
             return Err("invalid RGBA image dimensions");

@@ -432,6 +432,42 @@ pub(super) fn commands_move_a_native_client_once() {
             );
         }
         assert_eq!(host.runtime.network.commands, 2);
+        // Both packets share one event drain. Module-owned clients must consume
+        // each command once, without leaving another engine movement pending.
+        for frame in 3..=4 {
+            assert!(host.runtime.send_local_command(
+                id,
+                &command,
+                EventTime::from_milliseconds(frame * 16)
+            ));
+        }
+        host.drain(&mut Default::default());
+        assert_eq!(host.runtime.network.commands, 4);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().calls,
+            initial_calls + 4
+        );
+        let position = host.runtime.server.clients[id.0 as usize]
+            .player
+            .body
+            .position;
+        let world = host.runtime.collision.as_mut().unwrap();
+        assert_eq!(
+            host.runtime.server.move_pending_clients(
+                &host.runtime.geometry,
+                world.geometry,
+                0,
+                &mut world.scratch,
+            ),
+            0
+        );
+        assert_eq!(
+            host.runtime.server.clients[id.0 as usize]
+                .player
+                .body
+                .position,
+            position
+        );
         super::cues::received_sounds_use_precache_and_the_presentation_ring(
             &mut host,
             id,

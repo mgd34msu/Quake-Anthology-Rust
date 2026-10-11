@@ -53,9 +53,7 @@ pub(super) fn subdivide(
                 let a = row[column].vertex.position;
                 let b = row[column + 1].vertex.position;
                 let c = row[column + 2].vertex.position;
-                let midpoint = Vec3(std::array::from_fn(|i| {
-                    (a.0[i] + b.0[i] * 2.0 + c.0[i]) * 0.25
-                }));
+                let midpoint = ((a + b * 2.0) + c) * 0.25;
                 let offset = midpoint - a;
                 let direction = normalized_or_zero(c - a);
                 let distance = offset - (direction * offset.dot(direction));

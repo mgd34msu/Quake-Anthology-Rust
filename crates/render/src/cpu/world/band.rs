@@ -89,14 +89,14 @@ impl WorldBand {
         &mut self,
         prepared: &WorldPrepare,
         camera: &Camera,
-        ranks: [usize; 2],
+        ranks: IndexSpan,
         assets: &Assets,
         mut buffers: Buffers<'_>,
         stats: &mut crate::BackendStats,
     ) {
         // Preserve each original rank's edge scan and rover operations. Only
         // the platform barrier changes; rows remain exclusively owned here.
-        for rank in ranks[0]..ranks[1] {
+        for rank in ranks.range() {
             self.draw_item(prepared, camera, rank, assets, buffers.reborrow(), stats);
         }
     }

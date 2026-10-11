@@ -389,9 +389,8 @@ fn deliver_client_move(
     let qa_network::commands::packet::Move::Quake3 { delta, .. } = movement else {
         return Err(Error::Context);
     };
-    let accepted = server_commands
-        .decode(staged, client.send_state().sequence, time, 0, server)?
-        .is_some();
+    let accepted =
+        server_commands.decode(staged, client.send_state().sequence, time, server, |_| {})? > 0;
     Ok((delta, accepted))
 }
 
@@ -681,7 +680,13 @@ fn q2_request(
     let qa_network::commands::packet::Move::Quake2 { last_frame, .. } = movement else {
         return Err(Error::Context);
     };
-    receiver.decode(staged, client.channel.send_state().sequence, 0, 0, server)?;
+    receiver.decode(
+        staged,
+        client.channel.send_state().sequence,
+        0,
+        server,
+        |_| {},
+    )?;
     let expected = (last_frame >= 0).then_some(last_frame as u32);
     assert_eq!(receiver.delta_request(), expected);
     Ok(expected)
@@ -1014,9 +1019,11 @@ fn qw_move(
             return Err(Error::Context);
         };
         let length = commands.stage(payload)?;
-        let command = commands
-            .decode(length, sequence, 0, 0, server)?
-            .ok_or(Error::Context)?;
+        let mut command = None;
+        commands.decode(length, sequence, 0, server, |current| {
+            command = Some(current)
+        })?;
+        let command = command.ok_or(Error::Context)?;
         assert_eq!(command.movement[0], 300.);
         assert_eq!(command.duration_ms, 20);
     }
@@ -1968,12 +1975,20 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
             Channel::load(Protocol::NetQuake15.channel(), Endpoint::Server, 8192, 16)
                 .map_err(|_| Error::Context)?;
         let length = server_commands.stage(&bytes[..length])?;
-        let decoded = server_commands
-            .decode(length, 0, 4321, 50_000_321, &mut server_channel)?
-            .ok_or(Error::Context)?;
-        assert_eq!(decoded.duration_ns, 50_000_321);
-        assert_eq!(decoded.duration_ms, 50);
+        let mut decoded = None;
+        assert_eq!(
+            server_commands.decode(length, 0, 4321, &mut server_channel, |command| decoded =
+                Some(command),)?,
+            1
+        );
+        let decoded = decoded.ok_or(Error::Context)?;
+        assert_eq!(decoded.duration_ns, 0);
+        assert_eq!(decoded.duration_ms, 0);
         assert_eq!(decoded.server_time_ms, 4321);
+        assert_eq!(
+            Protocol::NetQuake15.command_execution(),
+            qa_core::primitives::CommandExecution::FrameLatest,
+        );
         Ok(())
     }
     let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;

@@ -242,13 +242,25 @@ fn untrusted_command_client_ids_are_scoped_and_disconnected_slots_stay_idle() {
         duration_ms: 123,
         ..Default::default()
     };
-    server.submit_command(ClientId(u32::MAX), command);
-    server.submit_command(ClientId(0), command);
+    server.submit_command(
+        ClientId(u32::MAX),
+        command,
+        qa_core::primitives::CommandExecution::PerCommand,
+    );
+    server.submit_command(
+        ClientId(0),
+        command,
+        qa_core::primitives::CommandExecution::PerCommand,
+    );
     assert_eq!(server.clients[0].command.duration_ms, 0);
     let id = server
         .connect(Connection::Remote, ModuleId(1), PlayerTail::None, None)
         .unwrap();
-    server.submit_command(id, command);
+    server.submit_command(
+        id,
+        command,
+        qa_core::primitives::CommandExecution::PerCommand,
+    );
     assert_eq!(server.clients[0].command.duration_ms, 123);
 }
 

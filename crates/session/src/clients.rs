@@ -1,7 +1,8 @@
 use qa_core::events::{EventRing, OutputConsumerId, OutputTarget};
 use qa_core::primitives::{
-    Bounds, ClientId, CollisionOwner, CollisionShape, CommandIntent, EntityId, GeometryId,
-    HudState, ModuleId, NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3,
+    Bounds, ClientId, CollisionOwner, CollisionShape, CommandExecution, CommandIntent, EntityId,
+    GeometryId, HudState, ModuleId, NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd,
+    Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
@@ -32,6 +33,7 @@ pub struct Client {
     pub hud: HudState,
     pub hud_publication: HudPublication,
     pub command: UserCmd,
+    pub command_execution: CommandExecution,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
     /// An admitted native Q2 client advances inside ClientThink through Pmove.
@@ -45,6 +47,7 @@ impl Client {
         self.hud.reset(texts);
         self.hud_publication.reset();
         self.command = UserCmd::default();
+        self.command_execution = CommandExecution::default();
         self.command_pending = false;
         self.module_movement = false;
         self.intent = CommandIntent::default();
@@ -120,6 +123,7 @@ impl Server {
                 link_order: LinkOrder::Tail,
                 player: PlayerState::with_capacity(items, powerups, values),
                 command: UserCmd::default(),
+                command_execution: CommandExecution::default(),
                 intent: CommandIntent::default(),
                 command_pending: false,
                 module_movement: false,
@@ -271,13 +275,14 @@ impl Server {
                 );
                 client.command =
                     qa_movement::prepare_command(client.player.movement_rules, command);
+                client.command_execution = CommandExecution::PerCommand;
                 client.command_pending = true;
             }
         }
     }
 
     /// Ingress submits a command once. There is no recorded input history.
-    pub fn submit_command(&mut self, id: ClientId, command: UserCmd) {
+    pub fn submit_command(&mut self, id: ClientId, command: UserCmd, execution: CommandExecution) {
         let Some(client) = self
             .clients
             .get_mut(id.0 as usize)
@@ -286,7 +291,81 @@ impl Server {
             return;
         };
         client.command = command;
+        client.command_execution = execution;
         client.command_pending = true;
+    }
+
+    /// Frame-latest wire commands have no msec field. Resolve them against the
+    /// queued SERVER frame which consumes them, never a packet-arrival span.
+    pub fn resolve_frame_command(&mut self, id: ClientId, span: EventTime, end: EventTime) {
+        let Some(client) = self.clients.get_mut(id.0 as usize) else {
+            return;
+        };
+        if client.command_pending && client.command_execution == CommandExecution::FrameLatest {
+            let command = UserCmd {
+                duration_ms: span.milliseconds().min(u64::from(u16::MAX)) as u16,
+                duration_ns: span.0,
+                server_time_ms: end.milliseconds() as i32,
+                ..client.command
+            };
+            client.command = qa_movement::prepare_command(client.player.movement_rules, command);
+        }
+    }
+
+    /// Consume the one admitted command. Native module hosts use this same
+    /// pending bit before ClientThink; taking it never runs engine movement.
+    pub fn take_pending_command(&mut self, id: ClientId) -> Option<UserCmd> {
+        let client = self.clients.get_mut(id.0 as usize)?;
+        if client.connection.is_none() || !client.command_pending {
+            return None;
+        }
+        client.command_pending = false;
+        Some(client.command)
+    }
+
+    /// The single authoritative engine movement/body/link operation. Packet
+    /// protocols consume here before admitting their next command; frame-latest
+    /// protocols and bots use the batch below. The caller transports attachments
+    /// after its ordered body commits through commit_attachments.
+    pub fn move_pending_client(
+        &mut self,
+        id: ClientId,
+        store: &CollisionStore,
+        geometry: GeometryId,
+        index: u32,
+        scratch: &mut TraceScratch,
+    ) -> u32 {
+        let module_moves = self.module_moves(id).is_some();
+        let Some(command) = self.take_pending_command(id) else {
+            return 0;
+        };
+        if module_moves {
+            return 0;
+        }
+        let client = &mut self.clients[id.0 as usize];
+        let result = {
+            let mut trace = WorldTrace::new(
+                store,
+                geometry,
+                index,
+                &self.entities,
+                &self.area,
+                scratch,
+                CollisionOwner::Lifetime(client.entity),
+            );
+            qa_movement::pmove(command, &mut client.player, &mut trace)
+        };
+        self.entities
+            .columns
+            .set_body(client.entity.slot as usize, client.player.body);
+        self.area.link(
+            &self.entities,
+            client.entity,
+            LinkFlags::SOLID,
+            client.link_order,
+            LinkIntent::Commit,
+        );
+        result.steps
     }
 
     /// Local, network and bot clients share the same authoritative entry.
@@ -301,37 +380,13 @@ impl Server {
     ) -> u32 {
         let mut steps = 0;
         for client_index in 0..self.clients.len() {
-            let module_moves = self.module_moves(ClientId(client_index as u32)).is_some();
-            let client = &mut self.clients[client_index];
-            if client.connection.is_some() && client.command_pending {
-                client.command_pending = false;
-                if module_moves {
-                    continue;
-                }
-                let result = {
-                    let mut trace = WorldTrace::new(
-                        store,
-                        geometry,
-                        index,
-                        &self.entities,
-                        &self.area,
-                        scratch,
-                        CollisionOwner::Lifetime(client.entity),
-                    );
-                    qa_movement::pmove(client.command, &mut client.player, &mut trace)
-                };
-                steps += result.steps;
-                self.entities
-                    .columns
-                    .set_body(client.entity.slot as usize, client.player.body);
-                self.area.link(
-                    &self.entities,
-                    client.entity,
-                    LinkFlags::SOLID,
-                    client.link_order,
-                    LinkIntent::Commit,
-                );
-            }
+            steps += self.move_pending_client(
+                ClientId(client_index as u32),
+                store,
+                geometry,
+                index,
+                scratch,
+            );
         }
         self.commit_attachments();
         steps

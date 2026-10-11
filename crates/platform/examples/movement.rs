@@ -191,7 +191,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     intent,
                     qa_input::InputPolicy::native(client.player.movement_rules),
                 );
-                server.submit_command(ClientId(slot as u32), command);
+                server.submit_command(
+                    ClientId(slot as u32),
+                    command,
+                    qa_core::primitives::CommandExecution::PerCommand,
+                );
             }
         }
         server.build_bot_commands(start, end, qa_input::InputPolicy::native);

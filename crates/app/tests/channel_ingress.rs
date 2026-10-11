@@ -236,7 +236,7 @@ fn local_moves_submit_only_after_native_channel_packet_dispatch() -> Result<(), 
 }
 
 #[test]
-fn netquake_move_duration_uses_queued_packet_time_instead_of_pacing_or_time_marker()
+fn netquake_move_duration_uses_queued_server_frame_time_instead_of_packet_or_pacing_time()
 -> Result<(), String> {
     struct Source(EventTime);
     impl FrameSource for Source {
@@ -265,7 +265,7 @@ fn netquake_move_duration_uses_queued_packet_time_instead_of_pacing_or_time_mark
         movement: [1.0, 0.0, 0.0],
         ..Default::default()
     };
-    for (packet_ms, marker_ms, duration_ms) in [(41, 50, 41), (83, 90, 33)] {
+    for (packet_ms, marker_ms, duration_ms) in [(41, 50, 50), (83, 90, 40)] {
         assert!(
             host.runtime
                 .send_local_command(client, &command, EventTime::default())

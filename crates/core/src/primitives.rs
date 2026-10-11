@@ -790,6 +790,16 @@ impl PlayerState {
     }
 }
 
+/// Transport-selected command consumption, independent of movement rules.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommandExecution {
+    /// Keep the latest command and resolve its duration at the SERVER frame.
+    FrameLatest,
+    /// Consume each admitted command before admitting the next one.
+    #[default]
+    PerCommand,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UserCmd {
     pub duration_ms: u16,

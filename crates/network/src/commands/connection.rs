@@ -1,6 +1,7 @@
 //! The connection owns its packet codec and fixed decode scratch.
 use super::{
-    from_q1_move, from_q2_rr_usercmd, from_q2_usercmd, from_q3_usercmd, from_qw_usercmd,
+    Q2Cmd, Q2RrCmd, QwCmd, from_q1_move, from_q2_rr_usercmd, from_q2_usercmd, from_q3_usercmd,
+    from_qw_usercmd,
     packet::{self, Key, Move, Protocol, ZERO_Q2, ZERO_Q2_RR, ZERO_Q3, ZERO_QW},
     to_q1_move, to_q2_rr_usercmd, to_q2_usercmd, to_q3_usercmd, to_qw_usercmd,
 };
@@ -17,6 +18,42 @@ pub struct Commands {
     scratch: Box<[u8]>,
     previous_time: i32,
     delta_request: Option<u32>,
+    previous_command: Option<NativeBackup>,
+}
+
+/// Native loss recovery retains one command, not an input history.
+#[derive(Clone, Copy)]
+enum NativeBackup {
+    QuakeWorld(QwCmd),
+    Quake2(Q2Cmd),
+    Quake2Repro(Q2RrCmd),
+}
+
+/// QW/Q2 repeat the last command only for gaps smaller than twenty packets.
+fn recover<C: Copy>(
+    mut dropped: u32,
+    previous: C,
+    commands: [C; 3],
+    mut consume: impl FnMut(C),
+) -> usize {
+    let mut accepted = 0;
+    if dropped < 20 {
+        while dropped > 2 {
+            consume(previous);
+            accepted += 1;
+            dropped -= 1;
+        }
+        if dropped > 1 {
+            consume(commands[0]);
+            accepted += 1;
+        }
+        if dropped > 0 {
+            consume(commands[1]);
+            accepted += 1;
+        }
+    }
+    consume(commands[2]);
+    accepted + 1
 }
 impl Commands {
     pub fn load(protocol: Protocol) -> Self {
@@ -25,6 +62,12 @@ impl Commands {
             scratch: vec![0; 8192].into_boxed_slice(),
             previous_time: 0,
             delta_request: None,
+            previous_command: match protocol {
+                Protocol::QuakeWorld28 => Some(NativeBackup::QuakeWorld(ZERO_QW)),
+                Protocol::Quake2_34 => Some(NativeBackup::Quake2(ZERO_Q2)),
+                Protocol::Quake2Repro1038 => Some(NativeBackup::Quake2Repro(ZERO_Q2_RR)),
+                _ => None,
+            },
         }
     }
     /// Native payload delta request. QW SERVER retains clc_delta's low byte;
@@ -110,7 +153,7 @@ impl Commands {
             |writer| channel.write_command_records(writer),
         )
     }
-    /// NQ duration is the native SERVER frame input, never its ping timestamp.
+    /// Copies the native payload into the connection's fixed decode scratch.
     pub fn stage(&mut self, bytes: &[u8]) -> Result<usize, packet::Error> {
         self.scratch
             .get_mut(..bytes.len())
@@ -123,9 +166,9 @@ impl Commands {
         length: usize,
         sequence: u32,
         server_time: i32,
-        frame_ns: u64,
         channel: &mut Channel,
-    ) -> Result<Option<UserCmd>, packet::Error> {
+        mut consume: impl FnMut(UserCmd),
+    ) -> Result<usize, packet::Error> {
         if self.protocol == Protocol::QuakeWorld28 {
             // SV_ExecuteClientMessage starts each message with delta_sequence=-1.
             self.delta_request = None;
@@ -156,18 +199,17 @@ impl Commands {
                 channel.receive_command(sequence, text).map(|_| ())
             })?
         else {
-            return Ok(None);
+            return Ok(0);
         };
-        let command = match movement {
+        let dropped = channel.state().dropped;
+        let accepted = match movement {
             Move::NetQuake { command, .. } => {
-                let mut command = from_q1_move(
-                    command,
-                    (qa_core::sys_events::EventTime(frame_ns).milliseconds())
-                        .min(u64::from(u16::MAX)) as u16,
-                    server_time,
-                );
-                command.duration_ns = frame_ns;
-                command
+                // NetQuake's wire has no duration. SERVER resolves it once
+                // when consuming the latest command for its queued frame span.
+                let command = from_q1_move(command, 0, server_time);
+                self.previous_time = command.server_time_ms;
+                consume(command);
+                1
             }
             Move::QuakeWorld {
                 commands,
@@ -175,30 +217,48 @@ impl Commands {
                 ..
             } => {
                 self.delta_request = delta_request.map(u32::from);
-                from_qw_usercmd(
-                    commands[2],
-                    self.previous_time.wrapping_add(i32::from(commands[2].msec)),
-                )
+                let Some(NativeBackup::QuakeWorld(previous)) = self.previous_command else {
+                    return Err(packet::Error::Context);
+                };
+                let accepted = recover(dropped, previous, commands, |native| {
+                    self.previous_time = self.previous_time.wrapping_add(i32::from(native.msec));
+                    consume(from_qw_usercmd(native, self.previous_time));
+                });
+                let mut previous = commands[2];
+                // SV_ExecuteClientMessage avoids repeated fire during recovery.
+                previous.buttons = 0;
+                self.previous_command = Some(NativeBackup::QuakeWorld(previous));
+                accepted
             }
             Move::Quake2 {
                 last_frame,
                 commands,
             } => {
                 self.delta_request = (last_frame >= 0).then_some(last_frame as u32);
-                from_q2_usercmd(
-                    commands[2],
-                    self.previous_time.wrapping_add(i32::from(commands[2].msec)),
-                )
+                let Some(NativeBackup::Quake2(previous)) = self.previous_command else {
+                    return Err(packet::Error::Context);
+                };
+                let accepted = recover(dropped, previous, commands, |native| {
+                    self.previous_time = self.previous_time.wrapping_add(i32::from(native.msec));
+                    consume(from_q2_usercmd(native, self.previous_time));
+                });
+                self.previous_command = Some(NativeBackup::Quake2(commands[2]));
+                accepted
             }
             Move::Quake2Repro {
                 last_frame,
                 commands,
             } => {
                 self.delta_request = (last_frame >= 0).then_some(last_frame as u32);
-                from_q2_rr_usercmd(
-                    commands[2],
-                    self.previous_time.wrapping_add(i32::from(commands[2].msec)),
-                )
+                let Some(NativeBackup::Quake2Repro(previous)) = self.previous_command else {
+                    return Err(packet::Error::Context);
+                };
+                let accepted = recover(dropped, previous, commands, |native| {
+                    self.previous_time = self.previous_time.wrapping_add(i32::from(native.msec));
+                    consume(from_q2_rr_usercmd(native, self.previous_time));
+                });
+                self.previous_command = Some(NativeBackup::Quake2Repro(commands[2]));
+                accepted
             }
             Move::Quake3 {
                 commands,
@@ -207,19 +267,25 @@ impl Commands {
             } => {
                 // This precedes old-command filtering in native SV_UserMove.
                 self.delta_request = delta.then_some(message_acknowledged);
-                let native = commands[usize::from(count) - 1];
-                if native.server_time <= self.previous_time {
-                    return Ok(None);
+                let final_time = commands[usize::from(count) - 1].server_time;
+                let mut accepted = 0;
+                for &native in &commands[..usize::from(count)] {
+                    if native.server_time > final_time || native.server_time <= self.previous_time {
+                        continue;
+                    }
+                    let command = from_q3_usercmd(
+                        native,
+                        self.previous_time,
+                        qa_core::primitives::WeaponId::default(),
+                    );
+                    self.previous_time = native.server_time;
+                    consume(command);
+                    accepted += 1;
                 }
-                from_q3_usercmd(
-                    native,
-                    self.previous_time,
-                    qa_core::primitives::WeaponId::default(),
-                )
+                accepted
             }
         };
-        self.previous_time = command.server_time_ms;
-        Ok(Some(command))
+        Ok(accepted)
     }
     pub fn decode_output(
         &mut self,

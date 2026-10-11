@@ -538,8 +538,8 @@ fn connected_heap() -> Result<(), String> {
                 staged,
                 client.channel.send_state().sequence,
                 0,
-                0,
                 &mut server,
+                |_| {},
             )?;
             if server_commands.delta_request() != Some(frame) {
                 return Err(qa_network::commands::packet::Error::Context);
@@ -675,9 +675,11 @@ fn connected_qw_heap() -> Result<(), String> {
                 return Err(Error::Context);
             };
             let length = server_commands.stage(bytes)?;
-            let received = server_commands
-                .decode(length, sequence, 0, 0, &mut server)?
-                .ok_or(Error::Context)?;
+            let mut received = None;
+            server_commands.decode(length, sequence, 0, &mut server, |command| {
+                received = Some(command);
+            })?;
+            let received = received.ok_or(Error::Context)?;
             if received.movement[0] != 300.
                 || server_commands.delta_request() != base.map(|n| u32::from(n as u8))
             {

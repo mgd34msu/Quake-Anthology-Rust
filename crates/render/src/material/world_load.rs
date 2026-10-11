@@ -35,14 +35,14 @@ use crate::{
 };
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
+use qa_core::text::FixedText;
 use qa_formats::bsp::Map;
 
 /// Worldspawn/configstring data copied at the entity boundary. Rendering owns
 /// no entity-lump parser and resolves this name only during asset registration.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SkyEnvironment {
-    name: [u8; 64],
-    length: u8,
+    name: FixedText<63>,
     pub degrees_per_second: f32,
     pub axis: qa_core::primitives::Vec3,
 }
@@ -53,7 +53,7 @@ impl SkyEnvironment {
         axis: qa_core::primitives::Vec3,
     ) -> Result<Self, &'static str> {
         if name.is_empty()
-            || name.len() > 63
+            || name.len() > FixedText::<63>::CAPACITY
             || !degrees_per_second.is_finite()
             || !axis.is_finite()
             || std::str::from_utf8(name).is_err()
@@ -63,33 +63,33 @@ impl SkyEnvironment {
         {
             return Err("invalid sky environment");
         }
-        let mut result = Self {
-            name: [0; 64],
-            length: name.len() as u8,
+        let mut text = FixedText::default();
+        text.set_bytes(name)
+            .map_err(|_| "invalid sky environment")?;
+        Ok(Self {
+            name: text,
             degrees_per_second,
             axis,
-        };
-        result.name[..name.len()].copy_from_slice(name);
-        Ok(result)
+        })
     }
     pub fn name(&self) -> Result<&str, std::str::Utf8Error> {
-        std::str::from_utf8(&self.name[..self.length as usize])
+        std::str::from_utf8(self.name.as_bytes())
     }
 }
 impl Default for SkyEnvironment {
     fn default() -> Self {
-        let mut name = [0; 64];
-        name[..6].copy_from_slice(b"unit1_");
+        let mut name = FixedText::default();
+        // The original default is a constant six-byte name within this capacity.
+        let _ = name.set_bytes(b"unit1_");
         Self {
             name,
-            length: 6,
             degrees_per_second: 0.0,
             axis: qa_core::primitives::Vec3::default(),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldLoadOptions {
     pub geometry: GeometryOptions,
     /// Explicit RGB/custom presentation; stock Q1/Q2 defaults retain indices.
@@ -247,8 +247,13 @@ pub fn load_world(
     let mut geometry = load_geometry(map, options.geometry)?;
     let visibility =
         load_visibility(map).map_err(|_| WorldMaterialError::Boundary("world visibility"))?;
-    let (lightmaps, regions) =
-        prepare_lightmaps(&geometry, assets, options, &presentation.lightstyles, rules)?;
+    let (lightmaps, regions) = prepare_lightmaps(
+        &geometry,
+        assets,
+        &options,
+        &presentation.lightstyles,
+        rules,
+    )?;
     for surface in &geometry.surfaces {
         if !matches!(rules, RuleSetId::Quake3)
             && let Some(region) = regions[surface.source_id as usize]
@@ -401,7 +406,7 @@ pub fn load_world(
         } else if matches!(rules, RuleSetId::Quake2) && sky {
             Some(Sky::Cube {
                 outer_box: Some(load_indexed_box(
-                    options.sky_environment,
+                    &options.sky_environment,
                     palette.ok_or(WorldMaterialError::Boundary("missing sky palette"))?,
                     &mut images,
                 )?),
@@ -506,7 +511,7 @@ pub fn load_world(
 fn prepare_lightmaps(
     geometry: &WorldGeometry,
     assets: &mut Assets,
-    options: WorldLoadOptions,
+    options: &WorldLoadOptions,
     styles: &[LightStyle; 256],
     rules: RuleSetId,
 ) -> Result<(Vec<Option<ImageId>>, Vec<Option<AtlasRegion>>), WorldMaterialError> {
@@ -813,7 +818,7 @@ fn load_box(
     load_box_with_suffix(name, "_", wrap, images)
 }
 fn load_indexed_box(
-    environment: SkyEnvironment,
+    environment: &SkyEnvironment,
     palette: crate::PaletteId,
     images: &mut Images<'_>,
 ) -> Result<[ImageId; 6], WorldMaterialError> {

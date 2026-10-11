@@ -5,6 +5,7 @@ use crate::{
     channel,
     message::{Encoding, Error as MessageError, Reader, Writer},
 };
+pub use qa_core::primitives::CommandExecution;
 use qa_core::{checksum, primitives::Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +17,12 @@ pub enum Protocol {
     Quake3_68,
 }
 impl Protocol {
+    pub const fn command_execution(self) -> CommandExecution {
+        match self {
+            Self::NetQuake15 => CommandExecution::FrameLatest,
+            _ => CommandExecution::PerCommand,
+        }
+    }
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "15" => Some(Self::NetQuake15),

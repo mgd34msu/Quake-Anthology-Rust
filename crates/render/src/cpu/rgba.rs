@@ -206,9 +206,7 @@ impl Factor {
             |out| {
                 let row_bytes = view.bounds[2] as usize * 4;
                 for (row, destination) in out.chunks_exact_mut(row_bytes).enumerate() {
-                    let start = ((view.bounds[1] as usize + row) * view.width as usize
-                        + view.bounds[0] as usize)
-                        * 4;
+                    let start = view.offset(view.bounds[0] as usize, view.bounds[1] as usize + row);
                     destination.copy_from_slice(&view.rgba[start..start + row_bytes]);
                 }
             },
@@ -654,7 +652,7 @@ impl Product {
         let surface = geometry
             .surfaces
             .iter()
-            .find(|surface| surface.boundaries.range().contains(&boundary))?;
+            .find(|surface| surface.boundaries.contains(boundary))?;
         // qsrc gl_rsurf.c styled grids retain styles; tr_bsp.c:199-205
         // authored pages are static and have no lightstyle dependency.
         let styles = match surface.light_source {

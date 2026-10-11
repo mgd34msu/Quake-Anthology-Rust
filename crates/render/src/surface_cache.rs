@@ -8,12 +8,12 @@
 //! Fullbright colors are encoded by the supplied colormap rows; the cutoff
 //! metadata does not bypass that table. Only explicit fence cutouts skip it.
 
+use crate::assets::upload::{MAX_DIMENSION, validate_dimensions};
 use qa_core::stamps::StampSet;
 use std::sync::Arc;
 
 const COLORMAP_BYTES: usize = 64 * 256;
 const ALPHAMAP_BYTES: usize = 256 * 256;
-const MAX_DIMENSION: u32 = 8192;
 
 fn allocation_bytes(bytes: usize) -> Option<usize> {
     Some(bytes.checked_add(7)? & !7)
@@ -140,9 +140,7 @@ impl IndexedTexture {
         mips: [&[u8]; 4],
         transparent_index: Option<u8>,
     ) -> Result<Self, &'static str> {
-        if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
-            return Err("invalid indexed texture dimensions");
-        }
+        validate_dimensions(width, height).map_err(|_| "invalid indexed texture dimensions")?;
         for (mip, indices) in mips.iter().enumerate() {
             let w = (width >> mip).max(1) as usize;
             let h = (height >> mip).max(1) as usize;
@@ -170,10 +168,7 @@ impl IndexedTexture {
         indices: &[u8],
         transparent_index: Option<u8>,
     ) -> Result<Self, &'static str> {
-        if width == 0
-            || height == 0
-            || width > MAX_DIMENSION
-            || height > MAX_DIMENSION
+        if validate_dimensions(width, height).is_err()
             || indices.len() != width as usize * height as usize
         {
             return Err("invalid indexed base image dimensions");
@@ -268,10 +263,7 @@ impl LightGrid {
     ) -> Result<Self, &'static str> {
         let (cells, style_count) = grid_shape(size[0], size[1], [style, 255, 255, 255])?;
         if style_count != 1
-            || page_width == 0
-            || page_height == 0
-            || page_width > MAX_DIMENSION
-            || page_height > MAX_DIMENSION
+            || validate_dimensions(page_width, page_height).is_err()
             || page.len() != page_width as usize * page_height as usize * 3
             || origin[0] as u64 + size[0] as u64 > page_width as u64
             || origin[1] as u64 + size[1] as u64 > page_height as u64
@@ -307,9 +299,7 @@ impl LightGrid {
 }
 
 fn grid_shape(width: u32, height: u32, styles: [u8; 4]) -> Result<(usize, usize), &'static str> {
-    if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
-        return Err("invalid lightmap grid dimensions");
-    }
+    validate_dimensions(width, height).map_err(|_| "invalid lightmap grid dimensions")?;
     let count = styles.iter().position(|&s| s == 255).unwrap_or(4);
     if styles[count..].iter().any(|&s| s != 255) {
         return Err("invalid lightmap style sequence");
@@ -356,9 +346,8 @@ impl SurfaceSource {
         lightmap: Option<LightGrid>,
         world_has_lightdata: bool,
     ) -> Result<Self, &'static str> {
-        if extents
-            .iter()
-            .any(|&e| e == 0 || e > MAX_DIMENSION || !e.is_multiple_of(16))
+        if validate_dimensions(extents[0], extents[1]).is_err()
+            || extents.iter().any(|&e| !e.is_multiple_of(16))
             || lightmap
                 .as_ref()
                 .is_some_and(|grid| grid.dimensions() != [extents[0] / 16 + 1, extents[1] / 16 + 1])
@@ -386,7 +375,7 @@ impl SurfaceSource {
     ) -> Result<Self, &'static str> {
         if mip_count == 0
             || mip_count > 32
-            || extents.iter().any(|&e| e == 0 || e > MAX_DIMENSION)
+            || validate_dimensions(extents[0], extents[1]).is_err()
             || (extents[0] as usize)
                 .checked_mul(extents[1] as usize)
                 .and_then(|pixels| pixels.checked_mul(4))

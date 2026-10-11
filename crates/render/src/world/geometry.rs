@@ -728,11 +728,8 @@ fn vertex_bounds(vertices: &[WorldVertex]) -> Result<Bounds, GeometryError> {
         maxs: first,
     };
     for vertex in vertices {
-        for axis in 0..3 {
-            let value = vertex.vertex.position.0[axis];
-            if !value.is_finite() {
-                return Err(GeometryError::SizeLimit);
-            }
+        if !vertex.vertex.position.is_finite() {
+            return Err(GeometryError::SizeLimit);
         }
         bounds.add_point(vertex.vertex.position);
     }
