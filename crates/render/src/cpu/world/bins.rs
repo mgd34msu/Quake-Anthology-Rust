@@ -69,8 +69,7 @@ impl CoverageBins {
     ) {
         self.clear();
         for (index, primitive) in primitives.iter().enumerate() {
-            let vertices = &coverage
-                [primitive.first_coverage..primitive.first_coverage + primitive.coverage_count];
+            let vertices = &coverage[primitive.coverage.range()];
             let depth_policy = if index < opaque_count && !primitive.overlay {
                 policy
             } else {

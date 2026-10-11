@@ -216,8 +216,7 @@ impl WorldBand {
                 if opaque_only && primitive.overlay {
                     continue;
                 }
-                let vertices = &prepared.geometry.coverage
-                    [primitive.first_coverage..primitive.first_coverage + primitive.coverage_count];
+                let vertices = &prepared.geometry.coverage[primitive.coverage.range()];
                 if !self.edges.add_polygon(
                     index,
                     primitive.depth_key,

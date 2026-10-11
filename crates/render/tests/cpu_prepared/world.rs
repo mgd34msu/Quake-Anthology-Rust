@@ -2086,8 +2086,10 @@ fn coverage_bins_keep_odd_global_rows_and_uncertain_primitive_order() {
             texcoord_over_depth: [0.0; 2],
         });
         primitives.push(Primitive {
-            first_coverage: coverage.len(),
-            coverage_count: vertices.len(),
+            coverage: RangeSpan {
+                first: coverage.len() as u32,
+                count: vertices.len() as u32,
+            },
             winding: crate::edges::polygon_winding(&vertices).ok(),
             ..Primitive::default()
         });

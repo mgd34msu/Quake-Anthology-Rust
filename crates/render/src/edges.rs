@@ -45,6 +45,11 @@ pub struct Stats {
     pub rejected: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Winding {
+    clockwise: bool,
+}
+
 /// Certifies a polygon's native global row interval without storing scanner
 /// state. Errors must remain eligible for every active band: add_polygon still
 /// owns their scoped rejection, including fixed-edge arithmetic failures.
@@ -56,7 +61,7 @@ pub fn certified_rows(
     vertices: &[ProjectedVertex],
     viewport: Viewport,
     policy: DepthPolicy,
-    winding: Option<bool>,
+    winding: Option<Winding>,
 ) -> Result<std::ops::Range<u32>, ()> {
     if viewport.width == 0
         || viewport.height == 0
@@ -65,8 +70,7 @@ pub fn certified_rows(
     {
         return Err(());
     }
-    valid_polygon(vertices)?;
-    let clockwise = winding.ok_or(())?;
+    let clockwise = winding.ok_or(())?.clockwise;
     let mut start = viewport.y + viewport.height;
     let mut end = viewport.y;
     let mut previous = vertices[vertices.len() - 1];
@@ -271,16 +275,17 @@ impl Edges {
         key: u32,
         draw_rank: u32,
         vertices: &[ProjectedVertex],
-        winding: Option<bool>,
+        winding: Option<Winding>,
     ) -> bool {
         if !self.collecting {
             self.stats.rejected += 1;
             return false;
         }
-        let Some(clockwise) = winding.filter(|_| valid_polygon(vertices).is_ok()) else {
+        let Some(winding) = winding else {
             self.stats.rejected += 1;
             return false;
         };
+        let clockwise = winding.clockwise;
         let mut needed = 0usize;
         let mut previous = vertices[vertices.len() - 1];
         for &vertex in vertices {
@@ -661,12 +666,14 @@ fn valid_polygon(vertices: &[ProjectedVertex]) -> Result<(), ()> {
     clippy::result_unit_err,
     reason = "Invalid winding is a scoped geometry rejection."
 )]
-pub fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<bool, ()> {
+pub fn polygon_winding(vertices: &[ProjectedVertex]) -> Result<Winding, ()> {
     valid_polygon(vertices)?;
     let area =
         crate::affine::signed_area(vertices.len(), |index| vertices[index].xy.map(f64::from));
     (area != 0.0 && area.is_finite())
-        .then_some(area > 0.0)
+        .then_some(Winding {
+            clockwise: area > 0.0,
+        })
         .ok_or(())
 }
 

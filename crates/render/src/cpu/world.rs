@@ -297,12 +297,10 @@ struct Primitive {
     fixed_adjust: [i64; 2],
     planes: Planes,
     overlay: bool,
-    first_stage: usize,
-    stages: usize,
+    stages: qa_core::primitives::IndexSpan,
     deforms: [DeformOp; 3],
-    first_coverage: usize,
-    coverage_count: usize,
-    winding: Option<bool>,
+    coverage: qa_core::primitives::IndexSpan,
+    winding: Option<crate::edges::Winding>,
     depth_override: Option<f32>,
     patch: bool,
     rgba: Option<usize>,
@@ -1421,8 +1419,10 @@ impl SurfacePrepare {
                     fixed_adjust: [0; 2],
                     planes: Planes::default(),
                     overlay,
-                    first_stage: self.stage_count,
-                    stages: 0,
+                    stages: qa_core::primitives::IndexSpan {
+                        first: self.stage_count as u32,
+                        count: 0,
+                    },
                     deforms,
                     patch: surface.patch.is_some(),
                     rgba: current.map(|(index, _)| index),
@@ -1530,17 +1530,17 @@ impl SurfacePrepare {
                             sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
                         };
                         self.stage_count += 1;
-                        primitive.stages += 1;
+                        primitive.stages.count += 1;
                     }
                     if !valid {
-                        self.stage_count = primitive.first_stage;
+                        self.stage_count = primitive.stages.first as usize;
                         self.reject(stats);
                         continue;
                     }
-                    primitive.planes = self.stages[primitive.first_stage].planes;
+                    primitive.planes = self.stages[primitive.stages.first as usize].planes;
                 }
                 if !self.keep_coverage(&mut primitive, count) {
-                    self.stage_count = primitive.first_stage;
+                    self.stage_count = primitive.stages.first as usize;
                     self.reject(stats);
                     continue;
                 }
@@ -1593,7 +1593,10 @@ impl SurfacePrepare {
         }
         let mut primitive = Primitive {
             domain: PrimitiveDomain::GeneratedSky,
-            first_stage: self.stage_count,
+            stages: qa_core::primitives::IndexSpan {
+                first: self.stage_count as u32,
+                count: 0,
+            },
             draw_rank: rank,
             deforms,
             depth_override,
@@ -1628,12 +1631,12 @@ impl SurfacePrepare {
         }
         for (stage, prepared) in sky_stages[..stages].iter().copied().enumerate() {
             let Some(prepared) = prepared else {
-                self.stage_count = primitive.first_stage;
+                self.stage_count = primitive.stages.first as usize;
                 self.reject(stats);
                 return;
             };
             let Some(image) = assets.image(prepared.image) else {
-                self.stage_count = primitive.first_stage;
+                self.stage_count = primitive.stages.first as usize;
                 self.reject(stats);
                 return;
             };
@@ -1643,12 +1646,12 @@ impl SurfacePrepare {
                     .project_stage(prepared, evaluator, &mut self.screen)
                     .is_none()
             {
-                self.stage_count = primitive.first_stage;
+                self.stage_count = primitive.stages.first as usize;
                 self.reject(stats);
                 return;
             }
             let Some(planes) = Planes::load(&self.screen[..count]) else {
-                self.stage_count = primitive.first_stage;
+                self.stage_count = primitive.stages.first as usize;
                 self.reject(stats);
                 return;
             };
@@ -1658,11 +1661,11 @@ impl SurfacePrepare {
                 sampler: Some(super::stage_sampler(image, prepared.stage.sampler)),
             };
             self.stage_count += 1;
-            primitive.stages += 1;
+            primitive.stages.count += 1;
         }
-        primitive.planes = self.stages[primitive.first_stage].planes;
+        primitive.planes = self.stages[primitive.stages.first as usize].planes;
         if !self.keep_coverage(&mut primitive, count) {
-            self.stage_count = primitive.first_stage;
+            self.stage_count = primitive.stages.first as usize;
             self.reject(stats);
             return;
         }
@@ -1806,8 +1809,10 @@ impl SurfacePrepare {
             }
         }
         primitive.winding = crate::edges::polygon_winding(target).ok();
-        primitive.first_coverage = self.coverage_count;
-        primitive.coverage_count = count;
+        primitive.coverage = qa_core::primitives::IndexSpan {
+            first: self.coverage_count as u32,
+            count: count as u32,
+        };
         self.coverage_count = end;
         true
     }
@@ -2176,7 +2181,7 @@ fn stage_span(
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
-    for stage in &stages[primitive.first_stage..primitive.first_stage + primitive.stages] {
+    for stage in &stages[primitive.stages.range()] {
         let Some(prepared) = stage.prepared else {
             stats.rejected += 1;
             continue;
@@ -2252,7 +2257,7 @@ fn stage_span(
                 stats.curve_spans = stats.curve_spans.saturating_add(1);
                 stats.curve_pixels = stats.curve_pixels.saturating_add(written);
             }
-            if primitive.stages > 1 {
+            if primitive.stages.count > 1 {
                 stats.multistage_spans = stats.multistage_spans.saturating_add(1);
                 stats.multistage_pixels = stats.multistage_pixels.saturating_add(written);
             }
@@ -2277,8 +2282,8 @@ fn factor_spans(
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
-    let a = stages[primitive.first_stage];
-    let b = stages[primitive.first_stage + 1];
+    let a = stages[primitive.stages.first as usize];
+    let b = stages[primitive.stages.first as usize + 1];
     let (Some(first), Some(second), Some(sample_a), Some(sample_b)) =
         (a.prepared, b.prepared, a.sampler, b.sampler)
     else {
@@ -2680,6 +2685,9 @@ impl SurfacePrepare {
         coverage: usize,
         references: usize,
     ) -> Result<Self, &'static str> {
+        if stages > u32::MAX as usize || coverage > u32::MAX as usize {
+            return Err("CPU preparation range exceeds IndexSpan");
+        }
         Ok(Self {
             catalog,
             primitives: vec![Primitive::default(); primitives].into_boxed_slice(),
@@ -2754,8 +2762,8 @@ impl SurfacePrepare {
             .copy_from_slice(&source.coverage[..source.coverage_count]);
         for primitive in &source.primitives[..source.primitive_count] {
             let mut primitive = *primitive;
-            primitive.first_stage += first_stage;
-            primitive.first_coverage += first_coverage;
+            primitive.stages.first += first_stage as u32;
+            primitive.coverage.first += first_coverage as u32;
             self.primitives[self.primitive_count] = primitive;
             self.primitive_count += 1;
         }
