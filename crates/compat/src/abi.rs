@@ -171,6 +171,7 @@ const fn server() -> CallTable {
     t.entries[18] = Some(config_set);
     t.entries[19] = Some(config_get);
     t.entries[37] = Some(entity_token);
+    t.entries[42] = Some(snap_vector);
     t.entries[45] = Some(file_seek);
     t
 }
@@ -189,6 +190,7 @@ const fn client() -> CallTable {
     t.entries[11] = Some(file_read);
     t.entries[13] = Some(file_close);
     t.entries[14] = Some(command_append);
+    t.entries[71] = Some(snap_vector);
     t.entries[89] = Some(file_seek);
     t.entries[111] = Some(acos::<false>);
     t
@@ -769,6 +771,22 @@ fn cvar_integer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     };
     let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
     Ok(qa_console::numbers::integer(text.as_str()) as u32 as u64)
+}
+fn snap_vector(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Err(CallError::Memory);
+    }
+    let address = c.pointer(0)?;
+    let vector = qa_core::math::round_vector(c.memory.read_vec3(address)?);
+    // Native Sys_SnapVector's FISTP/FILD narrows through signed int32, loses
+    // negative zero and returns integer-indefinite for nonfinite/overflow input.
+    let vector = qa_core::primitives::Vec3(
+        vector
+            .0
+            .map(|value| crate::numbers::native_integer(value) as f32),
+    );
+    c.memory.write_vec3(address, vector)?;
+    Ok(0)
 }
 fn cvar_number(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let Some(view) = c.services.cvars.bind(c.text(0)?, c.context.console) else {

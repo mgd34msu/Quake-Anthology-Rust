@@ -1827,6 +1827,96 @@ fn native_import_code(
     code
 }
 
+fn native_snap_imports_execute_through_session_dispatch() {
+    use qa_compat::abi::Q3_CLIENT;
+    use qa_console::views::Role;
+    for (imports, ordinal, phase, role) in [
+        (&Q3_SERVER, 42, Phase::Server, Role::Game),
+        (&Q3_CLIENT, 71, Phase::Client, Role::Cgame),
+    ] {
+        for (input, expected) in [
+            ([0.5, 1.5, 2.5], [0.0f32, 2.0, 2.0]),
+            ([-0.5, -1.5, -2.5], [0.0, -2.0, -2.0]),
+            ([-0.0, f32::from_bits(1), -f32::from_bits(1)], [0.0; 3]),
+            (
+                [f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+                [i32::MIN as f32; 3],
+            ),
+        ] {
+            let image = function_image(Encoding::Pe, &[0xc3]);
+            let base = image.base;
+            let entry = image.symbol(b"GetGameAPI").unwrap().address;
+            let vector = base + 0x1700;
+            let mut vm = Vm::map_image(
+                image,
+                &[NamedExport {
+                    name: b"GetGameAPI",
+                    command: None,
+                    parameters: &[NativeScalar::Word; 13],
+                    result: NativeScalar::Word,
+                }],
+                &[],
+                Duration::from_secs(3),
+            )
+            .unwrap();
+            let mut code =
+                native_import_code(vm.import_callback(), &[ordinal, vector], false, false, 0);
+            assert_eq!(code.pop(), Some(0xc3));
+            code.extend([0x48, 0xb8]); // mov rax,vector
+            code.extend(vector.to_le_bytes());
+            let mut jumps = Vec::new();
+            for (axis, value) in expected.into_iter().enumerate() {
+                code.extend([0x81, 0x78, axis as u8 * 4]); // cmp dword [rax+offset],bits
+                code.extend(value.to_bits().to_le_bytes());
+                code.extend([0x75, 0]); // jne mismatch
+                jumps.push(code.len() - 1);
+            }
+            code.extend([0x31, 0xc0, 0xc3]); // return zero when all components match
+            let mismatch = code.len();
+            code.extend([0xb8, 1, 0, 0, 0, 0xc3]);
+            for jump in jumps {
+                code[jump] = u8::try_from(mismatch - jump - 1).unwrap();
+            }
+            let mut memory =
+                qa_compat::memory::ModuleMemory::borrow(base, vm.process.memory_mut().unwrap())
+                    .unwrap();
+            memory.write(entry, &code).unwrap();
+            memory
+                .write_vec3(vector, qa_core::primitives::Vec3(input))
+                .unwrap();
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let mut request = request(
+                &mut runtime,
+                ModuleId(1),
+                RuleSetId::Quake3,
+                TickRate::fixed(50).unwrap(),
+                vm,
+            );
+            request.phase = phase;
+            request.context.console.role = role;
+            if let Program::Native { imports: table, .. } = &mut request.program {
+                *table = imports;
+            }
+            let mut host = FrameHost::load_modules(
+                Console::new(Context::default()).unwrap(),
+                runtime,
+                TickRate::FrameDriven,
+                vec![request],
+            )
+            .unwrap();
+            host.call_module_export(
+                ModuleId(1),
+                Export::words(CallbackId(0), &[]),
+                ThinkTime::Milliseconds(0),
+            )
+            .unwrap();
+            let counts = host.module_counts(ModuleId(1)).unwrap();
+            assert_eq!(counts.last_result, Some(ModuleResult::Native(0)));
+            assert_eq!(counts.traps, 0);
+        }
+    }
+}
+
 fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
     use qa_compat::native::{NativeCalls, q2::Game};
     use qa_compat::{abi::UnknownCalls, services::ServiceStorage};
@@ -4076,6 +4166,7 @@ pub fn run() {
     missing_native_imports_log_once_and_preserve_session_dispatch();
     scalar_native_export_results_survive_session_dispatch();
     native_math_imports_execute_in_owned_children_through_session_dispatch();
+    native_snap_imports_execute_through_session_dispatch();
     native_heap_imports_share_owned_memory_through_session_dispatch();
     elf_lifecycle_uses_session_order_once_and_a_bad_constructor_stops_only_its_module();
     elf_lifecycle_rejects_malformed_arrays_and_non_executable_targets();

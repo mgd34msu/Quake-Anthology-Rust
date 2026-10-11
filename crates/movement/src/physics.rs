@@ -673,7 +673,7 @@ impl Step<'_> {
     }
     fn snap(&mut self, previous: Vec3) {
         if self.arena() {
-            self.player.body.velocity.0 = self.player.body.velocity.0.map(f32::round_ties_even);
+            self.player.body.velocity = math::round_vector(self.player.body.velocity);
             return;
         }
         if !self.classic() {

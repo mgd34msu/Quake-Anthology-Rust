@@ -53,6 +53,10 @@ pub fn lerp_array<const N: usize>(start: [f32; N], end: [f32; N], fraction: f32)
     std::array::from_fn(|i| start[i] + fraction * (end[i] - start[i]))
 }
 
+pub fn round_vector(vector: Vec3) -> Vec3 {
+    Vec3(vector.0.map(f32::round_ties_even))
+}
+
 pub fn difference(a: Vec3, b: Vec3) -> Vec3 {
     a - b
 }
