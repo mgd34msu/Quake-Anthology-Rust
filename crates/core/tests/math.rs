@@ -92,6 +92,40 @@ fn short_angles_preserve_native_operation_orders_and_signed_widths() {
 }
 
 #[test]
+fn byte_angles_keep_native_float_and_integral_forms() {
+    let mut seed = 0x3169_u32;
+    for _ in 0..65536 {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let angle = f32::from_bits(seed);
+        assert_eq!(
+            angle_to_byte(angle, AngleByteForm::Float),
+            (angle * 256.0 / 360.0) as i32
+        );
+        assert_eq!(
+            angle_to_byte(angle, AngleByteForm::Integral),
+            (angle as i32).wrapping_mul(256) / 360
+        );
+    }
+    for byte in i8::MIN..=i8::MAX {
+        assert_eq!(
+            byte_to_angle(i32::from(byte)).to_bits(),
+            (f32::from(byte) * (360.0 / 256.0)).to_bits()
+        );
+    }
+}
+
+#[test]
+fn direction_encoding_preserves_native_indices_and_zero() {
+    for (index, normal) in DIRECTIONS.iter().enumerate() {
+        assert_eq!(direction_to_byte(*normal), index as u8);
+    }
+    assert_eq!(direction_to_byte(Vec3::default()), 0);
+    assert_eq!(direction_to_byte(Vec3([-0.0; 3])), 0);
+    assert_eq!(direction_to_byte(Vec3([f32::NAN; 3])), 0);
+    assert_eq!(direction_to_byte(Vec3([0.0, 0.0, 1.0])), 5);
+}
+
+#[test]
 fn transforms_and_clip_interpolation_keep_each_component_order() {
     let mut seed = 0x3176_u32;
     let mut next = || {

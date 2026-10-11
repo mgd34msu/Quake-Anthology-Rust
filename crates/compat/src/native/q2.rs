@@ -589,16 +589,21 @@ impl Game {
                         NativeScalar::Void,
                     ))
                 } else if (if layout.version == 2023 {
-                    26..=31
+                    26..=35
                 } else {
-                    24..=29
+                    24..=32
                 })
                 .contains(&ordinal)
                 {
                     Some((
-                        if ordinal == if layout.version == 2023 { 30 } else { 28 } {
+                        if [
+                            if layout.version == 2023 { 30 } else { 28 },
+                            if layout.version == 2023 { 34 } else { 32 },
+                        ]
+                        .contains(&ordinal)
+                        {
                             &[NativeScalar::Float][..]
-                        } else if ordinal == if layout.version == 2023 { 31 } else { 29 } {
+                        } else if ordinal >= if layout.version == 2023 { 31 } else { 29 } {
                             &[NativeScalar::Word][..]
                         } else {
                             &[NativeScalar::I32][..]

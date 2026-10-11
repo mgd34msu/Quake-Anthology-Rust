@@ -1927,6 +1927,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 [24, 25, 26, 27, 28, 29]
             }
         );
+        let vector_slots = [b"WritePosition".as_slice(), b"WriteDir", b"WriteAngle"]
+            .map(|name| game.import_ordinal(name).unwrap());
+        assert_eq!(vector_slots, if rr { [32, 33, 34] } else { [30, 31, 32] });
+        let entity_slot = rr.then(|| game.import_ordinal(b"WriteEntity").unwrap());
+        assert_eq!(entity_slot, rr.then_some(35));
         let unicast_slot = game.import_ordinal(b"unicast").unwrap();
         assert_eq!(unicast_slot, if rr { 25 } else { 23 });
         assert!(
@@ -2240,7 +2245,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 pointers[slot],
                 a,
                 returns_value,
-                slot == write_slots[4],
+                slot == write_slots[4] || slot == vector_slots[2],
                 base + 0x1c30,
             );
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
@@ -2922,6 +2927,27 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm.process.memory_mut().unwrap()[at..at + text.len()].copy_from_slice(text);
             invoke_import(&mut game, append_slot, &[base + at as u64]);
         }
+        for (at, vector) in [
+            (0x1e80, [1.0625, -2.125, 4096.0]),
+            (0x1ec0, [0.0, 0.0, 1.0]),
+        ] {
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .write_vec3(base + at, qa_core::primitives::Vec3(vector))
+                .unwrap();
+        }
+        invoke_import(&mut game, vector_slots[0], &[base + 0x1e80]);
+        invoke_import(&mut game, vector_slots[1], &[base + 0x1ec0]);
+        invoke_import(&mut game, vector_slots[1], &[0]);
+        invoke_import(
+            &mut game,
+            vector_slots[2],
+            &[u64::from((-270.0f32).to_bits())],
+        );
+        if let Some(slot) = entity_slot {
+            invoke_import(&mut game, slot, &[entity_address + stride]);
+            invoke_import(&mut game, slot, &[base + 0x3000]);
+        }
         drop(invoke_import);
         console.execute_frame(&mut runtime);
         let view = console.cvars.bind("sensitivity", context.console).unwrap();
@@ -2930,6 +2956,19 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             0xff, 0x80, 0xbf, 0xfe, 0x78, 0x56, 0x34, 0x12, 0x45, 0x23, 0xa1, 0x7f,
         ];
         expected.extend(b"_qa_child_cvar\0\0");
+        if rr {
+            for value in [1.0625f32, -2.125, 4096.0] {
+                expected.extend(value.to_bits().to_le_bytes());
+            }
+        } else {
+            for value in [8i16, -17, i16::MIN] {
+                expected.extend(value.to_le_bytes());
+            }
+        }
+        expected.extend([5, 0, 64]);
+        if rr {
+            expected.extend([2, 0, 0, 0]);
+        }
         assert_eq!(storage.message(ModuleId(1)).unwrap(), expected);
         if let Some(entity) = owned_entity {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);

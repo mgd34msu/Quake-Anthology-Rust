@@ -69,7 +69,7 @@ fn vertices(
     }
     reserve(out, bytes.len() / 4)?;
     for p in bytes.as_chunks::<4>().0 {
-        let normal = *normals::ALIAS
+        let normal = *qa_core::math::DIRECTIONS
             .get(usize::from(p[3]))
             .ok_or(FormatError::InvalidReference("alias normal", p[3] as usize))?;
         let position = Vec3(std::array::from_fn(|a| {

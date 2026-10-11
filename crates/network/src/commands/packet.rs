@@ -263,7 +263,11 @@ pub fn write_with_commands(
             w.write_bits(3, 8)?;
             w.write_float(*timestamp)?;
             for angle in command.view_angles.0 {
-                w.write_bits(((angle as i32).wrapping_mul(256) / 360) as u32, 8)?;
+                w.write_bits(
+                    qa_core::math::angle_to_byte(angle, qa_core::math::AngleByteForm::Integral)
+                        as u32,
+                    8,
+                )?;
             }
             for value in command.movement {
                 w.write_bits(value as u32, 16)?;
@@ -420,7 +424,7 @@ pub fn read_with_commands(
             let timestamp = r.read_float()?;
             let mut angles = [0.; 3];
             for angle in &mut angles {
-                *angle = (r.read_signed(8)? as f32) * (360.0 / 256.0);
+                *angle = qa_core::math::byte_to_angle(r.read_signed(8)?);
             }
             let mut movement = [0; 3];
             for value in &mut movement {

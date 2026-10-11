@@ -215,6 +215,9 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[27] = Some(native_message_bits::<32>);
     table.entries[28] = Some(native_message_bits::<32>);
     table.entries[29] = Some(native_message_string);
+    table.entries[30] = Some(native_message_position::<false>);
+    table.entries[31] = Some(native_message_direction);
+    table.entries[32] = Some(native_message_angle);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -250,6 +253,10 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[29] = Some(native_message_bits::<32>);
     table.entries[30] = Some(native_message_bits::<32>);
     table.entries[31] = Some(native_message_string);
+    table.entries[32] = Some(native_message_position::<true>);
+    table.entries[33] = Some(native_message_direction);
+    table.entries[34] = Some(native_message_angle);
+    table.entries[35] = Some(native_message_entity);
     table.entries[48] = Some(native_register_observer);
     table.entries[49] = Some(native_forget_observer);
     table.entries[9] = Some(abort);
@@ -771,6 +778,52 @@ fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn native_message_bits<const WIDTH: u8>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     (ENGINE_CALLS.message_bits)(c.services, c.context.module, c.arg(0)? as u32, WIDTH)?;
+    Ok(0)
+}
+fn native_message_position<const FLOAT: bool>(
+    c: &mut Invocation<'_, '_, '_>,
+) -> Result<u64, CallError> {
+    let position = c.memory.read_vec3(c.pointer(0)?)?;
+    for value in position.0 {
+        let (word, width) = if FLOAT {
+            (value.to_bits(), 32)
+        } else {
+            (
+                (qa_core::math::narrow_eighth(value) * 8.0) as i32 as u32,
+                16,
+            )
+        };
+        (ENGINE_CALLS.message_bits)(c.services, c.context.module, word, width)?;
+    }
+    Ok(0)
+}
+fn native_message_direction(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let pointer = c.pointer(0)?;
+    let direction = if pointer == 0 {
+        qa_core::primitives::Vec3::default()
+    } else {
+        c.memory.read_vec3(pointer)?
+    };
+    (ENGINE_CALLS.message_bits)(
+        c.services,
+        c.context.module,
+        u32::from(qa_core::math::direction_to_byte(direction)),
+        8,
+    )?;
+    Ok(0)
+}
+fn native_message_angle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let word = qa_core::math::angle_to_byte(
+        f32::from_bits(c.arg(0)? as u32),
+        qa_core::math::AngleByteForm::Float,
+    );
+    (ENGINE_CALLS.message_bits)(c.services, c.context.module, word as u32, 8)?;
+    Ok(0)
+}
+fn native_message_entity(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let native = entities.identity(c.memory, c.context, *table, c.pointer(0)?)?;
+    (ENGINE_CALLS.message_bits)(c.services, c.context.module, native.slot as u32, 16)?;
     Ok(0)
 }
 fn native_visibility<const WIDE: bool, const HEARING: bool>(

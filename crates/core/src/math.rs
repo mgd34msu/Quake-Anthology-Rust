@@ -1,6 +1,23 @@
 use crate::primitives::Vec3;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+mod directions;
+pub use directions::DIRECTIONS;
+
+/// Native coarse normal encoding, preserving table order and strict ties.
+pub fn direction_to_byte(direction: Vec3) -> u8 {
+    let mut best = 0;
+    let mut best_dot = 0.0;
+    for (index, normal) in DIRECTIONS.iter().enumerate() {
+        let dot = direction.dot(*normal);
+        if dot > best_dot {
+            best_dot = dot;
+            best = index as u8;
+        }
+    }
+    best
+}
+
 impl Add for Vec3 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
@@ -91,6 +108,24 @@ pub fn angle_to_short(angle: f32, form: AngleShortForm) -> i32 {
 
 pub fn short_to_angle(angle: i32) -> f32 {
     angle as f32 * (360.0 / 65536.0)
+}
+
+#[derive(Clone, Copy)]
+pub enum AngleByteForm {
+    Float,
+    Integral,
+}
+
+/// Byte narrowing is performed by the native field writer, after these operations.
+pub fn angle_to_byte(angle: f32, form: AngleByteForm) -> i32 {
+    match form {
+        AngleByteForm::Float => (angle * 256.0 / 360.0) as i32,
+        AngleByteForm::Integral => (angle as i32).wrapping_mul(256) / 360,
+    }
+}
+
+pub fn byte_to_angle(angle: i32) -> f32 {
+    angle as f32 * (360.0 / 256.0)
 }
 
 /// Native Q2 signed 16-bit coordinates and velocities in eighth units.

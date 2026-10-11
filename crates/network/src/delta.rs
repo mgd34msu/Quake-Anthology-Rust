@@ -1,7 +1,9 @@
 //! One table walker for native scalar deltas. Protocol records supply words;
 //! only these field descriptors select comparison, projection and presence.
 use crate::message::{Error, ErrorKind, Reader, Writer};
-use qa_core::math::{AngleShortForm, angle_to_short, short_to_angle};
+use qa_core::math::{
+    AngleByteForm, AngleShortForm, angle_to_byte, angle_to_short, byte_to_angle, short_to_angle,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScaleRead {
@@ -156,9 +158,9 @@ impl Field {
             }
             Value::Angle8 { integral } if PREFIX => {
                 if FLOAT_BYTES && integral {
-                    ((f32::from_bits(word) as i32).wrapping_mul(256) / 360) as u32
+                    angle_to_byte(f32::from_bits(word), AngleByteForm::Integral) as u32
                 } else {
-                    (f32::from_bits(word) * 256.0 / 360.0) as i32 as u32
+                    angle_to_byte(f32::from_bits(word), AngleByteForm::Float) as u32
                 }
             }
             Value::FloatInt if FLOAT_BYTES => f32::from_bits(word) as i32 as u32,
@@ -201,7 +203,7 @@ impl Field {
             }
             Value::Signed => ((word << (32 - bits)) as i32 >> (32 - bits)) as u32,
             Value::Angle16 => short_to_angle(i32::from(word as i16)).to_bits(),
-            Value::Angle8 { .. } if PREFIX => ((word as i8 as f32) * (360.0 / 256.0)).to_bits(),
+            Value::Angle8 { .. } if PREFIX => byte_to_angle(i32::from(word as i8)).to_bits(),
             Value::Scaled { factor, read } if STATE => {
                 let value = if matches!(read, ScaleRead::Signed)
                     || PREFIX && matches!(read, ScaleRead::SignedTenthsDelta)
