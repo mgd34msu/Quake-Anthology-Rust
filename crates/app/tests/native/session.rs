@@ -2025,6 +2025,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 || (index_slot..index_slot + 3).contains(&slot);
             let stack = if a.len() > 4 { 0x48 } else { 0x28 };
             let mut code = vec![0x48, 0x83, 0xec, stack];
+            if slot == if rr { 30 } else { 27 } {
+                code.push(0xb8);
+                code.extend((a[0] as u32).to_le_bytes());
+                code.extend([0x66, 0x0f, 0x6e, 0xc0]); // native float in XMM0
+            }
             for (arg, register) in
                 a.iter()
                     .take(4)
@@ -2678,7 +2683,24 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // Unlinking a never-published native slot must not create a common entity.
         invoke_import(&mut game, unlink_slot, &[entity_address + stride, 0]);
         invoke_import(&mut game, unlink_slot, &[base + 0x3000, 0]);
+        let first_write = if rr { 26 } else { 23 };
+        for (offset, word) in [
+            (0, 0x1234_ffff),
+            (1, 0x80),
+            (2, (-321i32) as u32 as u64),
+            (3, 0x1234_5678),
+            (4, 0x7fa1_2345),
+            (5, base + 0x1720),
+            (5, 0),
+        ] {
+            invoke_import(&mut game, first_write + offset, &[word]);
+        }
         drop(invoke_import);
+        let mut expected = vec![
+            0xff, 0x80, 0xbf, 0xfe, 0x78, 0x56, 0x34, 0x12, 0x45, 0x23, 0xa1, 0x7f,
+        ];
+        expected.extend(b"_qa_child_cvar\0\0");
+        assert_eq!(storage.message(ModuleId(1)).unwrap(), expected);
         if let Some(entity) = owned_entity {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             (qa_compat::services::ENGINE_CALLS.free)(&mut services, context, entity).unwrap();

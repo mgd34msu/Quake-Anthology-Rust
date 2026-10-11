@@ -1,6 +1,23 @@
 use qa_network::message::{Encoding, ErrorKind, Reader, Writer};
 
 #[test]
+fn native_byte_writer_resumes_without_clearing_the_prefix() {
+    let mut bytes = [0xcc; 5];
+    Writer::new(&mut bytes, Encoding::Bytes)
+        .write_bits(0x1234, 16)
+        .unwrap();
+    let mut writer = Writer::append_bytes(&mut bytes, 2).unwrap();
+    writer.write_bits(0xabcdef, 16).unwrap();
+    assert_eq!(writer.bytes(), &[0x34, 0x12, 0xef, 0xcd]);
+    assert!(writer.write_bits(0x5432, 16).is_err());
+    assert_eq!(writer.size(), 4);
+    assert_eq!(writer.bytes(), &[0x34, 0x12, 0xef, 0xcd]);
+    assert_eq!(bytes[4], 0xcc);
+    assert!(Writer::append_bytes(&mut bytes, 6).is_err());
+    assert!(Writer::append_bytes(&mut bytes, usize::MAX).is_err());
+}
+
+#[test]
 fn byte_prefix_patch_is_bounded_and_never_edits_bitstream_symbols() {
     for encoding in [Encoding::Bytes, Encoding::Bits, Encoding::Q3] {
         let mut data = [0xa5; 8];

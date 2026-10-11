@@ -202,6 +202,12 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[18] = Some(native_link);
     table.entries[19] = Some(native_unlink);
     table.entries[20] = Some(native_area_query::<false>);
+    table.entries[23] = Some(native_message_bits::<8>);
+    table.entries[24] = Some(native_message_bits::<8>);
+    table.entries[25] = Some(native_message_bits::<16>);
+    table.entries[26] = Some(native_message_bits::<32>);
+    table.entries[27] = Some(native_message_bits::<32>);
+    table.entries[28] = Some(native_message_string);
     table.entries[36] = Some(q2_cvar);
     table.entries[37] = Some(q2_cvar_set::<false>);
     table.entries[38] = Some(q2_cvar_set::<true>);
@@ -224,6 +230,12 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[21] = Some(native_link);
     table.entries[22] = Some(native_unlink);
     table.entries[23] = Some(native_area_query::<true>);
+    table.entries[26] = Some(native_message_bits::<8>);
+    table.entries[27] = Some(native_message_bits::<8>);
+    table.entries[28] = Some(native_message_bits::<16>);
+    table.entries[29] = Some(native_message_bits::<32>);
+    table.entries[30] = Some(native_message_bits::<32>);
+    table.entries[31] = Some(native_message_string);
     table.entries[48] = Some(native_register_observer);
     table.entries[49] = Some(native_forget_observer);
     table.entries[9] = Some(abort);
@@ -683,6 +695,20 @@ fn native_info_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         c.memory.write(output + length as u64, &[0])?;
     }
     Ok(span.len() as u64)
+}
+fn native_message_bits<const WIDTH: u8>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    (ENGINE_CALLS.message_bits)(c.services, c.context.module, c.arg(0)? as u32, WIDTH)?;
+    Ok(0)
+}
+fn native_message_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let pointer = c.pointer(0)?;
+    let bytes = if pointer == 0 {
+        &[][..]
+    } else {
+        c.memory.cstring(pointer)?
+    };
+    (ENGINE_CALLS.message_string)(c.services, c.context.module, bytes)?;
+    Ok(0)
 }
 
 fn native_portal_set<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

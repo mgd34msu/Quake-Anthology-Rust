@@ -25,6 +25,43 @@ fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
 }
 
 #[test]
+fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage =
+        ServiceStorage::load(&[(ModuleId(1), 0), (ModuleId(2), 0)], 0, &console.cvars).unwrap();
+    let mut scratch = runtime.geometry.scratch();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    (ENGINE_CALLS.message_bits)(&mut services, ModuleId(1), 0x1234, 16).unwrap();
+    (ENGINE_CALLS.message_string)(&mut services, ModuleId(2), b"\xff\x80").unwrap();
+    let oversized = vec![0xaa; 0x8000];
+    assert_eq!(
+        (ENGINE_CALLS.message_string)(&mut services, ModuleId(1), &oversized),
+        Err(CallError::Capacity)
+    );
+    assert_eq!(
+        services.storage.message(ModuleId(1)).unwrap(),
+        &[0x34, 0x12]
+    );
+    assert_eq!(
+        services.storage.message(ModuleId(2)).unwrap(),
+        &[0xff, 0x80, 0]
+    );
+    (ENGINE_CALLS.message_string)(&mut services, ModuleId(1), &oversized[..0x8000 - 3]).unwrap();
+    let full = services.storage.message(ModuleId(1)).unwrap().to_vec();
+    assert_eq!(full.len(), 0x8000);
+    assert_eq!(
+        (ENGINE_CALLS.message_bits)(&mut services, ModuleId(1), 1, 8),
+        Err(CallError::Capacity)
+    );
+    assert_eq!(services.storage.message(ModuleId(1)).unwrap(), full);
+    assert_eq!(
+        (ENGINE_CALLS.message_bits)(&mut services, ModuleId(3), 1, 8),
+        Err(CallError::Memory)
+    );
+}
+
+#[test]
 fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
     let mut runtime = Runtime::load(4, std::iter::empty()).unwrap();
     let mut console = Console::new(Context::default()).unwrap();

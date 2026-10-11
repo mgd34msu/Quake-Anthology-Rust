@@ -176,6 +176,21 @@ pub struct Writer<'a> {
     bit: usize,
 }
 impl<'a> Writer<'a> {
+    /// Continue a native byte message without rewriting its existing prefix.
+    pub fn append_bytes(data: &'a mut [u8], written: usize) -> Result<Self, Error> {
+        let bit = written
+            .checked_mul(8)
+            .filter(|_| written <= data.len())
+            .ok_or(Error {
+                byte: written,
+                kind: ErrorKind::Capacity,
+            })?;
+        Ok(Self {
+            data,
+            encoding: Encoding::Bytes,
+            bit,
+        })
+    }
     pub fn new(data: &'a mut [u8], encoding: Encoding) -> Self {
         Self {
             data,

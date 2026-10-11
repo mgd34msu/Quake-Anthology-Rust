@@ -73,6 +73,8 @@ struct ConfigRange {
     module: ModuleId,
     first: usize,
     count: usize,
+    message: Box<[u8]>,
+    written: usize,
 }
 
 /// One load-sized store for module file handles and configstrings. Native
@@ -102,6 +104,8 @@ impl ServiceStorage {
                 module,
                 first: total,
                 count,
+                message: vec![0; 0x8000].into_boxed_slice(),
+                written: 0,
             });
             total = total.checked_add(count).ok_or(CallError::Capacity)?;
         }
@@ -134,6 +138,32 @@ impl ServiceStorage {
             return Err(CallError::ConfigString);
         }
         Ok(range.first + ordinal)
+    }
+    pub fn message(&self, module: ModuleId) -> Result<&[u8], CallError> {
+        let row = self
+            .ranges
+            .iter()
+            .find(|r| r.module == module)
+            .ok_or(CallError::Memory)?;
+        Ok(&row.message[..row.written])
+    }
+    fn write_message(
+        &mut self,
+        module: ModuleId,
+        write: impl FnOnce(
+            &mut qa_network::message::Writer<'_>,
+        ) -> Result<(), qa_network::message::Error>,
+    ) -> Result<(), CallError> {
+        let row = self
+            .ranges
+            .iter_mut()
+            .find(|r| r.module == module)
+            .ok_or(CallError::Memory)?;
+        let mut writer = qa_network::message::Writer::append_bytes(&mut row.message, row.written)
+            .map_err(|_| CallError::Capacity)?;
+        write(&mut writer).map_err(|_| CallError::Capacity)?;
+        row.written = writer.size();
+        Ok(())
     }
     pub fn configstring(
         &self,
@@ -250,6 +280,8 @@ pub type ResourceIndexCall =
 pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
 pub struct EngineCallTable {
+    pub message_bits: fn(&mut EngineServices<'_>, ModuleId, u32, u8) -> Result<(), CallError>,
+    pub message_string: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(), CallError>,
     pub area_query: AreaQueryCall,
     pub portal_set: fn(&mut EngineServices<'_>, u32, bool, bool) -> Result<bool, CallError>,
     pub portal_adjust: fn(&mut EngineServices<'_>, u32, u32, bool) -> Result<(), CallError>,
@@ -290,6 +322,16 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    message_bits: |s, module, value, width| {
+        s.storage
+            .write_message(module, |w| w.write_bits(value, width))
+    },
+    message_string: |s, module, bytes| {
+        s.storage.write_message(module, |w| {
+            w.write_data(bytes)?;
+            w.write_bits(0, 8)
+        })
+    },
     portal_set: |s, number, open, strict| {
         let Some(portals) = s.portals.as_mut() else {
             return Ok(false);

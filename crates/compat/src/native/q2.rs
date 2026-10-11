@@ -565,6 +565,23 @@ impl Game {
                         &[NativeScalar::I32, NativeScalar::Word][..],
                         NativeScalar::Void,
                     ))
+                } else if (if layout.version == 2023 {
+                    26..=31
+                } else {
+                    23..=28
+                })
+                .contains(&ordinal)
+                {
+                    Some((
+                        if ordinal == if layout.version == 2023 { 30 } else { 27 } {
+                            &[NativeScalar::Float][..]
+                        } else if ordinal == if layout.version == 2023 { 31 } else { 28 } {
+                            &[NativeScalar::Word][..]
+                        } else {
+                            &[NativeScalar::I32][..]
+                        },
+                        NativeScalar::Void,
+                    ))
                 } else if layout.version == 2023 && matches!(ordinal, 1 | 9) {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else {

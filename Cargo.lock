@@ -190,6 +190,7 @@ dependencies = [
  "qa-content",
  "qa-core",
  "qa-formats",
+ "qa-network",
  "qa-platform",
  "qa-session",
  "qa-world",

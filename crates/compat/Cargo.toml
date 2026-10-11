@@ -12,3 +12,4 @@ qa-console = { path = "../console" }
 qa-content = { path = "../content" }
 qa-formats = { path = "../formats" }
 qa-platform = { path = "../platform" }
+qa-network = { path = "../network" }
