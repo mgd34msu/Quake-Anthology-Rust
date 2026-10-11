@@ -157,6 +157,8 @@ const fn server() -> CallTable {
     t.entries[0] = Some(print);
     t.entries[1] = Some(abort);
     t.entries[2] = Some(milliseconds);
+    t.entries[3] = Some(q3_cvar_register);
+    t.entries[4] = Some(q3_cvar_update);
     t.entries[5] = Some(cvar_set::<true, true>);
     t.entries[6] = Some(cvar_integer);
     t.entries[7] = Some(cvar_string);
@@ -177,6 +179,8 @@ const fn client() -> CallTable {
     t.entries[0] = Some(print);
     t.entries[1] = Some(abort);
     t.entries[2] = Some(milliseconds);
+    t.entries[3] = Some(q3_cvar_register);
+    t.entries[4] = Some(q3_cvar_update);
     t.entries[5] = Some(cvar_set::<true, true>);
     t.entries[6] = Some(cvar_string);
     t.entries[7] = Some(argc);
@@ -207,6 +211,8 @@ const fn ui() -> CallTable {
     t.entries[14] = Some(file_read);
     t.entries[16] = Some(file_close);
     t.entries[86] = Some(file_seek);
+    t.entries[50] = Some(q3_cvar_register);
+    t.entries[51] = Some(q3_cvar_update);
     t
 }
 // Original Q3 1.32 import ordinals. Game/UI commands carry an execution mode;
@@ -618,6 +624,69 @@ fn cvar_create(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         c.arg(2)? as u32,
     )?;
     Ok(0)
+}
+// q_shared.h vmCvar_t is identical for QVM and native pointer widths.
+const VM_CVAR_BYTES: usize = 16 + 256;
+fn q3_cvar_register(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let destination = if c.null_pointer(0)? {
+        None
+    } else {
+        Some(c.pointer(0)?)
+    };
+    if let Some(address) = destination {
+        c.memory.read(address, VM_CVAR_BYTES)?;
+    }
+    let name = text_at(c.memory, c.pointer(1)?)?;
+    let default = text_at(c.memory, c.pointer(2)?)?;
+    let view = (ENGINE_CALLS.cvar_register)(
+        c.services,
+        c.context.console,
+        name,
+        Some(default),
+        c.arg(3)? as u32,
+    )?;
+    (ENGINE_CALLS.cvar_latch)(c.services, view)?;
+    if let Some(address) = destination {
+        let handle = (ENGINE_CALLS.cvar_view)(c.services, view)?;
+        c.memory.write_word(address, handle as i32)?;
+        c.memory.write_word(address + 4, -1)?;
+        q3_cvar_project(c, address)?;
+    }
+    Ok(0)
+}
+fn q3_cvar_update(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Err(CallError::Memory);
+    }
+    q3_cvar_project(c, c.pointer(0)?)?;
+    Ok(0)
+}
+fn q3_cvar_project(c: &mut Invocation<'_, '_, '_>, address: u64) -> Result<(), CallError> {
+    c.memory.read(address, VM_CVAR_BYTES)?;
+    let handle = c.memory.read_word(address)? as u32;
+    let (view, count) = (ENGINE_CALLS.cvar_snapshot)(c.services, handle)?;
+    if c.memory.read_word(address + 4)? == count {
+        return Ok(());
+    }
+    let text = c.services.cvars.read(view).map_err(|_| CallError::Cvar)?;
+    let text = text.as_str();
+    if text.len() >= 256 {
+        return Err(CallError::Text);
+    }
+    let value = c
+        .services
+        .cvars
+        .numeric(view)
+        .map_err(|_| CallError::Cvar)?;
+    // The native integer field uses atoi, not a cast from the float value.
+    let integer = qa_console::numbers::integer(text);
+    // Q_strncpyz calls strncpy, which pads the native fixed-width field.
+    c.memory.read_mut(address + 16, 256)?.fill(0);
+    c.memory.write_string(address + 16, 256, text.as_bytes())?;
+    c.memory.write_word(address + 8, value.to_bits() as i32)?;
+    c.memory.write_word(address + 12, integer)?;
+    c.memory.write_word(address + 4, count)?;
+    Ok(())
 }
 fn q2_cvar(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name_address = c.pointer(0)?;

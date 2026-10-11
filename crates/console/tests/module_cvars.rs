@@ -254,3 +254,49 @@ fn bad_info_and_capacity_failures_keep_live_rows_and_existing_bindings() {
     );
     assert_eq!(cvars.read(first).unwrap().as_str(), "7");
 }
+#[test]
+fn native_views_count_each_change_and_keep_alias_contexts_and_latches() {
+    let mut cvars = Cvars::new().unwrap();
+    let context = context(RuleSetId::Quake3);
+    let view = cvars
+        .register("_qa_vm_count", Some("1"), 32, context)
+        .unwrap();
+    cvars.force_write(view, "2").unwrap();
+    cvars.force_write(view, "3").unwrap();
+    let handle = cvars.native_view(view).unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 3);
+    assert_eq!(cvars.native_view(view).unwrap(), handle);
+    cvars.set_latch_active(view.canonical(), true);
+    cvars.write(view, "4").unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 4);
+    cvars.write(view, "4").unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 4);
+    cvars.write(view, "5").unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 5);
+    cvars.apply_latches().unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 6);
+    assert_eq!(cvars.read(view).unwrap().as_str(), "5");
+    cvars.force_write(view, "6").unwrap();
+    cvars.force_write(view, "7").unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 8);
+    cvars
+        .register("_qa_vm_count", Some("ignored"), 1, context)
+        .unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 8);
+    let other = cvars
+        .register("_qa_vm_other", Some("9"), 0, context)
+        .unwrap();
+    cvars.force_write(other, "10").unwrap();
+    assert_eq!(cvars.native_snapshot(handle).unwrap().1, 8);
+    assert!(cvars.native_snapshot(u32::MAX).is_none());
+
+    let view = cvars.bind("cg_fov", context).unwrap();
+    let alias = cvars.bind("fov", context).unwrap();
+    let first = cvars.native_view(view).unwrap();
+    let second = cvars.native_view(alias).unwrap();
+    let before = cvars.native_snapshot(first).unwrap().1;
+    let alias_before = cvars.native_snapshot(second).unwrap().1;
+    cvars.force_write(alias, "103").unwrap();
+    assert_eq!(cvars.native_snapshot(first).unwrap().1, before + 1);
+    assert_eq!(cvars.native_snapshot(second).unwrap().1, alias_before + 1);
+}
