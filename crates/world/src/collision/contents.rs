@@ -17,7 +17,10 @@ impl Contents {
     pub const WINDOW: Self = Self(1 << 32);
     pub const SKY: Self = Self(1 << 33);
     pub const LADDER: Self = Self(1 << 34);
+    pub const PLAYER: Self = Self(1 << 41);
+    pub const PROJECTILE: Self = Self(1 << 42);
     pub const FLUID: Self = Self(8 | 16 | 32);
+    const Q2_SHARED: u32 = 0x0f03807d;
 
     pub fn intersects(self, mask: Self) -> bool {
         self.0 & mask.0 != 0
@@ -36,12 +39,9 @@ impl Contents {
     }
 
     pub fn from_q2(raw: u32) -> Self {
-        let mut bits = u64::from(raw & 0x0f03807d);
+        let mut bits = u64::from(raw & Self::Q2_SHARED);
         if raw & 2 != 0 {
             bits |= Self::WINDOW.0;
-        }
-        if raw & 0xc0000000 != 0 {
-            bits |= Self::BODY.0;
         }
         if raw & 0x10000000 != 0 {
             bits |= 0x20000000;
@@ -50,7 +50,30 @@ impl Contents {
             bits |= Self::LADDER.0;
         }
         bits |= u64::from((raw >> 18) & 0x3f) << 35;
+        bits |= u64::from(raw >> 30) << 41;
+        // Preserve opaque bits too, including RR waterjump/projectile clipping.
+        bits |= u64::from(raw & 0x7f80) << 36;
         Self(bits)
+    }
+
+    pub fn to_q2(self) -> u32 {
+        let mut raw = self.0 as u32 & Self::Q2_SHARED;
+        if self.intersects(Self::WINDOW) {
+            raw |= 2;
+        }
+        if self.intersects(Self::SKY) {
+            raw |= 1;
+        }
+        if self.0 & 0x20000000 != 0 {
+            raw |= 0x10000000;
+        }
+        if self.intersects(Self::LADDER) {
+            raw |= 0x20000000;
+        }
+        raw |= ((self.0 >> 35) as u32 & 0x3f) << 18;
+        raw |= ((self.0 >> 41) as u32 & 3) << 30;
+        raw |= (self.0 >> 36) as u32 & 0x7f80;
+        raw
     }
 
     pub fn from_q3(raw: u32) -> Self {
