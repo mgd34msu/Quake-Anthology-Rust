@@ -1,7 +1,7 @@
 use super::EntityTraceFlags;
 use super::{
     CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceQuery, TraceScratch,
-    WorldEntityRule, boxes::trace_box,
+    WorldEntityRule,
 };
 use crate::{area::AreaGrid, entities::EntityTable};
 use qa_core::primitives::{
@@ -197,40 +197,20 @@ impl<'a> WorldTrace<'a> {
             } else {
                 query
             };
-            let incoming = match shape {
-                CollisionShape::Box => trace_box(
-                    target_query,
-                    &Body {
-                        position: *linked.position,
-                        velocity: *linked.velocity,
-                        mins: *linked.mins,
-                        maxs: *linked.maxs,
-                    },
-                    id,
-                ),
-                CollisionShape::Model { geometry, index } => {
-                    // Stale lifetimes and invalid inline ordinals affect only
-                    // this candidate, never another geometry in the store.
-                    if self.store.model_bounds(geometry, index).is_none() {
-                        continue;
-                    }
-                    let mut incoming = self.store.trace_transformed(
-                        geometry,
-                        index,
-                        target_query,
-                        *linked.position,
-                        columns.angles[slot],
-                        columns.model_rules[slot],
-                        self.scratch,
-                    );
-                    if incoming.fraction < 1.0 || incoming.start_solid || incoming.all_solid {
-                        incoming.entity = Some(id);
-                    }
-                    incoming.brush_solid = true;
-                    incoming
-                }
-                CollisionShape::None => continue,
-            };
+            let incoming = self.store.trace_body(
+                target_query,
+                shape,
+                &Body {
+                    position: *linked.position,
+                    velocity: *linked.velocity,
+                    mins: *linked.mins,
+                    maxs: *linked.maxs,
+                },
+                columns.angles[slot],
+                columns.model_rules[slot],
+                Some(id),
+                self.scratch,
+            );
             result.merge_linked(incoming, query.entity_rules);
         }
         result

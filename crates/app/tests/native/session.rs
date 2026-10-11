@@ -2053,11 +2053,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         // guessed argument signature is read, and instructions after it stop.
         let target = 0x180001600u64;
         let trap_name = if rr {
-            b"clip".as_slice()
+            b"get_configstring".as_slice()
         } else {
             b"bprintf".as_slice()
         };
-        let pointer = pointers[if rr { 15 } else { 0 }];
+        let pointer = pointers[if rr { 8 } else { 0 }];
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
         if rr {
@@ -2243,6 +2243,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
+                || (rr && slot == 15)
                 || slot == area_slot
                 || slot == contents_slot
                 || slot == connected_slot
@@ -2271,6 +2272,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                 .copy_from_slice(&code);
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let before_clip = (rr && slot == 15).then(|| {
+                (
+                    services.server.entities.len(),
+                    services.server.entities.columns.position[bound.slot as usize],
+                    services.server.area.bounds(bound),
+                )
+            });
             game.vm
                 .call(
                     &mut NativeCalls {
@@ -2290,6 +2298,14 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     &[1],
                 )
                 .unwrap();
+            if let Some((count, position, bounds)) = before_clip {
+                assert_eq!(services.server.entities.len(), count);
+                assert_eq!(
+                    services.server.entities.columns.position[bound.slot as usize],
+                    position
+                );
+                assert_eq!(services.server.area.bounds(bound), bounds);
+            }
             if slot == link_slot && a[0] == entity_address {
                 let bounds = services.server.area.bounds(bound).unwrap();
                 assert_eq!(
@@ -2757,6 +2773,80 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(result_entity(&mut game), expected);
         }
         set_fields(&mut game, 0, 0, 0);
+        if rr {
+            let fraction = |game: &mut Game| {
+                qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                    .unwrap()
+                    .read_word(output + 4)
+                    .unwrap() as u32
+            };
+            // A direct world clip ignores the linked body intersecting this segment.
+            assert_eq!(
+                invoke_import(
+                    &mut game,
+                    15,
+                    &[output, base + 0x3000, start, 0, 0, end, body_mask]
+                ),
+                output
+            );
+            assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+            assert_eq!(result_entity(&mut game), base + 0x3000);
+            // A miss still returns the specified target, unlike an ordinary trace.
+            invoke_import(
+                &mut game,
+                15,
+                &[output, entity_address, start, 0, 0, end, 1],
+            );
+            assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+            assert_eq!(result_entity(&mut game), entity_address);
+            // This native slot has no common lifetime, is not in use, and is unlinked.
+            // NOT, TRIGGER without an inline model, and BBOX all use its temporary box.
+            for solid in [0, 1, 2] {
+                let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                memory.write_vec3(inactive + 4, origin).unwrap();
+                memory
+                    .write_vec3(inactive + 16, qa_core::primitives::Vec3([0.0, 90.0, 0.0]))
+                    .unwrap();
+                memory
+                    .write_vec3(
+                        inactive + 1396,
+                        qa_core::primitives::Vec3([-16.0, -16.0, -24.0]),
+                    )
+                    .unwrap();
+                memory
+                    .write_vec3(
+                        inactive + 1408,
+                        qa_core::primitives::Vec3([16.0, 16.0, 32.0]),
+                    )
+                    .unwrap();
+                memory.write(inactive + 1456, &[solid]).unwrap();
+                drop(memory);
+                invoke_import(
+                    &mut game,
+                    15,
+                    &[output, inactive, start, 0, 0, end, body_mask],
+                );
+                assert_eq!(fraction(&mut game), ((37.0f32 - 0.03125) / 100.0).to_bits());
+                assert_eq!(result_entity(&mut game), inactive);
+            }
+            // Raw target motion takes effect without relinking and never mutates the
+            // authoritative pose or area link of the previously linked client.
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .write_vec3(inactive + 4, qa_core::primitives::Vec3([90.0, 5.0, 7.0]))
+                .unwrap();
+            invoke_import(
+                &mut game,
+                15,
+                &[output, inactive, start, 0, 0, end, body_mask],
+            );
+            assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+            assert_eq!(result_entity(&mut game), inactive);
+        }
         let list = base + 0x1e00;
         let predicate = base + 0x1780;
         for (limit, role, callback, decision, expected) in [
@@ -2920,6 +3010,34 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             config_slot,
             &[if rr { 64 } else { 34 }, base + 0x17a0],
         );
+        if rr {
+            // A trigger's valid inline model is used even while unlinked. The
+            // fixture's empty inline model clears where its temporary box hits.
+            for solid in [1, 3] {
+                qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap()
+                .write(address + 1456, &[solid])
+                .unwrap();
+                invoke_import(
+                    &mut game,
+                    15,
+                    &[output, address, start, 0, 0, end, body_mask],
+                );
+                assert_eq!(result_entity(&mut game), address);
+                let memory = qa_compat::memory::ModuleMemory::borrow(
+                    base,
+                    game.vm.process.memory_mut().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    memory.read_word(output + 4).unwrap() as u32,
+                    1.0f32.to_bits()
+                );
+            }
+        }
         invoke_import(&mut game, link_slot, &[address, 0]);
         invoke_import(&mut game, link_slot, &[address, 0]);
         invoke_import(&mut game, link_slot, &[entity_address, 0]);

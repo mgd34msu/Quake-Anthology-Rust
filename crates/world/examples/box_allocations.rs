@@ -55,10 +55,10 @@ fn main() -> Result<(), &'static str> {
                     excluded: &[],
                 },
                 body,
-                EntityId {
+                Some(EntityId {
                     slot: slot as u32,
                     generation: 1,
-                },
+                }),
             );
             if black_box(trace).fraction < 1.0 {
                 hits += 1;

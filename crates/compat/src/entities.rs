@@ -1,11 +1,11 @@
 //! Native entity-address projection onto common lifetime handles.
 use crate::{
     memory::ModuleMemory,
-    services::{CallContext, CallError, ENGINE_CALLS, EngineServices},
+    services::{CallContext, CallError, ClipTarget, ENGINE_CALLS, EngineServices},
 };
 use qa_core::primitives::{
-    Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, ModelRules, ModuleId,
-    NativeEntity,
+    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, ModelRules, ModuleId,
+    NativeEntity, Vec3,
 };
 use qa_world::area::LinkFlags;
 use qa_world::collision::Contents;
@@ -480,15 +480,12 @@ impl EntityProjection {
         if native_slot >= entities.count as usize {
             return Err(CallError::Entity);
         }
-        let origin = memory.read_vec3(address + 4)?;
-        let angles = memory.read_vec3(address + 16)?;
+        let (body, angles) = self.body(memory, address)?;
+        let origin = body.position;
         let bounds = Bounds {
-            mins: memory.read_vec3(address + layout.mins as u64)?,
-            maxs: memory.read_vec3(address + layout.maxs as u64)?,
+            mins: body.mins,
+            maxs: body.maxs,
         };
-        if origin.0.iter().chain(&angles.0).any(|v| !v.is_finite()) || !bounds.is_valid() {
-            return Err(CallError::Entity);
-        }
         let solid = field(memory, address, layout.solid)?;
         if solid > 3 {
             return Err(CallError::Entity);
@@ -496,14 +493,7 @@ impl EntityProjection {
         let flags = memory.read_word(address + layout.flags as u64)? as u32;
         let link_count = memory.read_word(address + layout.link_count as u64)?;
         let shape = if solid == 3 {
-            let model = memory.read_word(address + 40)? as u32;
-            if model as usize >= self.models.count {
-                return Err(CallError::Geometry);
-            }
-            let (name, _) = services
-                .storage
-                .configstring(context.module, self.models.first + model as usize)?;
-            Self::inline_model(services, name)?.0
+            self.model(services, memory, context, address)?.0
         } else if solid == 2 {
             CollisionShape::Box
         } else {
@@ -629,6 +619,75 @@ impl EntityProjection {
             }
         }
         Ok(())
+    }
+    fn body(&self, memory: &ModuleMemory<'_>, address: u64) -> Result<(Body, Vec3), CallError> {
+        let body = Body {
+            position: memory.read_vec3(address + 4)?,
+            mins: memory.read_vec3(address + self.layout.mins as u64)?,
+            maxs: memory.read_vec3(address + self.layout.maxs as u64)?,
+            ..Body::default()
+        };
+        let angles = memory.read_vec3(address + 16)?;
+        if body
+            .position
+            .0
+            .iter()
+            .chain(&angles.0)
+            .any(|v| !v.is_finite())
+            || !(Bounds {
+                mins: body.mins,
+                maxs: body.maxs,
+            })
+            .is_valid()
+        {
+            return Err(CallError::Entity);
+        }
+        Ok((body, angles))
+    }
+    fn model(
+        &self,
+        services: &EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        address: u64,
+    ) -> Result<(CollisionShape, Bounds), CallError> {
+        let model = memory.read_word(address + 40)? as u32;
+        if model as usize >= self.models.count {
+            return Err(CallError::Geometry);
+        }
+        let (name, _) = services
+            .storage
+            .configstring(context.module, self.models.first + model as usize)?;
+        Self::inline_model(services, name)
+    }
+    pub(crate) fn clip_target(
+        &self,
+        services: &EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+        address: u64,
+    ) -> Result<ClipTarget, CallError> {
+        let identity = self.identity(memory, context, table, address)?;
+        if identity.slot == 0 {
+            return Ok(ClipTarget::World);
+        }
+        let (body, angles) = self.body(memory, address)?;
+        let solid = field(memory, address, self.layout.solid)?;
+        let shape = match solid {
+            3 => self.model(services, memory, context, address)?.0,
+            1 => self
+                .model(services, memory, context, address)
+                .map_or(CollisionShape::Box, |model| model.0),
+            0 | 2 => CollisionShape::Box,
+            _ => return Err(CallError::Entity),
+        };
+        Ok(ClipTarget::Body {
+            body,
+            shape,
+            angles,
+            rules: self.layout.model_rules,
+        })
     }
     fn inline_model(
         services: &EngineServices<'_>,

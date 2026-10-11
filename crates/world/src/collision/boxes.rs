@@ -22,7 +22,7 @@ const fn nodes() -> [ClipNode; 6] {
 }
 static NODES: [ClipNode; 6] = nodes();
 
-pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
+pub fn trace_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
     if query.entity_rules.quake_kind().is_none() {
         return trace_convex_box(query, body, entity);
     }
@@ -69,13 +69,13 @@ pub fn trace_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
         trace.end = end;
     }
     if trace.fraction < 1.0 || trace.start_solid {
-        trace.entity = Some(entity);
+        trace.entity = entity;
     }
     trace.brush_solid = false;
     trace
 }
 
-fn trace_convex_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
+fn trace_convex_box(query: TraceQuery, body: &Body, entity: Option<EntityId>) -> Trace {
     let original = query;
     let mut query = query;
     if query
@@ -153,7 +153,7 @@ fn trace_convex_box(query: TraceQuery, body: &Body, entity: EntityId) -> Trace {
     // CM_TransformedBoxTrace derives the endpoint from the original segment.
     trace.end = original.start.lerp(original.end, trace.fraction);
     if trace.fraction < 1.0 || trace.start_solid {
-        trace.entity = Some(entity);
+        trace.entity = entity;
     }
     trace.brush_solid = false;
     trace

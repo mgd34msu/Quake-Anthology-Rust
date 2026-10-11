@@ -7,7 +7,10 @@ use super::{
 };
 use qa_core::{
     math::{AngleBasis, angle_vectors_radians, radians_from_degrees, radians_from_degrees_f32},
-    primitives::{Bounds, ClipNode, GeometryId, ModelRotation, ModelRules, Plane, SurfaceId, Vec3},
+    primitives::{
+        Body, Bounds, ClipNode, CollisionShape, EntityId, GeometryId, ModelRotation, ModelRules,
+        Plane, SurfaceId, Vec3,
+    },
 };
 use std::ops::Range;
 
@@ -284,6 +287,43 @@ impl CollisionStore {
             return Err(StoreError::Capacity);
         }
         Ok(self.make_scratch(capacity))
+    }
+
+    /// The shared narrow phase also accepts targets without a common lifetime
+    /// or area link, as required by native direct-entity clipping.
+    pub fn trace_body(
+        &self,
+        query: TraceQuery,
+        shape: CollisionShape,
+        body: &Body,
+        angles: Vec3,
+        rules: ModelRules,
+        entity: Option<EntityId>,
+        scratch: &mut TraceScratch,
+    ) -> Trace {
+        match shape {
+            CollisionShape::Box => super::boxes::trace_box(query, body, entity),
+            CollisionShape::Model { geometry, index } => {
+                if self.model_bounds(geometry, index).is_none() {
+                    return Trace::clear(query.end);
+                }
+                let mut trace = self.trace_transformed(
+                    geometry,
+                    index,
+                    query,
+                    body.position,
+                    angles,
+                    rules,
+                    scratch,
+                );
+                if trace.fraction < 1.0 || trace.start_solid || trace.all_solid {
+                    trace.entity = entity;
+                }
+                trace.brush_solid = true;
+                trace
+            }
+            CollisionShape::None => Trace::clear(query.end),
+        }
     }
 
     pub fn trace_model(

@@ -500,7 +500,9 @@ impl Game {
                         &[NativeScalar::Word, NativeScalar::Word][..],
                         NativeScalar::Void,
                     ))
-                } else if ordinal == if layout.version == 2023 { 14 } else { 12 } {
+                } else if ordinal == if layout.version == 2023 { 14 } else { 12 }
+                    || (layout.version == 2023 && ordinal == 15)
+                {
                     Some((
                         &[
                             NativeScalar::Word,

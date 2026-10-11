@@ -10,8 +10,8 @@ use qa_core::primitives::ThinkTime;
 use qa_core::{
     events::FrameEvent,
     primitives::{
-        Bounds, ClientId, CvarHandle, EffectEvent, EntityId, GeometryId, ModuleId, NameId,
-        PrintKind, SoundEvent, Vec3,
+        Body, Bounds, ClientId, CollisionShape, CvarHandle, EffectEvent, EntityId, GeometryId,
+        ModelRules, ModuleId, NameId, PrintKind, SoundEvent, Vec3,
     },
     text::FixedText,
 };
@@ -280,6 +280,16 @@ pub type ResourceIndexCall =
     fn(&mut EngineServices<'_>, ModuleId, ResourceRange, &[u8]) -> Result<u32, CallError>;
 pub type AreaQueryCall =
     fn(&EngineServices<'_>, Bounds, LinkFlags, &mut dyn FnMut(EntityId) -> bool);
+/// A direct clip selects one target, independently of area linking and owners.
+pub enum ClipTarget {
+    World,
+    Body {
+        body: Body,
+        shape: CollisionShape,
+        angles: Vec3,
+        rules: ModelRules,
+    },
+}
 pub struct EngineCallTable {
     pub in_visibility: fn(
         &mut EngineServices<'_>,
@@ -309,6 +319,7 @@ pub struct EngineCallTable {
         TraceQuery<'_>,
         Option<&dyn NativeTraceEntities>,
     ) -> Result<Trace, CallError>,
+    pub clip: fn(&mut EngineServices<'_>, TraceQuery<'_>, ClipTarget) -> Result<Trace, CallError>,
     pub point_contents:
         fn(&mut EngineServices<'_>, Vec3, EntityTracePolicy) -> Result<Contents, CallError>,
     pub link:
@@ -417,6 +428,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     sound: |s, e| s.sound(e),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
+    clip: |s, q, target| s.clip(q, target),
     point_contents: |s, p, rules| s.point_contents(p, rules),
     link: |s, c, e, f| s.link(c, e, f),
     unlink: |s, e| s.unlink(e),
@@ -484,6 +496,23 @@ impl EngineServices<'_> {
         )
         .with_native_entities(native)
         .trace(query))
+    }
+    pub fn clip(&mut self, query: TraceQuery<'_>, target: ClipTarget) -> Result<Trace, CallError> {
+        Ok(match target {
+            ClipTarget::World => {
+                let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
+                self.geometry
+                    .trace_model(geometry, index, query, self.scratch)
+            }
+            ClipTarget::Body {
+                body,
+                shape,
+                angles,
+                rules,
+            } => self
+                .geometry
+                .trace_body(query, shape, &body, angles, rules, None, self.scratch),
+        })
     }
     pub fn point_contents(
         &mut self,
