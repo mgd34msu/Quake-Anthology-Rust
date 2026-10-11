@@ -222,11 +222,6 @@ impl PlayerProjection {
     pub fn load(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
         Self::load_fields(protocol, bindings, false)
     }
-    /// Native module stats share this walker without importing movement/view
-    /// columns, which belong to independently selected capability roles.
-    pub fn load_stats(protocol: Protocol, bindings: &[(usize, ValueBinding)]) -> Self {
-        Self::load_fields(protocol, bindings, true)
-    }
     /// Native array ordinals enter their explicitly reserved common bank rows.
     /// Shared hot fields remain authoritative when writing a snapshot.
     pub fn load_values(
@@ -236,6 +231,8 @@ impl PlayerProjection {
     ) -> Self {
         Self::load_value_fields(protocol, stats, persistent, false)
     }
+    /// Native module stats enter their ordinal bank rows without importing
+    /// movement/view columns, whose capability roles remain independent.
     pub fn load_stat_values(protocol: Protocol, stats: &[ValueBinding]) -> Self {
         Self::load_value_fields(protocol, stats, &[], true)
     }

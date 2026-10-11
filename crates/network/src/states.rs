@@ -4,7 +4,7 @@ use crate::{
     delta::{self, Field, Group, Packed, Presence, ScaleRead, Value},
     message::{Error, Reader, Writer},
 };
-use qa_core::primitives::{IndexSpan, RuleSetId};
+use qa_core::primitives::{IndexSpan, NATIVE_VALUE_LAYOUT, RuleSetId};
 
 /// Native numeric arrays carried by the snapshot, independently of movement,
 /// map and module roles. NQ/QW publish stats in separate service messages.
@@ -191,6 +191,10 @@ const fn mask_fields<const N: usize>(start: usize, bits: u8, value: Value) -> [F
 }
 static STATS: [Field; 16] = mask_fields(48, 16, Value::Signed);
 static PERSISTANT: [Field; 16] = mask_fields(64, 16, Value::Signed);
+const _: () = {
+    assert!(STATS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].0 as usize);
+    assert!(PERSISTANT.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake3 as usize].1 as usize);
+};
 static AMMO: [Field; 16] = mask_fields(80, 16, Value::Signed);
 static POWERUPS: [Field; 16] = mask_fields(96, 32, Value::Unsigned);
 static PLAYER_ARRAYS: [Group<true>; 4] = [
@@ -408,7 +412,8 @@ const fn q2_player_fields() -> [Field; 36] {
 }
 static Q2_PLAYER_FIELDS: [Field; 36] = q2_player_fields();
 static Q2_STATS: [Field; 32] = mask_fields(36, 16, Value::Signed);
-pub const Q2_RR_STATS: usize = 64;
+const _: () = assert!(Q2_STATS.len() == NATIVE_VALUE_LAYOUT[RuleSetId::Quake2 as usize].0 as usize);
+pub const Q2_RR_STATS: usize = NATIVE_VALUE_LAYOUT[RuleSetId::Quake2Rerelease as usize].0 as usize;
 static Q2_RR_STAT_FIELDS: [Field; Q2_RR_STATS] = mask_fields(0, 16, Value::Signed);
 static Q2_RR_STAT_GROUP: [Group; 1] = [Group {
     fields: &Q2_RR_STAT_FIELDS,

@@ -763,7 +763,7 @@ impl EngineServices<'_> {
         rules: EntityTracePolicy,
         pass: CollisionOwner,
     ) -> Result<Contents, CallError> {
-        let (mut trace, _) = self.world_trace(pass, None)?;
+        let (trace, _) = self.world_trace(pass, None)?;
         Ok(trace.point_contents(point, rules, &[]))
     }
     pub fn link(

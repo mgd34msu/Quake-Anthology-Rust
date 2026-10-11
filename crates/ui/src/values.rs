@@ -1,20 +1,13 @@
 //! Native ordinal/width bindings over the common bank, resolved at load.
 use qa_core::primitives::{
-    NameId, RuleSetId, ValueBank, ValueBinding, ValueId, ValueReset, ValueWidth,
+    NATIVE_VALUE_LAYOUT, NameId, RuleSetId, ValueBank, ValueBinding, ValueId, ValueReset,
+    ValueWidth,
 };
 pub struct NativeValues {
     /// These are immutable numeric bindings, not additional value storage.
     pub stats: Box<[ValueBinding]>,
     pub persistent: Box<[ValueBinding]>,
 }
-// Native boundary counts/widths from client.h and the three q_shared/game.h files.
-const NATIVE: [(u32, u32, ValueWidth); 5] = [
-    (32, 0, ValueWidth::Signed32),
-    (32, 0, ValueWidth::Signed32),
-    (32, 0, ValueWidth::Signed16),
-    (64, 0, ValueWidth::Signed16),
-    (16, 16, ValueWidth::Signed32),
-];
 impl NativeValues {
     /// A module life transition clears only its explicitly bound fields.
     pub fn reset_life(&self, bank: &mut ValueBank) {
@@ -25,7 +18,7 @@ impl NativeValues {
     /// Each native module may bind its own explicitly reserved bank range.
     /// Source/protocol/presentation choices never change the bank's identity.
     pub fn load(rules: RuleSetId, first: ValueId) -> Option<Self> {
-        let (stats, persistent, width) = NATIVE[rules as usize];
+        let (stats, persistent, width) = NATIVE_VALUE_LAYOUT[rules as usize];
         first.0.checked_add(stats)?.checked_add(persistent)?;
         let fields = |offset: u32, count: u32, reset| {
             (0..count)
@@ -55,7 +48,7 @@ pub struct ValueLayout {
 }
 impl ValueLayout {
     pub fn load(extensions: &[ExtensionValue]) -> Option<Self> {
-        let native_count: u32 = NATIVE
+        let native_count: u32 = NATIVE_VALUE_LAYOUT
             .iter()
             .map(|&(stats, persistent, _)| stats + persistent)
             .sum();

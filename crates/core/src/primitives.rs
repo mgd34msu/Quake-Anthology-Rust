@@ -1133,6 +1133,14 @@ pub enum ValueWidth {
     Signed32,
     Float32,
 }
+/// Native stat/persistent counts and module value widths, in RuleSetId order.
+pub const NATIVE_VALUE_LAYOUT: [(u32, u32, ValueWidth); 5] = [
+    (32, 0, ValueWidth::Signed32),
+    (32, 0, ValueWidth::Signed32),
+    (32, 0, ValueWidth::Signed16),
+    (64, 0, ValueWidth::Signed16),
+    (16, 16, ValueWidth::Signed32),
+];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueReset {
     Life,
