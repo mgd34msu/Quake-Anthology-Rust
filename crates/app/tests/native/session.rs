@@ -2924,6 +2924,22 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             allocation: AllocationPolicy::EDICT,
             link_order: qa_gameplay::rules::link_order(rules),
         };
+        // GetGameAPI may use world services before publishing its edict
+        // table. A missing native view must not reject that valid query.
+        let mut factory = native_import_code(
+            pointers[if rr { 16 } else { 13 }],
+            &[base + 0x1df0],
+            true,
+            &[],
+            base + 0x1de0,
+        );
+        factory.pop();
+        factory.extend([0x48, 0xb8]);
+        factory.extend((base + 0x1800).to_le_bytes());
+        factory.push(0xc3);
+        let factory_at = 0x1080;
+        game.vm.process.memory_mut().unwrap()[factory_at..factory_at + factory.len()]
+            .copy_from_slice(&factory);
         let returned = {
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             game.vm
@@ -2943,6 +2959,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 )
                 .unwrap()
         };
+        assert_eq!(
+            &game.vm.process.memory_mut().unwrap()[0x1de0..0x1de8],
+            &[0; 8]
+        );
         let target = 0x180001600u64;
         let frame_offset = if rr { 136 } else { 112 };
         game.vm.process.memory_mut().unwrap()[0x1800 + frame_offset..0x1808 + frame_offset]
@@ -3183,6 +3203,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 (39, 40, 41, 42)
             }
         );
+        // These writes execute in the owned child immediately before the
+        // import, after the previous export projection and without LinkEntity.
+        let live_edits = std::cell::RefCell::new(Vec::<(u64, Vec<u8>)>::new());
         let mut invoke_import = |game: &mut Game, slot: usize, a: &[u64]| {
             let returns_value = slot == malloc_slot
                 || slot == trace_slot
@@ -3208,6 +3231,22 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 },
                 base + 0x1c30,
             );
+            let mut prefix = Vec::new();
+            for (address, bytes) in live_edits.borrow_mut().drain(..) {
+                for (index, bytes) in bytes.chunks(4).enumerate() {
+                    prefix.extend([0x48, 0xb9]);
+                    prefix.extend((address + (index * 4) as u64).to_le_bytes());
+                    if bytes.len() == 4 {
+                        prefix.extend([0xc7, 0x01]);
+                        prefix.extend(bytes);
+                    } else {
+                        assert_eq!(bytes.len(), 1);
+                        prefix.extend([0xc6, 0x01, bytes[0]]);
+                    }
+                }
+            }
+            prefix.append(&mut code);
+            code = prefix;
             if slot == argv_slot || slot == args_slot || (rr && slot == 8) {
                 // Dereference the returned C string in the child as well as inspecting
                 // the authoritative shared bytes in the parent.
@@ -3220,6 +3259,8 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
                 .copy_from_slice(&code);
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+            let before_spatial = (slot == trace_slot || slot == contents_slot)
+                .then(|| services.server.area.bounds(bound));
             let before_clip = (rr && slot == 15).then(|| {
                 (
                     services.server.entities.len(),
@@ -3251,6 +3292,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     &[1],
                 )
                 .unwrap();
+            if let Some(bounds) = before_spatial {
+                assert_eq!(services.server.area.bounds(bound), bounds);
+            }
             if let Some((count, position, bounds)) = before_clip {
                 assert_eq!(services.server.entities.len(), count);
                 assert_eq!(
@@ -3936,6 +3980,150 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(result_entity(&mut game), expected);
         }
         set_fields(&mut game, 0, 0, 0);
+        let fraction = |game: &mut Game| {
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap()
+                .read_word(output + if rr { 4 } else { 8 })
+                .unwrap() as u32
+        };
+        let vec_bytes = |v: [f32; 3]| {
+            v.into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+        for (address, bytes, expected) in [
+            (
+                entity_address + 4,
+                vec_bytes([8.0, 5.0, 7.0]),
+                (42.0f32 - 0.03125) / 100.0,
+            ),
+            (
+                entity_address + if rr { 1396 } else { 204 },
+                vec_bytes([-4.0, -16.0, -24.0]),
+                (54.0f32 - 0.03125) / 100.0,
+            ),
+        ] {
+            live_edits.borrow_mut().push((address, bytes));
+            invoke_import(
+                &mut game,
+                trace_slot,
+                &[output, start, 0, 0, end, 0, body_mask],
+            );
+            assert_eq!(fraction(&mut game), expected.to_bits());
+        }
+        // Current SOLID_NOT disables an old solid-chain member immediately.
+        live_edits.borrow_mut().push((
+            entity_address + if rr { 1456 } else { 264 },
+            if rr {
+                vec![0]
+            } else {
+                0u32.to_le_bytes().to_vec()
+            },
+        ));
+        invoke_import(
+            &mut game,
+            trace_slot,
+            &[output, start, 0, 0, end, 0, body_mask],
+        );
+        assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+        // PointContents walks the old AREA_SOLID membership even after the
+        // current SOLID_NOT value disables traces, using the live box hull.
+        let live_point = base + 0x1d98;
+        qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+            .unwrap()
+            .write_vec3(live_point, qa_core::primitives::Vec3([8.0, 5.0, 7.0]))
+            .unwrap();
+        assert_eq!(
+            invoke_import(&mut game, contents_slot, &[live_point]),
+            body_mask
+        );
+        // Restore ABI fields without relinking; a contents query reads the
+        // live origin/bounds while the same stored area membership remains.
+        live_edits.borrow_mut().extend([
+            (
+                entity_address + if rr { 1456 } else { 264 },
+                if rr {
+                    vec![2]
+                } else {
+                    2u32.to_le_bytes().to_vec()
+                },
+            ),
+            (entity_address + 4, vec_bytes([3.0, 5.0, 7.0])),
+            (
+                entity_address + if rr { 1396 } else { 204 },
+                vec_bytes([-16.0, -16.0, -24.0]),
+            ),
+        ]);
+        invoke_import(
+            &mut game,
+            trace_slot,
+            &[output, start, 0, 0, end, 0, body_mask],
+        );
+        // Current model selection must use the existing config revision/cache
+        // even when the old linked common shape was a box. Model1 is empty.
+        let model_row = game.vm.resource_ranges().unwrap()[0].get(1).unwrap();
+        game.vm.process.memory_mut().unwrap()[0x1b00..0x1b03].copy_from_slice(b"*1\0");
+        invoke_import(
+            &mut game,
+            if rr { 7 } else { 6 },
+            &[model_row as u64, base + 0x1b00],
+        );
+        live_edits.borrow_mut().extend([
+            (
+                entity_address + if rr { 1456 } else { 264 },
+                if rr {
+                    vec![3]
+                } else {
+                    3u32.to_le_bytes().to_vec()
+                },
+            ),
+            (entity_address + 40, 1u32.to_le_bytes().to_vec()),
+        ]);
+        invoke_import(
+            &mut game,
+            trace_slot,
+            &[output, start, 0, 0, end, 0, body_mask],
+        );
+        assert_eq!(fraction(&mut game), 1.0f32.to_bits());
+        live_edits.borrow_mut().push((
+            entity_address + if rr { 1456 } else { 264 },
+            if rr {
+                vec![2]
+            } else {
+                2u32.to_le_bytes().to_vec()
+            },
+        ));
+        invoke_import(
+            &mut game,
+            trace_slot,
+            &[output, start, 0, 0, end, 0, body_mask],
+        );
+        invoke_import(
+            &mut game,
+            if rr { 7 } else { 6 },
+            &[model_row as u64, base + 0x1720],
+        );
+        let point = base + 0x1d98;
+        let mut memory =
+            qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
+                .unwrap();
+        memory
+            .write_vec3(point, qa_core::primitives::Vec3([-13.0, 5.0, 7.0]))
+            .unwrap();
+        drop(memory);
+        assert_eq!(invoke_import(&mut game, contents_slot, &[point]), body_mask);
+        live_edits
+            .borrow_mut()
+            .push((entity_address + 4, vec_bytes([4.0, 5.0, 7.0])));
+        assert_eq!(invoke_import(&mut game, contents_slot, &[point]), 0);
+        live_edits
+            .borrow_mut()
+            .push((entity_address + 4, vec_bytes([3.0, 5.0, 7.0])));
+        invoke_import(
+            &mut game,
+            trace_slot,
+            &[output, start, 0, 0, end, 0, body_mask],
+        );
         if rr {
             let fraction = |game: &mut Game| {
                 qa_compat::memory::ModuleMemory::borrow(base, game.vm.process.memory_mut().unwrap())
@@ -4583,7 +4771,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         } {
             assert_eq!(
                 storage.configstring(ModuleId(1), first + 1).unwrap(),
-                (&b"_qa_child_cvar"[..], 1)
+                (
+                    &b"_qa_child_cvar"[..],
+                    if first + 1 == model_row { 3 } else { 1 }
+                )
             );
         }
         assert!(!runtime.server.area.unlink(bound));

@@ -679,6 +679,7 @@ pub struct EngineCallTable {
         Vec3,
         EntityTracePolicy,
         CollisionOwner,
+        Option<&dyn NativeTraceEntities>,
     ) -> Result<Contents, CallError>,
     pub link:
         fn(&mut EngineServices<'_>, CallContext, EntityId, LinkFlags) -> Result<bool, CallError>,
@@ -858,7 +859,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
     clip: |s, q, target| s.clip(q, target),
-    point_contents: |s, p, rules, pass| s.point_contents(p, rules, pass),
+    point_contents: |s, p, rules, pass, native| s.point_contents(p, rules, pass, native),
     link: |s, c, e, f| s.link(c, e, f),
     unlink: |s, e| s.unlink(e),
     bot_registration: |s, e, registered| s.bot_registration(e, registered),
@@ -927,7 +928,8 @@ impl EngineServices<'_> {
                 self.scratch,
                 pass,
             )
-            .with_native_entities(native),
+            .with_native_entities(native)
+            .with_native_models(Some(self.storage)),
             &mut self.server.clients,
         ))
     }
@@ -1038,8 +1040,9 @@ impl EngineServices<'_> {
         point: Vec3,
         rules: EntityTracePolicy,
         pass: CollisionOwner,
+        native: Option<&dyn NativeTraceEntities>,
     ) -> Result<Contents, CallError> {
-        let (trace, _) = self.world_trace(pass, None)?;
+        let (trace, _) = self.world_trace(pass, native)?;
         Ok(trace.point_contents(point, rules, &[]))
     }
     pub fn link(
@@ -1251,5 +1254,11 @@ impl EngineServices<'_> {
         self.file(owner, handle)?;
         self.storage.files[handle as usize - 1] = None;
         Ok(())
+    }
+}
+
+impl qa_world::collision::NativeModelNames for ServiceStorage {
+    fn model_name(&self, module: ModuleId, index: u32) -> Option<(&[u8], u64)> {
+        self.configstring(module, index as usize).ok()
     }
 }

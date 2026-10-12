@@ -191,26 +191,77 @@ impl QuakeCLayout {
 
 pub(crate) struct QuakeCTraceView<'a, 'memory> {
     memory: &'a ModuleMemory<'memory>,
+    strings: &'a ModuleMemory<'memory>,
     layout: QuakeCLayout,
     module: ModuleId,
+    error: TraceError,
+}
+impl QuakeCTraceView<'_, '_> {
+    pub fn finish(&self) -> Result<(), CallError> {
+        self.error.finish()
+    }
+    fn address(&self, slot: i32) -> Result<u64, CallError> {
+        let address = u32::try_from(slot)
+            .ok()
+            .and_then(|slot| slot.checked_mul(self.layout.stride as u32))
+            .ok_or(CallError::Entity)?;
+        self.layout.address(self.memory, address)
+    }
 }
 impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
     fn module(&self) -> ModuleId {
         self.module
     }
-    fn fields(&self, slot: i32) -> Option<(CollisionOwner, CollisionTags)> {
-        let address = u32::try_from(slot)
-            .ok()?
-            .checked_mul(self.layout.stride as u32)?;
-        self.layout
-            .identity(self.memory, self.module, address)
-            .ok()?;
-        Some((
+    fn owner(&self, slot: i32) -> Option<CollisionOwner> {
+        self.error.capture(|| {
             self.layout
-                .owner(self.memory, self.module, u64::from(address))
-                .ok()?,
-            QuakeCLayout::tags(self.layout.flags(self.memory, u64::from(address)).ok()?),
-        ))
+                .owner(self.memory, self.module, self.address(slot)?)
+        })
+    }
+    fn fields(&self, slot: i32, point_contents: bool) -> Option<NativeTraceFields> {
+        self.error.capture(|| {
+            let address = self.address(slot)?;
+            let solid = self.layout.solid(self.memory, address)?;
+            if !point_contents && solid <= 1 {
+                return Ok(NativeTraceFields::default());
+            }
+            Ok(NativeTraceFields {
+                tags: if point_contents {
+                    CollisionTags::default()
+                } else {
+                    QuakeCLayout::tags(self.layout.flags(self.memory, address)?)
+                },
+                enabled: point_contents || solid > 1,
+                box_target: solid != 4,
+                contents: Contents::SOLID,
+            })
+        })
+    }
+    fn bounds(&self, slot: i32, cached: Bounds) -> Option<Bounds> {
+        self.error
+            .capture(|| self.layout.bounds(self.memory, self.address(slot)?, cached))
+    }
+    fn target(
+        &self,
+        slot: i32,
+        cached: NativeTraceTarget,
+        point_contents: bool,
+        store: &CollisionStore,
+        geometry: qa_core::primitives::GeometryId,
+        _names: Option<&dyn NativeModelNames>,
+    ) -> Option<NativeTraceTarget> {
+        self.error.capture(|| {
+            let address = self.address(slot)?;
+            self.layout.target(
+                self.memory,
+                self.strings,
+                address,
+                cached,
+                store,
+                Some(geometry),
+                Some(point_contents),
+            )
+        })
     }
 }
 
@@ -218,6 +269,7 @@ impl EntityProjection {
     pub(crate) fn quakec_trace_view<'a, 'memory>(
         &self,
         memory: &'a ModuleMemory<'memory>,
+        strings: &'a ModuleMemory<'memory>,
         context: CallContext,
         pass: u32,
     ) -> Result<(QuakeCTraceView<'a, 'memory>, CollisionOwner), CallError> {
@@ -225,8 +277,10 @@ impl EntityProjection {
         Ok((
             QuakeCTraceView {
                 memory,
+                strings,
                 layout: self.quakec_layout()?,
                 module: context.module,
+                error: TraceError::default(),
             },
             CollisionOwner::Native(pass),
         ))
@@ -503,7 +557,12 @@ impl EntityProjection {
         layout.write_number(memory, u64::from(value), layout.model_index, ordinal as f32)?;
         let bounds = if text.starts_with(b"*") {
             Some(
-                Self::inline_model(services, services.world.ok_or(CallError::Geometry)?.0, text)?.1,
+                inline_model(
+                    services.geometry,
+                    services.world.ok_or(CallError::Geometry)?.0,
+                    text,
+                )?
+                .1,
             )
         } else if context.native_rules == qa_core::primitives::RuleSetId::QuakeWorld {
             None
@@ -638,29 +697,24 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
-        let mut body = services.server.entities.columns.body(slot);
-        let mut angles = services.server.entities.columns.angles[slot];
-        for (field, to) in [
-            (layout.origin, &mut body.position),
-            (layout.velocity, &mut body.velocity),
-            (layout.angles, &mut angles),
-            (layout.mins, &mut body.mins),
-            (layout.maxs, &mut body.maxs),
-        ] {
-            if field.is_some() {
-                *to = layout.vector(memory, address, field)?;
-            }
-        }
-        if !body.position.is_finite()
-            || !angles.is_finite()
-            || !(Bounds {
-                mins: body.mins,
-                maxs: body.maxs,
-            })
-            .is_valid()
-        {
-            return Err(CallError::Entity);
-        }
+        let columns = &services.server.entities.columns;
+        let target = layout.target(
+            memory,
+            strings,
+            address,
+            NativeTraceTarget {
+                body: columns.body(slot),
+                angles: columns.angles[slot],
+                shape: columns.collision_shape[slot],
+                rules: columns.model_rules[slot],
+                contents_pose: columns.point_contents_pose[slot],
+            },
+            services.geometry,
+            services.world.map(|world| world.0),
+            None,
+        )?;
+        let body = target.body;
+        let angles = target.angles;
         let number = |field| {
             layout
                 .number(memory, address, field)
@@ -671,22 +725,8 @@ impl EntityProjection {
         } else {
             0
         };
-        let solid = if layout.solid.is_some() {
-            number(layout.solid)?
-        } else {
-            0
-        };
-        let shape = match solid {
-            0 | 1 => CollisionShape::None,
-            2 | 3 => CollisionShape::Box,
-            4 if value == 0 => CollisionShape::None,
-            4 => {
-                let offset = layout.word(memory, address, layout.model)?;
-                let name = strings.cstring(u64::from(offset))?;
-                Self::inline_model(services, services.world.ok_or(CallError::Geometry)?.0, name)?.0
-            }
-            _ => return Err(CallError::Entity),
-        };
+        let solid = layout.solid(memory, address)?;
+        let shape = target.shape;
         let owner = if layout.owner.is_some() {
             layout.owner(memory, context.module, address)?
         } else {
@@ -810,5 +850,90 @@ impl EntityProjection {
             .and_then(|slot| (slot as usize).checked_mul(layout.stride))
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(0)
+    }
+}
+
+impl QuakeCLayout {
+    fn solid(self, memory: &ModuleMemory<'_>, address: u64) -> Result<i32, CallError> {
+        self.solid.map_or(Ok(0), |field| {
+            self.number(memory, address, Some(field))
+                .map(|value| crate::numbers::native_integer(f64::from(value)))
+        })
+    }
+    fn bounds(
+        self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        mut bounds: Bounds,
+    ) -> Result<Bounds, CallError> {
+        if self.mins.is_some() {
+            bounds.mins = self.vector(memory, address, self.mins)?;
+        }
+        if self.maxs.is_some() {
+            bounds.maxs = self.vector(memory, address, self.maxs)?;
+        }
+        bounds.is_valid().then_some(bounds).ok_or(CallError::Entity)
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "One native row decoder serves publication and operation-specific live queries"
+    )]
+    fn target(
+        self,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        address: u64,
+        mut cached: NativeTraceTarget,
+        store: &CollisionStore,
+        geometry: Option<qa_core::primitives::GeometryId>,
+        point_contents: Option<bool>,
+    ) -> Result<NativeTraceTarget, CallError> {
+        let solid = self.solid(memory, address)?;
+        for (field, to) in [
+            (self.origin, &mut cached.body.position),
+            (self.velocity, &mut cached.body.velocity),
+        ] {
+            if field.is_some() {
+                *to = self.vector(memory, address, field)?;
+            }
+        }
+        let bounds = self.bounds(
+            memory,
+            address,
+            Bounds {
+                mins: cached.body.mins,
+                maxs: cached.body.maxs,
+            },
+        )?;
+        cached.body.mins = bounds.mins;
+        cached.body.maxs = bounds.maxs;
+        if point_contents.is_none() || solid == 4 {
+            if self.angles.is_some() {
+                cached.angles = self.vector(memory, address, self.angles)?;
+            }
+        } else {
+            cached.angles = Vec3::default();
+        }
+        if !cached.body.position.is_finite() || !cached.angles.is_finite() {
+            return Err(CallError::Entity);
+        }
+        cached.shape = match solid {
+            0 | 1 if point_contents == Some(true) => CollisionShape::Box,
+            0 | 1 => CollisionShape::None,
+            2 | 3 => CollisionShape::Box,
+            4 if address == 0 => CollisionShape::None,
+            4 => {
+                inline_model(
+                    store,
+                    geometry.ok_or(CallError::Geometry)?,
+                    strings.cstring(u64::from(self.word(memory, address, self.model)?))?,
+                )?
+                .0
+            }
+            _ => return Err(CallError::Entity),
+        };
+        cached.rules = ModelRules::default();
+        cached.contents_pose = None;
+        Ok(cached)
     }
 }

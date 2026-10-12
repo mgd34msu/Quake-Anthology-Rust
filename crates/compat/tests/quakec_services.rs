@@ -71,8 +71,11 @@ fn vm(capacity: usize) -> Vm {
             (Opcode::Return, 1, 0, 0),
             (Opcode::State, 28, 29, 0),
             (Opcode::Return, 1, 0, 0),
+            (Opcode::StorePV, 28, 31, 0),
+            (Opcode::Call1, 32, 0, 0),
+            (Opcode::Return, 1, 0, 0),
         ],
-        &[0, 1, 2, 5, 8, -16, 11, 13, 15],
+        &[0, 1, 2, 5, 8, -16, 11, 13, 15, 17, -41],
         GLOBALS,
         FIELDS,
         36,
@@ -837,6 +840,17 @@ fn trace_uses_shared_collision_and_native_pass_and_result_offsets() {
             store_and_trace(calls, &mut vm, value, b"origin", &[12.0f32.to_bits(), 0, 0]).unwrap();
             assert!(f32::from_bits(vm.image.globals[62]) > before);
             assert_eq!(calls.services.server.area.bounds(id), linked_bounds);
+            let box_fraction = vm.image.globals[62];
+            write(&mut vm, value, b"angles", &[f32::NAN.to_bits(); 3]);
+            calls.call(&mut vm, 16, 4).unwrap();
+            assert_eq!(vm.image.globals[62], box_fraction);
+            assert_eq!(calls.services.server.area.bounds(id), linked_bounds);
+            // Full publication still validates the presentation angles.
+            assert_eq!(
+                vm.project_entities(calls.services, calls.context),
+                Err(CallError::Entity)
+            );
+            write(&mut vm, value, b"angles", &[0; 3]);
             store_and_trace(calls, &mut vm, value, b"solid", &[0]).unwrap();
             assert_eq!(vm.image.globals[62], 1.0f32.to_bits());
             assert_eq!(calls.services.server.area.bounds(id), linked_bounds);
@@ -976,7 +990,7 @@ fn quakec_native_print_signature_does_not_follow_the_console_view() {
 }
 
 #[test]
-fn spatial_queries_flush_storep_and_state_without_scanning_untouched_rows() {
+fn spatial_queries_read_storep_without_publishing_unrelated_dirty_rows() {
     with_services(RuleSetId::Quake, |calls| {
         let mut vm = seeded_vm(calls, 8);
         calls.call(&mut vm, 14, 0).unwrap();
@@ -990,10 +1004,14 @@ fn spatial_queries_flush_storep_and_state_without_scanning_untouched_rows() {
         let start = [0; 3];
         let end = [20.0f32, 0.0, 0.0].map(f32::to_bits);
         parameters(&mut vm, &[&start, &end, &[0], &[0]]);
+        // Executed StorePV makes this unlinked row malformed. Trace must not
+        // validate its bounds merely because it has a dirty publication mark.
+        store_and_trace(calls, &mut vm, untouched, b"mins", &[4.0f32.to_bits(); 3]).unwrap();
+        assert_eq!(vm.image.globals[62], 1.0f32.to_bits());
         store_and_trace(calls, &mut vm, value, b"origin", &[12.0f32.to_bits(), 0, 0]).unwrap();
         assert_eq!(
             calls.services.server.entities.columns.position[id.slot as usize],
-            Vec3([12.0, 0.0, 0.0])
+            Vec3::default()
         );
         calls.call(&mut vm, 16, 4).unwrap();
         assert_eq!(
@@ -1001,6 +1019,12 @@ fn spatial_queries_flush_storep_and_state_without_scanning_untouched_rows() {
             Err(CallError::Entity)
         );
         write(&mut vm, untouched, b"mins", &[0; 3]);
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.position[id.slot as usize],
+            Vec3([12.0, 0.0, 0.0])
+        );
         vm.project_entities(calls.services, calls.context).unwrap();
         write(&mut vm, untouched, b"mins", &[4.0f32.to_bits(); 3]);
         vm.image.globals[34] = value;
@@ -1009,6 +1033,8 @@ fn spatial_queries_flush_storep_and_state_without_scanning_untouched_rows() {
         vm.image.globals[29] = 0x0100_0001;
         vm.image.globals[32] = 5;
         vm.call(calls, 4, 100, false).unwrap();
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
         assert_eq!(
             calls.services.server.entities.columns.appearance[id.slot as usize].frame,
             37
@@ -1021,6 +1047,8 @@ fn spatial_queries_flush_storep_and_state_without_scanning_untouched_rows() {
         vm.image.globals[28] = 41.0f32.to_bits();
         assert_eq!(vm.call(calls, 8, 2, false), Err(Trap::Budget));
         calls.call(&mut vm, 16, 4).unwrap();
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
         assert_eq!(
             calls.services.server.entities.columns.appearance[id.slot as usize].frame,
             41
@@ -1048,6 +1076,8 @@ fn pointer_stores_mark_crossed_rows_and_flush_the_current_reused_lifetime() {
         let end = [20.0f32, 0.0, 0.0].map(f32::to_bits);
         parameters(&mut vm, &[&start, &end, &[0], &[0]]);
         vm.call(calls, 2, 100, false).unwrap();
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
         assert_eq!(
             calls.services.server.entities.columns.position[second_id.slot as usize],
             Vec3([15.0, 0.0, 0.0])
@@ -1057,6 +1087,8 @@ fn pointer_stores_mark_crossed_rows_and_flush_the_current_reused_lifetime() {
         vm.image.globals[28] = 0;
         vm.image.globals[31] = first + vm.stride as u32 - 2;
         vm.call(calls, 3, 100, false).unwrap();
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
         assert_eq!(
             calls.services.server.entities.columns.position[second_id.slot as usize],
             Vec3([17.0, 0.0, 0.0])
@@ -1103,19 +1135,23 @@ fn rejected_dirty_import_keeps_bounded_membership_until_it_can_retry() {
         let end = [20.0f32, 0.0, 0.0].map(f32::to_bits);
         parameters(&mut vm, &[&start, &end, &[0], &[0]]);
         for x in 1..=16 {
+            store_and_trace(
+                calls,
+                &mut vm,
+                first,
+                b"origin",
+                &[(x as f32).to_bits(), 0, 0],
+            )
+            .unwrap();
             assert_eq!(
-                store_and_trace(
-                    calls,
-                    &mut vm,
-                    first,
-                    b"origin",
-                    &[(x as f32).to_bits(), 0, 0]
-                ),
-                Err(Trap::Builtin)
+                vm.project_dirty_entities(calls.services, calls.context),
+                Err(CallError::Entity)
             );
         }
         write(&mut vm, second, b"mins", &[0; 3]);
         calls.call(&mut vm, 16, 4).unwrap();
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
         assert_eq!(
             calls.services.server.entities.columns.position[first_id.slot as usize],
             Vec3([16.0, 0.0, 0.0])
@@ -1271,4 +1307,80 @@ fn native_staging_preserves_full_wire_capacity_with_one_or_dense_cues() {
             });
         }
     }
+}
+
+#[test]
+fn point_contents_reads_live_candidates_without_flushing_unrelated_dirty_rows() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        calls.call(&mut vm, 14, 0).unwrap();
+        let value = vm.image.globals[1];
+        let id = entity(calls, &vm, value);
+        write(&mut vm, value, b"solid", &[2.0f32.to_bits()]);
+        let mins = [-2.0f32; 3].map(f32::to_bits);
+        let maxs = [2.0f32; 3].map(f32::to_bits);
+        parameters(&mut vm, &[&[value], &mins, &maxs]);
+        calls.call(&mut vm, 4, 3).unwrap();
+        let bounds = calls.services.server.area.bounds(id);
+        // A different unlinked, untouched row is malformed but not scanned.
+        calls.call(&mut vm, 14, 0).unwrap();
+        let untouched = vm.image.globals[1];
+        write(&mut vm, untouched, b"mins", &[4.0f32.to_bits(); 3]);
+        parameters(&mut vm, &[&[0; 3]]);
+        vm.image.globals[28..31].copy_from_slice(&[12.0f32.to_bits(), 0, 0]);
+        vm.image.globals[31] = vm
+            .field_address(value, vm.image.field(b"origin").unwrap() as u32, 3)
+            .unwrap() as u32;
+        vm.image.globals[32] = 10;
+        vm.call(calls, 9, 100, false).unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.position[id.slot as usize],
+            Vec3::default()
+        );
+        assert_eq!(calls.services.server.area.bounds(id), bounds);
+        // Original Q1 pointcontents remains world-only despite the live row.
+        assert_eq!(vm.image.globals[1], (-1.0f32).to_bits());
+        // Publication retains its existing explicit boundary; the query did
+        // not consume the dirty mark or change the area membership.
+        vm.project_dirty_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.position[id.slot as usize],
+            Vec3([12.0, 0.0, 0.0])
+        );
+        assert_eq!(calls.services.server.area.bounds(id), bounds);
+        // A real bytecode store makes an unrelated unlinked row malformed.
+        // Stock PointContents does not inspect or publish any entity row.
+        vm.image.globals[28..31].copy_from_slice(&[4.0f32.to_bits(); 3]);
+        vm.image.globals[31] = vm
+            .field_address(untouched, vm.image.field(b"mins").unwrap() as u32, 3)
+            .unwrap() as u32;
+        vm.call(calls, 9, 100, false).unwrap();
+        assert_eq!(vm.image.globals[1], (-1.0f32).to_bits());
+        assert_eq!(calls.services.server.area.bounds(id), bounds);
+        // A combined caller selects linked contents independently of the QC
+        // source. Raw host/native bytes have no dirty mark: the candidate-local
+        // view must decode this linked row without importing unrelated rows.
+        calls.context.trace_rules = RuleSetId::Quake2;
+        write(&mut vm, value, b"origin", &[0; 3]);
+        write(&mut vm, value, b"mins", &[4.0f32.to_bits(); 3]);
+        parameters(&mut vm, &[&[0; 3]]);
+        assert_eq!(calls.call(&mut vm, 41, 1), Err(Trap::Builtin));
+        assert_eq!(
+            calls.services.server.entities.columns.mins[id.slot as usize],
+            Vec3([-2.0; 3])
+        );
+        assert_eq!(calls.services.server.area.bounds(id), bounds);
+        // The caller's linked-content policy uses the old solid chain even
+        // after the QC row becomes nonsolid. Bounds remain executed fields.
+        write(&mut vm, value, b"solid", &[0]);
+        write(&mut vm, value, b"owner", &[1]);
+        assert_eq!(calls.call(&mut vm, 41, 1), Err(Trap::Builtin));
+        write(&mut vm, value, b"mins", &[(-2.0f32).to_bits(); 3]);
+        // Native temporary boxes do not use angles or owner for contents.
+        write(&mut vm, value, b"angles", &[f32::NAN.to_bits(); 3]);
+        calls.call(&mut vm, 41, 1).unwrap();
+        assert_eq!(vm.image.globals[1], (-1.0f32).to_bits());
+        assert_eq!(calls.services.server.area.bounds(id), bounds);
+    });
 }

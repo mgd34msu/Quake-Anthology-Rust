@@ -31,6 +31,7 @@ struct Fixture {
     storage: ServiceStorage,
     vm: Vm,
     unknown: UnknownCalls,
+    trace_rules: RuleSetId,
 }
 fn context() -> CallContext {
     CallContext {
@@ -64,6 +65,7 @@ impl Fixture {
             storage,
             vm,
             unknown: UnknownCalls::load(1).unwrap(),
+            trace_rules: RuleSetId::Quake,
         }
     }
     fn call(&mut self, number: u32, arguments: &[i32]) -> Result<i32, Trap> {
@@ -74,7 +76,10 @@ impl Fixture {
         QvmCalls {
             services: &mut services,
             table: &Q3_SERVER,
-            context: context(),
+            context: CallContext {
+                trace_rules: self.trace_rules,
+                ..context()
+            },
             platform_time: EventTime(0),
             command: &[],
             unknown: &mut self.unknown,
@@ -322,4 +327,89 @@ fn qvm_count_growth_borrowed_client_and_trigger_roles_use_the_shared_projection(
         [None; 4]
     );
     assert!(f.runtime.server.entities.resolve(trigger).is_none());
+}
+
+#[test]
+fn qvm_point_contents_reads_published_pose_between_imports_without_relink() {
+    let mut f = Fixture::new();
+    f.trace_rules = RuleSetId::Quake3;
+    f.row(ENTITIES, 0, 1);
+    f.register(ENTITIES, 1).unwrap();
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    let entity = f.binding(0);
+    let old_bounds = f.runtime.server.area.bounds(entity).unwrap();
+    let point = PLAYERS + 512;
+    f.vm.memory
+        .write_vec3(point, Vec3([-0.5, 0.0, 0.0]))
+        .unwrap();
+    assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0x0200_0000);
+    f.vm.memory
+        .write_vec3(ENTITIES + 92, Vec3([-2.0, 0.0, 0.0]))
+        .unwrap();
+    assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0);
+    assert_eq!(f.runtime.server.area.bounds(entity), Some(old_bounds));
+    assert_eq!(f.vm.memory.read_word(ENTITIES + 420).unwrap(), 1);
+    assert_eq!(
+        f.runtime.server.entities.columns.position[entity.slot as usize],
+        Vec3([-2.0, 0.0, 0.0])
+    );
+}
+
+#[test]
+fn qvm_live_contents_reads_zero_contents_boxes_and_rejects_only_executed_targets() {
+    let mut f = Fixture::new();
+    // The inline-model case below needs a real model-zero resource, while
+    // the other registration fixtures only require visibility metadata.
+    f.runtime
+        .geometry
+        .load_brushes(
+            vec![],
+            vec![],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
+            qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
+            vec![qa_core::primitives::Bounds {
+                mins: Vec3([-100.0; 3]),
+                maxs: Vec3([100.0; 3]),
+            }],
+        )
+        .unwrap();
+    f.trace_rules = RuleSetId::Quake3;
+    let point = PLAYERS + 512;
+    f.vm.memory
+        .write_vec3(point, Vec3([-0.5, 0.0, 0.0]))
+        .unwrap();
+    // A world-only query does not require LocateGameData.
+    assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0);
+    f.row(ENTITIES, 0, 1);
+    f.register(ENTITIES, 1).unwrap();
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    let entity = f.binding(0);
+    let bounds = f.runtime.server.area.bounds(entity);
+    // The linked temporary box remains a BODY for PointContents even when
+    // the native trace mask now sees r.contents==0.
+    f.vm.memory.write_word(ENTITIES + 460, 0).unwrap();
+    assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0x0200_0000);
+    // Owner and physical pose are unused by this native contents operation.
+    f.vm.memory.write_word(ENTITIES + 512, -1).unwrap();
+    f.vm.memory
+        .write_vec3(ENTITIES + 488, Vec3([f32::NAN; 3]))
+        .unwrap();
+    assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0x0200_0000);
+    f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
+    // Native pass filtering precedes the unsupported target decode.
+    assert_eq!(f.call(25, &[0, point as i32, 0]).unwrap(), 0);
+    assert_eq!(f.call(25, &[0, point as i32, 1023]), Err(Trap::Syscall));
+    assert_eq!(f.runtime.server.area.bounds(entity), bounds);
+    assert_eq!(f.vm.memory.read_word(ENTITIES + 420).unwrap(), 1);
+    f.vm.memory.write_word(ENTITIES + 424, 0).unwrap();
+    // bmodel is a native qboolean, not Q2's SOLID_BSP discriminant.
+    f.vm.memory.write_word(ENTITIES + 432, 257).unwrap();
+    f.vm.memory.write_word(ENTITIES + 160, 999).unwrap();
+    assert_eq!(f.call(25, &[0, point as i32, 0]).unwrap(), 0);
+    assert_eq!(f.call(25, &[0, point as i32, 1023]), Err(Trap::Syscall));
+    assert_eq!(f.runtime.server.area.bounds(entity), bounds);
+    // SVF_CAPSULE selects only temporary hulls; BSP model handles ignore it.
+    f.vm.memory.write_word(ENTITIES + 160, 0).unwrap();
+    f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
+    assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0);
 }

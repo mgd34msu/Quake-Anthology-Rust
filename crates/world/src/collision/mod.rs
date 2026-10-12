@@ -11,7 +11,9 @@ pub use contents::Contents;
 use qa_core::primitives::{
     CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
 };
-pub use scene::{NativeTraceEntities, WorldTrace};
+pub use scene::{
+    NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget, WorldTrace,
+};
 pub use store::{CollisionStore, StoreError, TraceScratch};
 
 #[inline]

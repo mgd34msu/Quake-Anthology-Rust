@@ -6,14 +6,48 @@ use super::{
 use crate::{area::AreaGrid, entities::EntityTable};
 use qa_core::primitives::{
     Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, EntityPose, GeometryId,
-    ModuleId, NativeEntity, Vec3,
+    ModelRules, ModuleId, NativeEntity, Vec3,
 };
+
+#[derive(Clone, Copy, Default)]
+pub struct NativeTraceFields {
+    pub tags: CollisionTags,
+    pub enabled: bool,
+    pub box_target: bool,
+    pub contents: Contents,
+}
+
+#[derive(Clone, Copy)]
+pub struct NativeTraceTarget {
+    pub body: Body,
+    pub angles: Vec3,
+    pub shape: CollisionShape,
+    pub rules: ModelRules,
+    pub contents_pose: Option<EntityPose>,
+}
+
+/// The existing module configstring storage lends names and revisions. This
+/// interface neither owns resources nor caches geometry.
+pub trait NativeModelNames {
+    fn model_name(&self, module: ModuleId, index: u32) -> Option<(&[u8], u64)>;
+}
 
 /// A stopped module's current ownership/classification fields. Geometry and
 /// narrow-phase clipping remain in this shared trace implementation.
 pub trait NativeTraceEntities {
     fn module(&self) -> ModuleId;
-    fn fields(&self, slot: i32) -> Option<(CollisionOwner, CollisionTags)>;
+    fn owner(&self, slot: i32) -> Option<CollisionOwner>;
+    fn fields(&self, slot: i32, point_contents: bool) -> Option<NativeTraceFields>;
+    fn bounds(&self, slot: i32, cached: Bounds) -> Option<Bounds>;
+    fn target(
+        &self,
+        slot: i32,
+        cached: NativeTraceTarget,
+        point_contents: bool,
+        store: &CollisionStore,
+        geometry: GeometryId,
+        models: Option<&dyn NativeModelNames>,
+    ) -> Option<NativeTraceTarget>;
 }
 
 /// A frozen world and its directly borrowed hot entity columns. A caller's
@@ -27,6 +61,7 @@ pub struct WorldTrace<'a> {
     scratch: &'a mut TraceScratch,
     pass: CollisionOwner,
     native_entities: Option<(ModuleId, &'a dyn NativeTraceEntities)>,
+    native_models: Option<&'a dyn NativeModelNames>,
 }
 
 impl<'a> WorldTrace<'a> {
@@ -48,6 +83,7 @@ impl<'a> WorldTrace<'a> {
             scratch,
             pass,
             native_entities: None,
+            native_models: None,
         }
     }
 
@@ -58,6 +94,11 @@ impl<'a> WorldTrace<'a> {
 
     pub fn with_native_entities(mut self, view: Option<&'a dyn NativeTraceEntities>) -> Self {
         self.native_entities = view.map(|view| (view.module(), view));
+        self
+    }
+
+    pub fn with_native_models(mut self, models: Option<&'a dyn NativeModelNames>) -> Self {
+        self.native_models = models;
         self
     }
 
@@ -93,32 +134,26 @@ impl<'a> WorldTrace<'a> {
             (query.mins, query.maxs)
         };
         let bounds = Bounds::swept(query.start, query.end, mins, maxs, 1.0);
-        let columns = &self.entities.columns;
-        let pass_slot = match query.pass {
-            CollisionOwner::Lifetime(id) => self.entities.resolve(id),
-            _ => None,
-        };
-        let pass_owner = self
-            .fields(query.pass)
-            .map_or(CollisionOwner::None, |fields| fields.0);
+        let pass_owner = self.owner(query.pass).unwrap_or(CollisionOwner::None);
         let role = query.entity_rules.link_role;
         for linked in self.area.query(self.entities, bounds, role) {
             if result.all_solid {
                 break;
             }
             let id = linked.id;
-            let slot = id.slot as usize;
             if self.same_owner(query.pass, CollisionOwner::Lifetime(id))
                 || query.excluded.contains(&id)
             {
                 continue;
             }
-            let shape = columns.collision_shape[slot];
-            if shape == CollisionShape::None {
+            let Some(fields) = self.fields(CollisionOwner::Lifetime(id), false) else {
+                continue;
+            };
+            if !fields.enabled {
                 continue;
             }
             if query.entity_rules.quake_kind() == Some(QuakeTraceKind::IgnoreBoxes)
-                && shape == CollisionShape::Box
+                && fields.box_target
             {
                 continue;
             }
@@ -126,15 +161,16 @@ impl<'a> WorldTrace<'a> {
                 .entity_rules
                 .filtering
                 .contains(EntityTraceFlags::SKIP_POINT_ENTITIES)
-                && let Some(pass) = pass_slot
-                && columns.maxs[pass].0[0] - columns.mins[pass].0[0] != 0.0
-                && linked.maxs.0[0] - linked.mins.0[0] == 0.0
+                && self
+                    .owner_bounds(query.pass)
+                    .is_some_and(|bounds| bounds.maxs.0[0] - bounds.mins.0[0] != 0.0)
+                && self
+                    .bounds(id)
+                    .is_some_and(|bounds| bounds.maxs.0[0] - bounds.mins.0[0] == 0.0)
             {
                 continue;
             }
-            let Some((owner, tags)) = self.fields(CollisionOwner::Lifetime(id)) else {
-                continue;
-            };
+            let tags = fields.tags;
             if query
                 .entity_rules
                 .filtering
@@ -163,13 +199,14 @@ impl<'a> WorldTrace<'a> {
                 .entity_rules
                 .filtering
                 .contains(EntityTraceFlags::CONTENTS_MASK)
-                && !query
-                    .mask
-                    .intersects(Contents(columns.collision_contents[slot]))
+                && !query.mask.intersects(fields.contents)
             {
                 continue;
             }
             if query.pass != CollisionOwner::None {
+                let Some(owner) = self.owner(CollisionOwner::Lifetime(id)) else {
+                    continue;
+                };
                 if self.same_owner(owner, query.pass) {
                     continue;
                 }
@@ -195,17 +232,15 @@ impl<'a> WorldTrace<'a> {
             } else {
                 query
             };
+            let Some(target) = self.target(id, false) else {
+                continue;
+            };
             let incoming = self.store.trace_body(
                 target_query,
-                shape,
-                &Body {
-                    position: *linked.position,
-                    velocity: *linked.velocity,
-                    mins: *linked.mins,
-                    maxs: *linked.maxs,
-                },
-                columns.angles[slot],
-                columns.model_rules[slot],
+                target.shape,
+                &target.body,
+                target.angles,
+                target.rules,
                 Some(id),
                 self.scratch,
             );
@@ -244,12 +279,20 @@ impl<'a> WorldTrace<'a> {
             {
                 continue;
             }
-            let slot = linked.id.slot as usize;
-            let pose = self.entities.columns.point_contents_pose[slot].unwrap_or(EntityPose {
-                position: *linked.position,
-                angles: self.entities.columns.angles[slot],
+            if !self
+                .fields(CollisionOwner::Lifetime(linked.id), true)
+                .is_some_and(|fields| fields.enabled)
+            {
+                continue;
+            }
+            let Some(target) = self.target(linked.id, true) else {
+                continue;
+            };
+            let pose = target.contents_pose.unwrap_or(EntityPose {
+                position: target.body.position,
+                angles: target.angles,
             });
-            match self.entities.columns.collision_shape[slot] {
+            match target.shape {
                 CollisionShape::None => continue,
                 CollisionShape::Model { geometry, index } => {
                     result |= self.store.point_contents_transformed(
@@ -258,7 +301,7 @@ impl<'a> WorldTrace<'a> {
                         point,
                         pose.position,
                         pose.angles,
-                        self.entities.columns.model_rules[slot],
+                        target.rules,
                         rules,
                     );
                     continue;
@@ -269,14 +312,14 @@ impl<'a> WorldTrace<'a> {
             // BODY/MONSTER brush, independently of an entity's content filter.
             let inside = (0..3).all(|axis| {
                 let coordinate = point.0[axis] - pose.position.0[axis];
-                coordinate >= linked.mins.0[axis]
+                coordinate >= target.body.mins.0[axis]
                     && if !rules
                         .filtering
                         .contains(EntityTraceFlags::INCLUSIVE_CONTENTS_MAX)
                     {
-                        coordinate < linked.maxs.0[axis]
+                        coordinate < target.body.maxs.0[axis]
                     } else {
-                        coordinate <= linked.maxs.0[axis]
+                        coordinate <= target.body.maxs.0[axis]
                     }
             });
             if inside {
@@ -286,19 +329,15 @@ impl<'a> WorldTrace<'a> {
         result
     }
 
-    fn fields(&self, entity: CollisionOwner) -> Option<(CollisionOwner, CollisionTags)> {
+    fn owner(&self, entity: CollisionOwner) -> Option<CollisionOwner> {
         let (native, cached) = match entity {
-            CollisionOwner::None => return Some((CollisionOwner::None, CollisionTags::default())),
-            CollisionOwner::Native(native) => (
-                Some(native),
-                (CollisionOwner::None, CollisionTags::default()),
-            ),
+            CollisionOwner::None => return None,
+            CollisionOwner::Native(native) => (Some(native), CollisionOwner::None),
             CollisionOwner::Lifetime(id) => {
                 let slot = self.entities.resolve(id)?;
-                let columns = &self.entities.columns;
                 (
-                    columns.native_entity[slot],
-                    (columns.collision_owner[slot], columns.collision_tags[slot]),
+                    self.entities.columns.native_entity[slot],
+                    self.entities.columns.collision_owner[slot],
                 )
             }
         };
@@ -306,9 +345,101 @@ impl<'a> WorldTrace<'a> {
             && let Some(native) = native
             && native.module == module
         {
-            return view.fields(native.slot);
+            return view.owner(native.slot);
         }
         Some(cached)
+    }
+
+    fn fields(&self, entity: CollisionOwner, point_contents: bool) -> Option<NativeTraceFields> {
+        let (native, cached) = match entity {
+            CollisionOwner::None => return None,
+            CollisionOwner::Native(native) => (
+                Some(native),
+                NativeTraceFields {
+                    tags: CollisionTags::default(),
+                    enabled: false,
+                    box_target: false,
+                    contents: Contents::EMPTY,
+                },
+            ),
+            CollisionOwner::Lifetime(id) => {
+                let slot = self.entities.resolve(id)?;
+                let columns = &self.entities.columns;
+                (
+                    columns.native_entity[slot],
+                    NativeTraceFields {
+                        tags: columns.collision_tags[slot],
+                        enabled: columns.collision_shape[slot] != CollisionShape::None,
+                        box_target: columns.collision_shape[slot] == CollisionShape::Box,
+                        contents: Contents(columns.collision_contents[slot]),
+                    },
+                )
+            }
+        };
+        if let Some((module, view)) = self.native_entities
+            && let Some(native) = native
+            && native.module == module
+        {
+            return view.fields(native.slot, point_contents);
+        }
+        Some(cached)
+    }
+
+    fn native(&self, id: EntityId) -> Option<(NativeEntity, &'a dyn NativeTraceEntities)> {
+        let slot = self.entities.resolve(id)?;
+        let native = self.entities.columns.native_entity[slot]?;
+        let (module, view) = self.native_entities?;
+        (native.module == module).then_some((native, view))
+    }
+
+    fn owner_bounds(&self, owner: CollisionOwner) -> Option<Bounds> {
+        match owner {
+            CollisionOwner::None => None,
+            CollisionOwner::Lifetime(id) => self.bounds(id),
+            CollisionOwner::Native(native) => {
+                let (module, view) = self.native_entities?;
+                (native.module == module)
+                    .then(|| view.bounds(native.slot, Bounds::default()))
+                    .flatten()
+            }
+        }
+    }
+
+    fn bounds(&self, id: EntityId) -> Option<Bounds> {
+        let slot = self.entities.resolve(id)?;
+        let cached = Bounds {
+            mins: self.entities.columns.mins[slot],
+            maxs: self.entities.columns.maxs[slot],
+        };
+        if let Some((native, view)) = self.native(id) {
+            view.bounds(native.slot, cached)
+        } else {
+            Some(cached)
+        }
+    }
+
+    fn target(&self, id: EntityId, point_contents: bool) -> Option<NativeTraceTarget> {
+        let slot = self.entities.resolve(id)?;
+        let columns = &self.entities.columns;
+        let cached = NativeTraceTarget {
+            body: columns.body(slot),
+            angles: columns.angles[slot],
+            shape: columns.collision_shape[slot],
+            rules: columns.model_rules[slot],
+            contents_pose: columns.point_contents_pose[slot],
+        };
+        if let Some((native, view)) = self.native(id) {
+            view.target(
+                native.slot,
+                cached,
+                point_contents,
+                self.store,
+                self.geometry,
+                self.native_models,
+            )
+        } else {
+            Some(cached)
+        }
     }
 
     fn native_owner(&self, owner: CollisionOwner) -> Option<NativeEntity> {

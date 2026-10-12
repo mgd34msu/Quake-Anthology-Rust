@@ -348,8 +348,8 @@ impl Vm {
         self.dirty_count = 0;
         Ok(())
     }
-    /// Spatial queries consume only successful bytecode entity writes since
-    /// the previous import. Export projection also catches external byte edits.
+    /// Module return imports successful bytecode entity writes since the
+    /// previous publication. Export projection also catches external byte edits.
     pub fn project_dirty_entities(
         &mut self,
         services: &mut crate::services::EngineServices<'_>,

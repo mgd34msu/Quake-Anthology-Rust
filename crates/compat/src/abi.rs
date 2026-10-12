@@ -582,7 +582,7 @@ const fn quakec() -> CallTable {
     t.entries[36] = scalar!(rint, Some(scalar));
     t.entries[37] = scalar!(floor::<false>, Some(scalar));
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
-    t.entries[41] = scalar!(qc_point_contents, Some(vector));
+    t.entries[41] = qc!(qc_point_contents, 1, 1, true);
     t.entries[43] = scalar!(absolute::<false>, Some(scalar));
     t.entries[45] = scalar!(cvar_number::<false>, Some(strings));
     t.entries[46] = scalar!(command_append, Some(strings.void()));
@@ -823,8 +823,8 @@ fn qc_precache<const MODEL: bool>(
     // precache row has been written, so a failed load retains that row.
     if MODEL && inserted && c.context.native_rules != qa_core::primitives::RuleSetId::QuakeWorld {
         if name.starts_with(b"*") {
-            crate::entities::EntityProjection::inline_model(
-                c.services,
+            crate::entities::inline_model(
+                c.services.geometry,
                 c.services.world.ok_or(CallError::Geometry)?.0,
                 name,
             )?;
@@ -936,7 +936,6 @@ fn qc_trace_line(
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
     use qa_world::collision::{QuakeTraceKind, TraceQuery, trace_policy};
-    vm.project_dirty_entities(c.services, c.context)?;
     let (rules, entity_rules) = trace_policy(c.context.trace_rules);
     let kind =
         match crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 6)?))) {
@@ -950,11 +949,15 @@ fn qc_trace_line(
         rules,
         entity_rules.with_quake_kind(Some(kind)),
     );
-    let (view, pass) =
-        vm.projection
-            .quakec_trace_view(&vm.entities, c.context, qc_word(arguments, 7)?)?;
+    let (view, pass) = vm.projection.quakec_trace_view(
+        &vm.entities,
+        &vm.strings,
+        c.context,
+        qc_word(arguments, 7)?,
+    )?;
     query.pass = pass;
     let trace = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
+    view.finish()?;
     let entity = vm.projection.quakec_hit(c.services, trace.entity);
     vm.write_trace(trace, entity)
         .map_err(|_| CallError::Memory)?;
@@ -1849,6 +1852,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
             ..query
         };
         let result = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
+        view.finish()?;
         let entity = view.address(&c.services.server.entities, result.entity)?;
         (result, entity)
     };
@@ -1872,137 +1876,200 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         c.native_player.ok_or(CallError::Entity)?
     };
     let client = &mut c.services.server.clients[id.0 as usize];
-    let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
-    codec.read_state(c.memory, address, c.context.module, &mut client.player)?;
-    if layout.wide {
-        client.player.movement.tuning.n64_physics = c
-            .services
-            .storage
-            .config_integer(c.context.module, crate::q2_abi::RERELEASE_N64_PHYSICS)
-            .is_some_and(|value| value != 0);
-    }
-    client.command = qa_movement::prepare_command(
-        client.player.movement_rules,
-        codec.command(c.memory, address, client.command.server_time_ms)?,
+    let saved = (
+        client.player.body,
+        client.player.movement,
+        client.player.view_angles,
+        client.player.view_offset,
+        client.command,
     );
-    let options = codec.options(c.memory, address)?;
-    let result = {
-        let view = entities.trace_view(c.memory, c.context)?;
-        (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options)?
-    };
-    let client = &c.services.server.clients[id.0 as usize];
-    let player = &client.player;
-    let native_address = |id| {
-        crate::entities::native_address(table, c.context.module, &c.services.server.entities, id)
-            .unwrap_or(table.address)
-    };
-    codec.write_state(c.memory, address, player)?;
-    c.memory
-        .write_vec3(address + layout.view as u64, player.view_angles)?;
-    c.memory
-        .write_vec3(address + layout.mins as u64, player.body.mins)?;
-    c.memory
-        .write_vec3(address + layout.maxs as u64, player.body.maxs)?;
-    if let Some(offset) = layout.height {
-        c.memory.write_word(
-            address + offset as u64,
-            player.view_offset.0[2].to_bits() as i32,
-        )?;
-    }
-    if let Some(outputs) = &layout.outputs {
-        c.memory.write(
-            address + outputs.jump_sound as u64,
-            &[u8::from(result.jump_sound)],
-        )?;
-        c.memory.write(
-            address + outputs.step_clip as u64,
-            &[u8::from(result.step_clip)],
-        )?;
-        c.memory.write_word(
-            address + outputs.impact_delta as u64,
-            result.impact_delta.to_bits() as i32,
-        )?;
-    }
-    c.memory.write_u64(
-        address + layout.ground as u64,
-        if player.movement.grounded
-            && !(!layout.wide
-                && player.movement.mode == qa_core::primitives::MovementMode::Spectator)
-        {
-            player
-                .movement
-                .ground
-                .map(native_address)
-                .unwrap_or(table.address)
-        } else {
-            0
-        },
-    )?;
-    c.memory.write_word(
-        address + layout.water as u64,
-        qa_world::collision::Contents(player.movement.water_contents).to_q2() as i32,
-    )?;
-    if layout.wide {
-        c.memory.write(
-            address + layout.level as u64,
-            &[player.movement.water_level],
-        )?;
-    } else {
-        c.memory.write_word(
-            address + layout.level as u64,
-            i32::from(player.movement.water_level),
-        )?;
-    }
-    c.memory.write_word(
-        address + layout.touch_count as u64,
-        result.contact_count as i32,
-    )?;
-    for (index, trace) in result.contacts[..result.contact_count]
-        .iter()
-        .flatten()
-        .enumerate()
-    {
-        let entity = trace.entity.map(native_address).unwrap_or(table.address);
-        let at = address + layout.touches as u64;
+    let result = (|| {
+        let client = &mut c.services.server.clients[id.0 as usize];
+        let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
+        codec.read_state(c.memory, address, c.context.module, &mut client.player)?;
         if layout.wide {
-            crate::traces::write_q2::<true>(
-                c.memory,
-                at + (index * 96) as u64,
-                *trace,
-                c.native_surfaces.ok_or(CallError::Geometry)?,
-                entity,
+            client.player.movement.tuning.n64_physics = c
+                .services
+                .storage
+                .config_integer(c.context.module, crate::q2_abi::RERELEASE_N64_PHYSICS)
+                .is_some_and(|value| value != 0);
+        }
+        client.command = qa_movement::prepare_command(
+            client.player.movement_rules,
+            codec.command(c.memory, address, client.command.server_time_ms)?,
+        );
+        let options = codec.options(c.memory, address)?;
+        let view = entities.trace_view(c.memory, c.context)?;
+        let result = (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options)?;
+        view.finish()?;
+        let client = &c.services.server.clients[id.0 as usize];
+        let player = &client.player;
+        let native_address = |id| {
+            crate::entities::native_address(
+                table,
+                c.context.module,
+                &c.services.server.entities,
+                id,
+            )
+            .unwrap_or(table.address)
+        };
+        codec.write_state(c.memory, address, player)?;
+        c.memory
+            .write_vec3(address + layout.view as u64, player.view_angles)?;
+        c.memory
+            .write_vec3(address + layout.mins as u64, player.body.mins)?;
+        c.memory
+            .write_vec3(address + layout.maxs as u64, player.body.maxs)?;
+        if let Some(offset) = layout.height {
+            c.memory.write_word(
+                address + offset as u64,
+                player.view_offset.0[2].to_bits() as i32,
+            )?;
+        }
+        if let Some(outputs) = &layout.outputs {
+            c.memory.write(
+                address + outputs.jump_sound as u64,
+                &[u8::from(result.jump_sound)],
+            )?;
+            c.memory.write(
+                address + outputs.step_clip as u64,
+                &[u8::from(result.step_clip)],
+            )?;
+            c.memory.write_word(
+                address + outputs.impact_delta as u64,
+                result.impact_delta.to_bits() as i32,
+            )?;
+        }
+        c.memory.write_u64(
+            address + layout.ground as u64,
+            if player.movement.grounded
+                && !(!layout.wide
+                    && player.movement.mode == qa_core::primitives::MovementMode::Spectator)
+            {
+                player
+                    .movement
+                    .ground
+                    .map(native_address)
+                    .unwrap_or(table.address)
+            } else {
+                0
+            },
+        )?;
+        c.memory.write_word(
+            address + layout.water as u64,
+            qa_world::collision::Contents(player.movement.water_contents).to_q2() as i32,
+        )?;
+        if layout.wide {
+            c.memory.write(
+                address + layout.level as u64,
+                &[player.movement.water_level],
             )?;
         } else {
-            c.memory.write_u64(at + (index * 8) as u64, entity)?;
+            c.memory.write_word(
+                address + layout.level as u64,
+                i32::from(player.movement.water_level),
+            )?;
         }
+        c.memory.write_word(
+            address + layout.touch_count as u64,
+            result.contact_count as i32,
+        )?;
+        for (index, trace) in result.contacts[..result.contact_count]
+            .iter()
+            .flatten()
+            .enumerate()
+        {
+            let entity = trace.entity.map(native_address).unwrap_or(table.address);
+            let at = address + layout.touches as u64;
+            if layout.wide {
+                crate::traces::write_q2::<true>(
+                    c.memory,
+                    at + (index * 96) as u64,
+                    *trace,
+                    c.native_surfaces.ok_or(CallError::Geometry)?,
+                    entity,
+                )?;
+            } else {
+                c.memory.write_u64(at + (index * 8) as u64, entity)?;
+            }
+        }
+        Ok(0)
+    })();
+    if result.is_err() {
+        let client = &mut c.services.server.clients[id.0 as usize];
+        (
+            client.player.body,
+            client.player.movement,
+            client.player.view_angles,
+            client.player.view_offset,
+            client.command,
+        ) = saved;
     }
-    Ok(0)
+    result
 }
+fn native_contents_view<'a, 'memory>(
+    projection: Option<&'a crate::entities::EntityProjection>,
+    memory: &'a crate::memory::ModuleMemory<'memory>,
+    context: CallContext,
+) -> Result<Option<crate::entities::NativeTraceView<'a, 'memory>>, CallError> {
+    projection
+        .map(|projection| projection.optional_trace_view(memory, context))
+        .transpose()
+        .map(Option::flatten)
+}
+
 fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let point = c.memory.read_vec3(c.pointer(0)?)?;
     if !point.is_finite() {
         return Err(CallError::Geometry);
     }
     let (_, rules) = qa_world::collision::trace_policy(c.context.trace_rules);
+    let view = native_contents_view(c.native_entities.as_deref(), c.memory, c.context)?;
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
         rules,
         qa_core::primitives::CollisionOwner::None,
+        view.as_ref()
+            .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
     )?;
+    if let Some(view) = view {
+        view.finish()?;
+    }
     Ok(u64::from(contents.to_q2()))
 }
 
-fn qc_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let point = argument_vector(c)?;
+fn qc_point_contents(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    let point = qc_vector(arguments, 0)?;
     let (_, rules) = qa_world::collision::trace_policy(c.context.trace_rules);
+    let view = if rules
+        .filtering
+        .contains(qa_world::collision::EntityTraceFlags::LINKED_CONTENTS)
+    {
+        Some(
+            vm.projection
+                .quakec_trace_view(&vm.entities, &vm.strings, c.context, 0)?
+                .0,
+        )
+    } else {
+        None
+    };
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
         rules,
         qa_core::primitives::CollisionOwner::None,
+        view.as_ref()
+            .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
     )?;
-    Ok(bits::<false>(f64::from(contents.to_q1())))
+    if let Some(view) = view {
+        view.finish()?;
+    }
+    Ok(CallValue::Word(bits::<false>(f64::from(contents.to_q1()))))
 }
 
 fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -2050,7 +2117,18 @@ fn q3_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         slot: c.arg(1)? as i32,
     });
     let rules = qa_world::collision::trace_policy(c.context.trace_rules).1;
-    let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules, pass)?;
+    let view = native_contents_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let contents = (ENGINE_CALLS.point_contents)(
+        c.services,
+        point,
+        rules,
+        pass,
+        view.as_ref()
+            .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
+    )?;
+    if let Some(view) = view {
+        view.finish()?;
+    }
     Ok(u64::from(contents.to_q3()))
 }
 
