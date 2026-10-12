@@ -175,6 +175,7 @@ pub fn dispatch(
                     FrameEvent::Hud(_) => true,
                     FrameEvent::ConfigString { .. } => true,
                     FrameEvent::StaticEntity(_) => true,
+                    FrameEvent::PlayerValue { .. } | FrameEvent::SetAngles(_) => true,
                 };
                 if submitted {
                     OutputSubmission::BestEffort
@@ -411,7 +412,10 @@ pub fn dispatch(
                                     }
                                 }
                             }
-                            FrameEvent::Sound(_) | FrameEvent::StaticEntity(_) => {
+                            FrameEvent::Sound(_)
+                            | FrameEvent::StaticEntity(_)
+                            | FrameEvent::PlayerValue { .. }
+                            | FrameEvent::SetAngles(_) => {
                                 let encoded = connection
                                     .commands
                                     .as_ref()
@@ -426,6 +430,7 @@ pub fn dispatch(
                                             &server.entities,
                                             &mut runtime.native_numbers[slot],
                                             &runtime.config_publications[slot],
+                                            runtime.catalog.hud.values.native(delivery.source),
                                             &mut runtime.output_native_bytes,
                                         )
                                     });
@@ -623,6 +628,25 @@ pub fn dispatch(
             // Independently leased text stays valid through the resync.
             client.hud.reset_inventory();
             client.hud_publication.reset();
+            // Separate native stat services rebuild from the producer after a
+            // cancelled delivery, just like the discrete inventory above.
+            client.value_publication.clear();
+            if let Some(snapshot) = runtime.snapshots[slot].as_ref()
+                && let Some(seat) = snapshot.seat()
+                && qa_network::outputs::separate_player_values(snapshot.protocol)
+            {
+                let rules = snapshot.protocol.rule_set();
+                for index in 0..runtime.catalog.hud.values.native(rules).stats.len() {
+                    runtime.catalog.hud.import_native_stat(
+                        rules,
+                        client_id,
+                        index,
+                        0,
+                        &mut runtime.prediction[seat.index()].player,
+                        time,
+                    );
+                }
+            }
             runtime.config_publications[slot].reset();
             runtime.native_numbers[slot].reset();
         }
@@ -679,10 +703,26 @@ fn encode_record(
     entities: &qa_world::entities::EntityTable,
     numbers: &mut crate::output_namespace::NativeNumbers,
     publication: &crate::client_resources::ConfigPublication,
+    source_values: &qa_ui::values::NativeValues,
     output: &mut [u8],
 ) -> Result<usize, qa_network::outputs::Error> {
     use crate::client_resources::ResourceReadiness;
     use qa_network::{commands::packet::Protocol, outputs::Error};
+    match event {
+        FrameEvent::PlayerValue { id, value } => {
+            let index = source_values
+                .stats
+                .iter()
+                .position(|binding| binding.id == id)
+                .and_then(|index| u8::try_from(index).ok())
+                .ok_or(Error::Unsupported)?;
+            return qa_network::outputs::player_value(protocol, index, value.as_integer(), output);
+        }
+        FrameEvent::SetAngles(angles) => {
+            return qa_network::outputs::set_angles(protocol, angles, output);
+        }
+        _ => {}
+    }
     let (ordinal, readiness) = match event {
         FrameEvent::Sound(sound) => publication
             .project_sound(delivery.module, sound.source_ordinal, sound.sound)

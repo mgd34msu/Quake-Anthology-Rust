@@ -857,6 +857,7 @@ fn all_entity_reactions_share_one_numeric_function_table() {
         CallbackCall::Touch {
             entity: id,
             other: id,
+            time: None,
         },
         CallbackCall::Use {
             entity: id,

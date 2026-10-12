@@ -5,6 +5,80 @@ use qa_core::primitives::{Motion, WeaponReadiness, WeaponState};
 use qa_formats::program::quakec::Image;
 use qa_world::entities::FullTable;
 
+#[derive(Clone, Copy)]
+struct ClientFields {
+    health: Option<usize>,
+    armor: Option<usize>,
+    armor_type: Option<usize>,
+    frags: Option<usize>,
+    ammo: Option<usize>,
+    ammo_counts: [Option<usize>; 4],
+    items: Option<usize>,
+    weapon: Option<usize>,
+    weapon_model: Option<usize>,
+    weapon_frame: Option<usize>,
+    view_offset: Option<usize>,
+    punch: Option<usize>,
+    view_angles: Option<usize>,
+    fix_angle: Option<usize>,
+    water_level: Option<usize>,
+    water_type: Option<usize>,
+    water_jump: Option<usize>,
+    button_attack: Option<usize>,
+    button_jump: Option<usize>,
+    impulse: Option<usize>,
+    team: Option<usize>,
+    net_name: Option<usize>,
+    gravity: Option<usize>,
+    max_speed: Option<usize>,
+    touch: Option<usize>,
+    stats: [Option<qa_core::primitives::ValueBinding>; 32],
+    extra_stats: [Option<u32>; 4],
+    server_flags: u32,
+    player_stats: Option<qa_gameplay::registry::NativePlayerBindings>,
+}
+impl ClientFields {
+    fn load(field: impl Fn(&[u8], u16) -> Option<usize>) -> Self {
+        Self {
+            health: field(b"health", 2),
+            armor: field(b"armorvalue", 2),
+            armor_type: field(b"armortype", 2),
+            frags: field(b"frags", 2),
+            ammo: field(b"currentammo", 2),
+            ammo_counts: [
+                b"ammo_shells".as_slice(),
+                b"ammo_nails",
+                b"ammo_rockets",
+                b"ammo_cells",
+            ]
+            .map(|name| field(name, 2)),
+            items: field(b"items", 2),
+            weapon: field(b"weapon", 2),
+            weapon_model: field(b"weaponmodel", 1),
+            weapon_frame: field(b"weaponframe", 2),
+            view_offset: field(b"view_ofs", 3),
+            punch: field(b"punchangle", 3),
+            view_angles: field(b"v_angle", 3),
+            fix_angle: field(b"fixangle", 2),
+            water_level: field(b"waterlevel", 2),
+            water_type: field(b"watertype", 2),
+            water_jump: field(b"teleport_time", 2),
+            button_attack: field(b"button0", 2),
+            button_jump: field(b"button2", 2),
+            impulse: field(b"impulse", 2),
+            team: field(b"team", 2),
+            net_name: field(b"netname", 1),
+            gravity: field(b"gravity", 2),
+            max_speed: field(b"maxspeed", 2),
+            touch: field(b"touch", 6),
+            stats: [None; 32],
+            extra_stats: [None; 4],
+            server_flags: 0,
+            player_stats: None,
+        }
+    }
+}
+
 pub(super) struct ThinkBindings {
     module: qa_session::dispatch::ModuleBinding,
     functions: Box<[qa_core::primitives::ThinkBinding]>,
@@ -79,6 +153,7 @@ pub(crate) struct QuakeCLayout {
     next_think: Option<usize>,
     think: Option<usize>,
     move_type: Option<usize>,
+    client: ClientFields,
 }
 impl QuakeCLayout {
     fn load(image: &Image, stride: usize, header: usize) -> Self {
@@ -118,6 +193,7 @@ impl QuakeCLayout {
             next_think: field(b"nextthink", 2),
             think: field(b"think", 6),
             move_type: field(b"movetype", 2),
+            client: ClientFields::load(field),
         }
     }
     fn address(self, memory: &ModuleMemory<'_>, value: u32) -> Result<u64, CallError> {
@@ -340,6 +416,371 @@ impl qa_world::collision::NativeTraceEntities for QuakeCTraceView<'_, '_> {
 }
 
 impl EntityProjection {
+    pub(crate) fn quakec_client_count(&self) -> Result<usize, CallError> {
+        let layout = self.quakec_layout()?;
+        if !layout.integer_motion {
+            return Err(CallError::Unsupported);
+        }
+        layout.client_edicts.ok_or(CallError::Entity)
+    }
+    pub(crate) fn quakec_check_address(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<(), CallError> {
+        self.quakec_layout()?.address(memory, value).map(|_| ())
+    }
+    pub(crate) fn quakec_client_address(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<u64, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        let slot = value as usize / layout.stride;
+        if slot == 0 || slot > self.quakec_client_count()? {
+            return Err(CallError::Entity);
+        }
+        Ok(address)
+    }
+    pub(crate) fn quakec_bind_client(
+        &mut self,
+        entities: &EntityTable,
+        native: NativeEntity,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
+        if native.slot <= 0 || native.slot as usize > self.quakec_client_count()? {
+            return Err(CallError::Entity);
+        }
+        self.bind_client(entities, native, entity)
+    }
+    pub(crate) fn quakec_bind_player_values(
+        &mut self,
+        stats: &[qa_core::primitives::ValueBinding],
+    ) -> Result<(), CallError> {
+        self.quakec_client_count()?;
+        let mut layout = self.quakec_layout()?;
+        if stats.len() != layout.client.stats.len() {
+            return Err(CallError::Capacity);
+        }
+        for (to, value) in layout.client.stats.iter_mut().zip(stats) {
+            *to = Some(*value);
+        }
+        self.schema = EntitySchema::QuakeC(layout);
+        Ok(())
+    }
+    pub(crate) fn quakec_client_globals(
+        &mut self,
+        flags: u32,
+        stats: [Option<u32>; 4],
+    ) -> Result<(), CallError> {
+        let mut layout = self.quakec_layout()?;
+        layout.client.server_flags = flags;
+        layout.client.extra_stats = stats;
+        self.schema = EntitySchema::QuakeC(layout);
+        Ok(())
+    }
+    pub(crate) fn quakec_bind_client_registry(
+        &mut self,
+        registry: &qa_gameplay::registry::Registry,
+    ) -> Result<(), CallError> {
+        self.quakec_client_count()?;
+        let mut layout = self.quakec_layout()?;
+        layout.client.player_stats =
+            qa_gameplay::registry::NativePlayerBindings::load(RuleSetId::QuakeWorld, registry);
+        self.schema = EntitySchema::QuakeC(layout);
+        Ok(())
+    }
+    fn quakec_client(
+        &self,
+        services: &EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(u64, qa_core::primitives::ClientId), CallError> {
+        if context.native_rules != RuleSetId::QuakeWorld || self.owner != Some(context.module) {
+            return Err(CallError::Unsupported);
+        }
+        let address = self.quakec_client_address(memory, value)?;
+        let native = self.quakec_identity(memory, context, value)?;
+        let entity = self
+            .binding(&services.server.entities, native)?
+            .ok_or(CallError::Entity)?;
+        let client = services
+            .server
+            .client_for_native(native)
+            .ok_or(CallError::Entity)?;
+        let row = &services.server.clients[client.0 as usize];
+        if row.entity != entity || row.module != context.module {
+            return Err(CallError::Entity);
+        }
+        Ok((address, client))
+    }
+    pub(crate) fn quakec_validate_client_spawn(
+        &self,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        if context.native_rules != RuleSetId::QuakeWorld || self.owner != Some(context.module) {
+            return Err(CallError::Unsupported);
+        }
+        let address = self.quakec_client_address(memory, value)?;
+        let layout = self.quakec_layout()?;
+        for field in [layout.colormap, layout.client.team, layout.client.net_name] {
+            memory.read(address + field.ok_or(CallError::Memory)? as u64, 4)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn quakec_client_spawn(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        name: u32,
+        maxspeed: f32,
+    ) -> Result<(), CallError> {
+        let (address, client) = self.quakec_client(services, memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        self.quakec_validate_client_spawn(memory, context, value)?;
+        memory
+            .read_mut(address + layout.header as u64, layout.fields)?
+            .fill(0);
+        layout.write_number(
+            memory,
+            address,
+            layout.colormap,
+            (value as usize / layout.stride) as f32,
+        )?;
+        layout.write_number(memory, address, layout.client.team, 0.0)?;
+        memory.write_word(
+            address + layout.client.net_name.ok_or(CallError::Memory)? as u64,
+            name as i32,
+        )?;
+        for (field, value) in [
+            (layout.client.gravity, 1.0),
+            (layout.client.max_speed, maxspeed),
+        ] {
+            if let Some(field) = field {
+                layout.write_number(memory, address, Some(field), value)?;
+            }
+        }
+        let (motion, angular_velocity) = layout.motion_state(memory, address)?;
+        let slot = services.server.clients[client.0 as usize].entity.slot as usize;
+        services.server.entities.columns.motion[slot] = motion;
+        services.server.entities.columns.angular_velocity[slot] = angular_velocity;
+        Ok(())
+    }
+    pub(crate) fn quakec_client_command(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        command: &qa_core::primitives::UserCmd,
+        roll_angle: f32,
+        roll_speed: f32,
+    ) -> Result<(), CallError> {
+        if context.native_rules != RuleSetId::QuakeWorld || self.owner != Some(context.module) {
+            return Err(CallError::Unsupported);
+        }
+        let layout = self.quakec_layout()?;
+        let address = self.quakec_client_address(memory, value)?;
+        if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
+            layout.write_vector(
+                memory,
+                address,
+                layout.client.view_angles,
+                command.view_angles,
+            )?;
+        }
+        layout.write_number(
+            memory,
+            address,
+            layout.client.button_attack,
+            (command.buttons & qa_core::primitives::buttons::ATTACK) as f32,
+        )?;
+        layout.write_number(
+            memory,
+            address,
+            layout.client.button_jump,
+            ((command.buttons & qa_core::primitives::buttons::JUMP) >> 1) as f32,
+        )?;
+        if command.impulse != 0 {
+            layout.write_number(
+                memory,
+                address,
+                layout.client.impulse,
+                f32::from(command.impulse),
+            )?;
+        }
+        // SV_RunCmd reads these fields after the preceding stores. QuakeC
+        // definitions can overlap, including one angle store with the next
+        // v_angle component, so preserve each scalar native read/write.
+        if layout.number(memory, address, layout.client.health)? > 0.0 {
+            if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
+                let pitch = layout.number(memory, address, layout.client.view_angles)?;
+                layout.write_number(memory, address, layout.angles, -pitch / 3.0)?;
+                let yaw = layout.number(
+                    memory,
+                    address,
+                    layout.client.view_angles.map(|field| field + 4),
+                )?;
+                layout.write_number(memory, address, layout.angles.map(|field| field + 4), yaw)?;
+            }
+            let angles = layout.vector(memory, address, layout.angles)?;
+            let velocity = layout.vector(memory, address, layout.velocity)?;
+            let roll = qa_gameplay::rules::appearance::AliasRoll {
+                angle: roll_angle,
+                speed: roll_speed,
+            }
+            .calculate(angles, velocity)
+                * 4.0;
+            layout.write_number(memory, address, layout.angles.map(|field| field + 8), roll)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn quakec_read_client(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<Vec3, CallError> {
+        let (address, client) = self.quakec_client(services, memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        let origin = layout.vector(memory, address, layout.origin)?;
+        let velocity = layout.vector(memory, address, layout.velocity)?;
+        let mins = layout.vector(memory, address, layout.mins)?;
+        let view = layout.vector(memory, address, layout.client.view_angles)?;
+        let health = layout.number(memory, address, layout.client.health)?;
+        let water_jump = layout.number(memory, address, layout.client.water_jump)?;
+        layout.number(memory, address, layout.client.water_level)?;
+        layout.number(memory, address, layout.client.water_type)?;
+        layout.flags(memory, address)?;
+        let gravity = layout
+            .client
+            .gravity
+            .map(|field| layout.number(memory, address, Some(field)))
+            .transpose()?
+            .unwrap_or(1.0);
+        let maxspeed = layout
+            .client
+            .max_speed
+            .map(|field| layout.number(memory, address, Some(field)))
+            .transpose()?;
+        self.quakec_publish(services, memory, strings, context, value)?;
+        let player = &mut services.server.clients[client.0 as usize].player;
+        let view_offset = player.view_offset;
+        qa_movement::set_bounds(player);
+        if layout.client.view_offset.is_some() {
+            player.view_offset = view_offset;
+        }
+        let offset = mins - player.body.mins;
+        player.body.position = origin + offset;
+        player.body.velocity = velocity;
+        player.view_angles = view;
+        if player.movement.mode != qa_core::primitives::MovementMode::Spectator {
+            player.movement.mode = if health <= 0.0 {
+                qa_core::primitives::MovementMode::Dead
+            } else {
+                qa_core::primitives::MovementMode::Walk
+            };
+        }
+        player.movement.water_jump_seconds = water_jump;
+        player.movement.tuning.gravity_multiplier = gravity;
+        player.movement.tuning.max_speed = maxspeed;
+        Ok(offset)
+    }
+    pub(crate) fn quakec_write_client(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        offset: Vec3,
+    ) -> Result<(), CallError> {
+        let (address, client) = self.quakec_client(services, memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        layout.link_fields(memory, address)?;
+        for field in [layout.velocity, layout.client.view_angles] {
+            memory.read(address + field.ok_or(CallError::Memory)? as u64, 12)?;
+        }
+        for field in [
+            layout.client.water_jump,
+            layout.client.water_level,
+            layout.client.water_type,
+            layout.ground_entity,
+        ] {
+            memory.read(address + field.ok_or(CallError::Memory)? as u64, 4)?;
+        }
+        let player = &services.server.clients[client.0 as usize].player;
+        let water_jump = player.movement.water_jump_seconds;
+        let level = player.movement.water_level;
+        let contents = Contents(player.movement.water_contents).to_q1();
+        let grounded = player.movement.grounded;
+        let ground = self.quakec_hit(services, player.movement.ground);
+        let origin = player.body.position - offset;
+        let velocity = player.body.velocity;
+        let view = player.view_angles;
+        let flags = layout.flags(memory, address)?;
+        layout.write_number(memory, address, layout.client.water_jump, water_jump)?;
+        layout.write_number(memory, address, layout.client.water_level, f32::from(level))?;
+        layout.write_number(memory, address, layout.client.water_type, contents as f32)?;
+        layout.write_number(
+            memory,
+            address,
+            layout.flags,
+            (if grounded { flags | 512 } else { flags & !512 }) as i32 as f32,
+        )?;
+        if grounded {
+            memory.write_word(
+                address + layout.ground_entity.ok_or(CallError::Memory)? as u64,
+                ground as i32,
+            )?;
+        }
+        layout.write_vector(memory, address, layout.origin, origin)?;
+        layout.write_vector(memory, address, layout.velocity, velocity)?;
+        layout.write_vector(memory, address, layout.client.view_angles, view)?;
+        self.quakec_link(services, memory, strings, context, value)
+    }
+    pub(crate) fn quakec_touch_callback(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<Option<qa_core::primitives::CallbackId>, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        let word = layout.word(memory, address, layout.client.touch)?;
+        if word == 0 {
+            Ok(None)
+        } else {
+            self.quakec_callback(word).map(Some)
+        }
+    }
+    pub(crate) fn quakec_client_fixangle(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<Option<Vec3>, CallError> {
+        let layout = self.quakec_layout()?;
+        let address = self.quakec_client_address(memory, value)?;
+        if layout.number(memory, address, layout.client.fix_angle)? == 0.0 {
+            return Ok(None);
+        }
+        layout.vector(memory, address, layout.angles).map(Some)
+    }
+    pub(crate) fn quakec_clear_client_fixangle(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let layout = self.quakec_layout()?;
+        let address = self.quakec_client_address(memory, value)?;
+        layout.write_number(memory, address, layout.client.fix_angle, 0.0)
+    }
     pub(crate) fn quakec_trace_view<'a, 'memory>(
         &self,
         memory: &'a ModuleMemory<'memory>,
@@ -478,6 +919,9 @@ impl EntityProjection {
             };
             let native_slot = native.slot as usize;
             let client = native_slot > 0 && native_slot <= clients;
+            if client && layout.integer_motion {
+                continue;
+            }
             let phase = if !client {
                 entities.columns.motion[entity.slot as usize]
             } else {
@@ -1110,6 +1554,7 @@ impl EntityProjection {
         if layout.effects.is_some() {
             appearance.native.effects = u64::from(number(layout.effects)? as u32);
         }
+        self.quakec_publish_client(services, memory, strings, context, address, native)?;
         if let Some(client) = services.server.client_for_native(native) {
             let client = &mut services.server.clients[client.0 as usize];
             if client.module == context.module {
@@ -1168,6 +1613,172 @@ impl EntityProjection {
             link_flags.0 |= LinkFlags::ITEM;
         }
         Ok(Some((entity, link_flags)))
+    }
+    fn quakec_publish_client(
+        &self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        address: u64,
+        native: NativeEntity,
+    ) -> Result<(), CallError> {
+        let Some(id) = services.server.client_for_native(native) else {
+            return Ok(());
+        };
+        if services.server.clients[id.0 as usize].module != context.module {
+            return Ok(());
+        }
+        let layout = self.quakec_layout()?;
+        if !layout.integer_motion {
+            return Ok(());
+        }
+        let fields = layout.client;
+        let number = |field: Option<usize>| {
+            field
+                .map(|at| layout.number(memory, address, Some(at)))
+                .transpose()
+        };
+        let integer = |field| number(field).map(|value| value.map(crate::numbers::native_integer));
+        let health = number(fields.health)?;
+        let armor = integer(fields.armor)?;
+        let armor_type = number(fields.armor_type)?;
+        let frags = integer(fields.frags)?;
+        let items = integer(fields.items)?.map(|value| value as u32);
+        let weapon = integer(fields.weapon)?.map(|value| value as u32);
+        let ammo = fields.ammo_counts.map(integer);
+        let current_ammo = integer(fields.ammo)?;
+        let weapon_model = if let Some(field) = fields.weapon_model {
+            let word = layout.word(memory, address, Some(field))?;
+            let path = strings.cstring(u64::from(word))?;
+            if path.is_empty() {
+                Some(0)
+            } else {
+                let range = services
+                    .storage
+                    .resources(context.module)
+                    .ok_or(CallError::ConfigString)?[0];
+                Some(
+                    (ENGINE_CALLS.resource_find)(services, context.module, range, path)?
+                        .ok_or(CallError::Geometry)?,
+                )
+            }
+        } else {
+            None
+        };
+        let weapon_frame = integer(fields.weapon_frame)?;
+        let view_offset = fields
+            .view_offset
+            .map(|field| layout.vector(memory, address, Some(field)))
+            .transpose()?;
+        let punch = fields
+            .punch
+            .map(|field| layout.vector(memory, address, Some(field)))
+            .transpose()?;
+        let view = fields
+            .view_angles
+            .map(|field| layout.vector(memory, address, Some(field)))
+            .transpose()?;
+        let water_level = integer(fields.water_level)?;
+        let water_type = integer(fields.water_type)?;
+        let ground_flags = layout
+            .flags
+            .map(|_| layout.flags(memory, address))
+            .transpose()?;
+        let ground = if ground_flags.is_some_and(|flags| flags & 512 != 0)
+            && layout.ground_entity.is_some()
+        {
+            let word = layout.word(memory, address, layout.ground_entity)?;
+            let ground = layout.identity(memory, context.module, word)?;
+            self.binding(&services.server.entities, ground)?
+        } else {
+            None
+        };
+        let mut stats = [None; 32];
+        if let Some(health) = health {
+            stats[0] = Some(crate::numbers::native_integer(health) as u32);
+        }
+        if let Some(value) = frags {
+            stats[1] = Some(value as u32);
+        }
+        if let Some(value) = weapon_frame {
+            stats[5] = Some(value as u32);
+        }
+        if let Some(model) = weapon_model {
+            stats[2] = Some(model);
+        }
+        if let Some(value) = current_ammo {
+            stats[3] = Some(value as u32);
+        }
+        if let Some(value) = armor {
+            stats[4] = Some(value as u32);
+        }
+        let mut ammo_values = [None; 4];
+        for (index, value) in ammo.into_iter().enumerate() {
+            ammo_values[index] = value?;
+            if let Some(value) = ammo_values[index] {
+                stats[6 + index] = Some(value as u32);
+            }
+        }
+        if let Some(value) = weapon {
+            stats[10] = Some(value);
+        }
+        stats[11..15].copy_from_slice(&fields.extra_stats);
+        if let Some(items) = items {
+            stats[15] = Some(items | fields.server_flags.wrapping_shl(28));
+        }
+        let player = &mut services.server.clients[id.0 as usize].player;
+        if fields
+            .stats
+            .into_iter()
+            .flatten()
+            .any(|binding| binding.id.0 as usize >= player.values.capacity())
+        {
+            return Err(CallError::Capacity);
+        }
+        if let Some(native_stats) = fields.player_stats {
+            if !native_stats.fits(player) {
+                return Err(CallError::Capacity);
+            }
+            for (index, (binding, bits)) in fields.stats.into_iter().zip(stats).enumerate() {
+                let Some(bits) = bits else { continue };
+                if !native_stats.import(
+                    binding,
+                    ResourceNamespace::Module(context.module),
+                    index,
+                    bits,
+                    player,
+                    services.server.world_time,
+                ) {
+                    return Err(CallError::Capacity);
+                }
+            }
+        }
+        if let Some(value) = armor_type {
+            player.armor_absorption = value;
+            player.armor_energy_absorption = value;
+        }
+        if let Some(view) = view_offset {
+            player.view_offset = view;
+        }
+        if let Some(punch) = punch {
+            player.punch_angles = punch;
+        }
+        if let Some(view) = view {
+            player.view_angles = view;
+        }
+        if let Some(level) = water_level {
+            player.movement.water_level = level as u8;
+        }
+        if let Some(contents) = water_type {
+            player.movement.water_contents = Contents::from_q1(contents).0;
+        }
+        if let Some(flags) = ground_flags {
+            player.flags = flags;
+            player.movement.grounded = flags & 512 != 0;
+            player.movement.ground = ground;
+        }
+        Ok(())
     }
     pub(crate) fn quakec_project(
         &mut self,

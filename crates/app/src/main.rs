@@ -534,6 +534,9 @@ fn run() -> Result<(), String> {
         .map(|request| request.context.native_rules)
         .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
+    for api in &q2_clients {
+        host.register_q2_client_api(*api)?;
+    }
     for (index, spec) in quakec_modules.iter().enumerate() {
         println!(
             "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"entry\":\"StartFrame\",\"scope\":\"map_spawn_and_frames\",\"gameplay\":false}}",
@@ -658,21 +661,24 @@ fn run() -> Result<(), String> {
         // A sole provider is unambiguous. Combined providers require the
         // connection's explicit module number, independent of map/physics.
         let selected = seat_game_modules[seat].or_else(|| {
-            (q2_clients.len() == 1
-                && quakec_modules.is_empty()
+            let mut available = (1..=module_count).filter_map(|number| {
+                let module = qa_core::primitives::ModuleId(number as u16);
+                host.client_info(module).map(|_| module)
+            });
+            let only = available.next()?;
+            (available.next().is_none()
                 && q3_modules
                     .iter()
                     .all(|module| module.role != qa_app::modules::Q3Role::Game))
-            .then(|| q2_clients[0].module)
+            .then_some(only)
         });
         let Some(module) = selected else {
             continue;
         };
-        let api = q2_clients
-            .iter()
-            .find(|api| api.module == module)
-            .ok_or("seat-game-module needs a loaded Q2 client lifecycle")?;
-        let mut info = vec![0; api.abi.userinfo_bytes];
+        let api = host
+            .client_info(module)
+            .ok_or("seat-game-module needs a loaded supported client lifecycle")?;
+        let mut info = vec![0; api.userinfo_bytes];
         let length = host
             .console
             .cvars
@@ -686,7 +692,7 @@ fn run() -> Result<(), String> {
                 &mut info,
             )
             .map_err(|e| format!("native userinfo: {e:?}"))?;
-        let native_client = host.connect_q2_client(api, id, &info[..length])?;
+        let native_client = host.connect_module_client(module, id, &info[..length])?;
         println!(
             "{{\"event\":\"module_client_begin\",\"seat\":{seat},\"module\":{},\"native_client\":{native_client},\"native_signon\":false,\"gameplay_accepted\":false}}",
             module.0

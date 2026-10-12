@@ -1383,34 +1383,11 @@ fn quakeworld(
     options: MoveOptions,
 ) -> Result<MovementResult, TraceError> {
     with_rollback(player, |player| {
-        let command = super::prepare_command(RuleSetId::QuakeWorld, command);
+        let commands = super::quakeworld_steps(command);
         let parameters = Parameters::load(RuleSetId::QuakeWorld, player);
         let mut result = MovementResult::default();
-        // SV_RunCmd/CL_PredictUsercmd recursively halve both halves, dropping odd ms.
-        let mut durations = [0u16; 8];
-        durations[0] = command.duration_ms;
-        let mut pending = 1;
-        while pending > 0 {
-            pending -= 1;
-            let ms = durations[pending];
-            if ms > 50 {
-                durations[pending] = ms / 2;
-                durations[pending + 1] = ms / 2;
-                pending += 2;
-            } else {
-                run_step(
-                    UserCmd {
-                        duration_ms: ms,
-                        duration_ns: EventTime::from_milliseconds(u64::from(ms)).0,
-                        ..command
-                    },
-                    player,
-                    world,
-                    parameters,
-                    &mut result,
-                    options,
-                )?;
-            }
+        for command in commands {
+            run_step(command, player, world, parameters, &mut result, options)?;
         }
         Ok(result)
     })

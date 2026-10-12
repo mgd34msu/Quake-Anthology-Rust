@@ -348,8 +348,30 @@ pub struct CommandArgs<'a> {
     pub raw: &'a [u8],
 }
 
+/// Lifecycle phases use the owning module's loaded ABI policy. They do not
+/// select movement, trace, presentation or the connection's wire protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientCallback {
+    NewParameters,
+    Connect,
+    Begin,
+    BeforeMove,
+    AfterMove,
+    Disconnect,
+    Command,
+    UserinfoChanged,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CallbackCall<'a> {
+    Client {
+        entity: EntityId,
+        client: ClientId,
+        event: ClientCallback,
+        time: ThinkTime,
+        arguments: [u64; 9],
+        command: CommandArgs<'a>,
+    },
     /// A module export keeps its native words at the ABI boundary. The entity
     /// supplies the module owner and lifetime to the same dispatch table.
     Export {
@@ -372,6 +394,8 @@ pub enum CallbackCall<'a> {
     Touch {
         entity: EntityId,
         other: EntityId,
+        /// Some selects a native trigger clock; contacts preserve globals.
+        time: Option<ThinkTime>,
     },
     Use {
         entity: EntityId,
@@ -395,7 +419,8 @@ pub enum CallbackCall<'a> {
 impl CallbackCall<'_> {
     pub fn entity(self) -> EntityId {
         match self {
-            Self::Export { entity, .. }
+            Self::Client { entity, .. }
+            | Self::Export { entity, .. }
             | Self::Think { entity, .. }
             | Self::Spawn { entity, .. }
             | Self::Touch { entity, .. }

@@ -103,6 +103,11 @@ fn deliver(protocol: Protocol, bytes: &[u8]) -> (Result<usize, packet::Error>, V
     let length = commands.stage(bytes).unwrap();
     let mut output = Vec::new();
     let result = commands.decode(length, 7, 16, &mut channel, None, |incoming| {
+        // This fixture observes ordered records; batch lifecycle is covered by
+        // qw_move_batches and does not change text/move ordering.
+        if matches!(incoming, Incoming::MoveBegin | Incoming::MoveEnd) {
+            return ControlFlow::Continue(());
+        }
         output.push(seen(incoming));
         ControlFlow::Continue(())
     });

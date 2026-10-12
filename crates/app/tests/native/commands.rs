@@ -287,8 +287,11 @@ fn packet_commands_for_abi(rerelease: bool) {
         )
         .unwrap();
     host.console.cvars.force_write(maximum, "1").unwrap();
-    host.connect_q2_client(&api, client, b"\\name\\initial")
-        .unwrap();
+    {
+        host.register_q2_client_api(api).unwrap();
+        host.connect_module_client(api.module, client, b"\\name\\initial")
+    }
+    .unwrap();
     host.local_clients[0] = Some(client);
     host.runtime.loopback.clear_client(client);
     let movement = if rerelease {

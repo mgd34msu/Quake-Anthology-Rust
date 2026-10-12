@@ -369,6 +369,7 @@ impl FrameHost {
             }
         }
         self.run_pending_commands(frame_span);
+        self.publish_module_client_state();
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         self.publish_module_configs();
         self.publish_module_signon();
@@ -437,6 +438,48 @@ impl FrameHost {
                 time_ms: self.time.milliseconds(),
             })
         })
+    }
+
+    pub(crate) fn publish_client_values(
+        &mut self,
+        id: ClientId,
+        rules: qa_core::primitives::RuleSetId,
+        module: ModuleId,
+    ) {
+        use qa_core::{
+            events::FrameEvent,
+            primitives::{NativeDelivery, NativeTarget},
+        };
+        let bindings = &self.runtime.catalog.hud.values.native(rules).stats;
+        let server = &mut self.runtime.server;
+        let client = &mut server.clients[id.0 as usize];
+        let delivery = NativeDelivery {
+            module,
+            source: rules,
+            target: NativeTarget::Client(id),
+            origin: client.player.body.position,
+            reliable: true,
+            dupe_key: 0,
+            component: 0,
+            emission: None,
+            check_portals: false,
+        };
+        client.value_publication.publish_changes(
+            bindings,
+            &client.player.values,
+            |value_id, value| {
+                server
+                    .events
+                    .push_delivered(
+                        delivery,
+                        FrameEvent::PlayerValue {
+                            id: value_id,
+                            value,
+                        },
+                    )
+                    .is_ok()
+            },
+        );
     }
 
     pub(crate) fn alias_roll(&self) -> qa_gameplay::rules::appearance::AliasRoll {
@@ -698,6 +741,25 @@ impl FrameHost {
                         && server.clients[id.0 as usize].output == Some(binding.output)
                     {
                         match incoming {
+                            Incoming::PlayerValue { index, value } => {
+                                let protocol = self.runtime.snapshots[id.0 as usize]
+                                    .as_ref()
+                                    .map(|binding| binding.protocol);
+                                if let Some(protocol) = protocol {
+                                    self.runtime.catalog.hud.import_native_stat(
+                                        protocol.rule_set(),
+                                        id,
+                                        index as usize,
+                                        value as u32,
+                                        &mut self.runtime.prediction[seat.index()].player,
+                                        time,
+                                    );
+                                }
+                            }
+                            Incoming::SetAngles(angles) => {
+                                self.runtime.prediction[seat.index()].player.view_angles = angles;
+                                self.runtime.input.set_view_angles(seat, angles);
+                            }
                             Incoming::Print(print) => {
                                 let _ = self.runtime.server.events.print_level_bytes(
                                     Some(qa_core::events::OutputTarget::Local(id)),
@@ -745,6 +807,8 @@ impl FrameHost {
                     }
                 }
                 qa_core::loopback::Endpoint::Server => match incoming {
+                    Incoming::MoveBegin => self.begin_command_batch(id),
+                    Incoming::MoveEnd => self.end_command_batch(id),
                     Incoming::CommandString {
                         protocol,
                         text,
@@ -772,7 +836,7 @@ impl FrameHost {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
                             && self.runtime.server.module_moves(id).is_some()
-                            && let Err(error) = self.userinfo_q2_client(id, text)
+                            && let Err(error) = self.userinfo_module_client(id, text)
                         {
                             let _ = self.runtime.server.events.console_formatted(format_args!(
                                 "ClientUserinfoChanged: {error}\n"
@@ -836,7 +900,15 @@ impl FrameHost {
                     _ => {}
                 },
             }
-            std::ops::ControlFlow::Continue(())
+            if self.runtime.server.clients[id.0 as usize]
+                .connection
+                .is_none()
+            {
+                disconnected = Some(id);
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
         });
         if let Some(id) = disconnected {
             network.unbind(id);

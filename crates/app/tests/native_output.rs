@@ -891,6 +891,136 @@ fn native_layout_reaches_the_local_hud_through_channel_queue_and_client_ring() {
     );
     assert!(host.runtime.network.delivered > 0);
 }
+
+#[test]
+fn separate_stats_and_set_angles_reach_client_state_only_through_queued_native_packets() {
+    use qa_core::events::FrameEvent;
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let policy = ClientPolicy {
+            client: RuleSetId::Quake2Rerelease,
+            movement: RuleSetId::Quake3,
+            trace: RuleSetId::Quake2,
+        };
+        let id = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                policy,
+                protocol,
+                0,
+            )
+            .unwrap();
+        let binding = runtime.catalog.hud.values.native(protocol.rule_set()).stats[4];
+        let source_binding = runtime
+            .catalog
+            .hud
+            .values
+            .native(RuleSetId::QuakeWorld)
+            .stats[4];
+        let foreign = runtime.catalog.hud.values.native(policy.client).stats[4];
+        let delivery = NativeDelivery {
+            module: ModuleId(7),
+            source: RuleSetId::QuakeWorld,
+            target: NativeTarget::Client(id),
+            origin: Vec3::default(),
+            reliable: true,
+            dupe_key: 0,
+            component: 0,
+            emission: None,
+            check_portals: false,
+        };
+        runtime
+            .server
+            .events
+            .push_delivered(
+                delivery,
+                FrameEvent::PlayerValue {
+                    id: source_binding.id,
+                    value: NumericValue::integer(333),
+                },
+            )
+            .unwrap();
+        let angles = Vec3([45.0, 90.0, -45.0]);
+        runtime
+            .server
+            .events
+            .push_delivered(
+                NativeDelivery {
+                    reliable: false,
+                    ..delivery
+                },
+                FrameEvent::SetAngles(angles),
+            )
+            .unwrap();
+        assert_eq!(
+            runtime.prediction[0].player.values.get(binding.id),
+            Some(NumericValue::default())
+        );
+        assert_eq!(runtime.prediction[0].player.view_angles, Vec3::default());
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )
+        .unwrap();
+        host.local_clients[0] = Some(id);
+        let mut source = Source::default();
+        // Receive the discrete services before any subsequent player snapshot.
+        // The QW request also opens its native server reply window.
+        for step in 1..=4 {
+            source.now = EventTime::from_milliseconds(step * 20);
+            assert!(
+                host.runtime
+                    .send_local_command(id, &UserCmd::default(), source.now,)
+            );
+            host.drain(&mut Default::default());
+            dispatch(&mut host.runtime, &mut source);
+            host.drain(&mut Default::default());
+        }
+        assert_eq!(host.runtime.prediction[0].player.armor, 333);
+        assert_eq!(host.runtime.prediction[0].player.view_angles, angles);
+        for frame in 0..5 {
+            source.now = EventTime::from_milliseconds(100 + frame * 20);
+            host.frame(&mut source, true);
+        }
+        let player = &host.runtime.prediction[0].player;
+        assert_eq!(
+            player.values.get(binding.id),
+            Some(NumericValue::integer(333))
+        );
+        assert_eq!(player.values.get(foreign.id), Some(NumericValue::default()));
+        // NQ's later clientdata carries authoritative armor separately; QW
+        // playerinfo has no armor field and retains its stat service value.
+        let armor = if protocol == Protocol::NetQuake15 {
+            0
+        } else {
+            333
+        };
+        assert_eq!(player.armor, armor);
+        assert_eq!(player.view_angles, angles);
+        assert_eq!(
+            (player.movement_rules, player.trace_rules),
+            (policy.movement, policy.trace)
+        );
+        assert_eq!(
+            host.runtime.server.clients[0].player.values.get(binding.id),
+            Some(NumericValue::default())
+        );
+        assert_eq!(
+            host.runtime.server.clients[0].hud.values.get(binding.id),
+            Some(NumericValue::integer(333))
+        );
+        assert_eq!(host.runtime.server.clients[0].hud.armor, armor);
+        assert!(host.runtime.network.delivered > 0);
+    }
+}
 #[test]
 fn native_multicast_uses_compiled_sight_hearing_and_portal_connectivity() {
     use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisNode, VisibilityWorld};

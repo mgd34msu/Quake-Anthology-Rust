@@ -240,6 +240,10 @@ impl Commands {
                 key,
                 |record| match record {
                     packet::Record::Move(movement) => {
+                        let batch = matches!(movement, Move::QuakeWorld { .. });
+                        if batch && consume(Incoming::MoveBegin).is_break() {
+                            return Ok(ControlFlow::Break(()));
+                        }
                         let flow = self.decode_move(
                             movement,
                             server_time,
@@ -263,6 +267,9 @@ impl Commands {
                                 accepted += count;
                                 return Ok(ControlFlow::Break(()));
                             }
+                        }
+                        if batch {
+                            return Ok(consume(Incoming::MoveEnd));
                         }
                         Ok(ControlFlow::Continue(()))
                     }
@@ -494,6 +501,21 @@ impl Commands {
                 match (self.protocol, scratch[at]) {
                     (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
                     | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 6) => at += 1,
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 3)
+                    | (Protocol::QuakeWorld28, 38) => {
+                        let ((index, value), count) =
+                            crate::outputs::read_player_value(self.protocol, &scratch[at..])
+                                .map_err(|_| packet::Error::Context)?;
+                        at += count;
+                        consume(Incoming::PlayerValue { index, value });
+                    }
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 10) => {
+                        let (angles, count) =
+                            crate::outputs::read_set_angles(self.protocol, &scratch[at..])
+                                .map_err(|_| packet::Error::Context)?;
+                        at += count;
+                        consume(Incoming::SetAngles(angles));
+                    }
                     (Protocol::NetQuake15, 4) => {
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         if reader.read_bits(32)? != self.protocol.number() {

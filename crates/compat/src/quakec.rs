@@ -7,6 +7,7 @@ use crate::{
 use qa_core::{bits::BitSet, primitives::Vec3};
 use qa_formats::program::quakec::{Image, Opcode};
 
+mod client;
 mod map;
 pub use map::{MapAdmission, MapFields};
 
@@ -99,6 +100,8 @@ pub(crate) fn definition(image: &Image, fields: bool, name: &[u8], kind: u16) ->
     (definition.value_type & 0x7fff == kind).then_some(definition.offset)
 }
 pub const TEMP_STRING_BYTES: usize = 128;
+/// Original QuakeWorld MAX_INFO_STRING, including its terminating byte.
+pub const QW_USERINFO_BYTES: usize = 196;
 
 pub(super) fn temporary_string(memory: &mut ModuleMemory<'_>, text: &[u8]) -> Result<u32, Trap> {
     if text.len() >= TEMP_STRING_BYTES {
@@ -129,6 +132,7 @@ pub struct Vm {
     state: Option<StateFields>,
     call_fields: CallFields,
     map_globals: map::MapGlobals,
+    client_globals: client::ClientGlobals,
     trace_fields: Option<TraceFields>,
     vector_globals: Option<[usize; 3]>,
     state_step: f64,
@@ -186,6 +190,7 @@ impl Vm {
             frame_time: definition(&image, false, b"frametime", 2),
         };
         let map_globals = map::MapGlobals::load(&image);
+        let client_globals = client::ClientGlobals::load(&image);
         let hook_bytes = image
             .globals
             .len()
@@ -245,6 +250,7 @@ impl Vm {
             state,
             call_fields,
             map_globals,
+            client_globals,
             trace_fields,
             vector_globals,
             state_step: layout.state_step,
@@ -265,7 +271,9 @@ impl Vm {
         max_clients: i32,
     ) -> Result<(), crate::services::CallError> {
         self.projection
-            .quakec_seed(entities, module, rules, max_clients)
+            .quakec_seed(entities, module, rules, max_clients)?;
+        self.client_globals.rules = Some(rules);
+        Ok(())
     }
     /// Cold reservation for retained common names across this module's map
     /// lifetime. Reused temporary strings and suffixes can exhaust this fixed
@@ -497,6 +505,7 @@ impl Vm {
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
     ) -> Result<(), crate::services::CallError> {
+        self.sync_client_globals()?;
         self.projection
             .quakec_project(services, &self.entities, &self.strings, context)?;
         self.dirty_entities.clear();
@@ -510,6 +519,7 @@ impl Vm {
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
     ) -> Result<(), crate::services::CallError> {
+        self.sync_client_globals()?;
         for index in 0..self.dirty_count {
             let slot = self.dirty_slots[index];
             self.projection.quakec_project_row(

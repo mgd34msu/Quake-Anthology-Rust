@@ -201,8 +201,11 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
         .unwrap();
     host.console.cvars.force_write(maximum, "2").unwrap();
     for (&client, api) in clients.iter().zip(&apis) {
-        host.connect_q2_client(api, client, b"\\name\\observer")
-            .unwrap();
+        {
+            host.register_q2_client_api(*api).unwrap();
+            host.connect_module_client(api.module, client, b"\\name\\observer")
+        }
+        .unwrap();
     }
     host.local_clients[0] = Some(clients[0]);
     host.local_clients[1] = Some(clients[1]);

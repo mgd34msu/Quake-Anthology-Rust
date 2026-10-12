@@ -23,7 +23,8 @@ use std::sync::Arc;
 mod load;
 pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, load_quakec};
 mod clients;
-pub use clients::ClientCommandError;
+use clients::ClientLifecycle;
+pub use clients::{ClientCommandError, ClientLifecycleInfo};
 mod cues;
 mod map_start;
 mod resources;
@@ -219,7 +220,10 @@ struct Module {
     unknown: UnknownCalls,
     counts: Counts,
     state: State,
-    client_api: Option<Q2Clients>,
+    client_lifecycle: Option<ClientLifecycle>,
+    client_batch: Option<ClientId>,
+    client_contacts: qa_core::stamps::StampSet,
+    client_triggers: Vec<EntityId>,
     clock: qa_gameplay::rules::FrameClock,
     physics: Option<QwPhysics>,
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
@@ -519,7 +523,19 @@ impl FrameHost {
                     vm.bind_player_values(&values.stats, &values.persistent)
                         .map_err(|e| format!("module player values: {e:?}"))?;
                 }
-                Program::QuakeC(_) => {}
+                Program::QuakeC(qc) => {
+                    if request.context.native_rules == RuleSetId::QuakeWorld {
+                        qc.vm
+                            .bind_player_values(&values.stats)
+                            .map_err(|e| format!("module player values: {e:?}"))?;
+                        qc.vm
+                            .bind_client_settings(
+                                &host.console.cvars,
+                                &host.runtime.catalog.registry,
+                            )
+                            .map_err(|e| format!("module client settings: {e:?}"))?;
+                    }
+                }
             }
             let state = if !request.prepare.is_empty()
                 || !request.initialize.is_empty()
@@ -561,13 +577,29 @@ impl FrameHost {
                 None
             };
             let consumes_server_commands = request.program.consumes_server_commands();
+            let client_lifecycle = match &request.program {
+                Program::QuakeC(qc) if request.context.native_rules == RuleSetId::QuakeWorld => {
+                    Some(ClientLifecycle::quakeworld(
+                        request.context.module,
+                        qc.vm
+                            .client_count()
+                            .map_err(|e| format!("module client reservation: {e:?}"))?,
+                    ))
+                }
+                _ => None,
+            };
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),
                 unknown: UnknownCalls::load(256).map_err(|e| e.to_string())?,
                 counts: Counts::default(),
                 state,
-                client_api: None,
+                client_lifecycle,
+                client_batch: None,
+                client_contacts: qa_core::stamps::StampSet::new(
+                    host.runtime.server.entities.capacity(),
+                ),
+                client_triggers: Vec::with_capacity(host.runtime.server.entities.capacity()),
                 client_connection,
                 consumes_server_commands,
                 clock,
@@ -1178,6 +1210,13 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
             command,
             ..
         } => (time, arguments, client, command),
+        CallbackCall::Client {
+            time,
+            arguments,
+            client,
+            command,
+            ..
+        } => (time, arguments, Some(client), command),
         _ => return false,
     };
     let Some((row, storage)) = host
@@ -1310,11 +1349,18 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         _ => quakec::CallPhase::Export,
     };
     let think = phase == quakec::CallPhase::Think;
-    let (CallbackCall::Think { entity, time }
-    | CallbackCall::Spawn { entity, time }
-    | CallbackCall::Export { entity, time, .. }) = call
-    else {
-        return false;
+    let (entity, time) = match call {
+        CallbackCall::Think { entity, time }
+        | CallbackCall::Spawn { entity, time }
+        | CallbackCall::Export { entity, time, .. }
+        | CallbackCall::Client { entity, time, .. } => (entity, time),
+        CallbackCall::Touch { entity, time, .. } => {
+            let Some(row) = host.module_row(module) else {
+                return false;
+            };
+            (entity, time.unwrap_or_else(|| row.time(host.time)))
+        }
+        _ => return false,
     };
     let Some((row, storage)) = host
         .modules
@@ -1331,7 +1377,23 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     };
     let native = native_self(&host.runtime, entity, module, &qc.vm);
     let world = native_self(&host.runtime, row.request.anchor, module, &qc.vm);
-    if qc.vm.prepare_call(native, world, time, phase).is_err() {
+    let prepared = match call {
+        CallbackCall::Client { event, .. } => native
+            .ok_or(qa_compat::services::CallError::Entity)
+            .and_then(|native| qc.vm.prepare_client_call(event, native, time)),
+        CallbackCall::Touch { other, time, .. } => {
+            let other = native_self(&host.runtime, other, module, &qc.vm);
+            native
+                .zip(other)
+                .ok_or(qa_compat::services::CallError::Entity)
+                .and_then(|(native, other)| qc.vm.prepare_touch_call(native, other, time))
+        }
+        _ => qc
+            .vm
+            .prepare_call(native, world, time, phase)
+            .map_err(|_| qa_compat::services::CallError::Memory),
+    };
+    if prepared.is_err() {
         return false;
     }
     let mut services = host

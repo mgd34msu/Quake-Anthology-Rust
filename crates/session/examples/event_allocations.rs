@@ -25,6 +25,12 @@ impl EventConsumer for Consumer {
             FrameEvent::Hud(event) => {
                 std::hint::black_box(event);
             }
+            FrameEvent::PlayerValue { id, value } => {
+                std::hint::black_box((id, value));
+            }
+            FrameEvent::SetAngles(angles) => {
+                std::hint::black_box(angles);
+            }
             FrameEvent::Sound(event) => {
                 std::hint::black_box(event);
                 self.counts[0] += 1;

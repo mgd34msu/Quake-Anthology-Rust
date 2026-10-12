@@ -12,7 +12,7 @@ use qa_formats::{
 
 pub(super) struct MapGlobals {
     map_name: Option<usize>,
-    server_flags: Option<usize>,
+    pub(super) server_flags: Option<usize>,
 }
 impl MapGlobals {
     pub(super) fn load(image: &Image) -> Self {

@@ -2494,7 +2494,10 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 host.console.cvars.force_write(maxclients, "2").unwrap();
             }
             host.initialize_modules(Phase::Server);
-            let result = host.connect_q2_client(&api, id, b"\\name\\NativeClient");
+            let result = {
+                host.register_q2_client_api(api).unwrap();
+                host.connect_module_client(api.module, id, b"\\name\\NativeClient")
+            };
             assert_eq!(
                 result.is_ok(),
                 admitted,
@@ -2540,7 +2543,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 let mut invalid_api = api;
                 invalid_api.module = ModuleId(2);
                 let error = host
-                    .think_q2_client(&invalid_api, id, &Default::default(), 0)
+                    .run_module_client_command(invalid_api.module, id, &Default::default(), 0)
                     .unwrap_err();
                 assert_eq!(
                     error_text(error).as_str(),
@@ -2548,16 +2551,12 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 );
                 let mut invalid_api = api;
                 invalid_api.usercmd = u64::MAX;
-                let error = host
-                    .think_q2_client(&invalid_api, id, &Default::default(), 0)
-                    .unwrap_err();
-                assert_eq!(error_text(error).as_str(), "native usercmd: Memory");
+                let error = host.register_q2_client_api(invalid_api).unwrap_err();
+                assert_eq!(error, "client lifecycle already registered differently");
                 let mut invalid_api = api;
                 invalid_api.think = CallbackId(u32::MAX);
-                let error = host
-                    .think_q2_client(&invalid_api, id, &Default::default(), 0)
-                    .unwrap_err();
-                assert_eq!(error_text(error).as_str(), "ClientThink: MissingFunction");
+                let error = host.register_q2_client_api(invalid_api).unwrap_err();
+                assert_eq!(error, "client lifecycle already registered differently");
                 assert_eq!(host.module_counts(api.module).unwrap().calls, before);
                 for command in [
                     qa_core::primitives::UserCmd {
@@ -2577,7 +2576,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 .enumerate()
                 {
                     let (index, command) = command;
-                    host.think_q2_client(&api, id, &command, 0xfedcba98)
+                    host.run_module_client_command(api.module, id, &command, 0xfedcba98)
                         .unwrap();
                     let client = &host.runtime.server.clients[id.0 as usize];
                     assert_eq!(client.player.body.position, body.position);
@@ -2628,7 +2627,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             host.shutdown_modules();
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
             let error = host
-                .think_q2_client(&api, id, &Default::default(), 0)
+                .run_module_client_command(api.module, id, &Default::default(), 0)
                 .unwrap_err();
             assert_eq!(
                 error_text(error).as_str(),

@@ -7,6 +7,7 @@ use qa_core::primitives::{PrintKind, RuleSetId};
 
 mod configstrings;
 mod cues;
+mod player_values;
 mod static_entities;
 pub use configstrings::{
     ConfigChunk, ConfigCommandReader, ConfigCommandStep, ConfigString, config_command,
@@ -14,6 +15,10 @@ pub use configstrings::{
 };
 use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
+pub use player_values::{
+    PLAYER_VALUE_SLOTS, player_value, read_player_value, read_set_angles, separate_player_values,
+    set_angles,
+};
 pub use static_entities::{STATIC_ENTITY_BYTES, read_static_entity, static_entity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -247,6 +247,20 @@ pub struct AliasRoll {
     pub angle: f32,
     pub speed: f32,
 }
+impl AliasRoll {
+    /// Native QW V_CalcRoll, shared by server command and client presentation.
+    pub fn calculate(self, angles: Vec3, velocity: Vec3) -> f32 {
+        let side = velocity.dot(math::angle_vectors(angles).right);
+        let sign = if side < 0.0 { -1.0 } else { 1.0 };
+        let magnitude = side.abs();
+        let side = if magnitude < self.speed {
+            magnitude * self.angle / self.speed
+        } else {
+            self.angle
+        };
+        side * sign
+    }
+}
 /// Convert native command angles into body angles before model presentation.
 /// QW playerinfo contains command angles; packetentities contain body angles.
 impl AppearancePolicy {
@@ -261,15 +275,7 @@ impl AppearancePolicy {
             // QW CL_LinkPlayers and V_CalcRoll retain their native operation order.
             angles.0[0] = -angles.0[0] / 3.0;
             angles.0[2] = 0.0;
-            let side = velocity.dot(math::angle_vectors(angles).right);
-            let sign = if side < 0.0 { -1.0 } else { 1.0 };
-            let magnitude = side.abs();
-            let side = if magnitude < roll.speed {
-                magnitude * roll.angle / roll.speed
-            } else {
-                roll.angle
-            };
-            angles.0[2] = (side * sign) * 4.0;
+            angles.0[2] = roll.calculate(angles, velocity) * 4.0;
         }
         angles
     }

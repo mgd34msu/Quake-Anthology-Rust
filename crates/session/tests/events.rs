@@ -16,6 +16,14 @@ impl EventConsumer for Consumer {
             FrameEvent::Effect(e) => e.effect.0,
             FrameEvent::Native(_) => u32::from(record.delivery.unwrap().module.0),
             FrameEvent::Hud(event) => event.client.0,
+            FrameEvent::PlayerValue { id, value } => {
+                assert_eq!(value, NumericValue::integer(17));
+                id.0
+            }
+            FrameEvent::SetAngles(angles) => {
+                assert_eq!(angles, Vec3([5.0, 90.0, -45.0]));
+                5
+            }
             FrameEvent::Print(p) => {
                 assert_eq!(texts.get(p.text), Some(b"message".as_slice()));
                 2
@@ -53,14 +61,21 @@ fn independent_module_dispatch_routes_all_types_once_and_retires_only_after_both
         count: 20,
     }))
     .unwrap();
+    ring.push(FrameEvent::PlayerValue {
+        id: ValueId(4),
+        value: NumericValue::integer(17),
+    })
+    .unwrap();
+    ring.push(FrameEvent::SetAngles(Vec3([5.0, 90.0, -45.0])))
+        .unwrap();
     let mut a = Consumer::default();
     let mut b = Consumer::default();
     dispatch_consumer(&mut ring, first, &mut a);
-    assert_eq!(a.events, [1, 2, 3]);
-    assert_eq!(ring.len(), 3);
+    assert_eq!(a.events, [1, 2, 3, 4, 5]);
+    assert_eq!(ring.len(), 5);
     dispatch_consumer(&mut ring, first, &mut a);
-    assert_eq!(a.events, [1, 2, 3]);
+    assert_eq!(a.events, [1, 2, 3, 4, 5]);
     dispatch_consumer(&mut ring, second, &mut b);
-    assert_eq!(b.events, [1, 2, 3]);
+    assert_eq!(b.events, [1, 2, 3, 4, 5]);
     assert!(ring.is_empty());
 }

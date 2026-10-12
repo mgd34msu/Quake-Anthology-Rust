@@ -85,6 +85,11 @@ pub enum Incoming<'a> {
     },
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
     PlayerInfo(crate::states::QwPlayerInfo),
+    PlayerValue {
+        index: u8,
+        value: i32,
+    },
+    SetAngles(qa_core::primitives::Vec3),
     Print(crate::outputs::Print<'a>),
     ConfigString(crate::outputs::ConfigString<'a>),
     StaticEntity(qa_core::primitives::EntityRecord),
@@ -92,6 +97,10 @@ pub enum Incoming<'a> {
         cue: crate::outputs::Cue,
         current: Option<crate::snapshots::ReceivedFrame<'a>>,
     },
+    /// One accepted QW move record, including all admitted loss recovery.
+    MoveBegin,
+    /// Completion is omitted if the synchronous consumer stops the batch.
+    MoveEnd,
     Command {
         command: qa_core::primitives::UserCmd,
         /// Q3's byte ordinal is mapped through the registry before execution.

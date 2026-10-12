@@ -1,9 +1,159 @@
 //! Client lifecycle exports use the same session table as provider callbacks.
-use super::{Export, FrameHost, ModuleResult, Program, Q2Clients, State};
+use super::{FrameHost, ModuleResult, Program, Q2Clients, State};
 use qa_core::primitives::{
-    ClientId, ModuleId, NativeEntity, SnapshotObservation, ThinkTime, UserCmd, Vec3,
+    CallbackCall, CallbackId, ClientCallback, ClientId, CommandArgs, ModuleId, NativeEntity,
+    RuleSetId, SnapshotObservation, ThinkTime, UserCmd, Vec3,
 };
 use std::fmt;
+
+mod quakec;
+
+/// Cold ABI metadata, independent of a client's wire, movement and trace roles.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientLifecycleInfo {
+    pub module: ModuleId,
+    pub rules: RuleSetId,
+    pub userinfo_bytes: usize,
+    pub clients: usize,
+    pub separate_values: bool,
+}
+#[derive(Clone, Copy)]
+pub(super) struct ClientLifecycle {
+    info: ClientLifecycleInfo,
+    q2: Option<Q2Clients>,
+    connect: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<u32, String>,
+    command:
+        fn(&mut FrameHost, ModuleId, ClientId, &UserCmd, u32) -> Result<(), ClientCommandError>,
+    finish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
+    disconnect: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
+    text: fn(&mut FrameHost, ModuleId, ClientId, CommandArgs<'_>) -> Result<(), ClientCommandError>,
+    userinfo: fn(&mut FrameHost, ModuleId, ClientId, &[u8]) -> Result<(), ClientCommandError>,
+    publish: fn(&mut FrameHost, ModuleId, ClientId) -> Result<(), ClientCommandError>,
+}
+impl ClientLifecycle {
+    pub(super) fn quakeworld(module: ModuleId, clients: usize) -> Self {
+        Self {
+            info: ClientLifecycleInfo {
+                module,
+                rules: RuleSetId::QuakeWorld,
+                userinfo_bytes: qa_compat::quakec::QW_USERINFO_BYTES,
+                clients,
+                separate_values: true,
+            },
+            q2: None,
+            connect: quakec::connect,
+            command: quakec::command,
+            finish: quakec::finish,
+            disconnect: quakec::disconnect,
+            text: quakec::text,
+            userinfo: quakec::userinfo,
+            publish: quakec::publish,
+        }
+    }
+    fn q2(api: Q2Clients, clients: usize) -> Self {
+        Self {
+            info: ClientLifecycleInfo {
+                module: api.module,
+                rules: api.rules,
+                userinfo_bytes: api.abi.userinfo_bytes,
+                clients,
+                separate_values: false,
+            },
+            q2: Some(api),
+            connect: q2_connect,
+            command: q2_command,
+            finish: no_finish,
+            disconnect: q2_disconnect,
+            text: q2_text,
+            userinfo: q2_userinfo,
+            publish: no_finish,
+        }
+    }
+}
+fn no_finish(_: &mut FrameHost, _: ModuleId, _: ClientId) -> Result<(), ClientCommandError> {
+    Ok(())
+}
+fn q2_api(host: &FrameHost, module: ModuleId) -> Result<Q2Clients, ClientCommandError> {
+    host.module_row(module)
+        .and_then(|row| row.client_lifecycle)
+        .and_then(|table| table.q2)
+        .ok_or(ClientCommandError::Inactive)
+}
+fn q2_connect(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    text: &[u8],
+) -> Result<u32, String> {
+    let api = q2_api(host, module).map_err(|e| e.to_string())?;
+    host.connect_q2_data(&api, id, text)
+}
+fn q2_command(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    command: &UserCmd,
+    frame: u32,
+) -> Result<(), ClientCommandError> {
+    host.think_q2_client(&q2_api(host, module)?, id, command, frame)
+}
+fn q2_disconnect(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+) -> Result<(), ClientCommandError> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let api = q2_api(host, module)?;
+        let (_, address, time) = host.module_client(id)?;
+        host.invoke_client(
+            id,
+            api.disconnect,
+            ClientCallback::Disconnect,
+            time,
+            &[address],
+            CommandArgs::default(),
+        )
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = (host, module, id);
+        Err(ClientCommandError::Unsupported)
+    }
+}
+fn q2_text(
+    host: &mut FrameHost,
+    module: ModuleId,
+    id: ClientId,
+    command: CommandArgs<'_>,
+) -> Result<(), ClientCommandError> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let api = q2_api(host, module)?;
+        let (_, address, time) = host.module_client(id)?;
+        host.invoke_client(
+            id,
+            api.command,
+            ClientCallback::Command,
+            time,
+            &[address],
+            command,
+        )
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = (host, module, id, command);
+        Err(ClientCommandError::Unsupported)
+    }
+}
+fn q2_userinfo(
+    host: &mut FrameHost,
+    _: ModuleId,
+    id: ClientId,
+    text: &[u8],
+) -> Result<(), ClientCommandError> {
+    host.userinfo_q2_client(id, text)
+}
 
 #[derive(Debug)]
 pub enum ClientCommandError {
@@ -47,6 +197,176 @@ impl fmt::Display for ClientCommandError {
 impl std::error::Error for ClientCommandError {}
 
 impl FrameHost {
+    /// Install a native table once after load. This caches the frozen native limit.
+    pub fn register_q2_client_api(&mut self, api: Q2Clients) -> Result<(), String> {
+        let modules = self.modules.as_mut().ok_or("missing client module")?;
+        let limit = modules
+            .storage
+            .max_clients(&self.console.cvars, api.rules)
+            .clamp(0, 256) as usize;
+        let row = modules.row_mut(api.module).ok_or("missing client module")?;
+        if let Some(existing) = row.client_lifecycle {
+            let unchanged = existing.q2.is_some_and(|previous| {
+                previous.module == api.module
+                    && previous.rules == api.rules
+                    && previous.usercmd == api.usercmd
+                    && previous.userinfo == api.userinfo
+                    && previous.connect == api.connect
+                    && previous.begin == api.begin
+                    && previous.disconnect == api.disconnect
+                    && previous.think == api.think
+                    && previous.command == api.command
+                    && previous.userinfo_changed == api.userinfo_changed
+                    && previous.social == api.social
+                    && std::ptr::eq(previous.abi, api.abi)
+            });
+            return if unchanged {
+                Ok(())
+            } else {
+                Err("client lifecycle already registered differently".into())
+            };
+        }
+        row.client_lifecycle = Some(ClientLifecycle::q2(api, limit));
+        Ok(())
+    }
+    pub fn client_info(&self, module: ModuleId) -> Option<ClientLifecycleInfo> {
+        Some(self.module_row(module)?.client_lifecycle?.info)
+    }
+    pub fn connect_module_client(
+        &mut self,
+        module: ModuleId,
+        id: ClientId,
+        userinfo: &[u8],
+    ) -> Result<u32, String> {
+        let table = self
+            .module_row(module)
+            .and_then(|row| row.client_lifecycle)
+            .ok_or("module has no supported client lifecycle")?;
+        (table.connect)(self, module, id, userinfo)
+    }
+    pub fn run_module_client_command(
+        &mut self,
+        module: ModuleId,
+        id: ClientId,
+        command: &UserCmd,
+        frame: u32,
+    ) -> Result<(), ClientCommandError> {
+        let native = self
+            .runtime
+            .server
+            .module_moves(id)
+            .ok_or(ClientCommandError::NoMovementBinding)?;
+        if native.module != module {
+            return Err(ClientCommandError::DifferentModule);
+        }
+        let table = self
+            .module_row(module)
+            .and_then(|row| row.client_lifecycle)
+            .ok_or(ClientCommandError::Inactive)?;
+        let implicit = self
+            .module_row(module)
+            .is_some_and(|row| row.client_batch.is_none());
+        if implicit {
+            self.begin_command_batch(id);
+        }
+        let result = (table.command)(self, module, id, command, frame);
+        if implicit {
+            if result.is_ok() {
+                self.end_command_batch(id);
+            } else if let Some(row) = self.module_row_mut(module) {
+                row.client_batch = None;
+            }
+        }
+        result
+    }
+    pub(crate) fn begin_command_batch(&mut self, id: ClientId) {
+        let Some(native) = self.runtime.server.module_moves(id) else {
+            return;
+        };
+        let Some(row) = self.module_row_mut(native.module) else {
+            return;
+        };
+        if row.client_batch == Some(id) {
+            return;
+        }
+        if row.client_batch.is_some() {
+            row.counts.rejected += 1;
+            return;
+        }
+        row.client_contacts.begin();
+        row.client_batch = Some(id);
+    }
+    pub(crate) fn end_command_batch(&mut self, id: ClientId) {
+        let Some(native) = self.runtime.server.module_moves(id) else {
+            return;
+        };
+        let table = self
+            .module_row(native.module)
+            .filter(|row| row.client_batch == Some(id))
+            .and_then(|row| row.client_lifecycle);
+        if let Some(table) = table {
+            if (table.finish)(self, native.module, id).is_err() {
+                self.disconnect_client(id);
+            }
+            if let Some(row) = self.module_row_mut(native.module) {
+                row.client_batch = None;
+            }
+        }
+    }
+    pub(crate) fn publish_module_client_state(&mut self) {
+        for slot in 0..self.runtime.server.clients.len() {
+            let id = ClientId(slot as u32);
+            let Some(native) = self.runtime.server.module_moves(id) else {
+                continue;
+            };
+            let Some(table) = self
+                .module_row(native.module)
+                .filter(|row| row.state == State::Running)
+                .and_then(|row| row.client_lifecycle)
+            else {
+                continue;
+            };
+            if (table.publish)(self, native.module, id).is_err() {
+                if let Some(row) = self.module_row_mut(native.module) {
+                    row.counts.rejected += 1;
+                }
+            }
+        }
+    }
+    fn invoke_client(
+        &mut self,
+        id: ClientId,
+        callback: CallbackId,
+        event: ClientCallback,
+        time: ThinkTime,
+        words: &[u64],
+        command: CommandArgs<'_>,
+    ) -> Result<(), ClientCommandError> {
+        let client = self
+            .runtime
+            .server
+            .clients
+            .get(id.0 as usize)
+            .filter(|client| client.connection.is_some())
+            .ok_or(ClientCommandError::Inactive)?;
+        let entity = client.entity;
+        let mut arguments = [0; 9];
+        for (to, from) in arguments.iter_mut().zip(words) {
+            *to = *from;
+        }
+        self.call_module(
+            callback,
+            CallbackCall::Client {
+                entity,
+                client: id,
+                event,
+                time,
+                arguments,
+                command,
+            },
+        )
+        .map_err(ClientCommandError::Dispatch)
+    }
     /// Called once for every command admitted by the native channel. Modules
     /// never share the engine's deferred movement pass with their ClientThink.
     pub(crate) fn received_command(
@@ -59,7 +379,9 @@ impl FrameHost {
         let rules = self.runtime.server.clients[id.0 as usize]
             .player
             .movement_rules;
-        let command = if execution == qa_network::commands::packet::CommandExecution::PerCommand {
+        let command = if execution == qa_network::commands::packet::CommandExecution::PerCommand
+            && self.runtime.server.module_moves(id).is_none()
+        {
             qa_movement::prepare_command(rules, command)
         } else {
             command
@@ -91,9 +413,8 @@ impl FrameHost {
             let Some((command, observation)) = self.runtime.server.take_pending_command(id) else {
                 return;
             };
-            let bound = self.module_row(native.module).and_then(|row| {
-                let api = row.client_api?;
-                let frame = observation
+            let bound = self.module_row(native.module).map(|row| {
+                observation
                     .filter(|_| {
                         self.runtime
                             .server
@@ -102,17 +423,18 @@ impl FrameHost {
                             .is_some()
                     })
                     .and_then(|source| source.frame_for(native.module, row.request.anchor))
-                    .unwrap_or(0);
-                Some((api, frame))
+                    .unwrap_or(0)
             });
-            if let Some((api, frame)) = bound
-                && let Err(error) = self.think_q2_client(&api, id, &command, frame)
-            {
-                let _ = self
-                    .runtime
-                    .server
-                    .events
-                    .console_formatted(format_args!("ClientThink: {error}\n"));
+            if let Some(frame) = bound {
+                let result = self.run_module_client_command(native.module, id, &command, frame);
+                if let Err(error) = result {
+                    let _ = self
+                        .runtime
+                        .server
+                        .events
+                        .console_formatted(format_args!("ClientThink: {error}\n"));
+                    self.disconnect_client(id);
+                }
             }
         } else if let Some(world) = &mut self.runtime.collision {
             let player = &mut self.runtime.server.clients[id.0 as usize].player;
@@ -149,7 +471,7 @@ impl FrameHost {
     ) -> Option<SnapshotObservation> {
         let native = self.runtime.server.module_moves(id)?;
         let row = self.module_row(native.module)?;
-        row.client_api?;
+        row.client_lifecycle?;
         if row.state != State::Running
             || self
                 .runtime
@@ -169,7 +491,7 @@ impl FrameHost {
     }
     /// Native client numbers are supplied by the connection boundary. They are
     /// unrelated to the common entity slot or the player's movement rules.
-    pub fn connect_q2_client(
+    fn connect_q2_data(
         &mut self,
         api: &Q2Clients,
         id: ClientId,
@@ -190,15 +512,13 @@ impl FrameHost {
                 return Err("client module unavailable or native slot out of range".into());
             }
             let maxclients = self
-                .modules
-                .as_ref()
-                .ok_or("missing client module")?
-                .storage
-                .max_clients(&self.console.cvars, row.request.context.native_rules);
-            if native_client >= maxclients.max(0) as u32 {
+                .client_info(api.module)
+                .ok_or("missing client lifecycle")?
+                .clients;
+            if native_client as usize >= maxclients {
                 return Err("native client outside module maxclients".into());
             }
-            self.runtime.native_numbers[id.0 as usize].set_native_clients(maxclients.max(0) as u32);
+            self.runtime.native_numbers[id.0 as usize].set_native_clients(maxclients as u32);
             let native = NativeEntity {
                 module: api.module,
                 slot: (native_client + 1) as i32,
@@ -228,10 +548,13 @@ impl FrameHost {
                 memory
                     .write_string(api.userinfo, api.abi.userinfo_bytes, userinfo)
                     .map_err(|e| format!("native userinfo: {e:?}"))?;
-                self.call_module_export(
-                    api.module,
-                    Export::words(api.connect, &[address, api.userinfo, api.social, 0]),
+                self.invoke_client(
+                    id,
+                    api.connect,
+                    ClientCallback::Connect,
                     time,
+                    &[address, api.userinfo, api.social, 0],
+                    CommandArgs::default(),
                 )
                 .map_err(|e| format!("ClientConnect: {e:?}"))?;
                 if !self
@@ -243,13 +566,20 @@ impl FrameHost {
                 {
                     return Err("native ClientConnect rejected this client".into());
                 }
-                self.module_row_mut(api.module)
-                    .ok_or("missing client module")?
-                    .client_api = Some(*api);
-                self.runtime.server.clients[id.0 as usize].module_movement = true;
                 accepted = true;
-                self.call_module_export(api.module, Export::words(api.begin, &[address]), time)
-                    .map_err(|e| format!("ClientBegin: {e:?}"))?;
+                // The successful ClientBegin return publishes native pmove and
+                // edict bounds through the existing owned-client projection.
+                // Failure below disconnects and clears this admission.
+                self.runtime.server.clients[id.0 as usize].module_movement = true;
+                self.invoke_client(
+                    id,
+                    api.begin,
+                    ClientCallback::Begin,
+                    time,
+                    &[address],
+                    CommandArgs::default(),
+                )
+                .map_err(|e| format!("ClientBegin: {e:?}"))?;
                 // Q2 ClientBegin owns spawn facing through ps.pmove.delta_angles.
                 // Like CL_ClearState, begin with zero command angles rather
                 // than adding the walk-through host's map-facing seed again.
@@ -260,10 +590,16 @@ impl FrameHost {
             })();
             if result.is_err() {
                 if accepted {
-                    self.disconnect_client(id);
-                } else {
-                    self.runtime.disconnect_client(id);
+                    let _ = self.invoke_client(
+                        id,
+                        api.disconnect,
+                        ClientCallback::Disconnect,
+                        time,
+                        &[address],
+                        CommandArgs::default(),
+                    );
                 }
+                self.disconnect_client(id);
             }
             result
         }
@@ -277,7 +613,7 @@ impl FrameHost {
     /// `server_frame` is the owning native frame retained with the client's
     /// acknowledged submitted snapshot, never its raw protocol frame number.
     /// Dispatch does not also run the host's authoritative movement entry.
-    pub fn think_q2_client(
+    fn think_q2_client(
         &mut self,
         api: &Q2Clients,
         id: ClientId,
@@ -294,10 +630,14 @@ impl FrameHost {
             api.abi
                 .write_command(&mut memory, api.usercmd, command, server_frame)
                 .map_err(ClientCommandError::Usercmd)?;
-            let mut export = Export::words(api.think, &[address, api.usercmd]);
-            export.client = Some(id);
-            self.call_module_export(api.module, export, time)
-                .map_err(ClientCommandError::Dispatch)
+            self.invoke_client(
+                id,
+                api.think,
+                ClientCallback::BeforeMove,
+                time,
+                &[address, api.usercmd],
+                CommandArgs::default(),
+            )
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
@@ -320,7 +660,10 @@ impl FrameHost {
             .server
             .module_moves(id)
             .and_then(|native| self.module_row(native.module))
-            .and_then(|row| row.client_api.map(|api| (api, row.request.context.console)));
+            .and_then(|row| {
+                row.client_lifecycle
+                    .map(|table| (table, row.request.context.console))
+            });
         let context = api.map_or(
             qa_console::views::Context {
                 source: rules,
@@ -362,56 +705,61 @@ impl FrameHost {
             let Some((api, _)) = api else {
                 return Ok(std::ops::ControlFlow::Continue(()));
             };
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            {
-                let (native, address, time) = self.module_client(id)?;
-                let mut argv = [&[][..]; 1024];
-                for (to, from) in argv.iter_mut().zip(args.iter_bytes()) {
-                    *to = from;
-                }
-                let mut export = Export::words(api.command, &[address]);
-                export.client = Some(id);
-                self.call_module_command(
-                    native.module,
-                    export,
-                    time,
-                    qa_core::primitives::CommandArgs {
-                        argv: &argv[..args.len()],
-                        raw: args.raw_bytes(),
-                    },
-                )
-                .map_err(ClientCommandError::Dispatch)?;
-                Ok(std::ops::ControlFlow::Continue(()))
+            let mut argv = [&[][..]; 1024];
+            for (to, from) in argv.iter_mut().zip(args.iter_bytes()) {
+                *to = from;
             }
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-            {
-                let _ = api;
-                Err(ClientCommandError::Unsupported)
-            }
+            (api.text)(
+                self,
+                api.info.module,
+                id,
+                CommandArgs {
+                    argv: &argv[..args.len()],
+                    raw: args.raw_bytes(),
+                },
+            )?;
+            Ok(std::ops::ControlFlow::Continue(()))
         })();
         self.command_tokens = tokens;
         result
     }
 
-    pub fn userinfo_q2_client(
+    pub fn userinfo_module_client(
         &mut self,
         id: ClientId,
         text: &[u8],
     ) -> Result<(), ClientCommandError> {
+        let native = self
+            .runtime
+            .server
+            .module_moves(id)
+            .ok_or(ClientCommandError::NoMovementBinding)?;
+        let table = self
+            .module_row(native.module)
+            .and_then(|row| row.client_lifecycle)
+            .ok_or(ClientCommandError::Inactive)?;
+        (table.userinfo)(self, native.module, id, text)
+    }
+    fn userinfo_q2_client(&mut self, id: ClientId, text: &[u8]) -> Result<(), ClientCommandError> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             let (native, address, time) = self.module_client(id)?;
             let api = self
                 .module_row(native.module)
-                .and_then(|row| row.client_api)
+                .and_then(|row| row.client_lifecycle)
+                .and_then(|table| table.q2)
                 .ok_or(ClientCommandError::Inactive)?;
             self.native_memory(native.module)?
                 .write_string(api.userinfo, api.abi.userinfo_bytes, text)
                 .map_err(|error| ClientCommandError::Usercmd(error.into()))?;
-            let mut export = Export::words(api.userinfo_changed, &[address, api.userinfo]);
-            export.client = Some(id);
-            self.call_module_export(native.module, export, time)
-                .map_err(ClientCommandError::Dispatch)
+            self.invoke_client(
+                id,
+                api.userinfo_changed,
+                ClientCallback::UserinfoChanged,
+                time,
+                &[address, api.userinfo],
+                CommandArgs::default(),
+            )
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
@@ -432,7 +780,7 @@ impl FrameHost {
         let row = self
             .module_row(native.module)
             .ok_or(ClientCommandError::MissingModule)?;
-        if row.state != State::Running || row.client_api.is_none() {
+        if row.state != State::Running || row.client_lifecycle.is_none() {
             return Err(ClientCommandError::Inactive);
         }
         let slot = u32::try_from(native.slot).map_err(|_| ClientCommandError::InvalidSlot)?;
@@ -461,7 +809,7 @@ impl FrameHost {
         let row = self
             .module_row(module)
             .ok_or(ClientCommandError::MissingModule)?;
-        let time = row.request.context.clock.at(self.time);
+        let time = row.time(self.time);
         let table = self
             .native_entities(module)
             .map_err(ClientCommandError::Table)?;
@@ -504,18 +852,18 @@ impl FrameHost {
     pub(crate) fn disconnect_client(&mut self, id: ClientId) {
         // Only clients admitted through this lifecycle have a disconnect entry.
         // Failed modules still release those clients without re-entering them.
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        if let Some(callback) = self
-            .runtime
-            .server
-            .clients
-            .get(id.0 as usize)
-            .and_then(|client| self.module_row(client.module))
-            .and_then(|row| row.client_api.map(|api| api.disconnect))
-            && let Ok((native, address, time)) = self.module_client(id)
+        if let Some(native) = self.runtime.server.module_moves(id)
+            && let Some(table) = self
+                .module_row(native.module)
+                .filter(|row| row.state == State::Running)
+                .and_then(|row| row.client_lifecycle)
         {
-            let _ =
-                self.call_module_export(native.module, Export::words(callback, &[address]), time);
+            let _ = (table.disconnect)(self, native.module, id);
+            if let Some(row) = self.module_row_mut(native.module) {
+                if row.client_batch == Some(id) {
+                    row.client_batch = None;
+                }
+            }
         }
         self.runtime.disconnect_client(id);
         for local in &mut self.local_clients {

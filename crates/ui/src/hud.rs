@@ -2,7 +2,7 @@ use qa_core::events::TextStore;
 use qa_core::primitives::{
     HudChange, HudLine, HudState, ItemId, NameId, PlayerState, PrintEvent, PrintKind,
 };
-use qa_gameplay::registry::Registry;
+use qa_gameplay::registry::{NativePlayerBindings, Registry};
 
 #[derive(Clone, Copy)]
 struct WeaponBinding {
@@ -14,6 +14,7 @@ pub struct HudBindings {
     pub values: crate::values::ValueLayout,
     weapons: Box<[Option<WeaponBinding>]>,
     items: usize,
+    native_players: Box<[Option<NativePlayerBindings>; 5]>,
 }
 
 impl HudBindings {
@@ -31,6 +32,10 @@ impl HudBindings {
             values,
             weapons,
             items: registry.items.len() + 1,
+            native_players: Box::new(
+                qa_core::primitives::RuleSetId::ALL
+                    .map(|rules| NativePlayerBindings::load(rules, registry)),
+            ),
         })
     }
 
@@ -54,6 +59,32 @@ impl HudBindings {
         state.armor_type = player.armor_type;
         state.frags = player.frags;
         state.score = player.score;
+    }
+    /// Queued native stat receipt updates the one CLIENT player before HUD reads.
+    pub fn import_native_stat(
+        &self,
+        rules: qa_core::primitives::RuleSetId,
+        client: qa_core::primitives::ClientId,
+        index: usize,
+        bits: u32,
+        player: &mut PlayerState,
+        time: qa_core::sys_events::EventTime,
+    ) -> bool {
+        let Some(binding) = self.values.native(rules).stats.get(index).copied() else {
+            return false;
+        };
+        if let Some(native) = self.native_players[rules as usize].as_ref() {
+            native.import(
+                Some(binding),
+                qa_core::primitives::ResourceNamespace::Client(client),
+                index,
+                bits,
+                player,
+                time,
+            )
+        } else {
+            binding.import(&mut player.values, bits)
+        }
     }
     pub fn apply(&self, state: &mut HudState, change: HudChange) -> bool {
         if !state.inventory.apply(change) {

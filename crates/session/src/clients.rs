@@ -43,6 +43,9 @@ pub struct Client {
     pub command: UserCmd,
     pub command_execution: CommandExecution,
     pub command_observation: Option<SnapshotObservation>,
+    /// Raw native connect parameters, retained on the canonical client slot.
+    pub module_spawn_parms: [u32; 16],
+    pub value_publication: qa_core::primitives::ValueBank,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
     pub audio_retirement: Option<AudioRetirement>,
@@ -60,6 +63,8 @@ impl Client {
         self.command = UserCmd::default();
         self.command_execution = CommandExecution::default();
         self.command_observation = None;
+        self.module_spawn_parms = [0; 16];
+        self.value_publication.clear();
         self.command_pending = false;
         self.module_movement = false;
         self.intent = CommandIntent::default();
@@ -137,6 +142,8 @@ impl Server {
                 command: UserCmd::default(),
                 command_execution: CommandExecution::default(),
                 command_observation: None,
+                module_spawn_parms: [0; 16],
+                value_publication: qa_core::primitives::ValueBank::load(values),
                 intent: CommandIntent::default(),
                 command_pending: false,
                 module_movement: false,
@@ -292,20 +299,26 @@ impl Server {
         mut policy: impl FnMut(RuleSetId) -> qa_input::InputPolicy,
     ) {
         let duration = EventTime(end.since(start));
-        for client in self.clients.iter_mut() {
-            if client.connection == Some(Connection::Bot) {
-                let command = qa_input::UserCmdBuilder::build(
-                    duration,
-                    end,
-                    client.intent,
-                    policy(client.player.movement_rules),
-                );
-                client.command =
-                    qa_movement::prepare_command(client.player.movement_rules, command);
-                client.command_execution = CommandExecution::PerCommand;
-                client.command_observation = None;
-                client.command_pending = true;
+        for slot in 0..self.clients.len() {
+            if self.clients[slot].connection != Some(Connection::Bot) {
+                continue;
             }
+            let module_moves = self.module_moves(ClientId(slot as u32)).is_some();
+            let client = &mut self.clients[slot];
+            let command = qa_input::UserCmdBuilder::build(
+                duration,
+                end,
+                client.intent,
+                policy(client.player.movement_rules),
+            );
+            client.command = if module_moves {
+                command
+            } else {
+                qa_movement::prepare_command(client.player.movement_rules, command)
+            };
+            client.command_execution = CommandExecution::PerCommand;
+            client.command_observation = None;
+            client.command_pending = true;
         }
     }
 
@@ -333,6 +346,7 @@ impl Server {
     /// Frame-latest wire commands have no msec field. Resolve them against the
     /// queued SERVER frame which consumes them, never a packet-arrival span.
     pub fn resolve_frame_command(&mut self, id: ClientId, span: EventTime, end: EventTime) {
+        let module_moves = self.module_moves(id).is_some();
         let Some(client) = self.clients.get_mut(id.0 as usize) else {
             return;
         };
@@ -343,7 +357,11 @@ impl Server {
                 server_time_ms: end.milliseconds() as i32,
                 ..client.command
             };
-            client.command = qa_movement::prepare_command(client.player.movement_rules, command);
+            client.command = if module_moves {
+                command
+            } else {
+                qa_movement::prepare_command(client.player.movement_rules, command)
+            };
         }
     }
 
@@ -380,19 +398,8 @@ impl Server {
         if module_moves {
             return Ok(0);
         }
+        let result = self.move_client(id, command, store, geometry, index, scratch)?;
         let client = &mut self.clients[id.0 as usize];
-        let result = {
-            let mut trace = WorldTrace::new(
-                store,
-                geometry,
-                index,
-                &self.entities,
-                &self.area,
-                scratch,
-                CollisionOwner::Lifetime(client.entity),
-            );
-            qa_movement::pmove(command, &mut client.player, &mut trace, Default::default())
-        }?;
         self.entities
             .columns
             .set_body(client.entity.slot as usize, client.player.body);
@@ -404,6 +411,30 @@ impl Server {
             LinkIntent::Commit,
         );
         Ok(result.steps)
+    }
+
+    /// The same authoritative movement entry also serves a module lifecycle's
+    /// native phase. Its ABI adapter commits and relinks the returned pose.
+    pub fn move_client(
+        &mut self,
+        id: ClientId,
+        command: UserCmd,
+        store: &CollisionStore,
+        geometry: GeometryId,
+        index: u32,
+        scratch: &mut TraceScratch,
+    ) -> Result<qa_movement::MovementResult, TraceError> {
+        let client = &mut self.clients[id.0 as usize];
+        let mut trace = WorldTrace::new(
+            store,
+            geometry,
+            index,
+            &self.entities,
+            &self.area,
+            scratch,
+            CollisionOwner::Lifetime(client.entity),
+        );
+        qa_movement::pmove(command, &mut client.player, &mut trace, Default::default())
     }
 
     /// Local, network and bot clients share the same authoritative entry.

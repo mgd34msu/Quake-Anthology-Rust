@@ -57,6 +57,25 @@ impl ValueBank {
     pub fn clear(&mut self) {
         self.bits.fill(0);
     }
+    /// A producer baseline advances only after the existing output ring has
+    /// admitted a changed value. A skipped consumer never repeats publication.
+    pub fn publish_changes(
+        &mut self,
+        bindings: &[ValueBinding],
+        current: &Self,
+        mut publish: impl FnMut(ValueId, NumericValue) -> bool,
+    ) {
+        for binding in bindings {
+            if let Some(value) = current.get(binding.id)
+                && self
+                    .get(binding.id)
+                    .is_some_and(|previous| previous != value)
+                && publish(binding.id, value)
+            {
+                self.set(binding.id, value);
+            }
+        }
+    }
     /// Copy into load-sized snapshot storage; report values that do not fit.
     pub fn copy_from(&mut self, source: &Self) -> usize {
         self.bits.fill(0);

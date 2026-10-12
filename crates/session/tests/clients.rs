@@ -397,6 +397,56 @@ fn pending_command_keeps_its_snapshot_observation_once_and_disconnect_clears_it(
 }
 
 #[test]
+fn admitted_module_clients_keep_the_command_span_for_native_leaf_preparation() {
+    use qa_core::{
+        primitives::{CommandExecution, RuleSetId, UserCmd},
+        sys_events::EventTime,
+    };
+    let mut server = Server::load(2, 8, 1, 0, 0, 0).unwrap();
+    let native = NativeEntity {
+        module: ModuleId(7),
+        slot: 1,
+    };
+    let module = server
+        .connect(Connection::Bot, native.module, Some(native))
+        .unwrap();
+    let engine = server.connect(Connection::Bot, ModuleId(8), None).unwrap();
+    for client in &mut server.clients {
+        client.player.movement_rules = RuleSetId::Quake3;
+    }
+    server.clients[module.0 as usize].module_movement = true;
+    let cvars = qa_console::cvars::Cvars::new().unwrap();
+    let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
+    server.build_bot_commands(EventTime(0), EventTime::from_milliseconds(250), |rules| {
+        handles.policy(&cvars, rules)
+    });
+    assert_eq!(
+        server.take_pending_command(module).unwrap().0.duration_ms,
+        250
+    );
+    assert_eq!(
+        server.take_pending_command(engine).unwrap().0.duration_ms,
+        200
+    );
+    for id in [module, engine] {
+        server.submit_command(id, UserCmd::default(), CommandExecution::FrameLatest, None);
+        server.resolve_frame_command(
+            id,
+            EventTime::from_milliseconds(250),
+            EventTime::from_milliseconds(300),
+        );
+    }
+    assert_eq!(
+        server.take_pending_command(module).unwrap().0.duration_ms,
+        250
+    );
+    assert_eq!(
+        server.take_pending_command(engine).unwrap().0.duration_ms,
+        200
+    );
+}
+
+#[test]
 fn pending_client_audio_retirement_survives_reset_and_blocks_only_its_slot() {
     use qa_session::clients::AudioRetirement;
     let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();

@@ -375,7 +375,11 @@ pub(super) fn commands_move_a_native_client_once() {
         let other_seat = SeatId::new(1).unwrap();
         let other_angles = Vec3([10.0, 217.0, -5.0]);
         host.runtime.input.set_view_angles(other_seat, other_angles);
-        host.connect_q2_client(&api, id, b"\\name\\once").unwrap();
+        {
+            host.register_q2_client_api(api).unwrap();
+            host.connect_module_client(api.module, id, b"\\name\\once")
+                .unwrap()
+        };
         let input_handles =
             qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
         let initial = host.runtime.input.build_frame_with_policy(

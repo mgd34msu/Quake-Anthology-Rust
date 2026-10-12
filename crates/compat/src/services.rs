@@ -34,6 +34,7 @@ pub use signon::{AmbientSound, SIGNON_BYTES, SignonCursor};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallError {
     Aborted,
+    Unsupported,
     Capacity,
     Entity,
     File,

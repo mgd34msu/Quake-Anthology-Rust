@@ -42,3 +42,53 @@ pub fn prepare_command(rules: RuleSetId, mut command: UserCmd) -> UserCmd {
     };
     command
 }
+
+/// QuakeWorld's native command leaves, in SV_RunCmd/CL_PredictUsercmd order.
+/// Both halves discard an odd millisecond. Impulse follows SV_RunCmd: first leaf only.
+/// The absolute server time and all other command fields remain unchanged.
+pub struct CommandSteps {
+    command: UserCmd,
+    // A u16 can halve at most 16 times, even before native duration admission.
+    durations: [u16; u16::BITS as usize],
+    pending: usize,
+}
+
+/// Apply QuakeWorld's native duration admission once, then yield <=50 ms leaves.
+/// A zero-duration command remains one leaf, as in the original server.
+pub fn quakeworld_steps(command: UserCmd) -> CommandSteps {
+    let command = prepare_command(RuleSetId::QuakeWorld, command);
+    let mut durations = [0; u16::BITS as usize];
+    durations[0] = command.duration_ms;
+    CommandSteps {
+        command,
+        durations,
+        pending: 1,
+    }
+}
+
+impl Iterator for CommandSteps {
+    type Item = UserCmd;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.pending > 0 {
+            self.pending -= 1;
+            let ms = self.durations[self.pending];
+            if ms > 50 {
+                self.durations[self.pending] = ms / 2;
+                self.durations[self.pending + 1] = ms / 2;
+                self.pending += 2;
+            } else {
+                let command = UserCmd {
+                    duration_ms: ms,
+                    duration_ns: EventTime::from_milliseconds(u64::from(ms)).0,
+                    ..self.command
+                };
+                self.command.impulse = 0;
+                return Some(command);
+            }
+        }
+        None
+    }
+}
+
+impl core::iter::FusedIterator for CommandSteps {}

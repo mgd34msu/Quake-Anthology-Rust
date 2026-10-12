@@ -1,8 +1,8 @@
 use crate::primitives::{
     ClientId, EffectEvent, EntityRecord, HudEvent, IndexSpan, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
     NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES,
-    NativeDelivery, NativePayload, NativeTarget, PrintEvent, PrintKind, PrintText, RuleSetId,
-    SoundEvent, TextId, TextLease,
+    NativeDelivery, NativePayload, NativeTarget, NumericValue, PrintEvent, PrintKind, PrintText,
+    RuleSetId, SoundEvent, TextId, TextLease, ValueId, Vec3,
 };
 use std::fmt::{self, Write};
 
@@ -20,6 +20,11 @@ pub enum FrameEvent {
     Effect(EffectEvent),
     Print(PrintEvent),
     Hud(HudEvent),
+    PlayerValue {
+        id: ValueId,
+        value: NumericValue,
+    },
+    SetAngles(Vec3),
     Native(NativePayload),
     ConfigString {
         module: ModuleId,

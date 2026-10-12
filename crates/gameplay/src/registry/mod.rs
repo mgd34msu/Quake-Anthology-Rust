@@ -1,5 +1,7 @@
 mod generated;
+mod native_players;
 pub use generated::SOURCE_COUNTS;
+pub use native_players::NativePlayerBindings;
 use qa_core::{
     names::NameTable,
     primitives::{CallbackId, ItemId, NameId, RuleSetId, WeaponId},

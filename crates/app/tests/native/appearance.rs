@@ -230,8 +230,11 @@ fn appearance_for_abi(rerelease: bool) {
         )
         .unwrap();
     host.console.cvars.force_write(maximum, "1").unwrap();
-    host.connect_q2_client(&api, client, b"\\name\\appearance")
-        .unwrap();
+    {
+        host.register_q2_client_api(api).unwrap();
+        host.connect_module_client(api.module, client, b"\\name\\appearance")
+    }
+    .unwrap();
     let native = NativeEntity { module, slot: 2 };
     run_frame(&mut host, module, frame);
     let old = find_native(&host, native);
