@@ -1,5 +1,5 @@
 //! Child-local C services. References into native bytes end before any foreign
-//! callback; the engine still borrows only after its kernel stop boundary.
+//! callback; the engine borrows only while holding a received kernel notification.
 use super::{ImportResult, NativeEntry, NativeError, NativeRegion};
 use crate::native::runtime::{Comparison, Function, Operation, RuntimeConfig};
 use qa_core::heap::{Heap, MemoryError};
@@ -404,7 +404,7 @@ impl Runtime {
             }
             let entity = self.memory.unsigned(scratch + index * 8, 8)?;
             // All byte reads and the engine's area borrow end before the native
-            // callback. Nested imports use the same stopped-memory boundary;
+            // callback. Nested imports reuse the one kernel-parked shared slot;
             // nested filtered calls claim another fixed bank.
             let decision = self.foreign(callback, abi, &[Word, Word], U32, &[entity, data])? as u32;
             if decision & !filter.end == filter.keep {

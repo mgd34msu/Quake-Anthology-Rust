@@ -206,6 +206,28 @@ fn child_entry() {
     }
 }
 
+#[test]
+fn a_multithreaded_bootstrap_is_rejected_before_foreign_execution() {
+    let bytes = [0u8; 8192];
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "native::tests::child_entry", "--nocapture"])
+        .env("QA_NATIVE_TEST_CHILD", "1");
+    let result = NativeProcess::launch(
+        command,
+        NativeImage {
+            base: BASE,
+            pointer_bytes: 8,
+            bytes: &bytes,
+            regions: &REGIONS,
+            imports: &[],
+            timeout: Duration::from_secs(3),
+            runtime: None,
+        },
+    );
+    assert!(matches!(result, Err(NativeError::Exited(status)) if status.code() == Some(125)));
+}
+
 fn child(code: &[u8], timeout: Duration) -> Result<NativeProcess, NativeError> {
     let mut bytes = vec![0; 8192];
     bytes[..code.len()].copy_from_slice(code);
@@ -227,12 +249,8 @@ fn configured_child(
     timeout: Duration,
     runtime: Option<super::runtime::RuntimeConfig>,
 ) -> Result<NativeProcess, NativeError> {
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .args(["--exact", "native::tests::child_entry", "--nocapture"])
-        .env("QA_NATIVE_TEST_CHILD", "1");
     NativeProcess::launch(
-        command,
+        native_child_command()?,
         NativeImage {
             imports,
             base: BASE,
@@ -243,6 +261,17 @@ fn configured_child(
             runtime,
         },
     )
+}
+
+fn native_child_command() -> Result<Command, NativeError> {
+    let executable = std::env::current_exe()?;
+    let profile = executable
+        .parent()
+        .and_then(std::path::Path::parent)
+        .ok_or(NativeError::Extent)?;
+    let mut command = Command::new(profile.join("examples/native_child"));
+    command.arg("--qa-native-child");
+    Ok(command)
 }
 
 #[test]
@@ -532,7 +561,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         })
         .unwrap();
     // The custom sync function tail-calls one engine import. This exercises a
-    // kernel-stopped borrow nested inside the runtime's MSVC vtable call.
+    // kernel-parked borrow nested inside the runtime's MSVC vtable call.
     bytes[256..262].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
     let sync = NativeProcess::import_address(BASE, 12288, imports.len() - 1).unwrap();
     bytes[262..270].copy_from_slice(&sync.to_le_bytes());
@@ -738,10 +767,18 @@ fn native_system_v_and_microsoft_calls_publish_the_same_owned_memory() {
     // mov rax,[rdi]; add rax,rsi; mov [rdi],rax; ret
     let mut system_v = standard(&[0x48, 0x8b, 0x07, 0x48, 0x01, 0xf0, 0x48, 0x89, 0x07, 0xc3]);
     assert_ne!(system_v.pid(), std::process::id());
-    for task in std::fs::read_dir(format!("/proc/{}/task", system_v.pid())).expect("owned tasks") {
+    let tasks: Vec<_> = std::fs::read_dir(format!("/proc/{}/task", system_v.pid()))
+        .expect("owned tasks")
+        .collect();
+    assert_eq!(tasks.len(), 1);
+    for task in tasks {
         let status = std::fs::read_to_string(task.expect("owned task").path().join("status"))
             .expect("kernel status");
-        assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+        assert!(
+            status
+                .lines()
+                .any(|line| line.starts_with("State:\tS") || line.starts_with("State:\tD"))
+        );
         assert!(status.lines().any(|line| line == "Seccomp:\t2"));
     }
     system_v.memory_mut().expect("parked")[4096..4104].copy_from_slice(&11u64.to_le_bytes());
@@ -1014,7 +1051,12 @@ fn native_local_buffers_are_shared_and_live_across_the_import_reply() {
                     assert!(at >= 8192 + 4096);
                     assert_eq!(&memory[at..at + 8], b"stack\0\0\0");
                     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-                    assert!(status.lines().any(|line| line.starts_with("State:\tT")));
+                    assert!(
+                        status
+                            .lines()
+                            .any(|line| line.starts_with("State:\tS")
+                                || line.starts_with("State:\tD"))
+                    );
                     memory[at..at + 8].copy_from_slice(&123u64.to_le_bytes());
                     Ok(91)
                 },
@@ -1109,14 +1151,19 @@ fn region_lookup_handles_the_full_sorted_table_and_gaps() {
 }
 
 #[test]
-fn a_publication_without_self_stop_is_parked_before_engine_access() {
-    // Send an IMPORT packet directly, then loop without entering the trusted
-    // child callback. The controller must impose the stop before borrowing.
-    // mov rsi,rdi; mov eax,1; xor edi,edi; mov edx,200; syscall; jmp $
+fn a_slot_publication_without_kernel_notification_never_borrows_engine_memory() {
+    // A foreign writer can forge slot bytes, but a publication alone cannot
+    // establish a memory borrow. No notification is generated by this loop.
+    // Copy a fixed packet into the excluded slot, then spin until the absolute
+    // export deadline expires.
     let mut process = child(
         &[
-            0x48, 0x89, 0xfe, 0xb8, 1, 0, 0, 0, 0x31, 0xff, 0xba, 200, 0, 0, 0, 0x0f, 0x05, 0xeb,
-            0xfe,
+            0x48, 0x89, 0xf8, // mov rax,rdi: slot address
+            0x48, 0xc7, 0x00, 2, 0, 0, 0, // mov qword[rax],2: forged handoff
+            0x48, 0x83, 0xc0, 8, // add rax,8
+            0x48, 0x89, 0xc7, // mov rdi,rax: packet destination
+            0xb9, 25, 0, 0, 0, 0xf3, 0x48, 0xa5, // rep movsq
+            0xeb, 0xfe,
         ],
         Duration::from_millis(200),
     )
@@ -1129,8 +1176,8 @@ fn a_publication_without_self_stop_is_parked_before_engine_access() {
     packet[8..16].copy_from_slice(&1u64.to_le_bytes());
     packet[16..24].copy_from_slice(&37u64.to_le_bytes());
     let mut arguments = [0; 13];
-    arguments[0] = BASE + 4096;
-    let pid = process.pid();
+    arguments[0] = BASE + memory.len() as u64;
+    arguments[1] = BASE + 4096;
     let mut calls = 0;
     let result = process.invoke(
         process
@@ -1142,18 +1189,139 @@ fn a_publication_without_self_stop_is_parked_before_engine_access() {
             )
             .unwrap(),
         arguments,
-        |call, _, memory| {
+        |_, _, _| {
             calls += 1;
-            assert_eq!(call.number, 37);
-            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-            assert!(status.lines().any(|line| line.starts_with("State:\tT")));
-            memory[5000] = 9;
             Ok(0)
         },
     );
     assert!(matches!(result, Err(NativeError::Timeout)), "{result:?}");
-    assert_eq!(calls, 1);
+    assert_eq!(calls, 0);
     assert_eq!(process.pid(), 0);
+}
+
+#[test]
+fn a_forged_handoff_cannot_become_an_engine_call() {
+    for handoff in [1u32, 2, 3] {
+        let mut code = vec![0x49, 0x89, 0xfa, 0xbf]; // r10=slot; edi=magic
+        code.extend(0x5141_524eu32.to_le_bytes());
+        code.push(0xbe); // esi=handoff low
+        code.extend(handoff.to_le_bytes());
+        code.extend([
+            0x31, 0xd2, 0x45, 0x31, 0xc0, 0x45, 0x31, 0xc9, // high/reserved=0
+            0xb8, 39, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b,
+        ]);
+        let mut process = standard(&code);
+        let mut arguments = [0; 13];
+        arguments[0] = BASE + process.memory().unwrap().len() as u64;
+        let entry = process
+            .bind(
+                BASE,
+                NativeAbi::SystemV,
+                &[NativeScalar::Word],
+                NativeScalar::Word,
+            )
+            .unwrap();
+        let result = process.invoke(entry, arguments, |_, _, _| panic!("forged handoff"));
+        assert!(matches!(result, Err(NativeError::Protocol)), "{result:?}");
+        assert_eq!(process.pid(), 0);
+    }
+}
+
+#[test]
+fn a_caught_signal_cannot_cancel_a_received_import_while_memory_is_borrowed() {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    // Call raw import 37, then read the parent's shared write after its reply.
+    let mut code = vec![0x53, 0x48, 0x89, 0xf3, 0x48, 0x89, 0xf8, 0xbf];
+    code.extend(37u32.to_le_bytes());
+    code.extend([0xff, 0xd0, 0x48, 0x8b, 0x03, 0x5b, 0xc3]);
+    let mut bytes = [0u8; 8192];
+    bytes[..code.len()].copy_from_slice(&code);
+    let mut command = native_child_command().unwrap();
+    command.env("QA_NATIVE_TEST_SIGNAL", "1");
+    let mut process = NativeProcess::launch(
+        command,
+        NativeImage {
+            base: BASE,
+            pointer_bytes: 8,
+            bytes: &bytes,
+            regions: &REGIONS,
+            imports: &[],
+            timeout: Duration::from_secs(3),
+            runtime: None,
+        },
+    )
+    .unwrap();
+    let pid = process.pid();
+    let entry = process
+        .bind(
+            BASE,
+            NativeAbi::SystemV,
+            &[NativeScalar::Word; 2],
+            NativeScalar::Word,
+        )
+        .unwrap();
+    let mut arguments = [0; 13];
+    arguments[0] = process.callback(NativeAbi::SystemV);
+    arguments[1] = BASE + 4096;
+    assert_eq!(
+        process
+            .invoke(entry, arguments, |call, _, memory| {
+                assert_eq!(call.number, 37);
+                // SAFETY: this fixture records and signals only its owned native PID.
+                assert_eq!(unsafe { kill(pid as i32, 10) }, 0);
+                crate::pause(Duration::from_millis(20));
+                memory[4096..4104].copy_from_slice(&123u64.to_le_bytes());
+                Ok(91)
+            })
+            .unwrap(),
+        123
+    );
+    assert_eq!(process.pid(), pid);
+    assert_eq!(
+        &process.memory().unwrap()[4096..4104],
+        &123u64.to_le_bytes()
+    );
+}
+
+#[test]
+fn a_fatal_signal_during_a_received_import_reaps_only_that_owner() {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let mut process = standard(&[0x48, 0x89, 0xf8, 0xbf, 37, 0, 0, 0, 0xff, 0xd0, 0xc3]);
+    let mut healthy = standard(&[0xb8, 77, 0, 0, 0, 0xc3]);
+    let pid = process.pid();
+    let entry = process
+        .bind(
+            BASE,
+            NativeAbi::SystemV,
+            &[NativeScalar::Word],
+            NativeScalar::Word,
+        )
+        .unwrap();
+    let mut arguments = [0; 13];
+    arguments[0] = process.callback(NativeAbi::SystemV);
+    let result = process.invoke(entry, arguments, |_, _, memory| {
+        // SAFETY: terminate only this recorded owner; no child can write after
+        // fatal termination, even while the engine completes its borrow.
+        assert_eq!(unsafe { kill(pid as i32, 9) }, 0);
+        crate::pause(Duration::from_millis(10));
+        memory[4096] = 42;
+        Ok(0)
+    });
+    assert!(result.is_err());
+    assert_eq!(process.pid(), 0);
+    let entry = healthy
+        .bind(BASE, NativeAbi::SystemV, &[], NativeScalar::Word)
+        .unwrap();
+    assert_eq!(
+        healthy
+            .invoke(entry, [0; 13], |_, _, _| panic!("no imports"))
+            .unwrap(),
+        77
+    );
 }
 
 #[test]

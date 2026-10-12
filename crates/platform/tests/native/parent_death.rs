@@ -90,9 +90,17 @@ fn native_children_die_when_the_engine_parent_is_killed() {
             }
         }
         let pid = owned.native.unwrap();
-        let expected = if mode == "spinning" { 'R' } else { 'T' };
+        let expected = match mode {
+            "spinning" => 'R',
+            "startup-race" => 'T',
+            _ => 'D',
+        };
         let started = crate::Stopwatch::start();
-        while state(pid) != Some(expected) {
+        while if mode == "parked" {
+            !matches!(state(pid), Some('S' | 'D'))
+        } else {
+            state(pid) != Some(expected)
+        } {
             assert!(started.elapsed() < Duration::from_secs(2), "{mode}");
             crate::pause(Duration::from_millis(1));
         }

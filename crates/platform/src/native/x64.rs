@@ -28,7 +28,7 @@ unsafe extern "sysv64" {
 // never a Rust reference to guest storage. Before Rust handles a packet, the
 // gate saves guest state, restores controller floating-point state and switches
 // back to that private stack. The controller may then publish every shared byte
-// while the parent enforces a kernel stop. Only one foreign call is active in
+// while the parent holds a received seccomp notification. One foreign call is active in
 // this single-thread child. Child-local callbacks save the outer gate state
 // on their private controller frame and use shared stack below the saved RSP.
 std::arch::global_asm!(

@@ -25,6 +25,10 @@ qa-content = { path = "../content" }
 qa-formats = { path = "../formats" }
 
 [[example]]
+name = "native_child"
+test = false
+
+[[example]]
 name = "output_retirement"
 required-features = ["allocation-tracking"]
 
