@@ -5,7 +5,7 @@ use super::{Error, Protocol};
 use crate::message::{Encoding, Reader, Writer};
 use qa_core::{
     math::{eighth_to_short, short_to_eighth},
-    primitives::Vec3,
+    primitives::{SoundAction, SoundEvent, Vec3},
 };
 
 const VOLUME: u8 = 1;
@@ -34,6 +34,67 @@ impl Sound {
     pub fn position(self) -> Option<Vec3> {
         (self.flags & POSITION != 0).then_some(self.position)
     }
+}
+/// Common PCM handles have already been projected into the destination's
+/// resource/entity namespaces. This is the one native sound field boundary.
+pub fn sound(
+    protocol: Protocol,
+    event: SoundEvent,
+    ordinal: u32,
+    entity: Option<u32>,
+    positioned: bool,
+    output: &mut [u8],
+) -> Result<usize, Error> {
+    let format = format(protocol)?;
+    if event.action != SoundAction::Play
+        || ordinal == 0
+        || ordinal
+            >= qa_core::configstrings::ConfigLayout::for_rules(protocol.rule_set())
+                .ok_or(Error::Unsupported)?
+                .resources[1]
+                .count
+        || entity.is_some_and(|entity| {
+            entity as usize >= crate::snapshots::snapshot_limits(protocol).native_numbers
+        })
+    {
+        return Err(Error::Unsupported);
+    }
+    let mut flags = 0;
+    if event.volume != 1.0 {
+        flags |= VOLUME;
+    }
+    if event.attenuation != 1.0 {
+        flags |= ATTENUATION;
+    }
+    if event.time_offset != 0.0 {
+        flags |= OFFSET;
+    }
+    if entity.is_some() {
+        flags |= ENTITY;
+    }
+    if positioned || event.positioned || entity.is_none() {
+        flags |= POSITION;
+    }
+    if ordinal > u32::from(u8::MAX) {
+        if format.sound_flags & INDEX16 == 0 {
+            return Err(Error::Unsupported);
+        }
+        flags |= INDEX16;
+    }
+    write_cue(
+        protocol,
+        Cue::Sound(Sound {
+            flags,
+            index: ordinal as u16,
+            volume: (event.volume * 255.0) as i32 as u8,
+            attenuation: (event.attenuation * 64.0) as i32 as u8,
+            time_offset: (event.time_offset * 1000.0) as i32 as u8,
+            entity: entity.unwrap_or(0) as u16,
+            channel: event.channel as u8 & 7,
+            position: event.position,
+        }),
+        output,
+    )
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuzzleFormat {

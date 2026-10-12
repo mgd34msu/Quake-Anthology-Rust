@@ -499,7 +499,7 @@ impl<'a> Images<'a> {
         }
         .map_err(ResourceError::Asset)
     }
-    fn register_indexed(
+    pub fn register_indexed(
         &mut self,
         texture: IndexedTexture,
         palette: PaletteId,

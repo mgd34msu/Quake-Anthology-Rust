@@ -210,6 +210,7 @@ fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() 
     let mut scrollback = qa_console::presentation::Scrollback::default();
     let result = qa_app::output::dispatch(
         &mut runtime,
+        &mut |_, _| None,
         &mut source,
         &mut scrollback,
         &local,

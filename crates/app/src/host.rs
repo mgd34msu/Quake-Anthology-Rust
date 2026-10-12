@@ -529,8 +529,10 @@ impl FrameHost {
             })
         });
         source.listeners(&listeners, self.console.cvars.value(self.volume));
+        let modules = &self.modules;
         result.output = crate::output::dispatch(
             &mut self.runtime,
+            &mut |module, sound| modules.as_ref()?.sound_ordinal(module, sound),
             source,
             &mut self.console.scrollback,
             &self.local_clients,
@@ -681,7 +683,27 @@ impl FrameHost {
                         receipt,
                         output: Some(output),
                     } => {
-                        self.runtime.server.events.acknowledge(output, receipt);
+                        if self.runtime.server.clients[id.0 as usize].output == Some(output) {
+                            let publication = &mut self.runtime.config_publications[id.0 as usize];
+                            self.runtime.server.events.acknowledge_with(
+                                output,
+                                receipt,
+                                |record| {
+                                    if let qa_core::events::FrameEvent::ConfigString {
+                                        module,
+                                        index,
+                                        ..
+                                    } = record.event
+                                    {
+                                        publication.acknowledged(
+                                            module,
+                                            index as usize,
+                                            record.sequence,
+                                        );
+                                    }
+                                },
+                            );
+                        }
                     }
                     _ => {}
                 },

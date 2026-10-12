@@ -42,8 +42,14 @@ impl Drop for Fixture {
 }
 
 pub fn palette(assets: &mut Assets) -> PaletteId {
+    shifted_palette(assets, 0)
+}
+pub fn shifted_palette(assets: &mut Assets, shift: u8) -> PaletteId {
     let rgb: Vec<_> = (0..=255u8)
-        .flat_map(|index| [index, 255 - index, index / 2])
+        .flat_map(|index| {
+            let value = index.wrapping_add(shift);
+            [value, 255 - value, value / 2]
+        })
         .collect();
     let shades: Vec<_> = (0..64u8)
         .flat_map(|shade| (0..=255u8).map(move |index| index.wrapping_add(shade)))
@@ -128,13 +134,19 @@ pub fn md2() -> Vec<u8> {
 }
 
 pub fn pcx(index: u8) -> Vec<u8> {
+    pcx_dimensions(8, 4, index)
+}
+pub fn pcx_dimensions(width: u16, height: u16, index: u8) -> Vec<u8> {
     let mut bytes = vec![0; 128];
     bytes[..4].copy_from_slice(&[10, 5, 1, 8]);
-    bytes[8..10].copy_from_slice(&7u16.to_le_bytes());
-    bytes[10..12].copy_from_slice(&3u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&(width - 1).to_le_bytes());
+    bytes[10..12].copy_from_slice(&(height - 1).to_le_bytes());
     bytes[65] = 1;
-    bytes[66..68].copy_from_slice(&8u16.to_le_bytes());
-    bytes.extend(std::iter::repeat_n(index, 32));
+    bytes[66..68].copy_from_slice(&width.to_le_bytes());
+    bytes.extend(std::iter::repeat_n(
+        index,
+        usize::from(width) * usize::from(height),
+    ));
     bytes.push(12);
     // Deliberately different from the selected global palette.
     bytes.extend((0..=255u8).flat_map(|value| [255, value, value]));

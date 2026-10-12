@@ -15,7 +15,6 @@ use qa_core::{
         GeometryId, IndexSpan, ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity,
         PrintKind, RuleSetId, SoundEvent, UserCmd, Vec3,
     },
-    text::FixedText,
 };
 use qa_session::clients::Server;
 use qa_world::{
@@ -68,20 +67,6 @@ struct OpenFile {
     reference: FileRef,
     cursor: u64,
 }
-/// Native Q2 resource names select player-relative or explicit file paths.
-pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, CallError> {
-    if name.is_empty() || name.starts_with(b"*") {
-        return Ok(None);
-    }
-    let mut path = FixedText::default();
-    if let Some(explicit) = name.strip_prefix(b"#") {
-        path.append_bytes(explicit).map_err(|_| CallError::Text)?;
-    } else {
-        path.append_bytes(b"sound/").map_err(|_| CallError::Text)?;
-        path.append_bytes(name).map_err(|_| CallError::Text)?;
-    }
-    Ok(Some(path))
-}
 struct ConfigRange {
     module: ModuleId,
     span: IndexSpan,
@@ -90,6 +75,7 @@ struct ConfigRange {
     revision: u64,
     entity_text: Option<EntityText>,
     sounds: Option<IndexSpan>,
+    sound_bindings: Option<qa_audio::SoundBindings>,
 }
 struct EntityText {
     bytes: std::sync::Arc<[u8]>,
@@ -104,7 +90,6 @@ pub struct ServiceStorage {
     files: Box<[Option<OpenFile>]>,
     configs: ConfigStrings,
     resource_keys: Box<[Option<NameId>]>,
-    sounds: Box<[Option<qa_core::primitives::SoundId>]>,
     sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     ranges: Box<[ConfigRange]>,
     resource_names: NameTable,
@@ -180,6 +165,7 @@ impl ServiceStorage {
                 revision: 0,
                 entity_text: None,
                 sounds: None,
+                sound_bindings: None,
             });
             total = total.checked_add(count).ok_or(CallError::Capacity)?;
         }
@@ -190,7 +176,6 @@ impl ServiceStorage {
             files: std::iter::repeat_with(|| None).take(files).collect(),
             configs: ConfigStrings::load(capacities).map_err(|_| CallError::Capacity)?,
             resource_keys: vec![None; total].into_boxed_slice(),
-            sounds: vec![None; total].into_boxed_slice(),
             sound_bank: None,
             ranges: ranges.into_boxed_slice(),
             resource_names: NameTable::load_reserved(std::iter::empty(), total + 1, total * 128)
@@ -309,10 +294,24 @@ impl ServiceStorage {
     ) -> Result<Option<qa_core::primitives::SoundId>, CallError> {
         let index = usize::try_from(index).map_err(|_| CallError::Text)?;
         let ordinal = range.get(index).ok_or(CallError::Text)?;
-        Ok(self.sounds[self.config(module, ordinal)?])
+        self.config(module, ordinal)?;
+        let row = self.range(module).ok_or(CallError::ConfigString)?;
+        if row.sounds.is_some_and(|sounds| sounds != range) {
+            return Err(CallError::ConfigString);
+        }
+        Ok(row
+            .sound_bindings
+            .as_ref()
+            .and_then(|bindings| bindings.sound(index as u32)))
     }
-    /// Attach the load-owned bank and bind each native sound row through the
-    /// same path used when gamecode changes a registered name later.
+    pub fn sound_ordinal(
+        &self,
+        module: ModuleId,
+        sound: qa_core::primitives::SoundId,
+    ) -> Option<u32> {
+        self.range(module)?.sound_bindings.as_ref()?.ordinal(sound)
+    }
+    /// Cold attachment binds all registered module ranges to this one PCM bank.
     pub fn bind_sound_bank(
         &mut self,
         module: ModuleId,
@@ -323,47 +322,54 @@ impl ServiceStorage {
             return Err(CallError::ConfigString);
         }
         self.check_range(module, sounds)?;
-        self.range_mut(module)
-            .ok_or(CallError::ConfigString)?
-            .sounds = Some(sounds);
+        let row = self.range_mut(module).ok_or(CallError::ConfigString)?;
+        if row.sounds != Some(sounds) {
+            row.sound_bindings = Some(qa_audio::SoundBindings::load(sounds.count as usize));
+        }
+        row.sounds = Some(sounds);
         self.sound_bank = Some(bank);
-        // A storage may hold several modules. Rebinding the bank updates all
-        // registered sound ranges, so none retain handles from an older bank.
         for i in 0..self.ranges.len() {
             let owner = self.ranges[i].module;
             if let Some(range) = self.ranges[i].sounds {
+                self.ranges[i]
+                    .sound_bindings
+                    .as_mut()
+                    .ok_or(CallError::ConfigString)?
+                    .attach(self.sound_bank.as_deref().ok_or(CallError::Text)?);
                 for ordinal in range.range() {
-                    self.bind_sound(owner, ordinal)?;
+                    let index = self.config(owner, ordinal)?;
+                    self.bind_sound_at(owner, index)?;
                 }
             }
         }
         Ok(())
     }
-    fn bind_sound(&mut self, module: ModuleId, ordinal: usize) -> Result<(), CallError> {
-        let index = self.config(module, ordinal)?;
-        let Some(range) = self.range(module).and_then(|range| range.sounds) else {
+    fn bind_sound_at(&mut self, module: ModuleId, index: usize) -> Result<(), CallError> {
+        let row = self
+            .ranges
+            .iter_mut()
+            .find(|row| row.module == module)
+            .ok_or(CallError::ConfigString)?;
+        let Some(sounds) = row.sounds else {
             return Ok(());
         };
-        if !range.contains(ordinal) {
-            return Ok(());
-        }
-        self.bind_sound_at(index)
-    }
-    fn bind_sound_at(&mut self, index: usize) -> Result<(), CallError> {
-        self.sounds[index] = None;
-        let sound = match self.sound_bank.as_ref().zip(sound_path(
-            self.configs
-                .config(index)
-                .ok_or(CallError::ConfigString)?
-                .text,
-        )?) {
-            Some((bank, path)) => {
-                bank.find(std::str::from_utf8(path.as_bytes()).map_err(|_| CallError::Text)?)
-            }
-            _ => None,
-        };
-        self.sounds[index] = sound;
-        Ok(())
+        let ordinal = index
+            .checked_sub(row.span.first as usize)
+            .and_then(|ordinal| ordinal.checked_sub(sounds.first as usize))
+            .filter(|&ordinal| ordinal < sounds.count as usize)
+            .ok_or(CallError::ConfigString)?;
+        row.sound_bindings
+            .as_mut()
+            .ok_or(CallError::ConfigString)?
+            .bind_name(
+                self.sound_bank.as_deref(),
+                ordinal as u32,
+                self.configs
+                    .config(index)
+                    .ok_or(CallError::ConfigString)?
+                    .text,
+            )
+            .map_err(|_| CallError::Text)
     }
     fn set_configstring(
         &mut self,
@@ -406,7 +412,7 @@ impl ServiceStorage {
             range.revision = range.revision.wrapping_add(1);
             let ordinal = index - range.span.first as usize;
             if range.sounds.is_some_and(|sounds| sounds.contains(ordinal)) {
-                self.bind_sound_at(index)?;
+                self.bind_sound_at(module, index)?;
             }
         }
         Ok(())
@@ -559,7 +565,7 @@ pub struct EngineCallTable {
         Option<qa_core::primitives::WeaponId>,
         f32,
     ),
-    pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
+    pub sound: fn(&mut EngineServices<'_>, NativeDelivery, SoundEvent) -> Result<u64, CallError>,
     pub sound_id: fn(
         &EngineServices<'_>,
         ModuleId,
@@ -691,7 +697,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     console_formatted: |s, text| EngineServices::console_formatted(&mut s.server.events, text),
     usercmd: |s, native| s.usercmd(native),
     set_usercmd_value: |s, seat, weapon, scale| s.input.set_usercmd_value(seat, weapon, scale),
-    sound: |s, e| s.sound(e),
+    sound: |s, delivery, e| s.sound(delivery, e),
     sound_id: |s, module, range, index| s.storage.sound_id(module, range, index),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),
@@ -811,10 +817,10 @@ impl EngineServices<'_> {
         let client = self.server.client_for_native(native)?;
         Some(self.server.clients[client.0 as usize].command)
     }
-    pub fn sound(&mut self, event: SoundEvent) -> Result<u64, CallError> {
+    pub fn sound(&mut self, delivery: NativeDelivery, event: SoundEvent) -> Result<u64, CallError> {
         self.server
             .events
-            .push(FrameEvent::Sound(event))
+            .push_delivered(delivery, FrameEvent::Sound(event))
             .map_err(|_| CallError::Capacity)
     }
     pub fn effect(&mut self, event: EffectEvent) -> Result<u64, CallError> {

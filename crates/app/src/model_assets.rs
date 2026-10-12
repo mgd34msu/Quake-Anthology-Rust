@@ -19,6 +19,7 @@ pub struct ModelRequest<'a> {
     pub source_rules: RuleSetId,
     /// Image upload policy is independent of model format and map geometry.
     pub rules: RuleSetId,
+    pub source_palette: Option<PaletteId>,
     pub palette: Option<PaletteId>,
     pub image_settings: ImageSettings,
     /// Unsupported optional precaches are explicit diagnostics, never a mesh
@@ -31,12 +32,35 @@ impl<'a> ModelRequest<'a> {
             path,
             source_rules: rules,
             rules,
+            source_palette: palette,
             palette,
             image_settings: ImageSettings::native(rules),
             required: true,
         }
     }
+    pub fn profile(self) -> ModelProfile {
+        ModelProfile {
+            source_rules: self.source_rules,
+            rules: self.rules,
+            source_palette: self.source_palette,
+            palette: self.palette,
+            image_settings: self.image_settings,
+        }
+    }
 }
+
+/// File provenance and presentation are explicit registration choices. They
+/// never alter the filename's exact NameId or the shared decoded mesh.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelProfile {
+    pub source_rules: RuleSetId,
+    pub rules: RuleSetId,
+    pub source_palette: Option<PaletteId>,
+    pub palette: Option<PaletteId>,
+    pub image_settings: ImageSettings,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelRegistrationId(u32);
 
 #[derive(Clone, Copy, Debug)]
 pub struct ModelLimits {
@@ -110,11 +134,13 @@ pub struct InlineBinding {
 #[derive(Debug)]
 pub struct ModelDiagnostic {
     pub name: NameId,
+    pub profile: ModelProfile,
     pub error: String,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelCapacity {
     pub names: usize,
+    pub registrations: usize,
     pub name_bytes: usize,
     pub bindings: usize,
     pub skins: usize,
@@ -123,29 +149,31 @@ pub struct ModelCapacity {
     pub inline_bindings: usize,
 }
 
-#[derive(Clone, Copy)]
-struct Options {
-    source_rules: RuleSetId,
-    rules: RuleSetId,
-    palette: Option<PaletteId>,
-    image_settings: ImageSettings,
-    required: bool,
-}
-impl Options {
-    fn same_images(self, other: Self) -> bool {
-        self.source_rules == other.source_rules
-            && self.rules == other.rules
-            && self.image_settings == other.image_settings
-    }
-}
 struct Registration {
     path: String,
-    options: Options,
+    profile: ModelProfile,
+    required: bool,
+}
+impl Registration {
+    fn diagnostic(&self, names: &NameTable, error: String) -> Result<ModelDiagnostic, String> {
+        Ok(ModelDiagnostic {
+            name: names
+                .find(self.path.as_bytes())
+                .ok_or("missing registered model name")?,
+            profile: self.profile,
+            error,
+        })
+    }
+}
+struct RegisteredProfile {
+    profile: ModelProfile,
+    skins: Option<IndexSpan>,
 }
 
 pub struct ModelCatalog {
     names: NameTable,
-    models: Box<[Option<IndexSpan>]>,
+    models: Box<[IndexSpan]>,
+    registrations: Box<[RegisteredProfile]>,
     bindings: Box<[ModelMaterials]>,
     worlds: Box<[IndexSpan]>,
     inline: Box<[InlineBinding]>,
@@ -163,115 +191,161 @@ impl ModelCatalog {
         worlds: impl IntoIterator<Item = WorldId>,
         limits: ModelLimits,
     ) -> Result<Self, String> {
-        let mut registrations = Vec::<Registration>::new();
-        let mut name_bytes = 0usize;
+        let mut pending = Vec::<Registration>::new();
         for request in requests {
             if request.path.is_empty() || request.path.starts_with('*') {
                 continue;
             }
-            if registrations.len() == limits.models {
+            if pending.len() == limits.models || pending.len() == u32::MAX as usize {
                 return Err("model registration capacity".to_owned());
             }
-            let path = canonical_path(request.path);
-            name_bytes = name_bytes
-                .checked_add(path.len())
-                .filter(|&bytes| bytes <= limits.name_bytes)
-                .ok_or("model name capacity")?;
-            registrations.push(Registration {
-                path,
-                options: Options {
-                    source_rules: request.source_rules,
-                    rules: request.rules,
-                    palette: request.palette,
-                    image_settings: request.image_settings,
-                    required: request.required,
-                },
+            pending.push(Registration {
+                path: canonical_path(request.path),
+                profile: request.profile(),
+                required: request.required,
             });
         }
-        registrations.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-        let mut unique = Vec::<Registration>::with_capacity(registrations.len());
-        for registration in registrations {
-            if let Some(previous) = unique.last_mut()
-                && previous.path == registration.path
+        pending.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut unique = Vec::<Registration>::new();
+        for registration in pending {
+            let first = unique.partition_point(|entry| entry.path < registration.path);
+            if let Some(previous) = unique[first..]
+                .iter_mut()
+                .take_while(|entry| entry.path == registration.path)
+                .find(|entry| entry.profile == registration.profile)
             {
-                if !previous.options.same_images(registration.options)
-                    || previous.options.palette != registration.options.palette
-                {
-                    return Err(format!(
-                        "conflicting model image registration: {}",
-                        registration.path
-                    ));
-                }
-                previous.options.required |= registration.options.required;
-                continue;
+                previous.required |= registration.required;
+            } else {
+                unique.push(registration);
             }
-            unique.push(registration);
         }
-        let names = NameTable::load(
-            unique
-                .iter()
-                .map(|registration| registration.path.as_bytes()),
-        )
-        .map_err(|error| format!("model names: {error}"))?;
-        let mut models = vec![None; names.len()].into_boxed_slice();
+        let names = NameTable::load(unique.iter().map(|entry| entry.path.as_bytes()))
+            .map_err(|error| format!("model names: {error}"))?;
+        let name_bytes = (0..names.len())
+            .try_fold(0usize, |bytes, index| {
+                bytes.checked_add(names.get(NameId(index as u32)).map_or(0, <[u8]>::len))
+            })
+            .filter(|&bytes| bytes <= limits.name_bytes)
+            .ok_or("model name capacity")?;
+        let mut models = vec![IndexSpan::default(); names.len()].into_boxed_slice();
+        let mut registrations: Vec<_> = unique
+            .iter()
+            .map(|entry| RegisteredProfile {
+                profile: entry.profile,
+                skins: None,
+            })
+            .collect();
+        let mut paths = Vec::<&str>::new();
+        let mut files = Vec::with_capacity(unique.len());
+        for (index, entry) in unique.iter().enumerate() {
+            let name = names
+                .find(entry.path.as_bytes())
+                .ok_or("missing registered model name")?;
+            let span = &mut models[name.0 as usize];
+            if span.count == 0 {
+                *span = IndexSpan {
+                    first: index as u32,
+                    count: 1,
+                };
+                paths.push(&entry.path);
+            } else {
+                span.count += 1;
+            }
+            files.push(paths.len() - 1);
+        }
+        // One read and one format decode per filename. These cold inputs are
+        // dropped before the catalog is returned and frame consumers begin.
+        let bytes: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                vfs.read_file(path.as_bytes(), limits.file_bytes, reader)
+                    .map_err(|error| error.to_string())
+            })
+            .collect();
+        let parsed: Vec<_> = bytes
+            .iter()
+            .map(|bytes| {
+                bytes.as_ref().map_err(Clone::clone).and_then(|bytes| {
+                    let model =
+                        Model::parse(bytes).map_err(|error| format!("decode: {error:?}"))?;
+                    validate_model(&model)?;
+                    Ok(model)
+                })
+            })
+            .collect();
+        let mut meshes = vec![None; paths.len()];
         let mut bindings = Vec::new();
         let mut diagnostics = Vec::new();
         let mut capacity = ModelCapacity {
             names: names.len(),
-            name_bytes: unique
-                .iter()
-                .map(|registration| registration.path.len())
-                .sum(),
+            name_bytes,
+            registrations: registrations.len(),
             ..ModelCapacity::default()
         };
-        // Keep one existing image-name/recipe cache per upload profile across
-        // the entire catalog. Palettes are already part of its indexed keys.
-        let mut groups: Vec<Vec<Registration>> = Vec::new();
-        for registration in unique {
+        // Reuse the existing image recipe cache within each explicit profile,
+        // including its source/target translation pair.
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for (index, entry) in unique.iter().enumerate() {
             if let Some(group) = groups
                 .iter_mut()
-                .find(|group| group[0].options.same_images(registration.options))
+                .find(|group| unique[group[0]].profile == entry.profile)
             {
-                group.push(registration);
+                group.push(index);
             } else {
-                groups.push(vec![registration]);
+                groups.push(vec![index]);
             }
         }
         for group in groups {
-            let options = group[0].options;
-            let mut images = Images::new(
+            let profile = unique[group[0]].profile;
+            let mut images = match Images::new(
                 vfs,
                 assets,
-                options.source_rules,
-                options.rules,
-                options.image_settings,
-                None,
-            )
-            .map_err(|error| format!("model images: {error:?}"))?;
-            for registration in group {
-                let name = names
-                    .find(registration.path.as_bytes())
-                    .ok_or("missing registered model name")?;
-                match register(
-                    vfs,
-                    reader,
-                    &mut images,
-                    &registration,
-                    &mut capacity,
-                    limits,
-                ) {
+                profile.source_rules,
+                profile.rules,
+                profile.image_settings,
+                profile.source_palette.zip(profile.palette),
+            ) {
+                Ok(images) => images,
+                Err(error) => {
+                    let error = format!("model images: {error:?}");
+                    if group.iter().any(|&index| unique[index].required) {
+                        return Err(error);
+                    }
+                    for index in group {
+                        diagnostics.push(unique[index].diagnostic(&names, error.clone())?);
+                    }
+                    continue;
+                }
+            };
+            for index in group {
+                let entry = &unique[index];
+                let file = files[index];
+                let result = parsed[file]
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|model| {
+                        register(
+                            model,
+                            &mut images,
+                            entry,
+                            &mut meshes[file],
+                            &mut capacity,
+                            limits,
+                        )
+                    });
+                match result {
                     Ok(skins) => {
                         let first =
                             u32::try_from(bindings.len()).map_err(|_| "model binding table")?;
                         let count =
                             u32::try_from(skins.len()).map_err(|_| "model binding table")?;
                         bindings.extend(skins);
-                        models[name.0 as usize] = Some(IndexSpan { first, count });
+                        registrations[index].skins = Some(IndexSpan { first, count });
                     }
-                    Err(error) if registration.options.required => {
-                        return Err(format!("model {}: {error}", registration.path));
+                    Err(error) if entry.required => {
+                        return Err(format!("model {}: {error}", entry.path));
                     }
-                    Err(error) => diagnostics.push(ModelDiagnostic { name, error }),
+                    Err(error) => diagnostics.push(entry.diagnostic(&names, error)?),
                 }
             }
         }
@@ -312,6 +386,7 @@ impl ModelCatalog {
         Ok(Self {
             names,
             models,
+            registrations: registrations.into_boxed_slice(),
             bindings: bindings.into_boxed_slice(),
             worlds: world_ranges,
             inline: inline.into_boxed_slice(),
@@ -320,30 +395,32 @@ impl ModelCatalog {
         })
     }
 
-    /// Only config publication/update resolves a filename. Frame callers keep
-    /// the resulting NameId or ModelBinding and perform numeric lookup below.
-    pub fn name_for_path(&self, path: &str) -> Option<NameId> {
-        self.names.find_path(path)
+    /// Resolve both filename and profile only at registration/configuration
+    /// boundaries. A profile mismatch never selects the first same-name entry.
+    pub fn registration(&self, path: &str, profile: ModelProfile) -> Option<ModelRegistrationId> {
+        let name = self.names.find_path(path)?;
+        let span = self.models[name.0 as usize];
+        span.range()
+            .find(|&index| {
+                let entry = &self.registrations[index];
+                entry.profile == profile && entry.skins.is_some()
+            })
+            .map(|index| ModelRegistrationId(index as u32))
     }
     pub fn name(&self, name: NameId) -> Option<&str> {
         std::str::from_utf8(self.names.get(name)?).ok()
     }
-    pub fn resolve_name(&self, name: NameId, skin: u32) -> Option<ModelBinding> {
-        self.resolve_name_with(name, skin, ModelMaterialPolicy::default())
-    }
-    pub fn resolve_name_with(
+    /// Frame lookup uses only cached numeric registration, skin and policy.
+    pub fn binding(
         &self,
-        name: NameId,
+        registration: ModelRegistrationId,
         skin: u32,
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBinding> {
-        let span = (*self.models.get(name.0 as usize)?)?;
+        let span = self.registrations.get(registration.0 as usize)?.skins?;
         // Native R_DrawAliasModel uses skin zero for an out-of-range skinnum.
         let skin = if skin < span.count { skin } else { 0 };
         Some(self.bindings.get((span.first + skin) as usize)?.variants[policy.index()])
-    }
-    pub fn resolve_path(&self, path: &str, skin: u32) -> Option<ModelBinding> {
-        self.resolve_name(self.name_for_path(path)?, skin)
     }
     pub fn resolve_inline(&self, world: WorldId, index: u32) -> Option<InlineBinding> {
         let span = *self.worlds.get(world.0 as usize)?;
@@ -357,18 +434,7 @@ impl ModelCatalog {
     }
 }
 
-fn register(
-    vfs: &Vfs,
-    reader: &mut ArchiveReader,
-    images: &mut Images<'_>,
-    registration: &Registration,
-    capacity: &mut ModelCapacity,
-    limits: ModelLimits,
-) -> Result<Vec<ModelMaterials>, String> {
-    let bytes = vfs
-        .read_file(registration.path.as_bytes(), limits.file_bytes, reader)
-        .map_err(|error| error.to_string())?;
-    let model = Model::parse(&bytes).map_err(|error| format!("decode: {error:?}"))?;
+fn validate_model(model: &Model<'_>) -> Result<(), String> {
     if !matches!(model.format, ModelFormat::Mdl | ModelFormat::Md2) {
         return Err(format!(
             "model format not yet registered: {:?}",
@@ -389,14 +455,23 @@ fn register(
     if model.skins.is_empty() {
         return Err("model requires an explicit external skin".to_owned());
     }
+    Ok(())
+}
+
+fn register(
+    model: &Model<'_>,
+    images: &mut Images<'_>,
+    registration: &Registration,
+    shared_mesh: &mut Option<ModelId>,
+    capacity: &mut ModelCapacity,
+    limits: ModelLimits,
+) -> Result<Vec<ModelMaterials>, String> {
     let skin_count = capacity
         .skins
         .checked_add(model.skins.len())
         .filter(|&count| count <= limits.skins && count <= u32::MAX as usize)
         .ok_or("model skin capacity")?;
-    let mesh = model.meshes.first().ok_or("model has no mesh")?;
-    let (vertices, frame_size, indices) = mesh_vertices(mesh, capacity, limits)?;
-    let options = registration.options;
+    let options = registration.profile;
     let usage = ImageUse::default();
     let mut materials = Vec::with_capacity(model.skins.len());
     for (index, skin) in model.skins.iter().enumerate() {
@@ -407,10 +482,12 @@ fn register(
                 pixels,
             } => {
                 let palette = options
-                    .palette
-                    .ok_or("indexed model requires a selected palette")?;
+                    .source_palette
+                    .ok_or("indexed model requires a source palette")?;
                 let texture = IndexedTexture::load_base(width, height, pixels, None)?;
-                let image = images.assets.register_indexed_image(texture, palette)?;
+                let image = images
+                    .register_indexed(texture, palette)
+                    .map_err(|error| format!("indexed skin: {error:?}"))?;
                 let params = images
                     .upload_params(usage)
                     .map_err(|error| format!("skin upload: {error:?}"))?;
@@ -422,15 +499,18 @@ fn register(
             }
             Image::External(path) => {
                 let path = std::str::from_utf8(path).map_err(|_| "skin path is not UTF-8")?;
-                if qa_formats::image::ImageFormat::from_path(path.as_bytes())
+                if matches!(
+                    options.source_rules,
+                    RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+                ) && qa_formats::image::ImageFormat::from_path(path.as_bytes())
                     == Some(qa_formats::image::ImageFormat::Pcx)
                 {
                     images
                         .indexed_pcx(
                             path,
                             options
-                                .palette
-                                .ok_or("PCX skin requires a selected palette")?,
+                                .source_palette
+                                .ok_or("PCX skin requires a source palette")?,
                             None,
                             None,
                             usage,
@@ -476,10 +556,18 @@ fn register(
         }
         materials.push(variants);
     }
-    let material = materials.first().ok_or("model has no skin material")?[0];
-    let id = images
-        .assets
-        .register_animated_model(&vertices, frame_size, &indices, material)?;
+    let id = if let Some(id) = *shared_mesh {
+        id
+    } else {
+        let mesh = model.meshes.first().ok_or("model has no mesh")?;
+        let (vertices, frame_size, indices) = mesh_vertices(mesh, capacity, limits)?;
+        let material = materials.first().ok_or("model has no skin material")?[0];
+        let id = images
+            .assets
+            .register_animated_model(&vertices, frame_size, &indices, material)?;
+        *shared_mesh = Some(id);
+        id
+    };
     capacity.skins = skin_count;
     Ok(materials
         .into_iter()

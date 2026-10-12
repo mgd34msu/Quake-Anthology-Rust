@@ -2,7 +2,7 @@
 use crate::{client_scene::ClientModelBindings, model_assets::ModelCatalog};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
-    primitives::{ClientId, ModelRef, ModuleId, ResourceNamespace},
+    primitives::{ClientId, ModelRef, ModuleId, ResourceNamespace, RuleSetId},
 };
 use qa_network::commands::packet::Protocol;
 
@@ -15,10 +15,15 @@ pub struct ResourceState {
     pub models: ClientModelBindings,
     pub layout: ConfigLayout,
     pub rejected: u64,
-    sounds: Box<[Option<qa_core::primitives::SoundId>]>,
+    sounds: qa_audio::SoundBindings,
+    sound_rules: RuleSetId,
 }
 impl ClientResources {
-    pub fn load(client: ClientId, protocol: Protocol) -> Result<Option<Self>, String> {
+    pub fn load(
+        client: ClientId,
+        protocol: Protocol,
+        sound_rules: RuleSetId,
+    ) -> Result<Option<Self>, String> {
         let Some(layout) = ConfigLayout::for_rules(protocol.rule_set()) else {
             return Ok(None);
         };
@@ -32,7 +37,8 @@ impl ClientResources {
                 models: ClientModelBindings::load(client, layout),
                 layout,
                 rejected: 0,
-                sounds: vec![None; layout.resources[1].count as usize].into_boxed_slice(),
+                sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
+                sound_rules,
             },
         }))
     }
@@ -65,8 +71,33 @@ impl ClientResources {
     }
 }
 impl ResourceState {
+    pub fn sound_rules(&self) -> RuleSetId {
+        self.sound_rules
+    }
+    /// Sound presentation is selected at connection/profile load, independently
+    /// of the legacy protocol's resource and message layout.
+    pub fn set_sound_rules(&mut self, rules: RuleSetId) {
+        self.sound_rules = rules;
+    }
     pub fn sound(&self, ordinal: u32) -> Option<qa_core::primitives::SoundId> {
-        self.sounds.get(ordinal as usize).copied().flatten()
+        self.sounds.sound(ordinal)
+    }
+    /// Cold bank attachment reserves numeric inverse rows before packet intake.
+    pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) -> bool {
+        self.sounds.attach(bank);
+        for (ordinal, index) in self.layout.resources[1].range().enumerate() {
+            let Some(config) = self.configs.config(index) else {
+                return false;
+            };
+            if self
+                .sounds
+                .bind_name(Some(bank), ordinal as u32, config.text)
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
     }
     fn apply(
         &mut self,
@@ -83,10 +114,8 @@ impl ResourceState {
                 }
                 if changed && self.layout.resources[1].contains(index) {
                     let ordinal = index - self.layout.resources[1].first as usize;
-                    self.sounds[ordinal] = bank.and_then(|bank| {
-                        let path = qa_compat::services::sound_path(text).ok()??;
-                        bank.find(std::str::from_utf8(path.as_bytes()).ok()?)
-                    });
+                    self.rejected +=
+                        u64::from(self.sounds.bind_name(bank, ordinal as u32, text).is_err());
                 }
                 true
             }
@@ -103,9 +132,21 @@ impl ResourceState {
 pub struct ConfigPublication {
     module: Option<ModuleId>,
     revision: Option<u64>,
-    rows: Box<[u64]>,
+    rows: Box<[PublishedConfig]>,
     pub unsupported: u64,
     pub pending: Option<(u64, usize)>,
+}
+#[derive(Clone, Copy, Default)]
+struct PublishedConfig {
+    revision: u64,
+    sequence: Option<u64>,
+    acknowledged: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceReadiness {
+    Pending,
+    Ready,
+    Unsupported,
 }
 impl ConfigPublication {
     pub fn load() -> Self {
@@ -113,7 +154,7 @@ impl ConfigPublication {
             module: None,
             revision: None,
             rows: vec![
-                0;
+                PublishedConfig::default();
                 ConfigLayout::for_rules(qa_core::primitives::RuleSetId::Quake2Rerelease)
                     .map_or(0, |layout| layout.count)
             ]
@@ -125,7 +166,7 @@ impl ConfigPublication {
     pub fn reset(&mut self) {
         self.module = None;
         self.revision = None;
-        self.rows.fill(0);
+        self.rows.fill(PublishedConfig::default());
         self.pending = None;
     }
     pub fn begin(&mut self, module: ModuleId, revision: u64) -> bool {
@@ -136,11 +177,37 @@ impl ConfigPublication {
         self.revision != Some(revision)
     }
     pub fn needs(&self, index: usize, revision: u64) -> bool {
-        self.rows.get(index).is_some_and(|seen| *seen != revision)
+        self.rows
+            .get(index)
+            .is_some_and(|seen| seen.revision != revision)
     }
-    pub fn published(&mut self, index: usize, revision: u64) {
+    pub fn published(&mut self, index: usize, revision: u64, sequence: Option<u64>) {
         if let Some(seen) = self.rows.get_mut(index) {
-            *seen = revision;
+            *seen = PublishedConfig {
+                revision,
+                sequence,
+                acknowledged: false,
+            };
+        }
+    }
+    pub fn acknowledged(&mut self, module: ModuleId, index: usize, sequence: u64) {
+        if self.module == Some(module)
+            && let Some(row) = self.rows.get_mut(index)
+            && row.sequence == Some(sequence)
+        {
+            row.acknowledged = true;
+        }
+    }
+    pub fn readiness(&self, module: ModuleId, index: usize) -> ResourceReadiness {
+        let Some(row) = self.rows.get(index).filter(|_| self.module == Some(module)) else {
+            return ResourceReadiness::Unsupported;
+        };
+        if row.acknowledged {
+            ResourceReadiness::Ready
+        } else if row.sequence.is_some() || row.revision == 0 {
+            ResourceReadiness::Pending
+        } else {
+            ResourceReadiness::Unsupported
         }
     }
     pub fn finish(&mut self, revision: u64) {

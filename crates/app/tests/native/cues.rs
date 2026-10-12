@@ -142,6 +142,7 @@ struct Audio {
     entity: SoundEmitter,
     origin: Vec3,
     count: usize,
+    sound_rules: RuleSetId,
 }
 impl FrameSource for Audio {
     fn begin_frame(&mut self) -> Duration {
@@ -157,6 +158,7 @@ impl FrameSource for Audio {
     fn present(&mut self) {}
     fn sound(&mut self, event: SoundEvent) -> bool {
         assert_eq!(event.client, Some(self.client));
+        assert_eq!(event.spatial_rules, self.sound_rules);
         match self.count {
             0 => {
                 assert_eq!(event.entity, Some(self.entity));
@@ -265,12 +267,23 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .counters(output)
         .unwrap()
         .submissions;
+    let prior_sound_rules = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .sound_rules();
+    host.runtime.client_resources[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .state
+        .set_sound_rules(RuleSetId::Quake3);
     let mut audio = Audio {
         mixer: qa_audio::Mixer::load(bank, 8, 1),
         client,
         entity: emitter(client, 1),
         origin,
         count: 0,
+        sound_rules: RuleSetId::Quake3,
     };
     audio.mixer.listen(
         &[Some(qa_audio::Listener {
@@ -316,6 +329,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         );
         let counts = qa_app::output::dispatch(
             &mut host.runtime,
+            &mut |_, _| None,
             &mut audio,
             &mut host.console.scrollback,
             &[Some(client), None, None, None],
@@ -355,6 +369,11 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
             slot: 1
         })
     );
+    host.runtime.client_resources[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .state
+        .set_sound_rules(prior_sound_rules);
     host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
     host.runtime.server.clients[client.0 as usize]
         .player
@@ -389,6 +408,7 @@ impl FrameSource for MuzzleAudio {
         let expected = &self.expected[self.audio.count];
         assert!(expected.choices.contains(&event.sound));
         assert_eq!(event.client, Some(self.audio.client));
+        assert_eq!(event.spatial_rules, self.audio.sound_rules);
         assert_eq!(event.entity, Some(self.audio.entity));
         assert_eq!(event.position, self.audio.origin);
         assert_eq!(
@@ -453,6 +473,16 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .player
         .movement_rules = RuleSetId::Quake3;
     host.runtime.server.clients[client.0 as usize].client_rules = RuleSetId::Quake;
+    let prior_sound_rules = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .state
+        .sound_rules();
+    host.runtime.client_resources[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .state
+        .set_sound_rules(RuleSetId::Quake3);
     let mut audio = MuzzleAudio {
         audio: Audio {
             mixer: qa_audio::Mixer::load(std::sync::Arc::clone(&bank), 64, 1),
@@ -460,6 +490,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
             entity: emitter(client, 1),
             origin,
             count: 0,
+            sound_rules: RuleSetId::Quake3,
         },
         expected: Vec::new(),
     };
@@ -498,6 +529,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         );
         let counts = qa_app::output::dispatch(
             &mut host.runtime,
+            &mut |_, _| None,
             &mut audio,
             &mut host.console.scrollback,
             &[Some(client), None, None, None],
@@ -666,6 +698,11 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         ),
         (0, 0)
     );
+    host.runtime.client_resources[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .state
+        .set_sound_rules(prior_sound_rules);
     host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
     host.runtime.server.clients[client.0 as usize]
         .player

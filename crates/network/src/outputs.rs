@@ -11,7 +11,7 @@ pub use configstrings::{
     ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring, read_configstring,
 };
 use cues::project_cue;
-pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, write_cue};
+pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

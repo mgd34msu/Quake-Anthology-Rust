@@ -13,7 +13,7 @@ impl EventConsumer for Consumer {
             }
             FrameEvent::Sound(s) => s.sound.0,
             FrameEvent::Effect(e) => e.effect.0,
-            FrameEvent::Native(event) => event.delivery.module.0 as u32,
+            FrameEvent::Native(_) => u32::from(record.delivery.unwrap().module.0),
             FrameEvent::Hud(event) => event.client.0,
             FrameEvent::Print(p) => {
                 assert_eq!(texts.get(p.text), Some(b"message".as_slice()));

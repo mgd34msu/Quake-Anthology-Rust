@@ -1,5 +1,5 @@
 use crate::transport::{self, Submission};
-use qa_core::{events::OutputSubmission, primitives::NativeMessage, sys_events::EventTime};
+use qa_core::{events::OutputSubmission, primitives::NativeDelivery, sys_events::EventTime};
 use qa_network::{
     channel::{TransmitError, Unreliable},
     ingress::Connection,
@@ -67,48 +67,50 @@ pub(super) fn transmit(
 pub(super) fn submit(
     connection: &mut Connection,
     sequence: u64,
-    message: NativeMessage,
+    delivery: NativeDelivery,
     bytes: &[u8],
     output: &mut [u8],
     time: EventTime,
     admit: impl FnMut(&[u8]) -> bool,
 ) -> Result<(OutputSubmission, Submission, u64), ()> {
     let protocol = connection.commands.as_ref().ok_or(())?.protocol;
-    let encoded = qa_network::outputs::native(protocol, message.delivery.source, bytes, output)
-        .map_err(|_| ())?;
+    let encoded =
+        qa_network::outputs::native(protocol, delivery.source, bytes, output).map_err(|_| ())?;
     let bytes = &output[..encoded.length];
+    let (disposition, submitted) =
+        submit_encoded(connection, sequence, delivery, bytes, time, admit)?;
+    Ok((
+        disposition,
+        submitted,
+        if disposition != OutputSubmission::Unsent || connection.pending_output == Some(sequence) {
+            encoded.unsupported
+        } else {
+            0
+        },
+    ))
+}
+
+pub(super) fn submit_encoded(
+    connection: &mut Connection,
+    sequence: u64,
+    delivery: NativeDelivery,
+    bytes: &[u8],
+    time: EventTime,
+    admit: impl FnMut(&[u8]) -> bool,
+) -> Result<(OutputSubmission, Submission), ()> {
     if bytes.is_empty() {
-        return Ok((
-            OutputSubmission::BestEffort,
-            Submission::default(),
-            encoded.unsupported,
-        ));
+        return Ok((OutputSubmission::BestEffort, Submission::default()));
     }
-    if message.delivery.reliable {
+    if delivery.reliable {
         return match connection.channel.queue_reliable(bytes) {
-            Ok(receipt) => Ok((
-                OutputSubmission::Reliable(receipt),
-                Submission::default(),
-                encoded.unsupported,
-            )),
+            Ok(receipt) => Ok((OutputSubmission::Reliable(receipt), Submission::default())),
             Err(qa_network::channel::TransmitError::Full) => {
-                Ok((OutputSubmission::Unsent, Submission::default(), 0))
+                Ok((OutputSubmission::Unsent, Submission::default()))
             }
             Err(_) => Err(()),
         };
     }
     let (disposition, submitted) =
         transmit(connection, Some((sequence, bytes)), time, admit).map_err(|_| ())?;
-    Ok((
-        disposition.unwrap_or(OutputSubmission::Unsent),
-        submitted,
-        // Count projected-away services once the channel owns this record's
-        // bytes, including a blocked or fragmented initial submission. Pending
-        // completion retries those owned bytes without another projection.
-        if disposition.is_some() || connection.pending_output == Some(sequence) {
-            encoded.unsupported
-        } else {
-            0
-        },
-    ))
+    Ok((disposition.unwrap_or(OutputSubmission::Unsent), submitted))
 }

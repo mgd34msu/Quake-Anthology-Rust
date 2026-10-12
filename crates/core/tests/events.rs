@@ -118,6 +118,108 @@ fn private_sound_only_requires_its_client_and_presentation() {
     );
     assert!(ring.is_empty());
 }
+
+#[test]
+fn delivered_server_sound_uses_only_delivery_audience_and_never_direct_presentation() {
+    let mut ring = EventRing::load(4, 4, 4, 32).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let selected = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let other = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let FrameEvent::Sound(mut event) = sound(1) else {
+        unreachable!()
+    };
+    // Presentation listener state cannot override SERVER recipient authority.
+    event.client = Some(ClientId(1));
+    let delivery = NativeDelivery {
+        module: ModuleId(7),
+        source: RuleSetId::Quake2,
+        target: NativeTarget::Client(ClientId(0)),
+        origin: Vec3::default(),
+        reliable: true,
+        dupe_key: 42,
+        check_portals: true,
+    };
+    let sequence = ring
+        .push_delivered(delivery, FrameEvent::Sound(event))
+        .unwrap();
+    assert!(consume(&mut ring, presentation, OutputSubmission::Unsent).is_empty());
+    assert!(consume(&mut ring, other, OutputSubmission::Unsent).is_empty());
+    let mut batch = ring.batch(selected).unwrap();
+    assert_eq!(ring.next(&mut batch).unwrap().delivery, Some(delivery));
+    assert!(ring.submit(
+        selected,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(8))
+    ));
+    assert_eq!(
+        consume(&mut ring, module, OutputSubmission::BestEffort),
+        [sequence]
+    );
+    assert_eq!(ring.acknowledge(selected, NativeReceipt(7)), 0);
+    assert!(!ring.is_empty());
+    assert_eq!(ring.acknowledge(selected, NativeReceipt(8)), 1);
+    assert!(ring.is_empty());
+    // Received/local presentation has no native delivery and cannot retransmit.
+    let presented = ring.push_to(OutputTarget::Presentation, sound(2)).unwrap();
+    assert_eq!(
+        consume(&mut ring, presentation, OutputSubmission::BestEffort),
+        [presented]
+    );
+    assert!(consume(&mut ring, selected, OutputSubmission::Unsent).is_empty());
+}
+
+#[test]
+fn native_ack_observer_sees_the_owned_record_once_before_text_retirement() {
+    let mut ring = EventRing::load(4, 1, 4, 32).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let sequence = ring
+        .publish_configstring(
+            Some(OutputTarget::Client(ClientId(0))),
+            ModuleId(7),
+            RuleSetId::Quake2,
+            33,
+            b"a.wav",
+        )
+        .unwrap();
+    assert_eq!(
+        consume(
+            &mut ring,
+            client,
+            OutputSubmission::Reliable(NativeReceipt(8))
+        ),
+        [sequence]
+    );
+    let mut observed = Vec::new();
+    assert_eq!(
+        ring.acknowledge_with(client, NativeReceipt(7), |record| observed.push(record)),
+        0
+    );
+    assert!(observed.is_empty());
+    assert_eq!(
+        ring.acknowledge_with(client, NativeReceipt(8), |record| observed.push(record)),
+        1
+    );
+    assert_eq!(observed.len(), 1);
+    let FrameEvent::ConfigString {
+        module,
+        index,
+        text,
+        ..
+    } = observed[0].event
+    else {
+        panic!("config")
+    };
+    assert_eq!(
+        (module, index, observed[0].sequence),
+        (ModuleId(7), 33, sequence)
+    );
+    assert!(ring.texts.get(text).is_none());
+    assert_eq!(
+        ring.acknowledge_with(client, NativeReceipt(8), |_| panic!("duplicate ACK")),
+        0
+    );
+}
 #[test]
 fn formatted_console_uses_local_delivery_and_the_ring_text_boundary() {
     let mut ring = EventRing::load(4, 3, 1, 32).unwrap();
@@ -384,20 +486,19 @@ fn native_pages_follow_each_consumer_receipt_without_cloning_or_truncating() {
     let delivery = native_delivery(NativeTarget::All);
     let sequence = ring.native_message(delivery, &bytes).unwrap();
     let mut batch = ring.batch(first).unwrap();
-    let FrameEvent::Native(message) = ring.next(&mut batch).unwrap().event else {
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Native(message) = record.event else {
         panic!()
     };
-    assert_eq!(message.delivery, delivery);
+    assert_eq!(record.delivery, Some(delivery));
     let mut output = [0xcc; 128];
     assert!(
         ring.texts
-            .copy_payload(message.payload, &mut output[..127])
+            .copy_payload(message, &mut output[..127])
             .is_none()
     );
     assert_eq!(
-        ring.texts
-            .copy_payload(message.payload, &mut output)
-            .unwrap(),
+        ring.texts.copy_payload(message, &mut output).unwrap(),
         bytes
     );
     assert_eq!(ring.texts.truncated(), 0);
@@ -409,17 +510,9 @@ fn native_pages_follow_each_consumer_receipt_without_cloning_or_truncating() {
         OutputSubmission::Reliable(NativeReceipt(9))
     ));
     assert_eq!(ring.acknowledge(first, NativeReceipt(8)), 0);
-    assert!(
-        ring.texts
-            .copy_payload(message.payload, &mut output)
-            .is_some()
-    );
+    assert!(ring.texts.copy_payload(message, &mut output).is_some());
     assert_eq!(ring.acknowledge(first, NativeReceipt(9)), 1);
-    assert!(
-        ring.texts
-            .copy_payload(message.payload, &mut output)
-            .is_none()
-    );
+    assert!(ring.texts.copy_payload(message, &mut output).is_none());
     assert!(ring.is_empty());
 }
 #[test]

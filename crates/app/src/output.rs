@@ -2,7 +2,10 @@
 use crate::{Runtime, host::FrameSource};
 use qa_core::{
     events::{FrameEvent, OutputSubmission},
-    primitives::{ClientId, PrintKind},
+    primitives::{
+        ClientId, ModuleId, NativeDelivery, NativeTarget, PrintKind, ResourceNamespace,
+        SoundEmitter, SoundId, Vec3,
+    },
     sys_events::{EventTime, SeatId},
 };
 use qa_session::clients::Connection;
@@ -38,6 +41,7 @@ impl OutputCounts {
 
 pub fn dispatch(
     runtime: &mut Runtime,
+    resolve_sound: &mut impl FnMut(ModuleId, SoundId) -> Option<u32>,
     source: &mut impl FrameSource,
     scrollback: &mut qa_console::presentation::Scrollback,
     local: &[Option<ClientId>; SeatId::COUNT],
@@ -190,70 +194,154 @@ pub fn dispatch(
                         counts.stale_texts += 1;
                         OutputSubmission::BestEffort
                     }
-                } else if let FrameEvent::Native(message) = record.event {
-                    let visible = match message.delivery.target {
-                        qa_core::primitives::NativeTarget::All
-                        | qa_core::primitives::NativeTarget::Client(_) => true,
-                        target => runtime.collision.as_mut().is_some_and(|collision| {
-                            let Some(world) = collision.visibility.as_deref() else {
-                                return false;
-                            };
-                            let policy = qa_world::visibility::PointVisibility {
-                                channel: if target == qa_core::primitives::NativeTarget::Hearing {
-                                    qa_world::visibility::VisibilityChannel::Hearing
-                                } else {
-                                    qa_world::visibility::VisibilityChannel::Sight
-                                },
-                                missing_visible: false,
-                                area_zero: true,
-                            };
-                            world
-                                .test_points(
-                                    message.delivery.origin,
-                                    client.player.body.position,
-                                    &mut collision.visibility_row,
-                                    policy,
-                                    collision
-                                        .portals
-                                        .as_ref()
-                                        .filter(|_| message.delivery.check_portals),
-                                )
-                                .unwrap_or(false)
-                        }),
-                    };
-                    if !visible {
+                } else if let Some(delivery) = record.delivery {
+                    if !delivery_visible(
+                        runtime.collision.as_mut(),
+                        client.player.body.position,
+                        delivery,
+                    ) {
                         counts.native_filtered += 1;
                         OutputSubmission::BestEffort
-                    } else if let Some(bytes) =
-                        texts.copy_payload(message.payload, &mut runtime.output_bytes)
-                        && let Some(connection) = runtime
-                            .network
-                            .get_mut(client_id, qa_core::loopback::Endpoint::Server)
+                    } else if let Some(connection) = runtime
+                        .network
+                        .get_mut(client_id, qa_core::loopback::Endpoint::Server)
                     {
-                        counts.native_messages += 1;
                         let route = connection.route;
-                        match native::submit(
-                            connection,
-                            record.sequence,
-                            message,
-                            bytes,
-                            &mut runtime.output_native_bytes,
-                            time,
-                            |bytes| {
-                                crate::transport::admit_output(
-                                    &mut runtime.loopback,
-                                    source,
-                                    route,
-                                    bytes,
-                                )
-                            },
-                        ) {
-                            Ok((submission, submitted, unsupported)) => {
-                                counts.native_unsupported += unsupported;
-                                counts.add_native(&submitted);
-                                submission
+                        match record.event {
+                            FrameEvent::Native(payload) => {
+                                if let Some(bytes) =
+                                    texts.copy_payload(payload, &mut runtime.output_bytes)
+                                {
+                                    counts.native_messages += 1;
+                                    match native::submit(
+                                        connection,
+                                        record.sequence,
+                                        delivery,
+                                        bytes,
+                                        &mut runtime.output_native_bytes,
+                                        time,
+                                        |bytes| {
+                                            crate::transport::admit_output(
+                                                &mut runtime.loopback,
+                                                source,
+                                                route,
+                                                bytes,
+                                            )
+                                        },
+                                    ) {
+                                        Ok((submission, submitted, unsupported)) => {
+                                            counts.native_unsupported += unsupported;
+                                            counts.add_native(&submitted);
+                                            submission
+                                        }
+                                        Err(()) => {
+                                            counts.native_unsupported += 1;
+                                            OutputSubmission::BestEffort
+                                        }
+                                    }
+                                } else {
+                                    counts.stale_texts += 1;
+                                    OutputSubmission::BestEffort
+                                }
                             }
-                            Err(()) => {
+                            FrameEvent::Sound(event) => {
+                                let projected = connection
+                                    .commands
+                                    .as_ref()
+                                    .and_then(|commands| {
+                                        qa_core::configstrings::ConfigLayout::for_rules(
+                                            commands.protocol.rule_set(),
+                                        )
+                                        .zip(
+                                            qa_core::configstrings::ConfigLayout::for_rules(
+                                                delivery.source,
+                                            ),
+                                        )
+                                    })
+                                    .filter(|_| client.module == delivery.module)
+                                    .and_then(|(target, source)| {
+                                        let ordinal = resolve_sound(delivery.module, event.sound)?;
+                                        let index = source.resources[1].get(ordinal as usize)?;
+                                        let target_index = target.project_index(source, index)?;
+                                        Some((
+                                            index,
+                                            (target_index - target.resources[1].first as usize)
+                                                as u32,
+                                        ))
+                                    });
+                                if let Some((index, ordinal)) = projected {
+                                    match runtime.config_publications[slot]
+                                        .readiness(delivery.module, index)
+                                    {
+                                        crate::client_resources::ResourceReadiness::Pending => {
+                                            OutputSubmission::Unsent
+                                        }
+                                        crate::client_resources::ResourceReadiness::Unsupported => {
+                                            counts.native_unsupported += 1;
+                                            OutputSubmission::BestEffort
+                                        }
+                                        crate::client_resources::ResourceReadiness::Ready => {
+                                            let entity = sound_entity(
+                                                &server.entities,
+                                                runtime.local_snapshots[slot].as_ref(),
+                                                event.entity,
+                                                delivery.module,
+                                            );
+                                            if event.entity.is_some() && entity.is_none() {
+                                                counts.native_unsupported += 1;
+                                            }
+                                            let positioned = delivery.reliable
+                                            && connection.commands.as_ref().is_some_and(|commands| commands.protocol == qa_network::commands::packet::Protocol::Quake2Repro1038);
+                                            match connection.commands.as_ref().ok_or(()).and_then(
+                                                |commands| {
+                                                    qa_network::outputs::sound(
+                                                        commands.protocol,
+                                                        event,
+                                                        ordinal,
+                                                        entity,
+                                                        positioned,
+                                                        &mut runtime.output_native_bytes,
+                                                    )
+                                                    .map_err(|_| ())
+                                                },
+                                            ) {
+                                                Ok(length) => match native::submit_encoded(
+                                                    connection,
+                                                    record.sequence,
+                                                    delivery,
+                                                    &runtime.output_native_bytes[..length],
+                                                    time,
+                                                    |bytes| {
+                                                        crate::transport::admit_output(
+                                                            &mut runtime.loopback,
+                                                            source,
+                                                            route,
+                                                            bytes,
+                                                        )
+                                                    },
+                                                ) {
+                                                    Ok((submission, submitted)) => {
+                                                        counts.add_native(&submitted);
+                                                        submission
+                                                    }
+                                                    Err(()) => {
+                                                        counts.native_unsupported += 1;
+                                                        OutputSubmission::BestEffort
+                                                    }
+                                                },
+                                                Err(()) => {
+                                                    counts.native_unsupported += 1;
+                                                    OutputSubmission::BestEffort
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    counts.native_unsupported += 1;
+                                    OutputSubmission::BestEffort
+                                }
+                            }
+                            _ => {
                                 counts.native_unsupported += 1;
                                 OutputSubmission::BestEffort
                             }
@@ -399,4 +487,70 @@ pub fn dispatch(
         }
     }
     counts
+}
+
+fn delivery_visible(
+    collision: Option<&mut crate::WorldCollision>,
+    listener: Vec3,
+    delivery: NativeDelivery,
+) -> bool {
+    match delivery.target {
+        NativeTarget::All | NativeTarget::Client(_) => true,
+        target => collision.is_some_and(|collision| {
+            let Some(world) = collision.visibility.as_deref() else {
+                return false;
+            };
+            let policy = qa_world::visibility::PointVisibility {
+                channel: if target == NativeTarget::Hearing {
+                    qa_world::visibility::VisibilityChannel::Hearing
+                } else {
+                    qa_world::visibility::VisibilityChannel::Sight
+                },
+                missing_visible: false,
+                area_zero: true,
+            };
+            world
+                .test_points(
+                    delivery.origin,
+                    listener,
+                    &mut collision.visibility_row,
+                    policy,
+                    collision
+                        .portals
+                        .as_ref()
+                        .filter(|_| delivery.check_portals),
+                )
+                .unwrap_or(false)
+        }),
+    }
+}
+
+fn sound_entity(
+    entities: &qa_world::entities::EntityTable,
+    snapshot: Option<&crate::snapshots::LocalSnapshot>,
+    emitter: Option<SoundEmitter>,
+    module: ModuleId,
+) -> Option<u32> {
+    let id = match emitter? {
+        SoundEmitter::Entity(id) => id,
+        SoundEmitter::Native {
+            namespace: ResourceNamespace::Module(owner),
+            slot,
+        } => {
+            return (owner == module)
+                .then(|| u32::try_from(slot).ok())
+                .flatten();
+        }
+        SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(_),
+            ..
+        } => return None,
+    };
+    let slot = entities.resolve(id)?;
+    if let Some(native) =
+        entities.columns.native_entity[slot].filter(|native| native.module == module)
+    {
+        return u32::try_from(native.slot).ok();
+    }
+    snapshot?.native_number(id)
 }

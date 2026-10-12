@@ -384,8 +384,8 @@ pub const Q2_CLASSIC: CallTable = {
     table.entries[1] = scalar!(print);
     table.entries[2] = scalar!(native_print::<true, false>);
     table.entries[3] = scalar!(native_print::<true, true>);
-    table.entries[4] = scalar!(native_sound::<false, false>);
-    table.entries[5] = scalar!(native_sound::<true, false>);
+    table.entries[4] = scalar!(native_sound::<false, false, false>);
+    table.entries[5] = scalar!(native_sound::<true, false, false>);
     table.entries[6] = scalar!(config_set);
     table.entries[7] = scalar!(abort);
     table.entries[8] = scalar!(resource_index::<0>);
@@ -430,9 +430,9 @@ pub const Q2_RERELEASE: CallTable = {
     table.entries[1] = scalar!(print);
     table.entries[2] = scalar!(native_print::<true, false>);
     table.entries[3] = scalar!(native_print::<true, true>);
-    table.entries[4] = scalar!(native_sound::<false, false>);
-    table.entries[5] = scalar!(native_sound::<true, false>);
-    table.entries[6] = scalar!(native_sound::<true, true>);
+    table.entries[4] = scalar!(native_sound::<false, false, true>);
+    table.entries[5] = scalar!(native_sound::<true, false, true>);
+    table.entries[6] = scalar!(native_sound::<true, true, true>);
     table.entries[7] = scalar!(config_set);
     table.entries[8] = scalar!(native_config_get);
     table.entries[10] = scalar!(resource_index::<0>);
@@ -1091,20 +1091,26 @@ fn native_localized_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
     )?;
     Ok(0)
 }
-fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
+fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    use qa_core::primitives::{SoundAction, SoundEmitter, SoundEvent};
-    let address = c.pointer(if LOCAL { 0 } else { usize::from(POSITIONED) })?;
-    if address == 0 && (LOCAL || !POSITIONED) {
-        return Ok(0);
-    }
+    use qa_core::primitives::{NativeTarget, SoundAction, SoundEvent, Vec3};
+    let address;
     let client = if LOCAL {
-        let Some(client) = native_client(c, address)? else {
+        let target = c.pointer(0)?;
+        if target == 0 {
+            return Ok(0);
+        }
+        let Some(client) = native_client(c, target)? else {
             return Ok(0);
         };
+        address = c.pointer(2)?;
         Some(client)
     } else {
+        address = c.pointer(usize::from(POSITIONED))?;
+        if address == 0 && !POSITIONED {
+            return Ok(0);
+        }
         None
     };
     let index = if LOCAL {
@@ -1132,30 +1138,53 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
     else {
         return Ok(0);
     };
-    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-    let (entity, mut position) =
-        entities.sound_source(c.services, c.memory, c.context, *table, address)?;
-    if POSITIONED && !LOCAL {
-        let origin = c.pointer(0)?;
-        if origin != 0 {
-            position = c.memory.read_vec3(origin)?;
+    let origin = if POSITIONED {
+        c.pointer(usize::from(LOCAL))?
+    } else {
+        0
+    };
+    let (entity, mut position, mut positioned) = if address == 0 {
+        if origin == 0 {
+            return Ok(0);
         }
+        (None, Vec3::default(), true)
+    } else {
+        let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+        let (entity, position, positioned) =
+            entities.sound_source(c.services, c.memory, c.context, *table, address)?;
+        (Some(entity), position, positioned)
+    };
+    if origin != 0 {
+        position = c.memory.read_vec3(origin)?;
+        positioned = true;
     }
     let dupe_key = if LOCAL { c.arg(8)? as u32 } else { 0 };
+    let target = if let Some(client) = client {
+        NativeTarget::Client(client)
+    } else if channel & 8 != 0 || attenuation == 0.0 {
+        NativeTarget::All
+    } else {
+        NativeTarget::Hearing
+    };
+    // Classic SV_StartSound masks the whole channel for NO_PHS; rerelease
+    // preserves the independent reliable bit.
+    let reliable = channel & 16 != 0 && (WIDE || channel & 8 == 0);
+    positioned |= WIDE && reliable;
+    let delivery = native_delivery::<WIDE>(c, target, position, reliable, dupe_key);
     match (ENGINE_CALLS.sound)(
         c.services,
+        delivery,
         SoundEvent {
             sound,
             spatial_rules: c.context.sound_rules,
-            entity: entity.map(SoundEmitter::Entity),
+            entity,
             position,
-            client,
+            client: None,
             volume,
             attenuation,
             time_offset,
             channel: channel & 7,
-            reliable: channel & 16 != 0,
-            dupe_key,
+            positioned,
             action: SoundAction::Play,
         },
     ) {

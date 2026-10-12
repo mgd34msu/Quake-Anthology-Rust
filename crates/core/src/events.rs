@@ -1,6 +1,6 @@
 use crate::primitives::{
-    ClientId, EffectEvent, HudEvent, ModuleId, NativeDelivery, NativeMessage, NativePayload,
-    NativeTarget, PrintEvent, PrintKind, RuleSetId, SoundEvent, TextId, TextLease,
+    ClientId, EffectEvent, HudEvent, ModuleId, NativeDelivery, NativePayload, NativeTarget,
+    PrintEvent, PrintKind, RuleSetId, SoundEvent, TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -13,7 +13,7 @@ pub enum FrameEvent {
     Effect(EffectEvent),
     Print(PrintEvent),
     Hud(HudEvent),
-    Native(NativeMessage),
+    Native(NativePayload),
     ConfigString {
         module: ModuleId,
         source: RuleSetId,
@@ -63,6 +63,7 @@ pub struct OutputCounters {
 pub struct OutputRecord {
     pub sequence: u64,
     pub event: FrameEvent,
+    pub delivery: Option<NativeDelivery>,
 }
 pub struct OutputBatch {
     consumer: OutputConsumerId,
@@ -256,18 +257,27 @@ impl EventRing {
         self.retire();
     }
     pub fn push(&mut self, event: FrameEvent) -> Result<u64, EventStorageError> {
-        self.publish(None, event)
+        self.publish(None, None, event)
     }
     pub fn push_to(
         &mut self,
         target: OutputTarget,
         event: FrameEvent,
     ) -> Result<u64, EventStorageError> {
-        self.publish(Some(target), event)
+        self.publish(Some(target), None, event)
+    }
+    /// SERVER emissions reach native CLIENT channels before presentation.
+    pub fn push_delivered(
+        &mut self,
+        delivery: NativeDelivery,
+        event: FrameEvent,
+    ) -> Result<u64, EventStorageError> {
+        self.publish(None, Some(delivery), event)
     }
     fn publish(
         &mut self,
         target: Option<OutputTarget>,
+        delivery: Option<NativeDelivery>,
         event: FrameEvent,
     ) -> Result<u64, EventStorageError> {
         self.make_room();
@@ -275,7 +285,7 @@ impl EventRing {
         let pages = match event {
             FrameEvent::Print(p) => [Some(p.text), None, None, None],
             FrameEvent::ConfigString { text, .. } => [Some(text), None, None, None],
-            FrameEvent::Native(message) => message.payload.pages,
+            FrameEvent::Native(payload) => payload.pages,
             _ => [None; 4],
         };
         for (index, page) in pages.into_iter().enumerate() {
@@ -295,22 +305,27 @@ impl EventRing {
             let c = &mut self.consumers[consumer];
             let relevant = c.target.is_some()
                 && target.is_none_or(|target| c.target == Some(target))
-                && match (c.target, event) {
-                    (Some(OutputTarget::Client(id)), FrameEvent::Sound(sound)) => {
-                        sound.applies_to_client(id)
-                    }
-                    (Some(OutputTarget::Client(id)), FrameEvent::Print(p)) => {
-                        p.client.is_none_or(|to| to == id)
-                    }
-                    (Some(OutputTarget::Client(id)), FrameEvent::Hud(event)) => event.client == id,
-                    (Some(OutputTarget::Client(id)), FrameEvent::Native(message)) => {
-                        match message.delivery.target {
-                            NativeTarget::Client(to) => id == to,
-                            _ => true,
+                && delivery.is_none_or(|delivery| match c.target {
+                    Some(OutputTarget::Client(id)) => match delivery.target {
+                        NativeTarget::Client(to) => id == to,
+                        _ => true,
+                    },
+                    Some(OutputTarget::Module(_)) => true,
+                    _ => false,
+                })
+                && (delivery.is_some()
+                    || match (c.target, event) {
+                        (Some(OutputTarget::Client(id)), FrameEvent::Sound(sound)) => {
+                            sound.applies_to_client(id)
                         }
-                    }
-                    _ => true,
-                };
+                        (Some(OutputTarget::Client(id)), FrameEvent::Print(p)) => {
+                            p.client.is_none_or(|to| to == id)
+                        }
+                        (Some(OutputTarget::Client(id)), FrameEvent::Hud(event)) => {
+                            event.client == id
+                        }
+                        _ => true,
+                    });
             if relevant && c.resync {
                 c.counters.skipped_during_resync += 1;
             }
@@ -324,7 +339,11 @@ impl EventRing {
             };
         }
         self.slots[sequence as usize & self.mask] = Some(OutputSlot {
-            record: OutputRecord { sequence, event },
+            record: OutputRecord {
+                sequence,
+                event,
+                delivery,
+            },
             remaining,
             texts,
         });
@@ -353,13 +372,13 @@ impl EventRing {
             pages[index] = Some(lease.id());
             leases[index] = Some(lease);
         }
-        let result = self.push(FrameEvent::Native(NativeMessage {
+        let result = self.push_delivered(
             delivery,
-            payload: NativePayload {
+            FrameEvent::Native(NativePayload {
                 pages,
                 length: bytes.len(),
-            },
-        }));
+            }),
+        );
         self.texts.release_all(leases);
         result
     }
@@ -465,7 +484,7 @@ impl EventRing {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };
-        let result = self.publish(target, event(lease.id()));
+        let result = self.publish(target, None, event(lease.id()));
         self.texts.release(lease);
         result
     }
@@ -537,6 +556,15 @@ impl EventRing {
     }
     /// Receipts are supplied by native ACK processing, never physical intake here.
     pub fn acknowledge(&mut self, consumer: OutputConsumerId, receipt: NativeReceipt) -> usize {
+        self.acknowledge_with(consumer, receipt, |_| {})
+    }
+    /// Observers see a proved native ACK before the owning slot is retired.
+    pub fn acknowledge_with(
+        &mut self,
+        consumer: OutputConsumerId,
+        receipt: NativeReceipt,
+        mut observe: impl FnMut(OutputRecord),
+    ) -> usize {
         if !self.valid(consumer) || self.consumers[consumer.slot].resync {
             return 0;
         }
@@ -546,6 +574,7 @@ impl EventRing {
             if self.deliveries[offset] == Delivery::Awaiting(receipt) {
                 self.deliveries[offset] = Delivery::Done;
                 if let Some(slot) = &mut self.slots[sequence as usize & self.mask] {
+                    observe(slot.record);
                     slot.remaining -= 1;
                 }
                 count += 1;

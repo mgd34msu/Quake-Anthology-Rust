@@ -449,6 +449,11 @@ impl FrameHost {
     /// Resolve native ordinals and client cue resources after PCM loading.
     pub fn bind_sounds(&mut self, bank: &Arc<qa_audio::Bank>) -> Result<(), String> {
         self.muzzle_sounds.bind(bank);
+        for resources in self.runtime.client_resources.iter_mut().flatten() {
+            if !resources.state.bind_sounds(bank) {
+                return Err("client sound binding failed".into());
+            }
+        }
         if let Some(modules) = &mut self.modules {
             for row in modules.rows.iter_mut().flatten() {
                 if let Some(sounds) = row.native_sounds() {

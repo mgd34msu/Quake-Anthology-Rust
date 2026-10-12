@@ -91,6 +91,9 @@ impl LocalSnapshot {
     pub fn view_entity(&self) -> Option<u32> {
         self.entities.view_entity()
     }
+    pub fn native_number(&self, entity: qa_core::primitives::EntityId) -> Option<u32> {
+        self.entities.native_number(entity)
+    }
     pub fn entity_projection(&self) -> &qa_network::projection::EntityProjection {
         self.entities.projection()
     }

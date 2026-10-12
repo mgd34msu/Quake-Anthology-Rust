@@ -91,6 +91,10 @@ impl FrameHost {
             return;
         };
         let rules = snapshot.protocol.rule_set();
+        let Some(resources) = self.runtime.client_resources[client.0 as usize].as_ref() else {
+            return;
+        };
+        let sound_rules = resources.state.sound_rules();
         let Some(position) = self.cue_position(client, flash.entity, current) else {
             return;
         };
@@ -104,7 +108,7 @@ impl FrameHost {
             if let Some(sound) = self.muzzle_sounds.choose(recipe) {
                 self.present_sound(SoundEvent {
                     sound,
-                    spatial_rules: rules,
+                    spatial_rules: sound_rules,
                     entity: Some(SoundEmitter::Native {
                         namespace: ResourceNamespace::Client(client),
                         slot: i32::from(flash.entity),
@@ -135,12 +139,10 @@ impl FrameHost {
             .state;
         let sound = resources.sound(u32::from(wire.index))?;
         let ordinal = wire.entity();
-        let entity = ordinal
-            .filter(|slot| *slot != 0)
-            .map(|slot| SoundEmitter::Native {
-                namespace: ResourceNamespace::Client(client),
-                slot: i32::from(slot),
-            });
+        let entity = ordinal.map(|slot| SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(client),
+            slot: i32::from(slot),
+        });
         let position = if let Some(position) = wire.position() {
             position
         } else if ordinal.is_some_and(|slot| slot != 0) {
@@ -150,10 +152,11 @@ impl FrameHost {
         };
         Some(SoundEvent {
             sound,
-            spatial_rules: resources.layout.rules,
+            spatial_rules: resources.sound_rules(),
             entity,
             channel: u16::from(wire.channel),
             position,
+            positioned: wire.position().is_some(),
             volume: f32::from(wire.volume) / 255.0,
             attenuation: f32::from(wire.attenuation) / 64.0,
             time_offset: f32::from(wire.time_offset) / 1000.0,

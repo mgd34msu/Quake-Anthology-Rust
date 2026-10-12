@@ -292,6 +292,7 @@ fn dispatch(runtime: &mut Runtime, source: &mut Source) -> qa_app::output::Outpu
     let mut scrollback = qa_console::presentation::Scrollback::default();
     let counts = qa_app::output::dispatch(
         runtime,
+        &mut |_, _| None,
         source,
         &mut scrollback,
         &[None; SeatId::COUNT],
@@ -672,6 +673,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     };
     qa_app::output::dispatch(
         &mut host.runtime,
+        &mut |_, _| None,
         &mut source,
         &mut host.console.scrollback,
         &host.local_clients,
@@ -716,6 +718,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     let now = source.now;
     qa_app::output::dispatch(
         &mut host.runtime,
+        &mut |_, _| None,
         &mut source,
         &mut host.console.scrollback,
         &host.local_clients,
@@ -760,6 +763,7 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let mut scrollback = qa_console::presentation::Scrollback::default();
     qa_app::output::dispatch(
         &mut runtime,
+        &mut |_, _| None,
         &mut source,
         &mut scrollback,
         &[Some(id), None, None, None],
@@ -785,6 +789,7 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     runtime.loopback.clear_client(id);
     qa_app::output::dispatch(
         &mut runtime,
+        &mut |_, _| None,
         &mut source,
         &mut scrollback,
         &[Some(id), None, None, None],

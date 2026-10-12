@@ -70,6 +70,12 @@ impl Bank {
     pub fn find(&self, path: &str) -> Option<SoundId> {
         self.names.find_path(path).map(|id| SoundId(id.0))
     }
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
 }
 
 #[derive(Clone, Copy)]

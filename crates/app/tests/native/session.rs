@@ -26,6 +26,7 @@ use std::time::Duration;
 mod native_image;
 use native_image::*;
 mod cues;
+mod sound_routes;
 #[path = "../support/visibility_world.rs"]
 mod visibility_world;
 
@@ -2741,6 +2742,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         });
         image.regions = regions.into_boxed_slice();
         let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+        let sound_observer = runtime
+            .server
+            .events
+            .bind(OutputTarget::Module(ModuleId(90)))
+            .unwrap();
         let bounds = qa_core::primitives::Bounds {
             mins: qa_core::primitives::Vec3([-1000.0; 3]),
             maxs: qa_core::primitives::Vec3([1000.0; 3]),
@@ -4421,25 +4427,43 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             RuleSetId::Quake,
         )
         .unwrap();
+        emit_sound(
+            &mut game,
+            4,
+            &[entity_address, 24, 1, volume, attenuation, offset],
+            RuleSetId::Quake,
+        )
+        .unwrap();
+        emit_sound(
+            &mut game,
+            4,
+            &[entity_address, 2, 1, volume, 0, offset],
+            RuleSetId::Quake,
+        )
+        .unwrap();
         drop(emit_sound);
-        let mut batch = runtime
-            .server
-            .events
-            .batch(runtime.server.presentation)
-            .unwrap();
+        let mut batch = runtime.server.events.batch(sound_observer).unwrap();
         let mut sounds = Vec::new();
+        let mut sound_deliveries = Vec::new();
         while let Some(record) = runtime.server.events.next(&mut batch) {
             if let FrameEvent::Sound(sound) = record.event {
                 sounds.push(sound);
+                sound_deliveries.push(record.delivery.unwrap());
             }
         }
-        assert_eq!(sounds.len(), 3);
+        assert_eq!(sounds.len(), 5);
         assert_eq!(
             sounds
                 .iter()
                 .map(|sound| sound.spatial_rules)
                 .collect::<Vec<_>>(),
-            [RuleSetId::Quake, RuleSetId::Quake3, RuleSetId::Quake]
+            [
+                RuleSetId::Quake,
+                RuleSetId::Quake3,
+                RuleSetId::Quake,
+                RuleSetId::Quake,
+                RuleSetId::Quake
+            ]
         );
         assert_eq!(sounds[0].position, source);
         assert_eq!(sounds[2].position, source);
@@ -4447,9 +4471,21 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             sounds[1].position,
             qa_core::primitives::Vec3([1.0625, -2.125, 4096.0])
         );
-        assert_eq!((sounds[0].channel, sounds[0].reliable), (2, true));
-        assert_eq!((sounds[1].channel, sounds[1].reliable), (3, false));
-        for sound in sounds {
+        assert_eq!((sounds[0].channel, sound_deliveries[0].reliable), (2, true));
+        assert_eq!(
+            (sounds[1].channel, sound_deliveries[1].reliable),
+            (3, false)
+        );
+        assert_eq!(
+            sound_deliveries[3].target,
+            qa_core::primitives::NativeTarget::All
+        );
+        assert_eq!(sound_deliveries[3].reliable, rr);
+        assert_eq!(
+            sound_deliveries[4].target,
+            qa_core::primitives::NativeTarget::All
+        );
+        for sound in sounds.into_iter().take(4) {
             assert_eq!(
                 (
                     sound.volume,
@@ -4480,11 +4516,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             expected.extend([2, 0, 0, 0]);
         }
         let mut native = Vec::new();
-        let mut batch = runtime
-            .server
-            .events
-            .batch(runtime.server.presentation)
-            .unwrap();
+        let mut batch = runtime.server.events.batch(sound_observer).unwrap();
         let mut output = vec![0; 0x8000];
         while let Some(record) = runtime.server.events.next(&mut batch) {
             if let FrameEvent::Native(message) = record.event {
@@ -4492,12 +4524,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     .server
                     .events
                     .texts
-                    .copy_payload(message.payload, &mut output)
+                    .copy_payload(message, &mut output)
                     .unwrap();
-                native.push((message.delivery, bytes.to_vec()));
+                native.push((record.delivery.unwrap(), bytes.to_vec()));
             }
             runtime.server.events.submit(
-                runtime.server.presentation,
+                sound_observer,
                 record.sequence,
                 qa_core::events::OutputSubmission::BestEffort,
             );
@@ -4638,14 +4670,15 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             emit(&mut game, slots[1], &[target, 0, message]).unwrap();
             emit(&mut game, write_slots[0], &[0x9a]).unwrap();
             emit(&mut game, unicast_slot, &[target, 1, 0xabcd_ef01_1234_5678]).unwrap();
-            // RR local_sound uses target as emitter, ignoring origin and ent.
+            // The retail help marker addresses one client but emits from the
+            // world at a supplied position, independently of that listener.
             emit(
                 &mut game,
                 6,
                 &[
                     target,
-                    1,
-                    1,
+                    base + 0x1e80,
+                    base + 0x3000,
                     18,
                     1,
                     u64::from(1.0f32.to_bits()),
@@ -4689,16 +4722,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     local_prints.push((print.client, print.kind, print.level));
                 }
             }
-            assert_eq!(local_sounds.len(), 1);
-            assert_eq!(
-                (
-                    local_sounds[0].client,
-                    local_sounds[0].channel,
-                    local_sounds[0].reliable,
-                    local_sounds[0].dupe_key
-                ),
-                (Some(client), 2, true, 0xdead_beef)
-            );
+            assert!(local_sounds.is_empty());
             assert_eq!(
                 local_prints,
                 [
@@ -4716,6 +4740,30 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             let mut prints = Vec::new();
             let mut unicasts = Vec::new();
             while let Some(record) = runtime.server.events.next(&mut batch) {
+                if let FrameEvent::Sound(sound) = record.event {
+                    let delivery = record.delivery.unwrap();
+                    assert_eq!(sound.client, None);
+                    assert_eq!(sound.channel, 2);
+                    assert_eq!(
+                        sound.entity,
+                        Some(qa_core::primitives::SoundEmitter::Native {
+                            namespace: qa_core::primitives::ResourceNamespace::Module(ModuleId(1)),
+                            slot: 0,
+                        })
+                    );
+                    assert_eq!(
+                        sound.position,
+                        qa_core::primitives::Vec3([1.0625, -2.125, 4096.0])
+                    );
+                    assert!(sound.positioned);
+                    assert_eq!(
+                        delivery.target,
+                        qa_core::primitives::NativeTarget::Client(client)
+                    );
+                    assert!(delivery.reliable);
+                    assert_eq!(delivery.dupe_key, 0xdead_beef);
+                    local_sounds.push(sound);
+                }
                 if let FrameEvent::Native(message) = record.event {
                     let mut bytes = [0; 32];
                     assert_eq!(
@@ -4723,11 +4771,11 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                             .server
                             .events
                             .texts
-                            .copy_payload(message.payload, &mut bytes)
+                            .copy_payload(message, &mut bytes)
                             .unwrap(),
                         [0x9a]
                     );
-                    unicasts.push(message.delivery);
+                    unicasts.push(record.delivery.unwrap());
                 }
                 if let FrameEvent::Print(print) = record.event
                     && runtime.server.events.texts.get(print.text) == Some(text.as_slice())
@@ -4735,6 +4783,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                     prints.push((print.client, print.kind, print.level));
                 }
             }
+            assert_eq!(local_sounds.len(), 1);
             assert_eq!(
                 prints,
                 [
@@ -5253,6 +5302,14 @@ mod pmove;
 mod appearance;
 
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--q2-sound-routes") {
+        sound_routes::server_sounds_wait_for_resource_ack_without_stalling_other_clients();
+        sound_routes::unsupported_resource_names_drop_only_the_unrepresentable_client_delivery();
+        sound_routes::world_edict_sounds_keep_the_native_channel_replacement_key();
+        sound_routes::remote_native_emitters_keep_the_module_entity_channel();
+        println!("native Q2 sound route checks passed");
+        return;
+    }
     if std::env::args().any(|arg| arg == "--q2-appearance") {
         appearance::native_appearance_uses_common_lifetimes_and_player_state();
         println!("native Q2 appearance checks passed");
@@ -5307,6 +5364,10 @@ pub fn run() {
     returned_native_tables_bind_once_and_isolate_bad_apis();
     native_initialization_sequences_follow_api_binding_and_isolate_failure();
     q2_api_layouts_bind_the_full_table_and_name_missing_engine_services();
+    sound_routes::server_sounds_wait_for_resource_ack_without_stalling_other_clients();
+    sound_routes::unsupported_resource_names_drop_only_the_unrepresentable_client_delivery();
+    sound_routes::world_edict_sounds_keep_the_native_channel_replacement_key();
+    sound_routes::remote_native_emitters_keep_the_module_entity_channel();
     q2_normal_loader_selects_native_roles_and_copies_spawn_strings();
     q2_clients_bind_after_initialization_and_disconnect_before_shutdown();
     println!("native session dispatch checks passed");

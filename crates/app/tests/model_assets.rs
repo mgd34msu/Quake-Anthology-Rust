@@ -1,16 +1,18 @@
 #[path = "model_assets/support.rs"]
 mod support;
 
-use qa_app::model_assets::{ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelRequest};
-use qa_core::primitives::{Bounds, IndexSpan, NameId, RuleSetId, Vec3};
+use qa_app::model_assets::{
+    ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest,
+};
+use qa_core::primitives::{Bounds, IndexSpan, RuleSetId, Vec3};
 use qa_formats::archive::ArchiveReader;
-use qa_render::Assets;
 use qa_render::assets::{SoftwareAlias, StageTexture};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
 use qa_render::world::{
     WorldId,
     geometry::{GeometryPartition, PatchStats, WorldGeometry, WorldModel},
 };
+use qa_render::{Assets, PaletteId};
 use qa_world::visibility::{PvsRows, VisLeaf, VisibilityWorld};
 
 fn load(
@@ -29,8 +31,29 @@ fn load(
     )
 }
 
-fn image(assets: &Assets, catalog: &ModelCatalog, path: &str, skin: u32) -> qa_render::ImageId {
-    let binding = catalog.resolve_path(path, skin).unwrap();
+fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
+    ModelRequest::native("", rules, Some(palette)).profile()
+}
+fn binding(
+    catalog: &ModelCatalog,
+    path: &str,
+    profile: ModelProfile,
+    skin: u32,
+) -> Option<qa_app::model_assets::ModelBinding> {
+    catalog.binding(
+        catalog.registration(path, profile)?,
+        skin,
+        ModelMaterialPolicy::default(),
+    )
+}
+fn image(
+    assets: &Assets,
+    catalog: &ModelCatalog,
+    path: &str,
+    profile: ModelProfile,
+    skin: u32,
+) -> qa_render::ImageId {
+    let binding = binding(catalog, path, profile, skin).unwrap();
     let StageTexture::Image(image) = assets.material(binding.material).unwrap().stages[0].texture
     else {
         panic!("skin material")
@@ -43,6 +66,7 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
     let models_before = assets.models().len();
     let catalog = load(
         &fixture,
@@ -55,8 +79,8 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
         ModelLimits::default(),
     )
     .unwrap();
-    let first = catalog.resolve_path("models/test/tris.md2", 0).unwrap();
-    let second = catalog.resolve_path("models/test/tris.md2", 1).unwrap();
+    let first = binding(&catalog, "models/test/tris.md2", profile, 0).unwrap();
+    let second = binding(&catalog, "models/test/tris.md2", profile, 1).unwrap();
     assert_eq!(first.model, second.model);
     assert_ne!(first.material, second.material);
     assert_eq!(first.rules, RuleSetId::Quake2);
@@ -79,7 +103,13 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     );
     for (skin, index) in [(0, 11), (1, 22)] {
         let image = assets
-            .image(image(&assets, &catalog, "models/test/tris.md2", skin))
+            .image(image(
+                &assets,
+                &catalog,
+                "models/test/tris.md2",
+                profile,
+                skin,
+            ))
             .unwrap();
         assert_eq!(
             image.indexed.as_ref().unwrap().mip(0).unwrap().indices(),
@@ -90,8 +120,7 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
         assert_eq!(
             assets
                 .material(
-                    catalog
-                        .resolve_path("models/test/tris.md2", skin)
+                    binding(&catalog, "models/test/tris.md2", profile, skin)
                         .unwrap()
                         .material
                 )
@@ -114,6 +143,7 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
     let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
     // An MDL can use Q2 presentation independently of its file provenance.
     let catalog = load(
         &fixture,
@@ -126,7 +156,7 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
         ModelLimits::default(),
     )
     .unwrap();
-    let binding = catalog.resolve_path("progs/test.mdl", 0).unwrap();
+    let binding = binding(&catalog, "progs/test.mdl", profile, 0).unwrap();
     assert_eq!(binding.rules, RuleSetId::Quake2);
     let model = assets.model(binding.model).unwrap();
     assert_eq!(model.frame_count(), 2);
@@ -135,7 +165,7 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
     assert_eq!(model.vertices[3].position, Vec3([10.0, 4.0, 0.0]));
     assert_eq!(model.vertices[0].texcoord, [0.75, 0.5]);
     let image = assets
-        .image(image(&assets, &catalog, "progs/test.mdl", 0))
+        .image(image(&assets, &catalog, "progs/test.mdl", profile, 0))
         .unwrap();
     assert_eq!(
         image.indexed.as_ref().unwrap().mip(0).unwrap().indices(),
@@ -169,10 +199,10 @@ fn external_skin_decoding_does_not_inherit_upload_presentation() {
     let mut request = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake3, None);
     request.source_rules = RuleSetId::Quake2;
     let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
-    let binding = catalog.resolve_path(request.path, 0).unwrap();
+    let binding = binding(&catalog, request.path, request.profile(), 0).unwrap();
     assert_eq!(binding.rules, RuleSetId::Quake3);
     let skin = assets
-        .image(image(&assets, &catalog, request.path, 0))
+        .image(image(&assets, &catalog, request.path, request.profile(), 0))
         .unwrap();
     assert_eq!(&skin.rgba[..8], &[255, 0, 0, 255, 255, 0, 0, 255]);
     assert_eq!(&skin.rgba[8..], &[0, 0, 255, 255, 0, 0, 255, 255]);
@@ -180,10 +210,48 @@ fn external_skin_decoding_does_not_inherit_upload_presentation() {
 }
 
 #[test]
+fn q3_pcx_source_uses_embedded_palette_and_source_extent_without_global_palette() {
+    let fixture = support::Fixture::new(&[
+        ("models/test/tris.md2", support::md2()),
+        ("models/test/skin0.pcx", support::pcx_dimensions(641, 4, 11)),
+        ("models/test/skin1.pcx", support::pcx_dimensions(641, 4, 22)),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let request = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake3, None);
+    let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
+    let first = binding(&catalog, request.path, request.profile(), 0).unwrap();
+    let second = binding(&catalog, request.path, request.profile(), 1).unwrap();
+    assert_eq!(first.model, second.model);
+    assert_eq!(first.rules, RuleSetId::Quake3);
+    for (ordinal, index) in [(0, 11), (1, 22)] {
+        let skin = assets
+            .image(image(
+                &assets,
+                &catalog,
+                request.path,
+                request.profile(),
+                ordinal,
+            ))
+            .unwrap();
+        assert_eq!((skin.width, skin.height), (641, 4));
+        assert_eq!(&skin.rgba[..4], &[255, index, index, 255]);
+        assert!(
+            skin.rgba
+                .chunks_exact(4)
+                .all(|rgba| rgba == [255, index, index, 255])
+        );
+        assert!(skin.indexed.is_none());
+        assert!(skin.prepared.is_some());
+    }
+    assert!(catalog.diagnostics.is_empty());
+}
+
+#[test]
 fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_zero() {
     let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
     let models_before = assets.models().len();
     let catalog = load(
         &fixture,
@@ -195,15 +263,18 @@ fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_z
         ModelLimits::default(),
     )
     .unwrap();
-    let name = catalog.name_for_path("MODELS\\TEST\\TRIS.MD2").unwrap();
-    assert_eq!(catalog.name(name), Some("models/test/tris.md2"));
-    assert_eq!(catalog.name_for_path("models/test/tris.md2"), Some(name));
+    let registration = catalog
+        .registration("MODELS\\TEST\\TRIS.MD2", profile)
+        .unwrap();
     assert_eq!(
-        catalog.resolve_name(name, 99),
-        catalog.resolve_name(name, 0)
+        catalog.registration("models/test/tris.md2", profile),
+        Some(registration)
     );
-    assert_eq!(catalog.resolve_name(NameId(u32::MAX), 0), None);
-    assert_eq!(catalog.resolve_path("missing.md2", 0), None);
+    assert_eq!(
+        catalog.binding(registration, 99, ModelMaterialPolicy::default()),
+        catalog.binding(registration, 0, ModelMaterialPolicy::default())
+    );
+    assert_eq!(catalog.registration("missing.md2", profile), None);
     assert_eq!(catalog.capacity().names, 2); // explicit empty NameId plus file.
     assert_eq!(catalog.capacity().name_bytes, "models/test/tris.md2".len());
     assert_eq!(assets.models().len(), models_before + 1);
@@ -219,6 +290,7 @@ fn distinct_model_filenames_share_the_existing_skin_image_recipe_cache() {
     ]);
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
     let before = assets.images().len();
     let catalog = load(
         &fixture,
@@ -230,14 +302,14 @@ fn distinct_model_filenames_share_the_existing_skin_image_recipe_cache() {
     .unwrap();
     // Filename identity remains distinct even when source bytes are equal.
     assert_ne!(
-        catalog.resolve_path("models/a.md2", 0).unwrap().model,
-        catalog.resolve_path("models/b.md2", 0).unwrap().model
+        binding(&catalog, "models/a.md2", profile, 0).unwrap().model,
+        binding(&catalog, "models/b.md2", profile, 0).unwrap().model
     );
     assert_eq!(assets.images().len(), before + 2);
     for skin in [0, 1] {
         assert_eq!(
-            image(&assets, &catalog, "models/a.md2", skin),
-            image(&assets, &catalog, "models/b.md2", skin)
+            image(&assets, &catalog, "models/a.md2", profile, skin),
+            image(&assets, &catalog, "models/b.md2", profile, skin)
         );
     }
 }
@@ -252,6 +324,7 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
     ] {
         let mut assets = Assets::load().unwrap();
         let palette = support::palette(&mut assets);
+        let profile = native_profile(rules, palette);
         let catalog = load(
             &fixture,
             &mut assets,
@@ -263,16 +336,20 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
             ModelLimits::default(),
         )
         .unwrap();
-        let name = catalog.name_for_path("models/test/tris.md2").unwrap();
-        let opaque = catalog.resolve_name(name, 0).unwrap();
-        let base_image = image(&assets, &catalog, "models/test/tris.md2", 0);
+        let registration = catalog
+            .registration("models/test/tris.md2", profile)
+            .unwrap();
+        let opaque = catalog
+            .binding(registration, 0, ModelMaterialPolicy::default())
+            .unwrap();
+        let base_image = image(&assets, &catalog, "models/test/tris.md2", profile, 0);
         for translucent in [false, true] {
             for fullbright in [false, true] {
                 let policy = ModelMaterialPolicy {
                     translucent,
                     fullbright,
                 };
-                let binding = catalog.resolve_name_with(name, 0, policy).unwrap();
+                let binding = catalog.binding(registration, 0, policy).unwrap();
                 assert_eq!(binding.model, opaque.model);
                 let material = assets.material(binding.material).unwrap();
                 assert_eq!(material.stages.len(), 1);
@@ -324,7 +401,10 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
     assert_eq!(catalog.diagnostics.len(), 3);
     assert_eq!(assets.models().len(), count);
     for diagnostic in &catalog.diagnostics {
-        assert_eq!(catalog.resolve_name(diagnostic.name, 0), None);
+        assert_eq!(
+            catalog.registration(catalog.name(diagnostic.name).unwrap(), diagnostic.profile),
+            None
+        );
         assert!(!diagnostic.error.is_empty());
     }
     assert!(
@@ -350,7 +430,7 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
 }
 
 #[test]
-fn load_limits_and_conflicting_presentations_reject_at_registration() {
+fn load_limits_reject_at_registration() {
     let fixture = support::Fixture::models();
     for limits in [
         ModelLimits {
@@ -394,20 +474,193 @@ fn load_limits_and_conflicting_presentations_reject_at_registration() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_fallback() {
+    let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();
-    let palette = support::palette(&mut assets);
-    let error = load(
+    let source = support::palette(&mut assets);
+    let target = support::shifted_palette(&mut assets, 128);
+    let native = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(source));
+    let mut translated = native;
+    translated.rules = RuleSetId::Quake;
+    translated.palette = Some(target);
+    translated.image_settings =
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake);
+    let mut different_settings = native;
+    different_settings.image_settings.intensity = 1.0;
+    let mut different_source = native;
+    different_source.source_rules = RuleSetId::Quake3;
+    let before = assets.models().len();
+    let catalog = load(
         &fixture,
         &mut assets,
         &[
-            ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(palette)),
-            ModelRequest::native("MODELS/TEST/TRIS.MD2", RuleSetId::Quake, Some(palette)),
+            native,
+            translated,
+            different_settings,
+            different_source,
+            native,
         ],
         ModelLimits::default(),
     )
-    .err()
     .unwrap();
-    assert!(error.contains("conflicting model image registration"));
+    let selected = [native, translated, different_settings, different_source].map(|request| {
+        let id = catalog
+            .registration("MODELS\\TEST\\TRIS.MD2", request.profile())
+            .unwrap();
+        catalog
+            .binding(id, 0, ModelMaterialPolicy::default())
+            .unwrap()
+    });
+    assert_eq!(assets.models().len(), before + 1);
+    assert!(
+        selected
+            .iter()
+            .all(|binding| binding.model == selected[0].model)
+    );
+    assert_eq!(selected[0].rules, RuleSetId::Quake2);
+    assert_eq!(selected[1].rules, RuleSetId::Quake);
+    assert_ne!(selected[0].material, selected[1].material);
+    assert_ne!(selected[0].material, selected[2].material);
+    assert_eq!(catalog.capacity().registrations, 4);
+    assert_eq!(catalog.capacity().frame_vertices, 10);
+    assert_eq!(catalog.capacity().indices, 6);
+    let mut absent = translated.profile();
+    absent.rules = RuleSetId::QuakeWorld;
+    assert_eq!(catalog.registration(native.path, absent), None);
+    let native_image = assets
+        .image(image(&assets, &catalog, native.path, native.profile(), 0))
+        .unwrap();
+    let translated_image = assets
+        .image(image(
+            &assets,
+            &catalog,
+            translated.path,
+            translated.profile(),
+            0,
+        ))
+        .unwrap();
+    assert_eq!(native_image.rgba, translated_image.rgba);
+    assert_eq!(
+        native_image
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        [11; 32]
+    );
+    assert_eq!(
+        translated_image
+            .indexed
+            .as_ref()
+            .unwrap()
+            .mip(0)
+            .unwrap()
+            .indices(),
+        [139; 32]
+    );
+    assert!(catalog.diagnostics.is_empty());
+}
+
+#[test]
+fn embedded_mdl_registration_uses_the_existing_source_to_target_index_translation() {
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let source = support::palette(&mut assets);
+    let target = support::shifted_palette(&mut assets, 128);
+    let mut request = ModelRequest::native("progs/test.mdl", RuleSetId::Quake2, Some(target));
+    request.source_rules = RuleSetId::Quake;
+    request.source_palette = Some(source);
+    let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
+    let skin = assets
+        .image(image(&assets, &catalog, request.path, request.profile(), 0))
+        .unwrap();
+    assert_eq!(&skin.rgba[..8], &[1, 254, 0, 255, 2, 253, 1, 255]);
+    assert_eq!(
+        skin.indexed.as_ref().unwrap().mip(0).unwrap().indices(),
+        [129, 130]
+    );
+}
+
+#[test]
+fn failed_optional_profile_does_not_hide_another_registration_of_the_same_filename() {
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let native = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(palette));
+    let absent = ModelRequest {
+        source_palette: None,
+        required: false,
+        ..native
+    };
+    let catalog = load(
+        &fixture,
+        &mut assets,
+        &[absent, native],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    assert!(
+        catalog
+            .registration(native.path, native.profile())
+            .is_some()
+    );
+    assert_eq!(catalog.registration(absent.path, absent.profile()), None);
+    assert_eq!(catalog.diagnostics.len(), 1);
+    assert_eq!(catalog.diagnostics[0].profile, absent.profile());
+    assert!(catalog.diagnostics[0].error.contains("source palette"));
+}
+
+#[test]
+fn optional_image_constructor_failure_isolated_from_healthy_same_filename_profile() {
+    let fixture = support::Fixture::models();
+    for invalid in 0..3 {
+        let mut assets = Assets::load().unwrap();
+        let palette = support::palette(&mut assets);
+        let native = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(palette));
+        let mut optional = native;
+        optional.required = false;
+        match invalid {
+            0 => optional.image_settings.max_dimension = 0,
+            1 => optional.image_settings.picmip = 32,
+            _ => optional.image_settings.intensity = f32::NAN,
+        }
+        let before = assets.models().len();
+        let catalog = load(
+            &fixture,
+            &mut assets,
+            &[optional, native],
+            ModelLimits::default(),
+        )
+        .unwrap();
+        let healthy = binding(&catalog, native.path, native.profile(), 0).unwrap();
+        assert_eq!(assets.models().len(), before + 1);
+        assert_eq!(assets.model(healthy.model).unwrap().frame_count(), 2);
+        assert_eq!(
+            catalog.registration(optional.path, optional.profile()),
+            None
+        );
+        assert_eq!(catalog.capacity().registrations, 2);
+        assert_eq!(catalog.diagnostics.len(), 1);
+        let diagnostic = &catalog.diagnostics[0];
+        assert_eq!(catalog.name(diagnostic.name), Some(native.path));
+        assert!(diagnostic.error.starts_with("model images: "));
+        if invalid == 2 {
+            assert!(diagnostic.profile.image_settings.intensity.is_nan());
+        } else {
+            assert_eq!(diagnostic.profile, optional.profile());
+        }
+        // Required construction keeps its previous image-error category.
+        optional.required = true;
+        let error = load(&fixture, &mut assets, &[optional], ModelLimits::default())
+            .err()
+            .unwrap();
+        assert!(error.starts_with("model images: "));
+    }
 }
 
 fn world(assets: &mut Assets, origin: f32) -> WorldId {

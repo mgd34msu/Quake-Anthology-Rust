@@ -825,15 +825,21 @@ impl EntityProjection {
         context: CallContext,
         table: u64,
         address: u64,
-    ) -> Result<(Option<EntityId>, Vec3), CallError> {
-        let (_, _, entity) = self.entity(services, memory, context, table, address)?;
+    ) -> Result<(qa_core::primitives::SoundEmitter, Vec3, bool), CallError> {
+        let (_, slot, entity) = self.entity(services, memory, context, table, address)?;
         let (body, _) = self.body(memory, address)?;
-        let position = if field(memory, address, self.native_layout()?.solid)? == 3 {
-            body.center()
-        } else {
-            body.position
-        };
-        Ok((entity, position))
+        let bsp = field(memory, address, self.native_layout()?.solid)? == 3;
+        let position = if bsp { body.center() } else { body.position };
+        let positioned =
+            bsp || memory.read_word(address + self.native_layout()?.flags as u64)? as u32 & 1 != 0;
+        let emitter = entity.map_or(
+            qa_core::primitives::SoundEmitter::Native {
+                namespace: ResourceNamespace::Module(context.module),
+                slot: slot as i32,
+            },
+            qa_core::primitives::SoundEmitter::Entity,
+        );
+        Ok((emitter, position, positioned))
     }
     pub(crate) fn body(
         &self,

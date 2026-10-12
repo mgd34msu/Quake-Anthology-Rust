@@ -36,6 +36,11 @@ fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
     let mut storage =
         ServiceStorage::load(&[(ModuleId(1), 0), (ModuleId(2), 0)], 0, &console.cvars).unwrap();
     let mut scratch = runtime.geometry.scratch();
+    let observer = runtime
+        .server
+        .events
+        .bind(qa_core::events::OutputTarget::Module(ModuleId(0)))
+        .unwrap();
     let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
     (ENGINE_CALLS.message_bits)(&mut services, ModuleId(1), 0x1234, 16).unwrap();
     (ENGINE_CALLS.message_string)(&mut services, ModuleId(2), b"\xff\x80").unwrap();
@@ -72,11 +77,7 @@ fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
     (ENGINE_CALLS.message_bits)(&mut services, ModuleId(2), 0xab, 8).unwrap();
     services.storage.reset_message(ModuleId(2)).unwrap();
     publish(&mut services, ModuleId(2)); // module-frame reset discards unsubmitted bytes
-    let mut batch = services
-        .server
-        .events
-        .batch(services.server.presentation)
-        .unwrap();
+    let mut batch = services.server.events.batch(observer).unwrap();
     let mut output = vec![0; 0x8000];
     for expected in [
         vec![0x34, 0x12],
@@ -92,12 +93,12 @@ fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
                 .server
                 .events
                 .texts
-                .copy_payload(message.payload, &mut output)
+                .copy_payload(message, &mut output)
                 .unwrap(),
             expected
         );
         services.server.events.submit(
-            services.server.presentation,
+            observer,
             record.sequence,
             qa_core::events::OutputSubmission::BestEffort,
         );

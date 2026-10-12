@@ -1001,8 +1001,8 @@ pub struct SoundEvent {
     pub action: SoundAction,
     pub client: Option<ClientId>,
     pub time_offset: f32,
-    pub reliable: bool,
-    pub dupe_key: u32,
+    /// The emission needs its supplied position rather than an entity origin.
+    pub positioned: bool,
 }
 impl SoundEvent {
     pub fn applies_to_client(self, client: ClientId) -> bool {
@@ -1109,12 +1109,6 @@ impl NativePayload {
         self.length == 0
     }
 }
-#[derive(Clone, Copy, Debug)]
-pub struct NativeMessage {
-    pub delivery: NativeDelivery,
-    pub payload: NativePayload,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct HudEvent {
     pub client: ClientId,

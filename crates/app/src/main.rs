@@ -618,28 +618,42 @@ fn run() -> Result<(), String> {
         palettes[world.presentation_rules as usize] = Some(palette);
     }
     let mut requests = Vec::with_capacity(precaches.len());
-    for (rules, name) in precaches {
+    let mut profiles = [None; 5];
+    for (source_rules, name) in precaches {
         let path = std::str::from_utf8(name).map_err(|error| format!("model precache: {error}"))?;
-        let palette_source = qa_render::material::resources::PaletteSource::native(rules);
-        if palettes[rules as usize].is_none()
-            && let Some(source) = palette_source
-        {
-            palettes[rules as usize] = Some(
-                qa_render::material::resources::load_palette(
-                    &host.runtime.vfs,
-                    &mut assets,
-                    source,
-                )
-                .map_err(|error| format!("model palette: {error:?}"))?,
-            );
+        // Explicit --presentation selects upload; absent it, this native model
+        // registration boundary chooses its publishing module's presentation.
+        let rules = presentation_rules.unwrap_or(source_rules);
+        for palette_rules in [source_rules, rules] {
+            if palettes[palette_rules as usize].is_none()
+                && let Some(source) =
+                    qa_render::material::resources::PaletteSource::native(palette_rules)
+            {
+                palettes[palette_rules as usize] = Some(
+                    qa_render::material::resources::load_palette(
+                        &host.runtime.vfs,
+                        &mut assets,
+                        source,
+                    )
+                    .map_err(|error| format!("model palette: {error:?}"))?,
+                );
+            }
         }
         let mut request =
             qa_app::model_assets::ModelRequest::native(path, rules, palettes[rules as usize]);
+        request.source_rules = source_rules;
+        request.source_palette = palettes[source_rules as usize];
         request.image_settings =
             qa_app::render_settings::image_settings(&host.console.cvars, rules)?;
         request.required = false;
+        profiles[source_rules as usize] = Some(request.profile());
         requests.push(request);
     }
+    let client_profiles: Vec<_> = host
+        .client_model_sources()
+        .into_iter()
+        .filter_map(|(client, source)| profiles[source as usize].map(|profile| (client, profile)))
+        .collect();
     let models = qa_app::model_assets::ModelCatalog::load(
         &host.runtime.vfs,
         &mut model_reader,
@@ -659,7 +673,7 @@ fn run() -> Result<(), String> {
             ),
         );
     }
-    host.set_model_catalog(std::sync::Arc::new(models));
+    host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
     for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {

@@ -49,6 +49,115 @@ fn native_sound_defaults_and_present_parameters_keep_the_original_byte_order() {
 }
 
 #[test]
+fn common_sound_projection_uses_native_presence_quantization_and_limits() {
+    use qa_core::primitives::{SoundAction, SoundEvent, Vec3};
+    let mut output = [0xcc; 64];
+    let event = SoundEvent {
+        channel: 9,
+        position: Vec3([-1.125, 20.25, 128.125]),
+        volume: 0.8,
+        attenuation: 2.0,
+        time_offset: 0.125,
+        ..SoundEvent::default()
+    };
+    let length =
+        outputs::sound(Protocol::Quake2_34, event, 49, Some(5), true, &mut output).unwrap();
+    assert_eq!(
+        &output[..length],
+        &[9, 31, 49, 204, 128, 125, 41, 0, 247, 255, 162, 0, 1, 4]
+    );
+    assert_eq!(output[length], 0xcc);
+    let defaults = SoundEvent {
+        volume: 1.0,
+        attenuation: 1.0,
+        ..SoundEvent::default()
+    };
+    let length = outputs::sound(
+        Protocol::Quake2_34,
+        defaults,
+        255,
+        Some(1023),
+        false,
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(&output[..length], &[9, 8, 255, 248, 31]);
+    assert!(
+        outputs::sound(
+            Protocol::Quake2_34,
+            defaults,
+            256,
+            Some(1),
+            false,
+            &mut output
+        )
+        .is_err()
+    );
+    assert!(
+        outputs::sound(
+            Protocol::Quake2_34,
+            defaults,
+            1,
+            Some(1024),
+            false,
+            &mut output
+        )
+        .is_err()
+    );
+    let mut wide = defaults;
+    wide.channel = 7;
+    wide.attenuation = 4.0;
+    let length = outputs::sound(
+        Protocol::Quake2Repro1038,
+        wide,
+        2047,
+        Some(8191),
+        true,
+        &mut output,
+    )
+    .unwrap();
+    let Cue::Sound(projected) = exact(Protocol::Quake2Repro1038, &output[..length]) else {
+        panic!("sound")
+    };
+    assert_eq!(
+        (
+            projected.index,
+            projected.entity,
+            projected.channel,
+            projected.attenuation
+        ),
+        (2047, 8191, 7, 0)
+    );
+    assert!(projected.position().is_some());
+    assert!(
+        outputs::sound(
+            Protocol::Quake2Repro1038,
+            wide,
+            2048,
+            Some(1),
+            false,
+            &mut output
+        )
+        .is_err()
+    );
+    assert!(
+        outputs::sound(
+            Protocol::Quake2Repro1038,
+            wide,
+            1,
+            Some(8192),
+            false,
+            &mut output
+        )
+        .is_err()
+    );
+    wide.action = SoundAction::Stop;
+    assert!(outputs::sound(Protocol::Quake2Repro1038, wide, 1, None, false, &mut output).is_err());
+    assert!(outputs::sound(Protocol::Quake3_68, defaults, 1, None, false, &mut output).is_err());
+    assert!(outputs::sound(Protocol::Quake2_34, defaults, 0, None, false, &mut output).is_err());
+}
+
+#[test]
 fn rerelease_sound_uses_float_coordinates_and_the_negotiated_large_index() {
     let mut bytes = vec![9, 63, 1, 4, 51, 64, 200, 255, 255];
     let position = [-1.125f32, 20.25, 128.125];

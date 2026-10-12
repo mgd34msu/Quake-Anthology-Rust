@@ -301,7 +301,7 @@ impl Runtime {
             }
         }
         self.client_resources[id.0 as usize] =
-            client_resources::ClientResources::load(id, protocol)?;
+            client_resources::ClientResources::load(id, protocol, policy.client)?;
         self.config_publications[id.0 as usize].reset();
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)

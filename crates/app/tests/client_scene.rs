@@ -3,7 +3,7 @@ mod support;
 
 use qa_app::{
     client_scene::{ClientModelBindings, ClientSceneInput},
-    model_assets::{ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelRequest},
+    model_assets::{ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest},
     snapshots::{GunAnimation, Interpolation, LocalSnapshot, PresentationClock},
 };
 use qa_core::{
@@ -26,10 +26,11 @@ use qa_network::{
 };
 use qa_render::{Assets, FrontEnd, Limits, Refdef};
 
-fn catalog(rules: RuleSetId) -> (support::Fixture, Assets, ModelCatalog) {
+fn catalog(rules: RuleSetId) -> (support::Fixture, Assets, ModelCatalog, ModelProfile) {
     let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
+    let profile = ModelRequest::native("", rules, Some(palette)).profile();
     let catalog = ModelCatalog::load(
         &fixture.vfs,
         &mut ArchiveReader::default(),
@@ -43,7 +44,7 @@ fn catalog(rules: RuleSetId) -> (support::Fixture, Assets, ModelCatalog) {
         ModelLimits::default(),
     )
     .unwrap();
-    (fixture, assets, catalog)
+    (fixture, assets, catalog, profile)
 }
 
 fn configs() -> ConfigStrings {
@@ -60,13 +61,13 @@ fn reference(client: ClientId) -> ModelRef {
 
 #[test]
 fn connection_model_names_bind_once_and_reset_with_their_owner() {
-    let (_fixture, _assets, catalog) = catalog(RuleSetId::Quake2);
+    let (_fixture, _assets, catalog, profile) = catalog(RuleSetId::Quake2);
     let client = ClientId(7);
     let mut configs = configs();
     let index = ConfigLayout::QUAKE2.resources[0].get(50).unwrap();
     configs.set(index, b"models/test/tris.md2").unwrap();
     let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
-    assert_eq!(bindings.bind_all(&configs, &catalog), 0);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
     let policy = ModelMaterialPolicy::default();
     let selected = bindings
         .resolve(reference(client), 1, &catalog, policy)
@@ -104,8 +105,70 @@ fn connection_model_names_bind_once_and_reset_with_their_owner() {
 }
 
 #[test]
+fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallback() {
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let source = support::palette(&mut assets);
+    let target = support::shifted_palette(&mut assets, 128);
+    let native = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(source));
+    let mut foreign = native;
+    foreign.rules = RuleSetId::Quake;
+    foreign.palette = Some(target);
+    foreign.image_settings =
+        qa_render::material::resources::ImageSettings::native(RuleSetId::Quake);
+    let catalog = ModelCatalog::load(
+        &fixture.vfs,
+        &mut ArchiveReader::default(),
+        &mut assets,
+        [native, foreign],
+        [],
+        ModelLimits::default(),
+    )
+    .unwrap();
+    let client = ClientId(7);
+    let mut configs = configs();
+    let index = ConfigLayout::QUAKE2.resources[0].get(50).unwrap();
+    configs.set(index, native.path.as_bytes()).unwrap();
+    // Wire resource layout does not select source or upload policy.
+    let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
+    let policy = ModelMaterialPolicy::default();
+    assert_eq!(bindings.bind_all(&configs, &catalog, native.profile()), 0);
+    let native_binding = bindings
+        .resolve(reference(client), 1, &catalog, policy)
+        .unwrap();
+    assert_eq!(bindings.bind_all(&configs, &catalog, foreign.profile()), 0);
+    let foreign_binding = bindings
+        .resolve(reference(client), 1, &catalog, policy)
+        .unwrap();
+    assert_eq!(native_binding.model, foreign_binding.model);
+    assert_ne!(native_binding.material, foreign_binding.material);
+    assert_eq!(foreign_binding.rules, RuleSetId::Quake);
+    configs.set(index, b"MODELS\\TEST\\TRIS.MD2").unwrap();
+    assert!(bindings.config_changed(index, &configs, &catalog));
+    assert_eq!(
+        bindings.resolve(reference(client), 1, &catalog, policy),
+        Some(foreign_binding)
+    );
+    let mut absent = foreign.profile();
+    absent.source_rules = RuleSetId::Quake3;
+    assert_eq!(bindings.bind_all(&configs, &catalog, absent), 1);
+    assert_eq!(
+        bindings.resolve(reference(client), 1, &catalog, policy),
+        None
+    );
+    // A later text update retains the unregistered profile, rather than
+    // silently accepting a native registration for the same filename.
+    configs.set(index, native.path.as_bytes()).unwrap();
+    assert!(!bindings.config_changed(index, &configs, &catalog));
+    assert_eq!(
+        bindings.resolve(reference(client), 1, &catalog, policy),
+        None
+    );
+}
+
+#[test]
 fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
-    let (_fixture, assets, catalog) = catalog(RuleSetId::Quake2);
+    let (_fixture, assets, catalog, profile) = catalog(RuleSetId::Quake2);
     let client = ClientId(3);
     let mut configs = configs();
     configs
@@ -115,7 +178,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         )
         .unwrap();
     let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
-    assert_eq!(bindings.bind_all(&configs, &catalog), 0);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
     let projection = EntityProjection::load(Protocol::Quake2_34);
     let player_projection = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut ring = Q2Ring::load(8, 1024, 32, None).unwrap();
@@ -237,7 +300,8 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         packet.entity(1).material,
         Some(
             catalog
-                .resolve_path("models/test/tris.md2", 0)
+                .registration("models/test/tris.md2", profile)
+                .and_then(|id| catalog.binding(id, 0, ModelMaterialPolicy::default()))
                 .unwrap()
                 .material
         )
@@ -246,7 +310,8 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         packet.entity(1).material,
         Some(
             catalog
-                .resolve_path("models/test/tris.md2", 1)
+                .registration("models/test/tris.md2", profile)
+                .and_then(|id| catalog.binding(id, 1, ModelMaterialPolicy::default()))
                 .unwrap()
                 .material
         )
@@ -374,7 +439,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
     assert_eq!(decoded.velocity, Vec3([0.0, 100.0, 0.0]));
     assert_eq!(decoded.angles, Vec3([90.0, 0.0, 0.0]));
     for presentation in [RuleSetId::QuakeWorld, RuleSetId::Quake2] {
-        let (_fixture, assets, catalog) = catalog(presentation);
+        let (_fixture, assets, catalog, profile) = catalog(presentation);
         let mut configs = configs();
         configs
             .set(
@@ -383,7 +448,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
             )
             .unwrap();
         let mut bindings = ClientModelBindings::load(client, ConfigLayout::QUAKE2);
-        assert_eq!(bindings.bind_all(&configs, &catalog), 0);
+        assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
         let player = PlayerState::default();
         let input = ClientSceneInput {
             client,
@@ -426,7 +491,8 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
                 scene.entity(0).material,
                 Some(
                     catalog
-                        .resolve_path("models/test/tris.md2", 1)
+                        .registration("models/test/tris.md2", profile)
+                        .and_then(|id| catalog.binding(id, 1, ModelMaterialPolicy::default()))
                         .unwrap()
                         .material
                 )
@@ -573,7 +639,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
 #[test]
 fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_time() {
     use qa_network::snapshots::Q2ReproRing;
-    let (_fixture, assets, catalog) = catalog(RuleSetId::Quake2Rerelease);
+    let (_fixture, assets, catalog, profile) = catalog(RuleSetId::Quake2Rerelease);
     let client = ClientId(3);
     let layout = ConfigLayout::QUAKE2_RERELEASE;
     let mut configs =
@@ -586,7 +652,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         )
         .unwrap();
     let mut bindings = ClientModelBindings::load(client, layout);
-    assert_eq!(bindings.bind_all(&configs, &catalog), 0);
+    assert_eq!(bindings.bind_all(&configs, &catalog, profile), 0);
     let projection = EntityProjection::load(Protocol::Quake2Repro1038);
     let player_projection = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
     let mut ring = Q2ReproRing::load(4, 8192, 0, None).unwrap();
@@ -668,7 +734,8 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         gun.material,
         Some(
             catalog
-                .resolve_path("models/test/tris.md2", 1)
+                .registration("models/test/tris.md2", profile)
+                .and_then(|id| catalog.binding(id, 1, ModelMaterialPolicy::default()))
                 .unwrap()
                 .material
         )

@@ -1,12 +1,13 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
-use crate::model_assets::{ModelBinding, ModelCatalog, ModelMaterialPolicy};
+use crate::model_assets::{
+    ModelBinding, ModelCatalog, ModelMaterialPolicy, ModelProfile, ModelRegistrationId,
+};
 use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     math::{angle_vectors, lerp_angle},
     primitives::{
-        ClientId, IndexSpan, ModelRef, NameId, PlayerState, ResourceNamespace, RuleSetId, Vec3,
-        ViewWeapon,
+        ClientId, IndexSpan, ModelRef, PlayerState, ResourceNamespace, RuleSetId, Vec3, ViewWeapon,
     },
 };
 use qa_gameplay::rules::appearance::{AliasRoll, alias_pose_angles};
@@ -21,7 +22,8 @@ use qa_render::{Assets, Frame, Refdef, SceneEntity};
 pub struct ClientModelBindings {
     client: ClientId,
     range: IndexSpan,
-    names: Box<[Option<NameId>]>,
+    profile: Option<ModelProfile>,
+    registrations: Box<[Option<ModelRegistrationId>]>,
 }
 impl ClientModelBindings {
     pub fn load(client: ClientId, layout: ConfigLayout) -> Self {
@@ -29,13 +31,15 @@ impl ClientModelBindings {
         Self {
             client,
             range,
-            names: vec![None; range.count as usize].into_boxed_slice(),
+            profile: None,
+            registrations: vec![None; range.count as usize].into_boxed_slice(),
         }
     }
 
     /// Disconnect/rebinding clears all weak references into the old catalog.
     pub fn reset(&mut self) {
-        self.names.fill(None);
+        self.profile = None;
+        self.registrations.fill(None);
     }
 
     /// Text decoding and canonical name lookup happen at configuration changes,
@@ -50,7 +54,7 @@ impl ClientModelBindings {
             return true;
         }
         let ordinal = index - self.range.first as usize;
-        self.names[ordinal] = None;
+        self.registrations[ordinal] = None;
         let Some(row) = configs.config(index) else {
             return false;
         };
@@ -60,15 +64,24 @@ impl ClientModelBindings {
         let Ok(path) = std::str::from_utf8(row.text) else {
             return false;
         };
-        let Some(name) = models.name_for_path(path) else {
+        let Some(registration) = self
+            .profile
+            .and_then(|profile| models.registration(path, profile))
+        else {
             return false;
         };
-        self.names[ordinal] = Some(name);
+        self.registrations[ordinal] = Some(registration);
         true
     }
 
-    pub fn bind_all(&mut self, configs: &ConfigStrings, models: &ModelCatalog) -> u32 {
+    pub fn bind_all(
+        &mut self,
+        configs: &ConfigStrings,
+        models: &ModelCatalog,
+        profile: ModelProfile,
+    ) -> u32 {
         self.reset();
+        self.profile = Some(profile);
         self.range.range().fold(0, |missing, index| {
             missing + u32::from(!self.config_changed(index, configs, models))
         })
@@ -84,12 +97,12 @@ impl ClientModelBindings {
         if reference.namespace != ResourceNamespace::Client(self.client) {
             return None;
         }
-        let name = self
-            .names
+        let registration = self
+            .registrations
             .get(reference.ordinal as usize)
             .copied()
             .flatten()?;
-        models.resolve_name_with(name, u32::try_from(skin).unwrap_or(0), policy)
+        models.binding(registration, u32::try_from(skin).unwrap_or(0), policy)
     }
 }
 
