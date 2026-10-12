@@ -11,7 +11,7 @@ pub struct Function {
     pub number: u32,
     pub heap: bool,
     pub provider: &'static [u8],
-    pub versions: &'static [&'static [u8]],
+    pub versions: &'static [(&'static [u8], u8)],
     pub parameters: &'static [NativeScalar],
     pub result: NativeScalar,
     pub(crate) operation: Operation,
@@ -19,14 +19,14 @@ pub struct Function {
 use NativeScalar::{Double, I32, U32, Void, Word};
 const LIBC: &[u8] = b"libc.so.6";
 const LIBM: &[u8] = b"libm.so.6";
-const BASE_VERSION: &[&[u8]] = &[b"GLIBC_2.2.5"];
+const BASE_VERSION: &[(&[u8], u8)] = &[(b"GLIBC_2.2.5", 8)];
 const ENGINE_ABI: &[u8] = b"qa-engine";
 pub const FUNCTIONS: &[Function] = &[
     Function {
         name: b"memcpy",
         heap: false,
         provider: LIBC,
-        versions: &[b"GLIBC_2.2.5", b"GLIBC_2.14"],
+        versions: &[(b"GLIBC_2.2.5", 8), (b"GLIBC_2.14", 8)],
         number: FIRST,
         parameters: &[Word, Word, Word],
         result: Word,
@@ -66,7 +66,7 @@ pub const FUNCTIONS: &[Function] = &[
         name: b"strlen",
         heap: false,
         provider: LIBC,
-        versions: BASE_VERSION,
+        versions: &[(b"GLIBC_2.2.5", 8), (b"GLIBC_2.0", 4)],
         number: FIRST + 3,
         parameters: &[Word],
         result: Word,
@@ -480,11 +480,16 @@ pub fn function(number: u32) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.number == number)
 }
 impl Function {
+    pub fn supports_version(&self, pointer_bytes: u8, version: &[u8]) -> bool {
+        self.versions
+            .iter()
+            .any(|&(name, bytes)| bytes == pointer_bytes && name == version)
+    }
     /// Pointer-width admission is separate from resolving the import name.
     /// The i386 platform gate currently admits scalar/byte-oriented services;
     /// Windows object, TLS and CRT pointer-table layouts still require their
     /// own verified 32-bit module boundary before admission can be widened.
-    pub(crate) fn supports_pointer_bytes(&self, pointer_bytes: u8) -> bool {
+    pub fn supports_pointer_bytes(&self, pointer_bytes: u8) -> bool {
         pointer_bytes == 8
             || (pointer_bytes == 4
                 && matches!(

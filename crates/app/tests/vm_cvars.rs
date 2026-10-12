@@ -21,12 +21,14 @@ fn q3_vm_cvars_share_registry_and_match_native_layout_and_reference_rows() {
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::Microsoft,
             },
         ),

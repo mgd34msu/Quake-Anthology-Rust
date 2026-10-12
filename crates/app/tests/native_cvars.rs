@@ -77,6 +77,7 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
                         platform_time: EventTime(0),
                         command: &[],
                         addresses: Addresses::NativeFunction {
+                            pointer_bytes: 8,
                             abi: qa_platform::native::NativeAbi::SystemV,
                         },
                         arguments,

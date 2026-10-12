@@ -1,0 +1,229 @@
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
+
+use qa_app::{
+    Runtime,
+    host::FrameHost,
+    modules::{Export, ModuleResult, Phase, Program, Q3Spec, State, load_q3},
+};
+use qa_compat::{
+    memory::{ModuleMemory, Width},
+    native::{Error, NamedExport, ReturnedTable, TableFunction, Vm},
+};
+use qa_console::{commands::Console, views::Context};
+use qa_core::{
+    names::NameTable,
+    primitives::{CallbackId, ModuleId, NameId, ThinkTime},
+};
+use qa_formats::program::native::{Image, LoadRole};
+use qa_platform::native::{NativeAbi, NativeScalar};
+use qa_session::timing::TickRate;
+use std::{path::PathBuf, time::Duration};
+
+struct Files(PathBuf);
+impl Drop for Files {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn symbol(image: &Image, name: &[u8]) -> u64 {
+    image
+        .symbols
+        .iter()
+        .find(|s| s.defined && s.name.and_then(|id| image.names.get(id)) == Some(name))
+        .unwrap()
+        .address
+}
+
+#[test]
+#[ignore = "requires compiled original Q3 syscall fixture and the verified sibling qa-native-i386 helper"]
+fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
+    let fixture = PathBuf::from(
+        std::env::var_os("QA_NATIVE_Q3_ELF32_FIXTURE")
+            .expect("explicit compiled qagame32.so fixture"),
+    );
+    let bytes = std::fs::read(&fixture).unwrap();
+    let image = Image::parse(&bytes, Some(0x2000_0000), LoadRole::Library).unwrap();
+    assert_eq!(image.target.bits, 32);
+    let entry = symbol(&image, b"dllEntry");
+    let passfloat = symbol(&image, b"qa_fixture_passfloat");
+    let layout = symbol(&image, b"qa_q3_layout");
+    let files = Files(std::env::temp_dir().join(format!("qa-elf32-q3-{}", std::process::id())));
+    std::fs::create_dir(&files.0).unwrap();
+    std::fs::write(files.0.join("qagame32.so"), &bytes).unwrap();
+    std::fs::write(files.0.join("fixture.dat"), b"0123456789").unwrap();
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    let mut requests = Vec::new();
+    load_q3(
+        &mut runtime,
+        &[Q3Spec::parse("game:qagame32.so").unwrap()],
+        &mut requests,
+        TickRate::fixed(50).unwrap(),
+        None,
+    )
+    .unwrap();
+    let Program::Native { vm, .. } = &mut requests[0].program else {
+        panic!("native program")
+    };
+    assert!(matches!(
+        vm.declare_table(ReturnedTable {
+            version: 3,
+            bytes: 16,
+            functions: vec![TableFunction {
+                offset: 8,
+                parameters: &[],
+                result: NativeScalar::Void,
+            }]
+            .into_boxed_slice(),
+        }),
+        Err(Error::Process(
+            qa_platform::native::NativeError::Unsupported
+        ))
+    ));
+    let base = vm.process.base();
+    {
+        let memory = ModuleMemory::borrow(base, vm.process.memory_mut().unwrap()).unwrap();
+        let expected = [
+            4, 4, 4, 4, 272, 0, 4, 8, 12, 16, 56, 468, 208, 24, 516, 808, 776,
+        ];
+        for (index, value) in expected.into_iter().enumerate() {
+            assert_eq!(
+                memory
+                    .read_field(layout + (index * 4) as u64, Width::Word)
+                    .unwrap(),
+                value
+            );
+        }
+    }
+    // Observe the actual original PASSFLOAT syscall words through the same gate.
+    // Session execution below uses the production Q3 CallTable for services.
+    let entry = vm
+        .process
+        .bind(
+            entry,
+            NativeAbi::SystemV,
+            &[NativeScalar::Word],
+            NativeScalar::Void,
+        )
+        .unwrap();
+    let mut arguments = [0; 13];
+    arguments[0] = vm.import_callback();
+    vm.process
+        .invoke(entry, arguments, |_, _, _| {
+            panic!("dllEntry must only store the callback")
+        })
+        .unwrap();
+    let probe = vm
+        .process
+        .bind(passfloat, NativeAbi::SystemV, &[], NativeScalar::I32)
+        .unwrap();
+    let mut calls = 0;
+    let result = vm
+        .process
+        .invoke(probe, [0; 13], |call, _, _| {
+            calls += 1;
+            assert_eq!(call.number, 205);
+            assert_eq!(call.arguments[0] as u32, (-1.25_f32).to_bits());
+            Ok(0x31415926)
+        })
+        .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(result, 0x31415926);
+
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        requests,
+    )
+    .unwrap();
+    host.initialize_modules(Phase::Server);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    for (index, time) in [100, 137, 1000].into_iter().enumerate() {
+        host.call_module_export(
+            ModuleId(1),
+            Export::clocked(CallbackId(8)),
+            ThinkTime::Milliseconds(time),
+        )
+        .unwrap();
+        let counts = host.module_counts(ModuleId(1)).unwrap();
+        // Guest validates exact cvars, negative seek, file tail, startup vectors,
+        // PASSFLOAT results and constructor order before returning this count.
+        assert_eq!(
+            counts.last_result,
+            Some(ModuleResult::Native(0x13570001 + index as u64))
+        );
+        assert_eq!(counts.traps, 0);
+        assert_eq!(counts.rejected, 0);
+    }
+    let calls = host.module_counts(ModuleId(1)).unwrap().calls;
+    host.shutdown_modules();
+    let counts = host.module_counts(ModuleId(1)).unwrap();
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Stopped));
+    assert_eq!(counts.calls, calls + 5); // GAME_SHUTDOWN, three array entries, DT_FINI.
+    assert_eq!(counts.traps, 0); // finalizer bodies verify reverse order.
+    assert_eq!(counts.rejected, 0);
+    let calls = counts.calls;
+    host.shutdown_modules();
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
+}
+
+#[test]
+#[ignore = "requires the same compiled ELF32 original Q3 fixture"]
+fn elf32_binding_rejects_x64_and_unverified_hardening_versions() {
+    let fixture = PathBuf::from(
+        std::env::var_os("QA_NATIVE_Q3_ELF32_FIXTURE")
+            .expect("explicit compiled qagame32.so fixture"),
+    );
+    let bytes = std::fs::read(&fixture).unwrap();
+    for version in [b"GLIBC_2.2.5".as_slice(), b"GLIBC_2.99"] {
+        let mut image = Image::parse(&bytes, Some(0x2000_0000), LoadRole::Library).unwrap();
+        image.names = NameTable::load_reserved(
+            (0..image.names.len()).map(|i| image.names.get(NameId(i as u32)).unwrap()),
+            1,
+            version.len(),
+        )
+        .unwrap();
+        let version = image.names.intern(version).unwrap();
+        let index = image
+            .symbols
+            .iter()
+            .position(|s| s.name.and_then(|id| image.names.get(id)) == Some(b"strlen"))
+            .unwrap();
+        image.symbols[index].version.as_mut().unwrap().name = version;
+        let error = match Vm::map_image(
+            image,
+            &[NamedExport {
+                name: b"vmMain",
+                command: Some(0),
+                parameters: &[NativeScalar::Word; 13],
+                result: NativeScalar::Word,
+            }],
+            &[],
+            Duration::from_secs(3),
+        ) {
+            Err(Error::Binding(error)) => error,
+            _ => panic!("foreign width/version must reject before launch"),
+        };
+        assert!(error.contains("strlen@GLIBC_2."));
+    }
+    let bytes = std::fs::read(fixture.with_file_name("qagame32-host-hardening.so")).unwrap();
+    let image = Image::parse(&bytes, Some(0x2000_0000), LoadRole::Library).unwrap();
+    let error = match Vm::map_image(
+        image,
+        &[NamedExport {
+            name: b"vmMain",
+            command: Some(0),
+            parameters: &[NativeScalar::Word; 13],
+            result: NativeScalar::Word,
+        }],
+        &[],
+        Duration::from_secs(3),
+    ) {
+        Err(Error::Binding(error)) => error,
+        _ => panic!("unverified hardening import must reject before launch"),
+    };
+    assert!(error.contains("__stack_chk_fail@GLIBC_2.4"));
+}

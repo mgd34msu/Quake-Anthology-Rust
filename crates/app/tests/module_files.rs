@@ -34,8 +34,17 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
     for (base, addresses, wide) in [
         (0, Addresses::Qvm { mask: 511 }, false),
         (
+            0x2000_0000,
+            Addresses::Native {
+                pointer_bytes: 4,
+                abi: NativeAbi::SystemV,
+            },
+            false,
+        ),
+        (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: NativeAbi::Microsoft,
             },
             false,
@@ -43,6 +52,7 @@ fn q3_file_imports_seek_shared_handles_with_native_long_widths_and_eof() {
         (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: NativeAbi::SystemV,
             },
             true,

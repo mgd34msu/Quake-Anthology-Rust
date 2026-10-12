@@ -389,8 +389,8 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
             Err(qa_compat::native::Error::Export)
         ));
     }
-    let (file, _) = elf_symbol_fixture(32);
-    let image = Image::parse(&file, Some(0x2000_0000), LoadRole::Library).unwrap();
+    let file = pe_export_fixture(32);
+    let image = Image::parse(&file, None, LoadRole::Library).unwrap();
     assert!(matches!(
         Vm::map_image(
             image,

@@ -1876,6 +1876,15 @@ impl SurfacePrepare {
             Some(index) => Some(self.catalog.rgba[index].as_ref()?),
             None => None,
         };
+        let indexed_coordinates = if let Some(source) = primitive.indexed {
+            Some(
+                self.catalog
+                    .surface_info(primitive.world, primitive.surface)?
+                    .indexed_coordinates(surface, source),
+            )
+        } else {
+            None
+        };
         let vertices = self.clip.sources(indices.len())?;
         // Recipe ids map to this immutable boundary, whose source corner order
         // is the same order used at recipe registration. Intersections still
@@ -1886,11 +1895,7 @@ impl SurfacePrepare {
                 normal: loaded.normal,
                 ..loaded.vertex
             };
-            if let Some(source) = primitive.indexed {
-                let info = self
-                    .catalog
-                    .surface_info(primitive.world, primitive.surface)?;
-                let (projection, minima) = info.indexed_coordinates(surface, source);
+            if let Some((projection, minima)) = indexed_coordinates {
                 vertex.texcoord = std::array::from_fn(|axis| {
                     (crate::world::geometry::project_texture(projection[axis], vertex.position)
                         - minima[axis] as f32)

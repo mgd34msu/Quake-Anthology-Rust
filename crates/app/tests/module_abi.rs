@@ -39,9 +39,11 @@ fn q3_visibility_imports_use_compiled_pvs_and_native_portal_policy() {
     for addresses in [
         Addresses::Qvm { mask: 127 },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
         },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::Microsoft,
         },
     ] {
@@ -173,9 +175,11 @@ fn q3_area_connection_keeps_native_bounds_and_integer_override() {
     for addresses in [
         Addresses::Qvm { mask: 127 },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
         },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::Microsoft,
         },
     ] {
@@ -296,9 +300,11 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
     for addresses in [
         Addresses::Qvm { mask: 127 },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
         },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::Microsoft,
         },
     ] {
@@ -448,9 +454,11 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
     for addresses in [
         Addresses::Qvm { mask: 127 },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
         },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::Microsoft,
         },
     ] {
@@ -658,9 +666,11 @@ fn module_console_prints_do_not_wait_for_client_consumers() {
     for addresses in [
         Addresses::Qvm { mask: 127 },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
         },
         Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::Microsoft,
         },
     ] {
@@ -786,7 +796,10 @@ fn local_native_and_received_priority_prints_have_identical_hud_effects() {
                             context: context(),
                             platform_time: EventTime(0),
                             command: &[],
-                            addresses: Addresses::Native { abi },
+                            addresses: Addresses::Native {
+                                pointer_bytes: 8,
+                                abi
+                            },
                             arguments: &[u64::from(level), base + 16],
                         },
                         &mut unknown
@@ -877,12 +890,14 @@ fn q3_game_and_ui_commands_insert_and_append_in_the_one_buffer() {
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::Microsoft,
             },
         ),
@@ -989,6 +1004,7 @@ fn q3_spawn_tokens_have_independent_module_cursors_and_bounded_raw_output() {
         (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
@@ -1087,12 +1103,14 @@ fn numeric_cvar_imports_share_views_and_keep_signed_native_results() {
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::Microsoft,
             },
         ),
@@ -1211,6 +1229,7 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
         (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
@@ -1304,6 +1323,7 @@ fn q3_null_setters_reset_existing_views_and_leave_missing_names_absent() {
         (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
@@ -1436,6 +1456,7 @@ fn q3_ui_create_and_reset_preserve_native_flags_protection_and_latches() {
         (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
@@ -1565,6 +1586,7 @@ fn q3_ui_numeric_setter_preserves_native_formatting_and_forced_writes() {
         (
             1u64 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
@@ -1662,6 +1684,7 @@ fn native_syscall_memory_width_stays_separate_from_child_runtime_imports() {
         platform_time: EventTime(0),
         command: &[],
         addresses: Addresses::Native {
+            pointer_bytes: 8,
             abi: qa_platform::native::NativeAbi::SystemV,
         },
         arguments: &[base + 32, base + 16, (1u64 << 32) + 1],
@@ -1750,6 +1773,7 @@ fn original_float_syscalls_keep_their_declared_bits() {
                 &QUAKEC,
                 43,
                 Addresses::Native {
+                    pointer_bytes: 8,
                     abi: qa_platform::native::NativeAbi::SystemV
                 },
                 &args
@@ -1789,6 +1813,7 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
             platform_time: EventTime((u64::from(u32::MAX) + 8) * 1_000_000),
             command: &[b"native", b"arg"],
             addresses: Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
             arguments: &[base + 16, base + 32],

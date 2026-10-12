@@ -90,6 +90,7 @@ pub struct ImportTrapInfo<'a> {
 pub struct Vm {
     pub process: NativeProcess,
     abi: NativeAbi,
+    pointer_bytes: u8,
     exports: Box<[Option<Export>]>,
     table: Option<table::Table>,
     initialize: Box<[LifecycleCall]>,
@@ -132,9 +133,12 @@ impl Vm {
         imports: &[NativeImport<'_>],
         timeout: Duration,
     ) -> Result<Self, Error> {
-        if image.target.bits != 64 {
+        if image.target.bits != 64
+            && !(image.target.bits == 32 && image.target.encoding == Encoding::Elf)
+        {
             return Err(Error::Process(NativeError::Unsupported));
         }
+        let pointer_bytes = (image.target.bits / 8) as u8;
         let source_bytes = image.bytes.len();
         let runtime = runtime::bind(&mut image, imports).map_err(Error::Binding)?;
         let imports: Vec<_> = imports.iter().copied().chain(runtime.imports).collect();
@@ -178,7 +182,7 @@ impl Vm {
                 [
                     0,
                     runtime.startup.unwrap_or(0),
-                    runtime.startup.unwrap_or(0) + 8,
+                    runtime.startup.unwrap_or(0) + u64::from(pointer_bytes),
                 ],
             ),
             (lifecycle.finalize, &mut finalize, &[][..], [0; 3]),
@@ -294,7 +298,7 @@ impl Vm {
         let process = NativeProcess::load(NativeImage {
             imports: &imports,
             base: image.base,
-            pointer_bytes: (image.target.bits / 8) as u8,
+            pointer_bytes,
             bytes: &image.bytes,
             regions: &regions,
             timeout,
@@ -312,6 +316,7 @@ impl Vm {
         Ok(Self {
             process,
             abi,
+            pointer_bytes,
             exports,
             table: None,
             initialize: initialize.into_boxed_slice(),
@@ -435,6 +440,7 @@ impl Vm {
         let native_configs = &mut self.native_configs;
         let pmove = &mut self.pmove;
         let abi = self.abi;
+        let pointer_bytes = self.pointer_bytes;
         self.process
             .set_event_time(calls.platform_time)
             .map_err(Error::Process)?;
@@ -458,9 +464,9 @@ impl Vm {
                     platform_time: calls.platform_time,
                     command: calls.command,
                     addresses: if call.function {
-                        Addresses::NativeFunction { abi }
+                        Addresses::NativeFunction { abi, pointer_bytes }
                     } else {
-                        Addresses::Native { abi }
+                        Addresses::Native { abi, pointer_bytes }
                     },
                     arguments: &call.arguments,
                 };

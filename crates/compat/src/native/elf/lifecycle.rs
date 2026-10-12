@@ -1,5 +1,5 @@
 //! Relocated ELF shared-object init/fini order, resolved only at load.
-use crate::memory::ModuleMemory;
+use crate::memory::{ModuleMemory, Width};
 use qa_formats::{FormatError, program::native::Image};
 
 pub struct Lifecycle {
@@ -8,6 +8,11 @@ pub struct Lifecycle {
 }
 impl Lifecycle {
     pub fn load(image: &mut Image, source_bytes: usize) -> Result<Self, FormatError> {
+        let pointer_bytes = match image.target.bits {
+            32 => 4,
+            64 => 8,
+            _ => return Err(FormatError::InvalidRecordSize),
+        };
         let bias = image
             .base
             .checked_sub(image.preferred_base)
@@ -34,15 +39,22 @@ impl Lifecycle {
             match (tag(pointer), tag(size)) {
                 (None, None) => {}
                 (Some(at), Some(bytes)) => {
-                    if bytes % 8 != 0 {
+                    if bytes % pointer_bytes as u64 != 0 {
                         return Err(FormatError::InvalidRecordSize);
                     }
                     let bytes = usize::try_from(bytes).map_err(|_| FormatError::InvalidRange)?;
-                    let entries = memory
-                        .read(address(at)?, bytes)
+                    let at = address(at)?;
+                    memory
+                        .read(at, bytes)
                         .map_err(|_| FormatError::InvalidRange)?;
-                    for entry in entries.chunks_exact(8) {
-                        output.push(u64::from_le_bytes(std::array::from_fn(|i| entry[i])));
+                    for offset in (0..bytes).step_by(pointer_bytes) {
+                        let entry = at + offset as u64;
+                        let value = if pointer_bytes == 4 {
+                            memory.read_field(entry, Width::Word).map(u64::from)
+                        } else {
+                            memory.read_u64(entry)
+                        };
+                        output.push(value.map_err(|_| FormatError::InvalidRange)?);
                     }
                     if reverse {
                         output.reverse();

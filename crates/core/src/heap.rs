@@ -25,9 +25,9 @@ impl Heap {
     pub fn load(base: u64, bytes: usize, capacity: usize) -> Result<Self, MemoryError> {
         extent(base, bytes)?;
         if base == 0
-            || base % 16 != 0
+            || !base.is_multiple_of(16)
             || bytes == 0
-            || bytes % 16 != 0
+            || !bytes.is_multiple_of(16)
             || capacity == 0
             || capacity > 65536
         {

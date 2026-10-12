@@ -157,9 +157,11 @@ fn queued_q3_weapon_selection_uses_the_registry_for_independent_seats_and_module
             for addresses in [
                 Addresses::Qvm { mask: 127 },
                 Addresses::Native {
+                    pointer_bytes: 8,
                     abi: qa_platform::native::NativeAbi::SystemV,
                 },
                 Addresses::Native {
+                    pointer_bytes: 8,
                     abi: qa_platform::native::NativeAbi::Microsoft,
                 },
             ] {
@@ -207,9 +209,11 @@ fn queued_q3_weapon_selection_uses_the_registry_for_independent_seats_and_module
         for addresses in [
             Addresses::Qvm { mask: 127 },
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::Microsoft,
             },
         ] {
@@ -288,6 +292,7 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
         .native_weapon(RuleSetId::Quake3, 9)
         .unwrap();
     let addresses = Addresses::Native {
+        pointer_bytes: 8,
         abi: qa_platform::native::NativeAbi::SystemV,
     };
     for (seat, number) in [263, 9].into_iter().enumerate() {

@@ -70,6 +70,7 @@ pub(super) fn bind(
     explicit: &[NativeImport<'_>],
 ) -> Result<BoundRuntime, String> {
     let prefix = explicit.len();
+    let pointer_bytes = (image.target.bits / 8) as u8;
     let needs_heap = explicit.iter().any(|import| {
         qa_platform::native::runtime::function(import.number).is_some_and(|function| function.heap)
     }) || match image.target.encoding {
@@ -168,9 +169,13 @@ pub(super) fn bind(
         };
         let mut storage = std::mem::take(&mut image.bytes).into_vec();
         storage.resize(end, 0);
-        config
-            .prepare_crt(&mut storage[offset..offset + page])
-            .map_err(|_| "native CRT storage")?;
+        // The i386 admission covers scalar/byte services. Its startup vectors
+        // and errno use the zeroed page; x64 CRT pointer tables are not exposed.
+        if pointer_bytes == 8 {
+            config
+                .prepare_crt(&mut storage[offset..offset + page])
+                .map_err(|_| "native CRT storage")?;
+        }
         if let Some(teb) = config.teb {
             let thread = usize::try_from(teb - image.base).map_err(|_| "native thread storage")?;
             let tls_data = teb
@@ -246,7 +251,7 @@ pub(super) fn bind(
                     image
                         .names
                         .get(id)
-                        .is_some_and(|version| function.versions.contains(&version))
+                        .is_some_and(|version| function.supports_version(pointer_bytes, version))
                 })
         });
         let Some(function) = function else {
@@ -286,6 +291,9 @@ pub(super) fn bind(
             return NativeProcess::import_address(image.base, image.bytes.len(), ordinal)
                 .map_err(|e| format!("native import reservation: {e:?}"));
         };
+        if !function.supports_pointer_bytes(pointer_bytes) {
+            return Err(import_error(image, name, provider, version));
+        }
         if let Some(offset) = function.data_offset() {
             return config
                 .map(|config| config.base + offset as u64)

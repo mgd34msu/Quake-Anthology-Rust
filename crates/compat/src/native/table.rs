@@ -22,6 +22,11 @@ impl Vm {
     /// Declare slots before session FunctionTable construction. Their native
     /// addresses become callable only after the API return has been checked.
     pub fn declare_table(&mut self, layout: ReturnedTable) -> Result<u32, Error> {
+        if self.pointer_bytes != 8 {
+            return Err(Error::Process(
+                qa_platform::native::NativeError::Unsupported,
+            ));
+        }
         if self.table.is_some()
             || layout.bytes < 4
             || layout.functions.is_empty()
@@ -52,7 +57,7 @@ impl Vm {
         });
         Ok(ordinal)
     }
-    /// Called once during session initialization, with the child stopped.
+    /// Called once during session initialization, with the child parked.
     /// Resolve every entry before publishing any, so malformed tables cannot
     /// leave a partially callable module.
     pub fn bind_table(&mut self, address: u64) -> Result<(), Error> {
@@ -131,7 +136,7 @@ impl Vm {
         }
         Ok(())
     }
-    /// Engine-readable ABI data stays in the same stopped-child memory.
+    /// Engine-readable ABI data stays in the same parked-child memory.
     pub fn table_address(&self) -> Option<u64> {
         self.table.as_ref().and_then(|table| table.address)
     }

@@ -14,10 +14,12 @@ pub enum Addresses {
     },
     Native {
         abi: qa_platform::native::NativeAbi,
+        pointer_bytes: u8,
     },
     /// Declared C function parameters, including full-width native size_t.
     NativeFunction {
         abi: qa_platform::native::NativeAbi,
+        pointer_bytes: u8,
     },
 }
 pub struct Invocation<'a, 'engine, 'memory> {
@@ -672,6 +674,7 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
                 command: &[],
                 addresses: Addresses::Native {
                     abi: qa_platform::native::NativeAbi::SystemV,
+                    pointer_bytes: 8,
                 },
                 arguments: &arguments[..words],
             };
@@ -1737,9 +1740,11 @@ fn file_seek(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let offset = match c.addresses {
         Addresses::Native {
             abi: qa_platform::native::NativeAbi::SystemV,
+            pointer_bytes: 8,
         }
         | Addresses::NativeFunction {
             abi: qa_platform::native::NativeAbi::SystemV,
+            pointer_bytes: 8,
         } => c.arg(1)? as i64,
         _ => i64::from(c.arg(1)? as u32 as i32),
     };

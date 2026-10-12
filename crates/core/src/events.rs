@@ -9,6 +9,10 @@ use std::fmt::{self, Write};
 pub const CONSOLE_DISPLAY_RECORDS: usize = 128;
 
 #[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Fixed ring slots retain native page handles without allocating on publication."
+)]
 pub enum FrameEvent {
     Sound(SoundEvent),
     Effect(EffectEvent),
@@ -377,7 +381,7 @@ impl EventRing {
         if wire_length > NATIVE_WIRE_BYTES.min(self.texts.width * NATIVE_WIRE_PAGES)
             || bytes.len() > NATIVE_PAYLOAD_BYTES.min(self.texts.width * NATIVE_PAYLOAD_PAGES)
             || wire_length > bytes.len()
-            || (bytes.len() - wire_length) % NATIVE_CUE_CAPTURE_BYTES != 0
+            || !(bytes.len() - wire_length).is_multiple_of(NATIVE_CUE_CAPTURE_BYTES)
         {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);

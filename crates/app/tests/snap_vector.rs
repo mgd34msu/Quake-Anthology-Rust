@@ -21,12 +21,14 @@ fn snap_imports_keep_x87_ties_zero_sign_and_integer_indefinite_results() {
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::SystemV,
             },
         ),
         (
             1 << 40,
             Addresses::Native {
+                pointer_bytes: 8,
                 abi: qa_platform::native::NativeAbi::Microsoft,
             },
         ),
