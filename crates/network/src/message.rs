@@ -408,7 +408,10 @@ impl<'a> Writer<'a> {
         self.write_bits(value.to_bits(), 32)
     }
     pub fn write_data(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        for &byte in bytes {
+        self.write_data_iter(bytes.iter().copied())
+    }
+    pub fn write_data_iter(&mut self, bytes: impl IntoIterator<Item = u8>) -> Result<(), Error> {
+        for byte in bytes {
             self.write_bits(u32::from(byte), 8)?;
         }
         Ok(())

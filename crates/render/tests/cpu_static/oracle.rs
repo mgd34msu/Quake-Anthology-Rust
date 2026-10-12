@@ -201,6 +201,7 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
         vertex_color,
         binding: SurfaceBinding {
             material,
+            lightmap_conversion: None,
             lightmap,
             lightmap_region: Some(AtlasRegion {
                 page: 7,

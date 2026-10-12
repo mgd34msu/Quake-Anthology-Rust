@@ -3,6 +3,45 @@ use qa_render::lightmap::{
     shift_quake3_rgb,
 };
 
+#[test]
+fn caller_owned_native_kernels_keep_style_arithmetic_and_prewrite_checks() {
+    use qa_render::lightmap::{build_quake_rgb_into, build_quake2_rgb_into};
+    let samples = [32, 16, 8, 200, 100, 50, 32, 16, 8, 101, 3, 1];
+    for (scale, expected) in [
+        (Q1GlScale::OriginalOverbright, [96, 48, 24, 255, 106, 52]),
+        (Q1GlScale::Standard, [48, 24, 12, 201, 53, 26]),
+    ] {
+        assert_eq!(
+            build_quake_rgb(2, 1, &samples, &[128, 256], scale).unwrap(),
+            expected
+        );
+        let mut actual = [251; 6];
+        build_quake_rgb_into(2, 1, &samples, &[128, 256], scale, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+    for (modulate, expected) in [
+        (0.5, [24, 12, 9, 125, 26, 7]),
+        (1.0, [48, 24, 18, 250, 53, 14]),
+    ] {
+        let styles = [[1.0, 0.5, 0.25], [0.5, 1.0, 2.0]];
+        assert_eq!(
+            build_quake2_rgb(2, 1, &samples, &styles, modulate).unwrap(),
+            expected
+        );
+        let mut actual = [251; 6];
+        build_quake2_rgb_into(2, 1, &samples, &styles, modulate, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+    let mut normalized = [0; 3];
+    build_quake2_rgb_into(1, 1, &[200, 100, 50], &[[1.0; 3]], 3.0, &mut normalized).unwrap();
+    assert_eq!(normalized, [255, 127, 63]);
+    let mut too_small = [71; 2];
+    assert!(
+        build_quake_rgb_into(1, 1, &[64; 3], &[256], Q1GlScale::Standard, &mut too_small).is_err()
+    );
+    assert_eq!(too_small, [71; 2]);
+}
+
 fn pixels(width: u32, height: u32, value: u8) -> Vec<u8> {
     vec![value; width as usize * height as usize * 3]
 }

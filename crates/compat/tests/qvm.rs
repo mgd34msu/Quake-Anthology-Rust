@@ -156,3 +156,52 @@ fn only_the_hook_loop_marks_load_sized_dirty_words() {
     assert!(!vm.hooks.take_dirty_word(0));
     assert!(!vm.hooks.take_dirty_word(usize::MAX));
 }
+
+#[derive(Default)]
+struct EntryCalls {
+    entries: u32,
+    imports: u32,
+    reject_entry: bool,
+}
+impl SystemCalls for EntryCalls {
+    fn begin_call(&mut self, vm: &mut Vm) -> Result<(), Trap> {
+        self.entries += 1;
+        if self.reject_entry {
+            return Err(Trap::Syscall);
+        }
+        vm.memory.write_word(0, self.entries as i32)?;
+        Ok(())
+    }
+    fn call(&mut self, vm: &mut Vm, _: u32, _: &[i32]) -> Result<i32, Trap> {
+        assert_eq!(vm.memory.read_word(0)?, self.entries as i32);
+        self.imports += 1;
+        Ok(77)
+    }
+}
+
+#[test]
+fn export_entry_runs_once_before_imports_and_rejection_does_not_enter_code() {
+    use Opcode::*;
+    let bytes = image(&[
+        (Enter, 64),
+        (Const, -1),
+        (Call, 0),
+        (Pop, 0),
+        (Const, -2),
+        (Call, 0),
+        (Leave, 64),
+    ]);
+    let mut vm = Vm::load(Image::parse(&bytes).unwrap()).unwrap();
+    let mut calls = EntryCalls::default();
+    assert_eq!(vm.call(&mut calls, [0; 10], 100, false), Ok(77));
+    assert_eq!((calls.entries, calls.imports), (1, 2));
+    calls.reject_entry = true;
+    assert_eq!(vm.call(&mut calls, [0; 10], 100, true), Err(Trap::Syscall));
+    assert_eq!((calls.entries, calls.imports), (2, 2));
+    assert_eq!(vm.hooks.instructions, 0);
+    assert_eq!(vm.memory.read_word(0).unwrap(), 1);
+    calls.reject_entry = false;
+    assert_eq!(vm.call(&mut calls, [0; 10], 100, true), Ok(77));
+    assert_eq!((calls.entries, calls.imports), (3, 4));
+    assert_eq!(vm.memory.read_word(0).unwrap(), 3);
+}

@@ -13,7 +13,7 @@ use qa_platform::native::{
 use std::{fmt::Write, time::Duration};
 
 pub mod elf;
-use crate::entities::{Entities, EntityProjection};
+use crate::entities::Entities;
 pub mod q2;
 mod runtime;
 mod table;
@@ -101,8 +101,7 @@ pub struct Vm {
     native_command: Option<crate::command::NativeCommand>,
     native_configs: Option<crate::configstrings::NativeConfigs>,
     resources: Option<[qa_core::primitives::IndexSpan; 3]>,
-    entities: Option<EntityProjection>,
-    player_values: Option<crate::players::PlayerValues>,
+    projection: Option<crate::projection::Projection>,
     pmove: Option<crate::pmove::Pmove>,
     client_think: Option<u32>,
     pmove_redirect: Option<(u32, usize)>,
@@ -121,8 +120,7 @@ pub struct NativeCalls<'a, 'engine> {
 }
 impl Vm {
     pub fn configure_q3_game(&mut self) {
-        self.entities = Some(EntityProjection::load_q3());
-        self.player_values = Some(crate::players::PlayerValues::load_q3());
+        self.projection = Some(crate::projection::Projection::load_q3());
     }
     pub fn resource_ranges(&self) -> Option<&[qa_core::primitives::IndexSpan; 3]> {
         self.resources.as_ref()
@@ -331,8 +329,7 @@ impl Vm {
             native_command: None,
             native_configs: None,
             resources: None,
-            entities: None,
-            player_values: None,
+            projection: None,
             pmove: None,
             client_think: None,
             pmove_redirect: None,
@@ -374,8 +371,10 @@ impl Vm {
         stats: &[qa_core::primitives::ValueBinding],
         persistent: &[qa_core::primitives::ValueBinding],
     ) -> Result<(), Error> {
-        if let Some(values) = &mut self.player_values {
-            values.bind(stats, persistent).map_err(Error::Service)?;
+        if let Some(projection) = &mut self.projection {
+            projection
+                .bind_values(stats, persistent)
+                .map_err(Error::Service)?;
         }
         Ok(())
     }
@@ -433,12 +432,12 @@ impl Vm {
         };
         let cvars = &mut self.cvars;
         let resources = self.resources.as_ref();
-        if let Some(entities) = &mut self.entities {
-            entities
+        if let Some(projection) = &mut self.projection {
+            projection
                 .seed(&calls.services.server.entities, calls.context.module)
                 .map_err(Error::Service)?;
         }
-        let entities = &mut self.entities;
+        let mut entities = self.projection.as_mut().map(|p| &mut p.entities);
         let surfaces = self.surfaces.as_ref();
         let native_command = self.native_command.as_ref();
         let native_configs = &mut self.native_configs;
@@ -458,7 +457,7 @@ impl Vm {
                     memory: &mut memory,
                     native_cvars: cvars.as_mut(),
                     native_resources: resources,
-                    native_entities: entities.as_mut(),
+                    native_entities: entities.as_deref_mut(),
                     native_surfaces: surfaces,
                     native_command,
                     native_configs: native_configs.as_mut(),
@@ -526,25 +525,16 @@ impl Vm {
         if export.reject_zero && value == 0 {
             return Err(Error::DllAttach);
         }
-        if let Some(entities) = &mut self.entities
-            && entities.ready()
-        {
+        if let Some(projection) = &mut self.projection {
             let mut memory = process_memory(&mut self.process)?;
-            let table = entities
-                .project(calls.services, &mut memory, calls.context)
+            projection
+                .publish(
+                    &mut memory,
+                    calls.services,
+                    calls.context,
+                    self.pmove.as_mut(),
+                )
                 .map_err(Error::Service)?;
-            if let Some(values) = &mut self.player_values {
-                values
-                    .project(
-                        &memory,
-                        table,
-                        entities,
-                        calls.context.module,
-                        calls.services.server,
-                        self.pmove.as_mut(),
-                    )
-                    .map_err(Error::Service)?;
-            }
         }
         Ok(value)
     }
@@ -558,7 +548,11 @@ impl Vm {
         entities: &qa_world::entities::EntityTable,
         native: qa_core::primitives::NativeEntity,
     ) -> Option<qa_core::primitives::EntityId> {
-        self.entities.as_ref()?.binding(entities, native).ok()?
+        self.projection
+            .as_ref()?
+            .entities
+            .binding(entities, native)
+            .ok()?
     }
     pub fn bind_client(
         &mut self,
@@ -566,14 +560,15 @@ impl Vm {
         native: qa_core::primitives::NativeEntity,
         entity: qa_core::primitives::EntityId,
     ) -> Result<(), Error> {
-        self.entities
+        self.projection
             .as_mut()
             .ok_or(Error::Export)?
+            .entities
             .bind_client(entities, native, entity)
             .map_err(Error::Service)
     }
     pub fn entities(&mut self) -> Result<Entities, Error> {
-        let layout = self.entities.as_ref().ok_or(Error::Export)?;
+        let layout = &self.projection.as_ref().ok_or(Error::Export)?.entities;
         let memory = process_memory(&mut self.process).map_err(|error| match error {
             ProcessMemoryError::Memory(_) => Error::Export,
             error => error.into(),

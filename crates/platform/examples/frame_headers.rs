@@ -1,7 +1,7 @@
 //! Original-C frame-prefix fixture IO; player/entity bodies are excluded.
 use qa_network::{
     message::{Encoding, Reader, Writer},
-    snapshots::Q2Header,
+    snapshots::{Q2Header, native_area_byte},
 };
 use qa_platform::allocations;
 use std::io::{Read, Write};
@@ -40,6 +40,9 @@ fn main() -> Result<(), String> {
         input_reader
             .read_data(&mut areas[..count])
             .map_err(|e| e.to_string())?;
+        for byte in &mut areas[..count] {
+            *byte = native_area_byte(*byte, true);
+        }
         let mut bytes = [0; 300];
         let mut decoded_areas = [0; 255];
         allocations::begin_frame();
@@ -91,6 +94,9 @@ fn main() -> Result<(), String> {
         output
             .write_all(&[decoded.flags, decoded.player_flags, count as u8])
             .map_err(|e| e.to_string())?;
+        for byte in &mut decoded_areas[..count] {
+            *byte = native_area_byte(*byte, true);
+        }
         output
             .write_all(&decoded_areas[..count])
             .map_err(|e| e.to_string())?;

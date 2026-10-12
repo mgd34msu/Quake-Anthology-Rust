@@ -270,6 +270,7 @@ fn compare(
     );
     let binding = SurfaceMaterial {
         material,
+        lightmap_conversion: None,
         lightmap: light,
         lightmap_region: region.then_some(AtlasRegion {
             page: 0,
@@ -402,6 +403,7 @@ fn invalid_prepared_region_preserves_each_generic_stage_and_depth() {
             SurfaceMaterial {
                 material,
                 lightmap: light,
+                lightmap_conversion: None,
                 texture_scale: [1.0; 2],
                 lightmap_region: Some(AtlasRegion {
                     page: 0,

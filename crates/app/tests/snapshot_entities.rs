@@ -930,11 +930,7 @@ fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Res
             ReceivedFrame::Quake3(f) => f.areas,
             _ => unreachable!(),
         };
-        let visible = if protocol == Protocol::Quake3_68 {
-            !bits[0]
-        } else {
-            bits[0]
-        };
+        let visible = !bits[0];
         assert_ne!(visible & (1 << 1), 0);
         assert_eq!(visible & (1 << 2), 0);
         portals.set(0, true).unwrap();
@@ -961,11 +957,7 @@ fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Res
             ReceivedFrame::Quake3(f) => f.areas,
             _ => unreachable!(),
         };
-        let visible = if protocol == Protocol::Quake3_68 {
-            !bits[0]
-        } else {
-            bits[0]
-        };
+        let visible = !bits[0];
         assert_ne!(visible & (1 << 2), 0);
         // Opening the portal does not make the hidden leaf's PVS bit visible.
         assert!(

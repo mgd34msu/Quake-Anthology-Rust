@@ -531,7 +531,7 @@ fn q2_store(
         flags: 7,
         qw_peers: 0,
         player: &player,
-        areas: &[0x81, 0x42],
+        areas: &[!0x81, !0x42],
         entities,
     })
 }
@@ -577,7 +577,7 @@ fn q2_frames_share_the_ring_and_reset_unchanged_rows() -> Result<(), Error> {
     let frame = client.frame(2).ok_or(Error::Context)?;
     assert_eq!(frame.time, ThinkTime::Milliseconds(200));
     assert_eq!(frame.flags, 7);
-    assert_eq!(frame.areas, &[0x81, 0x42]);
+    assert_eq!(frame.areas, &[!0x81, !0x42]);
     assert_eq!(frame.player[1], 2);
     assert_eq!(
         frame.entities.iter().map(|e| e.number).collect::<Vec<_>>(),
@@ -2034,7 +2034,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                         command: 0,
                         flags: 1,
                         qw_peers: 0,
-                        areas: &[0x81],
+                        areas: &[!0x81],
                         player: &q2_player,
                         entities: &[],
                     };

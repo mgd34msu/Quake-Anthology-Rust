@@ -481,8 +481,8 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
 
 impl Q2Header {
     pub const REPRO_FRAME_MASK: u32 = 0x07ff_ffff;
-    /// Body after svc_frame. Areas are borrowed connection-owned scratch;
-    /// the supplied limit is the negotiated protocol's native area capacity.
+    /// Body after svc_frame. Areas are converted to common 1=hidden polarity
+    /// in connection-owned scratch; the limit is the native area capacity.
     pub fn read<const PACKED: bool>(
         reader: &mut Reader<'_>,
         areas: &mut [u8],
@@ -510,7 +510,7 @@ impl Q2Header {
         } else {
             0
         };
-        let area_bytes = read_areas(reader, areas, area_limit)?;
+        let area_bytes = read_areas(reader, areas, area_limit, true)?;
         Ok((
             Self {
                 sequence,
@@ -522,8 +522,8 @@ impl Q2Header {
         ))
     }
 
-    /// Writes svc_frame and its area mask, leaving the native player/entity
-    /// records to the existing scalar field walker.
+    /// Writes svc_frame, converting common hidden areas to native visible bits
+    /// and leaving player/entity records to the existing scalar field walker.
     pub fn write<const PACKED: bool>(
         self,
         writer: &mut Writer<'_>,
@@ -551,7 +551,7 @@ impl Q2Header {
         if PACKED {
             writer.write_bits(u32::from(self.player_flags), 8)?;
         }
-        super::write_areas(writer, areas)?;
+        super::write_areas(writer, areas, true)?;
         Ok(())
     }
 }

@@ -22,7 +22,15 @@ pub struct AppearanceCapabilities {
     pub drawable: bool,
 }
 
-#[derive(Clone, Copy)]
+/// Native animation capabilities, selected at the connection boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponInterpolation {
+    None,
+    Snapshot,
+    Rate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct NativeRules {
     viewer: u32,
     weapon: u32,
@@ -42,9 +50,15 @@ struct NativeRules {
     alias_light: Option<Vec3>,
     alias_pitch_reversed: bool,
     gl_alias_roll_reversed: bool,
-    interpolation_events: [u32; 2],
+    interpolation_events: &'static [u32],
     interpolation_distance: Option<i32>,
     player_interpolation_events: bool,
+    sequence_step: Option<u32>,
+    weapon_interpolation: WeaponInterpolation,
+    world_zero: bool,
+    command_body_angles: bool,
+    indexed_external_pcx: bool,
+    software_alias: bool,
 }
 const NEUTRAL: NativeRules = NativeRules {
     viewer: 0,
@@ -65,9 +79,15 @@ const NEUTRAL: NativeRules = NativeRules {
     alias_light: None,
     alias_pitch_reversed: false,
     gl_alias_roll_reversed: false,
-    interpolation_events: [0; 2],
+    interpolation_events: &[],
     interpolation_distance: None,
     player_interpolation_events: false,
+    sequence_step: None,
+    weapon_interpolation: WeaponInterpolation::None,
+    world_zero: false,
+    command_body_angles: false,
+    indexed_external_pcx: false,
+    software_alias: false,
 };
 // Original quake-2/game/q_shared.h render/effects values. Rerelease game.h
 // retains these bits, renames bit6 NO_ORIGIN_LERP and adds OLD_FRAME_LERP.
@@ -86,17 +106,25 @@ const Q2: NativeRules = NativeRules {
     native_alpha: true,
     alias_light: Some(Vec3([-1.0, 0.0, 0.0])),
     gl_alias_roll_reversed: true,
-    interpolation_events: [6, 7],
+    interpolation_events: &[6, 7],
     interpolation_distance: Some(512),
+    sequence_step: Some(1),
+    weapon_interpolation: WeaponInterpolation::Snapshot,
+    world_zero: true,
+    indexed_external_pcx: true,
+    software_alias: true,
     ..NEUTRAL
 };
 const RULES: [NativeRules; 5] = [
     NativeRules {
         alias_pitch_reversed: true,
+        world_zero: true,
         ..NEUTRAL
     },
     NativeRules {
         alias_pitch_reversed: true,
+        world_zero: true,
+        command_body_angles: true,
         ..NEUTRAL
     },
     Q2,
@@ -105,6 +133,7 @@ const RULES: [NativeRules; 5] = [
         explicit_alpha: true,
         zero_scale: true,
         player_interpolation_events: true,
+        weapon_interpolation: WeaponInterpolation::Rate,
         ..Q2
     },
     // Q3 entity eFlags are not refEntity renderfx. An actual client-scene
@@ -112,88 +141,152 @@ const RULES: [NativeRules; 5] = [
     NEUTRAL,
 ];
 
+/// Cached source semantics. These never choose a model's presentation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AppearancePolicy {
+    rules: NativeRules,
+}
+pub fn policy(source: RuleSetId) -> AppearancePolicy {
+    AppearancePolicy {
+        rules: RULES[source as usize],
+    }
+}
+impl AppearancePolicy {
+    pub fn adjacent(self, current: u32, previous: u32) -> bool {
+        self.rules
+            .sequence_step
+            .is_none_or(|step| current.wrapping_sub(previous) == step)
+    }
+    pub fn world_zero(self) -> bool {
+        self.rules.world_zero
+    }
+    pub fn weapon_interpolation(self) -> WeaponInterpolation {
+        self.rules.weapon_interpolation
+    }
+    pub fn player_event_check(self) -> bool {
+        self.rules.player_interpolation_events
+    }
+}
+
+/// Alias basis and light conversion, selected once for model presentation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AliasPose {
+    pitch_reversed: bool,
+    gl_roll_reversed: bool,
+    light: Option<Vec3>,
+}
+impl AliasPose {
+    pub fn angles(self, mut angles: Vec3, software: bool) -> Vec3 {
+        if self.pitch_reversed {
+            angles.0[0] = -angles.0[0];
+        }
+        if !software && self.gl_roll_reversed {
+            angles.0[2] = -angles.0[2];
+        }
+        angles
+    }
+    pub fn light_direction(self, angles: Vec3) -> Option<Vec3> {
+        let light = self.light?;
+        let basis = math::angle_vectors(angles);
+        Some(Vec3([
+            light.dot(basis.forward),
+            -light.dot(basis.right),
+            light.dot(basis.up),
+        ]))
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelPresentation {
+    pub pose: AliasPose,
+    pub software_alias: bool,
+    pub fullbright_light: [f32; 2],
+    pub alpha_cutoffs: [f32; 2],
+}
+pub fn model_presentation(source: RuleSetId) -> ModelPresentation {
+    let rules = RULES[source as usize];
+    ModelPresentation {
+        pose: AliasPose {
+            pitch_reversed: rules.alias_pitch_reversed,
+            gl_roll_reversed: rules.gl_alias_roll_reversed,
+            light: rules.alias_light,
+        },
+        software_alias: rules.software_alias,
+        fullbright_light: [128.0, 64.0],
+        alpha_cutoffs: [0.33, 0.66],
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelSource {
+    pub indexed_external_pcx: bool,
+}
+pub fn model_source(source: RuleSetId) -> ModelSource {
+    ModelSource {
+        indexed_external_pcx: RULES[source as usize].indexed_external_pcx,
+    }
+}
+
 /// Values from the common cvar table, bound before entering the scene path.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AliasRoll {
     pub angle: f32,
     pub speed: f32,
 }
-/// Convert native alias angles to the core [forward, -right, up] convention.
+/// Convert native command angles into body angles before model presentation.
 /// QW playerinfo contains command angles; packetentities contain body angles.
-pub fn alias_pose_angles(
-    source: RuleSetId,
-    mut angles: Vec3,
-    velocity: Vec3,
-    qw_player: bool,
-    software: bool,
-    roll: AliasRoll,
-) -> Vec3 {
-    if qw_player {
-        // QW CL_LinkPlayers and V_CalcRoll retain their native operation order.
-        angles.0[0] = -angles.0[0] / 3.0;
-        angles.0[2] = 0.0;
-        let side = velocity.dot(math::angle_vectors(angles).right);
-        let sign = if side < 0.0 { -1.0 } else { 1.0 };
-        let magnitude = side.abs();
-        let side = if magnitude < roll.speed {
-            magnitude * roll.angle / roll.speed
-        } else {
-            roll.angle
+impl AppearancePolicy {
+    pub fn body_angles(
+        self,
+        mut angles: Vec3,
+        velocity: Vec3,
+        qw_player: bool,
+        roll: AliasRoll,
+    ) -> Vec3 {
+        if self.rules.command_body_angles && qw_player {
+            // QW CL_LinkPlayers and V_CalcRoll retain their native operation order.
+            angles.0[0] = -angles.0[0] / 3.0;
+            angles.0[2] = 0.0;
+            let side = velocity.dot(math::angle_vectors(angles).right);
+            let sign = if side < 0.0 { -1.0 } else { 1.0 };
+            let magnitude = side.abs();
+            let side = if magnitude < roll.speed {
+                magnitude * roll.angle / roll.speed
+            } else {
+                roll.angle
+            };
+            angles.0[2] = (side * sign) * 4.0;
+        }
+        angles
+    }
+
+    /// Q2 packet entities invalidate interpolation on native discontinuities.
+    /// Classic cl_ents.c uses integer abs on each floating displacement.
+    pub fn can_interpolate(
+        self,
+        previous: &EntityAppearance,
+        current: &EntityAppearance,
+        old: Vec3,
+        new: Vec3,
+    ) -> bool {
+        if previous.source != current.source {
+            return false;
+        }
+        let rules = self.rules;
+        let Some(distance) = rules.interpolation_distance else {
+            return true;
         };
-        angles.0[2] = (side * sign) * 4.0;
+        previous.models == current.models
+            && !self.is_interpolation_event(current)
+            && (new - old)
+                .0
+                .iter()
+                .all(|delta| delta.is_finite() && (*delta as i32).unsigned_abs() <= distance as u32)
     }
-    let rules = RULES[source as usize];
-    if rules.alias_pitch_reversed {
-        angles.0[0] = -angles.0[0];
-    }
-    // Q2 ref_soft uses AngleVectors directly. ref_gl reverses alias pitch
-    // before R_RotateForEntity, whose remaining roll rotation is negative.
-    if !software && rules.gl_alias_roll_reversed {
-        angles.0[2] = -angles.0[2];
-    }
-    angles
-}
 
-/// Native Q2 software alias light, rotated with the original dot/negate order.
-pub fn alias_light_direction(source: RuleSetId, angles: Vec3) -> Option<Vec3> {
-    let light = RULES[source as usize].alias_light?;
-    let basis = math::angle_vectors(angles);
-    Some(Vec3([
-        light.dot(basis.forward),
-        -light.dot(basis.right),
-        light.dot(basis.up),
-    ]))
-}
-
-/// Q2 packet entities invalidate interpolation on native discontinuities.
-/// Classic cl_ents.c uses integer abs on each floating displacement.
-pub fn can_interpolate(
-    previous: &EntityAppearance,
-    current: &EntityAppearance,
-    old: Vec3,
-    new: Vec3,
-) -> bool {
-    if previous.source != current.source {
-        return false;
+    pub fn is_interpolation_event(self, current: &EntityAppearance) -> bool {
+        self.rules
+            .interpolation_events
+            .contains(&current.native.event)
     }
-    let rules = RULES[current.source as usize];
-    let Some(distance) = rules.interpolation_distance else {
-        return true;
-    };
-    previous.models == current.models
-        && !rules.interpolation_events.contains(&current.native.event)
-        && (new - old)
-            .0
-            .iter()
-            .all(|delta| delta.is_finite() && (*delta as i32).unsigned_abs() <= distance as u32)
-}
-
-/// Enhanced Q2 player interpolation also rejects the current POV's teleport
-/// event. Classic protocol 34 retains its original player-origin check.
-pub fn can_interpolate_player_event(current: &EntityAppearance) -> bool {
-    let rules = RULES[current.source as usize];
-    !rules.player_interpolation_events
-        || !rules.interpolation_events.contains(&current.native.event)
 }
 
 fn native_alpha(flags: u32, effects: u64, rules: NativeRules) -> f32 {
@@ -222,35 +315,37 @@ fn native_alpha(flags: u32, effects: u64, rules: NativeRules) -> f32 {
     alpha
 }
 
-pub fn project(appearance: &EntityAppearance) -> AppearanceCapabilities {
-    let rules = RULES[appearance.source as usize];
-    let flags = appearance.native.render_flags;
-    let supported = rules.viewer
-        | rules.weapon
-        | rules.depth
-        | rules.fullbright
-        | rules.translucent
-        | rules.frame_lerp
-        | rules.old_frame;
-    let alpha = if rules.native_alpha && !(rules.explicit_alpha && appearance.alpha != 0.0) {
-        native_alpha(flags, appearance.native.effects, rules)
-    } else {
-        appearance.alpha
-    };
-    AppearanceCapabilities {
-        viewer_model: flags & rules.viewer != 0,
-        weapon_model: flags & rules.weapon != 0,
-        depth_hack: flags & rules.depth != 0,
-        fullbright: flags & rules.fullbright != 0,
-        frame_lerp: flags & rules.frame_lerp != 0,
-        state_old_frame: flags & rules.old_frame != 0,
-        alpha,
-        scale: if rules.zero_scale && appearance.scale == 0.0 {
-            1.0
+impl AppearancePolicy {
+    pub fn project(self, appearance: &EntityAppearance) -> AppearanceCapabilities {
+        let rules = self.rules;
+        let flags = appearance.native.render_flags;
+        let supported = rules.viewer
+            | rules.weapon
+            | rules.depth
+            | rules.fullbright
+            | rules.translucent
+            | rules.frame_lerp
+            | rules.old_frame;
+        let alpha = if rules.native_alpha && !(rules.explicit_alpha && appearance.alpha != 0.0) {
+            native_alpha(flags, appearance.native.effects, rules)
         } else {
-            appearance.scale
-        },
-        unsupported: appearance.native.effects | u64::from(flags & !supported),
-        drawable: flags & rules.beam == 0,
+            appearance.alpha
+        };
+        AppearanceCapabilities {
+            viewer_model: flags & rules.viewer != 0,
+            weapon_model: flags & rules.weapon != 0,
+            depth_hack: flags & rules.depth != 0,
+            fullbright: flags & rules.fullbright != 0,
+            frame_lerp: flags & rules.frame_lerp != 0,
+            state_old_frame: flags & rules.old_frame != 0,
+            alpha,
+            scale: if rules.zero_scale && appearance.scale == 0.0 {
+                1.0
+            } else {
+                appearance.scale
+            },
+            unsupported: appearance.native.effects | u64::from(flags & !supported),
+            drawable: flags & rules.beam == 0,
+        }
     }
 }

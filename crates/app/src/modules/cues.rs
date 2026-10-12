@@ -52,17 +52,14 @@ impl FrameHost {
         slot: u16,
         current: Option<ReceivedFrame<'_>>,
     ) -> Option<Vec3> {
-        let projection = self
-            .runtime
-            .snapshots
-            .get(client.0 as usize)?
-            .as_ref()?
-            .entity_projection();
+        let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
         crate::client_scene::ClientEntities {
             client,
             current,
             previous: None,
-            projection,
+            projection: snapshot.entity_projection(),
+            appearance: snapshot.appearance_policy()?,
+            alias_roll: self.alias_roll(),
             interpolation: crate::snapshots::Interpolation::default(),
         }
         .sound_origin(u32::from(slot))

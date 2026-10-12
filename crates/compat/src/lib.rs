@@ -13,6 +13,7 @@ pub mod native;
 mod numbers;
 mod players;
 pub mod pmove;
+mod projection;
 pub mod q2_abi;
 pub mod quakec;
 pub mod qvm;

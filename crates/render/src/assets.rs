@@ -751,6 +751,7 @@ impl Assets {
                 material: materials[source].material,
                 lightmap: materials[source].lightmap,
                 lightmap_region: materials[source].lightmap_region,
+                lightmap_conversion: materials[source].lightmap_conversion,
                 texture_scale: materials[source].texture_scale,
                 mesh_indices: Span {
                     first,

@@ -6,6 +6,7 @@ use qa_core::names::{NameTable, canonical_path};
 use qa_core::primitives::{Bounds, IndexSpan, NameId, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
+use qa_gameplay::rules::appearance::{self, AliasPose, ModelPresentation, ModelSource};
 use qa_render::assets::{MaterialSettings, SoftwareAlias, Stage, StageTexture};
 use qa_render::material::resources::{ImageSettings, ImageUse, Images, ImagesState, IndexedTarget};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
@@ -87,12 +88,12 @@ impl Default for ModelLimits {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelBinding {
     pub model: ModelId,
     pub material: MaterialId,
     /// Native model presentation chosen at registration, independent of wire.
-    pub rules: RuleSetId,
+    pub pose: AliasPose,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelMaterialPolicy {
@@ -201,8 +202,22 @@ impl ModelFile {
 }
 struct ProfileImages {
     profile: ModelProfile,
+    model_policy: ModelPolicy,
     // Temporarily taken only while Images borrows the separately owned Assets.
     state: Option<Result<ImagesState, String>>,
+}
+#[derive(Clone, Copy)]
+struct ModelPolicy {
+    source: ModelSource,
+    presentation: ModelPresentation,
+}
+impl ModelProfile {
+    fn model_policy(self) -> ModelPolicy {
+        ModelPolicy {
+            source: appearance::model_source(self.source_rules),
+            presentation: appearance::model_presentation(self.rules),
+        }
+    }
 }
 
 pub struct ModelCatalog {
@@ -260,6 +275,7 @@ impl ModelCatalogBuilder {
             .map_err(|error| format!("model images: {error:?}"));
             unique.push(ProfileImages {
                 profile,
+                model_policy: profile.model_policy(),
                 state: Some(state),
             });
         }
@@ -429,6 +445,7 @@ impl ModelCatalogBuilder {
                                 model,
                                 &mut temporary,
                                 &registration,
+                                images.model_policy,
                                 &mut mesh,
                                 &mut self.capacity,
                                 self.limits,
@@ -690,6 +707,7 @@ fn register(
     model: &Model<'_>,
     images: &mut Images<'_>,
     registration: &Registration,
+    model_policy: ModelPolicy,
     shared_mesh: &mut Option<ModelId>,
     capacity: &mut ModelCapacity,
     limits: ModelLimits,
@@ -727,11 +745,9 @@ fn register(
             }
             Image::External(path) => {
                 let path = std::str::from_utf8(path).map_err(|_| "skin path is not UTF-8")?;
-                if matches!(
-                    options.source_rules,
-                    RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-                ) && qa_formats::image::ImageFormat::from_path(path.as_bytes())
-                    == Some(qa_formats::image::ImageFormat::Pcx)
+                if model_policy.source.indexed_external_pcx
+                    && qa_formats::image::ImageFormat::from_path(path.as_bytes())
+                        == Some(qa_formats::image::ImageFormat::Pcx)
                 {
                     images
                         .indexed_pcx(
@@ -777,14 +793,16 @@ fn register(
                 }],
                 MaterialSettings {
                     sort: if policy.translucent { 6.0 } else { 3.0 },
-                    software_alias: matches!(
-                        options.rules,
-                        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-                    )
-                    .then_some(SoftwareAlias {
-                        fullbright_light: policy.fullbright.then_some([128.0, 64.0]),
-                        alpha_cutoffs: policy.translucent.then_some([0.33, 0.66]),
-                    }),
+                    software_alias: model_policy.presentation.software_alias.then_some(
+                        SoftwareAlias {
+                            fullbright_light: policy
+                                .fullbright
+                                .then_some(model_policy.presentation.fullbright_light),
+                            alpha_cutoffs: policy
+                                .translucent
+                                .then_some(model_policy.presentation.alpha_cutoffs),
+                        },
+                    ),
                     ..MaterialSettings::default()
                 },
             )?;
@@ -810,7 +828,7 @@ fn register(
             variants: materials.map(|material| ModelBinding {
                 model: id,
                 material,
-                rules: options.rules,
+                pose: model_policy.presentation.pose,
             }),
         })
         .collect())

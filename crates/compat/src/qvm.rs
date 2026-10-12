@@ -20,6 +20,9 @@ impl From<crate::memory::MemoryError> for Trap {
 }
 
 pub trait SystemCalls {
+    fn begin_call(&mut self, _: &mut Vm) -> Result<(), Trap> {
+        Ok(())
+    }
     fn call(&mut self, vm: &mut Vm, number: u32, arguments: &[i32]) -> Result<i32, Trap>;
 }
 pub use crate::hooks::Hooks;
@@ -28,8 +31,7 @@ pub struct Vm {
     pub memory: ModuleMemory<'static>,
     pub image: Image,
     pub hooks: Hooks,
-    pub(crate) entities: Option<crate::entities::EntityProjection>,
-    player_values: Option<crate::players::PlayerValues>,
+    pub(crate) projection: Option<crate::projection::Projection>,
     program_stack: usize,
     stack_bottom: usize,
     mask: u32,
@@ -43,23 +45,21 @@ impl Vm {
             memory,
             image,
             hooks: Hooks::load(program_stack),
-            entities: None,
-            player_values: None,
+            projection: None,
             program_stack,
             stack_bottom: program_stack.saturating_sub(65536),
         })
     }
     pub fn configure_q3_game(&mut self) {
-        self.entities = Some(crate::entities::EntityProjection::load_q3());
-        self.player_values = Some(crate::players::PlayerValues::load_q3());
+        self.projection = Some(crate::projection::Projection::load_q3());
     }
     pub fn bind_player_values(
         &mut self,
         stats: &[qa_core::primitives::ValueBinding],
         persistent: &[qa_core::primitives::ValueBinding],
     ) -> Result<(), crate::services::CallError> {
-        if let Some(values) = &mut self.player_values {
-            values.bind(stats, persistent)?;
+        if let Some(projection) = &mut self.projection {
+            projection.bind_values(stats, persistent)?;
         }
         Ok(())
     }
@@ -68,20 +68,8 @@ impl Vm {
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
     ) -> Result<(), crate::services::CallError> {
-        if let Some(entities) = &mut self.entities
-            && entities.ready()
-        {
-            let table = entities.project(services, &mut self.memory, context)?;
-            if let Some(values) = &mut self.player_values {
-                values.project(
-                    &self.memory,
-                    table,
-                    entities,
-                    context.module,
-                    services.server,
-                    None,
-                )?;
-            }
+        if let Some(projection) = &mut self.projection {
+            projection.publish(&mut self.memory, services, context, None)?;
         }
         Ok(())
     }
@@ -95,6 +83,7 @@ impl Vm {
         budget: u64,
         hooks: bool,
     ) -> Result<i32, Trap> {
+        calls.begin_call(self)?;
         // Selection happens once. Const specialization removes every hook from
         // the ordinary loop, without maintaining a second opcode implementation.
         if hooks {

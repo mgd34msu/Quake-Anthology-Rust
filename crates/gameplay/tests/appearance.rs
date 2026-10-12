@@ -2,9 +2,69 @@ use qa_core::{
     math,
     primitives::{ClientId, EntityAppearance, ModelRef, ResourceNamespace, RuleSetId, Vec3},
 };
-use qa_gameplay::rules::appearance::{
-    AliasRoll, alias_light_direction, alias_pose_angles, can_interpolate, project,
-};
+use qa_gameplay::rules::appearance::{AliasRoll, model_presentation, policy};
+
+fn pose(
+    presentation: RuleSetId,
+    angles: Vec3,
+    velocity: Vec3,
+    command_angles: bool,
+    software: bool,
+    roll: AliasRoll,
+) -> Vec3 {
+    let source = if command_angles {
+        RuleSetId::QuakeWorld
+    } else {
+        presentation
+    };
+    let body = policy(source).body_angles(angles, velocity, command_angles, roll);
+    model_presentation(presentation).pose.angles(body, software)
+}
+
+#[test]
+fn cached_source_and_model_policies_remain_independent_capabilities() {
+    use qa_gameplay::rules::appearance::{WeaponInterpolation, model_source};
+    let peer = policy(RuleSetId::QuakeWorld);
+    let model = model_presentation(RuleSetId::Quake2);
+    let angles = Vec3([90.0, 0.0, 37.0]);
+    let body = peer.body_angles(
+        angles,
+        Vec3([0.0, 100.0, 0.0]),
+        true,
+        AliasRoll {
+            angle: 2.0,
+            speed: 200.0,
+        },
+    );
+    assert_eq!(body, Vec3([-30.0, 0.0, -4.0]));
+    assert_eq!(model.pose.angles(body, true), body);
+    assert_eq!(model.pose.angles(body, false), Vec3([-30.0, 0.0, 4.0]));
+    assert_eq!(angles, Vec3([90.0, 0.0, 37.0]));
+    assert!(peer.adjacent(10, 1));
+    assert_eq!(peer.weapon_interpolation(), WeaponInterpolation::None);
+    let classic = policy(RuleSetId::Quake2);
+    assert!(classic.adjacent(0, u32::MAX));
+    assert!(!classic.adjacent(10, 1));
+    assert_eq!(
+        classic.weapon_interpolation(),
+        WeaponInterpolation::Snapshot
+    );
+    let enhanced = policy(RuleSetId::Quake2Rerelease);
+    assert_eq!(enhanced.weapon_interpolation(), WeaponInterpolation::Rate);
+    assert!(enhanced.player_event_check());
+    for (source, zero, pcx, software) in [
+        (RuleSetId::Quake, true, false, false),
+        (RuleSetId::QuakeWorld, true, false, false),
+        (RuleSetId::Quake2, true, true, true),
+        (RuleSetId::Quake2Rerelease, true, true, true),
+        (RuleSetId::Quake3, false, false, false),
+    ] {
+        assert_eq!(policy(source).world_zero(), zero);
+        assert!(!policy(source).is_interpolation_event(&EntityAppearance::default()));
+        assert_eq!(model_source(source).indexed_external_pcx, pcx);
+        assert_eq!(model_presentation(source).software_alias, software);
+    }
+}
 
 #[test]
 fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
@@ -12,7 +72,7 @@ fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
     for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         for software in [false, true] {
             assert_eq!(
-                alias_pose_angles(
+                pose(
                     source,
                     angles,
                     Vec3::default(),
@@ -26,7 +86,7 @@ fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
     }
     for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
         assert_eq!(
-            alias_pose_angles(
+            pose(
                 source,
                 angles,
                 Vec3::default(),
@@ -37,7 +97,7 @@ fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
             angles
         );
         assert_eq!(
-            alias_pose_angles(
+            pose(
                 source,
                 angles,
                 Vec3::default(),
@@ -48,7 +108,7 @@ fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
             Vec3([30.0, 20.0, -40.0])
         );
     }
-    let q1 = alias_pose_angles(
+    let q1 = pose(
         RuleSetId::Quake,
         Vec3([30.0, 0.0, 0.0]),
         Vec3::default(),
@@ -60,7 +120,7 @@ fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
         math::angle_vectors(q1).axes()[0].0[2].to_bits(),
         0.5f32.to_bits()
     );
-    let q2_gl = alias_pose_angles(
+    let q2_gl = pose(
         RuleSetId::Quake2,
         Vec3([0.0, 0.0, 30.0]),
         Vec3::default(),
@@ -83,7 +143,7 @@ fn qw_playerinfo_converts_command_pitch_and_velocity_roll_without_changing_packe
     let angles = Vec3([30.0, 0.0, 37.0]);
     for (velocity, expected_roll) in [(100.0, -4.0), (200.0, -8.0), (-100.0, 4.0)] {
         assert_eq!(
-            alias_pose_angles(
+            pose(
                 RuleSetId::QuakeWorld,
                 angles,
                 Vec3([0.0, velocity, 0.0]),
@@ -95,7 +155,7 @@ fn qw_playerinfo_converts_command_pitch_and_velocity_roll_without_changing_packe
         );
     }
     assert_eq!(
-        alias_pose_angles(
+        pose(
             RuleSetId::QuakeWorld,
             angles,
             Vec3([0.0, 100.0, 0.0]),
@@ -106,7 +166,7 @@ fn qw_playerinfo_converts_command_pitch_and_velocity_roll_without_changing_packe
         Vec3([-30.0, 0.0, 37.0])
     );
     assert_eq!(
-        alias_pose_angles(
+        pose(
             RuleSetId::Quake2,
             angles,
             Vec3([0.0, 25.0, 0.0]),
@@ -121,7 +181,7 @@ fn qw_playerinfo_converts_command_pitch_and_velocity_roll_without_changing_packe
     );
     // Native V_CalcRoll takes its capped branch when speed is zero.
     assert_eq!(
-        alias_pose_angles(
+        pose(
             RuleSetId::QuakeWorld,
             angles,
             Vec3::default(),
@@ -143,11 +203,11 @@ fn source_flags_do_not_inherit_another_games_render_flag_semantics() {
         ..Default::default()
     };
     appearance.native.render_flags = 2 | 4 | 8 | 16 | 64;
-    let q2 = project(&appearance);
+    let q2 = policy(appearance.source).project(&appearance);
     assert!(q2.viewer_model && q2.weapon_model && q2.fullbright && q2.depth_hack && q2.frame_lerp);
     assert_eq!(q2.unsupported, 0);
     appearance.source = RuleSetId::Quake3;
-    let q3 = project(&appearance);
+    let q3 = policy(appearance.source).project(&appearance);
     assert!(
         !q3.viewer_model && !q3.weapon_model && !q3.fullbright && !q3.depth_hack && !q3.frame_lerp
     );
@@ -166,7 +226,7 @@ fn rerelease_default_scalars_are_effective_values_without_changing_native_sentin
     appearance.native.render_flags = 32;
     let native_alpha = appearance.alpha.to_bits();
     let native_scale = appearance.scale.to_bits();
-    let effective = project(&appearance);
+    let effective = policy(appearance.source).project(&appearance);
     assert_eq!(effective.alpha, 0.7);
     assert_eq!(effective.scale, 1.0);
     assert_eq!(appearance.alpha.to_bits(), native_alpha);
@@ -174,7 +234,7 @@ fn rerelease_default_scalars_are_effective_values_without_changing_native_sentin
     appearance.alpha = 0.25;
     appearance.scale = 2.0;
     appearance.native.render_flags = 0;
-    let explicit = project(&appearance);
+    let explicit = policy(appearance.source).project(&appearance);
     assert_eq!(explicit.alpha, 0.25);
     assert_eq!(explicit.scale, 2.0);
 }
@@ -193,16 +253,16 @@ fn legacy_translucency_defaults_keep_the_original_effect_override_order() {
         ((1 << 28) | (1 << 31), 0.6),
     ] {
         appearance.native.effects = effects;
-        let projected = project(&appearance);
+        let projected = policy(appearance.source).project(&appearance);
         assert_eq!(projected.alpha, expected);
         assert_ne!(projected.unsupported, 0); // Scalar decoding supplies no particles.
     }
     appearance.source = RuleSetId::Quake2;
     appearance.native.effects = 0;
     appearance.native.render_flags = 32 | 8;
-    assert_eq!(project(&appearance).alpha, 0.0);
+    assert_eq!(policy(appearance.source).project(&appearance).alpha, 0.0);
     appearance.native.render_flags = 32;
-    assert_eq!(project(&appearance).alpha, 0.7);
+    assert_eq!(policy(appearance.source).project(&appearance).alpha, 0.7);
 }
 
 #[test]
@@ -212,11 +272,14 @@ fn unsupported_beams_do_not_turn_into_ordinary_models() {
         ..Default::default()
     };
     appearance.native.render_flags = 128;
-    let q2 = project(&appearance);
+    let q2 = policy(appearance.source).project(&appearance);
     assert!(!q2.drawable && q2.unsupported != 0);
     appearance.source = RuleSetId::Quake3;
-    assert!(project(&appearance).drawable);
-    assert_ne!(project(&appearance).unsupported, 0);
+    assert!(policy(appearance.source).project(&appearance).drawable);
+    assert_ne!(
+        policy(appearance.source).project(&appearance).unsupported,
+        0
+    );
 }
 
 #[test]
@@ -226,10 +289,10 @@ fn rerelease_keeps_old_frame_selection_separate_from_discrete_origin_selection()
         ..Default::default()
     };
     appearance.native.render_flags = 1 << 22;
-    let old_frame = project(&appearance);
+    let old_frame = policy(appearance.source).project(&appearance);
     assert!(old_frame.state_old_frame && !old_frame.frame_lerp);
     appearance.native.render_flags = 64;
-    let discrete = project(&appearance);
+    let discrete = policy(appearance.source).project(&appearance);
     assert!(!discrete.state_old_frame && discrete.frame_lerp);
 }
 
@@ -244,12 +307,17 @@ fn software_alias_light_preserves_native_dot_then_negation_order() {
             light.dot(basis.up),
         ];
         for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
-            let actual = alias_light_direction(source, angles).unwrap();
+            let actual = model_presentation(source)
+                .pose
+                .light_direction(angles)
+                .unwrap();
             assert_eq!(actual.0.map(f32::to_bits), expected.map(f32::to_bits));
         }
     }
     assert_eq!(
-        alias_light_direction(RuleSetId::Quake3, Vec3::default()),
+        model_presentation(RuleSetId::Quake3)
+            .pose
+            .light_direction(Vec3::default()),
         None
     );
 }
@@ -261,20 +329,20 @@ fn q2_native_discontinuities_reset_interpolation_without_cross_namespace_aliasin
         ..Default::default()
     };
     let mut current = previous;
-    assert!(can_interpolate(
+    assert!(policy(current.source).can_interpolate(
         &previous,
         &current,
         Vec3::default(),
         Vec3([512.875, 0.0, 0.0])
     ));
-    assert!(!can_interpolate(
+    assert!(!policy(current.source).can_interpolate(
         &previous,
         &current,
         Vec3::default(),
         Vec3([-513.0, 0.0, 0.0])
     ));
     current.models[0] = ModelRef::native(ResourceNamespace::Client(ClientId(1)), 2);
-    assert!(!can_interpolate(
+    assert!(!policy(current.source).can_interpolate(
         &previous,
         &current,
         Vec3::default(),
@@ -283,7 +351,7 @@ fn q2_native_discontinuities_reset_interpolation_without_cross_namespace_aliasin
     current = previous;
     for event in [6, 7] {
         current.native.event = event;
-        assert!(!can_interpolate(
+        assert!(!policy(current.source).can_interpolate(
             &previous,
             &current,
             Vec3::default(),
@@ -292,7 +360,7 @@ fn q2_native_discontinuities_reset_interpolation_without_cross_namespace_aliasin
     }
     current.native.event = 0;
     current.source = RuleSetId::Quake3;
-    assert!(!can_interpolate(
+    assert!(!policy(current.source).can_interpolate(
         &previous,
         &current,
         Vec3::default(),
@@ -300,7 +368,7 @@ fn q2_native_discontinuities_reset_interpolation_without_cross_namespace_aliasin
     ));
     let previous = current;
     current.native.event = 6;
-    assert!(can_interpolate(
+    assert!(policy(current.source).can_interpolate(
         &previous,
         &current,
         Vec3::default(),

@@ -426,111 +426,8 @@ pub const Q3_UI: CallTable = ui();
 
 // Q2 function-pointer slots map into this same service table. Unimplemented
 // native slots bind named traps before reaching this numbered dispatcher.
-pub const Q2_CLASSIC: CallTable = {
-    let mut table = CallTable {
-        entries: [None; 256],
-    };
-    table.entries[0] = scalar!(native_print::<false, false>);
-    table.entries[1] = scalar!(print);
-    table.entries[2] = scalar!(native_print::<true, false>);
-    table.entries[3] = scalar!(native_print::<true, true>);
-    table.entries[4] = scalar!(native_sound::<false, false, false>);
-    table.entries[5] = scalar!(native_sound::<true, false, false>);
-    table.entries[6] = scalar!(config_set);
-    table.entries[7] = scalar!(abort);
-    table.entries[8] = scalar!(resource_index::<0>);
-    table.entries[9] = scalar!(resource_index::<1>);
-    table.entries[10] = scalar!(resource_index::<2>);
-    table.entries[11] = scalar!(native_set_model);
-    table.entries[12] = scalar!(native_trace::<false, false>);
-    table.entries[13] = scalar!(native_point_contents);
-    table.entries[14] = scalar!(native_visibility::<false, false>);
-    table.entries[15] = scalar!(native_visibility::<false, true>);
-    table.entries[16] = scalar!(native_portal_set::<false>);
-    table.entries[17] = scalar!(native_areas_connected::<false>);
-    table.entries[18] = scalar!(native_link);
-    table.entries[19] = scalar!(native_unlink);
-    table.entries[20] = scalar!(native_area_query::<false>);
-    table.entries[21] = scalar!(native_pmove);
-    table.entries[22] = scalar!(native_multicast::<false>);
-    table.entries[23] = scalar!(native_unicast::<false>);
-    table.entries[24] = scalar!(native_message_bits::<8>);
-    table.entries[25] = scalar!(native_message_bits::<8>);
-    table.entries[26] = scalar!(native_message_bits::<16>);
-    table.entries[27] = scalar!(native_message_bits::<32>);
-    table.entries[28] = scalar!(native_message_bits::<32>);
-    table.entries[29] = scalar!(native_message_string);
-    table.entries[30] = scalar!(native_message_position::<false>);
-    table.entries[31] = scalar!(native_message_direction);
-    table.entries[32] = scalar!(native_message_angle);
-    table.entries[36] = scalar!(q2_cvar);
-    table.entries[37] = scalar!(q2_cvar_set::<false>);
-    table.entries[38] = scalar!(q2_cvar_set::<true>);
-    table.entries[39] = scalar!(argc);
-    table.entries[40] = scalar!(native_argv);
-    table.entries[41] = scalar!(native_args);
-    table.entries[42] = scalar!(command_append);
-    table
-};
-pub const Q2_RERELEASE: CallTable = {
-    let mut table = CallTable {
-        entries: [None; 256],
-    };
-    table.entries[0] = scalar!(native_print::<false, false>);
-    table.entries[1] = scalar!(print);
-    table.entries[2] = scalar!(native_print::<true, false>);
-    table.entries[3] = scalar!(native_print::<true, true>);
-    table.entries[4] = scalar!(native_sound::<false, false, true>);
-    table.entries[5] = scalar!(native_sound::<true, false, true>);
-    table.entries[6] = scalar!(native_sound::<true, true, true>);
-    table.entries[7] = scalar!(config_set);
-    table.entries[8] = scalar!(native_config_get);
-    table.entries[10] = scalar!(resource_index::<0>);
-    table.entries[11] = scalar!(resource_index::<1>);
-    table.entries[12] = scalar!(resource_index::<2>);
-    table.entries[13] = scalar!(native_set_model);
-    table.entries[14] = scalar!(native_trace::<true, false>);
-    table.entries[15] = scalar!(native_trace::<true, true>);
-    table.entries[16] = scalar!(native_point_contents);
-    table.entries[17] = scalar!(native_visibility::<true, false>);
-    table.entries[18] = scalar!(native_visibility::<true, true>);
-    table.entries[19] = scalar!(native_portal_set::<true>);
-    table.entries[20] = scalar!(native_areas_connected::<true>);
-    table.entries[21] = scalar!(native_link);
-    table.entries[22] = scalar!(native_unlink);
-    table.entries[23] = scalar!(native_area_query::<true>);
-    table.entries[24] = scalar!(native_multicast::<true>);
-    table.entries[25] = scalar!(native_unicast::<true>);
-    table.entries[26] = scalar!(native_message_bits::<8>);
-    table.entries[27] = scalar!(native_message_bits::<8>);
-    table.entries[28] = scalar!(native_message_bits::<16>);
-    table.entries[29] = scalar!(native_message_bits::<32>);
-    table.entries[30] = scalar!(native_message_bits::<32>);
-    table.entries[31] = scalar!(native_message_string);
-    table.entries[32] = scalar!(native_message_position::<true>);
-    table.entries[33] = scalar!(native_message_direction);
-    table.entries[34] = scalar!(native_message_angle);
-    table.entries[35] = scalar!(native_message_entity);
-    // The rerelease calls the Pmove entry it exports rather than gi.Pmove.
-    // Its owned-child entry is redirected to this same service at bind time.
-    table.entries[70] = scalar!(native_pmove);
-    table.entries[48] = scalar!(native_register_observer);
-    table.entries[49] = scalar!(native_forget_observer);
-    table.entries[53] = scalar!(native_localized_print);
-    table.entries[9] = scalar!(abort);
-    table.entries[39] = scalar!(q2_cvar);
-    table.entries[40] = scalar!(q2_cvar_set::<false>);
-    table.entries[41] = scalar!(q2_cvar_set::<true>);
-    table.entries[42] = scalar!(argc);
-    table.entries[43] = scalar!(native_argv);
-    table.entries[44] = scalar!(native_args);
-    table.entries[45] = scalar!(command_append);
-    table.entries[65] = scalar!(native_server_frame);
-    table.entries[67] = scalar!(native_info_value);
-    table.entries[68] = scalar!(native_info_remove);
-    table.entries[69] = scalar!(native_info_set);
-    table
-};
+pub(crate) mod q2;
+pub use q2::{CLASSIC as Q2_CLASSIC, RERELEASE as Q2_RERELEASE};
 
 const fn quakec() -> CallTable {
     let mut t = CallTable {
@@ -1298,6 +1195,14 @@ pub struct QvmCalls<'a, 'engine> {
     pub unknown: &'a mut UnknownCalls,
 }
 impl qvm::SystemCalls for QvmCalls<'_, '_> {
+    fn begin_call(&mut self, vm: &mut qvm::Vm) -> Result<(), qvm::Trap> {
+        if let Some(projection) = &mut vm.projection {
+            projection
+                .seed(&self.services.server.entities, self.context.module)
+                .map_err(|_| qvm::Trap::Syscall)?;
+        }
+        Ok(())
+    }
     fn call(&mut self, vm: &mut qvm::Vm, number: u32, arguments: &[i32]) -> Result<i32, qvm::Trap> {
         let mut native = [0u64; 15];
         let args = arguments.get(1..).ok_or(qvm::Trap::Syscall)?;
@@ -1308,17 +1213,12 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             *to = u64::from(from as u32);
         }
         let mask = vm.memory.len() as u32 - 1;
-        if let Some(entities) = &mut vm.entities {
-            entities
-                .seed(&self.services.server.entities, self.context.module)
-                .map_err(|_| qvm::Trap::Syscall)?;
-        }
         let mut call = Invocation {
             services: self.services,
             memory: &mut vm.memory,
             native_cvars: None,
             native_resources: None,
-            native_entities: vm.entities.as_mut(),
+            native_entities: vm.projection.as_mut().map(|p| &mut p.entities),
             native_surfaces: None,
             native_command: None,
             native_configs: None,

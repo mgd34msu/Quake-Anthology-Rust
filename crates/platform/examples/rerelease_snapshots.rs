@@ -101,7 +101,7 @@ fn main() -> Result<(), String> {
                     command: 0,
                     flags: 6,
                     qw_peers: 0,
-                    areas: &[0xff; 32],
+                    areas: &[0; 32],
                     player: &native_player,
                     entities: &entities,
                 })?;
@@ -134,7 +134,7 @@ fn main() -> Result<(), String> {
                     || current.player[..42] != player.words
                     || current.player[42..] != player.stats
                     || current.flags != 6
-                    || current.areas != [0xff; 32]
+                    || current.areas != [0; 32]
                     || current.time != native_time(sequence)
                 {
                     return Err(Error::Context);
@@ -147,7 +147,7 @@ fn main() -> Result<(), String> {
                 command: 0,
                 flags: 6,
                 qw_peers: 0,
-                areas: &[0xff; 32],
+                areas: &[0; 32],
                 player: &native_repro,
                 entities: &entities,
             })?;
@@ -167,7 +167,7 @@ fn main() -> Result<(), String> {
                 || current.player[..43] != repro_player.words
                 || current.player[43..] != repro_player.stats
                 || current.flags != 6
-                || current.areas != [0xff; 32]
+                || current.areas != [0; 32]
                 || current.time != native_time(sequence)
             {
                 return Err(Error::Context);
@@ -326,6 +326,9 @@ fn transmit_frames<const P: usize>(
         let flags = input.read_bits(8)? as u8;
         let area_count = input.read_bits(8)? as usize;
         input.read_data(&mut areas[..area_count])?;
+        for byte in &mut areas[..area_count] {
+            *byte = snapshots::native_area_byte(*byte, true);
+        }
         for word in &mut player {
             *word = input.read_bits(32)?;
         }
@@ -419,7 +422,12 @@ fn compare_frames<const P: usize>(
         output.extend_from_slice(&(reader.byte_position() as u16).to_le_bytes());
         output.extend_from_slice(&frame.sequence.to_le_bytes());
         output.extend_from_slice(&[frame.flags, frame.areas.len() as u8]);
-        output.extend_from_slice(frame.areas);
+        output.extend(
+            frame
+                .areas
+                .iter()
+                .map(|byte| snapshots::native_area_byte(*byte, true)),
+        );
         for word in frame.player {
             output.extend_from_slice(&word.to_le_bytes());
         }

@@ -2874,6 +2874,31 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let pointers = (0..service_count)
             .map(|n| game.vm.process.import_pointer(n).unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(game.import_ordinal(b""), None);
+        assert_eq!(game.import_ordinal(b"Pmove"), (!rr).then_some(21));
+        assert_eq!(
+            [b"TagMalloc".as_slice(), b"TagFree", b"FreeTags"]
+                .map(|name| game.import_ordinal(name).unwrap()),
+            if rr { [36, 37, 38] } else { [33, 34, 35] }
+        );
+        let missing = game.vm.unresolved_imports().collect::<Vec<_>>();
+        assert_eq!(missing.len(), if rr { 17 } else { 1 });
+        assert!(missing.iter().all(|import| {
+            import
+                .name
+                .is_some_and(|name| !name.is_empty() && game.import_ordinal(name).is_some())
+        }));
+        assert!(!missing.iter().any(|import| {
+            matches!(
+                import.name,
+                Some(b"TagMalloc" | b"TagFree" | b"FreeTags" | b"Pmove")
+            )
+        }));
+        if rr {
+            // Pmove is an engine redirect for the returned export, never a
+            // public game_import_t slot or an unresolved service name.
+            assert!(game.vm.process.import_pointer(70).is_some());
+        }
         let write_slots = [
             b"WriteChar".as_slice(),
             b"WriteByte",
@@ -2914,6 +2939,10 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         for (slot, pointer) in pointers.iter().enumerate() {
             let at = first + header + slot * 8;
             assert_eq!(&memory[at..at + 8], &pointer.to_le_bytes());
+        }
+        if rr {
+            let after_table = first + header + service_count * 8;
+            assert_eq!(&memory[after_table..after_table + 8], &[0; 8]);
         }
         let bound = runtime
             .server

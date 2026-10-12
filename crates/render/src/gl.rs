@@ -79,6 +79,7 @@ procedures! {
     gen_textures: "glGenTextures"(i32, *mut u32);
     bind_texture: "glBindTexture"(u32, u32);
     texture_image: "glTexImage2D"(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void);
+    texture_sub_image: "glTexSubImage2D"(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void);
     texture_parameter: "glTexParameteri"(u32, u32, i32);
     generate_mipmap: "glGenerateMipmap"(u32);
     active_texture: "glActiveTexture"(u32);
@@ -339,6 +340,16 @@ struct State {
     depth_hack: bool,
     frame_weights: Option<[f32; 2]>,
 }
+impl State {
+    fn bind_texture(&mut self, gl: &Gl, texture: u32) {
+        if self.texture != texture {
+            // SAFETY: The backend owns the current GL context and loaded entry
+            // points; numeric texture handles belong to its cold registration.
+            unsafe { (gl.bind_texture)(TEXTURE_2D, texture) };
+            self.texture = texture;
+        }
+    }
+}
 struct Dynamic {
     buffer: u32,
     vao: u32,
@@ -383,6 +394,7 @@ pub struct GlBackend {
     meshes: Box<[Mesh]>,
     textures: Box<[u32]>,
     texture_params: Box<[TextureParams]>,
+    lightmap_updates: crate::lightmap::AtlasUpdates,
     samplers: [u32; 8],
     table_buffer: u32,
     table_texture: u32,
@@ -470,6 +482,7 @@ impl GlBackend {
             meshes: Box::new([]),
             textures: Box::new([]),
             texture_params: Box::new([]),
+            lightmap_updates: crate::lightmap::AtlasUpdates::load(assets)?,
             samplers: [0; 8],
             table_buffer: 0,
             table_texture: 0,
@@ -737,6 +750,7 @@ impl GlBackend {
                                 assets,
                                 &projection,
                                 inputs,
+                                &view.refdef.lightstyles,
                                 view.refdef.far,
                                 &mut stats,
                             ),
@@ -1249,6 +1263,7 @@ impl GlBackend {
         assets: &Assets,
         projection: &[f32; 16],
         mut inputs: DrawInputs,
+        lightstyles: &[crate::scene::LightStyle; 256],
         far: f32,
         stats: &mut BackendStats,
     ) {
@@ -1278,6 +1293,44 @@ impl GlBackend {
             return;
         }
         if binding.mesh_indices.count == 0 {
+            return;
+        }
+        let (gl, state, textures) = (&self.gl, &mut self.state, &self.textures);
+        if self
+            .lightmap_updates
+            .refresh(
+                surface.world,
+                surface.surface,
+                lightstyles,
+                assets,
+                |image, region, pixels| {
+                    let Some(&texture) = textures.get(image.0 as usize) else {
+                        return false;
+                    };
+                    state.bind_texture(gl, texture);
+                    // SAFETY: The registered region is within this owned texture;
+                    // pixels are a complete RGBA rectangle in load-sized scratch.
+                    // RGBA rows are four-byte multiples, retaining the context's
+                    // existing unpack alignment without changing its pixel state.
+                    unsafe {
+                        (gl.texture_sub_image)(
+                            TEXTURE_2D,
+                            0,
+                            region.x as i32,
+                            region.y as i32,
+                            region.width as i32,
+                            region.height as i32,
+                            RGBA,
+                            UNSIGNED_BYTE,
+                            pixels.as_ptr().cast(),
+                        );
+                    }
+                    true
+                },
+            )
+            .is_err()
+        {
+            stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
         if let Some(Sky::Cube { .. }) = material.settings.sky {
@@ -1496,10 +1549,7 @@ impl GlBackend {
             }
             self.state.polygon_offset = Some(settings.polygon_offset);
         }
-        if self.state.texture != texture {
-            unsafe { (self.gl.bind_texture)(TEXTURE_2D, texture) };
-            self.state.texture = texture;
-        }
+        self.state.bind_texture(&self.gl, texture);
         let texture_params = self.texture_params[prepared.image.0 as usize];
         let image_sampler = texture_params.sampler.unwrap_or(stage.sampler);
         let sampler_index = usize::from(image_sampler.wrap == Wrap::Clamp)

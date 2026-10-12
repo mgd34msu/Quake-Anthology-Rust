@@ -287,11 +287,9 @@ impl VisibilityScratch {
                     self.areas[area / 8] |= 1 << (area & 7);
                 }
             }
-            // Q3 sends hidden areas; Q2 sends visible areas.
-            if protocol == Protocol::Quake3_68 {
-                for byte in &mut self.areas[..self.area_count] {
-                    *byte = !*byte;
-                }
+            // Common frames store hidden areas; each native codec owns wire polarity.
+            for byte in &mut self.areas[..self.area_count] {
+                *byte = qa_network::snapshots::native_area_byte(*byte, true);
             }
         }
         Ok(())

@@ -79,7 +79,7 @@ impl Fixture {
         let mut services =
             self.runtime
                 .engine_services(&mut self.console, &mut self.storage, &mut scratch);
-        QvmCalls {
+        let mut calls = QvmCalls {
             services: &mut services,
             table: &Q3_SERVER,
             context: CallContext {
@@ -89,8 +89,9 @@ impl Fixture {
             platform_time: EventTime(0),
             command: &[],
             unknown: &mut self.unknown,
-        }
-        .call(&mut self.vm, number, arguments)
+        };
+        calls.begin_call(&mut self.vm)?;
+        calls.call(&mut self.vm, number, arguments)
     }
     fn publish(&mut self) {
         let mut scratch = self.runtime.geometry.scratch();
@@ -98,6 +99,21 @@ impl Fixture {
             self.runtime
                 .engine_services(&mut self.console, &mut self.storage, &mut scratch);
         self.vm.publish_entities(&mut services, context()).unwrap();
+    }
+    fn export(&mut self, context: CallContext) -> Result<i32, Trap> {
+        let mut scratch = self.runtime.geometry.scratch();
+        let mut services =
+            self.runtime
+                .engine_services(&mut self.console, &mut self.storage, &mut scratch);
+        let mut calls = QvmCalls {
+            services: &mut services,
+            table: &Q3_SERVER,
+            context,
+            platform_time: EventTime(0),
+            command: &[],
+            unknown: &mut self.unknown,
+        };
+        self.vm.call(&mut calls, [0; 10], 100, true)
     }
     fn register(&mut self, address: u64, count: i32) -> Result<i32, Trap> {
         self.call(
@@ -1004,4 +1020,20 @@ fn qvm_live_contents_reads_zero_contents_boxes_and_rejects_only_executed_targets
     f.vm.memory.write_word(ENTITIES + 160, 0).unwrap();
     f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
     assert_eq!(f.call(25, &[0, point as i32, 1023]).unwrap(), 0);
+}
+
+#[test]
+fn export_without_imports_binds_the_projection_owner_before_execution() {
+    use qa_formats::program::qvm::Opcode::*;
+    let mut f = Fixture::new();
+    f.vm = service_program::program(&[(Enter, 16), (Const, 83), (Leave, 16)], &[]);
+    f.vm.configure_q3_game();
+    assert_eq!(f.export(context()), Ok(83));
+    assert_eq!(f.vm.hooks.instructions, 3);
+    let mut foreign = context();
+    foreign.module = ModuleId(2);
+    assert_eq!(f.export(foreign), Err(Trap::Syscall));
+    assert_eq!(f.vm.hooks.instructions, 3);
+    assert_eq!(f.export(context()), Ok(83));
+    assert_eq!(f.vm.hooks.instructions, 6);
 }

@@ -118,8 +118,11 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     let second = binding(&catalog, "models/test/tris.md2", profile, 1).unwrap();
     assert_eq!(first.model, second.model);
     assert_ne!(first.material, second.material);
-    assert_eq!(first.rules, RuleSetId::Quake2);
-    assert_eq!(second.rules, RuleSetId::Quake2);
+    assert_eq!(
+        first.pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake2).pose
+    );
+    assert_eq!(first.pose, second.pose);
     assert_eq!(assets.models().len(), models_before + 1);
     let model = assets.model(first.model).unwrap();
     assert_eq!(model.frame_count(), 2);
@@ -192,7 +195,10 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
     )
     .unwrap();
     let binding = binding(&catalog, "progs/test.mdl", profile, 0).unwrap();
-    assert_eq!(binding.rules, RuleSetId::Quake2);
+    assert_eq!(
+        binding.pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake2).pose
+    );
     let model = assets.model(binding.model).unwrap();
     assert_eq!(model.frame_count(), 2);
     assert_eq!(model.vertices_per_frame, 3);
@@ -229,7 +235,10 @@ fn external_skin_decoding_does_not_inherit_upload_presentation() {
     request.source_rules = RuleSetId::Quake2;
     let (assets, catalog) = load(&fixture, assets, &[request], ModelLimits::default()).unwrap();
     let binding = binding(&catalog, request.path, request.profile(), 0).unwrap();
-    assert_eq!(binding.rules, RuleSetId::Quake3);
+    assert_eq!(
+        binding.pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake3).pose
+    );
     let skin = assets
         .image(image(&assets, &catalog, request.path, request.profile(), 0))
         .unwrap();
@@ -251,7 +260,10 @@ fn q3_pcx_source_uses_embedded_palette_and_source_extent_without_global_palette(
     let first = binding(&catalog, request.path, request.profile(), 0).unwrap();
     let second = binding(&catalog, request.path, request.profile(), 1).unwrap();
     assert_eq!(first.model, second.model);
-    assert_eq!(first.rules, RuleSetId::Quake3);
+    assert_eq!(
+        first.pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake3).pose
+    );
     for (ordinal, index) in [(0, 11), (1, 22)] {
         let skin = assets
             .image(image(
@@ -830,8 +842,14 @@ fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_
             .iter()
             .all(|binding| binding.model == selected[0].model)
     );
-    assert_eq!(selected[0].rules, RuleSetId::Quake2);
-    assert_eq!(selected[1].rules, RuleSetId::Quake);
+    assert_eq!(
+        selected[0].pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake2).pose
+    );
+    assert_eq!(
+        selected[1].pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake).pose
+    );
     assert_ne!(selected[0].material, selected[1].material);
     assert_ne!(selected[0].material, selected[2].material);
     assert_eq!(catalog.capacity().registrations, 4);
@@ -1415,6 +1433,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
             current: None,
             previous: None,
             projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
             player_projection: &player_projection,
             bindings: &bindings,
             models: &catalog,
@@ -1452,6 +1471,7 @@ fn client_inline_binding_uses_an_explicit_world_and_the_shared_entity_arena() {
         current: None,
         previous: None,
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
         player_projection: &player_projection,
         bindings: &bindings,
         models: &catalog,

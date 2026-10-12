@@ -15,8 +15,7 @@ use crate::{
         Wrap, upload,
     },
     lightmap::{
-        AtlasBuilder, AtlasRegion, LightmapError, Q1GlScale, build_quake_rgb, build_quake2_rgb,
-        shift_quake3_rgb,
+        AtlasBuilder, AtlasRegion, LightmapConversion, LightmapError, Q1GlScale, shift_quake3_rgb,
     },
     shader::{
         AlphaFunc, AlphaGen, BlendFactor, Cull, Deform, RgbGen, ShaderDef, StageBlend, TexCoordGen,
@@ -257,6 +256,13 @@ pub fn load_world(
         };
     }
     let mut geometry = load_geometry(map, options.geometry)?;
+    let lightmap_conversion = if matches!(geometry_source, RuleSetId::Quake) {
+        LightmapConversion::Scalar(options.q1_gl_scale)
+    } else {
+        LightmapConversion::Rgb {
+            modulate: options.q2_modulate,
+        }
+    };
     let visibility =
         load_visibility(map).map_err(|_| WorldMaterialError::Boundary("world visibility"))?;
     let (lightmaps, regions) = prepare_lightmaps(
@@ -264,7 +270,7 @@ pub fn load_world(
         assets,
         &options,
         &presentation.lightstyles,
-        geometry_source,
+        lightmap_conversion,
     )?;
     for surface in &geometry.surfaces {
         if !matches!(geometry_source, RuleSetId::Quake3)
@@ -506,6 +512,9 @@ pub fn load_world(
             } else {
                 None
             },
+            lightmap_conversion: (surface.light_source == LightSource::Samples
+                && regions[surface.source_id as usize].is_some())
+            .then_some(lightmap_conversion),
             texture_scale: scale,
         });
     }
@@ -541,7 +550,7 @@ fn prepare_lightmaps(
     assets: &mut Assets,
     options: &WorldLoadOptions,
     styles: &[LightStyle; 256],
-    rules: RuleSetId,
+    conversion: LightmapConversion,
 ) -> Result<(Vec<Option<ImageId>>, Vec<Option<AtlasRegion>>), WorldMaterialError> {
     let decoupled = geometry
         .surfaces
@@ -602,35 +611,26 @@ fn prepare_lightmaps(
                 ));
             }
             LightSource::Samples => {
-                let active: Vec<_> = surface
-                    .styles
-                    .iter()
-                    .take_while(|&&s| s != 255)
-                    .map(|&s| styles[s as usize])
-                    .collect();
-                let rgb = if matches!(rules, RuleSetId::Quake) {
-                    let scales: Vec<_> = active
-                        .iter()
-                        .map(|style| u32::from(style.indexed_scale))
-                        .collect();
-                    build_quake_rgb(
+                let (active, count) = conversion.referenced_styles(surface.styles, styles);
+                let mut converted = vec![
+                    0;
+                    crate::lightmap::rgb_bytes(
                         surface.lightmap_grid[0],
                         surface.lightmap_grid[1],
-                        &rgb,
-                        &scales,
-                        options.q1_gl_scale,
                     )?
-                } else {
-                    let scales: Vec<_> = active.iter().map(|style| style.rgb).collect();
-                    build_quake2_rgb(
-                        surface.lightmap_grid[0],
-                        surface.lightmap_grid[1],
-                        &rgb,
-                        &scales,
-                        options.q2_modulate,
-                    )?
-                };
-                atlas.insert(surface.lightmap_grid[0], surface.lightmap_grid[1], &rgb)?
+                ];
+                conversion.build_rgb_into(
+                    surface.lightmap_grid[0],
+                    surface.lightmap_grid[1],
+                    &rgb,
+                    &active[..count],
+                    &mut converted,
+                )?;
+                atlas.insert(
+                    surface.lightmap_grid[0],
+                    surface.lightmap_grid[1],
+                    &converted,
+                )?
             }
             _ => continue,
         };

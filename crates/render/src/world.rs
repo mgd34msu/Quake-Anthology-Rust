@@ -26,6 +26,7 @@ pub struct SurfaceBinding {
     /// the whole image with authored coordinates, including original Q3 pages.
     /// The atlas page number is provenance, never an ImageId/table index.
     pub lightmap_region: Option<crate::lightmap::AtlasRegion>,
+    pub lightmap_conversion: Option<crate::lightmap::LightmapConversion>,
     /// Legacy projections retain texel coordinates for the native cache.
     /// Generic stages resolve them to normalized coordinates at draw setup.
     pub texture_scale: [f32; 2],
@@ -36,6 +37,7 @@ pub struct SurfaceMaterial {
     pub lightmap: ImageId,
     /// Some selects a packed face; None retains full authored-image sampling.
     pub lightmap_region: Option<crate::lightmap::AtlasRegion>,
+    pub lightmap_conversion: Option<crate::lightmap::LightmapConversion>,
     pub texture_scale: [f32; 2],
 }
 impl Default for SurfaceMaterial {
@@ -44,6 +46,7 @@ impl Default for SurfaceMaterial {
             material: MaterialId(0),
             lightmap: ImageId(0),
             lightmap_region: None,
+            lightmap_conversion: None,
             texture_scale: [1.0; 2],
         }
     }

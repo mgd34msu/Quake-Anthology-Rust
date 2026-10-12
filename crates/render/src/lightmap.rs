@@ -1,4 +1,6 @@
-//! Load-time lightmap packing and native GL lighting conversions.
+//! Lightmap packing and the native conversion shared by load and GL refresh.
+
+use crate::scene::LightStyle;
 
 pub const PAGE_SIZE: u32 = 128;
 
@@ -236,6 +238,239 @@ pub enum Q1GlScale {
     Standard,
 }
 
+/// Arithmetic selected once at the lighting boundary, independently of the
+/// view's movement, protocol and module identities.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LightmapConversion {
+    Scalar(Q1GlScale),
+    Rgb { modulate: f32 },
+}
+impl LightmapConversion {
+    pub(crate) fn referenced_styles(
+        self,
+        ids: [u8; 4],
+        styles: &[LightStyle; 256],
+    ) -> ([LightStyle; 4], usize) {
+        let mut selected = [LightStyle {
+            rgb: [0.0; 3],
+            indexed_scale: 0,
+        }; 4];
+        let count = active_style_count(&ids);
+        for (output, &id) in selected.iter_mut().zip(&ids[..count]) {
+            match self {
+                Self::Scalar(_) => output.indexed_scale = styles[id as usize].indexed_scale,
+                Self::Rgb { .. } => output.rgb = styles[id as usize].rgb,
+            }
+        }
+        (selected, count)
+    }
+    pub(crate) fn build_rgb_into(
+        self,
+        width: u32,
+        height: u32,
+        samples: &[u8],
+        styles: &[LightStyle],
+        rgb: &mut [u8],
+    ) -> Result<(), LightmapError> {
+        if styles.len() > 4 {
+            return Err(LightmapError::Dimensions);
+        }
+        match self {
+            Self::Scalar(scale) => {
+                let scales: [u32; 4] = std::array::from_fn(|index| {
+                    styles.get(index).map_or(0, |s| u32::from(s.indexed_scale))
+                });
+                build_quake_rgb_into(width, height, samples, &scales[..styles.len()], scale, rgb)
+            }
+            Self::Rgb { modulate } => {
+                let scales: [[f32; 3]; 4] =
+                    std::array::from_fn(|index| styles.get(index).map_or([0.0; 3], |s| s.rgb));
+                build_quake2_rgb_into(
+                    width,
+                    height,
+                    samples,
+                    &scales[..styles.len()],
+                    modulate,
+                    rgb,
+                )
+            }
+        }
+    }
+}
+
+fn active_style_count(ids: &[u8; 4]) -> usize {
+    ids.iter().take_while(|&&id| id != 255).count()
+}
+
+/// GPU atlas residency remembers only the weights used by each registered
+/// surface. Samples and atlas images stay in the existing immutable Assets.
+pub struct AtlasUpdates {
+    offsets: Box<[usize]>,
+    styles: Box<[Option<[LightStyle; 4]>]>,
+    rgb: Box<[u8]>,
+    rgba: Box<[u8]>,
+}
+impl AtlasUpdates {
+    /// Frozen Assets must retain the same numeric world, surface and image
+    /// registrations until this residency owner is discarded.
+    pub fn load(assets: &crate::Assets) -> Result<Self, &'static str> {
+        let mut offsets = Vec::with_capacity(assets.worlds().len());
+        let mut region_edges = Vec::new();
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        for world in assets.worlds() {
+            offsets.push(count);
+            count = count
+                .checked_add(world.geometry().surfaces.len())
+                .ok_or("GL styled surface count overflow")?;
+            for (surface, binding) in world.geometry().surfaces.iter().zip(world.bindings()) {
+                if binding.lightmap_conversion.is_none() {
+                    continue;
+                }
+                let Some(region) = binding.lightmap_region else {
+                    return Err("GL styled surface has no atlas region");
+                };
+                if surface.light_source != crate::world::geometry::LightSource::Samples
+                    || [region.width, region.height] != surface.lightmap_grid
+                {
+                    return Err("GL styled surface sample dimensions disagree");
+                }
+                let samples = world
+                    .geometry()
+                    .light_samples
+                    .get(surface.light_samples.range())
+                    .ok_or("GL styled surface has invalid samples")?;
+                let active = active_style_count(&surface.styles);
+                let required =
+                    check_samples(region.width, region.height, active, samples.as_flattened())
+                        .map_err(|_| "GL styled surface has invalid samples")?;
+                bytes = bytes.max(required);
+                // Assets already admitted these rectangle bounds. Track starts
+                // and ends; ties retire an old rectangle before admitting the
+                // next, so adjacent texels retain independent ownership.
+                let right = region.x + region.width;
+                let bottom = region.y + region.height;
+                region_edges.push((binding.lightmap.0, region.x, true, region.y, bottom));
+                region_edges.push((binding.lightmap.0, right, false, region.y, bottom));
+            }
+        }
+        region_edges.sort_unstable();
+        let mut current_image = None;
+        let mut active = std::collections::BTreeMap::<u32, u32>::new();
+        for (image, _, start, top, bottom) in region_edges {
+            if current_image != Some(image) {
+                active.clear();
+                current_image = Some(image);
+            }
+            if !start {
+                active.remove(&top);
+                continue;
+            }
+            if active
+                .range(..=top)
+                .next_back()
+                .is_some_and(|(_, &end)| end > top)
+                || active
+                    .range(top..)
+                    .next()
+                    .is_some_and(|(&begin, _)| begin < bottom)
+            {
+                return Err("GL styled atlas regions overlap");
+            }
+            active.insert(top, bottom);
+        }
+        let rgba_bytes = bytes
+            .checked_div(3)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or("GL lightmap scratch size overflow")?;
+        Ok(Self {
+            offsets: offsets.into_boxed_slice(),
+            styles: vec![None; count].into_boxed_slice(),
+            rgb: vec![0; bytes].into_boxed_slice(),
+            rgba: vec![0; rgba_bytes].into_boxed_slice(),
+        })
+    }
+
+    /// The upload callback borrows scratch only during this call. A true return
+    /// records successful submission; rejection keeps the previous residency.
+    pub fn refresh(
+        &mut self,
+        world_id: crate::world::WorldId,
+        surface_id: u32,
+        styles: &[LightStyle; 256],
+        assets: &crate::Assets,
+        upload: impl FnOnce(crate::assets::ImageId, AtlasRegion, &[u8]) -> bool,
+    ) -> Result<bool, &'static str> {
+        let world = assets.world(world_id).ok_or("invalid GL styled world")?;
+        let surface = world
+            .geometry()
+            .surfaces
+            .get(surface_id as usize)
+            .ok_or("invalid GL styled surface")?;
+        let binding = world
+            .bindings()
+            .get(surface_id as usize)
+            .ok_or("invalid GL styled binding")?;
+        let Some(conversion) = binding.lightmap_conversion else {
+            return Ok(false);
+        };
+        let index = self
+            .offsets
+            .get(world_id.0 as usize)
+            .and_then(|offset| offset.checked_add(surface_id as usize))
+            .ok_or("invalid GL style residency index")?;
+        let last = self
+            .styles
+            .get_mut(index)
+            .ok_or("invalid GL style residency index")?;
+        let (selected, count) = conversion.referenced_styles(surface.styles, styles);
+        if *last == Some(selected) {
+            return Ok(false);
+        }
+        let region = binding
+            .lightmap_region
+            .ok_or("GL styled surface has no atlas region")?;
+        let bytes =
+            rgb_bytes(region.width, region.height).map_err(|_| "invalid GL lightmap dimensions")?;
+        let rgba_bytes = bytes / 3 * 4;
+        let rgb = self
+            .rgb
+            .get_mut(..bytes)
+            .ok_or("GL lightmap scratch exhausted")?;
+        let rgba = self
+            .rgba
+            .get_mut(..rgba_bytes)
+            .ok_or("GL lightmap scratch exhausted")?;
+        let samples = world
+            .geometry()
+            .light_samples
+            .get(surface.light_samples.range())
+            .ok_or("invalid GL styled samples")?;
+        conversion
+            .build_rgb_into(
+                region.width,
+                region.height,
+                samples.as_flattened(),
+                &selected[..count],
+                rgb,
+            )
+            .map_err(|_| "invalid GL lightmap style conversion")?;
+        for (source, output) in rgb
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(rgba.as_chunks_mut::<4>().0)
+        {
+            output.copy_from_slice(&[source[0], source[1], source[2], 255]);
+        }
+        if !upload(binding.lightmap, region, rgba) {
+            return Err("GL lightmap upload rejected");
+        }
+        *last = Some(selected);
+        Ok(true)
+    }
+}
+
 /// Lit style grids are RGB-normalized at their file boundary, in style-major order.
 /// Missing lighting/fullbright surfaces are prepared by the caller, independently.
 pub fn build_quake_rgb(
@@ -246,11 +481,25 @@ pub fn build_quake_rgb(
     scale: Q1GlScale,
 ) -> Result<Vec<u8>, LightmapError> {
     let bytes = check_samples(width, height, style_8_8.len(), style_major_rgb)?;
+    let mut rgb = vec![0; bytes];
+    build_quake_rgb_into(width, height, style_major_rgb, style_8_8, scale, &mut rgb)?;
+    Ok(rgb)
+}
+
+pub fn build_quake_rgb_into(
+    width: u32,
+    height: u32,
+    style_major_rgb: &[u8],
+    style_8_8: &[u32],
+    scale: Q1GlScale,
+    rgb: &mut [u8],
+) -> Result<(), LightmapError> {
+    let bytes = check_samples(width, height, style_8_8.len(), style_major_rgb)?;
+    check_output(bytes, rgb)?;
     let shift = match scale {
         Q1GlScale::OriginalOverbright => 7,
         Q1GlScale::Standard => 8,
     };
-    let mut rgb = vec![0; bytes];
     for (component, output) in rgb.iter_mut().enumerate() {
         let mut accumulated = 0u32;
         for (style, &weight) in style_8_8.iter().enumerate() {
@@ -260,7 +509,7 @@ pub fn build_quake_rgb(
         }
         *output = (accumulated >> shift).min(255) as u8;
     }
-    Ok(rgb)
+    Ok(())
 }
 
 /// Native ref_gl/gl_light.c:503-568, 590-635; RGB styles and modulate precede normalization.
@@ -272,10 +521,24 @@ pub fn build_quake2_rgb(
     modulate: f32,
 ) -> Result<Vec<u8>, LightmapError> {
     let bytes = check_samples(width, height, styles.len(), style_major_rgb)?;
+    let mut rgb = vec![0; bytes];
+    build_quake2_rgb_into(width, height, style_major_rgb, styles, modulate, &mut rgb)?;
+    Ok(rgb)
+}
+
+pub fn build_quake2_rgb_into(
+    width: u32,
+    height: u32,
+    style_major_rgb: &[u8],
+    styles: &[[f32; 3]],
+    modulate: f32,
+    rgb: &mut [u8],
+) -> Result<(), LightmapError> {
+    let bytes = check_samples(width, height, styles.len(), style_major_rgb)?;
+    check_output(bytes, rgb)?;
     if !modulate.is_finite() || styles.iter().flatten().any(|value| !value.is_finite()) {
         return Err(LightmapError::Scalar);
     }
-    let mut rgb = vec![0; bytes];
     for pixel in 0..bytes / 3 {
         let mut accumulated = [0.0f32; 3];
         for (style, weights) in styles.iter().enumerate() {
@@ -302,7 +565,17 @@ pub fn build_quake2_rgb(
             rgb[pixel * 3 + component] = channels[component] as u8;
         }
     }
-    Ok(rgb)
+    Ok(())
+}
+
+fn check_output(bytes: usize, output: &[u8]) -> Result<(), LightmapError> {
+    if output.len() != bytes {
+        return Err(LightmapError::SampleLength {
+            expected: bytes,
+            actual: output.len(),
+        });
+    }
+    Ok(())
 }
 
 /// Native Q3 tr_bsp.c:100-125 shifts by map bits minus renderer bits, then normalizes.
@@ -359,13 +632,7 @@ fn check_samples(
     styles: usize,
     samples: &[u8],
 ) -> Result<usize, LightmapError> {
-    if width == 0 || height == 0 {
-        return Err(LightmapError::Dimensions);
-    }
-    let bytes = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(3))
-        .ok_or(LightmapError::Size)?;
+    let bytes = rgb_bytes(width, height)?;
     let expected = bytes.checked_mul(styles).ok_or(LightmapError::Size)?;
     if samples.len() != expected {
         return Err(LightmapError::SampleLength {
@@ -373,5 +640,16 @@ fn check_samples(
             actual: samples.len(),
         });
     }
+    Ok(bytes)
+}
+
+pub(crate) fn rgb_bytes(width: u32, height: u32) -> Result<usize, LightmapError> {
+    if width == 0 || height == 0 {
+        return Err(LightmapError::Dimensions);
+    }
+    let bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(3))
+        .ok_or(LightmapError::Size)?;
     Ok(bytes)
 }

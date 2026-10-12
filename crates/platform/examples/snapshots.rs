@@ -43,6 +43,7 @@ type ReadFrame<const P: usize, const E: usize> =
 struct Codec<const P: usize, const E: usize> {
     encoding: Encoding,
     native_entity_words: usize,
+    visible_areas: bool,
     opcodes: [u32; 2],
     end: u32,
     write: WriteFrame<P, E>,
@@ -51,6 +52,7 @@ struct Codec<const P: usize, const E: usize> {
 const Q3: Codec<PLAYER_WORDS, ENTITY_WORDS> = Codec {
     encoding: Encoding::Q3,
     native_entity_words: ENTITY_WORDS,
+    visible_areas: false,
     opcodes: [7, 7],
     end: 8,
     write: snapshots::write_q3,
@@ -60,6 +62,7 @@ const Q2: Codec<{ qa_network::states::Q2_PLAYER_WORDS }, { qa_network::states::Q
     Codec {
         encoding: Encoding::Bytes,
         native_entity_words: qa_network::states::Q2_ENTITY_WORDS,
+        visible_areas: true,
         opcodes: [20, 20],
         end: 6,
         write: |w, r, n, d| snapshots::write_q2(w, r, n, d, 16),
@@ -68,6 +71,7 @@ const Q2: Codec<{ qa_network::states::Q2_PLAYER_WORDS }, { qa_network::states::Q
 const QW: Codec<0, { qa_network::states::QW_ENTITY_WORDS }> = Codec {
     encoding: Encoding::Bytes,
     native_entity_words: qa_network::states::QW_NATIVE_ENTITY_WORDS,
+    visible_areas: false,
     opcodes: [47, 48],
     end: 6,
     write: |w, r, n, d| snapshots::write_qw(w, r, n, d.map(|base| (base, base as u8))),
@@ -102,7 +106,7 @@ fn entities<const E: usize>(
 fn load<const P: usize, const E: usize>(
     input: &[u8],
     retained: Option<u64>,
-    native_entity_words: usize,
+    codec: &Codec<P, E>,
 ) -> Result<Vec<Case<P, E>>, String> {
     let mut reader = Reader::new(input, Encoding::Bytes);
     let count = reader.read_bits(32).map_err(|e| e.to_string())?;
@@ -118,9 +122,12 @@ fn load<const P: usize, const E: usize>(
         let old_player = words(&mut reader)?;
         let player = words(&mut reader)?;
         reader.read_data(&mut areas).map_err(|e| e.to_string())?;
-        let baselines = entities(&mut reader, baseline_count, native_entity_words)?;
-        let old = entities(&mut reader, a, native_entity_words)?;
-        let entities = entities(&mut reader, b, native_entity_words)?;
+        for byte in &mut areas {
+            *byte = snapshots::native_area_byte(*byte, codec.visible_areas);
+        }
+        let baselines = entities(&mut reader, baseline_count, codec.native_entity_words)?;
+        let old = entities(&mut reader, a, codec.native_entity_words)?;
+        let entities = entities(&mut reader, b, codec.native_entity_words)?;
         let mut server = Ring::load(64, 1024, 32, None).map_err(|e| format!("{e:?}"))?;
         let mut client = Ring::load(64, 1024, 32, retained).map_err(|e| format!("{e:?}"))?;
         for baseline in baselines {
@@ -251,7 +258,14 @@ fn run<const P: usize, const E: usize>(
         ] {
             output.write_bits(value, 32).map_err(|e| e.to_string())?;
         }
-        output.write_data(frame.areas).map_err(|e| e.to_string())?;
+        output
+            .write_data_iter(
+                frame
+                    .areas
+                    .iter()
+                    .map(|byte| snapshots::native_area_byte(*byte, codec.visible_areas)),
+            )
+            .map_err(|e| e.to_string())?;
         for &word in frame.player {
             output.write_bits(word, 32).map_err(|e| e.to_string())?;
         }
@@ -270,7 +284,7 @@ fn run<const P: usize, const E: usize>(
 fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
     let input = std::fs::read(fixture).map_err(|e| e.to_string())?;
     let oracle = std::fs::read(oracle).map_err(|e| e.to_string())?;
-    let mut cases = load(&input, Some(1920), Q3.native_entity_words)?;
+    let mut cases = load(&input, Some(1920), &Q3)?;
     let mut output = [0; 32768];
     let mut offset = 0;
     for case in &mut cases {
@@ -366,7 +380,7 @@ fn compare<const P: usize, const E: usize>(
     codec: &Codec<P, E>,
     retained: Option<u64>,
 ) -> Result<(), String> {
-    let mut cases = load(input, retained, codec.native_entity_words)?;
+    let mut cases = load(input, retained, codec)?;
     check_heap_counter()?;
     let mut stdout = std::io::stdout().lock();
     let mut output = [0; 32768];
@@ -480,7 +494,7 @@ fn connected_heap() -> Result<(), String> {
                 command: 0,
                 flags: 0,
                 qw_peers: 0,
-                areas: &[0x81],
+                areas: &[!0x81],
                 player: &player,
                 entities: &[entity],
             }))?;

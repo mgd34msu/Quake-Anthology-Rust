@@ -723,6 +723,7 @@ fn rgba_world(
             material,
             lightmap,
             lightmap_region: region,
+            lightmap_conversion: None,
             texture_scale: [1.0; 2],
         },
         None,

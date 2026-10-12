@@ -114,6 +114,7 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
         current: None,
         previous: None,
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
         player_projection: &player_projection,
         bindings: &resources.state.models,
         models: &models,
@@ -262,6 +263,7 @@ fn static_entity_admission_and_scene_capacity_reject_without_growing() {
         current: None,
         previous: None,
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
         player_projection: &player_projection,
         bindings: &resources.state.models,
         models: &models,
@@ -376,7 +378,10 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
         .unwrap();
     assert_eq!(native_binding.model, foreign_binding.model);
     assert_ne!(native_binding.material, foreign_binding.material);
-    assert_eq!(foreign_binding.rules, RuleSetId::Quake);
+    assert_eq!(
+        foreign_binding.pose,
+        qa_gameplay::rules::appearance::model_presentation(RuleSetId::Quake).pose
+    );
     configs.set(index, b"MODELS\\TEST\\TRIS.MD2").unwrap();
     assert!(bindings.config_changed(index, &configs, &catalog));
     assert_eq!(
@@ -469,7 +474,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             command: 0,
             flags: 0,
             qw_peers: 0,
-            areas: &[0b0101],
+            areas: &[!0b0101],
             player: &player_words,
             entities: &entities,
         })
@@ -490,6 +495,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         current: Some(ReceivedFrame::Quake2(ring.frame(2).unwrap())),
         previous: Some(ReceivedFrame::Quake2(ring.frame(1).unwrap())),
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
         player_projection: &player_projection,
         bindings: &bindings,
         static_entities: &[],
@@ -582,7 +588,12 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
     );
     let packet = frame.finish();
     assert_eq!((packet.entity(1).frame, packet.entity(1).old_frame), (0, 0));
-    assert_eq!(packet.entity(1).back_lerp, 0.0);
+    // Original Q2 CL_AddViewWeapon resets oldframe only. The fractional
+    // weight remains 1-lerpfrac even when both native frames are zero.
+    assert_eq!(
+        packet.entity(1).back_lerp,
+        1.0 - input.interpolation.fraction
+    );
     let q3_projection = EntityProjection::load(Protocol::Quake3_68);
     let q3 = ClientSceneInput {
         current: Some(ReceivedFrame::Quake3(Frame {
@@ -596,6 +607,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             entities: &[],
         })),
         projection: &q3_projection,
+        appearance: qa_gameplay::rules::appearance::policy(q3_projection.rule_set()),
         ..input
     };
     assert_eq!(q3.hidden_areas(&mut mask), (&[0b0101, 0b1010][..], false));
@@ -699,6 +711,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
             current: Some(ReceivedFrame::QuakeWorld(current)),
             previous: None,
             projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
             player_projection: &player_projection,
             bindings: &bindings,
             static_entities: &[],
@@ -713,6 +726,11 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
             gun_previous: None,
             view_entity: Some(1),
         };
+        let common = input.entities().get(2).unwrap();
+        assert_eq!(common.record.angles, Vec3([90.0, 0.0, 0.0]));
+        assert_eq!(common.angles, Vec3([-30.0, 0.0, -4.0]));
+        let packet_pose = input.entities().get(40).unwrap();
+        assert_eq!(packet_pose.angles, packet_pose.record.angles);
         for software in [true, false] {
             let mut frontend = FrontEnd::load(Limits::default()).unwrap();
             let mut frame = frontend.begin_frame([0; 4]).unwrap();
@@ -982,6 +1000,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         current: Some(ReceivedFrame::Quake2Repro(ring.frame(4).unwrap())),
         previous: Some(ReceivedFrame::Quake2Repro(ring.frame(3).unwrap())),
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
         player_projection: &player_projection,
         bindings: &bindings,
         static_entities: &[],
@@ -1157,6 +1176,8 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
         current: Some(ReceivedFrame::Quake2(current_frame)),
         previous: Some(ReceivedFrame::Quake2(old_frame)),
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
+        alias_roll: AliasRoll::default(),
         interpolation: Interpolation {
             time: ThinkTime::Milliseconds(125),
             fraction: 0.25,
@@ -1300,6 +1321,8 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         current: Some(ReceivedFrame::Quake3(frame)),
         previous: None,
         projection: &projection,
+        appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
+        alias_roll: AliasRoll::default(),
         interpolation: Interpolation::default(),
     };
     assert_eq!(entities.sound_origin(0), Some(record.position));
@@ -1321,6 +1344,8 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         let world = ClientEntities {
             current: None,
             projection: &projection,
+            appearance: qa_gameplay::rules::appearance::policy(projection.rule_set()),
+            alias_roll: AliasRoll::default(),
             ..entities
         };
         assert_eq!(world.sound_origin(0), Some(Vec3::default()));

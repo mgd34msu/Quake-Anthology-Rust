@@ -9,7 +9,7 @@ use qa_core::{
     primitives::{NameId, RuleSetId},
 };
 use qa_formats::program::native::{Encoding, Image};
-use qa_platform::native::{NativeAbi, NativeFormat, NativeImport, NativeScalar, PAGE_BYTES};
+use qa_platform::native::{NativeAbi, NativeScalar, PAGE_BYTES};
 use std::time::Duration;
 
 struct Function {
@@ -29,56 +29,11 @@ struct Layout {
     entity_offset: usize,
     wide_stride: bool,
     import_header: usize,
-    imports: &'static [&'static [u8]],
+    imports: &'static [crate::abi::q2::Import],
+    public_imports: usize,
     functions: &'static [Function],
     entity: EntityLayout,
 }
-const CLASSIC_IMPORTS: &[&[u8]] = &[
-    b"bprintf",
-    b"dprintf",
-    b"cprintf",
-    b"centerprintf",
-    b"sound",
-    b"positioned_sound",
-    b"configstring",
-    b"error",
-    b"modelindex",
-    b"soundindex",
-    b"imageindex",
-    b"setmodel",
-    b"trace",
-    b"pointcontents",
-    b"inPVS",
-    b"inPHS",
-    b"SetAreaPortalState",
-    b"AreasConnected",
-    b"linkentity",
-    b"unlinkentity",
-    b"BoxEdicts",
-    b"Pmove",
-    b"multicast",
-    b"unicast",
-    b"WriteChar",
-    b"WriteByte",
-    b"WriteShort",
-    b"WriteLong",
-    b"WriteFloat",
-    b"WriteString",
-    b"WritePosition",
-    b"WriteDir",
-    b"WriteAngle",
-    b"TagMalloc",
-    b"TagFree",
-    b"FreeTags",
-    b"cvar",
-    b"cvar_set",
-    b"cvar_forceset",
-    b"argc",
-    b"argv",
-    b"args",
-    b"AddCommandString",
-    b"DebugGraph",
-];
 const CLASSIC_FUNCTIONS: &[Function] = functions!(
     (b"Init", 8, Void, []),
     (b"Shutdown", 16, Void, []),
@@ -96,78 +51,6 @@ const CLASSIC_FUNCTIONS: &[Function] = functions!(
     (b"RunFrame", 112, Void, []),
     (b"ServerCommand", 120, Void, []),
 );
-const RERELEASE_IMPORTS: &[&[u8]] = &[
-    b"Broadcast_Print",
-    b"Com_Print",
-    b"Client_Print",
-    b"Center_Print",
-    b"sound",
-    b"positioned_sound",
-    b"local_sound",
-    b"configstring",
-    b"get_configstring",
-    b"Com_Error",
-    b"modelindex",
-    b"soundindex",
-    b"imageindex",
-    b"setmodel",
-    b"trace",
-    b"clip",
-    b"pointcontents",
-    b"inPVS",
-    b"inPHS",
-    b"SetAreaPortalState",
-    b"AreasConnected",
-    b"linkentity",
-    b"unlinkentity",
-    b"BoxEdicts",
-    b"multicast",
-    b"unicast",
-    b"WriteChar",
-    b"WriteByte",
-    b"WriteShort",
-    b"WriteLong",
-    b"WriteFloat",
-    b"WriteString",
-    b"WritePosition",
-    b"WriteDir",
-    b"WriteAngle",
-    b"WriteEntity",
-    b"TagMalloc",
-    b"TagFree",
-    b"FreeTags",
-    b"cvar",
-    b"cvar_set",
-    b"cvar_forceset",
-    b"argc",
-    b"argv",
-    b"args",
-    b"AddCommandString",
-    b"DebugGraph",
-    b"GetExtension",
-    b"Bot_RegisterEdict",
-    b"Bot_UnRegisterEdict",
-    b"Bot_MoveToPoint",
-    b"Bot_FollowActor",
-    b"GetPathToGoal",
-    b"Loc_Print",
-    b"Draw_Line",
-    b"Draw_Point",
-    b"Draw_Circle",
-    b"Draw_Bounds",
-    b"Draw_Sphere",
-    b"Draw_OrientedWorldText",
-    b"Draw_StaticWorldText",
-    b"Draw_Cylinder",
-    b"Draw_Ray",
-    b"Draw_Arrow",
-    b"ReportMatchDetails_Multicast",
-    b"ServerFrame",
-    b"SendToClipBoard",
-    b"Info_ValueForKey",
-    b"Info_RemoveKey",
-    b"Info_SetValueForKey",
-];
 const RERELEASE_FUNCTIONS: &[Function] = functions!(
     (b"PreInit", 8, Void, []),
     (b"Init", 16, Void, []),
@@ -211,7 +94,8 @@ const CLASSIC: Layout = Layout {
     entity_offset: 128,
     wide_stride: false,
     import_header: 0,
-    imports: CLASSIC_IMPORTS,
+    imports: &crate::abi::q2::CLASSIC_IMPORTS,
+    public_imports: 44,
     functions: CLASSIC_FUNCTIONS,
     entity: EntityLayout {
         source: RuleSetId::Quake2,
@@ -266,7 +150,8 @@ const RERELEASE: Layout = Layout {
     entity_offset: 160,
     wide_stride: true,
     import_header: 16,
-    imports: RERELEASE_IMPORTS,
+    imports: &crate::abi::q2::RERELEASE_IMPORTS,
+    public_imports: 70,
     functions: RERELEASE_FUNCTIONS,
     entity: EntityLayout {
         source: RuleSetId::Quake2Rerelease,
@@ -357,12 +242,15 @@ impl Game {
         }
         let mut names = NameTable::load_reserved(
             std::iter::empty(),
-            image.names.len() + layout.imports.len(),
+            image.names.len() + layout.public_imports,
             (0..image.names.len())
                 .filter_map(|n| image.names.get(NameId(n as u32)))
                 .map(<[u8]>::len)
                 .sum::<usize>()
-                + layout.imports.iter().map(|n| n.len()).sum::<usize>(),
+                + layout.imports[..layout.public_imports]
+                    .iter()
+                    .map(|import| import.name.len())
+                    .sum::<usize>(),
         )
         .map_err(|_| Error::Export)?;
         // Re-intern in numeric order to preserve every existing exact NameId.
@@ -379,7 +267,8 @@ impl Game {
         let labels = layout
             .imports
             .iter()
-            .map(|name| names.intern(name).map_err(|_| Error::Export))
+            .take(layout.public_imports)
+            .map(|import| names.intern(import.name).map_err(|_| Error::Export))
             .collect::<Result<Vec<_>, _>>()?;
         image.names = names;
         let cvar_capacity = 1024;
@@ -447,7 +336,7 @@ impl Game {
         // Classic print adapters share synchronous scratch in the load-owned
         // import page, past every pointer slot and before cvar storage.
         let format_offset = PAGE_BYTES / 2;
-        if layout.import_header + layout.imports.len() * 8 > format_offset {
+        if layout.import_header + layout.public_imports * 8 > format_offset {
             return Err(Error::Export);
         }
         let region = image
@@ -476,373 +365,16 @@ impl Game {
         } else {
             NativeAbi::SystemV
         };
-        let imports = labels
+        let imports = layout
+            .imports
             .iter()
             .enumerate()
-            .map(|(ordinal, _)| {
-                let cvar = if layout.version == 2023 { 39 } else { 36 };
-                let local = if ordinal == cvar - 3 {
-                    Some(if layout.version == 2023 {
-                        qa_platform::native::runtime::TAG_MALLOC64
-                    } else {
-                        qa_platform::native::runtime::TAG_MALLOC32
-                    })
-                } else if ordinal == cvar - 2 {
-                    Some(qa_platform::native::runtime::TAG_FREE)
-                } else if ordinal == cvar - 1 {
-                    Some(qa_platform::native::runtime::FREE_TAGS)
-                } else {
-                    None
-                };
-                if let Some(number) = local {
-                    let function =
-                        qa_platform::native::runtime::function(number).ok_or(Error::Export)?;
-                    return Ok(NativeImport {
-                        format: None,
-                        filter: None,
-                        trap: false,
-                        number,
-                        abi,
-                        parameters: function.parameters,
-                        result: function.result,
-                    });
-                }
-                let formatted = layout.version == 3 && matches!(ordinal, 0..=3 | 7);
-                let signature = if formatted {
-                    Some((
-                        match ordinal {
-                            0 => &[NativeScalar::I32, NativeScalar::Word][..],
-                            2 => &[NativeScalar::Word, NativeScalar::I32, NativeScalar::Word][..],
-                            3 => &[NativeScalar::Word, NativeScalar::Word][..],
-                            _ => &[NativeScalar::Word][..],
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 3 && ordinal == 21 {
-                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
-                } else if ordinal == 4 {
-                    Some((
-                        if layout.version == 2023 {
-                            &[
-                                NativeScalar::Word,
-                                NativeScalar::U8,
-                                NativeScalar::I32,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                            ][..]
-                        } else {
-                            &[
-                                NativeScalar::Word,
-                                NativeScalar::I32,
-                                NativeScalar::I32,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                            ][..]
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if ordinal == 5 {
-                    Some((
-                        if layout.version == 2023 {
-                            &[
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::U8,
-                                NativeScalar::I32,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                            ][..]
-                        } else {
-                            &[
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::I32,
-                                NativeScalar::I32,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                                NativeScalar::Float,
-                            ][..]
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 2023 && ordinal == 6 {
-                    Some((
-                        &[
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::U8,
-                            NativeScalar::I32,
-                            NativeScalar::Float,
-                            NativeScalar::Float,
-                            NativeScalar::Float,
-                            NativeScalar::U32,
-                        ][..],
-                        NativeScalar::Void,
-                    ))
-                } else if ordinal == cvar {
-                    Some((
-                        &[NativeScalar::Word, NativeScalar::Word, NativeScalar::U32][..],
-                        NativeScalar::Word,
-                    ))
-                } else if ordinal == cvar + 1 || ordinal == cvar + 2 {
-                    Some((
-                        &[NativeScalar::Word, NativeScalar::Word][..],
-                        NativeScalar::Word,
-                    ))
-                } else if ordinal == cvar + 3 {
-                    Some((&[][..], NativeScalar::I32))
-                } else if ordinal == cvar + 4 {
-                    Some((&[NativeScalar::I32][..], NativeScalar::Word))
-                } else if ordinal == cvar + 5 {
-                    Some((&[][..], NativeScalar::Word))
-                } else if ordinal == cvar + 6 {
-                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
-                } else if (if layout.version == 2023 {
-                    21..23
-                } else {
-                    18..20
-                })
-                .contains(&ordinal)
-                    || (layout.version == 2023 && matches!(ordinal, 48 | 49))
-                {
-                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
-                } else if (if layout.version == 2023 {
-                    10..13
-                } else {
-                    8..11
-                })
-                .contains(&ordinal)
-                {
-                    Some((&[NativeScalar::Word][..], NativeScalar::I32))
-                } else if ordinal == if layout.version == 2023 { 13 } else { 11 } {
-                    Some((
-                        &[NativeScalar::Word, NativeScalar::Word][..],
-                        NativeScalar::Void,
-                    ))
-                } else if ordinal == if layout.version == 2023 { 14 } else { 12 }
-                    || (layout.version == 2023 && ordinal == 15)
-                {
-                    Some((
-                        &[
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::U32,
-                        ][..],
-                        NativeScalar::Word,
-                    ))
-                } else if layout.version == 2023 && ordinal == 8 {
-                    Some((&[NativeScalar::I32][..], NativeScalar::Word))
-                } else if ordinal == if layout.version == 2023 { 16 } else { 13 } {
-                    Some((
-                        &[NativeScalar::Word][..],
-                        if layout.version == 2023 {
-                            NativeScalar::U32
-                        } else {
-                            NativeScalar::I32
-                        },
-                    ))
-                } else if layout.version == 2023 && ordinal == 67 {
-                    Some((
-                        &[
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                        ][..],
-                        NativeScalar::Word,
-                    ))
-                } else if layout.version == 2023 && ordinal == 65 {
-                    Some((&[][..], NativeScalar::U32))
-                } else if layout.version == 2023 && matches!(ordinal, 68 | 69) {
-                    Some((
-                        if ordinal == 68 {
-                            &[NativeScalar::Word, NativeScalar::Word][..]
-                        } else {
-                            &[NativeScalar::Word, NativeScalar::Word, NativeScalar::Word][..]
-                        },
-                        NativeScalar::U8,
-                    ))
-                } else if (if layout.version == 2023 {
-                    17..=18
-                } else {
-                    14..=15
-                })
-                .contains(&ordinal)
-                {
-                    Some((
-                        if layout.version == 2023 {
-                            &[NativeScalar::Word, NativeScalar::Word, NativeScalar::U8][..]
-                        } else {
-                            &[NativeScalar::Word, NativeScalar::Word][..]
-                        },
-                        if layout.version == 2023 {
-                            NativeScalar::U8
-                        } else {
-                            NativeScalar::I32
-                        },
-                    ))
-                } else if ordinal == if layout.version == 2023 { 19 } else { 16 } {
-                    Some((
-                        if layout.version == 2023 {
-                            &[NativeScalar::I32, NativeScalar::U8][..]
-                        } else {
-                            &[NativeScalar::I32, NativeScalar::I32][..]
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if ordinal == if layout.version == 2023 { 20 } else { 17 } {
-                    Some((
-                        &[NativeScalar::I32, NativeScalar::I32][..],
-                        if layout.version == 2023 {
-                            NativeScalar::U8
-                        } else {
-                            NativeScalar::I32
-                        },
-                    ))
-                } else if ordinal == if layout.version == 2023 { 23 } else { 20 } {
-                    Some((
-                        if layout.version == 2023 {
-                            &[
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::I32,
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                            ][..]
-                        } else {
-                            &[
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::Word,
-                                NativeScalar::I32,
-                                NativeScalar::I32,
-                            ][..]
-                        },
-                        if layout.version == 2023 {
-                            NativeScalar::Word
-                        } else {
-                            NativeScalar::I32
-                        },
-                    ))
-                } else if ordinal == if layout.version == 2023 { 7 } else { 6 } {
-                    Some((
-                        &[NativeScalar::I32, NativeScalar::Word][..],
-                        NativeScalar::Void,
-                    ))
-                } else if ordinal == if layout.version == 2023 { 24 } else { 22 } {
-                    Some((
-                        if layout.version == 2023 {
-                            &[NativeScalar::Word, NativeScalar::I32, NativeScalar::U8][..]
-                        } else {
-                            &[NativeScalar::Word, NativeScalar::I32][..]
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if ordinal == if layout.version == 2023 { 25 } else { 23 } {
-                    Some((
-                        if layout.version == 2023 {
-                            &[NativeScalar::Word, NativeScalar::U8, NativeScalar::U32][..]
-                        } else {
-                            &[NativeScalar::Word, NativeScalar::I32][..]
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if (if layout.version == 2023 {
-                    26..=35
-                } else {
-                    24..=32
-                })
-                .contains(&ordinal)
-                {
-                    Some((
-                        if [
-                            if layout.version == 2023 { 30 } else { 28 },
-                            if layout.version == 2023 { 34 } else { 32 },
-                        ]
-                        .contains(&ordinal)
-                        {
-                            &[NativeScalar::Float][..]
-                        } else if ordinal >= if layout.version == 2023 { 31 } else { 29 } {
-                            &[NativeScalar::Word][..]
-                        } else {
-                            &[NativeScalar::I32][..]
-                        },
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 2023 && ordinal == 53 {
-                    Some((
-                        &[
-                            NativeScalar::Word,
-                            NativeScalar::I32,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                            NativeScalar::Word,
-                        ][..],
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 2023 && ordinal == 0 {
-                    Some((
-                        &[NativeScalar::I32, NativeScalar::Word][..],
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 2023 && ordinal == 2 {
-                    Some((
-                        &[NativeScalar::Word, NativeScalar::I32, NativeScalar::Word][..],
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 2023 && ordinal == 3 {
-                    Some((
-                        &[NativeScalar::Word, NativeScalar::Word][..],
-                        NativeScalar::Void,
-                    ))
-                } else if layout.version == 2023 && matches!(ordinal, 1 | 9) {
-                    Some((&[NativeScalar::Word][..], NativeScalar::Void))
-                } else {
-                    None
-                };
-                Ok(NativeImport {
-                    format: formatted.then_some(NativeFormat {
-                        buffer: format_address,
-                        capacity: if ordinal == 0 { 2048 } else { 1024 },
-                        format: if ordinal == 2 {
-                            2
-                        } else if matches!(ordinal, 0 | 3) {
-                            1
-                        } else {
-                            0
-                        },
-                    }),
-                    filter: if ordinal == 23 { filter } else { None },
-                    trap: signature.is_none(),
-                    number: ordinal as u32,
-                    abi,
-                    parameters: signature.map_or(&[], |s| s.0),
-                    result: signature.map_or(NativeScalar::Void, |s| s.1),
-                })
+            .map(|(ordinal, import)| {
+                import
+                    .native(ordinal, abi, format_address, filter)
+                    .ok_or(Error::Export)
             })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let mut imports = imports;
-        if layout.version == 2023 {
-            imports.push(NativeImport {
-                format: None,
-                number: 70,
-                abi,
-                parameters: &[NativeScalar::Word],
-                result: NativeScalar::Void,
-                filter: None,
-                trap: false,
-            });
-        }
+            .collect::<Result<Vec<_>, _>>()?;
         let mut vm = Vm::map_image(
             image,
             &[NamedExport {
@@ -877,14 +409,16 @@ impl Game {
             )
             .map_err(Error::Service)?,
         );
-        vm.entities = Some(crate::entities::EntityProjection::load(
-            layout.entity_offset,
-            layout.wide_stride,
-            layout.entity,
-            configs.resources[0],
-            qa_world::entities::MAX_ENTITIES,
+        vm.projection = Some(crate::projection::Projection::load_q2(
+            crate::entities::EntityProjection::load(
+                layout.entity_offset,
+                layout.wide_stride,
+                layout.entity,
+                configs.resources[0],
+                qa_world::entities::MAX_ENTITIES,
+            ),
+            client,
         ));
-        vm.player_values = Some(crate::players::PlayerValues::load_q2(client));
         vm.pmove = Some(crate::pmove::Pmove::load(
             if layout.version == 2023 {
                 &crate::pmove::RERELEASE
@@ -893,7 +427,7 @@ impl Game {
             },
             client,
         ));
-        let pointers = (0..layout.imports.len())
+        let pointers = (0..layout.public_imports)
             .map(|n| vm.process.import_pointer(n).ok_or(Error::Export))
             .collect::<Result<Vec<_>, _>>()?;
         let memory = vm.process.memory_mut().map_err(Error::Process)?;
@@ -939,7 +473,7 @@ impl Game {
             .functions
             .iter()
             .position(|f| f.name == b"Pmove")
-            .map(|n| (first + n as u32, layout.imports.len()));
+            .map(|n| (first + n as u32, layout.public_imports));
         Ok(Self {
             vm,
             imports_address: address,
@@ -964,6 +498,8 @@ impl Game {
         self.vm.entities()
     }
     pub fn import_ordinal(&self, name: &[u8]) -> Option<usize> {
-        self.layout.imports.iter().position(|n| *n == name)
+        self.layout.imports[..self.layout.public_imports]
+            .iter()
+            .position(|import| import.name == name)
     }
 }

@@ -134,8 +134,8 @@ impl Vm {
         if let Some(table) = &mut self.table {
             table.address = Some(address);
         }
-        if let Some(entities) = &mut self.entities {
-            entities.bind_table(address);
+        if let Some(projection) = &mut self.projection {
+            projection.entities.bind_table(address);
         }
         Ok(())
     }

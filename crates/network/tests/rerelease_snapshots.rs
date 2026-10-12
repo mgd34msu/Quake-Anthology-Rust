@@ -27,6 +27,51 @@ fn player() -> Q2KexPlayer {
     player
 }
 
+#[test]
+fn native_q2_headers_convert_common_hidden_bits_without_changing_wire_masks() -> Result<(), Error> {
+    fn check<const PACKED: bool>() -> Result<(), Error> {
+        let header = Q2Header {
+            sequence: 103,
+            delta: 98,
+            flags: 5,
+            player_flags: 0,
+        };
+        let hidden = [!0x81u8, !0x42u8];
+        let mut bytes = [0; 32];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        header.write::<PACKED>(&mut writer, &hidden)?;
+        let wire = writer.bytes();
+        let mut original = Reader::new(wire, Encoding::Bytes);
+        assert_eq!(original.read_bits(8)?, 20);
+        if PACKED {
+            assert_eq!(original.read_bits(32)?, 103 | (5 << 27));
+        } else {
+            assert_eq!(original.read_bits(32)?, 103);
+            assert_eq!(original.read_bits(32)?, 98);
+        }
+        assert_eq!(original.read_bits(8)?, 5);
+        if PACKED {
+            assert_eq!(original.read_bits(8)?, 0);
+        }
+        assert_eq!(original.read_bits(8)?, 2);
+        let mut visible = [0; 2];
+        original.read_data(&mut visible)?;
+        assert_eq!(visible, [0x81, 0x42]);
+        assert_eq!(original.byte_position(), wire.len());
+        let mut reader = Reader::new(wire, Encoding::Bytes);
+        assert_eq!(reader.read_bits(8)?, 20);
+        let mut admitted = [0; 2];
+        let (read, count) = Q2Header::read::<PACKED>(&mut reader, &mut admitted, 2)?;
+        assert_eq!(count, hidden.len());
+        assert_eq!(admitted, hidden);
+        assert_eq!((read.sequence, read.delta, read.flags), (103, 98, 5));
+        assert_eq!(reader.byte_position(), wire.len());
+        Ok(())
+    }
+    check::<false>()?;
+    check::<true>()
+}
+
 fn wire(
     sequence: u32,
     delta: i32,
@@ -43,7 +88,7 @@ fn wire(
         flags: 5,
         player_flags: 0,
     }
-    .write::<false>(&mut writer, &[0x81, 0x42])?;
+    .write::<false>(&mut writer, &[!0x81, !0x42])?;
     states::write_q2_kex_player(&mut writer, from, to)?;
     writer.write_bits(18, 8)?;
     let _ = demo;
@@ -91,7 +136,7 @@ fn repro_wire(
         flags: 0xf5,
         player_flags,
     }
-    .write::<true>(&mut writer, &[0x81, 0x42])?;
+    .write::<true>(&mut writer, &[!0x81, !0x42])?;
     for &byte in player.bytes() {
         writer.write_bits(u32::from(byte), 8)?;
     }
@@ -169,7 +214,7 @@ fn repro_transmission_patches_the_player_prefix_after_existing_message_data() ->
         command: 0,
         flags: 0xf5,
         qw_peers: 0,
-        areas: &[0xa5; 255],
+        areas: &[!0xa5; 255],
         player: &player,
         entities: &[],
     })?;
@@ -191,7 +236,7 @@ fn repro_transmission_patches_the_player_prefix_after_existing_message_data() ->
     })?);
     let decoded = receiver.current().ok_or(Error::Context)?;
     assert_eq!(decoded.player, &player);
-    assert_eq!(decoded.areas, &[0xa5; 255]);
+    assert_eq!(decoded.areas, &[!0xa5; 255]);
     assert_eq!(decoded.flags, 5);
     assert_eq!(reader.byte_position(), writer.size());
     let mut tiny = [0; 7];
@@ -460,7 +505,7 @@ fn kex_frames_share_the_ring_and_merge_with_native_beam_and_demo_rules() -> Resu
         assert_eq!(&current.player[42..], next_player.stats);
         assert_eq!(current.time, ThinkTime::Milliseconds(50));
         assert_eq!(current.flags, 5);
-        assert_eq!(current.areas, [0x81, 0x42]);
+        assert_eq!(current.areas, [!0x81, !0x42]);
         assert_eq!(ring.counts().accepted, 2);
     }
     Ok(())

@@ -428,10 +428,24 @@ impl FrameHost {
         })
     }
 
+    pub(crate) fn alias_roll(&self) -> qa_gameplay::rules::appearance::AliasRoll {
+        qa_gameplay::rules::appearance::AliasRoll {
+            angle: self
+                .console
+                .cvars
+                .value_in(self.roll_angle, qa_core::primitives::RuleSetId::QuakeWorld),
+            speed: self
+                .console
+                .cvars
+                .value_in(self.roll_speed, qa_core::primitives::RuleSetId::QuakeWorld),
+        }
+    }
+
     /// Pose readers do not require a loaded renderer or model catalog.
     pub fn client_entities_inputs(
         &self,
     ) -> [Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT] {
+        let alias_roll = self.alias_roll();
         std::array::from_fn(|seat| {
             let (client, _, _) = self.local_seat(seat)?;
             let snapshot = self.runtime.snapshots.get(client.0 as usize)?.as_ref()?;
@@ -445,6 +459,8 @@ impl FrameHost {
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection: snapshot.entity_projection(),
+                appearance: snapshot.appearance_policy()?,
+                alias_roll,
                 interpolation: snapshot.interpolation()?,
             })
         })
@@ -453,16 +469,6 @@ impl FrameHost {
     pub fn client_scene_inputs(
         &self,
     ) -> [Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT] {
-        let alias_roll = qa_gameplay::rules::appearance::AliasRoll {
-            angle: self
-                .console
-                .cvars
-                .value_in(self.roll_angle, qa_core::primitives::RuleSetId::QuakeWorld),
-            speed: self
-                .console
-                .cvars
-                .value_in(self.roll_speed, qa_core::primitives::RuleSetId::QuakeWorld),
-        };
         let entities = self.client_entities_inputs();
         std::array::from_fn(|seat| {
             let (_, _, player) = self.local_seat(seat)?;
@@ -484,12 +490,13 @@ impl FrameHost {
                 current: entities.current,
                 previous: entities.previous,
                 projection: entities.projection,
+                appearance: entities.appearance,
                 player_projection: snapshot.player_projection(),
                 bindings: &resources.state.models,
                 static_entities: resources.state.static_entities(),
                 models: self.runtime.models.as_deref()?,
                 player,
-                alias_roll,
+                alias_roll: entities.alias_roll,
                 interpolation: entities.interpolation,
                 gun_animation: snapshot.gun_animation(),
                 gun_previous: snapshot

@@ -7,11 +7,11 @@ use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     math::{angle_vectors, lerp_angle},
-    primitives::{
-        ClientId, IndexSpan, ModelRef, PlayerState, ResourceNamespace, RuleSetId, Vec3, ViewWeapon,
-    },
+    primitives::{ClientId, IndexSpan, ModelRef, PlayerState, ResourceNamespace, Vec3, ViewWeapon},
 };
-use qa_gameplay::rules::appearance::{AliasRoll, AppearanceCapabilities, alias_pose_angles};
+use qa_gameplay::rules::appearance::{
+    AliasPose, AliasRoll, AppearanceCapabilities, AppearancePolicy, WeaponInterpolation,
+};
 use qa_network::{
     projection::{EntityProjection, EntityRecord, PlayerProjection},
     snapshots::{Frame as SnapshotFrame, ReceivedFrame},
@@ -164,6 +164,8 @@ pub struct ClientEntities<'a> {
     pub current: Option<ReceivedFrame<'a>>,
     pub previous: Option<ReceivedFrame<'a>>,
     pub projection: &'a EntityProjection,
+    pub appearance: AppearancePolicy,
+    pub alias_roll: AliasRoll,
     pub interpolation: Interpolation,
 }
 
@@ -173,16 +175,12 @@ pub struct PresentedEntity {
     pub origin: Vec3,
     pub angles: Vec3,
     pub capabilities: AppearanceCapabilities,
-    pub qw_player: bool,
 }
 impl ClientEntities<'_> {
     /// Native frame numbers, not shader time, determine whether Q2 has a
     /// usable predecessor. Other protocols retain their existing policy.
     fn adjacent(&self, current: u32, previous: u32) -> bool {
-        !matches!(
-            self.projection.rule_set(),
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-        ) || current.wrapping_sub(previous) == 1
+        self.appearance.adjacent(current, previous)
     }
 
     fn decode(&self, words: &[u32]) -> Option<EntityRecord> {
@@ -213,7 +211,7 @@ impl ClientEntities<'_> {
     }
 
     fn present(&self, number: u32, record: EntityRecord, qw_player: bool) -> PresentedEntity {
-        let capabilities = qa_gameplay::rules::appearance::project(&record.appearance);
+        let capabilities = self.appearance.project(&record.appearance);
         let previous = self
             .previous
             .filter(|previous| {
@@ -225,7 +223,7 @@ impl ClientEntities<'_> {
             .and_then(|previous| Self::row(previous, number))
             .and_then(|(words, _)| self.decode(words))
             .filter(|old| {
-                qa_gameplay::rules::appearance::can_interpolate(
+                self.appearance.can_interpolate(
                     &old.appearance,
                     &record.appearance,
                     old.position,
@@ -245,13 +243,15 @@ impl ClientEntities<'_> {
                 lerp_angle(old.angles.0[axis], record.angles.0[axis], fraction)
             }))
         });
+        let angles =
+            self.appearance
+                .body_angles(angles, record.velocity, qw_player, self.alias_roll);
         PresentedEntity {
             record,
             previous,
             origin,
             angles,
             capabilities,
-            qw_player,
         }
     }
 
@@ -265,7 +265,7 @@ impl ClientEntities<'_> {
     /// NQ/QW/Q2 reserve ordinal zero for the world and never receive a pose
     /// for it. Q3 client/entity zero is a real row and must be resolved.
     pub fn sound_origin(&self, number: u32) -> Option<Vec3> {
-        if number == 0 && self.projection.rule_set() != RuleSetId::Quake3 {
+        if number == 0 && self.appearance.world_zero() {
             Some(Vec3::default())
         } else {
             self.get(number).map(|entity| entity.origin)
@@ -280,6 +280,7 @@ pub struct ClientSceneInput<'a> {
     pub current: Option<ReceivedFrame<'a>>,
     pub previous: Option<ReceivedFrame<'a>>,
     pub projection: &'a EntityProjection,
+    pub appearance: AppearancePolicy,
     pub player_projection: &'a PlayerProjection,
     pub bindings: &'a ClientModelBindings,
     pub models: &'a ModelCatalog,
@@ -320,11 +321,13 @@ impl ClientSceneInput<'_> {
             current: self.current,
             previous: self.previous,
             projection: self.projection,
+            appearance: self.appearance,
+            alias_roll: self.alias_roll,
             interpolation: self.interpolation,
         }
     }
 
-    /// Wire area-bit polarity is converted once at the CLIENT scene boundary.
+    /// Accepted snapshots already use common hidden-area polarity.
     /// The world query and copied render command borrow the same hidden bits.
     pub fn hidden_areas<'a>(&self, output: &'a mut [u8]) -> (&'a [u8], bool) {
         let areas = match self.current {
@@ -336,13 +339,7 @@ impl ClientSceneInput<'_> {
             None => &[],
         };
         let count = areas.len().min(output.len());
-        let invert = matches!(
-            self.projection.rule_set(),
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-        );
-        for (to, from) in output[..count].iter_mut().zip(&areas[..count]) {
-            *to = if invert { !*from } else { *from };
-        }
+        output[..count].copy_from_slice(&areas[..count]);
         (&output[..count], count != areas.len())
     }
 
@@ -376,8 +373,7 @@ impl ClientSceneInput<'_> {
                     previous: None,
                     origin: record.position,
                     angles: record.angles,
-                    capabilities: qa_gameplay::rules::appearance::project(&record.appearance),
-                    qw_player: false,
+                    capabilities: self.appearance.project(&record.appearance),
                 },
                 None,
                 1.0,
@@ -496,20 +492,13 @@ impl ClientSceneInput<'_> {
                                 native_frame(old.appearance.frame, model.frame_count())
                             })
                     };
-                    let angles = alias_pose_angles(
-                        binding.rules,
-                        pose.angles,
-                        record.velocity,
-                        pose.qw_player,
-                        software,
-                        self.alias_roll,
-                    );
+                    let angles = binding.pose.angles(pose.angles, software);
                     entity.model = binding.model.into();
                     entity.material = Some(binding.material);
                     entity.frame = current_frame;
                     entity.old_frame = old_frame;
                     entity.back_lerp = 1.0 - fraction;
-                    entity.lighting = Some(native_lighting(binding.rules, angles));
+                    entity.lighting = Some(native_lighting(binding.pose, angles));
                     angles
                 }
             };
@@ -550,9 +539,8 @@ impl ClientSceneInput<'_> {
             counts.missing_models += 1;
             return;
         };
-        let source = self.projection.rule_set();
-        let native_q2 = matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease);
-        let previous = if native_q2 {
+        let animation_policy = self.appearance.weapon_interpolation();
+        let previous = if animation_policy != WeaponInterpolation::None {
             self.previous
                 .filter(|old| {
                     self.current.is_some_and(|current| {
@@ -580,50 +568,47 @@ impl ClientSceneInput<'_> {
                 lerp_angle(old.angles.0[axis], weapon.angles.0[axis], fraction)
             }))
         });
-        let angles = alias_pose_angles(
-            binding.rules,
-            self.player.view_angles + angles,
-            Vec3::default(),
-            false,
-            software,
-            self.alias_roll,
-        );
+        let angles = binding
+            .pose
+            .angles(self.player.view_angles + angles, software);
         let current_frame = native_frame(weapon.frame, model.frame_count());
-        let (old_frame, back_lerp) = if source == RuleSetId::Quake2Rerelease && previous.is_some() {
-            let back = self.gun_animation.map_or(0.0, |animation| {
-                self.interpolation
-                    .gun_back_lerp(animation.changed_at, weapon.rate)
-            });
-            let old = self
-                .gun_previous
-                .and_then(|frame| self.weapon(frame))
-                .filter(|old| old.model == weapon.model);
-            if old.is_none()
-                && back != 0.0
-                && self
-                    .gun_animation
-                    .is_some_and(|animation| animation.previous.is_some())
-            {
-                counts.unsupported += 1;
-            }
-            (
-                old.map_or(current_frame, |old| {
-                    native_frame(old.frame, model.frame_count())
-                }),
-                back,
-            )
-        } else if source == RuleSetId::Quake2 && weapon.frame != 0 {
-            (
-                previous
-                    .filter(|old| old.model == weapon.model)
-                    .map_or(current_frame, |old| {
+        let (old_frame, back_lerp) =
+            if animation_policy == WeaponInterpolation::Rate && previous.is_some() {
+                let back = self.gun_animation.map_or(0.0, |animation| {
+                    self.interpolation
+                        .gun_back_lerp(animation.changed_at, weapon.rate)
+                });
+                let old = self
+                    .gun_previous
+                    .and_then(|frame| self.weapon(frame))
+                    .filter(|old| old.model == weapon.model);
+                if old.is_none()
+                    && back != 0.0
+                    && self
+                        .gun_animation
+                        .is_some_and(|animation| animation.previous.is_some())
+                {
+                    counts.unsupported += 1;
+                }
+                (
+                    old.map_or(current_frame, |old| {
                         native_frame(old.frame, model.frame_count())
                     }),
-                1.0 - fraction,
-            )
-        } else {
-            (current_frame, 0.0)
-        };
+                    back,
+                )
+            } else if animation_policy == WeaponInterpolation::Snapshot {
+                (
+                    previous
+                        .filter(|_| weapon.frame != 0)
+                        .filter(|old| old.model == weapon.model)
+                        .map_or(current_frame, |old| {
+                            native_frame(old.frame, model.frame_count())
+                        }),
+                    1.0 - fraction,
+                )
+            } else {
+                (current_frame, 0.0)
+            };
         let entity = SceneEntity {
             model: binding.model.into(),
             material: Some(binding.material),
@@ -633,7 +618,7 @@ impl ClientSceneInput<'_> {
             old_frame,
             back_lerp,
             depth_hack: true,
-            lighting: Some(native_lighting(binding.rules, angles)),
+            lighting: Some(native_lighting(binding.pose, angles)),
             ..SceneEntity::default()
         };
         let added = frame.add_entity(entity);
@@ -649,17 +634,18 @@ impl ClientSceneInput<'_> {
     }
 
     fn player_event_interpolation(&self) -> bool {
-        let (Some(current @ ReceivedFrame::Quake2Repro(_)), Some(number)) =
-            (self.current, self.view_entity)
-        else {
+        if !self.appearance.player_event_check() {
+            return true;
+        }
+        let (Some(current), Some(number)) = (self.current, self.view_entity) else {
             return true;
         };
         let Some((words, _)) = ClientEntities::row(current, number) else {
             return true;
         };
-        self.entities().decode(words).is_some_and(|entity| {
-            qa_gameplay::rules::appearance::can_interpolate_player_event(&entity.appearance)
-        })
+        self.entities()
+            .decode(words)
+            .is_some_and(|entity| !self.appearance.is_interpolation_event(&entity.appearance))
     }
 }
 
@@ -671,9 +657,9 @@ fn native_frame(frame: i32, count: u32) -> u32 {
         .unwrap_or(0)
 }
 
-fn native_lighting(source: RuleSetId, angles: Vec3) -> qa_render::stage::EntityLighting {
+fn native_lighting(pose: AliasPose, angles: Vec3) -> qa_render::stage::EntityLighting {
     let mut lighting = qa_render::stage::EntityLighting::default();
-    if let Some(direction) = qa_gameplay::rules::appearance::alias_light_direction(source, angles) {
+    if let Some(direction) = pose.light_direction(angles) {
         lighting.direction = direction;
     }
     lighting

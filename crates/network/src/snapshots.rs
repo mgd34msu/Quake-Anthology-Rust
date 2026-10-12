@@ -13,6 +13,12 @@ pub use q2::{
 
 pub const SLOTS: usize = 32;
 
+/// Convert one native area byte to or from common 1=hidden polarity.
+/// The native protocol boundary supplies whether its bits mean visible.
+pub const fn native_area_byte(byte: u8, visible: bool) -> u8 {
+    byte ^ if visible { u8::MAX } else { 0 }
+}
+
 /// Native snapshot storage and usable entity-number boundaries selected once
 /// by the connection protocol, never inferred from common reservations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +101,7 @@ pub struct Frame<'a, const P: usize, const E: usize> {
     pub flags: u8,
     /// Accepted QW playerinfo rows, carried by the existing native ring slot.
     pub qw_peers: u32,
+    /// Common polarity: a set bit hides the area. Native codecs convert at admission/submission.
     pub areas: &'a [u8],
     pub player: &'a [u32; P],
     pub entities: &'a [Entity<E>],
@@ -787,7 +794,7 @@ pub fn read_q3(
     let base_sequence = sequence.saturating_sub(distance);
     let full = distance == 0 || base_sequence == 0;
     let flags = reader.read_bits(8)? as u8;
-    let area_bytes = read_areas(reader, &mut ring.scratch_areas, 32)?;
+    let area_bytes = read_areas(reader, &mut ring.scratch_areas, 32, false)?;
     let base_index = slot(base_sequence);
     let base_valid = full || ring.frame(base_sequence).is_some();
     // qsrc consumes an invalid delta using the addressed slot's retained
@@ -1142,12 +1149,18 @@ fn read_areas(
     reader: &mut Reader<'_>,
     out: &mut [u8],
     limit: usize,
+    visible: bool,
 ) -> Result<usize, packet::Error> {
     let count = reader.read_bits(8)? as usize;
     if count > out.len() || count > limit {
         return Err(packet::Error::Count);
     }
     reader.read_data(&mut out[..count])?;
+    if visible {
+        for byte in &mut out[..count] {
+            *byte = native_area_byte(*byte, visible);
+        }
+    }
     Ok(count)
 }
 
@@ -1195,7 +1208,7 @@ pub(super) fn write_q3_frame(
     writer.write_bits(time, 32)?;
     writer.write_bits(from.map_or(0, |f| sequence - f.sequence), 8)?;
     writer.write_bits(u32::from(to.flags), 8)?;
-    write_areas(writer, areas)?;
+    write_areas(writer, areas, false)?;
     states::write_q3_player(
         writer,
         from.map_or(&[0; states::PLAYER_WORDS], |f| f.player),
@@ -1375,7 +1388,11 @@ fn rows_mut<T>(items: &mut [T], capacity: usize, index: usize, count: usize) -> 
     let first = index * capacity;
     &mut items[first..first + count]
 }
-fn write_areas(writer: &mut Writer<'_>, areas: &[u8]) -> Result<(), crate::message::Error> {
+fn write_areas(
+    writer: &mut Writer<'_>,
+    areas: &[u8],
+    visible: bool,
+) -> Result<(), crate::message::Error> {
     writer.write_bits(areas.len() as u32, 8)?;
-    writer.write_data(areas)
+    writer.write_data_iter(areas.iter().map(|byte| native_area_byte(*byte, visible)))
 }

@@ -75,6 +75,7 @@ pub struct SnapshotBinding {
 
 struct ClientPresentation {
     seat: SeatId,
+    appearance: qa_gameplay::rules::appearance::AppearancePolicy,
     clock: PresentationClock,
     fixed_period: Option<u16>,
     negotiated_period: bool,
@@ -95,6 +96,9 @@ impl SnapshotBinding {
     }
     pub fn entity_projection(&self) -> &qa_network::projection::EntityProjection {
         self.entities.projection()
+    }
+    pub fn appearance_policy(&self) -> Option<qa_gameplay::rules::appearance::AppearancePolicy> {
+        self.presentation.as_ref().map(|client| client.appearance)
     }
     pub fn player_projection(&self) -> &PlayerProjection {
         &self.projection
@@ -163,6 +167,7 @@ impl SnapshotBinding {
             projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
             presentation: seat.map(|seat| ClientPresentation {
                 seat,
+                appearance: qa_gameplay::rules::appearance::policy(protocol.rule_set()),
                 // Native wire timestamps select their arithmetic at admission;
                 // movement, map format and module ownership do not select it.
                 clock: PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(
