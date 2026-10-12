@@ -48,6 +48,7 @@ pub(crate) struct QuakeCLayout {
     abs_max: Option<usize>,
     solid: Option<usize>,
     flags: Option<usize>,
+    ground_entity: Option<usize>,
     owner: Option<usize>,
     model: Option<usize>,
     model_index: Option<usize>,
@@ -81,6 +82,7 @@ impl QuakeCLayout {
             abs_max: field(b"absmax", 3),
             solid: field(b"solid", 2),
             flags: field(b"flags", 2),
+            ground_entity: field(b"groundentity", 4),
             owner: field(b"owner", 4),
             model: field(b"model", 1),
             model_index: field(b"modelindex", 2),
@@ -186,6 +188,22 @@ impl QuakeCLayout {
         value: Vec3,
     ) -> Result<(), CallError> {
         memory.write_vec3(address + field.ok_or(CallError::Memory)? as u64, value)?;
+        Ok(())
+    }
+    fn link_fields(self, memory: &ModuleMemory<'_>, address: u64) -> Result<(), CallError> {
+        for field in [
+            self.origin,
+            self.angles,
+            self.mins,
+            self.maxs,
+            self.abs_min,
+            self.abs_max,
+        ] {
+            memory.read(address + field.ok_or(CallError::Memory)? as u64, 12)?;
+        }
+        for field in [self.solid, self.flags, self.owner] {
+            memory.read(address + field.ok_or(CallError::Memory)? as u64, 4)?;
+        }
         Ok(())
     }
 }
@@ -560,6 +578,52 @@ impl EntityProjection {
         layout.write_vector(memory, value as u64, layout.origin, origin)?;
         self.quakec_link(services, memory, strings, context, value)
     }
+    pub(crate) fn quakec_drop_to_floor(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<bool, CallError> {
+        use qa_world::collision::{QuakeTraceKind, TraceQuery, trace_policy};
+        let layout = self.quakec_layout()?;
+        let origin = layout.vector(memory, u64::from(value), layout.origin)?;
+        let mins = layout.vector(memory, u64::from(value), layout.mins)?;
+        let maxs = layout.vector(memory, u64::from(value), layout.maxs)?;
+        let mut end = origin;
+        end.0[2] -= 256.0;
+        let (rules, entity_rules) = trace_policy(context.trace_rules);
+        let mut query = TraceQuery::point(
+            origin,
+            end,
+            rules,
+            entity_rules.with_quake_kind(Some(QuakeTraceKind::Normal)),
+        );
+        query.mins = mins;
+        query.maxs = maxs;
+        let (view, pass) = self.quakec_trace_view(memory, strings, context, value)?;
+        query.pass = pass;
+        let trace = (ENGINE_CALLS.trace)(services, query, Some(&view))?;
+        view.finish()?;
+        if trace.fraction == 1.0 || trace.all_solid {
+            return Ok(false);
+        }
+        let ground_address =
+            u64::from(value) + layout.ground_entity.ok_or(CallError::Memory)? as u64;
+        let flags_address = u64::from(value) + layout.flags.ok_or(CallError::Memory)? as u64;
+        memory.read(ground_address, 4)?;
+        memory.read(flags_address, 4)?;
+        if value != 0 {
+            layout.link_fields(memory, u64::from(value))?;
+        }
+        self.quakec_set_origin(services, memory, strings, context, value, trace.end)?;
+        let flags = layout.flags(memory, u64::from(value))? as i32 | 512;
+        layout.write_number(memory, u64::from(value), layout.flags, flags as f32)?;
+        let ground = self.quakec_hit(services, trace.entity);
+        memory.write_word(ground_address, ground as i32)?;
+        Ok(true)
+    }
     pub(crate) fn quakec_set_size(
         &mut self,
         services: &mut EngineServices<'_>,
@@ -701,20 +765,7 @@ impl EntityProjection {
             return Ok(());
         }
         let layout = self.quakec_layout()?;
-        if [
-            layout.origin,
-            layout.angles,
-            layout.mins,
-            layout.maxs,
-            layout.solid,
-            layout.flags,
-            layout.owner,
-        ]
-        .iter()
-        .any(Option::is_none)
-        {
-            return Err(CallError::Memory);
-        }
+        layout.link_fields(memory, u64::from(value))?;
         let Some((entity, link_flags)) =
             self.quakec_publish(services, memory, strings, context, value)?
         else {

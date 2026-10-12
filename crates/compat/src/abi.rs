@@ -252,6 +252,7 @@ pub struct UnknownCalls {
     numbers: NameTable,
     pub calls: u64,
     pub capacity_drops: u64,
+    pub last: Option<u32>,
 }
 impl UnknownCalls {
     pub fn load(capacity: usize) -> Result<Self, qa_core::names::NamesError> {
@@ -263,7 +264,29 @@ impl UnknownCalls {
             )?,
             calls: 0,
             capacity_drops: 0,
+            last: None,
         })
+    }
+    fn report(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        module: qa_core::primitives::ModuleId,
+        number: u32,
+        kind: &str,
+    ) {
+        self.calls = self.calls.saturating_add(1);
+        self.last = Some(number);
+        let key = number.to_le_bytes();
+        if self.numbers.find(&key).is_none() {
+            if self.numbers.intern(&key).is_ok() {
+                let _ = (ENGINE_CALLS.console_formatted)(
+                    services,
+                    format_args!("module {}: unknown {kind} {number}\n", module.0),
+                );
+            } else {
+                self.capacity_drops = self.capacity_drops.saturating_add(1);
+            }
+        }
     }
 }
 impl CallTable {
@@ -289,23 +312,9 @@ impl CallTable {
         if let Some(Some(entry)) = self.entries.get(number as usize) {
             return entry.invoke(call, None);
         }
-        unknown.calls = unknown.calls.saturating_add(1);
-        let key = number.to_le_bytes();
-        if unknown.numbers.find(&key).is_none() {
-            if unknown.numbers.intern(&key).is_ok() {
-                // A full output ring counts its loss; an unsupported import
-                // still returns zero without aborting the module or engine.
-                let _ = (ENGINE_CALLS.console_formatted)(
-                    call.services,
-                    format_args!(
-                        "module {}: unknown system call {number}\n",
-                        call.context.module.0
-                    ),
-                );
-            } else {
-                unknown.capacity_drops = unknown.capacity_drops.saturating_add(1);
-            }
-        }
+        // Q3 returns zero for an unsupported import; a full output ring
+        // still counts its loss through the common publisher.
+        unknown.report(call.services, call.context.module, number, "system call");
         Ok(CallValue::Word(0))
     }
 }
@@ -615,6 +624,7 @@ const fn quakec() -> CallTable {
     });
     t.entries[26] = value!(qc_float_string, scalar);
     t.entries[27] = value!(qc_vector_string, vector);
+    t.entries[34] = qc!(qc_drop_to_floor, 0, 0, true);
     t.entries[35] = scalar!(
         lightstyle,
         Some(QcSignature::new(
@@ -664,13 +674,11 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
     fn call(&mut self, vm: &mut quakec::Vm, number: u32, argc: usize) -> Result<(), quakec::Trap> {
         // Unsupported native builtins trap only when executed; they never
         // inherit the Q3 convention of reporting an unknown import as zero.
-        let entry = self
-            .table
-            .entries
-            .get(number as usize)
-            .copied()
-            .flatten()
-            .ok_or(quakec::Trap::Builtin)?;
+        let Some(entry) = self.table.entries.get(number as usize).copied().flatten() else {
+            self.unknown
+                .report(self.services, self.context.module, number, "QuakeC builtin");
+            return Err(quakec::Trap::Builtin);
+        };
         let signature = entry.quakec.ok_or(quakec::Trap::Builtin)?;
         if argc > 8 {
             return Err(quakec::Trap::Builtin);
@@ -800,6 +808,15 @@ fn qc_set_origin(
         qc_vector(arguments, 1)?,
     )?;
     Ok(CallValue::Word(0))
+}
+fn qc_drop_to_floor(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    _: &[u64],
+) -> Result<CallValue, CallError> {
+    Ok(CallValue::Word(u64::from(
+        f32::from(u8::from(vm.drop_to_floor(c.services, c.context)?)).to_bits(),
+    )))
 }
 fn qc_set_size(
     c: &mut QuakeCCalls<'_, '_>,

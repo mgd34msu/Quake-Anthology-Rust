@@ -723,9 +723,16 @@ fn nq_startup_assigns_only_the_selected_native_mode_global() {
 
 #[test]
 fn map_parse_or_spawn_failure_never_reports_running_or_executes_later_spawns() {
-    for text in [
-        b"{ classname worldspawn } { classname broken } { classname entry }".as_slice(),
-        b"{ classname worldspawn } { classname entry callback missing } { classname entry }",
+    for (text, unknown) in [
+        (
+            b"{ classname worldspawn } { classname broken } { classname entry }".as_slice(),
+            Some(999),
+        ),
+        (
+            b"{ classname worldspawn } { classname entry callback missing } { classname entry }"
+                .as_slice(),
+            None,
+        ),
     ] {
         let mut vm = program(
             &[
@@ -749,6 +756,13 @@ fn map_parse_or_spawn_failure_never_reports_running_or_executes_later_spawns() {
             host.module_state(ModuleId(1)),
             Some(qa_app::modules::State::Failed)
         );
+        assert_eq!(host.last_unknown_call(ModuleId(1)), unknown);
+        if let Some(number) = unknown {
+            assert!(
+                prints(&host).iter().any(|text| text
+                    == format!("module 1: unknown QuakeC builtin {number}\n").as_bytes())
+            );
+        }
         let calls = host.module_counts(ModuleId(1)).unwrap().calls;
         for milliseconds in [0, 100, 200] {
             host.frame(

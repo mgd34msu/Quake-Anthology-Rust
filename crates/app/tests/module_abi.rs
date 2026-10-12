@@ -1850,6 +1850,7 @@ fn native_addresses_role_ordinals_cvar_conversion_and_byte_strings_use_existing_
         assert_eq!(Q3_SERVER.invoke(1234, &mut call, &mut unknown), Ok(0));
         assert_eq!(Q3_SERVER.invoke(1235, &mut call, &mut unknown), Ok(0));
         assert_eq!((unknown.calls, unknown.capacity_drops), (3, 1));
+        assert_eq!(unknown.last, Some(1235));
         let mut batch = services
             .server
             .events

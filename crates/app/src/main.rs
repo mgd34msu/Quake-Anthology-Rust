@@ -528,6 +528,7 @@ fn run() -> Result<(), String> {
             native_entity_source,
         )?;
     }
+    let module_count = module_requests.len();
     let model_sources: Vec<_> = module_requests
         .iter()
         .map(|request| request.context.native_rules)
@@ -628,6 +629,17 @@ fn run() -> Result<(), String> {
     // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
     if !host.runtime.quit {
         host.initialize_modules(qa_app::modules::Phase::Server);
+        for index in 0..module_count {
+            let module = qa_core::primitives::ModuleId((index + 1) as u16);
+            if host.module_state(module) == Some(qa_app::modules::State::Failed) {
+                let detail = host
+                    .last_unknown_call(module)
+                    .map_or_else(String::new, |number| {
+                        format!("; last unsupported import {number}")
+                    });
+                return Err(format!("module {} failed initialization{detail}", module.0));
+            }
+        }
     }
     let sound_rules = local_clients
         .iter()
@@ -1017,7 +1029,7 @@ fn run() -> Result<(), String> {
         frame += 1;
     }
     host.shutdown_modules();
-    for index in 0..quakec_modules.len() + q2_modules.len() + q3_modules.len() {
+    for index in 0..module_count {
         if let Some(counts) = host.module_counts(qa_core::primitives::ModuleId((index + 1) as u16))
         {
             println!(

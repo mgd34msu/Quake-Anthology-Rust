@@ -489,6 +489,9 @@ impl FrameHost {
     pub fn module_counts(&self, module: ModuleId) -> Option<&Counts> {
         Some(&self.module_row(module)?.counts)
     }
+    pub fn last_unknown_call(&self, module: ModuleId) -> Option<u32> {
+        self.module_row(module)?.unknown.last
+    }
     pub fn module_state(&self, module: ModuleId) -> Option<State> {
         Some(self.module_row(module)?.state)
     }

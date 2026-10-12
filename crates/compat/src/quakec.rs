@@ -368,6 +368,31 @@ impl Vm {
             },
         )
     }
+    /// Native droptofloor reads the current self row and uses the shared
+    /// caller-selected trace and explicit no-touch entity link service.
+    pub fn drop_to_floor(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+    ) -> Result<bool, crate::services::CallError> {
+        let global = self
+            .call_fields
+            .self_global
+            .ok_or(crate::services::CallError::Memory)?;
+        let entity = self.image.globals[global];
+        let dropped = self.projection.quakec_drop_to_floor(
+            services,
+            &mut self.entities,
+            &self.strings,
+            context,
+            entity,
+        )?;
+        if dropped {
+            let slot = entity as usize / self.stride;
+            self.mark_entity_rows(slot, slot);
+        }
+        Ok(dropped)
+    }
     /// Native NOCLIP follows the owning module's think phase. Its pose writes
     /// use the same checked edict importer and explicit link service.
     pub fn advance_noclip(
@@ -430,13 +455,16 @@ impl Vm {
         // a row boundary. Retain every successfully written row on later traps.
         let first = address as usize / self.stride;
         let last = (address as usize + 3) / self.stride;
+        self.mark_entity_rows(first, last);
+        Ok(())
+    }
+    fn mark_entity_rows(&mut self, first: usize, last: usize) {
         for slot in first..=last {
             if self.dirty_entities.insert(slot) {
                 self.dirty_slots[self.dirty_count] = slot;
                 self.dirty_count += 1;
             }
         }
-        Ok(())
     }
     pub(crate) fn write_trace(
         &mut self,

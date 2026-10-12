@@ -38,6 +38,7 @@ const FIELDS: &[(u16, u16, &[u8])] = &[
     (2, 33, b"colormap"),
     (2, 34, b"nextthink"),
     (6, 35, b"think"),
+    (4, 36, b"groundentity"),
 ];
 const GLOBALS: &[(u16, u16, &[u8])] = &[
     (4, 34, b"self"),
@@ -52,7 +53,17 @@ const GLOBALS: &[(u16, u16, &[u8])] = &[
     (3, 69, b"trace_plane_normal"),
     (4, 72, b"trace_ent"),
 ];
+fn body_bits(body: Body) -> [[u32; 3]; 4] {
+    [body.position, body.velocity, body.mins, body.maxs].map(|value| value.0.map(f32::to_bits))
+}
 fn vm(capacity: usize) -> Vm {
+    vm_with_definitions(capacity, GLOBALS, FIELDS)
+}
+fn vm_with_definitions(
+    capacity: usize,
+    globals: &[(u16, u16, &[u8])],
+    fields: &[(u16, u16, &[u8])],
+) -> Vm {
     let bytes = quakec_program::program_with_definitions(
         &[
             (Opcode::Return, 1, 0, 0),
@@ -76,9 +87,9 @@ fn vm(capacity: usize) -> Vm {
             (Opcode::Return, 1, 0, 0),
         ],
         &[0, 1, 2, 5, 8, -16, 11, 13, 15, 17, -41],
-        GLOBALS,
-        FIELDS,
-        36,
+        globals,
+        fields,
+        37,
         96,
     );
     Vm::load(
@@ -148,7 +159,15 @@ fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
 }
 fn with_model_services(
     rules: RuleSetId,
+    model_loader: Option<&mut Models>,
+    run: impl FnOnce(&mut QuakeCCalls<'_, '_>),
+) {
+    with_collision_services(rules, model_loader, &[], run);
+}
+fn with_collision_services(
+    rules: RuleSetId,
     mut model_loader: Option<&mut Models>,
+    world_boxes: &[Bounds],
     run: impl FnOnce(&mut QuakeCCalls<'_, '_>),
 ) {
     let names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
@@ -169,14 +188,30 @@ fn with_model_services(
     let mut storage =
         ServiceStorage::load_native(&[(ModuleId(1), config_count, rules)], 0, &cvars).unwrap();
     let mut geometry = CollisionStore::new();
-    let mut tree = BrushTree::direct(0).unwrap();
+    let mut planes = Vec::new();
+    let mut brushes = Vec::new();
+    for bounds in world_boxes {
+        let first = planes.len() as u32;
+        for axis in 0..3 {
+            let mut normal = [0.0; 3];
+            normal[axis] = 1.0;
+            planes.push(Plane::oriented(Vec3(normal), bounds.maxs.0[axis]));
+            normal[axis] = -1.0;
+            planes.push(Plane::oriented(Vec3(normal), -bounds.mins.0[axis]));
+        }
+        brushes.push(qa_world::collision::brushes::Brush {
+            sides: IndexSpan { first, count: 6 },
+            contents: qa_world::collision::Contents::SOLID,
+        });
+    }
+    let mut tree = BrushTree::direct(brushes.len()).unwrap();
     tree.models
         .push(qa_world::collision::brushes::ModelRoot::Leaf(0));
     let world = geometry
         .load_brushes(
-            vec![],
-            vec![],
-            SurfaceTable::flags(vec![]),
+            planes,
+            brushes,
+            SurfaceTable::flags(vec![SurfaceFlags::default(); world_boxes.len() * 6]),
             tree,
             vec![
                 Bounds {
@@ -661,11 +696,14 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
     }
 }
 fn seeded_vm(calls: &mut QuakeCCalls<'_, '_>, capacity: usize) -> Vm {
-    let mut vm = vm(if calls.context.native_rules == RuleSetId::QuakeWorld {
+    let vm = vm(if calls.context.native_rules == RuleSetId::QuakeWorld {
         capacity + 31
     } else {
         capacity
     });
+    seed_vm(calls, vm)
+}
+fn seed_vm(calls: &mut QuakeCCalls<'_, '_>, mut vm: Vm) -> Vm {
     let anchor = calls
         .services
         .server
@@ -915,11 +953,7 @@ fn rejected_protected_remove_preserves_lifetime_area_and_native_bytes() {
                 .entities
                 .columns
                 .body(id.slot as usize);
-            let bits = |body: qa_core::primitives::Body| {
-                [body.position, body.velocity, body.mins, body.maxs]
-                    .map(|value| value.0.map(f32::to_bits))
-            };
-            assert_eq!(bits(after), bits(body));
+            assert_eq!(body_bits(after), body_bits(body));
             assert_eq!(calls.services.server.area.bounds(id), bounds);
             assert_eq!(
                 vm.entities.read(u64::from(value), vm.stride).unwrap(),
@@ -1041,6 +1075,415 @@ fn trace_uses_shared_collision_and_native_pass_and_result_offsets() {
             assert_eq!(calls.call(&mut vm, 16, 4), Err(Trap::Builtin));
         });
     }
+}
+
+fn spawn_box(
+    calls: &mut QuakeCCalls<'_, '_>,
+    vm: &mut Vm,
+    origin: [f32; 3],
+    mins: [f32; 3],
+    maxs: [f32; 3],
+) -> u32 {
+    calls.call(vm, 14, 0).unwrap();
+    let value = vm.image.globals[1];
+    write(vm, value, b"solid", &[2.0f32.to_bits()]);
+    parameters(
+        vm,
+        &[&[value], &mins.map(f32::to_bits), &maxs.map(f32::to_bits)],
+    );
+    calls.call(vm, 4, 3).unwrap();
+    parameters(vm, &[&[value], &origin.map(f32::to_bits)]);
+    calls.call(vm, 2, 2).unwrap();
+    value
+}
+
+fn solid_order(calls: &QuakeCCalls<'_, '_>) -> Vec<EntityId> {
+    calls
+        .services
+        .server
+        .area
+        .query(
+            &calls.services.server.entities,
+            Bounds {
+                mins: Vec3([-1024.0; 3]),
+                maxs: Vec3([1024.0; 3]),
+            },
+            qa_world::area::LinkFlags::SOLID,
+        )
+        .map(|linked| linked.id)
+        .collect()
+}
+
+#[test]
+fn droptofloor_uses_live_box_and_caller_rules_over_a_shared_brush_world() {
+    let floor = Bounds {
+        mins: Vec3([-100.0, -100.0, -512.0]),
+        maxs: Vec3([100.0, 100.0, 0.0]),
+    };
+    for native in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_collision_services(native, None, &[floor], |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let value = spawn_box(calls, &mut vm, [0.0, 0.0, 40.0], [-1.0; 3], [1.0; 3]);
+            let id = entity(calls, &vm, value);
+            for (trace_rules, epsilon) in
+                [(RuleSetId::Quake, 0.03125f32), (RuleSetId::Quake3, 0.125)]
+            {
+                // The input is live, while the cached body still sits at40.
+                write(
+                    &mut vm,
+                    value,
+                    b"origin",
+                    &[0.0f32, 0.0, 32.0].map(f32::to_bits),
+                );
+                write(&mut vm, value, b"flags", &[3.75f32.to_bits()]);
+                write(&mut vm, value, b"groundentity", &[value]);
+                vm.image.globals[34] = value;
+                calls.context.trace_rules = trace_rules;
+                calls.context.console.source = RuleSetId::Quake2;
+                let trace_globals = vm.image.globals[60..73].to_vec();
+                calls.call(&mut vm, 34, 0).unwrap();
+                assert_eq!(vm.image.globals[1], 1.0f32.to_bits());
+                assert_eq!(
+                    read(&vm, value, b"origin", 3),
+                    [0.0f32, 0.0, 1.0 + epsilon].map(f32::to_bits)
+                );
+                assert_eq!(read(&vm, value, b"flags", 1), [515.0f32.to_bits()]);
+                assert_eq!(read(&vm, value, b"groundentity", 1), [0]);
+                assert_eq!(&vm.image.globals[60..73], trace_globals);
+                assert_eq!(
+                    calls.services.server.entities.columns.position[id.slot as usize],
+                    Vec3([0.0, 0.0, 1.0 + epsilon])
+                );
+                // Relink precedes the flags write. The actual post-Think
+                // dirty importer must then see the final native flags too.
+                assert_eq!(
+                    calls.services.server.entities.columns.flags[id.slot as usize],
+                    3
+                );
+                let linked = calls.services.server.area.bounds(id);
+                vm.project_dirty_entities(calls.services, calls.context)
+                    .unwrap();
+                assert_eq!(
+                    calls.services.server.entities.columns.flags[id.slot as usize],
+                    515
+                );
+                assert_eq!(calls.services.server.area.bounds(id), linked);
+            }
+        });
+    }
+}
+
+#[test]
+fn droptofloor_sets_linked_native_ground_and_reinserts_an_unchanged_pose() {
+    for native in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(native, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let floor = spawn_box(
+                calls,
+                &mut vm,
+                [0.0; 3],
+                [-16.0, -16.0, -8.0],
+                [16.0, 16.0, 0.0],
+            );
+            let value = spawn_box(calls, &mut vm, [0.0, 0.0, 32.0], [-1.0; 3], [1.0; 3]);
+            vm.image.globals[34] = value;
+            calls.call(&mut vm, 34, 0).unwrap();
+            assert_eq!(vm.image.globals[1], 1.0f32.to_bits());
+            assert_eq!(read(&vm, value, b"groundentity", 1), [floor]);
+            assert_eq!(
+                read(&vm, value, b"origin", 3),
+                [0.0f32, 0.0, 1.03125].map(f32::to_bits)
+            );
+            let peer = spawn_box(calls, &mut vm, [8.0, 0.0, 1.03125], [-1.0; 3], [1.0; 3]);
+            let value_id = entity(calls, &vm, value);
+            let peer_id = entity(calls, &vm, peer);
+            let order = solid_order(calls);
+            assert!(
+                order.iter().position(|id| *id == value_id).unwrap()
+                    < order.iter().position(|id| *id == peer_id).unwrap()
+            );
+            let pose = read(&vm, value, b"origin", 3);
+            let bounds = calls.services.server.area.bounds(value_id);
+            let peer_bytes = vm
+                .entities
+                .read(u64::from(peer), vm.stride)
+                .unwrap()
+                .to_vec();
+            vm.image.globals[34] = value;
+            calls.call(&mut vm, 34, 0).unwrap();
+            assert_eq!(vm.image.globals[1], 1.0f32.to_bits());
+            assert_eq!(read(&vm, value, b"origin", 3), pose);
+            assert_eq!(calls.services.server.area.bounds(value_id), bounds);
+            let order = solid_order(calls);
+            assert!(
+                order.iter().position(|id| *id == value_id).unwrap()
+                    > order.iter().position(|id| *id == peer_id).unwrap()
+            );
+            assert_eq!(
+                vm.entities.read(u64::from(peer), vm.stride).unwrap(),
+                peer_bytes
+            );
+        });
+    }
+}
+
+#[test]
+fn droptofloor_miss_and_allsolid_preserve_native_row_common_body_and_links() {
+    let floor = Bounds {
+        mins: Vec3([-100.0, -100.0, -512.0]),
+        maxs: Vec3([100.0, 100.0, 0.0]),
+    };
+    for native in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for boxes in [&[][..], &[floor][..]] {
+            with_collision_services(native, None, boxes, |calls| {
+                let mut vm = seeded_vm(calls, 8);
+                let value = spawn_box(calls, &mut vm, [0.0, 0.0, -20.0], [-1.0; 3], [1.0; 3]);
+                write(&mut vm, value, b"flags", &[81.5f32.to_bits()]);
+                write(&mut vm, value, b"groundentity", &[value]);
+                vm.image.globals[34] = value;
+                let id = entity(calls, &vm, value);
+                let bytes = vm
+                    .entities
+                    .read(u64::from(value), vm.stride)
+                    .unwrap()
+                    .to_vec();
+                let body = calls
+                    .services
+                    .server
+                    .entities
+                    .columns
+                    .body(id.slot as usize);
+                let bounds = calls.services.server.area.bounds(id);
+                let order = solid_order(calls);
+                calls.call(&mut vm, 34, 0).unwrap();
+                assert_eq!(vm.image.globals[1], 0.0f32.to_bits());
+                assert_eq!(
+                    vm.entities.read(u64::from(value), vm.stride).unwrap(),
+                    bytes
+                );
+                assert_eq!(
+                    body_bits(
+                        calls
+                            .services
+                            .server
+                            .entities
+                            .columns
+                            .body(id.slot as usize)
+                    ),
+                    body_bits(body)
+                );
+                assert_eq!(calls.services.server.area.bounds(id), bounds);
+                assert_eq!(solid_order(calls), order);
+            });
+        }
+    }
+}
+
+#[test]
+fn droptofloor_accepts_startsolid_when_trace_reaches_an_actual_floor() {
+    let boxes = [
+        Bounds {
+            mins: Vec3([-100.0, -100.0, -512.0]),
+            maxs: Vec3([100.0, 100.0, 0.0]),
+        },
+        Bounds {
+            mins: Vec3([-100.0, -100.0, 31.0]),
+            maxs: Vec3([100.0, 100.0, 33.0]),
+        },
+    ];
+    for native in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_collision_services(native, None, &boxes, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let value = spawn_box(calls, &mut vm, [0.0, 0.0, 32.0], [-1.0; 3], [1.0; 3]);
+            vm.image.globals[34] = value;
+            let (rules, entity_rules) =
+                qa_world::collision::trace_policy(calls.context.trace_rules);
+            let mut query = qa_world::collision::TraceQuery::point(
+                Vec3([0.0, 0.0, 32.0]),
+                Vec3([0.0, 0.0, -224.0]),
+                rules,
+                entity_rules.with_quake_kind(Some(qa_world::collision::QuakeTraceKind::Normal)),
+            );
+            query.mins = Vec3([-1.0; 3]);
+            query.maxs = Vec3([1.0; 3]);
+            query.pass = CollisionOwner::Lifetime(entity(calls, &vm, value));
+            let trace = (ENGINE_CALLS.trace)(calls.services, query, None).unwrap();
+            assert!(trace.start_solid && !trace.all_solid && trace.fraction < 1.0);
+            calls.call(&mut vm, 34, 0).unwrap();
+            assert_eq!(vm.image.globals[1], 1.0f32.to_bits());
+            assert_eq!(
+                read(&vm, value, b"origin", 3),
+                trace.end.0.map(f32::to_bits)
+            );
+            assert_eq!(read(&vm, value, b"groundentity", 1), [0]);
+        });
+    }
+}
+
+#[test]
+fn droptofloor_rejects_only_executed_arity_or_required_field_paths_without_partial_relink() {
+    let floor = Bounds {
+        mins: Vec3([-100.0, -100.0, -512.0]),
+        maxs: Vec3([100.0, 100.0, 0.0]),
+    };
+    for missing in [
+        b"groundentity".as_slice(),
+        b"origin",
+        b"mins",
+        b"maxs",
+        b"flags",
+        b"absmin",
+        b"absmax",
+        b"angles",
+        b"solid",
+        b"owner",
+    ] {
+        with_collision_services(RuleSetId::Quake, None, &[floor], |calls| {
+            let fields = FIELDS
+                .iter()
+                .copied()
+                .map(|mut definition| {
+                    if definition.2 == missing {
+                        definition.0 = 1;
+                    }
+                    definition
+                })
+                .collect::<Vec<_>>();
+            let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+            // Loading unrelated bytecode and the ordinary spawn path still
+            // work. Only the builtin's executed field path rejects.
+            assert!(vm.call(calls, 1, 100, false).is_ok());
+            calls.call(&mut vm, 14, 0).unwrap();
+            let value = vm.image.globals[1];
+            write(
+                &mut vm,
+                value,
+                b"origin",
+                &[0.0f32, 0.0, 32.0].map(f32::to_bits),
+            );
+            write(&mut vm, value, b"mins", &[-1.0f32; 3].map(f32::to_bits));
+            write(&mut vm, value, b"maxs", &[1.0f32; 3].map(f32::to_bits));
+            write(&mut vm, value, b"solid", &[2.0f32.to_bits()]);
+            vm.image.globals[34] = value;
+            let id = entity(calls, &vm, value);
+            let bytes = vm
+                .entities
+                .read(u64::from(value), vm.stride)
+                .unwrap()
+                .to_vec();
+            let body = calls
+                .services
+                .server
+                .entities
+                .columns
+                .body(id.slot as usize);
+            assert_eq!(calls.call(&mut vm, 34, 0), Err(Trap::Builtin));
+            assert_eq!(
+                vm.entities.read(u64::from(value), vm.stride).unwrap(),
+                bytes
+            );
+            assert_eq!(
+                body_bits(
+                    calls
+                        .services
+                        .server
+                        .entities
+                        .columns
+                        .body(id.slot as usize)
+                ),
+                body_bits(body)
+            );
+            assert_eq!(calls.services.server.area.bounds(id), None);
+        });
+    }
+    with_services(RuleSetId::Quake, |calls| {
+        let fields = FIELDS
+            .iter()
+            .copied()
+            .filter(|field| field.2 != b"groundentity")
+            .collect::<Vec<_>>();
+        let mut vm = seed_vm(calls, vm_with_definitions(8, GLOBALS, &fields));
+        let value = spawn_box(calls, &mut vm, [0.0, 0.0, 32.0], [-1.0; 3], [1.0; 3]);
+        vm.image.globals[34] = value;
+        calls.call(&mut vm, 34, 0).unwrap(); // Miss never reads groundentity.
+        assert_eq!(vm.image.globals[1], 0);
+        let bytes = vm
+            .entities
+            .read(u64::from(value), vm.stride)
+            .unwrap()
+            .to_vec();
+        assert_eq!(calls.call(&mut vm, 34, 1), Err(Trap::Builtin));
+        assert_eq!(
+            vm.entities.read(u64::from(value), vm.stride).unwrap(),
+            bytes
+        );
+    });
+    with_services(RuleSetId::Quake, |calls| {
+        let globals = GLOBALS
+            .iter()
+            .copied()
+            .map(|mut definition| {
+                if definition.2 == b"self" {
+                    definition.0 = 2;
+                }
+                definition
+            })
+            .collect::<Vec<_>>();
+        let mut vm = seed_vm(calls, vm_with_definitions(8, &globals, FIELDS));
+        assert!(vm.call(calls, 1, 100, false).is_ok());
+        assert_eq!(calls.call(&mut vm, 34, 0), Err(Trap::Builtin));
+    });
+}
+
+#[test]
+fn droptofloor_finishes_native_candidate_validation_before_mutating_self() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        let floor = spawn_box(
+            calls,
+            &mut vm,
+            [0.0; 3],
+            [-16.0, -16.0, -8.0],
+            [16.0, 16.0, 0.0],
+        );
+        let value = spawn_box(calls, &mut vm, [0.0, 0.0, 32.0], [-1.0; 3], [1.0; 3]);
+        // This selected floor's live owner is malformed after its old area
+        // membership was published. The view captures the boundary error.
+        write(&mut vm, floor, b"owner", &[1]);
+        vm.image.globals[34] = value;
+        let bytes = vm
+            .entities
+            .read(u64::from(value), vm.stride)
+            .unwrap()
+            .to_vec();
+        let id = entity(calls, &vm, value);
+        let body = calls
+            .services
+            .server
+            .entities
+            .columns
+            .body(id.slot as usize);
+        let bounds = calls.services.server.area.bounds(id);
+        let order = solid_order(calls);
+        assert_eq!(calls.call(&mut vm, 34, 0), Err(Trap::Builtin));
+        assert_eq!(
+            vm.entities.read(u64::from(value), vm.stride).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            body_bits(
+                calls
+                    .services
+                    .server
+                    .entities
+                    .columns
+                    .body(id.slot as usize)
+            ),
+            body_bits(body)
+        );
+        assert_eq!(calls.services.server.area.bounds(id), bounds);
+        assert_eq!(solid_order(calls), order);
+    });
 }
 
 #[test]
