@@ -60,13 +60,16 @@ struct CallFields {
 pub struct PhysicsEntity {
     pub entity: qa_core::primitives::EntityId,
     pub native: qa_core::primitives::NativeEntity,
-    pub phase: PhysicsPhase,
+    pub phase: qa_core::primitives::Motion,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PhysicsPhase {
-    None,
-    Noclip,
-    Unsupported,
+
+impl From<qa_session::physics::PhysicsError> for crate::services::CallError {
+    fn from(error: qa_session::physics::PhysicsError) -> Self {
+        match error {
+            qa_session::physics::PhysicsError::Entity => Self::Entity,
+            qa_session::physics::PhysicsError::AngularVelocity => Self::Memory,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallPhase {
@@ -332,10 +335,8 @@ impl Vm {
         &self,
         entities: &qa_world::entities::EntityTable,
         cursor: &mut usize,
-        rules: qa_core::primitives::RuleSetId,
     ) -> Result<Option<PhysicsEntity>, crate::services::CallError> {
-        self.projection
-            .quakec_physics_entity(entities, &self.entities, cursor, rules)
+        self.projection.quakec_physics_entity(entities, cursor)
     }
     /// Resolve the currently live module-owned lifetime of a captured native
     /// row. Native reuse changes its common handle, never revives the old one.
@@ -450,22 +451,43 @@ impl Vm {
         }
         Ok(dropped)
     }
-    /// Native NOCLIP follows the owning module's think phase. Its pose writes
-    /// use the same checked edict importer and explicit link service.
-    pub fn advance_noclip(
+    /// Refresh the angular input for the shared entity executor. Missing
+    /// native fields reject only this executed motion path.
+    pub fn prepare_noclip(
+        &mut self,
+        entities: &mut qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        value: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .quakec_prepare_noclip(entities, &self.entities, context, value)
+    }
+    /// Scalar native writes retain VectorMA's read/write overlap order; all
+    /// motion arithmetic stays in the shared executor over common columns.
+    pub fn write_noclip(
+        &mut self,
+        entities: &mut qa_world::entities::EntityTable,
+        context: crate::services::CallContext,
+        value: u32,
+        stage: qa_session::physics::MotionWrite,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .quakec_write_noclip(entities, &mut self.entities, context, value, stage)
+    }
+    /// Finish the existing native explicit relink without trigger touches;
+    /// native world0 only publishes its pose.
+    pub fn finish_noclip(
         &mut self,
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
         value: u32,
-        step: f32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection.quakec_noclip(
+        self.projection.quakec_finish_noclip(
             services,
             &mut self.entities,
             &self.strings,
             context,
             value,
-            step,
         )
     }
     /// Import bytecode field stores without replacing explicit native relinks.

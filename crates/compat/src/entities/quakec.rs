@@ -1,7 +1,7 @@
 //! QuakeC byte-offset edicts use the same namespace/lifetime projection as
 //! native modules. Only ABI field storage and ordinal reuse live here.
 use super::*;
-use qa_core::primitives::{WeaponReadiness, WeaponState};
+use qa_core::primitives::{Motion, WeaponReadiness, WeaponState};
 use qa_formats::program::quakec::Image;
 use qa_world::entities::FullTable;
 
@@ -32,12 +32,28 @@ fn client_edicts(
     }
 }
 
+fn motion(value: f32) -> Motion {
+    if value == 0.0 {
+        Motion::None
+    } else if value == 8.0 {
+        Motion::Noclip
+    } else {
+        Motion::Unsupported
+    }
+}
+
+fn integer_motion(value: f32) -> Motion {
+    motion(crate::numbers::native_integer(f64::from(value)) as f32)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct QuakeCLayout {
     stride: usize,
     header: usize,
     fields: usize,
     client_edicts: Option<usize>,
+    integer_motion: bool,
+    motion_decode: Option<fn(f32) -> Motion>,
     name_fields: [Option<usize>; 3],
     origin: Option<usize>,
     velocity: Option<usize>,
@@ -74,6 +90,8 @@ impl QuakeCLayout {
             header,
             fields: image.entityfields * 4,
             client_edicts: None,
+            integer_motion: false,
+            motion_decode: None,
             name_fields: [b"classname".as_slice(), b"target", b"targetname"]
                 .map(|name| field(name, 1)),
             origin: field(b"origin", 3),
@@ -172,6 +190,23 @@ impl QuakeCLayout {
         field: Option<usize>,
     ) -> Result<Vec3, CallError> {
         Ok(memory.read_vec3(address + field.ok_or(CallError::Memory)? as u64)?)
+    }
+    fn motion_state(
+        self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+    ) -> Result<(Motion, Option<Vec3>), CallError> {
+        let angular_velocity = self
+            .angular_velocity
+            .map(|field| self.vector(memory, address, Some(field)))
+            .transpose()?;
+        let motion = if let Some(field) = self.move_type {
+            let decode = self.motion_decode.ok_or(CallError::Entity)?;
+            decode(self.number(memory, address, Some(field))?)
+        } else {
+            Motion::Unsupported
+        };
+        Ok((motion, angular_velocity))
     }
     fn write_number(
         self,
@@ -357,15 +392,25 @@ impl EntityProjection {
     ) -> Result<(), CallError> {
         let mut layout = self.quakec_layout()?;
         let clients = client_edicts(rules, max_clients)?;
+        let integer_motion = rules == RuleSetId::QuakeWorld;
         let first = clients.checked_add(1).ok_or(CallError::Capacity)?;
         if first > self.bindings.len() {
             return Err(CallError::Capacity);
         }
-        if layout.client_edicts.is_some_and(|bound| bound != clients) {
+        if layout
+            .client_edicts
+            .is_some_and(|bound| bound != clients || layout.integer_motion != integer_motion)
+        {
             return Err(CallError::Entity);
         }
         self.seed(entities, module)?;
         layout.client_edicts = Some(clients);
+        layout.integer_motion = integer_motion;
+        layout.motion_decode = Some(if integer_motion {
+            self::integer_motion
+        } else {
+            motion
+        });
         self.schema = EntitySchema::QuakeC(layout);
         self.observed_count = self.observed_count.max(first);
         Ok(())
@@ -423,9 +468,7 @@ impl EntityProjection {
     pub(crate) fn quakec_physics_entity(
         &self,
         entities: &EntityTable,
-        memory: &ModuleMemory<'_>,
         cursor: &mut usize,
-        rules: qa_core::primitives::RuleSetId,
     ) -> Result<Option<crate::quakec::PhysicsEntity>, CallError> {
         let layout = self.quakec_layout()?;
         let clients = layout.client_edicts.ok_or(CallError::Entity)?;
@@ -435,27 +478,10 @@ impl EntityProjection {
             };
             let native_slot = native.slot as usize;
             let client = native_slot > 0 && native_slot <= clients;
-            let phase = if !client && layout.move_type.is_some() {
-                let move_type = layout.number(
-                    memory,
-                    (native_slot * layout.stride) as u64,
-                    layout.move_type,
-                )?;
-                let (none, noclip) = if rules == qa_core::primitives::RuleSetId::QuakeWorld {
-                    let move_type = crate::numbers::native_integer(f64::from(move_type));
-                    (move_type == 0, move_type == 8)
-                } else {
-                    (move_type == 0.0, move_type == 8.0)
-                };
-                if none {
-                    crate::quakec::PhysicsPhase::None
-                } else if noclip {
-                    crate::quakec::PhysicsPhase::Noclip
-                } else {
-                    crate::quakec::PhysicsPhase::Unsupported
-                }
+            let phase = if !client {
+                entities.columns.motion[entity.slot as usize]
             } else {
-                crate::quakec::PhysicsPhase::Unsupported
+                Motion::Unsupported
             };
             return Ok(Some(crate::quakec::PhysicsEntity {
                 entity,
@@ -572,7 +598,7 @@ impl EntityProjection {
         } else {
             return Err(CallError::Capacity);
         };
-        self.bind(services, claim, slot, None)?;
+        let entity = self.bind(services, claim, slot, None)?;
         self.observed_count = self.observed_count.max(slot + 1);
         let address = slot.checked_mul(layout.stride).ok_or(CallError::Memory)?;
         // ED_ClearEdict clears only entvars. Boundary metadata does not inhabit
@@ -580,6 +606,11 @@ impl EntityProjection {
         memory
             .read_mut((address + layout.header) as u64, layout.fields)?
             .fill(0);
+        let (motion, angular_velocity) = layout.motion_state(memory, address as u64)?;
+        let common_slot = entity.slot as usize;
+        let columns = &mut services.server.entities.columns;
+        columns.motion[common_slot] = motion;
+        columns.angular_velocity[common_slot] = angular_velocity;
         u32::try_from(address).map_err(|_| CallError::Memory)
     }
     fn quakec_removal(
@@ -876,33 +907,76 @@ impl EntityProjection {
         };
         Ok((entity, position, centered))
     }
-    pub(crate) fn quakec_noclip(
+    pub(crate) fn quakec_prepare_noclip(
+        &mut self,
+        entities: &mut EntityTable,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        let entity = self.binding(entities, native)?.ok_or(CallError::Entity)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        let angles = layout.vector(memory, address, layout.angles)?;
+        let angular_velocity = layout.vector(memory, address, layout.angular_velocity)?;
+        let slot = entity.slot as usize;
+        entities.columns.angles[slot] = angles;
+        entities.columns.angular_velocity[slot] = Some(angular_velocity);
+        Ok(())
+    }
+    pub(crate) fn quakec_write_noclip(
+        &mut self,
+        entities: &mut EntityTable,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        stage: qa_session::physics::MotionWrite,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        let entity = self.binding(entities, native)?.ok_or(CallError::Entity)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        let slot = entity.slot as usize;
+        let (axis, field, vector) = match stage {
+            qa_session::physics::MotionWrite::Angles(axis) => {
+                (axis, layout.angles, entities.columns.angles[slot])
+            }
+            qa_session::physics::MotionWrite::Origin(axis) => {
+                (axis, layout.origin, entities.columns.position[slot])
+            }
+        };
+        let value = *vector.0.get(axis).ok_or(CallError::Memory)?;
+        layout.write_number(memory, address, field.map(|at| at + axis * 4), value)?;
+        // VectorMA writes each component before reading the next. Refresh the
+        // same common columns after writes that can alias later native input.
+        match stage {
+            qa_session::physics::MotionWrite::Angles(axis) if axis < 2 => {
+                let angles = layout.vector(memory, address, layout.angles)?;
+                let velocity = layout.vector(memory, address, layout.angular_velocity)?;
+                entities.columns.angles[slot] = angles;
+                entities.columns.angular_velocity[slot] = Some(velocity);
+            }
+            qa_session::physics::MotionWrite::Angles(_)
+            | qa_session::physics::MotionWrite::Origin(0 | 1) => {
+                let origin = layout.vector(memory, address, layout.origin)?;
+                let velocity = layout.vector(memory, address, layout.velocity)?;
+                entities.columns.position[slot] = origin;
+                entities.columns.velocity[slot] = velocity;
+            }
+            qa_session::physics::MotionWrite::Origin(_) => {}
+        }
+        Ok(())
+    }
+    pub(crate) fn quakec_finish_noclip(
         &mut self,
         services: &mut EngineServices<'_>,
         memory: &mut ModuleMemory<'_>,
         strings: &ModuleMemory<'_>,
         context: CallContext,
         value: u32,
-        step: f32,
     ) -> Result<(), CallError> {
-        let native = self.quakec_identity(memory, context, value)?;
-        self.binding(&services.server.entities, native)?
-            .ok_or(CallError::Entity)?;
-        let layout = self.quakec_layout()?;
-        let address = u64::from(value);
-        // SV_Physics_Noclip calls VectorMA for angles before origin. Retain
-        // that order, including native fields read after the angle write.
-        let angles = layout.vector(memory, address, layout.angles)?;
-        let angular_velocity = layout.vector(memory, address, layout.angular_velocity)?;
-        layout.write_vector(
-            memory,
-            address,
-            layout.angles,
-            angles + angular_velocity * step,
-        )?;
-        let origin = layout.vector(memory, address, layout.origin)?;
-        let velocity = layout.vector(memory, address, layout.velocity)?;
-        layout.write_vector(memory, address, layout.origin, origin + velocity * step)?;
+        self.quakec_identity(memory, context, value)?;
         if value == 0 {
             // Native SV_LinkEdict ignores world0, but its pose writes still
             // belong in the common columns used by presentation.
@@ -955,6 +1029,7 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
+        let (motion, angular_velocity) = layout.motion_state(memory, address)?;
         let weapon_state = layout
             .attack_finished
             .map(|field| {
@@ -1047,6 +1122,8 @@ impl EntityProjection {
         columns.target[slot] = names[1];
         columns.set_body(slot, body);
         columns.angles[slot] = angles;
+        columns.angular_velocity[slot] = angular_velocity;
+        columns.motion[slot] = motion;
         columns.flags[slot] = flags;
         columns.collision_shape[slot] = shape;
         columns.collision_owner[slot] = owner;

@@ -1,17 +1,7 @@
 pub(crate) use qa_core::math::{difference, length, normalized};
 use qa_core::primitives::{Body, CallbackId, DamageEvent, DamageFlags, EntityId, Vec3};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Motion {
-    #[default]
-    None,
-    Walk,
-    Fly,
-    Toss,
-    Bounce,
-    Push,
-    Stop,
-}
+pub use qa_core::primitives::Motion;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PowerArmor {

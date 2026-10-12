@@ -1736,6 +1736,103 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
 }
 
 #[test]
+fn noclip_native_vector_aliases_keep_component_and_phase_write_order() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 70, 0, 0)]);
+        let read_origin = code.function(&[(LoadV, 80, 81, 70), (Return, 70, 0, 0)]);
+        let read_angles = code.function(&[(LoadV, 80, 82, 70), (Return, 70, 0, 0)]);
+        let fields = FIELDS
+            .iter()
+            .map(|&(kind, offset, name)| {
+                let offset = match name {
+                    b"origin" => 1,
+                    b"velocity" => 0,
+                    b"avelocity" => 5,
+                    _ => offset,
+                };
+                (kind, offset, name)
+            })
+            .collect::<Vec<_>>();
+        let mut vm = code.vm_fields(&fields);
+        let initial = [4.0f32, -3.25, 0.125, 9.0, 0.0, -5.0, 2.0, -7.0, 1.0];
+        let native = 40u32 * vm.stride as u32;
+        for (word, value) in initial.iter().copied().enumerate() {
+            let address = vm.field_address(native, word as u32, 1).unwrap();
+            vm.entities
+                .write_word(address, value.to_bits() as i32)
+                .unwrap();
+        }
+        vm.image.globals[80] = native;
+        vm.image.globals[81] = 1;
+        vm.image.globals[82] = 6;
+        let mut expected = initial;
+        // WinQuake/QW VectorMA reads and writes each axis before the next.
+        // These legal field definitions overlap within each vector operation.
+        for axis in 0..3 {
+            expected[6 + axis] = expected[6 + axis] + 0.125f32 * expected[5 + axis];
+        }
+        for axis in 0..3 {
+            expected[1 + axis] = expected[1 + axis] + 0.125f32 * expected[axis];
+        }
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            vec![frame, read_origin, read_angles, 0],
+            frame,
+            125,
+            &[(40, 8.0, 0.0, 0)],
+        );
+        let mut host = load(runtime, vec![request]);
+        tick(&mut host, 0);
+        tick(&mut host, 125);
+        let slot = ids[0].slot as usize;
+        for (actual, first) in [
+            (host.runtime.server.entities.columns.position[slot], 1),
+            (host.runtime.server.entities.columns.velocity[slot], 0),
+            (host.runtime.server.entities.columns.angles[slot], 6),
+            (
+                host.runtime.server.entities.columns.angular_velocity[slot].unwrap(),
+                5,
+            ),
+        ] {
+            assert_eq!(
+                actual.0.map(f32::to_bits),
+                expected[first..first + 3]
+                    .iter()
+                    .copied()
+                    .map(f32::to_bits)
+                    .collect::<Vec<_>>()
+                    .as_slice()
+            );
+        }
+        for (callback, first) in [(1, 1), (2, 6)] {
+            host.call_module_export(
+                ModuleId(1),
+                Export::clocked(CallbackId(callback)),
+                ThinkTime::Seconds(0.125),
+            )
+            .unwrap();
+            assert_eq!(
+                host.module_counts(ModuleId(1)).unwrap().last_result,
+                Some(ModuleResult::QuakeC(std::array::from_fn(|axis| {
+                    expected[first + axis].to_bits()
+                })))
+            );
+        }
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+        assert_eq!(
+            host.runtime.server.entities.columns.motion[slot],
+            Motion::Noclip
+        );
+        assert!(host.runtime.server.area.bounds(ids[0]).is_some());
+    }
+}
+
+#[test]
 fn noclip_reused_native_row_continues_on_new_common_lifetime() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let mut code = Code::new();

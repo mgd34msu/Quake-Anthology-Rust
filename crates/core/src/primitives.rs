@@ -406,6 +406,21 @@ impl CallbackCall<'_> {
     }
 }
 
+/// Entity motion capabilities, independent of the module and wire identities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Motion {
+    #[default]
+    None,
+    Walk,
+    Fly,
+    Toss,
+    Bounce,
+    Push,
+    Stop,
+    Noclip,
+    Unsupported,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Body {
     pub position: Vec3,

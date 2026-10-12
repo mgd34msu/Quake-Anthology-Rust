@@ -1,8 +1,8 @@
 use qa_core::bits::BitSet;
 use qa_core::primitives::{
     Body, BodyAttachment, CallbackId, CollisionOwner, CollisionShape, CollisionTags,
-    EntityAppearance, EntityId, EntityPose, ModelRules, ModuleId, NameId, NativeEntity, ThinkTime,
-    Vec3,
+    EntityAppearance, EntityId, EntityPose, ModelRules, ModuleId, Motion, NameId, NativeEntity,
+    ThinkTime, Vec3,
 };
 
 pub const MAX_ENTITIES: usize = 8192;
@@ -123,6 +123,8 @@ pub struct EntityColumns {
     pub mins: Box<[Vec3]>,
     pub maxs: Box<[Vec3]>,
     pub angles: Box<[Vec3]>,
+    pub angular_velocity: Box<[Option<Vec3>]>,
+    pub motion: Box<[Motion]>,
     pub next_think: Box<[Option<ThinkTime>]>,
     think_fn: Box<[qa_core::primitives::ThinkBinding]>,
     pub touch: Box<[Option<CallbackId>]>,
@@ -158,6 +160,8 @@ impl EntityColumns {
             mins: vec![Vec3::default(); capacity].into_boxed_slice(),
             maxs: vec![Vec3::default(); capacity].into_boxed_slice(),
             angles: vec![Vec3::default(); capacity].into_boxed_slice(),
+            angular_velocity: vec![None; capacity].into_boxed_slice(),
+            motion: vec![Motion::Unsupported; capacity].into_boxed_slice(),
             next_think: vec![None; capacity].into_boxed_slice(),
             think_fn: vec![qa_core::primitives::ThinkBinding::default(); capacity]
                 .into_boxed_slice(),
@@ -189,6 +193,8 @@ impl EntityColumns {
         self.mins[slot] = Vec3::default();
         self.maxs[slot] = Vec3::default();
         self.angles[slot] = Vec3::default();
+        self.angular_velocity[slot] = None;
+        self.motion[slot] = Motion::Unsupported;
         self.next_think[slot] = None;
         self.think_fn[slot] = qa_core::primitives::ThinkBinding::default();
         self.touch[slot] = None;

@@ -1134,7 +1134,7 @@ fn find_includes_frozen_native_clients_without_common_bindings() {
             }
             let mut cursor = 1;
             assert!(
-                vm.physics_entity(&calls.services.server.entities, &mut cursor, rules)
+                vm.physics_entity(&calls.services.server.entities, &mut cursor)
                     .unwrap()
                     .is_none()
             );

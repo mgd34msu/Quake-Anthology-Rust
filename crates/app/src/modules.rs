@@ -9,7 +9,7 @@ use qa_compat::{
     services::{CallContext, ServiceStorage, SignonCursor},
 };
 use qa_core::primitives::{
-    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, RuleSetId, ThinkTime,
+    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, Motion, RuleSetId, ThinkTime,
 };
 use qa_session::{
     dispatch::{
@@ -1074,13 +1074,11 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
         let Program::QuakeC(qc) = &row.request.program else {
             return;
         };
-        let next = qc.vm.physics_entity(
-            &host.runtime.server.entities,
-            &mut cursor,
-            row.request.context.native_rules,
-        );
+        let next = qc
+            .vm
+            .physics_entity(&host.runtime.server.entities, &mut cursor);
         match next {
-            Ok(Some(entity)) if entity.phase != quakec::PhysicsPhase::Unsupported => {
+            Ok(Some(entity)) if matches!(entity.phase, Motion::None | Motion::Noclip) => {
                 let result = run_think_with_rebind(
                     host,
                     &functions,
@@ -1105,10 +1103,10 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
                 if let Some(row) = host.module_row_mut(module) {
                     row.counts.rejected += u64::from(result.rejected);
                 }
-                if entity.phase == quakec::PhysicsPhase::Noclip
+                if entity.phase == Motion::Noclip
                     && result.rejected == 0
                     && let Some(current) = result.current_entity
-                    && quakec_noclip(host, module, current, motion_step).is_err()
+                    && entity_noclip(host, module, current, motion_step).is_err()
                     && let Some(row) = host.module_row_mut(module)
                 {
                     row.counts.rejected += 1;
@@ -1131,7 +1129,7 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
     }
 }
 
-fn quakec_noclip(
+fn entity_noclip(
     host: &mut FrameHost,
     module: ModuleId,
     entity: EntityId,
@@ -1150,8 +1148,16 @@ fn quakec_noclip(
     let mut services = host
         .runtime
         .engine_services(&mut host.console, storage, &mut row.scratch);
+    let context = row.request.context;
     qc.vm
-        .advance_noclip(&mut services, row.request.context, native, step)
+        .prepare_noclip(&mut services.server.entities, context, native)?;
+    qa_session::physics::noclip(
+        &mut services.server.entities,
+        entity,
+        step,
+        |entities, write| qc.vm.write_noclip(entities, context, native, write),
+    )?;
+    qc.vm.finish_noclip(&mut services, context, native)
 }
 
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
