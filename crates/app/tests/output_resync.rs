@@ -136,6 +136,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         qa_app::output::dispatch(
             &mut host.runtime,
             &mut source,
+            &mut host.console.scrollback,
             &host.local_clients,
             EventTime(1),
             3.0,
@@ -167,6 +168,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         qa_app::output::dispatch(
             &mut host.runtime,
             &mut source,
+            &mut host.console.scrollback,
             &host.local_clients,
             EventTime(2),
             3.0,

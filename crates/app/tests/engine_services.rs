@@ -14,6 +14,9 @@ use qa_world::{
 
 fn context(module: u16, rules: RuleSetId, order: LinkOrder) -> CallContext {
     CallContext {
+        native_rules: rules,
+        trace_rules: rules,
+        sound_rules: rules,
         server_frame: 0,
         module: ModuleId(module),
         clock: ThinkTime::Seconds(2.0),

@@ -98,6 +98,9 @@ fn abi_call(
                 native_pmove: None,
                 native_player: None,
                 context: CallContext {
+                    native_rules: qa_core::primitives::RuleSetId::Quake3,
+                    trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                    sound_rules: qa_core::primitives::RuleSetId::Quake3,
                     module: ModuleId(7),
                     clock: ThinkTime::Milliseconds(0),
                     server_frame: 0,

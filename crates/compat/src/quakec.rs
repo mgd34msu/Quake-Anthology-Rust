@@ -4,7 +4,7 @@ use crate::{
     hooks::Hooks,
     memory::{MemoryError, ModuleMemory},
 };
-use qa_core::primitives::Vec3;
+use qa_core::{bits::BitSet, primitives::Vec3};
 use qa_formats::program::quakec::{Image, Opcode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,27 @@ struct StateFields {
     frame: usize,
     think: usize,
 }
+struct TraceFields {
+    scalars: [usize; 6],
+    end: usize,
+    normal: usize,
+    entity: usize,
+}
+
+/// Resolve typed ABI definitions once. Missing or incompatible service fields
+/// reject only a builtin that actually needs them, not unrelated bytecode.
+pub(crate) fn definition(image: &Image, fields: bool, name: &[u8], kind: u16) -> Option<usize> {
+    let name = image.names.find(name)?;
+    let definitions = if fields {
+        &image.fielddefs
+    } else {
+        &image.globaldefs
+    };
+    let definition = definitions
+        .iter()
+        .find(|definition| definition.name == name)?;
+    (definition.value_type & 0x7fff == kind).then_some(definition.offset)
+}
 pub const TEMP_STRING_BYTES: usize = 128;
 
 pub(super) fn temporary_string(memory: &mut ModuleMemory<'_>, text: &[u8]) -> Result<u32, Trap> {
@@ -72,7 +93,12 @@ pub struct Vm {
     pub statement: usize,
     pub stride: usize,
     pub header_bytes: usize,
+    pub(crate) projection: crate::entities::EntityProjection,
+    dirty_entities: BitSet,
+    dirty_slots: Box<[usize]>,
+    dirty_count: usize,
     state: Option<StateFields>,
+    trace_fields: Option<TraceFields>,
     vector_globals: Option<[usize; 3]>,
     state_step: f64,
     stack: [Frame; 32],
@@ -95,6 +121,9 @@ impl Vm {
             .header_bytes
             .checked_add(image.entityfields.checked_mul(4).ok_or(Trap::Memory)?)
             .ok_or(Trap::Memory)?;
+        if stride == 0 {
+            return Err(Trap::Memory);
+        }
         let extent = stride
             .checked_mul(layout.entities)
             .filter(|&n| n <= i32::MAX as usize)
@@ -142,6 +171,27 @@ impl Vm {
                 })
                 .then_some(offsets)
         })();
+        let trace_fields = (|| {
+            Some(TraceFields {
+                scalars: [
+                    definition(&image, false, b"trace_allsolid", 2)?,
+                    definition(&image, false, b"trace_startsolid", 2)?,
+                    definition(&image, false, b"trace_fraction", 2)?,
+                    definition(&image, false, b"trace_inwater", 2)?,
+                    definition(&image, false, b"trace_inopen", 2)?,
+                    definition(&image, false, b"trace_plane_dist", 2)?,
+                ],
+                end: definition(&image, false, b"trace_endpos", 3)?,
+                normal: definition(&image, false, b"trace_plane_normal", 3)?,
+                entity: definition(&image, false, b"trace_ent", 4)?,
+            })
+        })();
+        let projection = crate::entities::EntityProjection::load_quakec(
+            &image,
+            stride,
+            layout.header_bytes,
+            layout.entities,
+        );
         Ok(Self {
             image,
             entities,
@@ -152,7 +202,12 @@ impl Vm {
             statement: 0,
             stride,
             header_bytes: layout.header_bytes,
+            projection,
+            dirty_entities: BitSet::empty(layout.entities),
+            dirty_slots: vec![0; layout.entities].into_boxed_slice(),
+            dirty_count: 0,
             state,
+            trace_fields,
             vector_globals,
             state_step: layout.state_step,
             stack: [Frame::default(); 32],
@@ -163,6 +218,88 @@ impl Vm {
             string_limit,
             temporary_used: 0,
         })
+    }
+    pub fn seed_entities(
+        &mut self,
+        entities: &qa_world::entities::EntityTable,
+        module: qa_core::primitives::ModuleId,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection.seed(entities, module)
+    }
+    /// Import bytecode field stores without replacing explicit native relinks.
+    /// Scheduling remains owned by the provider's native think phase.
+    pub fn project_entities(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .quakec_project(services, &self.entities, &self.strings, context)?;
+        self.dirty_entities.clear();
+        self.dirty_count = 0;
+        Ok(())
+    }
+    /// Spatial queries consume only successful bytecode entity writes since
+    /// the previous import. Export projection also catches external byte edits.
+    pub(crate) fn project_dirty_entities(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+    ) -> Result<(), crate::services::CallError> {
+        for index in 0..self.dirty_count {
+            let slot = self.dirty_slots[index];
+            self.projection.quakec_project_row(
+                services,
+                &self.entities,
+                &self.strings,
+                context,
+                slot,
+            )?;
+        }
+        // Keep the entire pending set on a rejected import so later stores
+        // cannot append a cleared row a second time beyond the fixed capacity.
+        for &slot in &self.dirty_slots[..self.dirty_count] {
+            self.dirty_entities.remove(slot);
+        }
+        self.dirty_count = 0;
+        Ok(())
+    }
+    fn store_entity_word(&mut self, address: u64, word: u32) -> Result<(), Trap> {
+        self.entities.write_word(address, word as i32)?;
+        // StoreP accepts native pointers, including an unaligned word crossing
+        // a row boundary. Retain every successfully written row on later traps.
+        let first = address as usize / self.stride;
+        let last = (address as usize + 3) / self.stride;
+        for slot in first..=last {
+            if self.dirty_entities.insert(slot) {
+                self.dirty_slots[self.dirty_count] = slot;
+                self.dirty_count += 1;
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn write_trace(
+        &mut self,
+        trace: qa_world::collision::Trace,
+        entity: u32,
+    ) -> Result<(), Trap> {
+        let fields = self.trace_fields.as_ref().ok_or(Trap::Memory)?;
+        let values = [
+            f32::from(u8::from(trace.all_solid)),
+            f32::from(u8::from(trace.start_solid)),
+            trace.fraction,
+            f32::from(u8::from(trace.in_water)),
+            f32::from(u8::from(trace.in_open)),
+            trace.plane.distance,
+        ];
+        for (&offset, value) in fields.scalars.iter().zip(values) {
+            self.image.globals[offset] = value.to_bits();
+        }
+        let end = fields.end;
+        let normal = fields.normal;
+        self.image.globals[fields.entity] = entity;
+        self.write_global_vector(end, trace.end)?;
+        self.write_global_vector(normal, trace.plane.normal)
     }
     pub(crate) fn write_global_vector(&mut self, offset: usize, value: Vec3) -> Result<(), Trap> {
         let end = offset.checked_add(3).ok_or(Trap::Memory)?;
@@ -387,8 +524,7 @@ impl Vm {
                     let address = u64::from(self.image.globals[b]);
                     self.entities.read(address, width * 4)?;
                     for i in 0..width {
-                        self.entities
-                            .write_word(address + i as u64 * 4, self.image.globals[a + i] as i32)?;
+                        self.store_entity_word(address + i as u64 * 4, self.image.globals[a + i])?;
                     }
                     if HOOKS {
                         self.hooks.stores += 1;
@@ -424,18 +560,16 @@ impl Vm {
                     let frame = self.field_address(entity, state.frame as u32, 1)?;
                     let think = self.field_address(entity, state.think as u32, 1)?;
                     let time = f32::from_bits(self.image.globals[state.time_global]);
-                    self.entities.write_word(
+                    self.store_entity_word(
                         nextthink,
-                        ((time as f64 + self.state_step) as f32).to_bits() as i32,
+                        ((time as f64 + self.state_step) as f32).to_bits(),
                     )?;
                     if f32::from_bits(self.image.globals[a])
                         != f32::from_bits(self.entities.read_word(frame)? as u32)
                     {
-                        self.entities
-                            .write_word(frame, self.image.globals[a] as i32)?;
+                        self.store_entity_word(frame, self.image.globals[a])?;
                     }
-                    self.entities
-                        .write_word(think, self.image.globals[b] as i32)?;
+                    self.store_entity_word(think, self.image.globals[b])?;
                     if HOOKS {
                         self.hooks.stores += 1;
                         for address in [nextthink, frame, think] {

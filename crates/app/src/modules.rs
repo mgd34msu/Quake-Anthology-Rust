@@ -294,7 +294,7 @@ impl FrameHost {
             {
                 return Err("invalid module binding".into());
             }
-            if let Program::QuakeC(qc) = &request.program {
+            if let Program::QuakeC(qc) = &mut request.program {
                 if request
                     .entries
                     .iter()
@@ -311,6 +311,9 @@ impl FrameHost {
                     )
                     .ok_or("missing QuakeC entity namespace")?;
                 }
+                qc.vm
+                    .seed_entities(&host.runtime.server.entities, request.context.module)
+                    .map_err(|error| format!("QuakeC entity bindings: {error:?}"))?;
             }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &request.program
@@ -325,7 +328,7 @@ impl FrameHost {
                 &[(
                     request.context.module,
                     request.configstrings,
-                    request.context.console.source,
+                    request.context.native_rules,
                 )],
                 request.files,
                 &host.console.cvars,
@@ -350,7 +353,7 @@ impl FrameHost {
                         .catalog
                         .hud
                         .values
-                        .native(request.context.console.source)
+                        .native(request.context.native_rules)
                         .stats,
                 )
                 .map_err(|e| format!("native player stats: {e:?}"))?;
@@ -400,7 +403,7 @@ impl FrameHost {
                             .configstring(row.request.context.module, ordinal)
                             .map_err(|e| format!("native sound precache: {e:?}"))?;
                         if !name.is_empty() {
-                            visit(name, row.request.context.console.source)?;
+                            visit(name, row.request.context.native_rules)?;
                         }
                     }
                 }
@@ -799,10 +802,16 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         unknown: &mut row.unknown,
     };
     row.counts.calls += 1;
-    let result = qc
+    let execution = qc
         .vm
-        .call(&mut calls, entry, row.request.instruction_budget, false)
-        .map(ModuleResult::QuakeC)
-        .map_err(|_| ());
+        .call(&mut calls, entry, row.request.instruction_budget, false);
+    // VM-owned entvars are visible after the call, including admitted writes
+    // preceding a call-scoped trap. Importing pose never implicitly relinks.
+    let projection = qc.vm.project_entities(calls.services, calls.context);
+    let result = execution.map_err(|_| ()).and_then(|value| {
+        projection
+            .map(|()| ModuleResult::QuakeC(value))
+            .map_err(|_| ())
+    });
     row.counts.record(result)
 }

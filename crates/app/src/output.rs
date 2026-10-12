@@ -39,6 +39,7 @@ impl OutputCounts {
 pub fn dispatch(
     runtime: &mut Runtime,
     source: &mut impl FrameSource,
+    scrollback: &mut qa_console::presentation::Scrollback,
     local: &[Option<ClientId>; SeatId::COUNT],
     time: EventTime,
     notify_time: f64,
@@ -76,6 +77,11 @@ pub fn dispatch(
                                 )
                             {
                                 qa_console::logger::console_bytes(text);
+                                // Keep the original ring text alive for this
+                                // independent display lifetime; no payload copy.
+                                if !scrollback.append(texts, event.text) {
+                                    counts.stale_texts += 1;
+                                }
                             }
                         } else {
                             counts.stale_texts += 1;

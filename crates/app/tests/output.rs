@@ -207,14 +207,17 @@ fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() 
     ];
     runtime.print_event(None, PrintKind::Notify, format_args!("message\n"));
     let mut source = Source::default();
+    let mut scrollback = qa_console::presentation::Scrollback::default();
     let result = qa_app::output::dispatch(
         &mut runtime,
         &mut source,
+        &mut scrollback,
         &local,
         EventTime(1_000_000_000),
         3.0,
         2.0,
     );
+    scrollback.clear(&mut runtime.server.events.texts);
     assert_eq!(result.prints, 1);
     for slot in [64, 255, 511] {
         assert_eq!(

@@ -826,3 +826,78 @@ fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_pa
     }
     Ok(())
 }
+
+#[test]
+fn targeted_view_weapon_projection_matches_full_import_without_a_stat_bank() {
+    let namespace =
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(5));
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+    ] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let mut source = PlayerState::default();
+        source.view_weapon = qa_core::primitives::ViewWeapon {
+            model: qa_core::primitives::ModelRef::native(namespace, 17),
+            frame: 13,
+            offset: Vec3([0.5, -1.25, 2.0]),
+            angles: Vec3([2.0, -3.0, 4.0]),
+            skin: 5,
+            rate: 12,
+        };
+        let mut words = vec![0; projection.words()];
+        assert!(projection.reduce(&source, &context(), &mut words, |model| Some(model.ordinal)));
+        // IntegerFloat is the writer's input representation. These two native
+        // readers store the decoded byte integer in the accepted player row.
+        match protocol {
+            Protocol::NetQuake15 => words[9] = 13,
+            Protocol::QuakeWorld28 => words[11] = 13,
+            _ => {}
+        }
+        let mut imported = PlayerState::default();
+        assert!(projection.apply(&words, &mut imported, &mut context(), namespace, |_| None));
+        assert_eq!(
+            projection.view_weapon(&words, namespace),
+            Some(imported.view_weapon)
+        );
+        assert_eq!(imported.view_weapon.frame, 13);
+        assert!(
+            projection
+                .view_weapon(&words[..words.len() - 1], namespace)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn q2_player_interpolation_rejects_only_native_discontinuities() {
+    for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let mut from = vec![0; projection.words()];
+        let mut to = from.clone();
+        let position = if protocol == Protocol::Quake2_34 {
+            (256.0 * 8.0) as u32
+        } else {
+            256.0f32.to_bits()
+        };
+        to[1] = position;
+        assert!(projection.can_interpolate_player(&from, &to));
+        to[1] = if protocol == Protocol::Quake2_34 {
+            (256.125 * 8.0) as u32
+        } else {
+            256.125f32.to_bits()
+        };
+        assert!(!projection.can_interpolate_player(&from, &to));
+        to[1] = 0;
+        if protocol == Protocol::Quake2Repro1038 {
+            to[35] = 1 << 4;
+            assert!(!projection.can_interpolate_player(&from, &to));
+            from[35] = 1 << 4;
+            assert!(projection.can_interpolate_player(&from, &to));
+            to[42] = 1;
+            assert!(!projection.can_interpolate_player(&from, &to));
+        }
+    }
+}

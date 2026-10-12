@@ -271,6 +271,9 @@ fn request(
         .id;
     ModuleRequest {
         context: CallContext {
+            native_rules: rules,
+            trace_rules: rules,
+            sound_rules: rules,
             server_frame: 0,
             module: id,
             clock: ThinkTime::Milliseconds(0),
@@ -1991,15 +1994,25 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
         let mut file = q2_table_file();
         pe_rva(&mut file, 0x1800, if rr { 2023 } else { 3 }, 4);
         pe_text(&mut file, 0x1500, &[0xc3]);
+        // Both loaded modules retain their real GetGameAPI import pointer.
+        let mut api = vec![0x48, 0x89, 0x0d];
+        api.extend((0x1b20i32 - 0x1087).to_le_bytes());
+        api.extend([0x48, 0x8d, 0x05]);
+        api.extend((0x1800i32 - 0x108e).to_le_bytes());
+        api.push(0xc3);
+        pe_text(&mut file, 0x1080, &api);
+        // Init precaches one sound through the actual native soundindex import.
+        let mut sound = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05];
+        sound.extend((0x1b20i32 - 0x160b).to_le_bytes());
+        sound.extend([0x48, 0x8d, 0x0d]);
+        sound.extend((0x1bd0i32 - 0x1612).to_le_bytes());
+        sound.extend([0x48, 0x8b, 0x80]);
+        sound.extend((if rr { 16i32 + 11 * 8 } else { 9 * 8 }).to_le_bytes());
+        sound.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0xc3]);
+        pe_text(&mut file, 0x1600, &sound);
+        pe_text(&mut file, 0x1bd0, b"_qa_native_loader.wav\0");
         if rr {
-            // Keep the real API import pointer, then verify ServerFrame against
-            // the module's own RunFrame calls in startup, ticks and shutdown.
-            let mut api = vec![0x48, 0x89, 0x0d];
-            api.extend((0x1b20i32 - 0x1087).to_le_bytes());
-            api.extend([0x48, 0x8d, 0x05]);
-            api.extend((0x1800i32 - 0x108e).to_le_bytes());
-            api.push(0xc3);
-            pe_text(&mut file, 0x1080, &api);
+            // Verify ServerFrame against native RunFrame calls.
             let mut check = vec![0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05];
             check.extend((0x1b20i32 - 0x174b).to_le_bytes());
             check.extend([0x48, 0x8b, 0x80]);
@@ -2046,6 +2059,11 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
             if rr && (rva == 0x1400 || rva == 0x14c0) {
                 code.extend([0x48, 0x83, 0xec, 0x28, 0xe8]);
                 code.extend((0x1740i32 - (rva + 9) as i32).to_le_bytes());
+                code.extend([0x48, 0x83, 0xc4, 0x28]);
+            }
+            if rva == 0x1400 {
+                code.extend([0x48, 0x83, 0xec, 0x28, 0xe8]);
+                code.extend((0x1600i32 - (rva + code.len() + 4) as i32).to_le_bytes());
                 code.extend([0x48, 0x83, 0xc4, 0x28]);
             }
             if rva == 0x1440 {
@@ -2123,6 +2141,14 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
             matches!(request.frame.arguments[0], Argument::Word(value) if value == u64::from(rules == RuleSetId::Quake2Rerelease))
         );
     }
+    for (index, request) in requests.iter_mut().enumerate() {
+        request.context.console.source = if index == 0 {
+            RuleSetId::Quake3
+        } else {
+            RuleSetId::QuakeWorld
+        };
+        request.context.sound_rules = RuleSetId::Quake;
+    }
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -2135,6 +2161,22 @@ fn q2_normal_loader_selects_native_roles_and_copies_spawn_strings() {
         polls: 0,
     };
     host.frame(&mut source, true);
+    let mut precached = Vec::new();
+    host.for_each_native_sound(|name, source| {
+        precached.push((name.to_vec(), source));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        precached,
+        [
+            (b"_qa_native_loader.wav".to_vec(), RuleSetId::Quake2),
+            (
+                b"_qa_native_loader.wav".to_vec(),
+                RuleSetId::Quake2Rerelease
+            ),
+        ]
+    );
     for (id, calls) in [(ModuleId(1), 5), (ModuleId(2), 6)] {
         assert_eq!(
             host.module_state(id),
@@ -2860,6 +2902,9 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let mut scratch = runtime.geometry.scratch();
         let mut unknown = UnknownCalls::load(8).unwrap();
         let context = CallContext {
+            native_rules: rules,
+            trace_rules: rules,
+            sound_rules: rules,
             server_frame: 0x1_1234_5678,
             module: ModuleId(1),
             clock: ThinkTime::Milliseconds(0),
@@ -4306,32 +4351,37 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 position
             }
         };
-        let mut emit_sound = |game: &mut Game, slot: usize, arguments: &[u64]| {
-            let code = native_import_code(
-                pointers[slot],
-                arguments,
-                false,
-                if slot == 4 { &[3] } else { &[] },
-                0,
-            );
-            game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
-                .copy_from_slice(&code);
-            let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-            game.vm.call(
-                &mut NativeCalls {
-                    native_player: None,
-                    services: &mut services,
-                    table: game.imports,
-                    context,
-                    platform_time: EventTime(0),
-                    command: &[],
-                    raw_args: b"",
-                    unknown: &mut unknown,
-                },
-                run,
-                &[1],
-            )
-        };
+        let mut emit_sound =
+            |game: &mut Game, slot: usize, arguments: &[u64], sound_rules: RuleSetId| {
+                let mut sound_context = context;
+                sound_context.console.source = RuleSetId::Quake3;
+                sound_context.sound_rules = sound_rules;
+                let code = native_import_code(
+                    pointers[slot],
+                    arguments,
+                    false,
+                    if slot == 4 { &[3] } else { &[] },
+                    0,
+                );
+                game.vm.process.memory_mut().unwrap()[code_at..code_at + code.len()]
+                    .copy_from_slice(&code);
+                let mut services =
+                    runtime.engine_services(&mut console, &mut storage, &mut scratch);
+                game.vm.call(
+                    &mut NativeCalls {
+                        native_player: None,
+                        services: &mut services,
+                        table: game.imports,
+                        context: sound_context,
+                        platform_time: EventTime(0),
+                        command: &[],
+                        raw_args: b"",
+                        unknown: &mut unknown,
+                    },
+                    run,
+                    &[1],
+                )
+            };
         let volume = u64::from(0.5f32.to_bits());
         let attenuation = u64::from(1.0f32.to_bits());
         let offset = u64::from(0.125f32.to_bits());
@@ -4339,6 +4389,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             &mut game,
             4,
             &[entity_address, 18, 1, volume, attenuation, offset],
+            RuleSetId::Quake,
         )
         .unwrap();
         emit_sound(
@@ -4353,13 +4404,21 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 attenuation,
                 offset,
             ],
+            RuleSetId::Quake3,
         )
         .unwrap();
-        emit_sound(&mut game, 4, &[0, 18, 1, volume, attenuation, offset]).unwrap();
+        emit_sound(
+            &mut game,
+            4,
+            &[0, 18, 1, volume, attenuation, offset],
+            RuleSetId::Quake,
+        )
+        .unwrap();
         emit_sound(
             &mut game,
             5,
             &[0, entity_address, 3, 1, volume, attenuation, offset],
+            RuleSetId::Quake,
         )
         .unwrap();
         drop(emit_sound);
@@ -4375,6 +4434,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             }
         }
         assert_eq!(sounds.len(), 3);
+        assert_eq!(
+            sounds
+                .iter()
+                .map(|sound| sound.spatial_rules)
+                .collect::<Vec<_>>(),
+            [RuleSetId::Quake, RuleSetId::Quake3, RuleSetId::Quake]
+        );
         assert_eq!(sounds[0].position, source);
         assert_eq!(sounds[2].position, source);
         assert_eq!(

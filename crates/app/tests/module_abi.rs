@@ -20,6 +20,9 @@ use qa_world::{area::LinkOrder, entities::AllocationPolicy};
 
 fn context() -> CallContext {
     CallContext {
+        native_rules: qa_core::primitives::RuleSetId::Quake3,
+        trace_rules: qa_core::primitives::RuleSetId::Quake3,
+        sound_rules: qa_core::primitives::RuleSetId::Quake3,
         server_frame: 0,
         module: ModuleId(1),
         clock: ThinkTime::Milliseconds(17),

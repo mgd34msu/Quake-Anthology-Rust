@@ -26,7 +26,9 @@ impl ReuseDelay {
         }
     }
 
-    fn eligible(self, now: ThinkTime, freed: Option<ThinkTime>) -> bool {
+    /// Native namespaces use the same delay for their ABI ordinal metadata;
+    /// common lifetime allocation remains owned by EntityTable.
+    pub fn eligible(self, now: ThinkTime, freed: Option<ThinkTime>) -> bool {
         let Some(freed) = freed else { return true };
         match self {
             Self::Seconds { seconds, grace_end } => {
@@ -42,7 +44,7 @@ impl ReuseDelay {
         }
     }
 
-    fn freetime(self, now: ThinkTime) -> ThinkTime {
+    pub fn freetime(self, now: ThinkTime) -> ThinkTime {
         match self {
             // Q1/QW/Q2 edict freetime is binary32, even when sv.time is double.
             Self::Seconds { .. } => ThinkTime::Seconds(now.seconds() as f32 as f64),
@@ -57,6 +59,9 @@ pub enum FullTable {
     /// QW's last-edict rule is confined to the requesting module's lifetimes.
     /// Foreign modules and protected slots are never displaced.
     OverwriteLastOwned,
+    /// A native namespace has selected this exact ordinal for forced reuse.
+    /// It may replace only this owner's current or immediately retired handle.
+    OverwriteOwned(EntityId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -460,6 +465,18 @@ impl EntityTable {
         owner: ModuleId,
         policy: AllocationPolicy,
     ) -> Option<Allocation> {
+        if let FullTable::OverwriteOwned(id) = policy.full {
+            let slot = id.slot as usize;
+            if !self.replaceable(slot, owner)
+                || !(self.id_at(slot) == Some(id)
+                    || self.id_at(slot).is_none()
+                        && id.generation.checked_add(1) == Some(self.generations[slot])
+                        && self.freed_at[slot].is_some())
+            {
+                return None;
+            }
+            return Some(self.replace(slot, owner, policy));
+        }
         let mut start = self.reserved;
         while let Some(slot) = self.free_bits.next_set(start) {
             start = slot + 1;
@@ -471,21 +488,32 @@ impl EntityTable {
             return Some(self.claim(slot, owner, policy, None));
         }
         if policy.full == FullTable::OverwriteLastOwned {
-            if let Some(slot) = (self.reserved..self.capacity()).rev().find(|&slot| {
-                self.last_owner[slot] == owner
-                    && self.generations[slot] < u32::MAX
-                    && (self.id_at(slot).is_none() || self.generations[slot] < u32::MAX - 1)
-                    && !self.never_free[slot]
-                    && (self.id_at(slot).is_some() || self.freed_at[slot].is_some())
-            }) {
-                let displaced = self.id_at(slot);
-                if displaced.is_some() {
-                    self.generations[slot] += 1;
-                }
-                return Some(self.claim(slot, owner, policy, displaced));
+            if let Some(slot) = (self.reserved..self.capacity())
+                .rev()
+                .find(|&slot| self.replaceable(slot, owner))
+            {
+                return Some(self.replace(slot, owner, policy));
             }
         }
         None
+    }
+
+    fn replaceable(&self, slot: usize, owner: ModuleId) -> bool {
+        slot >= self.reserved
+            && slot < self.capacity()
+            && self.last_owner[slot] == owner
+            && self.generations[slot] < u32::MAX
+            && (self.id_at(slot).is_none() || self.generations[slot] < u32::MAX - 1)
+            && !self.never_free[slot]
+            && (self.id_at(slot).is_some() || self.freed_at[slot].is_some())
+    }
+
+    fn replace(&mut self, slot: usize, owner: ModuleId, policy: AllocationPolicy) -> Allocation {
+        let displaced = self.id_at(slot);
+        if displaced.is_some() {
+            self.generations[slot] += 1;
+        }
+        self.claim(slot, owner, policy, displaced)
     }
 
     fn claim(

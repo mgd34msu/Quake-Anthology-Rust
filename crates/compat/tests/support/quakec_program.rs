@@ -8,6 +8,26 @@ pub fn program_with_vectors(
     function_entries: &[i32],
     vectors: &[(u16, &[u8])],
 ) -> Vec<u8> {
+    let mut globals = vec![(4, 34, &b"self"[..]), (2, 35, &b"time"[..])];
+    globals.extend(vectors.iter().map(|&(offset, name)| (3, offset, name)));
+    program_with_definitions(
+        operations,
+        function_entries,
+        &globals,
+        &[(2, 0, b"nextthink"), (2, 1, b"frame"), (6, 2, b"think")],
+        8,
+        64,
+    )
+}
+
+pub fn program_with_definitions(
+    operations: &[(Opcode, i16, i16, i16)],
+    function_entries: &[i32],
+    globals: &[(u16, u16, &[u8])],
+    fields: &[(u16, u16, &[u8])],
+    entity_fields: usize,
+    global_words: usize,
+) -> Vec<u8> {
     let mut statements = vec![0; 8];
     for &(op, a, b, c) in operations {
         statements.extend((op as u16).to_le_bytes());
@@ -15,25 +35,22 @@ pub fn program_with_vectors(
             statements.extend(n.to_le_bytes());
         }
     }
-    let mut strings = b"\0self\0time\0nextthink\0frame\0think\0".to_vec();
+    let mut strings = vec![0];
     let mut globaldefs = Vec::new();
     let mut fielddefs = Vec::new();
-    for (kind, offset, name) in [(4u16, 34u16, 1i32), (2, 35, 6)] {
+    for &(kind, offset, name) in globals {
         globaldefs.extend(kind.to_le_bytes());
-        globaldefs.extend(offset.to_le_bytes());
-        globaldefs.extend(name.to_le_bytes());
-    }
-    for &(offset, name) in vectors {
-        globaldefs.extend(3u16.to_le_bytes());
         globaldefs.extend(offset.to_le_bytes());
         globaldefs.extend((strings.len() as i32).to_le_bytes());
         strings.extend(name);
         strings.push(0);
     }
-    for (kind, offset, name) in [(2u16, 0u16, 11i32), (2, 1, 21), (6, 2, 27)] {
+    for &(kind, offset, name) in fields {
         fielddefs.extend(kind.to_le_bytes());
         fielddefs.extend(offset.to_le_bytes());
-        fielddefs.extend(name.to_le_bytes());
+        fielddefs.extend((strings.len() as i32).to_le_bytes());
+        strings.extend(name);
+        strings.push(0);
     }
     let mut functions = Vec::new();
     for &first in function_entries {
@@ -42,7 +59,7 @@ pub fn program_with_vectors(
         }
         functions.extend([0; 8]);
     }
-    let mut globals = vec![0; 64 * 4];
+    let mut globals = vec![0; global_words * 4];
     globals[34 * 4..35 * 4].copy_from_slice(&48u32.to_le_bytes());
     globals[35 * 4..36 * 4].copy_from_slice(&3.0f32.to_bits().to_le_bytes());
     let lumps = [
@@ -61,7 +78,7 @@ pub fn program_with_vectors(
         header.extend([bytes.len() as i32, (lump.len() / stride) as i32]);
         bytes.extend(lump);
     }
-    header.push(8);
+    header.push(entity_fields as i32);
     for (i, n) in header.into_iter().enumerate() {
         bytes[i * 4..i * 4 + 4].copy_from_slice(&n.to_le_bytes());
     }

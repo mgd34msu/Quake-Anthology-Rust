@@ -132,6 +132,9 @@ fn call_context(
     console: Context,
 ) -> CallContext {
     CallContext {
+        native_rules: rules,
+        trace_rules: rules,
+        sound_rules: rules,
         server_frame: 0,
         module,
         clock,
@@ -356,7 +359,8 @@ pub fn load_q3(
     Ok(())
 }
 
-/// The initial normal-app entry is StartFrame; native spawning stays separate.
+/// StartFrame dispatches through shared services; map/client spawn phases stay
+/// independent of this initial provider entry.
 pub fn load_quakec(
     runtime: &mut Runtime,
     specs: &[QuakeCSpec],

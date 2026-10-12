@@ -55,6 +55,9 @@ fn qvm_spawn_tokens_use_session_dispatch_and_explicit_module_syntax() {
                 .id;
             ModuleRequest {
                 context: CallContext {
+                    native_rules: qa_core::primitives::RuleSetId::Quake3,
+                    trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                    sound_rules: qa_core::primitives::RuleSetId::Quake3,
                     server_frame: 0,
                     module,
                     clock: ThinkTime::Milliseconds(0),
@@ -241,6 +244,9 @@ fn lifecycle_host_in(
         TickRate::FrameDriven,
         vec![ModuleRequest {
             context: CallContext {
+                native_rules: qa_core::primitives::RuleSetId::Quake3,
+                trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_rules: qa_core::primitives::RuleSetId::Quake3,
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
@@ -591,6 +597,9 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
     let requests = vec![
         ModuleRequest {
             context: CallContext {
+                native_rules: qa_core::primitives::RuleSetId::Quake3,
+                trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_rules: qa_core::primitives::RuleSetId::Quake3,
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
@@ -619,6 +628,9 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
         },
         ModuleRequest {
             context: CallContext {
+                native_rules: RuleSetId::Quake,
+                trace_rules: RuleSetId::Quake,
+                sound_rules: RuleSetId::Quake,
                 server_frame: 0,
                 module: ModuleId(2),
                 clock: ThinkTime::Seconds(0.0),
@@ -725,6 +737,9 @@ fn quakec_runtime_host(rules: RuleSetId, vm: Vm, mut runtime: Runtime) -> FrameH
         TickRate::FrameDriven,
         vec![ModuleRequest {
             context: CallContext {
+                native_rules: rules,
+                trace_rules: rules,
+                sound_rules: rules,
                 server_frame: 0,
                 module,
                 clock: ThinkTime::module_clock(rules),
@@ -1095,6 +1110,9 @@ fn with_quakec_calls(
         services: &mut services,
         table: &QUAKEC,
         context: CallContext {
+            native_rules: rules,
+            trace_rules: rules,
+            sound_rules: rules,
             module: ModuleId(1),
             clock: ThinkTime::Seconds(0.0),
             server_frame: 0,

@@ -514,7 +514,17 @@ pub enum ReceivedFrame<'a> {
     Quake2Repro(Q2ReproFrame<'a>),
     Quake3(Q3Frame<'a>),
 }
-impl ReceivedFrame<'_> {
+impl<'a> ReceivedFrame<'a> {
+    /// QW playerinfo is separate; it does not have a playerstate in this frame.
+    pub fn player_words(self) -> Option<&'a [u32]> {
+        match self {
+            Self::NetQuake(frame) => Some(frame.player),
+            Self::QuakeWorld(_) => None,
+            Self::Quake2(frame) => Some(frame.player),
+            Self::Quake2Repro(frame) => Some(frame.player),
+            Self::Quake3(frame) => Some(frame.player),
+        }
+    }
     pub fn time(self) -> qa_core::primitives::ThinkTime {
         match self {
             Self::NetQuake(frame) => frame.time,

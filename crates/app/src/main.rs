@@ -684,6 +684,16 @@ fn run() -> Result<(), String> {
         )
     };
     let mut window = renderer_kind.open(width, height)?;
+    let console_rules = host.console.cvars.context().source;
+    let console_assets = qa_app::renderer::console::ConsoleAssets::load(
+        &host.runtime.vfs,
+        &mut assets,
+        console_rules,
+        palettes[console_rules as usize],
+        qa_app::render_settings::image_settings(&host.console.cvars, console_rules)?,
+        width as u32,
+        height as u32,
+    )?;
     let mut renderer = Renderer::load(
         renderer_kind,
         &window,
@@ -692,11 +702,22 @@ fn run() -> Result<(), String> {
         assets,
         loaded_world.into_iter().collect(),
         cpu_bands,
+        console_assets,
     )?;
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
     }
-    renderer.frame(&host.client_views(), &host.client_scene_inputs());
+    renderer.frame(
+        &host.client_views(),
+        &host.client_scene_inputs(),
+        qa_console::presentation::ConsoleView {
+            editor: &host.console.editor,
+            scrollback: &host.console.scrollback,
+            texts: &host.runtime.server.events.texts,
+            rules: console_rules,
+            time: host.time,
+        },
+    );
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     let _ = renderer.merge_worker_counts(qa_platform::allocations::Counts::default());
     renderer.present(&mut window);

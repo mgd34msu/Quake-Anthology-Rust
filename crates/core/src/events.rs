@@ -4,6 +4,9 @@ use crate::primitives::{
 };
 use std::fmt::{self, Write};
 
+/// Independent display leases reserved for the one console's retained output.
+pub const CONSOLE_DISPLAY_RECORDS: usize = 128;
+
 #[derive(Clone, Copy, Debug)]
 pub enum FrameEvent {
     Sound(SoundEvent),

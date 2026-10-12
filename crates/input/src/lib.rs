@@ -137,6 +137,7 @@ struct Seat {
     drift: view::PitchDrift,
     weapon: Option<WeaponId>,
     zoom_sensitivity: Option<f32>,
+    catchers: u32,
 }
 impl Seat {
     fn clear_mouse(&mut self) {
@@ -230,6 +231,7 @@ pub(crate) struct CommandRules {
     drift_threshold: Option<f32>,
     drift_uses_ideal_pitch: bool,
     integer_frame_time: bool,
+    caught_buttons: u32,
 }
 const Q1_INPUT: CommandRules = CommandRules {
     speed: [200.0, 350.0, 200.0],
@@ -255,6 +257,7 @@ const Q1_INPUT: CommandRules = CommandRules {
     drift_threshold: None,
     drift_uses_ideal_pitch: true,
     integer_frame_time: false,
+    caught_buttons: 0,
 };
 const Q2_INPUT: CommandRules = CommandRules {
     speed: [200.0; 3],
@@ -296,6 +299,7 @@ const INPUT_RULES: [CommandRules; 5] = [
         lookspring: Lookspring::NotFreelook,
         pitch_clamp: PitchClamp::RelativeToPrevious(90.0),
         integer_frame_time: true,
+        caught_buttons: buttons::TALK,
         ..Q2_INPUT
     },
 ];
@@ -470,6 +474,26 @@ impl Input {
     pub fn set_text_seat(&mut self, seat: SeatId) {
         self.text_seat = seat;
     }
+    /// Catchers suppress this seat's game input while the same held-key and
+    /// release accounting continues. No second usercmd builder is introduced.
+    pub fn set_catcher(&mut self, seat: SeatId, owner: u32, active: bool, time: EventTime) {
+        let state = &mut self.seats[seat.index()];
+        let catchers = if active {
+            state.catchers | owner
+        } else {
+            state.catchers & !owner
+        };
+        if (state.catchers != 0) != (catchers != 0) {
+            state.clear_mouse();
+            for button in &mut state.actions {
+                button.sample(time, 0, KeyState::Elapsed);
+            }
+        }
+        state.catchers = catchers;
+    }
+    pub fn key_catchers(&self, seat: SeatId) -> u32 {
+        self.seats[seat.index()].catchers
+    }
     pub fn rejected_devices(&self) -> u64 {
         self.rejected_devices
     }
@@ -497,7 +521,7 @@ impl Input {
         player: &qa_core::primitives::PlayerState,
         forward: f32,
     ) -> Option<Vec3> {
-        if !policy.pitch_drift() {
+        if !policy.pitch_drift() || self.seats[seat.index()].catchers != 0 {
             return None;
         }
         let state = &mut self.seats[seat.index()];
@@ -933,6 +957,20 @@ impl Input {
                 .actions
                 .each_mut()
                 .map(|button| button.sample(time, period, rules.key_state));
+            if seat.catchers != 0 {
+                seat.clear_mouse();
+                return UserCmdBuilder::build(
+                    period,
+                    time,
+                    CommandIntent {
+                        view_angles: seat.angles,
+                        weapon: seat.weapon,
+                        buttons: rules.caught_buttons,
+                        ..CommandIntent::default()
+                    },
+                    policy,
+                );
+            }
             let fraction = |action: Action| sampled[action as usize].0;
             let strafe = held[Action::Strafe as usize];
             let look = held[Action::MouseLook as usize];

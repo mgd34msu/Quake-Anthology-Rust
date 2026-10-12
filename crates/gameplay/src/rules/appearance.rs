@@ -44,6 +44,7 @@ struct NativeRules {
     gl_alias_roll_reversed: bool,
     interpolation_events: [u32; 2],
     interpolation_distance: Option<i32>,
+    player_interpolation_events: bool,
 }
 const NEUTRAL: NativeRules = NativeRules {
     viewer: 0,
@@ -66,6 +67,7 @@ const NEUTRAL: NativeRules = NativeRules {
     gl_alias_roll_reversed: false,
     interpolation_events: [0; 2],
     interpolation_distance: None,
+    player_interpolation_events: false,
 };
 // Original quake-2/game/q_shared.h render/effects values. Rerelease game.h
 // retains these bits, renames bit6 NO_ORIGIN_LERP and adds OLD_FRAME_LERP.
@@ -102,6 +104,7 @@ const RULES: [NativeRules; 5] = [
         old_frame: 1 << 22,
         explicit_alpha: true,
         zero_scale: true,
+        player_interpolation_events: true,
         ..Q2
     },
     // Q3 entity eFlags are not refEntity renderfx. An actual client-scene
@@ -183,6 +186,14 @@ pub fn can_interpolate(
             .0
             .iter()
             .all(|delta| delta.is_finite() && (*delta as i32).unsigned_abs() <= distance as u32)
+}
+
+/// Enhanced Q2 player interpolation also rejects the current POV's teleport
+/// event. Classic protocol 34 retains its original player-origin check.
+pub fn can_interpolate_player_event(current: &EntityAppearance) -> bool {
+    let rules = RULES[current.source as usize];
+    !rules.player_interpolation_events
+        || !rules.interpolation_events.contains(&current.native.event)
 }
 
 fn native_alpha(flags: u32, effects: u64, rules: NativeRules) -> f32 {

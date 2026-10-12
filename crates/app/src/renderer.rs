@@ -1,4 +1,5 @@
 //! Client composition uses the same scene packets for either renderer.
+pub mod console;
 use crate::{
     client_scene::{ClientSceneInput, SceneCounts},
     host::ClientView,
@@ -169,6 +170,7 @@ pub struct Sample {
     pub presented: bool,
     pub visible_surfaces: u32,
     pub client_scene: SceneCounts,
+    pub console: console::ConsoleStats,
 }
 #[expect(
     clippy::large_enum_variant,
@@ -196,6 +198,7 @@ pub struct Renderer {
     height: u32,
     recorded_rendered_frames: u64,
     draw_failed: bool,
+    console: console::ConsoleAssets,
 }
 impl Renderer {
     /// Assets are frozen while a backend and its packets reference them.
@@ -207,6 +210,7 @@ impl Renderer {
         assets: Assets,
         worlds: Vec<LoadedWorld>,
         bands: Option<RasterBands>,
+        console: console::ConsoleAssets,
     ) -> Result<Self, String> {
         let mut scenes: Vec<Option<WorldScene>> =
             (0..assets.worlds().len()).map(|_| None).collect();
@@ -238,6 +242,19 @@ impl Renderer {
                 .checked_mul(SeatId::COUNT)
                 .ok_or("scene surface capacity")?,
         );
+        limits.commands = limits
+            .commands
+            .checked_add(console.command_capacity())
+            .ok_or("console scene capacity")?;
+        limits.vertices = limits
+            .vertices
+            .checked_add(
+                console
+                    .command_capacity()
+                    .checked_mul(6)
+                    .ok_or("console vertex capacity")?,
+            )
+            .ok_or("console vertex capacity")?;
         let frontend = FrontEnd::load(limits)?;
         let backend = match kind {
             Kind::Cpu => {
@@ -293,6 +310,7 @@ impl Renderer {
             height,
             recorded_rendered_frames: 0,
             draw_failed: false,
+            console,
         })
     }
     /// Last backend-rendered frame workload, with lifetime cache counters.
@@ -329,6 +347,7 @@ impl Renderer {
         &mut self,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<ClientSceneInput<'_>>; SeatId::COUNT],
+        console: qa_console::presentation::ConsoleView<'_>,
     ) {
         self.sample = Sample::default();
         self.draw_failed = false;
@@ -403,6 +422,15 @@ impl Renderer {
                 rejected += 1;
             }
         }
+        self.sample.console = self.console.append(
+            &mut frame,
+            &self.assets,
+            console,
+            self.width,
+            self.height,
+            matches!(self.kind, Kind::Cpu),
+        );
+        rejected += self.sample.console.rejected;
         let packet = frame.finish();
         self.sample.frontend_ns = timer.elapsed().as_nanos() as u64;
         let timer = Stopwatch::start();

@@ -38,6 +38,7 @@ pub trait FrameSource {
         &mut self,
         _views: &[Option<ClientView>; SeatId::COUNT],
         _scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+        _console: qa_console::presentation::ConsoleView<'_>,
     ) {
     }
     fn present(&mut self);
@@ -102,8 +103,9 @@ impl FrameSource for LiveFrame<'_> {
         &mut self,
         views: &[Option<ClientView>; SeatId::COUNT],
         scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+        console: qa_console::presentation::ConsoleView<'_>,
     ) {
-        self.renderer.frame(views, scenes);
+        self.renderer.frame(views, scenes, console);
     }
 }
 
@@ -367,12 +369,23 @@ impl FrameHost {
             return result;
         }
         let client = Stopwatch::start();
+        self.advance_client_presentation();
         result.commands = self.client_frame();
         self.client_modules();
         result.client_ns = client.elapsed().as_nanos() as u64;
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
-        source.render(&self.client_views(), &self.client_scene_inputs());
+        source.render(
+            &self.client_views(),
+            &self.client_scene_inputs(),
+            qa_console::presentation::ConsoleView {
+                editor: &self.console.editor,
+                scrollback: &self.console.scrollback,
+                texts: &self.runtime.server.events.texts,
+                rules: self.console.cvars.context().source,
+                time: self.time,
+            },
+        );
         source.present();
         result.total_ns = source.elapsed().as_nanos() as u64;
         result
@@ -431,13 +444,32 @@ impl FrameHost {
                 current: channel.current_snapshot(),
                 previous: channel.previous_snapshot(),
                 projection: snapshot.entity_projection(),
+                player_projection: snapshot.player_projection(),
                 bindings: &resources.state.models,
                 models: self.runtime.models.as_deref()?,
                 player,
                 alias_roll,
+                interpolation: snapshot.interpolation(),
+                gun_animation: snapshot.gun_animation(),
+                gun_previous: snapshot
+                    .gun_animation()
+                    .and_then(|animation| animation.previous)
+                    .and_then(|sequence| channel.snapshot(sequence)),
                 view_entity: snapshot.view_entity(),
             })
         })
+    }
+
+    fn advance_client_presentation(&mut self) {
+        for snapshot in self.runtime.local_snapshots.iter_mut().flatten() {
+            if let Some(connection) = self
+                .runtime
+                .network
+                .get(snapshot.client, qa_core::loopback::Endpoint::Client)
+            {
+                snapshot.advance_presentation(&connection.channel, self.time);
+            }
+        }
     }
 
     fn local_seat(
@@ -459,6 +491,7 @@ impl FrameHost {
     }
     fn mouse_capture_requested(&self) -> bool {
         !self.runtime.quit
+            && self.console.editor.seat().is_none()
             && self.console.cvars.integer(self.mouse_enabled) != 0
             && self
                 .local_worlds
@@ -499,6 +532,7 @@ impl FrameHost {
         result.output = crate::output::dispatch(
             &mut self.runtime,
             source,
+            &mut self.console.scrollback,
             &self.local_clients,
             self.time,
             f64::from(self.console.cvars.value(self.notify_time)),
@@ -695,11 +729,13 @@ impl FrameHost {
                     }
                     EventKind::Quit => self.runtime.quit = true,
                     EventKind::ConsoleLine(text) => {
-                        let context = qa_console::views::Context {
-                            event_time: Some(event.time),
-                            ..self.console.cvars.context()
+                        let seat = self.console.cvars.context().seat;
+                        let mut target = ConsoleInput {
+                            console: &mut self.console,
+                            events: &mut self.runtime.server.events,
+                            time: event.time,
                         };
-                        let _ = self.console.append_line(text, context);
+                        target.command(seat, event.time, text);
                     }
                     EventKind::Packet {
                         socket,
@@ -712,9 +748,13 @@ impl FrameHost {
                         event,
                         &mut ConsoleInput {
                             console: &mut self.console,
+                            events: &mut self.runtime.server.events,
+                            time: event.time,
                         },
                     ),
                 }
+                self.console
+                    .sync_editor_input(&mut self.runtime.input, event.time);
             }
             // Com_EventLoop drains local client packets, then server packets when
             // system events run out. Both use the same packet consumer as UDP.
@@ -839,16 +879,41 @@ impl FrameHost {
 
 struct ConsoleInput<'a> {
     console: &'a mut Console<Runtime>,
+    events: &'a mut qa_core::events::EventRing,
+    time: EventTime,
 }
 impl Target for ConsoleInput<'_> {
-    fn character(&mut self, _seat: SeatId, _value: char) {}
+    fn key(&mut self, seat: SeatId, control: u16, down: bool, repeat: bool) -> bool {
+        match self
+            .console
+            .edit_key(seat, control, down, repeat, self.time, |text| {
+                let _ = self.events.console_formatted(text);
+            }) {
+            Ok(caught) => caught,
+            Err(error) => {
+                let _ = self
+                    .events
+                    .console_formatted(format_args!("Console input: {error:?}\n"));
+                true
+            }
+        }
+    }
+    fn character(&mut self, seat: SeatId, value: char) {
+        if self.console.editor.character(seat, value).is_err() {
+            let _ = self.events.console_bytes(b"Console input line is full\n");
+        }
+    }
     fn command(&mut self, seat: SeatId, time: EventTime, text: &str) {
         let context = qa_console::views::Context {
             seat,
             event_time: Some(time),
             ..self.console.cvars.context()
         };
-        let _ = self.console.append_line(text, context);
+        if let Err(error) = self.console.append_line(text, context) {
+            let _ = self
+                .events
+                .console_formatted(format_args!("Input command: {error:?}\n"));
+        }
     }
 }
 

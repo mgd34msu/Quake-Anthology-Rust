@@ -42,6 +42,9 @@ fn q3_vm_cvars_share_registry_and_match_native_layout_and_reference_rows() {
             let mut scratch = runtime.geometry.scratch();
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
             let context = CallContext {
+                native_rules: qa_core::primitives::RuleSetId::Quake3,
+                trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_rules: qa_core::primitives::RuleSetId::Quake3,
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),
@@ -383,6 +386,9 @@ fn session_function_dispatch_drives_vm_cvar_registration_and_updates() {
             .id;
         let request = ModuleRequest {
             context: CallContext {
+                native_rules: qa_core::primitives::RuleSetId::Quake3,
+                trace_rules: qa_core::primitives::RuleSetId::Quake3,
+                sound_rules: qa_core::primitives::RuleSetId::Quake3,
                 server_frame: 0,
                 module: ModuleId(1),
                 clock: ThinkTime::Milliseconds(0),

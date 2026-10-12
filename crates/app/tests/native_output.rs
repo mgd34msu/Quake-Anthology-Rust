@@ -93,14 +93,18 @@ fn publish(runtime: &mut Runtime, reliable: bool, target: NativeTarget, bytes: &
         .unwrap()
 }
 fn dispatch(runtime: &mut Runtime, source: &mut Source) -> qa_app::output::OutputCounts {
-    qa_app::output::dispatch(
+    let mut scrollback = qa_console::presentation::Scrollback::default();
+    let counts = qa_app::output::dispatch(
         runtime,
         source,
+        &mut scrollback,
         &[None; SeatId::COUNT],
         source.now,
         3.0,
         2.0,
-    )
+    );
+    scrollback.clear(&mut runtime.server.events.texts);
+    counts
 }
 fn receive(peer: &mut Channel, bytes: &[u8]) -> Vec<u8> {
     let received = peer.receive(bytes, EventTime(20)).unwrap();
@@ -473,6 +477,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     qa_app::output::dispatch(
         &mut host.runtime,
         &mut source,
+        &mut host.console.scrollback,
         &host.local_clients,
         EventTime(0),
         3.0,
@@ -516,6 +521,7 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     qa_app::output::dispatch(
         &mut host.runtime,
         &mut source,
+        &mut host.console.scrollback,
         &host.local_clients,
         now,
         3.0,
@@ -555,9 +561,11 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     while runtime.loopback.send(Endpoint::Server, id, &[0]).is_ok() {}
     publish(&mut runtime, false, NativeTarget::Client(id), b"\x0fheld\0");
     let mut source = Source::default();
+    let mut scrollback = qa_console::presentation::Scrollback::default();
     qa_app::output::dispatch(
         &mut runtime,
         &mut source,
+        &mut scrollback,
         &[Some(id), None, None, None],
         EventTime(1),
         3.0,
@@ -582,6 +590,7 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     qa_app::output::dispatch(
         &mut runtime,
         &mut source,
+        &mut scrollback,
         &[Some(id), None, None, None],
         EventTime(2),
         3.0,

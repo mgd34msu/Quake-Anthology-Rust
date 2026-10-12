@@ -138,6 +138,8 @@ impl Server {
             .into_boxed_slice();
         // Ring pages plus six independent display slots per client/module.
         let rows = 4096usize
+            .checked_add(qa_core::events::CONSOLE_DISPLAY_RECORDS)
+            .ok_or(ServerError::OutputCapacity)?
             .checked_add(
                 max_clients
                     .checked_add(32)

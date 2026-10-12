@@ -1,16 +1,17 @@
 //! CLIENT-owned snapshot values become copied entries in the shared scene list.
 use crate::model_assets::{ModelBinding, ModelCatalog, ModelMaterialPolicy};
+use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
-    math::angle_vectors,
+    math::{angle_vectors, lerp_angle},
     primitives::{
-        ClientId, IndexSpan, ModelRef, NameId, PlayerState, ResourceNamespace, RuleSetId,
-        ThinkTime, Vec3,
+        ClientId, IndexSpan, ModelRef, NameId, PlayerState, ResourceNamespace, RuleSetId, Vec3,
+        ViewWeapon,
     },
 };
 use qa_gameplay::rules::appearance::{AliasRoll, alias_pose_angles};
 use qa_network::{
-    projection::{EntityProjection, EntityRecord},
+    projection::{EntityProjection, EntityRecord, PlayerProjection},
     snapshots::{Entity, Frame as SnapshotFrame, ReceivedFrame},
 };
 use qa_render::{Assets, Frame, Refdef, SceneEntity};
@@ -99,10 +100,15 @@ pub struct ClientSceneInput<'a> {
     pub current: Option<ReceivedFrame<'a>>,
     pub previous: Option<ReceivedFrame<'a>>,
     pub projection: &'a EntityProjection,
+    pub player_projection: &'a PlayerProjection,
     pub bindings: &'a ClientModelBindings,
     pub models: &'a ModelCatalog,
     pub player: &'a PlayerState,
     pub alias_roll: AliasRoll,
+    /// Snapshot-domain time is independent of shader/refdef time.
+    pub interpolation: Interpolation,
+    pub gun_animation: Option<GunAnimation>,
+    pub gun_previous: Option<ReceivedFrame<'a>>,
     /// Negotiated native view entity; common client/entity slots cannot supply it.
     pub view_entity: Option<u32>,
 }
@@ -163,15 +169,7 @@ impl ClientSceneInput<'_> {
                         Some(ReceivedFrame::$variant(previous)) => Some(previous),
                         _ => None,
                     };
-                    self.append_entities(
-                        $current,
-                        previous,
-                        frame,
-                        assets,
-                        refdef,
-                        software,
-                        &mut counts,
-                    );
+                    self.append_entities($current, previous, frame, assets, software, &mut counts);
                 }};
             }
             match current {
@@ -186,28 +184,18 @@ impl ClientSceneInput<'_> {
         counts
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Native frame widths share one CLIENT scene projection without copying snapshot storage"
-    )]
     fn append_entities<const P: usize, const E: usize>(
         &self,
         current: SnapshotFrame<'_, P, E>,
         previous: Option<SnapshotFrame<'_, P, E>>,
         frame: &mut Frame,
         assets: &Assets,
-        refdef: &Refdef,
         software: bool,
         counts: &mut SceneCounts,
     ) {
-        let fraction = previous.map_or(1.0, |previous| {
-            let span = current.time.seconds() - previous.time.seconds();
-            if span <= 0.0 || !span.is_finite() {
-                return 1.0;
-            }
-            let time = ThinkTime::Milliseconds(refdef.time_ms as i64).seconds();
-            ((time - previous.time.seconds()) / span).clamp(0.0, 1.0) as f32
-        });
+        let previous =
+            previous.filter(|previous| self.adjacent(current.sequence, previous.sequence));
+        let fraction = self.interpolation.fraction;
         for entity in current.entities {
             counts.entities += 1;
             let Some(record) = self.decode(entity) else {
@@ -276,9 +264,14 @@ impl ClientSceneInput<'_> {
                             native_frame(old.appearance.frame, model.frame_count())
                         })
                 };
+                let angles = previous.map_or(record.angles, |old| {
+                    Vec3(std::array::from_fn(|axis| {
+                        lerp_angle(old.angles.0[axis], record.angles.0[axis], fraction)
+                    }))
+                });
                 let angles = alias_pose_angles(
                     binding.rules,
-                    record.angles,
+                    angles,
                     record.velocity,
                     current.qw_player(entity.number),
                     software,
@@ -327,7 +320,10 @@ impl ClientSceneInput<'_> {
         software: bool,
         counts: &mut SceneCounts,
     ) {
-        let weapon = self.player.view_weapon;
+        let weapon = self
+            .current
+            .and_then(|frame| self.weapon(frame))
+            .unwrap_or(self.player.view_weapon);
         let Some(reference) = weapon.model else {
             return;
         };
@@ -344,21 +340,87 @@ impl ClientSceneInput<'_> {
             counts.missing_models += 1;
             return;
         };
+        let source = self.projection.rule_set();
+        let native_q2 = matches!(source, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease);
+        let previous = if native_q2 {
+            self.previous
+                .filter(|old| {
+                    self.current
+                        .is_some_and(|current| self.adjacent(current.sequence(), old.sequence()))
+                })
+                .filter(|old| {
+                    self.current
+                        .and_then(ReceivedFrame::player_words)
+                        .zip(old.player_words())
+                        .is_some_and(|(current, previous)| {
+                            self.player_projection
+                                .can_interpolate_player(previous, current)
+                        })
+                })
+                .filter(|_| self.player_event_interpolation())
+                .and_then(|old| self.weapon(old))
+        } else {
+            None
+        };
+        let offset = previous.map_or(weapon.offset, |old| old.offset);
+        let fraction = self.interpolation.fraction;
+        let angles = previous.map_or(weapon.angles, |old| {
+            Vec3(std::array::from_fn(|axis| {
+                lerp_angle(old.angles.0[axis], weapon.angles.0[axis], fraction)
+            }))
+        });
         let angles = alias_pose_angles(
             binding.rules,
-            self.player.view_angles + weapon.angles,
+            self.player.view_angles + angles,
             Vec3::default(),
             false,
             software,
             self.alias_roll,
         );
+        let current_frame = native_frame(weapon.frame, model.frame_count());
+        let (old_frame, back_lerp) = if source == RuleSetId::Quake2Rerelease && previous.is_some() {
+            let back = self.gun_animation.map_or(0.0, |animation| {
+                self.interpolation
+                    .gun_back_lerp(animation.changed_at, weapon.rate)
+            });
+            let old = self
+                .gun_previous
+                .and_then(|frame| self.weapon(frame))
+                .filter(|old| old.model == weapon.model);
+            if old.is_none()
+                && back != 0.0
+                && self
+                    .gun_animation
+                    .is_some_and(|animation| animation.previous.is_some())
+            {
+                counts.unsupported += 1;
+            }
+            (
+                old.map_or(current_frame, |old| {
+                    native_frame(old.frame, model.frame_count())
+                }),
+                back,
+            )
+        } else if source == RuleSetId::Quake2 && weapon.frame != 0 {
+            (
+                previous
+                    .filter(|old| old.model == weapon.model)
+                    .map_or(current_frame, |old| {
+                        native_frame(old.frame, model.frame_count())
+                    }),
+                1.0 - fraction,
+            )
+        } else {
+            (current_frame, 0.0)
+        };
         let entity = SceneEntity {
             model: binding.model,
             material: Some(binding.material),
-            origin: refdef.origin + weapon.offset,
+            origin: refdef.origin + offset + (weapon.offset - offset) * fraction,
             axes: angle_vectors(angles).axes(),
-            frame: native_frame(weapon.frame, model.frame_count()),
-            old_frame: native_frame(weapon.frame, model.frame_count()),
+            frame: current_frame,
+            old_frame,
+            back_lerp,
             depth_hack: true,
             lighting: Some(native_lighting(binding.rules, angles)),
             ..SceneEntity::default()
@@ -366,6 +428,37 @@ impl ClientSceneInput<'_> {
         let added = frame.add_entity(entity);
         counts.models += u32::from(added);
         counts.rejected += u32::from(!added);
+    }
+
+    fn adjacent(&self, current: u32, previous: u32) -> bool {
+        !matches!(
+            self.projection.rule_set(),
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        ) || current.wrapping_sub(previous) == 1
+    }
+
+    fn weapon(&self, frame: ReceivedFrame<'_>) -> Option<ViewWeapon> {
+        self.player_projection.view_weapon(
+            frame.player_words()?,
+            ResourceNamespace::Client(self.client),
+        )
+    }
+
+    fn player_event_interpolation(&self) -> bool {
+        let (Some(ReceivedFrame::Quake2Repro(current)), Some(number)) =
+            (self.current, self.view_entity)
+        else {
+            return true;
+        };
+        let Ok(index) = current
+            .entities
+            .binary_search_by_key(&number, |entity| entity.number)
+        else {
+            return true;
+        };
+        self.decode(&current.entities[index]).is_some_and(|entity| {
+            qa_gameplay::rules::appearance::can_interpolate_player_event(&entity.appearance)
+        })
     }
 }
 

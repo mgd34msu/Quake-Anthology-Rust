@@ -6,7 +6,7 @@ use crate::{
     text::MAX_TEXT,
     views::{Context, RuleSetId},
 };
-use qa_core::sys_events::{EventTime, SeatId};
+use qa_core::sys_events::{EventTime, SeatId, key_catchers};
 use qa_core::text::FixedText;
 use qa_core::{
     names::{NamesError, compare_folded},
@@ -76,6 +76,8 @@ struct Parser {
 }
 pub struct Console<H> {
     pub cvars: Cvars,
+    pub editor: crate::editor::Editor,
+    pub scrollback: crate::presentation::Scrollback,
     buffer: CommandBuffer,
     commands: Vec<NameId>,
     command_by_name: Box<[Option<Command<H>>]>,
@@ -100,6 +102,8 @@ impl<H: Host> Console<H> {
         let alias_by_name = vec![None; cvars.names.capacity()].into_boxed_slice();
         let mut console = Self {
             cvars,
+            editor: crate::editor::Editor::default(),
+            scrollback: crate::presentation::Scrollback::default(),
             command_by_name,
             alias_by_name,
             buffer: CommandBuffer::new(),
@@ -134,6 +138,7 @@ impl<H: Host> Console<H> {
             ("unbindall", Self::unbind_all),
             ("bindlist", Self::bind_list),
             ("centerview", Self::center_view),
+            ("toggleconsole", Self::toggle_console),
         ] {
             console.register(name, function);
         }
@@ -176,6 +181,55 @@ impl<H: Host> Console<H> {
     }
     pub fn append_line(&mut self, text: &str, context: Context) -> Result<(), TextError> {
         self.buffer.append_line(text, context)
+    }
+    /// The window editor submits through the same buffer as stdin, binds and
+    /// module commands. Failed admission keeps the editable line intact.
+    pub fn edit_key(
+        &mut self,
+        seat: SeatId,
+        control: u16,
+        down: bool,
+        repeat: bool,
+        time: EventTime,
+        mut print: impl FnMut(Output<'_>),
+    ) -> Result<bool, TextError> {
+        match self.editor.key(seat, control, down, repeat) {
+            crate::editor::EditAction::Ignored => Ok(false),
+            crate::editor::EditAction::Caught => Ok(true),
+            crate::editor::EditAction::Submit => {
+                let context = Context {
+                    seat,
+                    event_time: Some(time),
+                    ..self.cvars.context()
+                };
+                self.buffer.append_line(self.editor.line(), context)?;
+                print(format_args!("]{}\n", self.editor.line()));
+                self.editor.submitted();
+                Ok(true)
+            }
+        }
+    }
+
+    pub fn sync_editor_input(&self, input: &mut Input, time: EventTime) {
+        let owner = self.editor.seat();
+        for seat in SeatId::ALL {
+            input.set_catcher(seat, key_catchers::CONSOLE, owner == Some(seat), time);
+        }
+        if let Some(seat) = owner {
+            input.set_text_seat(seat);
+        }
+    }
+
+    fn toggle_console(
+        console: &mut Self,
+        host: &mut H,
+        _: &Arguments<'_>,
+        context: Context,
+    ) -> Result<(), CommandError> {
+        console.editor.toggle(context.seat);
+        let time = context.event_time.unwrap_or(host.input_time());
+        console.sync_editor_input(host.input(), time);
+        Ok(())
     }
     pub fn idle(&self) -> bool {
         self.buffer.is_empty()

@@ -133,6 +133,38 @@ fn vector_operations_normalization_and_angle_wrapping() {
 }
 
 #[test]
+fn native_angle_lerp_keeps_shortest_path_strict_ties_and_operation_order() {
+    for (from, to, fraction, expected) in [
+        (350.0, 10.0, 0.5, 360.0),
+        (10.0, 350.0, 0.5, 0.0),
+        (0.0, 180.0, 0.5, 90.0),
+        (0.0, -180.0, 0.5, -90.0),
+        (40.0, 50.0, 0.0, 40.0),
+        (40.0, 50.0, 1.0, 50.0),
+    ] {
+        assert_eq!(lerp_angle(from, to, fraction), expected);
+    }
+    let mut seed = 0x0012_u32;
+    for _ in 0..65536 {
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed as i32 as f32 / 65536.0
+        };
+        let from = next();
+        let mut to = next();
+        let fraction = next() / 32768.0;
+        let actual = lerp_angle(from, to, fraction);
+        if to - from > 180.0 {
+            to -= 360.0;
+        }
+        if to - from < -180.0 {
+            to += 360.0;
+        }
+        assert_eq!(actual.to_bits(), (from + fraction * (to - from)).to_bits());
+    }
+}
+
+#[test]
 fn native_zero_normalization_distinguishes_in_place_and_output_results() {
     let input = Vec3([-0.0, 0.0, -0.0]);
     let mut in_place = input;

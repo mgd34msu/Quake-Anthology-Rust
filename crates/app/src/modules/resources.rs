@@ -13,7 +13,7 @@ impl FrameHost {
             if row.state != State::Running {
                 continue;
             }
-            let rules = row.request.context.console.source;
+            let rules = row.request.context.native_rules;
             let Some(layout) = ConfigLayout::for_rules(rules) else {
                 continue;
             };
@@ -72,7 +72,7 @@ impl FrameHost {
             else {
                 continue;
             };
-            let source = row.request.context.console.source;
+            let source = row.request.context.native_rules;
             let Some(source_layout) = ConfigLayout::for_rules(source) else {
                 continue;
             };

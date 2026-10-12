@@ -52,6 +52,12 @@ pub struct CallContext {
     pub clock: ThinkTime,
     /// SERVER frame number before/after dispatch, projected from provider ticks.
     pub server_frame: u64,
+    /// Native ABI, limits and source provenance are independent of cvar views.
+    pub native_rules: RuleSetId,
+    /// Collision behaviour belongs to the calling trace role.
+    pub trace_rules: RuleSetId,
+    /// Spatial sound behaviour belongs to the emitting role.
+    pub sound_rules: RuleSetId,
     pub console: Context,
     pub allocation: AllocationPolicy,
     pub link_order: LinkOrder,
@@ -911,10 +917,10 @@ impl EngineServices<'_> {
         Ok(())
     }
     pub fn free(&mut self, context: CallContext, entity: EntityId) -> Result<(), CallError> {
-        self.unlink(entity)?;
         if !self.server.entities.release(entity, context.clock) {
             return Err(CallError::Entity);
         }
+        self.server.area.unlink(entity);
         self.server.navigation.unregister(entity);
         Ok(())
     }

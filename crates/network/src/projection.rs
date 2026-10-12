@@ -5,7 +5,7 @@ use qa_core::{
     math::{AngleShortForm, angle_to_short, eighth_to_short, short_to_angle, short_to_eighth},
     primitives::{
         EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer, PlayerState, PlayerTail,
-        ResourceNamespace, ValueBinding, ValueWidth,
+        ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon,
     },
 };
 
@@ -377,6 +377,78 @@ impl PlayerProjection {
         self.flag_mask
     }
 
+    /// Presentation reads the same native field table without importing stats
+    /// into a second player bank or allocating temporary value capacity.
+    pub fn view_weapon(&self, words: &[u32], namespace: ResourceNamespace) -> Option<ViewWeapon> {
+        let words = words.get(..self.words)?;
+        let mut weapon = ViewWeapon::default();
+        let mut present = false;
+        for field in &self.fields {
+            present |= self.apply_weapon(
+                field.source,
+                field.convert.import(words[field.word]),
+                &mut weapon,
+                namespace,
+            );
+        }
+        present.then_some(weapon)
+    }
+
+    /// Native Q2 player interpolation rejects a teleport or a changed POV.
+    /// Raw flag semantics remain at this protocol boundary.
+    pub fn can_interpolate_player(&self, from: &[u32], to: &[u32]) -> bool {
+        let (Some(from), Some(to)) = (from.get(..self.words), to.get(..self.words)) else {
+            return false;
+        };
+        if !matches!(
+            self.protocol,
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038
+        ) {
+            return true;
+        }
+        for field in &self.fields {
+            match field.source {
+                Position(_) => {
+                    let old = f32::from_bits(field.convert.import(from[field.word]));
+                    let new = f32::from_bits(field.convert.import(to[field.word]));
+                    let distance = (new - old).abs();
+                    if !distance.is_finite() || distance > 256.0 {
+                        return false;
+                    }
+                }
+                Client if from[field.word] != to[field.word] => return false,
+                _ => {}
+            }
+        }
+        self.protocol != Protocol::Quake2Repro1038 || (from[35] ^ to[35]) & (1 << 4) == 0
+    }
+
+    fn apply_weapon(
+        &self,
+        source: Source,
+        value: u32,
+        weapon: &mut ViewWeapon,
+        namespace: ResourceNamespace,
+    ) -> bool {
+        match source {
+            WeaponFrame => weapon.frame = value as i32,
+            WeaponOffset(i) => weapon.offset.0[i] = f32::from_bits(value),
+            WeaponAngle(i) => weapon.angles.0[i] = f32::from_bits(value),
+            WeaponRate => weapon.rate = value as i32,
+            WeaponModel => {
+                let model = if self.protocol == Protocol::Quake2Repro1038 {
+                    weapon.skin = (value >> 13) as i32;
+                    value & 8191
+                } else {
+                    value
+                };
+                weapon.model = ModelRef::native(namespace, model);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// The module can supply fields absent from the common hot columns through
     /// load-resolved numeric bindings. Last binding wins in registration order.
     pub fn reduce(
@@ -495,10 +567,9 @@ impl PlayerProjection {
                         *weapon_time = value as i32;
                     }
                 }
-                WeaponFrame => player.view_weapon.frame = value as i32,
-                WeaponOffset(i) => player.view_weapon.offset.0[i] = f32::from_bits(value),
-                WeaponAngle(i) => player.view_weapon.angles.0[i] = f32::from_bits(value),
-                WeaponRate => player.view_weapon.rate = value as i32,
+                WeaponFrame | WeaponOffset(_) | WeaponAngle(_) | WeaponRate | WeaponModel => {
+                    self.apply_weapon(field.source, value, &mut player.view_weapon, namespace);
+                }
                 BodyFrame | BodyModel | BodySkin | BodyEffects => {
                     let body = context.appearance.get_or_insert_with(|| EntityAppearance {
                         source: self.protocol.rule_set(),
@@ -519,15 +590,6 @@ impl PlayerProjection {
                     player.movement.ground = context.ground_number.and_then(&mut resolve_ground);
                 }
                 Weapon => context.weapon_number = Some(value),
-                WeaponModel => {
-                    let model = if self.protocol == Protocol::Quake2Repro1038 {
-                        player.view_weapon.skin = (value >> 13) as i32;
-                        value & 8191
-                    } else {
-                        value
-                    };
-                    player.view_weapon.model = ModelRef::native(namespace, model);
-                }
                 Gravity => context.gravity = f32::from_bits(value),
                 Speed => context.speed = f32::from_bits(value),
                 InfoFlags => context.player_info_flags = value as u16,

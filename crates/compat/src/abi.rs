@@ -90,8 +90,20 @@ enum QcArgc {
 enum QcArgs {
     Scalars,
     Vector,
-    Strings { from: usize, qw_from: usize },
-    ClientStrings { from: usize, qw_from: usize },
+    Strings {
+        from: usize,
+        qw_from: usize,
+    },
+    ClientStrings {
+        from: usize,
+        qw_from: usize,
+    },
+    /// Parameter widths remain native parm0+n*3; the flat service arguments
+    /// contain only each declared scalar/vector component.
+    Mixed {
+        vectors: u8,
+        strings: u8,
+    },
 }
 impl QcArgs {
     fn string_start(self, quakeworld: bool) -> Option<usize> {
@@ -102,10 +114,18 @@ impl QcArgs {
             _ => None,
         }
     }
-    fn layout(self, argc: usize) -> (usize, usize) {
+    fn width(self, argument: usize) -> usize {
+        let vector = match self {
+            Self::Vector => argument == 0,
+            Self::Mixed { vectors, .. } => vectors & (1 << argument) != 0,
+            _ => false,
+        };
+        if vector { 3 } else { 1 }
+    }
+    fn string(self, argument: usize, first: Option<usize>) -> bool {
         match self {
-            Self::Vector => (3, 1),
-            _ => (argc, 3),
+            Self::Mixed { strings, .. } => strings & (1 << argument) != 0,
+            _ => first.is_some_and(|first| argument >= first),
         }
     }
 }
@@ -135,9 +155,16 @@ impl QcSignature {
     }
 }
 type Entry = fn(&mut Invocation<'_, '_, '_>, Option<usize>) -> Result<CallValue, CallError>;
+type QcEntry =
+    fn(&mut QuakeCCalls<'_, '_>, &mut quakec::Vm, &[u64]) -> Result<CallValue, CallError>;
+#[derive(Clone, Copy)]
+enum Handler {
+    Shared(Entry),
+    QuakeC(QcEntry),
+}
 #[derive(Clone, Copy)]
 struct CallEntry {
-    call: Entry,
+    handler: Handler,
     quakec: Option<QcSignature>,
 }
 impl CallEntry {
@@ -146,7 +173,10 @@ impl CallEntry {
         call: &mut Invocation<'_, '_, '_>,
         string_start: Option<usize>,
     ) -> Result<CallValue, CallError> {
-        (self.call)(call, string_start)
+        match self.handler {
+            Handler::Shared(entry) => entry(call, string_start),
+            Handler::QuakeC(_) => Err(CallError::Memory),
+        }
     }
 }
 macro_rules! scalar {
@@ -155,7 +185,7 @@ macro_rules! scalar {
     };
     ($handler:expr, $signature:expr) => {
         Some(CallEntry {
-            call: |call, _| ($handler)(call).map(CallValue::Word),
+            handler: Handler::Shared(|call, _| ($handler)(call).map(CallValue::Word)),
             quakec: $signature,
         })
     };
@@ -163,8 +193,23 @@ macro_rules! scalar {
 macro_rules! value {
     ($handler:expr, $signature:expr) => {
         Some(CallEntry {
-            call: |call, _| ($handler)(call),
+            handler: Handler::Shared(|call, _| ($handler)(call)),
             quakec: Some($signature),
+        })
+    };
+}
+macro_rules! qc {
+    ($handler:expr, $argc:expr, $vectors:expr, $returns:expr) => {
+        Some(CallEntry {
+            handler: Handler::QuakeC($handler),
+            quakec: Some(QcSignature::new(
+                QcArgc::Fixed($argc),
+                QcArgs::Mixed {
+                    vectors: $vectors,
+                    strings: 0,
+                },
+                $returns,
+            )),
         })
     };
 }
@@ -452,11 +497,16 @@ const fn quakec() -> CallTable {
         true,
     );
     t.entries[1] = value!(angle_basis, vector.void());
+    t.entries[2] = qc!(qc_set_origin, 2, 2, false);
+    t.entries[4] = qc!(qc_set_size, 3, 6, false);
     t.entries[9] = value!(vector_normalize, vector);
     t.entries[12] = scalar!(vector_length, Some(vector));
     t.entries[13] = scalar!(vector_yaw, Some(vector));
+    t.entries[14] = qc!(qc_spawn, 0, 0, true);
+    t.entries[15] = qc!(qc_remove, 1, 0, false);
+    t.entries[16] = qc!(qc_trace_line, 4, 3, false);
     t.entries[23] = Some(CallEntry {
-        call: qc_print::<true>,
+        handler: Handler::Shared(qc_print::<true>),
         quakec: Some(QcSignature::new(
             QcArgc::Variadic,
             QcArgs::Strings {
@@ -467,11 +517,11 @@ const fn quakec() -> CallTable {
         )),
     });
     t.entries[25] = Some(CallEntry {
-        call: qc_print::<false>,
+        handler: Handler::Shared(qc_print::<false>),
         quakec: Some(QcSignature::new(QcArgc::Variadic, strings.args, false).developer()),
     });
     t.entries[24] = Some(CallEntry {
-        call: qc_client_print::<false>,
+        handler: Handler::Shared(qc_client_print::<false>),
         quakec: Some(QcSignature::new(
             QcArgc::Variadic,
             QcArgs::ClientStrings {
@@ -482,7 +532,7 @@ const fn quakec() -> CallTable {
         )),
     });
     t.entries[73] = Some(CallEntry {
-        call: qc_client_print::<true>,
+        handler: Handler::Shared(qc_client_print::<true>),
         quakec: Some(QcSignature::new(
             QcArgc::Variadic,
             QcArgs::ClientStrings {
@@ -539,23 +589,26 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         if matches!(signature.argc, QcArgc::Fixed(expected) if argc != expected) {
             return Err(quakec::Trap::Builtin);
         }
-        let mut arguments = [0u64; 8];
-        let (words, stride) = signature.args.layout(argc);
-        let quakeworld = self.context.console.source == qa_core::primitives::RuleSetId::QuakeWorld;
+        let mut arguments = [0u64; 24];
+        let mut words = 0;
+        let quakeworld = self.context.native_rules == qa_core::primitives::RuleSetId::QuakeWorld;
         let string_start = signature.args.string_start(quakeworld);
-        for (index, to) in arguments[..words].iter_mut().enumerate() {
-            let mut word = *vm
-                .image
-                .globals
-                .get(4 + index * stride)
-                .ok_or(quakec::Trap::Memory)?;
-            if string_start.is_some_and(|first| index >= first) {
-                vm.string(word as i32)?;
+        for index in 0..argc {
+            for component in 0..signature.args.width(index) {
+                let mut word = *vm
+                    .image
+                    .globals
+                    .get(4 + index * 3 + component)
+                    .ok_or(quakec::Trap::Memory)?;
+                if component == 0 && signature.args.string(index, string_start) {
+                    vm.string(word as i32)?;
+                }
+                if index == 0 && matches!(signature.args, QcArgs::ClientStrings { .. }) {
+                    word = vm.entity_number(word)?;
+                }
+                arguments[words] = u64::from(word);
+                words += 1;
             }
-            if index == 0 && matches!(signature.args, QcArgs::ClientStrings { .. }) {
-                word = vm.entity_number(word)?;
-            }
-            *to = u64::from(word);
         }
         if signature.developer_nq_only
             && !quakeworld
@@ -563,28 +616,32 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         {
             return Ok(());
         }
-        let mut invocation = Invocation {
-            services: self.services,
-            memory: &mut vm.strings,
-            native_cvars: None,
-            native_resources: None,
-            native_entities: None,
-            native_surfaces: None,
-            native_command: None,
-            native_configs: None,
-            native_pmove: None,
-            native_player: None,
-            context: self.context,
-            platform_time: self.platform_time,
-            command: &[],
-            addresses: Addresses::Native {
-                abi: qa_platform::native::NativeAbi::SystemV,
-            },
-            arguments: &arguments[..words],
+        let value = if let Handler::QuakeC(entry) = entry.handler {
+            entry(self, vm, &arguments[..words]).map_err(|_| quakec::Trap::Builtin)?
+        } else {
+            let mut invocation = Invocation {
+                services: self.services,
+                memory: &mut vm.strings,
+                native_cvars: None,
+                native_resources: None,
+                native_entities: None,
+                native_surfaces: None,
+                native_command: None,
+                native_configs: None,
+                native_pmove: None,
+                native_player: None,
+                context: self.context,
+                platform_time: self.platform_time,
+                command: &[],
+                addresses: Addresses::Native {
+                    abi: qa_platform::native::NativeAbi::SystemV,
+                },
+                arguments: &arguments[..words],
+            };
+            entry
+                .invoke(&mut invocation, string_start)
+                .map_err(|_| quakec::Trap::Builtin)?
         };
-        let value = entry
-            .invoke(&mut invocation, string_start)
-            .map_err(|_| quakec::Trap::Builtin)?;
         match value {
             CallValue::Word(value) => {
                 if signature.returns {
@@ -606,6 +663,109 @@ impl quakec::Builtins for QuakeCCalls<'_, '_> {
         }
         Ok(())
     }
+}
+
+fn qc_word(arguments: &[u64], index: usize) -> Result<u32, CallError> {
+    arguments
+        .get(index)
+        .copied()
+        .map(|word| word as u32)
+        .ok_or(CallError::Memory)
+}
+fn qc_vector(arguments: &[u64], first: usize) -> Result<qa_core::primitives::Vec3, CallError> {
+    Ok(qa_core::primitives::Vec3([
+        f32::from_bits(qc_word(arguments, first)?),
+        f32::from_bits(qc_word(arguments, first + 1)?),
+        f32::from_bits(qc_word(arguments, first + 2)?),
+    ]))
+}
+fn qc_spawn(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    _: &[u64],
+) -> Result<CallValue, CallError> {
+    Ok(CallValue::Word(u64::from(vm.projection.quakec_spawn(
+        c.services,
+        &mut vm.entities,
+        c.context,
+    )?)))
+}
+fn qc_remove(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    vm.projection.quakec_remove(
+        c.services,
+        &mut vm.entities,
+        c.context,
+        qc_word(arguments, 0)?,
+    )?;
+    Ok(CallValue::Word(0))
+}
+fn qc_set_origin(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    vm.projection.quakec_set_origin(
+        c.services,
+        &mut vm.entities,
+        &vm.strings,
+        c.context,
+        qc_word(arguments, 0)?,
+        qc_vector(arguments, 1)?,
+    )?;
+    Ok(CallValue::Word(0))
+}
+fn qc_set_size(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    let bounds = qa_core::primitives::Bounds {
+        mins: qc_vector(arguments, 1)?,
+        maxs: qc_vector(arguments, 4)?,
+    };
+    vm.projection.quakec_set_size(
+        c.services,
+        &mut vm.entities,
+        &vm.strings,
+        c.context,
+        qc_word(arguments, 0)?,
+        bounds,
+    )?;
+    Ok(CallValue::Word(0))
+}
+fn qc_trace_line(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    use qa_world::collision::{QuakeTraceKind, TraceQuery, trace_policy};
+    vm.project_dirty_entities(c.services, c.context)?;
+    let (rules, entity_rules) = trace_policy(c.context.trace_rules);
+    let kind =
+        match crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 6)?))) {
+            1 => QuakeTraceKind::IgnoreBoxes,
+            2 => QuakeTraceKind::Missile,
+            _ => QuakeTraceKind::Normal,
+        };
+    let mut query = TraceQuery::point(
+        qc_vector(arguments, 0)?,
+        qc_vector(arguments, 3)?,
+        rules,
+        entity_rules.with_quake_kind(Some(kind)),
+    );
+    let (view, pass) =
+        vm.projection
+            .quakec_trace_view(&vm.entities, c.context, qc_word(arguments, 7)?)?;
+    query.pass = pass;
+    let trace = (ENGINE_CALLS.trace)(c.services, query, Some(&view))?;
+    let entity = vm.projection.quakec_hit(c.services, trace.entity);
+    vm.write_trace(trace, entity)
+        .map_err(|_| CallError::Memory)?;
+    Ok(CallValue::Word(0))
 }
 
 fn argument_vector(c: &Invocation<'_, '_, '_>) -> Result<qa_core::primitives::Vec3, CallError> {
@@ -986,7 +1146,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
         c.services,
         SoundEvent {
             sound,
-            spatial_rules: c.context.console.source,
+            spatial_rules: c.context.sound_rules,
             entity: entity.map(SoundEmitter::Entity),
             position,
             client,
@@ -1433,7 +1593,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
         mask |= Contents::SKY;
     }
     let surfaces = c.native_surfaces.ok_or(CallError::Geometry)?;
-    let (rules, entity_rules) = trace_policy(c.context.console.source);
+    let (rules, entity_rules) = trace_policy(c.context.trace_rules);
     let query = TraceQuery {
         scope: qa_world::collision::TraceScope::Scene,
         start,
@@ -1593,7 +1753,7 @@ fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
     if !point.is_finite() {
         return Err(CallError::Geometry);
     }
-    let (_, rules) = qa_world::collision::trace_policy(c.context.console.source);
+    let (_, rules) = qa_world::collision::trace_policy(c.context.trace_rules);
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
@@ -1605,7 +1765,7 @@ fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
 
 fn qc_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let point = argument_vector(c)?;
-    let (_, rules) = qa_world::collision::trace_policy(c.context.console.source);
+    let (_, rules) = qa_world::collision::trace_policy(c.context.trace_rules);
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
@@ -1620,7 +1780,7 @@ fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let limit = c
         .services
         .storage
-        .max_clients(c.services.cvars, qa_core::primitives::RuleSetId::Quake3);
+        .max_clients(c.services.cvars, c.context.native_rules);
     if slot < 0 || slot >= limit {
         return Err(CallError::Entity);
     }
@@ -1659,7 +1819,7 @@ fn q3_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         module: c.context.module,
         slot: c.arg(1)? as i32,
     });
-    let rules = qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1;
+    let rules = qa_world::collision::trace_policy(c.context.trace_rules).1;
     let contents = (ENGINE_CALLS.point_contents)(c.services, point, rules, pass)?;
     Ok(u64::from(contents.to_q3()))
 }
@@ -1711,7 +1871,7 @@ fn native_info_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     if key.set_bytes(c.string(1)?).is_err() || value.set_bytes(c.string(2)?).is_err() {
         return Ok(0);
     }
-    let layout = client_layout(c.context.console.source).ok_or(CallError::Text)?;
+    let layout = client_layout(c.context.native_rules).ok_or(CallError::Text)?;
     let Ok(update) = InfoUpdate::new(
         key.as_bytes(),
         value.as_bytes(),
@@ -1745,7 +1905,7 @@ fn native_delivery<const WIDE: bool>(
     reliable: bool,
     dupe_key: u32,
 ) -> qa_core::primitives::NativeDelivery {
-    let source = c.context.console.source;
+    let source = c.context.native_rules;
     qa_core::primitives::NativeDelivery {
         module: c.context.module,
         source,
@@ -1869,7 +2029,7 @@ fn native_visibility<const WIDE: bool, const HEARING: bool>(
         qa_world::visibility::VisibilityChannel::Sight
     };
     let portals =
-        (!WIDE || c.arg(2)? != 0) && !c.services.ignore_areas(c.context.console.source, WIDE);
+        (!WIDE || c.arg(2)? != 0) && !c.services.ignore_areas(c.context.native_rules, WIDE);
     visibility_import(
         c,
         qa_world::visibility::PointVisibility {
@@ -1883,10 +2043,7 @@ fn native_visibility<const WIDE: bool, const HEARING: bool>(
 fn q3_visibility<const IGNORE_PORTALS: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    let portals = !IGNORE_PORTALS
-        && !c
-            .services
-            .ignore_areas(qa_core::primitives::RuleSetId::Quake3, true);
+    let portals = !IGNORE_PORTALS && !c.services.ignore_areas(c.context.native_rules, true);
     visibility_import(
         c,
         qa_world::visibility::PointVisibility {
@@ -1935,11 +2092,11 @@ fn native_areas_connected<const WIDE: bool>(
     if c.services.world.is_none() {
         return Ok(0);
     }
-    area_connection(c, c.context.console.source, WIDE, i32::from(WIDE), false)
+    area_connection(c, c.context.native_rules, WIDE, i32::from(WIDE), false)
 }
 
 fn q3_areas_connected(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    area_connection(c, qa_core::primitives::RuleSetId::Quake3, true, 0, true)
+    area_connection(c, c.context.native_rules, true, 0, true)
 }
 
 fn area_connection(

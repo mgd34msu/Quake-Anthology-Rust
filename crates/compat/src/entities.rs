@@ -6,11 +6,14 @@ use crate::{
 use qa_core::primitives::{
     Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityAppearance, EntityId,
     ModelRef, ModelRules, ModuleId, NativeAppearanceTail, NativeEntity, ResourceNamespace,
-    RuleSetId, Vec3,
+    RuleSetId, ThinkTime, Vec3,
 };
 use qa_world::area::LinkFlags;
 use qa_world::collision::Contents;
 use qa_world::entities::{EntityTable, MAX_ENTITIES};
+
+mod quakec;
+pub(crate) use quakec::QuakeCLayout;
 
 /// Published ABI data is read only while the owned child is stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,6 +200,14 @@ struct Binding {
     entity: EntityId,
     owned: bool,
     published: bool,
+    // A native ordinal's reuse delay is independent of its common lifetime.
+    freed_at: Option<ThinkTime>,
+}
+
+#[derive(Clone, Copy)]
+enum EntitySchema {
+    Native(EntityLayout),
+    QuakeC(QuakeCLayout),
 }
 
 #[derive(Clone, Copy)]
@@ -209,7 +220,7 @@ struct CachedModel {
 pub struct EntityProjection {
     table_offset: usize,
     wide_stride: bool,
-    layout: EntityLayout,
+    schema: EntitySchema,
     models: qa_core::primitives::IndexSpan,
     model_handles: Box<[Option<CachedModel>]>,
     owner: Option<ModuleId>,
@@ -227,13 +238,19 @@ impl EntityProjection {
         Self {
             table_offset,
             wide_stride,
-            layout,
+            schema: EntitySchema::Native(layout),
             models,
             model_handles: vec![None; models.count as usize].into_boxed_slice(),
             owner: None,
             bindings: vec![None; MAX_ENTITIES].into_boxed_slice(),
             observed_count: 0,
             leaves: [0; 128],
+        }
+    }
+    fn native_layout(&self) -> Result<EntityLayout, CallError> {
+        match self.schema {
+            EntitySchema::Native(layout) => Ok(layout),
+            EntitySchema::QuakeC(_) => Err(CallError::Entity),
         }
     }
     pub(crate) fn seed(
@@ -254,6 +271,9 @@ impl EntityProjection {
             {
                 let slot = usize::try_from(native.slot).map_err(|_| CallError::Entity)?;
                 self.borrow_slot(entities, slot, entity)?;
+                if matches!(self.schema, EntitySchema::QuakeC(_)) {
+                    self.observed_count = self.observed_count.max(slot + 1);
+                }
             }
         }
         self.owner = Some(owner);
@@ -279,6 +299,7 @@ impl EntityProjection {
             entity,
             owned: false,
             published: false,
+            freed_at: None,
         });
         Ok(())
     }
@@ -341,7 +362,7 @@ impl EntityProjection {
         if count > capacity
             || capacity as usize > self.bindings.len()
             || (address == 0 && count != 0)
-            || (address != 0 && stride < self.layout.bytes as u64)
+            || (address != 0 && stride < self.native_layout()?.bytes as u64)
         {
             return Err(CallError::Entity);
         }
@@ -387,7 +408,7 @@ impl EntityProjection {
             memory,
             entities: self.boundary(memory, context, table)?,
             module: context.module,
-            layout: self.layout,
+            layout: self.native_layout()?,
         })
     }
     pub(crate) fn boundary(
@@ -423,7 +444,7 @@ impl EntityProjection {
                 continue;
             }
             let address = slot_address(native, slot as u32).ok_or(CallError::Entity)?;
-            if field(memory, address, self.layout.in_use)? == 0 {
+            if field(memory, address, self.native_layout()?.in_use)? == 0 {
                 if let Some(entity) = self.binding(
                     &services.server.entities,
                     NativeEntity {
@@ -439,7 +460,7 @@ impl EntityProjection {
             }
             let (body, angles) = self.body(memory, address)?;
             let appearance = self.appearance(memory, address, context.module)?;
-            let flags = memory.read_word(address + self.layout.flags as u64)? as u32;
+            let flags = memory.read_word(address + self.native_layout()?.flags as u64)? as u32;
             let bound = self.binding(
                 &services.server.entities,
                 NativeEntity {
@@ -465,7 +486,7 @@ impl EntityProjection {
         address: u64,
         module: ModuleId,
     ) -> Result<EntityAppearance, CallError> {
-        let layout = self.layout.appearance;
+        let layout = self.native_layout()?.appearance;
         let mut models = [None; 4];
         for (index, model) in models.iter_mut().enumerate() {
             *model = ModelRef::native(
@@ -482,7 +503,7 @@ impl EntityProjection {
             render_flags: memory.read_word(address + layout.render_flags as u64)? as u32,
             event: field(memory, address, layout.event)?,
             loop_sound: memory.read_word(address + layout.loop_sound as u64)? as u32,
-            solid: memory.read_word(address + self.layout.network_solid as u64)? as u32,
+            solid: memory.read_word(address + self.native_layout()?.network_solid as u64)? as u32,
             ..NativeAppearanceTail::default()
         };
         let (alpha, scale) = if let Some(extended) = layout.extended {
@@ -502,7 +523,7 @@ impl EntityProjection {
             (1.0, 1.0)
         };
         Ok(EntityAppearance {
-            source: self.layout.source,
+            source: self.native_layout()?.source,
             models,
             frame: memory.read_word(address + 56)?,
             skin: memory.read_word(address + 60)?,
@@ -538,7 +559,7 @@ impl EntityProjection {
         if slot == 0 || slot >= entities.count as usize {
             return Err(CallError::Entity);
         }
-        if field(memory, address, self.layout.in_use)? == 0 {
+        if field(memory, address, self.native_layout()?.in_use)? == 0 {
             return Err(CallError::Entity);
         }
         self.bind(services, context, slot, bound)
@@ -562,6 +583,7 @@ impl EntityProjection {
             entity,
             owned: true,
             published: false,
+            freed_at: None,
         });
         Ok(entity)
     }
@@ -575,7 +597,7 @@ impl EntityProjection {
     ) -> Result<(), CallError> {
         let (entities, slot, bound) = self.entity(services, memory, context, table, address)?;
         let linked_address = self
-            .layout
+            .native_layout()?
             .linked
             .filter(|_| slot != 0)
             .map(|linked| {
@@ -636,7 +658,7 @@ impl EntityProjection {
         if native_slot == 0 {
             return Ok(());
         }
-        let layout = self.layout;
+        let layout = self.native_layout()?;
         if field(memory, address, layout.in_use)? == 0 {
             self.retire(services, context, native_slot)?;
             if let Some(linked) = layout.linked {
@@ -801,7 +823,7 @@ impl EntityProjection {
     ) -> Result<(Option<EntityId>, Vec3), CallError> {
         let (_, _, entity) = self.entity(services, memory, context, table, address)?;
         let (body, _) = self.body(memory, address)?;
-        let position = if field(memory, address, self.layout.solid)? == 3 {
+        let position = if field(memory, address, self.native_layout()?.solid)? == 3 {
             body.center()
         } else {
             body.position
@@ -815,8 +837,8 @@ impl EntityProjection {
     ) -> Result<(Body, Vec3), CallError> {
         let body = Body {
             position: memory.read_vec3(address + 4)?,
-            mins: memory.read_vec3(address + self.layout.mins as u64)?,
-            maxs: memory.read_vec3(address + self.layout.maxs as u64)?,
+            mins: memory.read_vec3(address + self.native_layout()?.mins as u64)?,
+            maxs: memory.read_vec3(address + self.native_layout()?.maxs as u64)?,
             ..Body::default()
         };
         let angles = memory.read_vec3(address + 16)?;
@@ -887,7 +909,7 @@ impl EntityProjection {
             return Ok(ClipTarget::World);
         }
         let (body, angles) = self.body(memory, address)?;
-        let solid = field(memory, address, self.layout.solid)?;
+        let solid = field(memory, address, self.native_layout()?.solid)?;
         let shape = match solid {
             3 => self.model(services, memory, context, address)?.0,
             1 => self
@@ -900,7 +922,7 @@ impl EntityProjection {
             body,
             shape,
             angles,
-            rules: self.layout.model_rules,
+            rules: self.native_layout()?.model_rules,
         })
     }
     fn inline_model(
@@ -942,8 +964,8 @@ impl EntityProjection {
         };
         memory.write_word(address + 40, model as i32)?;
         if let Some((_, bounds)) = inline {
-            memory.write_vec3(address + self.layout.mins as u64, bounds.mins)?;
-            memory.write_vec3(address + self.layout.maxs as u64, bounds.maxs)?;
+            memory.write_vec3(address + self.native_layout()?.mins as u64, bounds.mins)?;
+            memory.write_vec3(address + self.native_layout()?.maxs as u64, bounds.maxs)?;
             self.link(services, memory, context, table, address)?;
         }
         Ok(())

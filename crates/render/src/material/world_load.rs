@@ -673,7 +673,7 @@ fn default_material(
         .map_err(WorldMaterialError::Boundary)
 }
 
-fn compile_definition(
+pub fn compile_definition(
     definition: &ShaderDef,
     images: &mut Images<'_>,
 ) -> Result<MaterialId, WorldMaterialError> {

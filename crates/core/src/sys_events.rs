@@ -8,6 +8,14 @@ pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const ORDINARY_RESERVED_SLOTS: usize = 1;
 pub const MAX_INPUT_DEVICES: usize = 16;
 
+/// Independent owners of a seat's input, with native Q3 KEYCATCH bit values.
+pub mod key_catchers {
+    pub const CONSOLE: u32 = 1;
+    pub const UI: u32 = 2;
+    pub const MESSAGE: u32 = 4;
+    pub const CGAME: u32 = 8;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Peer {
     Socket(SocketAddr),

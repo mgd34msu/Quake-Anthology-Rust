@@ -69,6 +69,16 @@ pub fn round_vector(vector: Vec3) -> Vec3 {
 pub fn difference(a: Vec3, b: Vec3) -> Vec3 {
     a - b
 }
+/// Native q_shared LerpAngle: adjust the destination, then subtract again.
+pub fn lerp_angle(from: f32, mut to: f32, fraction: f32) -> f32 {
+    if to - from > 180.0 {
+        to -= 360.0;
+    }
+    if to - from < -180.0 {
+        to += 360.0;
+    }
+    from + fraction * (to - from)
+}
 pub fn length(v: Vec3) -> f32 {
     v.dot(v).sqrt()
 }

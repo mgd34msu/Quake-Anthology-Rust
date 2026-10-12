@@ -111,3 +111,20 @@ fn quit_requests_release_before_returning() {
     assert_eq!(source.polls, 1);
     assert!(host.runtime.quit);
 }
+
+#[test]
+fn window_console_releases_capture_at_the_existing_second_intake() {
+    let mut host = host();
+    connect(&mut host);
+    host.console
+        .append_line("toggleconsole", Context::default())
+        .unwrap();
+    let mut source = Source::default();
+    host.frame(&mut source, true);
+    assert_eq!(source.requests, [true, false]);
+    assert_eq!(source.polls, 2);
+    assert_eq!(
+        host.console.editor.seat(),
+        Some(qa_core::sys_events::SeatId::FIRST)
+    );
+}

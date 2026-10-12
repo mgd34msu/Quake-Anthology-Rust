@@ -951,7 +951,10 @@ impl CpuBackend {
                         stats.rejected = stats.rejected.saturating_add(1);
                         continue;
                     };
-                    if stage.blend.is_some() || draw.color != [255; 4] {
+                    // An opaque alpha-blended indexed image is still an exact copy.
+                    if (stage.blend.is_some() && stage.blend != Some(StageBlend::ALPHA))
+                        || draw.color != [255; 4]
+                    {
                         stats.rejected = stats.rejected.saturating_add(1);
                         continue;
                     }

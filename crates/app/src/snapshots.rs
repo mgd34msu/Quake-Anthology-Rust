@@ -15,7 +15,9 @@ use qa_network::{
 };
 
 mod entities;
+mod presentation;
 pub use entities::EntitySource;
+pub use presentation::{GunAnimation, Interpolation, PresentationClock};
 
 fn player_context(
     player: &PlayerState,
@@ -67,6 +69,9 @@ pub struct LocalSnapshot {
     native_client: u32,
     native_clients: u32,
     projection: PlayerProjection,
+    presentation: PresentationClock,
+    presentation_sequence: Option<u32>,
+    gun_animation: Option<GunAnimation>,
     context: PlayerContext,
     entities: entities::EntityScratch,
     last_sent: Option<u32>,
@@ -88,6 +93,39 @@ impl LocalSnapshot {
     }
     pub fn entity_projection(&self) -> &qa_network::projection::EntityProjection {
         self.entities.projection()
+    }
+    pub fn player_projection(&self) -> &PlayerProjection {
+        &self.projection
+    }
+    pub fn interpolation(&self) -> Interpolation {
+        self.presentation.sample()
+    }
+    pub fn gun_animation(&self) -> Option<GunAnimation> {
+        self.gun_animation
+    }
+    /// Called once at the CLIENT phase, after queued packets have been accepted.
+    /// Retained player and weapon words stay in the channel's single ring.
+    pub fn advance_presentation(
+        &mut self,
+        channel: &Channel,
+        queued: qa_core::sys_events::EventTime,
+    ) {
+        let Some(current) = channel.current_snapshot() else {
+            return;
+        };
+        let previous = channel.previous_snapshot();
+        let period = match self.protocol {
+            Protocol::Quake2_34 => Some(100),
+            Protocol::Quake2Repro1038 => channel.q2_repro_frame_ms(),
+            _ => None,
+        };
+        self.presentation.advance(
+            queued,
+            current.time(),
+            previous.map(ReceivedFrame::time),
+            period,
+            self.protocol,
+        );
     }
     pub fn entity_rejections(&self) -> u64 {
         self.entities.rejected
@@ -117,6 +155,9 @@ impl LocalSnapshot {
             native_client,
             native_clients: 1,
             projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
+            presentation: PresentationClock::default(),
+            presentation_sequence: None,
+            gun_animation: None,
             context: PlayerContext {
                 client_number: Some(native_client),
                 ..Default::default()
@@ -323,25 +364,44 @@ impl LocalSnapshot {
     }
 
     pub fn apply(&mut self, incoming: Incoming<'_>, player: &mut PlayerState) {
-        let words: Option<&[u32]> = match incoming {
+        let (words, snapshot): (Option<&[u32]>, Option<ReceivedFrame<'_>>) = match incoming {
             Incoming::Snapshot(frame) => match (self.protocol, frame) {
-                (Protocol::NetQuake15, ReceivedFrame::NetQuake(frame)) => Some(frame.player),
-                (Protocol::Quake2_34, ReceivedFrame::Quake2(frame)) => Some(frame.player),
-                (Protocol::Quake2Repro1038, ReceivedFrame::Quake2Repro(frame)) => {
-                    Some(frame.player)
+                (Protocol::NetQuake15, ReceivedFrame::NetQuake(_))
+                | (Protocol::Quake2_34, ReceivedFrame::Quake2(_))
+                | (Protocol::Quake2Repro1038, ReceivedFrame::Quake2Repro(_))
+                | (Protocol::Quake3_68, ReceivedFrame::Quake3(_)) => {
+                    (frame.player_words(), Some(frame))
                 }
-                (Protocol::Quake3_68, ReceivedFrame::Quake3(frame)) => Some(frame.player),
-                _ => None,
+                _ => (None, None),
             },
             Incoming::PlayerInfo(ref info)
                 if self.protocol == Protocol::QuakeWorld28
                     && u32::from(info.number) == self.native_client =>
             {
-                Some(&info.words)
+                (Some(&info.words), None)
             }
-            _ => None,
+            _ => (None, None),
         };
         if let Some(words) = words {
+            if let Some(frame) = snapshot
+                && self.presentation_sequence != Some(frame.sequence())
+            {
+                // Capture each accepted transition before importing it into
+                // CLIENT. Several snapshots may arrive in one physical drain.
+                let previous = self.presentation_sequence.replace(frame.sequence());
+                if let Some(weapon) = self
+                    .projection
+                    .view_weapon(words, ResourceNamespace::Client(self.client))
+                    && (self.gun_animation.is_none()
+                        || weapon.frame != player.view_weapon.frame
+                        || weapon.model != player.view_weapon.model)
+                {
+                    self.gun_animation = Some(GunAnimation {
+                        changed_at: frame.time(),
+                        previous,
+                    });
+                }
+            }
             // Native entity binding is deferred; an ordinal cannot resolve by
             // casting it to a common EntityId or selecting the executing module.
             if self.projection.apply(

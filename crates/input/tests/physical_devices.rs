@@ -1,6 +1,8 @@
 use qa_core::{
     primitives::{UserCmd, buttons},
-    sys_events::{DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SeatId, SysEvent},
+    sys_events::{
+        DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SeatId, SysEvent, key_catchers,
+    },
 };
 use qa_input::{Input, Target};
 
@@ -143,4 +145,44 @@ fn full_device_table_counts_rejections_and_removal_reuses_a_slot() {
     key(&mut input, &mut sink, 2, 999, 26, true);
     assert_eq!(input.rejected_devices(), 2);
     assert!(frame(&mut input, 20)[0].movement[0] > 0.0);
+}
+
+#[test]
+fn catcher_suppresses_only_its_seat_and_keeps_release_accounting() {
+    let mut input = Input::load();
+    let mut sink = Sink::default();
+    let second = SeatId::ALL[1];
+    input.assign(DeviceId::Keyboard(28), second);
+    input.seed(EventTime(0));
+    key(&mut input, &mut sink, 0, 0, 26, true);
+    key(&mut input, &mut sink, 0, 28, 26, true);
+    let policies =
+        [qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3); SeatId::COUNT];
+    input.set_catcher(SeatId::FIRST, key_catchers::CONSOLE, true, EventTime(0));
+    event(
+        &mut input,
+        &mut sink,
+        1,
+        EventKind::Mouse {
+            device: DeviceId::Mouse(0),
+            dx: 100,
+            dy: 100,
+        },
+    );
+    let commands = input.build_frame_with_policy(EventTime::from_milliseconds(20), &policies);
+    assert_eq!(commands[0].movement, [0.0; 3]);
+    assert_eq!(commands[0].buttons, buttons::TALK);
+    assert_eq!(commands[0].view_angles, Default::default());
+    assert!(commands[1].movement[0] > 0.0);
+    key(&mut input, &mut sink, 21, 0, 26, false);
+    input.set_catcher(
+        SeatId::FIRST,
+        key_catchers::CONSOLE,
+        false,
+        EventTime::from_milliseconds(22),
+    );
+    let commands = input.build_frame_with_policy(EventTime::from_milliseconds(40), &policies);
+    assert_eq!(commands[0].movement, [0.0; 3]);
+    assert_eq!(commands[0].view_angles, Default::default());
+    assert!(commands[1].movement[0] > 0.0);
 }
