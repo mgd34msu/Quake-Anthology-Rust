@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .map_err(|e| format!("{e:?}"))?;
     let image = images
-        .raster("env/native.tga", ImageUse::default())
+        .raster("env/native.tga", ImageUse::default(), None)
         .map_err(|e| format!("{e:?}"))?;
     let mut console = Console::new(Context::default())?;
     let mut host = Capture::default();
@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("name identity".into());
             }
             let reused = images
-                .raster("ENV\\NATIVE.TGA", ImageUse::pic())
+                .raster("ENV\\NATIVE.TGA", ImageUse::pic(), None)
                 .map_err(|e| format!("{e:?}"))?;
             if reused != image
                 || images.assets.register_material(

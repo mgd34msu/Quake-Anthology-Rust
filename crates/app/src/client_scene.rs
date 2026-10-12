@@ -10,10 +10,10 @@ use qa_core::{
         ClientId, IndexSpan, ModelRef, PlayerState, ResourceNamespace, RuleSetId, Vec3, ViewWeapon,
     },
 };
-use qa_gameplay::rules::appearance::{AliasRoll, alias_pose_angles};
+use qa_gameplay::rules::appearance::{AliasRoll, AppearanceCapabilities, alias_pose_angles};
 use qa_network::{
     projection::{EntityProjection, EntityRecord, PlayerProjection},
-    snapshots::{Entity, Frame as SnapshotFrame, ReceivedFrame},
+    snapshots::{Frame as SnapshotFrame, ReceivedFrame},
 };
 use qa_render::{Assets, Frame, Refdef, SceneEntity};
 
@@ -106,6 +106,123 @@ impl ClientModelBindings {
     }
 }
 
+/// A view of the connection's sole snapshot ring, shared by scene and audio.
+/// No asset registration, SERVER state or native child memory is needed.
+#[derive(Clone, Copy)]
+pub struct ClientEntities<'a> {
+    pub client: ClientId,
+    pub current: Option<ReceivedFrame<'a>>,
+    pub previous: Option<ReceivedFrame<'a>>,
+    pub projection: &'a EntityProjection,
+    pub interpolation: Interpolation,
+}
+
+pub struct PresentedEntity {
+    pub record: EntityRecord,
+    pub previous: Option<EntityRecord>,
+    pub origin: Vec3,
+    pub angles: Vec3,
+    pub capabilities: AppearanceCapabilities,
+    pub qw_player: bool,
+}
+impl ClientEntities<'_> {
+    /// Native frame numbers, not shader time, determine whether Q2 has a
+    /// usable predecessor. Other protocols retain their existing policy.
+    fn adjacent(&self, current: u32, previous: u32) -> bool {
+        !matches!(
+            self.projection.rule_set(),
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        ) || current.wrapping_sub(previous) == 1
+    }
+
+    fn decode(&self, words: &[u32]) -> Option<EntityRecord> {
+        let mut record = EntityRecord::default();
+        self.projection
+            .apply(words, &mut record, ResourceNamespace::Client(self.client))
+            .then_some(record)
+    }
+
+    fn row<'a>(frame: ReceivedFrame<'a>, number: u32) -> Option<(&'a [u32], bool)> {
+        macro_rules! find {
+            ($frame:expr) => {{
+                let frame = $frame;
+                let index = frame
+                    .entities
+                    .binary_search_by_key(&number, |row| row.number)
+                    .ok()?;
+                Some((&frame.entities[index].words[..], frame.qw_player(number)))
+            }};
+        }
+        match frame {
+            ReceivedFrame::NetQuake(frame) => find!(frame),
+            ReceivedFrame::QuakeWorld(frame) => find!(frame),
+            ReceivedFrame::Quake2(frame) => find!(frame),
+            ReceivedFrame::Quake2Repro(frame) => find!(frame),
+            ReceivedFrame::Quake3(frame) => find!(frame),
+        }
+    }
+
+    fn present(&self, number: u32, record: EntityRecord, qw_player: bool) -> PresentedEntity {
+        let capabilities = qa_gameplay::rules::appearance::project(&record.appearance);
+        let previous = self
+            .previous
+            .filter(|previous| {
+                self.current.is_some_and(|current| {
+                    std::mem::discriminant(&current) == std::mem::discriminant(previous)
+                        && self.adjacent(current.sequence(), previous.sequence())
+                })
+            })
+            .and_then(|previous| Self::row(previous, number))
+            .and_then(|(words, _)| self.decode(words))
+            .filter(|old| {
+                qa_gameplay::rules::appearance::can_interpolate(
+                    &old.appearance,
+                    &record.appearance,
+                    old.position,
+                    record.position,
+                )
+            });
+        let fraction = self.interpolation.fraction;
+        let origin = if capabilities.frame_lerp {
+            record.position
+        } else {
+            previous.map_or(record.position, |old| {
+                old.position.lerp(record.position, fraction)
+            })
+        };
+        let angles = previous.map_or(record.angles, |old| {
+            Vec3(std::array::from_fn(|axis| {
+                lerp_angle(old.angles.0[axis], record.angles.0[axis], fraction)
+            }))
+        });
+        PresentedEntity {
+            record,
+            previous,
+            origin,
+            angles,
+            capabilities,
+            qw_player,
+        }
+    }
+
+    /// Numeric lookup in accepted CLIENT rows. The pose uses the same native
+    /// discontinuity and interpolation path as the copied scene entities.
+    pub fn get(&self, number: u32) -> Option<PresentedEntity> {
+        let (words, qw_player) = Self::row(self.current?, number)?;
+        Some(self.present(number, self.decode(words)?, qw_player))
+    }
+
+    /// NQ/QW/Q2 reserve ordinal zero for the world and never receive a pose
+    /// for it. Q3 client/entity zero is a real row and must be resolved.
+    pub fn sound_origin(&self, number: u32) -> Option<Vec3> {
+        if number == 0 && self.projection.rule_set() != RuleSetId::Quake3 {
+            Some(Vec3::default())
+        } else {
+            self.get(number).map(|entity| entity.origin)
+        }
+    }
+}
+
 /// The frame borrows only accepted CLIENT data. No native memory or SERVER
 /// entity table may be observed by the renderer.
 pub struct ClientSceneInput<'a> {
@@ -145,6 +262,16 @@ impl std::ops::AddAssign for SceneCounts {
 }
 
 impl ClientSceneInput<'_> {
+    pub fn entities(&self) -> ClientEntities<'_> {
+        ClientEntities {
+            client: self.client,
+            current: self.current,
+            previous: self.previous,
+            projection: self.projection,
+            interpolation: self.interpolation,
+        }
+    }
+
     /// Wire area-bit polarity is converted once at the CLIENT scene boundary.
     /// The world query and copied render command borrow the same hidden bits.
     pub fn hidden_areas<'a>(&self, output: &'a mut [u8]) -> (&'a [u8], bool) {
@@ -178,11 +305,7 @@ impl ClientSceneInput<'_> {
         if let Some(current) = self.current {
             macro_rules! append {
                 ($variant:ident, $current:expr) => {{
-                    let previous = match self.previous {
-                        Some(ReceivedFrame::$variant(previous)) => Some(previous),
-                        _ => None,
-                    };
-                    self.append_entities($current, previous, frame, assets, software, &mut counts);
+                    self.append_entities($current, frame, assets, software, &mut counts);
                 }};
             }
             match current {
@@ -200,22 +323,21 @@ impl ClientSceneInput<'_> {
     fn append_entities<const P: usize, const E: usize>(
         &self,
         current: SnapshotFrame<'_, P, E>,
-        previous: Option<SnapshotFrame<'_, P, E>>,
         frame: &mut Frame,
         assets: &Assets,
         software: bool,
         counts: &mut SceneCounts,
     ) {
-        let previous =
-            previous.filter(|previous| self.adjacent(current.sequence, previous.sequence));
+        let entities = self.entities();
         let fraction = self.interpolation.fraction;
         for entity in current.entities {
             counts.entities += 1;
-            let Some(record) = self.decode(entity) else {
+            let Some(record) = entities.decode(&entity.words) else {
                 counts.rejected += 1;
                 continue;
             };
-            let capabilities = qa_gameplay::rules::appearance::project(&record.appearance);
+            let pose = entities.present(entity.number, record, current.qw_player(entity.number));
+            let capabilities = pose.capabilities;
             counts.unsupported += u32::from(capabilities.unsupported != 0);
             if !capabilities.drawable
                 || self.view_entity == Some(entity.number)
@@ -223,30 +345,13 @@ impl ClientSceneInput<'_> {
             {
                 continue;
             }
-            let previous = previous.and_then(|previous| {
-                let index = previous
-                    .entities
-                    .binary_search_by_key(&entity.number, |entity| entity.number)
-                    .ok()?;
-                let old = self.decode(&previous.entities[index])?;
-                qa_gameplay::rules::appearance::can_interpolate(
-                    &old.appearance,
-                    &record.appearance,
-                    old.position,
-                    record.position,
-                )
-                .then_some(old)
-            });
-            let position = if capabilities.frame_lerp {
-                if record.appearance.old_origin != record.position && fraction != 1.0 {
-                    counts.unsupported += 1;
-                }
-                record.position
-            } else {
-                previous.map_or(record.position, |old| {
-                    old.position.lerp(record.position, fraction)
-                })
-            };
+            let previous = pose.previous;
+            if capabilities.frame_lerp
+                && record.appearance.old_origin != record.position
+                && fraction != 1.0
+            {
+                counts.unsupported += 1;
+            }
             for (slot, reference) in record.appearance.models.iter().enumerate() {
                 let Some(reference) = *reference else {
                     continue;
@@ -277,16 +382,11 @@ impl ClientSceneInput<'_> {
                             native_frame(old.appearance.frame, model.frame_count())
                         })
                 };
-                let angles = previous.map_or(record.angles, |old| {
-                    Vec3(std::array::from_fn(|axis| {
-                        lerp_angle(old.angles.0[axis], record.angles.0[axis], fraction)
-                    }))
-                });
                 let angles = alias_pose_angles(
                     binding.rules,
-                    angles,
+                    pose.angles,
                     record.velocity,
-                    current.qw_player(entity.number),
+                    pose.qw_player,
                     software,
                     self.alias_roll,
                 );
@@ -296,7 +396,7 @@ impl ClientSceneInput<'_> {
                 let entity = SceneEntity {
                     model: binding.model,
                     material: Some(binding.material),
-                    origin: position,
+                    origin: pose.origin,
                     axes,
                     non_normalized_axes: capabilities.scale != 1.0,
                     color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
@@ -312,17 +412,6 @@ impl ClientSceneInput<'_> {
                 counts.rejected += u32::from(!added);
             }
         }
-    }
-
-    fn decode<const E: usize>(&self, entity: &Entity<E>) -> Option<EntityRecord> {
-        let mut record = EntityRecord::default();
-        self.projection
-            .apply(
-                &entity.words,
-                &mut record,
-                ResourceNamespace::Client(self.client),
-            )
-            .then_some(record)
     }
 
     fn append_weapon(
@@ -358,8 +447,9 @@ impl ClientSceneInput<'_> {
         let previous = if native_q2 {
             self.previous
                 .filter(|old| {
-                    self.current
-                        .is_some_and(|current| self.adjacent(current.sequence(), old.sequence()))
+                    self.current.is_some_and(|current| {
+                        self.entities().adjacent(current.sequence(), old.sequence())
+                    })
                 })
                 .filter(|old| {
                     self.current
@@ -443,13 +533,6 @@ impl ClientSceneInput<'_> {
         counts.rejected += u32::from(!added);
     }
 
-    fn adjacent(&self, current: u32, previous: u32) -> bool {
-        !matches!(
-            self.projection.rule_set(),
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-        ) || current.wrapping_sub(previous) == 1
-    }
-
     fn weapon(&self, frame: ReceivedFrame<'_>) -> Option<ViewWeapon> {
         self.player_projection.view_weapon(
             frame.player_words()?,
@@ -458,18 +541,15 @@ impl ClientSceneInput<'_> {
     }
 
     fn player_event_interpolation(&self) -> bool {
-        let (Some(ReceivedFrame::Quake2Repro(current)), Some(number)) =
+        let (Some(current @ ReceivedFrame::Quake2Repro(_)), Some(number)) =
             (self.current, self.view_entity)
         else {
             return true;
         };
-        let Ok(index) = current
-            .entities
-            .binary_search_by_key(&number, |entity| entity.number)
-        else {
+        let Some((words, _)) = ClientEntities::row(current, number) else {
             return true;
         };
-        self.decode(&current.entities[index]).is_some_and(|entity| {
+        self.entities().decode(words).is_some_and(|entity| {
             qa_gameplay::rules::appearance::can_interpolate_player_event(&entity.appearance)
         })
     }

@@ -61,6 +61,48 @@ fn image(
     image
 }
 
+fn render_indexed(
+    assets: &Assets,
+    binding: qa_app::model_assets::ModelBinding,
+    palette: PaletteId,
+) -> (Vec<u32>, qa_render::BackendStats) {
+    let mut frontend = qa_render::FrontEnd::load(Default::default()).unwrap();
+    let mut frame = frontend.begin_frame([3, 5, 7, 255]).unwrap();
+    assert!(frame.add_entity(qa_render::SceneEntity {
+        model: binding.model,
+        material: Some(binding.material),
+        origin: Vec3([0.0, -24.0, -36.0]),
+        lighting: Some(qa_render::stage::EntityLighting {
+            ambient: [255.0; 3],
+            directed: [0.0; 3],
+            direction: Vec3([-1.0, 0.0, 0.0]),
+        }),
+        ..Default::default()
+    }));
+    assert!(frame.render_scene(
+        qa_render::Refdef {
+            viewport: qa_render::Viewport {
+                width: 64,
+                height: 48,
+                ..Default::default()
+            },
+            fov: [90.0, 75.0],
+            cpu_presentation: qa_render::CpuPresentation::Indexed {
+                palette,
+                lighting: qa_render::surface_cache::IndexedLighting::Gray,
+                ambient: 0,
+                fullbright: true,
+            },
+            ..Default::default()
+        },
+        &[],
+        assets,
+    ));
+    let mut cpu = qa_render::cpu::CpuBackend::load(64, 48).unwrap();
+    let stats = cpu.render(&frame.finish(), assets);
+    (cpu.pixels().to_vec(), stats)
+}
+
 #[test]
 fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     let fixture = support::Fixture::models();
@@ -177,13 +219,7 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
 
 #[test]
 fn external_skin_decoding_does_not_inherit_upload_presentation() {
-    let mut model = support::md2();
-    for skin in 0..2 {
-        let start = 68 + skin * 64;
-        model[start..start + 64].fill(0);
-        let name = b"models/test/skin.tga";
-        model[start..start + name.len()].copy_from_slice(name);
-    }
+    let model = support::md2_skin(b"models/test/skin.tga");
     let mut tga = vec![0; 18];
     tga[2] = 2;
     tga[12..14].copy_from_slice(&2u16.to_le_bytes());
@@ -244,6 +280,160 @@ fn q3_pcx_source_uses_embedded_palette_and_source_extent_without_global_palette(
         assert!(skin.prepared.is_some());
     }
     assert!(catalog.diagnostics.is_empty());
+}
+
+#[test]
+fn rgb_pcx_and_tga_skins_keep_gl_pixels_and_draw_on_explicit_indexed_cpu_targets() {
+    for path in ["models/test/skin.pcx", "models/test/skin.tga"] {
+        let pixels = if path.ends_with("pcx") {
+            support::pcx(11)
+        } else {
+            support::tga(2, 2, &[[255, 11, 11, 255]; 4])
+        };
+        let fixture = support::Fixture::new(&[
+            (
+                "models/test/tris.md2",
+                support::md2_quad_skin(path.as_bytes()),
+            ),
+            (path, pixels),
+        ]);
+        let mut assets = Assets::load().unwrap();
+        let first = support::palette(&mut assets);
+        let second = support::shifted_palette(&mut assets, 128);
+        let mut original = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, None);
+        original.source_rules = RuleSetId::Quake3;
+        let requests = [
+            original,
+            ModelRequest {
+                palette: Some(first),
+                ..original
+            },
+            ModelRequest {
+                palette: Some(second),
+                ..original
+            },
+        ];
+        let catalog = load(&fixture, &mut assets, &requests, ModelLimits::default()).unwrap();
+        let baseline = binding(&catalog, original.path, original.profile(), 0).unwrap();
+        let source = assets
+            .image(image(
+                &assets,
+                &catalog,
+                original.path,
+                original.profile(),
+                0,
+            ))
+            .unwrap();
+        assert!(source.indexed.is_none());
+        assert!(
+            source
+                .rgba
+                .chunks_exact(4)
+                .all(|rgba| rgba == [255, 11, 11, 255])
+        );
+        let mut selected_images = Vec::new();
+        for (request, palette) in requests[1..].iter().zip([first, second]) {
+            let selected = binding(&catalog, request.path, request.profile(), 0).unwrap();
+            assert_eq!(selected.model, baseline.model);
+            let id = image(&assets, &catalog, request.path, request.profile(), 0);
+            assert!(!selected_images.contains(&id));
+            selected_images.push(id);
+            let skin = assets.image(id).unwrap();
+            assert_eq!(source.rgba, skin.rgba);
+            assert_eq!(source.prepared, skin.prepared);
+            let expected = assets
+                .palette(palette)
+                .unwrap()
+                .nearest_index([255, 11, 11], Some(255));
+            let texture = skin.indexed.as_ref().unwrap();
+            assert_eq!(texture.transparent_index(), Some(255));
+            assert!(
+                texture
+                    .mip(0)
+                    .unwrap()
+                    .indices()
+                    .iter()
+                    .all(|&index| index == expected)
+            );
+            let (pixels, stats) = render_indexed(&assets, selected, palette);
+            assert_eq!(stats.rejected, 0);
+            assert!(stats.triangles > 0);
+            let color = assets.palette(palette).unwrap().color(expected);
+            assert!(pixels.contains(&color));
+            assert!(
+                pixels
+                    .iter()
+                    .all(|&pixel| pixel == color || pixel == u32::from_le_bytes([3, 5, 7, 255]))
+            );
+        }
+        assert!(catalog.diagnostics.is_empty());
+    }
+}
+
+#[test]
+fn source_rgba_cutout_skins_keep_alpha_and_skip_the_reserved_index_in_cpu_scene() {
+    let path = "models/test/skin.tga";
+    let fixture = support::Fixture::new(&[
+        (
+            "models/opaque.md2",
+            support::md2_quad_skin(b"models/test/opaque.tga"),
+        ),
+        ("models/cutout.md2", support::md2_quad_skin(path.as_bytes())),
+        (
+            "models/test/opaque.tga",
+            support::tga(2, 2, &[[255, 11, 11, 255]; 4]),
+        ),
+        (
+            path,
+            support::tga(
+                2,
+                2,
+                &[
+                    [255, 11, 11, 255],
+                    [255, 11, 11, 0],
+                    [255, 11, 11, 255],
+                    [255, 11, 11, 0],
+                ],
+            ),
+        ),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let requests = ["models/opaque.md2", "models/cutout.md2"].map(|path| ModelRequest {
+        source_rules: RuleSetId::Quake3,
+        source_palette: None,
+        ..ModelRequest::native(path, RuleSetId::Quake2, Some(palette))
+    });
+    let catalog = load(&fixture, &mut assets, &requests, ModelLimits::default()).unwrap();
+    let selected =
+        requests.map(|request| binding(&catalog, request.path, request.profile(), 0).unwrap());
+    let image = assets
+        .image(image(
+            &assets,
+            &catalog,
+            requests[1].path,
+            requests[1].profile(),
+            0,
+        ))
+        .unwrap();
+    assert_eq!(
+        image.rgba.as_ref(),
+        &[
+            255, 11, 11, 255, 255, 11, 11, 0, 255, 11, 11, 255, 255, 11, 11, 0,
+        ]
+    );
+    let indices = image.indexed.as_ref().unwrap().mip(0).unwrap().indices();
+    assert_ne!(indices[0], 255);
+    assert_eq!(indices, [indices[0], 255, indices[0], 255]);
+    let opaque = render_indexed(&assets, selected[0], palette);
+    let cutout = render_indexed(&assets, selected[1], palette);
+    assert_eq!(opaque.1.rejected, 0);
+    assert_eq!(cutout.1.rejected, 0);
+    assert_ne!(opaque.0, cutout.0);
+    let color = assets.palette(palette).unwrap().color(indices[0]);
+    let opaque_pixels = opaque.0.iter().filter(|&&pixel| pixel == color).count();
+    let cutout_pixels = cutout.0.iter().filter(|&&pixel| pixel == color).count();
+    assert!(cutout_pixels > 0 && cutout_pixels < opaque_pixels);
 }
 
 #[test]

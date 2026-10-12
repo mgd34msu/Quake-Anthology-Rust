@@ -98,6 +98,7 @@ pub(crate) struct Parameters {
     circular_pitch: bool,
     fly_accel: f32,
     exclusive_button: Option<u32>,
+    dead_friction: Option<f32>,
 }
 impl Parameters {
     fn load(rules: RuleSetId, player: &PlayerState) -> Self {
@@ -144,6 +145,7 @@ impl Parameters {
             circular_pitch: capabilities.circular_pitch,
             fly_accel: 8.0,
             exclusive_button: if arena { Some(buttons::TALK) } else { None },
+            dead_friction: capabilities.dead_friction,
         }
     }
 }
@@ -315,10 +317,19 @@ impl Step<'_> {
             let kicked = self.arena()
                 && self.player.body.velocity.0[2] > 0.0
                 && self.player.body.velocity.dot(tr.plane.normal) > 10.0;
-            if contact
-                && !kicked
-                && (tr.plane.normal.0[2] >= 0.7 || tr.start_solid && !self.arena() && !self.qw())
-            {
+            let mut walkable = tr.plane.normal.0[2] >= 0.7;
+            if self.parameters.special.wall_ground && tr.fraction < 1.0 && !walkable {
+                // Rerelease PM_CatagorizePosition keeps the ground contact,
+                // but admits its steep slope when the normal points into a wall.
+                let wall = self.trace(start, start + tr.plane.normal);
+                walkable = wall.fraction < 1.0 && !wall.start_solid;
+            }
+            let grounded = if self.parameters.special.wall_ground {
+                tr.fraction < 1.0 && (walkable || tr.start_solid)
+            } else {
+                contact && (walkable || tr.start_solid && !self.arena() && !self.qw())
+            };
+            if grounded && !kicked {
                 self.player.movement.grounded = true;
                 self.player.movement.ground = tr.entity;
                 self.player.movement.ground_normal = tr.plane.normal;
@@ -349,6 +360,23 @@ impl Step<'_> {
             }
         }
         self.water_level();
+    }
+    fn dead_friction(&mut self) {
+        if self.player.movement.mode != MovementMode::Dead || !self.player.movement.grounded {
+            return;
+        }
+        let Some(drop) = self.parameters.dead_friction else {
+            return;
+        };
+        // Native PM_DeadMove precedes ordinary friction and removes a fixed
+        // speed per command, independently of the command's frame duration.
+        let mut direction = self.player.body.velocity;
+        let speed = math::normalize(&mut direction) - drop;
+        self.player.body.velocity = if speed <= 0.0 {
+            Vec3::default()
+        } else {
+            direction * speed
+        };
     }
     fn landed(&mut self, normal: Vec3) {
         let policy = self.parameters.landing;
@@ -1213,6 +1241,7 @@ impl Step<'_> {
                 self.categorize();
             }
         }
+        self.dead_friction();
         self.check_special();
         self.drop_timers();
         if !self.player.movement.timer.contains(MovementTimer::TELEPORT) && !self.water_jump_move()

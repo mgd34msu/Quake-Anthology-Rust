@@ -2,7 +2,10 @@
 use qa_core::{
     math,
     names::NameTable,
-    primitives::{ClientId, Pcm, RuleSetId, SoundAction, SoundEmitter, SoundEvent, SoundId, Vec3},
+    primitives::{
+        ClientId, Pcm, ResourceNamespace, RuleSetId, SoundAction, SoundEmitter, SoundEvent,
+        SoundId, Vec3,
+    },
 };
 use std::{num::NonZeroU32, sync::Arc};
 
@@ -104,6 +107,8 @@ pub struct MixCounts {
     pub full: u64,
     pub invalid: u64,
     pub frames: u64,
+    pub respatialized: u64,
+    pub missing_origins: u64,
 }
 pub struct Mixer {
     pub bank: Arc<Bank>,
@@ -143,6 +148,33 @@ impl Mixer {
             0.0
         };
     }
+    /// Resolve moving native emitters once at the CLIENT frame boundary.
+    /// Fixed-position sounds and non-CLIENT identities retain their supplied
+    /// origin. An absent pose retains the voice's last known origin.
+    pub fn respatialize(&mut self, mut resolve: impl FnMut(ClientId, u32) -> Option<Vec3>) {
+        for voice in self.voices.iter_mut().flatten() {
+            if voice.event.positioned {
+                continue;
+            }
+            let Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot,
+            }) = voice.event.entity
+            else {
+                continue;
+            };
+            let origin = u32::try_from(slot)
+                .ok()
+                .and_then(|slot| resolve(client, slot));
+            if let Some(origin) = origin.filter(|origin| origin.is_finite()) {
+                voice.event.position = origin;
+                self.counts.respatialized += 1;
+            } else {
+                self.counts.missing_origins += 1;
+            }
+        }
+    }
+
     pub fn sound(&mut self, event: SoundEvent) -> bool {
         if event.action == SoundAction::Stop {
             for slot in &mut self.voices {

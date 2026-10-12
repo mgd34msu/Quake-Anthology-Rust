@@ -5,7 +5,7 @@ use qa_core::{
     primitives::{ClientId, ResourceNamespace, SoundEmitter, SoundEvent, Vec3},
 };
 use qa_network::outputs::{Cue, MuzzleFlash, MuzzleFormat, Sound};
-use qa_network::{projection::EntityRecord, snapshots::ReceivedFrame};
+use qa_network::snapshots::ReceivedFrame;
 
 impl FrameHost {
     pub(crate) fn received_cue(
@@ -39,39 +39,20 @@ impl FrameHost {
         slot: u16,
         current: Option<ReceivedFrame<'_>>,
     ) -> Option<Vec3> {
-        if slot == 0 {
-            return Some(Vec3::default());
-        }
         let projection = self
             .runtime
             .local_snapshots
             .get(client.0 as usize)?
             .as_ref()?
             .entity_projection();
-        macro_rules! position {
-            ($frame:expr) => {{
-                let frame = $frame;
-                let index = frame
-                    .entities
-                    .binary_search_by_key(&u32::from(slot), |entity| entity.number)
-                    .ok()?;
-                let mut record = EntityRecord::default();
-                projection
-                    .apply(
-                        &frame.entities[index].words,
-                        &mut record,
-                        ResourceNamespace::Client(client),
-                    )
-                    .then_some(record.position)
-            }};
+        crate::client_scene::ClientEntities {
+            client,
+            current,
+            previous: None,
+            projection,
+            interpolation: crate::snapshots::Interpolation::default(),
         }
-        match current? {
-            ReceivedFrame::NetQuake(frame) => position!(frame),
-            ReceivedFrame::QuakeWorld(frame) => position!(frame),
-            ReceivedFrame::Quake2(frame) => position!(frame),
-            ReceivedFrame::Quake2Repro(frame) => position!(frame),
-            ReceivedFrame::Quake3(frame) => position!(frame),
-        }
+        .sound_origin(u32::from(slot))
     }
 
     fn muzzle_flash(

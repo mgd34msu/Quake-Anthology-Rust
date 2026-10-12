@@ -612,11 +612,13 @@ fn run() -> Result<(), String> {
     let mut model_reader = qa_formats::archive::ArchiveReader::default();
     let precaches = host.model_precaches();
     let mut palettes = [None; 5];
-    if let Some(world) = &loaded_world
-        && let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu
-    {
+    let view_palette = loaded_world.as_ref().and_then(|world| {
+        let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu else {
+            return None;
+        };
         palettes[world.presentation_rules as usize] = Some(palette);
-    }
+        Some(palette)
+    });
     let mut requests = Vec::with_capacity(precaches.len());
     let mut profiles = [None; 5];
     for (source_rules, name) in precaches {
@@ -639,8 +641,13 @@ fn run() -> Result<(), String> {
                 );
             }
         }
-        let mut request =
-            qa_app::model_assets::ModelRequest::native(path, rules, palettes[rules as usize]);
+        // Indexed aliases consume the view's palette. Its choice does not
+        // select file decoding or the independently chosen GL upload policy.
+        let mut request = qa_app::model_assets::ModelRequest::native(
+            path,
+            rules,
+            view_palette.or(palettes[rules as usize]),
+        );
         request.source_rules = source_rules;
         request.source_palette = palettes[source_rules as usize];
         request.image_settings =

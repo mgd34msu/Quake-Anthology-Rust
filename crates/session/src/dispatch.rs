@@ -272,7 +272,7 @@ pub struct DispatchStats {
 pub struct ThinkResult {
     pub called: u32,
     pub rejected: u32,
-    pub current_lifetime: bool,
+    pub current_entity: Option<EntityId>,
 }
 
 /// Run one current entity lifetime. A due deadline is cleared independently of
@@ -282,15 +282,31 @@ pub fn run_think<C: ThinkWorld>(
     world: &mut C,
     table: &FunctionTable<C>,
     entity: EntityId,
+    clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
+) -> ThinkResult {
+    run_think_with_rebind(world, table, entity, clock, |world, entity| {
+        world.entities().resolve(entity).map(|_| entity)
+    })
+}
+
+/// The callback boundary may resolve a new live handle for the same native
+/// row. The supplied resolver runs only after an accepted call; this remains
+/// the sole timing/repetition loop and never makes a stale handle live again.
+pub fn run_think_with_rebind<C: ThinkWorld>(
+    world: &mut C,
+    table: &FunctionTable<C>,
+    mut entity: EntityId,
     mut clock: impl FnMut(ModuleId) -> Option<ThinkFrame>,
+    mut rebind: impl FnMut(&mut C, EntityId) -> Option<EntityId>,
 ) -> ThinkResult {
     let mut result = ThinkResult::default();
     loop {
         let entities = world.entities();
         let Some(slot) = entities.resolve(entity) else {
+            result.current_entity = None;
             return result;
         };
-        result.current_lifetime = true;
+        result.current_entity = Some(entity);
         let Some(due) = entities.columns.next_think[slot] else {
             return result;
         };
@@ -323,15 +339,20 @@ pub fn run_think<C: ThinkWorld>(
             functions.function.entry,
             CallbackCall::Think { entity, time },
         );
-        result.current_lifetime = world.entities().resolve(entity).is_some();
         if !accepted {
+            result.current_entity = world.entities().resolve(entity).map(|_| entity);
             result.rejected = result.rejected.saturating_add(1);
             return result;
         }
         result.called = result.called.saturating_add(1);
-        if !result.current_lifetime || !functions.timing.repeat {
+        result.current_entity = rebind(world, entity);
+        if !functions.timing.repeat {
             return result;
         }
+        let Some(current) = result.current_entity else {
+            return result;
+        };
+        entity = current;
     }
 }
 

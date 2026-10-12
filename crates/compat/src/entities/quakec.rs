@@ -40,6 +40,7 @@ pub(crate) struct QuakeCLayout {
     origin: Option<usize>,
     velocity: Option<usize>,
     angles: Option<usize>,
+    angular_velocity: Option<usize>,
     mins: Option<usize>,
     maxs: Option<usize>,
     size: Option<usize>,
@@ -71,6 +72,7 @@ impl QuakeCLayout {
             origin: field(b"origin", 3),
             velocity: field(b"velocity", 3),
             angles: field(b"angles", 3),
+            angular_velocity: field(b"avelocity", 3),
             mins: field(b"mins", 3),
             maxs: field(b"maxs", 3),
             size: field(b"size", 3),
@@ -296,21 +298,33 @@ impl EntityProjection {
                 continue;
             };
             let client = native_slot > 0 && native_slot <= client_edicts(rules, max_clients)?;
-            let none = if !client && layout.move_type.is_some() {
+            let phase = if !client && layout.move_type.is_some() {
                 let move_type = layout.number(
                     memory,
                     (native_slot * layout.stride) as u64,
                     layout.move_type,
                 )?;
-                if rules == qa_core::primitives::RuleSetId::QuakeWorld {
-                    crate::numbers::native_integer(f64::from(move_type)) == 0
+                let (none, noclip) = if rules == qa_core::primitives::RuleSetId::QuakeWorld {
+                    let move_type = crate::numbers::native_integer(f64::from(move_type));
+                    (move_type == 0, move_type == 8)
                 } else {
-                    move_type == 0.0
+                    (move_type == 0.0, move_type == 8.0)
+                };
+                if none {
+                    crate::quakec::PhysicsPhase::None
+                } else if noclip {
+                    crate::quakec::PhysicsPhase::Noclip
+                } else {
+                    crate::quakec::PhysicsPhase::Unsupported
                 }
             } else {
-                false
+                crate::quakec::PhysicsPhase::Unsupported
             };
-            return Ok(Some(crate::quakec::PhysicsEntity { entity, none }));
+            return Ok(Some(crate::quakec::PhysicsEntity {
+                entity,
+                native,
+                phase,
+            }));
         }
         Ok(None)
     }
@@ -463,6 +477,41 @@ impl EntityProjection {
         layout.write_vector(memory, value as u64, layout.mins, bounds.mins)?;
         layout.write_vector(memory, value as u64, layout.maxs, bounds.maxs)?;
         layout.write_vector(memory, value as u64, layout.size, bounds.maxs - bounds.mins)?;
+        self.quakec_link(services, memory, strings, context, value)
+    }
+    pub(crate) fn quakec_noclip(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        step: f32,
+    ) -> Result<(), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        self.binding(&services.server.entities, native)?
+            .ok_or(CallError::Entity)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        // SV_Physics_Noclip calls VectorMA for angles before origin. Retain
+        // that order, including native fields read after the angle write.
+        let angles = layout.vector(memory, address, layout.angles)?;
+        let angular_velocity = layout.vector(memory, address, layout.angular_velocity)?;
+        layout.write_vector(
+            memory,
+            address,
+            layout.angles,
+            angles + angular_velocity * step,
+        )?;
+        let origin = layout.vector(memory, address, layout.origin)?;
+        let velocity = layout.vector(memory, address, layout.velocity)?;
+        layout.write_vector(memory, address, layout.origin, origin + velocity * step)?;
+        if value == 0 {
+            // Native SV_LinkEdict ignores world0, but its pose writes still
+            // belong in the common columns used by presentation.
+            self.quakec_publish(services, memory, strings, context, value)?;
+            return Ok(());
+        }
         self.quakec_link(services, memory, strings, context, value)
     }
     pub(crate) fn quakec_link(

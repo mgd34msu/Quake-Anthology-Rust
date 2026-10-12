@@ -885,3 +885,170 @@ fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Res
     }
     Ok(())
 }
+
+#[test]
+fn host_respatializes_once_per_client_frame_from_accepted_rows_without_a_catalog()
+-> Result<(), String> {
+    struct AudioClock {
+        clock: Clock,
+        mixer: qa_audio::Mixer,
+        mixes: u32,
+        pcm: [i16; 2],
+    }
+    impl FrameSource for AudioClock {
+        fn begin_frame(&mut self) -> Duration {
+            self.clock.begin_frame()
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.clock.poll_events(queue);
+        }
+        fn wait_time(&mut self, remaining: Duration) -> Duration {
+            self.clock.wait_time(remaining)
+        }
+        fn elapsed(&self) -> Duration {
+            self.clock.elapsed()
+        }
+        fn present(&mut self) {}
+        fn mix_audio(
+            &mut self,
+            entities: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT],
+        ) {
+            self.mixes += 1;
+            qa_app::audio::respatialize(&mut self.mixer, entities);
+            assert!(self.mixer.paint(&mut self.pcm));
+        }
+    }
+    let (mut host, client) = host(Protocol::Quake2_34, 1)?;
+    host.local_clients[0] = Some(client);
+    assert!(host.runtime.models.is_none());
+    let entity = add(
+        &mut host,
+        Some(NativeEntity {
+            module: MODULE,
+            slot: 42,
+        }),
+        RuleSetId::Quake2,
+        Vec3([100.0, 0.0, 0.0]),
+    );
+    let rate = std::num::NonZeroU32::new(44100).unwrap();
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/test.wav".into(),
+            qa_core::primitives::Pcm {
+                rate,
+                channels: qa_core::primitives::PcmChannels::Mono,
+                samples: vec![1024; 8],
+                loop_start: None,
+            },
+        )],
+    )?;
+    let sound = bank.find("sound/test.wav").unwrap();
+    let mut source = AudioClock {
+        clock: Clock::default(),
+        mixer: qa_audio::Mixer::load(std::sync::Arc::new(bank), 1, 1),
+        mixes: 0,
+        pcm: [0; 2],
+    };
+    source.mixer.listen(
+        &[Some(qa_audio::Listener {
+            client,
+            entity: None,
+            origin: Vec3::default(),
+            right: Vec3([1.0, 0.0, 0.0]),
+        })],
+        1.0,
+    );
+    let first = transmit(
+        &mut host,
+        client,
+        EventTime(1_000_000_000),
+        None,
+        None,
+        None,
+    )?;
+    // Keep the native receive/output binding valid. The fixture controls
+    // snapshot publication, so mark this queued-time SERVER frame as sent.
+    host.runtime.local_snapshots[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .submitted(0);
+    host.frame(&mut source, true);
+    assert_eq!(source.mixes, 1);
+    let binding = host.runtime.local_snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap();
+    assert_eq!(binding.applied, 1);
+    assert_eq!(binding.interpolation().time, ThinkTime::Milliseconds(900));
+    assert!(source.mixer.sound(qa_core::primitives::SoundEvent {
+        sound,
+        spatial_rules: RuleSetId::Quake2,
+        client: Some(client),
+        entity: Some(qa_core::primitives::SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(client),
+            slot: 42,
+        }),
+        position: Vec3([100.0, 0.0, 0.0]),
+        volume: 1.0,
+        attenuation: 1.0,
+        ..Default::default()
+    }));
+    host.runtime.server.entities.columns.position[entity.slot as usize] = Vec3([-100.0, 0.0, 0.0]);
+    transmit(
+        &mut host,
+        client,
+        EventTime(1_100_000_000),
+        Some(first),
+        None,
+        None,
+    )?;
+    // Native Q2 begins one 100ms interval behind the first snapshot. Advance
+    // 125ms of queued time from 900ms to the new interval's 25% point, 1025ms.
+    source.clock.0 = 125_000_000;
+    host.runtime.local_snapshots[client.0 as usize]
+        .as_mut()
+        .unwrap()
+        .submitted(1);
+    host.frame(&mut source, true);
+    assert_eq!(source.mixes, 2);
+    let binding = host.runtime.local_snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap();
+    assert_eq!(binding.applied, 2);
+    assert_eq!(binding.interpolation().time, ThinkTime::Milliseconds(1025));
+    assert_eq!(binding.interpolation().fraction, 0.25);
+    assert_eq!(
+        host.client_entities_inputs()[0]
+            .unwrap()
+            .get(42)
+            .unwrap()
+            .origin,
+        Vec3([50.0, 0.0, 0.0])
+    );
+    assert_eq!(source.pcm, [0, 1020]);
+    assert_eq!(source.mixer.counts.respatialized, 1);
+    // Mutating SERVER after packet acceptance cannot move the active voice.
+    host.runtime.server.entities.columns.position[entity.slot as usize] = Vec3([10000.0, 0.0, 0.0]);
+    source.clock.0 = 175_000_000;
+    host.frame(&mut source, true);
+    assert_eq!(source.mixes, 3);
+    let binding = host.runtime.local_snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap();
+    assert_eq!(binding.applied, 2);
+    assert_eq!(binding.interpolation().time, ThinkTime::Milliseconds(1075));
+    assert_eq!(binding.interpolation().fraction, 0.75);
+    assert_eq!(
+        host.client_entities_inputs()[0]
+            .unwrap()
+            .get(42)
+            .unwrap()
+            .origin,
+        Vec3([-50.0, 0.0, 0.0])
+    );
+    assert_eq!(source.pcm, [1020, 0]);
+    assert_eq!(source.mixer.counts.started, 1);
+    assert_eq!(source.mixer.counts.respatialized, 2);
+    assert_eq!(source.mixer.counts.missing_origins, 0);
+    Ok(())
+}

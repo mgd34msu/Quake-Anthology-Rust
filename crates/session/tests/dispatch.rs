@@ -218,7 +218,7 @@ fn null_callback_clears_only_the_due_deadline() {
         ThinkResult {
             called: 0,
             rejected: 1,
-            current_lifetime: true,
+            current_entity: Some(id),
         }
     );
     assert!(world.entities.columns.next_think[id.slot as usize].is_none());
@@ -241,7 +241,11 @@ fn missing_clock_and_wrong_units_do_not_consume_a_deadline() {
     install(&mut world, &table);
     let missing = run_think(&mut world, &table, id, |_| None);
     assert_eq!(
-        (missing.called, missing.rejected, missing.current_lifetime),
+        (
+            missing.called,
+            missing.rejected,
+            missing.current_entity.is_some()
+        ),
         (0, 1, true)
     );
     let wrong = run_think(&mut world, &table, id, |_| {
@@ -625,7 +629,11 @@ fn quakeworld_re_resolves_owner_and_its_clock_after_a_callback() {
         _ => None,
     });
     assert_eq!(
-        (result.called, result.rejected, result.current_lifetime),
+        (
+            result.called,
+            result.rejected,
+            result.current_entity.is_some()
+        ),
         (2, 0, true)
     );
     assert_eq!(
@@ -660,7 +668,11 @@ fn quakeworld_rejection_stops_rescheduling_and_preserves_the_callback() {
     install(&mut world, &table);
     let result = run_think(&mut world, &table, id, |_| frame(0.5, 0.25));
     assert_eq!(
-        (result.called, result.rejected, result.current_lifetime),
+        (
+            result.called,
+            result.rejected,
+            result.current_entity.is_some()
+        ),
         (0, 1, true)
     );
     assert_eq!(world.calls.len(), 1);
@@ -717,7 +729,11 @@ fn quakeworld_removal_and_slot_reuse_stop_the_old_generation() {
     install(&mut world, &table);
     let result = run_think(&mut world, &table, id, |_| frame(0.5, 0.25));
     assert_eq!(
-        (result.called, result.rejected, result.current_lifetime),
+        (
+            result.called,
+            result.rejected,
+            result.current_entity.is_some()
+        ),
         (1, 0, false)
     );
     assert_eq!(world.calls.len(), 1);
@@ -725,6 +741,86 @@ fn quakeworld_removal_and_slot_reuse_stop_the_old_generation() {
     assert!(world.entities.resolve(world.replacement.unwrap()).is_some());
     let stale = run_think(&mut world, &table, id, |_| frame(0.5, 0.25));
     assert_eq!(stale, ThinkResult::default());
+}
+
+#[test]
+fn explicit_native_rebind_continues_on_live_replacement_without_reviving_old_handle() {
+    fn replace(world: &mut World, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
+        assert!(record(world, module, entry, call));
+        let id = call.entity();
+        assert!(world.entities.release(id, ThinkTime::Seconds(1.0)));
+        let replacement = entity(world, module.0);
+        assert_eq!(replacement.slot, id.slot);
+        assert_ne!(replacement, id);
+        schedule(
+            world,
+            replacement,
+            ThinkTime::Seconds(0.5),
+            Some(CallbackId(1)),
+        );
+        world.replacement = Some(replacement);
+        true
+    }
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut world = world(2);
+        let old = entity(&mut world, 1);
+        schedule(
+            &mut world,
+            old,
+            ThinkTime::Seconds(0.5),
+            Some(CallbackId(0)),
+        );
+        let table = FunctionTable::load([(
+            ModuleId(1),
+            rules,
+            vec![
+                FunctionBinding {
+                    entry: 10,
+                    call: replace,
+                },
+                FunctionBinding {
+                    entry: 20,
+                    call: record,
+                },
+            ],
+        )])
+        .unwrap();
+        install(&mut world, &table);
+        let result = run_think_with_rebind(
+            &mut world,
+            &table,
+            old,
+            |_| frame(0.5, 0.25),
+            |world, current| {
+                world
+                    .replacement
+                    .or_else(|| world.entities.resolve(current).map(|_| current))
+                    .filter(|entity| world.entities.resolve(*entity).is_some())
+            },
+        );
+        let replacement = world.replacement.unwrap();
+        assert_eq!(result.current_entity, Some(replacement));
+        assert_eq!(result.rejected, 0);
+        assert_eq!(result.called, if rules == RuleSetId::Quake { 1 } else { 2 });
+        assert_eq!(world.calls.len(), result.called as usize);
+        if rules == RuleSetId::QuakeWorld {
+            assert_eq!(world.calls[1].2, 20);
+            assert_eq!(
+                world.entities.columns.next_think[replacement.slot as usize],
+                None
+            );
+        } else {
+            assert_eq!(
+                world.entities.columns.next_think[replacement.slot as usize],
+                Some(ThinkTime::Seconds(0.5))
+            );
+        }
+        assert!(world.entities.resolve(old).is_none());
+        assert_eq!(
+            run_think(&mut world, &table, old, |_| frame(0.5, 0.25)),
+            ThinkResult::default()
+        );
+    }
 }
 
 #[test]

@@ -3,7 +3,7 @@ use qa_core::primitives::RuleSetId;
 use qa_render::{
     Assets,
     assets::{Sampler, Wrap},
-    material::resources::{ImageRole, ImageSettings, ImageUse, Images},
+    material::resources::{ImageRole, ImageSettings, ImageUse, Images, IndexedTarget},
     surface_cache::PaletteLighting,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,7 +26,7 @@ fn shared_rule_selection_preserves_native_uploads_for_all_five_sources() {
             None,
         )
         .unwrap();
-        let resolved = images.raster("odd.tga", ImageUse::default()).unwrap();
+        let resolved = images.raster("odd.tga", ImageUse::default(), None).unwrap();
         let image = images.assets.image(resolved.id).unwrap();
         let prepared = image.prepared.as_ref().unwrap();
         (
@@ -85,6 +85,18 @@ impl Fixture {
         }
         std::fs::write(self.0.join(name), bytes).unwrap();
     }
+    fn rgba(&self, name: &str, width: u16, height: u16, pixels: &[[u8; 4]]) {
+        assert_eq!(pixels.len(), usize::from(width) * usize::from(height));
+        let mut bytes = vec![0; 18];
+        bytes[2] = 2;
+        bytes[12..14].copy_from_slice(&width.to_le_bytes());
+        bytes[14..16].copy_from_slice(&height.to_le_bytes());
+        bytes[16] = 32;
+        for &[r, g, b, a] in pixels {
+            bytes.extend([b, g, r, a]);
+        }
+        std::fs::write(self.0.join(name), bytes).unwrap();
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -95,6 +107,76 @@ fn palette() -> PaletteLighting {
     let colors: Vec<_> = (0..256).flat_map(|_| [7, 11, 19]).collect();
     let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
     PaletteLighting::load(&colors, &shades, None, 256).unwrap()
+}
+
+#[test]
+fn raster_target_recipe_shares_images_and_preserves_gl_pixels_with_explicit_masks() {
+    let root = Fixture::new();
+    let pixels = [[3, 4, 5, 255], [3, 4, 5, 0]];
+    root.rgba("env/masked.tga", 2, 1, &pixels);
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palettes = [17, 42].map(|at| {
+        let mut colors = vec![200u8; 256 * 3];
+        colors[at * 3..at * 3 + 3].copy_from_slice(&[3, 4, 5]);
+        if at == 17 {
+            colors[18 * 3..18 * 3 + 3].copy_from_slice(&[3, 4, 5]);
+        }
+        let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+        assets
+            .register_palette(PaletteLighting::load(&colors, &shades, None, 256).unwrap())
+            .unwrap()
+    });
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake2,
+        ImageSettings::native(RuleSetId::Quake2),
+        None,
+    )
+    .unwrap();
+    let usage = ImageUse::pic();
+    let source = images.raster("env/masked.tga", usage, None).unwrap();
+    let targets = [
+        IndexedTarget {
+            palette: palettes[0],
+            transparent_index: None,
+        },
+        IndexedTarget {
+            palette: palettes[0],
+            transparent_index: Some(17),
+        },
+        IndexedTarget {
+            palette: palettes[1],
+            transparent_index: Some(17),
+        },
+    ];
+    let mut ids = vec![source.id];
+    for (target, expected) in targets.into_iter().zip([[17, 17], [18, 17], [42, 17]]) {
+        let resolved = images
+            .raster("env/masked.tga", usage, Some(target))
+            .unwrap();
+        assert_eq!(
+            images
+                .raster("ENV\\MASKED.TGA", usage, Some(target))
+                .unwrap(),
+            resolved
+        );
+        assert!(!ids.contains(&resolved.id));
+        ids.push(resolved.id);
+        let source = images.assets.image(source.id).unwrap();
+        let converted = images.assets.image(resolved.id).unwrap();
+        assert_eq!(source.rgba, converted.rgba);
+        assert_eq!(converted.rgba.as_ref(), pixels.as_flattened());
+        assert_eq!(source.prepared, converted.prepared);
+        let texture = converted.indexed.as_ref().unwrap();
+        assert_eq!(texture.transparent_index(), target.transparent_index);
+        assert_eq!(texture.mip(0).unwrap().indices(), expected);
+    }
+    assert_eq!(images.assets.images().len(), ids.len() + 1); // built-in white image.
+    assert!(images.assets.image(source.id).unwrap().indexed.is_none());
 }
 
 #[test]
@@ -206,7 +288,9 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         None,
     )
     .unwrap();
-    let surface = images.raster("env/odd.tga", ImageUse::default()).unwrap();
+    let surface = images
+        .raster("env/odd.tga", ImageUse::default(), None)
+        .unwrap();
     let image = images.assets.image(surface.id).unwrap();
     assert_eq!((image.width, image.height), (3, 3));
     assert_eq!(&image.rgba[..4], &[17, 23, 31, 255]);
@@ -237,6 +321,7 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
                 role: ImageRole::CubeSky,
                 ..ImageUse::pic()
             },
+            None,
         )
         .unwrap();
     assert_ne!(sky.id, surface.id);
@@ -391,8 +476,10 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
         allow_picmip: false,
         ..ImageUse::default()
     };
-    let first = images.raster("ENV\\FIRST.TGA", usage).unwrap();
-    let second = images.raster("env/first.tga", ImageUse::default()).unwrap();
+    let first = images.raster("ENV\\FIRST.TGA", usage, None).unwrap();
+    let second = images
+        .raster("env/first.tga", ImageUse::default(), None)
+        .unwrap();
     assert_eq!(first, second);
     assert_eq!(second.sampler, usage.sampler);
     assert_eq!(
@@ -414,7 +501,9 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
     assert_eq!(images.conflicts.len(), 1);
     assert_eq!(images.conflicts[0].first, usage);
     assert_eq!(images.conflicts[0].requested, ImageUse::default());
-    images.raster("env/first.tga", ImageUse::default()).unwrap();
+    images
+        .raster("env/first.tga", ImageUse::default(), None)
+        .unwrap();
     assert_eq!(images.conflicts.len(), 1);
 }
 
@@ -442,7 +531,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     )
     .unwrap();
     let mipped = images
-        .raster("env/mipped.tga", ImageUse::default())
+        .raster("env/mipped.tga", ImageUse::default(), None)
         .unwrap();
     assert_eq!(
         images
@@ -456,7 +545,9 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
             .width,
         1
     );
-    let unmipped = images.raster("env/unmipped.tga", ImageUse::pic()).unwrap();
+    let unmipped = images
+        .raster("env/unmipped.tga", ImageUse::pic(), None)
+        .unwrap();
     let image = images.assets.image(unmipped.id).unwrap();
     let prepared = image.prepared.as_ref().unwrap();
     assert_eq!(
@@ -473,6 +564,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
                 allow_picmip: false,
                 ..ImageUse::default()
             },
+            None,
         )
         .unwrap();
     assert_eq!(
@@ -501,7 +593,7 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
     )
     .unwrap();
     let weighted = images
-        .raster("env/mipped.tga", ImageUse::default())
+        .raster("env/mipped.tga", ImageUse::default(), None)
         .unwrap();
     let prepared = images
         .assets

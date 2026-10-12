@@ -56,7 +56,14 @@ struct CallFields {
 /// classification, not another entity lifetime or movement implementation.
 pub struct PhysicsEntity {
     pub entity: qa_core::primitives::EntityId,
-    pub none: bool,
+    pub native: qa_core::primitives::NativeEntity,
+    pub phase: PhysicsPhase,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PhysicsPhase {
+    None,
+    Noclip,
+    Unsupported,
 }
 struct TraceFields {
     scalars: [usize; 6],
@@ -297,6 +304,36 @@ impl Vm {
     ) -> Result<Option<PhysicsEntity>, crate::services::CallError> {
         self.projection
             .quakec_physics_entity(entities, &self.entities, cursor, rules, max_clients)
+    }
+    /// Resolve the currently live module-owned lifetime of a captured native
+    /// row. Native reuse changes its common handle, never revives the old one.
+    pub fn bound_entity(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        native: qa_core::primitives::NativeEntity,
+    ) -> Result<Option<qa_core::primitives::EntityId>, crate::services::CallError> {
+        Ok(self
+            .projection
+            .binding(entities, native)?
+            .filter(|entity| entities.columns.owner[entity.slot as usize] == native.module))
+    }
+    /// Native NOCLIP follows the owning module's think phase. Its pose writes
+    /// use the same checked edict importer and explicit link service.
+    pub fn advance_noclip(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        value: u32,
+        step: f32,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection.quakec_noclip(
+            services,
+            &mut self.entities,
+            &self.strings,
+            context,
+            value,
+            step,
+        )
     }
     /// Import bytecode field stores without replacing explicit native relinks.
     /// Scheduling remains owned by the provider's native think phase.

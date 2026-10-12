@@ -117,7 +117,7 @@ impl ConsoleAssets {
                         .map_err(|error| format!("{error:?}"))
                 } else {
                     images
-                        .raster(name, ImageUse::pic())
+                        .raster(name, ImageUse::pic(), None)
                         .map_err(|error| format!("{error:?}"))
                         .and_then(|image| {
                             bitmap_material(&mut images, name, image.id, image.sampler, None)

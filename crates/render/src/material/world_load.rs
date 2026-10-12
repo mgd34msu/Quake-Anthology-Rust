@@ -470,7 +470,7 @@ pub fn load_world(
                 diagnostics.push(format!("native shader fallback: {name}"));
             }
             if matches!(geometry_source, RuleSetId::Quake3) {
-                let image = images.raster(&name, ImageUse::default())?;
+                let image = images.raster(&name, ImageUse::default(), None)?;
                 default_material(&name, image, surface.light_source, &mut images)?
             } else {
                 legacy_material(
@@ -755,6 +755,7 @@ pub fn compile_definition(
                         allow_picmip: !definition.no_picmip,
                         ..ImageUse::default()
                     },
+                    None,
                 )?;
                 sampler = image.sampler;
                 StageTexture::Image(image.id)
@@ -781,6 +782,7 @@ pub fn compile_definition(
                             allow_picmip: !definition.no_picmip,
                             ..ImageUse::default()
                         },
+                        None,
                     )?;
                     *slot = image.id;
                 }
@@ -893,6 +895,7 @@ fn load_box_with_suffix(
                     },
                     allow_picmip: true,
                 },
+                None,
             )?
             .id;
     }

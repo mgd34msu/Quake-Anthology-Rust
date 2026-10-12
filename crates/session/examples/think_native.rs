@@ -252,7 +252,7 @@ fn execute(
         output[base + 2] = u64::from(world.entities.resolve(ids[index]).is_some());
         output[base + 3] = u64::from(result.called);
         output[base + 4] = u64::from(result.rejected);
-        output[base + 5] = u64::from(result.current_lifetime);
+        output[base + 5] = u64::from(result.current_entity.is_some());
         output[1] += u64::from(result.rejected);
     }
     if world.invalid {

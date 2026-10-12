@@ -133,6 +133,47 @@ pub fn md2() -> Vec<u8> {
     bytes
 }
 
+pub fn md2_skin(path: &[u8]) -> Vec<u8> {
+    assert!(path.len() < 64);
+    let mut bytes = md2();
+    for skin in 0..2 {
+        let first = 68 + skin * 64;
+        bytes[first..first + 64].fill(0);
+        bytes[first..first + path.len()].copy_from_slice(path);
+    }
+    bytes
+}
+
+pub fn md2_quad_skin(path: &[u8]) -> Vec<u8> {
+    let mut bytes = md2_skin(path);
+    let frame_at = i32::from_le_bytes(bytes[56..60].try_into().unwrap()) as usize;
+    let stride = i32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+    for frame in 0..2 {
+        for (index, point) in [[8, 0, 0], [8, 4, 0], [8, 4, 4], [8, 0, 4]]
+            .into_iter()
+            .enumerate()
+        {
+            let first = frame_at + frame * stride + 40 + index * 4;
+            bytes[first..first + 3].copy_from_slice(&point);
+        }
+    }
+    bytes
+}
+
+pub fn tga(width: u16, height: u16, pixels: &[[u8; 4]]) -> Vec<u8> {
+    assert_eq!(pixels.len(), usize::from(width) * usize::from(height));
+    let mut bytes = vec![0; 18];
+    bytes[2] = 2;
+    bytes[12..14].copy_from_slice(&width.to_le_bytes());
+    bytes[14..16].copy_from_slice(&height.to_le_bytes());
+    bytes[16] = 32;
+    bytes[17] = 32;
+    for &[r, g, b, a] in pixels {
+        bytes.extend([b, g, r, a]);
+    }
+    bytes
+}
+
 pub fn pcx(index: u8) -> Vec<u8> {
     pcx_dimensions(8, 4, index)
 }

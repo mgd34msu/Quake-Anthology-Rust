@@ -7,7 +7,7 @@ use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
     AlphaFringe, Colormap, DecodedImage, ImageFormat, IndexedImage, MipTexture, Palette,
-    PaletteOptions, decode,
+    PaletteOptions, RgbaImage, decode,
 };
 
 #[derive(Debug)]
@@ -134,7 +134,19 @@ enum ImageRecipe {
         rgba_override: Option<NameId>,
         usage: ImageUse,
     },
-    Raster(RuleSetId),
+    Raster {
+        rules: RuleSetId,
+        indexed: Option<IndexedTarget>,
+    },
+}
+
+/// Software colors are converted to this explicit presentation palette while
+/// the image retains its source RGBA for GL. Masks reserve one palette entry;
+/// opaque pixels never select it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexedTarget {
+    pub palette: PaletteId,
+    pub transparent_index: Option<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ImageKey {
@@ -156,6 +168,26 @@ fn palette_index(colors: &PaletteLighting, rgba: [u8; 4], transparent: Option<u8
     } else {
         colors.nearest_index([rgba[0], rgba[1], rgba[2]], transparent)
     }
+}
+
+fn rgba_texture(
+    rgba: &RgbaImage,
+    colors: &PaletteLighting,
+    transparent_index: Option<u8>,
+) -> Result<IndexedTexture, ResourceError> {
+    let indices: Vec<_> = rgba
+        .pixels
+        .chunks_exact(4)
+        .map(|color| {
+            palette_index(
+                colors,
+                [color[0], color[1], color[2], color[3]],
+                transparent_index,
+            )
+        })
+        .collect();
+    IndexedTexture::load_base(rgba.width, rgba.height, &indices, transparent_index)
+        .map_err(ResourceError::Asset)
 }
 
 struct ImageRecipes {
@@ -714,23 +746,12 @@ impl<'a> Images<'a> {
                 &decoded.indices,
                 transparent_index,
             )
+            .map_err(ResourceError::Asset)?
         } else if let Some(rgba) = &rgba {
-            let indices: Vec<_> = rgba
-                .pixels
-                .chunks_exact(4)
-                .map(|color| {
-                    palette_index(
-                        colors,
-                        [color[0], color[1], color[2], color[3]],
-                        transparent_index,
-                    )
-                })
-                .collect();
-            IndexedTexture::load_base(rgba.width, rgba.height, &indices, transparent_index)
+            rgba_texture(rgba, colors, transparent_index)?
         } else {
             return Err(ResourceError::Missing(name.to_owned()));
-        }
-        .map_err(ResourceError::Asset)?;
+        };
         let mut gl_pixels = None;
         let id = if let Some(rgba) = rgba {
             self.register_indexed_rgba(
@@ -760,14 +781,19 @@ impl<'a> Images<'a> {
     }
     /// Original Q3 lookup tries TGA, then JPEG for a missing TGA. Explicit
     /// supported extensions are retained; newer formats use the same decoder.
-    pub fn raster(&mut self, name: &str, usage: ImageUse) -> Result<ResolvedImage, ResourceError> {
+    pub fn raster(
+        &mut self,
+        name: &str,
+        usage: ImageUse,
+        indexed: Option<IndexedTarget>,
+    ) -> Result<ResolvedImage, ResourceError> {
         let rules = self.source_rules;
         let key = ImageKey {
             name: self
                 .assets
                 .intern_name(name)
                 .map_err(ResourceError::Asset)?,
-            recipe: ImageRecipe::Raster(rules),
+            recipe: ImageRecipe::Raster { rules, indexed },
         };
         if let Some(index) = self.find(key) {
             let first = self.resolved[index].2;
@@ -836,10 +862,19 @@ impl<'a> Images<'a> {
                 image.expand(palette, &PaletteOptions::default())?
             }
         };
-        let id = self
-            .assets
-            .register_image(rgba.width, rgba.height, &rgba.pixels)
-            .map_err(ResourceError::Asset)?;
+        let id = if let Some(target) = indexed {
+            let colors = self
+                .assets
+                .palette(target.palette)
+                .ok_or(ResourceError::Asset("missing presentation image palette"))?;
+            let texture = rgba_texture(&rgba, colors, target.transparent_index)?;
+            self.assets
+                .register_rgba_with_indexed(rgba.width, rgba.height, &rgba.pixels, texture)
+        } else {
+            self.assets
+                .register_image(rgba.width, rgba.height, &rgba.pixels)
+        }
+        .map_err(ResourceError::Asset)?;
         self.prepare(id, usage, None)?;
         let resolved = self.remember(key, id, usage);
         Ok(resolved)

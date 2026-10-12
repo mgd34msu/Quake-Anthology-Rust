@@ -50,6 +50,22 @@ impl MuzzleSounds {
     }
 }
 
+/// Shared CLIENT poses are sampled once before bounded PCM mixahead.
+/// A sound's native namespace selects its owning connection, not a seat slot.
+pub fn respatialize(
+    mixer: &mut Mixer,
+    entities: &[Option<crate::client_scene::ClientEntities<'_>>;
+         qa_core::sys_events::SeatId::COUNT],
+) {
+    mixer.respatialize(|client, number| {
+        entities
+            .iter()
+            .flatten()
+            .find(|entities| entities.client == client)?
+            .sound_origin(number)
+    });
+}
+
 pub struct Output {
     pub mixer: Mixer,
     stream: qa_platform::AudioStream,
@@ -74,7 +90,12 @@ impl Output {
         })
     }
     /// Bounded mixahead; a failed write retains the exact PCM for retry.
-    pub fn submit(&mut self) {
+    pub fn submit(
+        &mut self,
+        entities: &[Option<crate::client_scene::ClientEntities<'_>>;
+             qa_core::sys_events::SeatId::COUNT],
+    ) {
+        respatialize(&mut self.mixer, entities);
         for _ in 0..8 {
             if !self.pending {
                 let Some(queued) = self.stream.queued_bytes() else {

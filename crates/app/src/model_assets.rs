@@ -6,7 +6,7 @@ use qa_core::primitives::{IndexSpan, NameId, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_render::assets::{MaterialSettings, SoftwareAlias, Stage, StageTexture};
-use qa_render::material::resources::{ImageSettings, ImageUse, Images};
+use qa_render::material::resources::{ImageSettings, ImageUse, Images, IndexedTarget};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::WorldId;
@@ -518,7 +518,14 @@ fn register(
                         .map_err(|error| format!("skin {path}: {error:?}"))?
                 } else {
                     images
-                        .raster(path, usage)
+                        .raster(
+                            path,
+                            usage,
+                            options.palette.map(|palette| IndexedTarget {
+                                palette,
+                                transparent_index: Some(255),
+                            }),
+                        )
                         .map_err(|error| format!("skin {path}: {error:?}"))?
                         .id
                 }

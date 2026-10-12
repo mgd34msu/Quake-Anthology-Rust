@@ -12,7 +12,9 @@ use qa_core::primitives::{
     CallbackCall, CallbackId, ClientId, EntityId, ModuleId, RuleSetId, ThinkTime,
 };
 use qa_session::{
-    dispatch::{CallError, FunctionBinding, FunctionTable, ThinkFrame, ThinkWorld, run_think},
+    dispatch::{
+        CallError, FunctionBinding, FunctionTable, ThinkFrame, ThinkWorld, run_think_with_rebind,
+    },
     timing::{Tick, TickRate},
 };
 
@@ -719,7 +721,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
         qc.vm.frame_time(step);
     }
     if physics_due && invoke_frame(host, module, time) && quakec {
-        quakec_none_phase(host, module, time, step);
+        quakec_entity_phase(host, module, time, step);
     }
     if let Some(row) = host.module_row_mut(module) {
         row.request.context.server_frame = tick.index;
@@ -746,14 +748,17 @@ fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool
     }
 }
 
-/// SV_Physics_None belongs after StartFrame in the native edict-order pass.
+/// NONE and NOCLIP belong after StartFrame in the native edict-order pass.
 /// Step, toss and pusher thinking belongs at their own motion phase positions,
 /// and is explicitly counted as unsupported rather than run prematurely.
-fn quakec_none_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, step: f64) {
+fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, step: f64) {
     let Some(modules) = host.modules.as_ref() else {
         return;
     };
     let functions = Arc::clone(&modules.functions);
+    // Native VectorMA takes float host_frametime, while think timing retains
+    // its existing double comparison and native float deadline narrowing.
+    let motion_step = step as f32;
     let mut cursor = 0;
     loop {
         let Some(row) = host.module_row(module) else {
@@ -772,15 +777,38 @@ fn quakec_none_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, st
             max_clients,
         );
         match next {
-            Ok(Some(entity)) if entity.none => {
-                let result = run_think(host, &functions, entity.entity, |owner| {
-                    (owner == module).then_some(ThinkFrame::Seconds {
-                        now: time.seconds(),
-                        step,
-                    })
-                });
+            Ok(Some(entity)) if entity.phase != quakec::PhysicsPhase::Unsupported => {
+                let result = run_think_with_rebind(
+                    host,
+                    &functions,
+                    entity.entity,
+                    |owner| {
+                        (owner == module).then_some(ThinkFrame::Seconds {
+                            now: time.seconds(),
+                            step,
+                        })
+                    },
+                    |host, _| {
+                        let row = host.module_row(module)?;
+                        let Program::QuakeC(qc) = &row.request.program else {
+                            return None;
+                        };
+                        qc.vm
+                            .bound_entity(&host.runtime.server.entities, entity.native)
+                            .ok()
+                            .flatten()
+                    },
+                );
                 if let Some(row) = host.module_row_mut(module) {
                     row.counts.rejected += u64::from(result.rejected);
+                }
+                if entity.phase == quakec::PhysicsPhase::Noclip
+                    && result.rejected == 0
+                    && let Some(current) = result.current_entity
+                    && quakec_noclip(host, module, current, motion_step).is_err()
+                    && let Some(row) = host.module_row_mut(module)
+                {
+                    row.counts.rejected += 1;
                 }
             }
             Ok(Some(_)) => {
@@ -798,6 +826,29 @@ fn quakec_none_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, st
             }
         }
     }
+}
+
+fn quakec_noclip(
+    host: &mut FrameHost,
+    module: ModuleId,
+    entity: EntityId,
+    step: f32,
+) -> Result<(), qa_compat::services::CallError> {
+    let row = host
+        .modules
+        .as_mut()
+        .and_then(|modules| modules.row_mut(module))
+        .ok_or(qa_compat::services::CallError::Entity)?;
+    let Program::QuakeC(qc) = &mut row.request.program else {
+        return Err(qa_compat::services::CallError::Entity);
+    };
+    let native = native_self(&host.runtime, entity, module, &qc.vm)
+        .ok_or(qa_compat::services::CallError::Entity)?;
+    let mut services =
+        host.runtime
+            .engine_services(&mut host.console, &mut row.storage, &mut row.scratch);
+    qc.vm
+        .advance_noclip(&mut services, row.request.context, native, step)
 }
 
 fn context(mut context: CallContext, time: ThinkTime) -> CallContext {

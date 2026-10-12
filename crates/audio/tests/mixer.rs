@@ -393,3 +393,118 @@ fn native_self_relative_gain_uses_the_client_voice_namespace() {
         assert_eq!(pcm, [0, 692]);
     }
 }
+
+#[test]
+fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
+    let mut m = mixer(vec![1024; 4], None, 1);
+    m.listen(&[listener(7, Vec3::default())], 1.0);
+    let mut e = event(&m);
+    e.spatial_rules = RuleSetId::Quake2;
+    e.entity = Some(SoundEmitter::Native {
+        namespace: ResourceNamespace::Client(ClientId(7)),
+        slot: 19,
+    });
+    e.client = Some(ClientId(7));
+    e.position = Vec3([400.0, 0.0, 0.0]);
+    e.attenuation = 1.0;
+    assert!(m.sound(e));
+    let mut pcm = [0; 2];
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [0, 692]);
+    m.respatialize(|client, number| {
+        assert_eq!((client, number), (ClientId(7), 19));
+        Some(Vec3([-400.0, 0.0, 0.0]))
+    });
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [692, 0]);
+    assert_eq!(m.counts.started, 1);
+    assert_eq!(m.counts.respatialized, 1);
+    m.respatialize(|_, _| None);
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [692, 0]);
+    assert_eq!(m.counts.missing_origins, 1);
+    m.respatialize(|_, _| Some(Vec3([f32::NAN, 0.0, 0.0])));
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [692, 0]);
+    assert_eq!(m.counts.missing_origins, 2);
+}
+
+#[test]
+fn fixed_and_non_client_emitters_never_resolve_client_poses() {
+    for (positioned, entity) in [
+        (
+            true,
+            Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(ClientId(7)),
+                slot: 19,
+            }),
+        ),
+        (
+            false,
+            Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Module(ModuleId(7)),
+                slot: 19,
+            }),
+        ),
+        (
+            false,
+            Some(SoundEmitter::Entity(EntityId {
+                slot: 19,
+                generation: 1,
+            })),
+        ),
+        (false, None),
+    ] {
+        let mut m = mixer(vec![1024; 2], None, 1);
+        m.listen(&[listener(7, Vec3::default())], 1.0);
+        let mut e = event(&m);
+        e.spatial_rules = RuleSetId::Quake2;
+        e.entity = entity;
+        e.position = Vec3([400.0, 0.0, 0.0]);
+        e.positioned = positioned;
+        e.attenuation = 1.0;
+        assert!(m.sound(e));
+        m.respatialize(|_, _| panic!("fixed/non-client origin queried"));
+        let mut pcm = [0; 2];
+        assert!(m.paint(&mut pcm));
+        assert_eq!(pcm, [0, 692]);
+        assert_eq!(m.counts.respatialized, 0);
+        assert_eq!(m.counts.missing_origins, 0);
+    }
+}
+
+#[test]
+fn moving_voices_keep_native_connection_namespace() {
+    let mut m = mixer(vec![1024], None, 2);
+    m.listen(
+        &[listener(7, Vec3::default()), listener(9, Vec3::default())],
+        1.0,
+    );
+    for client in [ClientId(7), ClientId(9)] {
+        let mut e = event(&m);
+        e.spatial_rules = RuleSetId::Quake2;
+        e.entity = Some(SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(client),
+            slot: 19,
+        });
+        e.client = Some(client);
+        e.attenuation = 1.0;
+        assert!(m.sound(e));
+    }
+    let mut queried = [false; 2];
+    m.respatialize(|client, number| {
+        assert_eq!(number, 19);
+        let index = match client.0 {
+            7 => 0,
+            9 => 1,
+            _ => panic!("wrong CLIENT namespace"),
+        };
+        queried[index] = true;
+        Some(Vec3([if index == 0 { 400.0 } else { -400.0 }, 0.0, 0.0]))
+    });
+    assert_eq!(queried, [true; 2]);
+    let mut pcm = [0; 2];
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [692, 692]);
+    assert_eq!(m.counts.respatialized, 2);
+}

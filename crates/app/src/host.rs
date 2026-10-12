@@ -52,7 +52,11 @@ pub trait FrameSource {
         _volume: f32,
     ) {
     }
-    fn mix_audio(&mut self) {}
+    fn mix_audio(
+        &mut self,
+        _entities: &[Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT],
+    ) {
+    }
     fn effect(&mut self, _event: EffectEvent) -> bool {
         false
     }
@@ -75,8 +79,11 @@ impl FrameSource for LiveFrame<'_> {
     fn listeners(&mut self, listeners: &[Option<qa_audio::Listener>; SeatId::COUNT], volume: f32) {
         self.audio.mixer.listen(listeners, volume);
     }
-    fn mix_audio(&mut self) {
-        self.audio.submit();
+    fn mix_audio(
+        &mut self,
+        entities: &[Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT],
+    ) {
+        self.audio.submit(entities);
     }
     fn send_packet(&mut self, socket: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
         self.pump.send_udp(socket, to, bytes).is_ok()
@@ -409,6 +416,32 @@ impl FrameHost {
         })
     }
 
+    /// Pose readers do not require a loaded renderer or model catalog.
+    pub fn client_entities_inputs(
+        &self,
+    ) -> [Option<crate::client_scene::ClientEntities<'_>>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
+            let (client, _, _) = self.local_seat(seat)?;
+            let snapshot = self
+                .runtime
+                .local_snapshots
+                .get(client.0 as usize)?
+                .as_ref()?;
+            let channel = &self
+                .runtime
+                .network
+                .get(client, qa_core::loopback::Endpoint::Client)?
+                .channel;
+            Some(crate::client_scene::ClientEntities {
+                client,
+                current: channel.current_snapshot(),
+                previous: channel.previous_snapshot(),
+                projection: snapshot.entity_projection(),
+                interpolation: snapshot.interpolation(),
+            })
+        })
+    }
+
     pub fn client_scene_inputs(
         &self,
     ) -> [Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT] {
@@ -422,8 +455,11 @@ impl FrameHost {
                 .cvars
                 .value_in(self.roll_speed, qa_core::primitives::RuleSetId::QuakeWorld),
         };
+        let entities = self.client_entities_inputs();
         std::array::from_fn(|seat| {
-            let (client, _, player) = self.local_seat(seat)?;
+            let (_, _, player) = self.local_seat(seat)?;
+            let entities = entities[seat]?;
+            let client = entities.client;
             let snapshot = self
                 .runtime
                 .local_snapshots
@@ -441,15 +477,15 @@ impl FrameHost {
                 .channel;
             Some(crate::client_scene::ClientSceneInput {
                 client,
-                current: channel.current_snapshot(),
-                previous: channel.previous_snapshot(),
-                projection: snapshot.entity_projection(),
+                current: entities.current,
+                previous: entities.previous,
+                projection: entities.projection,
                 player_projection: snapshot.player_projection(),
                 bindings: &resources.state.models,
                 models: self.runtime.models.as_deref()?,
                 player,
                 alias_roll,
-                interpolation: snapshot.interpolation(),
+                interpolation: entities.interpolation,
                 gun_animation: snapshot.gun_animation(),
                 gun_previous: snapshot
                     .gun_animation()
@@ -541,7 +577,7 @@ impl FrameHost {
             f64::from(self.console.cvars.value(self.center_time)),
         );
         result.output_drains += 1;
-        source.mix_audio();
+        source.mix_audio(&self.client_entities_inputs());
     }
 
     fn receive_packet(

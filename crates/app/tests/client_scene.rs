@@ -2,7 +2,7 @@
 mod support;
 
 use qa_app::{
-    client_scene::{ClientModelBindings, ClientSceneInput},
+    client_scene::{ClientEntities, ClientModelBindings, ClientSceneInput},
     model_assets::{ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest},
     snapshots::{GunAnimation, Interpolation, LocalSnapshot, PresentationClock},
 };
@@ -286,6 +286,15 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
     assert_eq!(counts.unsupported, 0);
     let packet = frame.finish();
     assert_eq!(packet.entity(0).origin, Vec3([20.0, 20.0, 30.0]));
+    assert_eq!(
+        input.entities().get(12).unwrap().origin,
+        packet.entity(0).origin
+    );
+    assert_eq!(
+        input.entities().get(12).unwrap().angles,
+        Vec3([360.0, 30.234375, 0.0])
+    );
+
     assert_eq!((packet.entity(0).frame, packet.entity(0).old_frame), (1, 0));
     assert_eq!(packet.entity(0).back_lerp, 0.5);
     assert_eq!(
@@ -822,4 +831,221 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
     let scene = frame.finish();
     assert_eq!(scene.entity(0).origin, Vec3([104.0, 206.0, 308.0]));
     assert_eq!(scene.entity(0).back_lerp, 0.0);
+}
+
+#[test]
+fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state() {
+    let client = ClientId(7);
+    let projection = EntityProjection::load(Protocol::Quake2_34);
+    let player = [0; states::Q2_PLAYER_WORDS];
+    let old = EntityRecord {
+        position: Vec3([100.0, 0.0, 0.0]),
+        appearance: EntityAppearance {
+            source: RuleSetId::Quake2,
+            models: [Some(reference(client)), None, None, None],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let current = EntityRecord {
+        position: Vec3([-100.0, 0.0, 0.0]),
+        ..old
+    };
+    let encode = |record: EntityRecord| {
+        let mut words = [0; states::Q2_ENTITY_WORDS];
+        assert!(projection.reduce(&record, &mut words, |model| Some(model.ordinal)));
+        [Entity { number: 12, words }]
+    };
+    let old_rows = encode(old);
+    let current_rows = encode(current);
+    let old_frame = Frame {
+        sequence: 1,
+        time: ThinkTime::Milliseconds(100),
+        command: 0,
+        flags: 0,
+        qw_peers: 0,
+        areas: &[],
+        player: &player,
+        entities: &old_rows,
+    };
+    let current_frame = Frame {
+        sequence: 2,
+        time: ThinkTime::Milliseconds(200),
+        entities: &current_rows,
+        ..old_frame
+    };
+    let entities = ClientEntities {
+        client,
+        current: Some(ReceivedFrame::Quake2(current_frame)),
+        previous: Some(ReceivedFrame::Quake2(old_frame)),
+        projection: &projection,
+        interpolation: Interpolation {
+            time: ThinkTime::Milliseconds(125),
+            fraction: 0.25,
+            frame_ms: 100,
+        },
+    };
+    assert_eq!(entities.get(12).unwrap().origin, Vec3([50.0, 0.0, 0.0]));
+    assert!(entities.get(11).is_none());
+    assert!(entities.get(13).is_none());
+    assert!(entities.get(0).is_none());
+    assert_eq!(entities.sound_origin(0), Some(Vec3::default()));
+    assert_eq!(
+        entities.get(12).unwrap().record.appearance.models[0],
+        Some(reference(client))
+    );
+    let gap = ClientEntities {
+        previous: Some(ReceivedFrame::Quake2(Frame {
+            sequence: 0,
+            ..old_frame
+        })),
+        ..entities
+    };
+    assert_eq!(gap.get(12).unwrap().origin, current.position);
+    for change in 0..4 {
+        let mut changed = current;
+        match change {
+            0 => changed.appearance.native.render_flags = 64, // RF_FRAMELERP
+            1 => changed.appearance.native.event = 6,         // EV_PLAYER_TELEPORT
+            2 => changed.appearance.models[0].as_mut().unwrap().ordinal += 1,
+            3 => changed.position.0[0] = -500.0, // native large-displacement reset
+            _ => unreachable!(),
+        }
+        let rows = encode(changed);
+        let view = ClientEntities {
+            current: Some(ReceivedFrame::Quake2(Frame {
+                entities: &rows,
+                ..current_frame
+            })),
+            ..entities
+        };
+        assert_eq!(
+            view.get(12).unwrap().origin,
+            changed.position,
+            "case {change}"
+        );
+    }
+
+    let rate = std::num::NonZeroU32::new(44100).unwrap();
+    let bank = qa_audio::Bank::load(
+        rate,
+        vec![(
+            "sound/test.wav".into(),
+            qa_core::primitives::Pcm {
+                rate,
+                channels: qa_core::primitives::PcmChannels::Mono,
+                samples: vec![1024; 3],
+                loop_start: None,
+            },
+        )],
+    )
+    .unwrap();
+    let sound = bank.find("sound/test.wav").unwrap();
+    let mut mixer = qa_audio::Mixer::load(std::sync::Arc::new(bank), 1, 1);
+    mixer.listen(
+        &[Some(qa_audio::Listener {
+            client,
+            entity: None,
+            origin: Vec3::default(),
+            right: Vec3([1.0, 0.0, 0.0]),
+        })],
+        1.0,
+    );
+    assert!(mixer.sound(qa_core::primitives::SoundEvent {
+        sound,
+        spatial_rules: RuleSetId::Quake2,
+        entity: Some(qa_core::primitives::SoundEmitter::Native {
+            namespace: ResourceNamespace::Client(client),
+            slot: 12,
+        }),
+        position: old.position,
+        volume: 1.0,
+        attenuation: 1.0,
+        client: Some(client),
+        ..Default::default()
+    }));
+    qa_app::audio::respatialize(&mut mixer, &[Some(entities), None, None, None]);
+    let mut pcm = [0; 2];
+    assert!(mixer.paint(&mut pcm));
+    assert_eq!(pcm, [0, 1020]);
+    let later = ClientEntities {
+        interpolation: Interpolation {
+            fraction: 0.75,
+            ..entities.interpolation
+        },
+        ..entities
+    };
+    assert_eq!(later.get(12).unwrap().origin, Vec3([-50.0, 0.0, 0.0]));
+    qa_app::audio::respatialize(&mut mixer, &[Some(later), None, None, None]);
+    assert!(mixer.paint(&mut pcm));
+    assert_eq!(pcm, [1020, 0]);
+    assert_eq!(mixer.counts.started, 1);
+    // A different client with the same ordinal cannot supply this voice's pose.
+    let foreign = ClientEntities {
+        client: ClientId(9),
+        ..later
+    };
+    qa_app::audio::respatialize(&mut mixer, &[Some(foreign), None, None, None]);
+    assert!(mixer.paint(&mut pcm));
+    assert_eq!(pcm, [1020, 0]);
+    assert_eq!(mixer.counts.missing_origins, 1);
+}
+
+#[test]
+fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
+    let client = ClientId(4);
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let player = [0; states::PLAYER_WORDS];
+    let record = EntityRecord {
+        position: Vec3([24.0, 48.0, 96.0]),
+        appearance: EntityAppearance {
+            source: RuleSetId::Quake3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut words = [0; states::ENTITY_WORDS];
+    assert!(projection.reduce(&record, &mut words, |model| Some(model.ordinal)));
+    let rows = [Entity { number: 0, words }];
+    let frame = Frame {
+        sequence: 1,
+        time: ThinkTime::Milliseconds(100),
+        command: 0,
+        flags: 0,
+        qw_peers: 0,
+        areas: &[],
+        player: &player,
+        entities: &rows,
+    };
+    let entities = ClientEntities {
+        client,
+        current: Some(ReceivedFrame::Quake3(frame)),
+        previous: None,
+        projection: &projection,
+        interpolation: Interpolation::default(),
+    };
+    assert_eq!(entities.sound_origin(0), Some(record.position));
+    let absent = ClientEntities {
+        current: Some(ReceivedFrame::Quake3(Frame {
+            entities: &[],
+            ..frame
+        })),
+        ..entities
+    };
+    assert_eq!(absent.sound_origin(0), None);
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+    ] {
+        let projection = EntityProjection::load(protocol);
+        let world = ClientEntities {
+            current: None,
+            projection: &projection,
+            ..entities
+        };
+        assert_eq!(world.sound_origin(0), Some(Vec3::default()));
+        assert_eq!(world.sound_origin(1), None);
+    }
 }

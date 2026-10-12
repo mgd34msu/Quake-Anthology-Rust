@@ -38,6 +38,140 @@ fn contact(query: TraceQuery, normal: Vec3, fraction: f32) -> Trace {
 }
 
 #[test]
+fn dead_move_removes_native_speed_once_before_the_teleport_pause() {
+    for rules in [
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        for (mode, grounded) in [
+            (MovementMode::Dead, true),
+            (MovementMode::Dead, false),
+            (MovementMode::Walk, true),
+            (MovementMode::Gib, true),
+        ] {
+            // Original VectorNormalize multiplies by 1/50 before scaling
+            // by the remaining 30; Q2 then truncates to its eighth-unit wire.
+            let mut expected = Vec3([30.0, 40.0, 0.0]);
+            if mode == MovementMode::Dead && grounded {
+                expected = expected * (1.0 / 50.0) * 30.0;
+                if rules == RuleSetId::Quake2 {
+                    expected.0 = expected.0.map(qa_core::math::narrow_eighth);
+                } else if rules == RuleSetId::Quake3 {
+                    expected = qa_core::math::round_vector(expected);
+                }
+            }
+            let mut state = player();
+            state.movement_rules = rules;
+            set_bounds(&mut state);
+            state.movement.mode = mode;
+            state.body.position.0[2] = if grounded {
+                if mode == MovementMode::Gib && rules != RuleSetId::Quake3 {
+                    0.0
+                } else {
+                    24.0
+                }
+            } else {
+                64.0
+            };
+            state.body.velocity = Vec3([30.0, 40.0, 0.0]);
+            state.movement.timer = MovementTimer::TELEPORT;
+            state.movement.remaining_ms = 100;
+            pmove(
+                command(0),
+                &mut state,
+                &mut support::FixtureWorld::default(),
+                Default::default(),
+            );
+            assert_eq!(
+                state.body.velocity.0.map(f32::to_bits),
+                expected.0.map(f32::to_bits),
+                "{rules:?} {mode:?} grounded={grounded}"
+            );
+        }
+    }
+    let mut state = player();
+    state.movement.mode = MovementMode::Dead;
+    state.body.position.0[2] = 24.0;
+    state.body.velocity = Vec3([12.0, 16.0, 0.0]);
+    state.movement.timer = MovementTimer::TELEPORT;
+    state.movement.remaining_ms = 100;
+    pmove(
+        command(0),
+        &mut state,
+        &mut support::FixtureWorld::default(),
+        Default::default(),
+    );
+    assert_eq!(state.body.velocity.0.map(f32::to_bits), [0; 3]);
+}
+
+#[test]
+fn rerelease_steep_ground_uses_the_wall_probe_without_replacing_its_contact() {
+    struct Slope {
+        fraction: f32,
+        start_solid: bool,
+        wall_fraction: f32,
+        wall_start_solid: bool,
+        probes: usize,
+    }
+    impl TraceServices for Slope {
+        fn trace(&mut self, query: TraceQuery) -> Trace {
+            let delta = query.end - query.start;
+            if delta == Vec3([0.0, 0.0, -0.25]) {
+                let mut trace = contact(query, Vec3([0.8, 0.0, 0.6]), self.fraction);
+                trace.start_solid = self.start_solid;
+                return trace;
+            }
+            if query.end == query.start + Vec3([0.8, 0.0, 0.6]) {
+                self.probes += 1;
+                let mut trace = contact(query, Vec3([-1.0, 0.0, 0.0]), self.wall_fraction);
+                trace.start_solid = self.wall_start_solid;
+                return trace;
+            }
+            Trace::clear(query.end)
+        }
+        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
+            Contents::EMPTY
+        }
+    }
+    for (rules, fraction, start_solid, wall_fraction, wall_start_solid, grounded, probes) in [
+        (RuleSetId::Quake2Rerelease, 0.5, false, 0.5, false, true, 2),
+        (RuleSetId::Quake2Rerelease, 0.5, false, 1.0, false, false, 2),
+        (RuleSetId::Quake2Rerelease, 0.5, false, 0.5, true, false, 2),
+        (RuleSetId::Quake2Rerelease, 0.5, true, 0.5, true, true, 2),
+        (RuleSetId::Quake2Rerelease, 1.0, true, 0.5, false, false, 0),
+        (RuleSetId::Quake2, 0.5, false, 0.5, false, false, 0),
+    ] {
+        let mut state = player();
+        state.movement_rules = rules;
+        state.movement.timer = MovementTimer::TELEPORT;
+        state.movement.remaining_ms = 100;
+        let mut world = Slope {
+            fraction,
+            start_solid,
+            wall_fraction,
+            wall_start_solid,
+            probes: 0,
+        };
+        let result = pmove(command(0), &mut state, &mut world, Default::default());
+        assert_eq!(
+            state.movement.grounded, grounded,
+            "{rules:?} fraction={fraction} start_solid={start_solid} wall_fraction={wall_fraction} wall_start_solid={wall_start_solid}"
+        );
+        assert_eq!(world.probes, probes);
+        assert!(
+            result.contacts[..result.contact_count]
+                .iter()
+                .flatten()
+                .all(|trace| trace.plane.normal == Vec3([0.8, 0.0, 0.6]))
+        );
+        if grounded {
+            assert_eq!(state.movement.ground_normal, Vec3([0.8, 0.0, 0.6]));
+        }
+    }
+}
+
+#[test]
 fn native_land_and_trick_timers_use_fresh_landing_rules_and_publish_impact() {
     for (ducked, n64, z, timer, time) in [
         (false, false, 150.0, MovementTimer::TRICK, 56),

@@ -285,6 +285,7 @@ pub struct SpecialMovement {
     pub lower_step_probe: bool,
     pub settle_ground_step: bool,
     pub recover_stuck: bool,
+    pub wall_ground: bool,
 }
 const POINT_JUMP: WaterJumpPolicy = WaterJumpPolicy {
     phase: ProbePhase::BeforeTimers,
@@ -320,6 +321,7 @@ const NO_SPECIAL: SpecialMovement = SpecialMovement {
     lower_step_probe: false,
     settle_ground_step: false,
     recover_stuck: false,
+    wall_ground: false,
 };
 const SPECIAL: [SpecialMovement; 5] = [
     NO_SPECIAL,
@@ -379,6 +381,7 @@ const SPECIAL: [SpecialMovement; 5] = [
         lower_step_probe: true,
         settle_ground_step: true,
         recover_stuck: true,
+        wall_ground: true,
     },
     SpecialMovement {
         release_jump_below: Some(10.0),
@@ -521,6 +524,7 @@ pub struct Capabilities {
     pub landing: LandingPolicy,
     pub stance: StancePolicy,
     pub circular_pitch: bool,
+    pub dead_friction: Option<f32>,
 }
 pub fn capabilities(rules: RuleSetId) -> Capabilities {
     Capabilities {
@@ -529,5 +533,6 @@ pub fn capabilities(rules: RuleSetId) -> Capabilities {
         landing: LANDING[rules as usize],
         stance: STANCE[rules as usize],
         circular_pitch: [false, false, true, true, false][rules as usize],
+        dead_friction: [None, None, Some(20.0), Some(20.0), Some(20.0)][rules as usize],
     }
 }
