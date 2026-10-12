@@ -33,9 +33,10 @@ struct Window {
     acknowledged: u32,
     sent: u32,
     encoded_bits: usize,
+    budget_bits: usize,
 }
 impl Window {
-    fn load() -> Self {
+    fn load(budget_bits: usize) -> Self {
         Self {
             slots: (0..SLOTS)
                 .map(|_| Slot {
@@ -51,6 +52,7 @@ impl Window {
             acknowledged: 0,
             sent: 0,
             encoded_bits: 0,
+            budget_bits,
         }
     }
     fn text(&self, sequence: u32) -> &[u8] {
@@ -74,7 +76,6 @@ impl Window {
         text: &[u8],
         receipt: NativeReceipt,
         opcode: u8,
-        maximum: Option<usize>,
     ) -> Result<(), TransmitError> {
         // MSG_ReadString stops after STRING_BYTES - 1 payload bytes. Keep
         // room for its terminator so the next service remains readable.
@@ -90,18 +91,11 @@ impl Window {
             + command_bytes(text)
                 .map(|byte| crate::message::q3_bits(u32::from(byte), 8))
                 .sum::<usize>();
-        if let Some(maximum) = maximum {
-            // Reserve the changing native ACK field, svc_EOF and MSG's padding
-            // bit. Every admitted SERVER window must drain in a command-only
-            // message, even before any of its commands can receive an ACK.
-            let reserved = 4 * crate::message::Q3_MAX_BYTE_BITS + crate::message::q3_bits(8, 8) + 1;
-            let budget = maximum.saturating_mul(8).saturating_sub(reserved);
-            if encoded_bits > budget {
-                return Err(TransmitError::MessageTooLarge);
-            }
-            if self.encoded_bits + encoded_bits > budget {
-                return Err(TransmitError::Full);
-            }
+        if encoded_bits > self.budget_bits {
+            return Err(TransmitError::MessageTooLarge);
+        }
+        if self.encoded_bits + encoded_bits > self.budget_bits {
+            return Err(TransmitError::Full);
         }
         self.store(self.sequence + 1, text, Some(receipt));
         self.slots[slot(sequence)].encoded_bits = encoded_bits;
@@ -178,14 +172,31 @@ pub(super) struct CommandMessages {
     incoming: Window,
     context: CommandContext,
     message_acknowledged: u32,
+    last_executed: u32,
 }
 impl CommandMessages {
-    pub(super) fn load() -> Self {
+    pub(super) fn load(endpoint: Endpoint, maximum: usize) -> Self {
+        // An admitted reliable window must fit before it can receive its ACK.
+        // CLIENT reserves every native usercmd permitted by the packet table.
+        let reserved = match endpoint {
+            Endpoint::Server => crate::message::q3_max_bits(32) + crate::message::q3_bits(8, 8) + 1,
+            Endpoint::Client => {
+                3 * crate::message::q3_max_bits(32)
+                    + 3 * crate::message::q3_max_bits(8)
+                    + packet::Q3_COMMANDS * crate::commands::delta::q3_max_command_bits()
+                    + 1
+            }
+        };
+        let budget = maximum
+            .min(qa_core::primitives::NATIVE_WIRE_BYTES)
+            .saturating_mul(8)
+            .saturating_sub(reserved);
         Self {
-            outgoing: Window::load(),
-            incoming: Window::load(),
+            outgoing: Window::load(budget),
+            incoming: Window::load(usize::MAX),
             context: CommandContext::default(),
             message_acknowledged: 0,
+            last_executed: 0,
         }
     }
     pub(super) fn pending(&self) -> bool {
@@ -196,10 +207,8 @@ impl CommandMessages {
         text: &[u8],
         receipt: NativeReceipt,
         endpoint: Endpoint,
-        maximum: Option<usize>,
     ) -> Result<(), TransmitError> {
-        self.outgoing
-            .queue(text, receipt, command_opcode(endpoint), maximum)
+        self.outgoing.queue(text, receipt, command_opcode(endpoint))
     }
     pub(super) fn submitted(&mut self, sequence: u32, message: u32) {
         self.outgoing.submitted(sequence, message);
@@ -237,6 +246,13 @@ impl Channel {
         // A new gamestate changes serverId, not reliable-command lifetimes.
         c.context = context;
         Ok(())
+    }
+    pub fn command_context(&self) -> Result<CommandContext, packet::Error> {
+        Ok(self
+            .commands
+            .as_ref()
+            .ok_or(packet::Error::Context)?
+            .context)
     }
     pub fn command_key(
         &self,
@@ -291,6 +307,43 @@ impl Channel {
             .incoming
             .receive(sequence, text, gaps)
     }
+    /// Cgame selects a retained native sequence, independently of native ACKs.
+    pub fn server_command(&self, sequence: u32) -> Result<&[u8], packet::Error> {
+        if self.endpoint() != Endpoint::Client {
+            return Err(packet::Error::Context);
+        }
+        let incoming = &self
+            .commands
+            .as_ref()
+            .ok_or(packet::Error::Context)?
+            .incoming;
+        if sequence > incoming.sequence
+            || (incoming.sequence >= SLOTS as u32 && sequence <= incoming.sequence - SLOTS as u32)
+            || incoming.slots[slot(sequence)].sequence != sequence
+        {
+            return Err(packet::Error::Context);
+        }
+        Ok(incoming.text(sequence))
+    }
+    pub fn last_executed_server_command(&self) -> Result<u32, packet::Error> {
+        if self.endpoint() != Endpoint::Client {
+            return Err(packet::Error::Context);
+        }
+        Ok(self
+            .commands
+            .as_ref()
+            .ok_or(packet::Error::Context)?
+            .last_executed)
+    }
+    pub fn executed_server_command(&mut self, sequence: u32) -> Result<(), packet::Error> {
+        self.server_command(sequence)?;
+        self.commands
+            .as_mut()
+            .ok_or(packet::Error::Context)?
+            .last_executed = sequence;
+        Ok(())
+    }
+
     pub fn received_command(&self) -> Option<(u32, &[u8])> {
         let c = self.commands.as_ref()?;
         Some((c.incoming.sequence, c.incoming.text(c.incoming.sequence)))

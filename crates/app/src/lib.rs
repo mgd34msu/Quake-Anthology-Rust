@@ -108,6 +108,43 @@ impl Runtime {
         storage: &'a mut qa_compat::services::ServiceStorage,
         scratch: &'a mut qa_world::collision::TraceScratch,
     ) -> qa_compat::services::EngineServices<'a> {
+        self.engine_service_parts(console, storage, scratch, None).0
+    }
+    pub(crate) fn client_command_parts(
+        &mut self,
+        client: ClientId,
+        lifetime: qa_core::primitives::EntityId,
+    ) -> Option<(client_resources::ClientCommandView<'_>, &mut Server)> {
+        let view = client_resources::command_view(
+            client,
+            lifetime,
+            &mut self.network,
+            &mut self.client_resources,
+            self.models.as_deref(),
+            self.sound_bank.as_deref(),
+        )?;
+        Some((view, &mut self.server))
+    }
+    pub(crate) fn engine_service_parts<'a>(
+        &'a mut self,
+        console: &'a mut qa_console::commands::Console<Self>,
+        storage: &'a mut qa_compat::services::ServiceStorage,
+        scratch: &'a mut qa_world::collision::TraceScratch,
+        client: Option<(ClientId, qa_core::primitives::EntityId)>,
+    ) -> (
+        qa_compat::services::EngineServices<'a>,
+        Option<client_resources::ClientCommandView<'a>>,
+    ) {
+        let client_commands = client.and_then(|(client, lifetime)| {
+            client_resources::command_view(
+                client,
+                lifetime,
+                &mut self.network,
+                &mut self.client_resources,
+                self.models.as_deref(),
+                self.sound_bank.as_deref(),
+            )
+        });
         let (cvars, commands) = console.module_parts();
         let world = self.collision.as_mut();
         let (identity, visibility, portals) = match world {
@@ -128,11 +165,12 @@ impl Runtime {
         } else {
             None
         };
-        qa_compat::services::EngineServices {
+        let services = qa_compat::services::EngineServices {
             server: &mut self.server,
             input: &mut self.input,
             cvars,
             commands,
+            client_commands: None,
             vfs: &self.vfs,
             localization: &self.localization,
             registry: &self.catalog.registry,
@@ -148,7 +186,8 @@ impl Runtime {
             visibility,
             portals,
             scratch,
-        }
+        };
+        (services, client_commands)
     }
 
     /// Common client capacity is chosen at load; native limits belong to each connection.
@@ -275,6 +314,11 @@ impl Runtime {
                 client.link_order,
                 qa_world::area::LinkIntent::Explicit,
             );
+            let maximum_message = if protocol == qa_network::commands::packet::Protocol::Quake3_68 {
+                qa_network::commands::packet::Q3_MESSAGE_BYTES
+            } else {
+                8192
+            };
             for endpoint in [
                 qa_core::loopback::Endpoint::Client,
                 qa_core::loopback::Endpoint::Server,
@@ -287,13 +331,16 @@ impl Runtime {
                     channel: qa_network::channel::Channel::load(
                         protocol.channel(),
                         endpoint,
-                        8192,
+                        maximum_message,
                         16,
                     )
                     .map_err(|e| e.to_string())?,
                     output: None,
                     pending_output: None,
-                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    commands: Some(qa_network::commands::connection::Commands::load(
+                        protocol,
+                        maximum_message,
+                    )),
                 };
                 if endpoint == qa_core::loopback::Endpoint::Server {
                     self.bind_server_connection(id, connection, native_client, Some(seat))?;
@@ -484,18 +531,43 @@ impl Runtime {
         let Some(commands) = &connection.commands else {
             return false;
         };
-        let mut bytes = [0; 1400];
+        // Retained fragments belong to their original encoded message. Drain
+        // that flight without attaching the current command's watermark.
+        if connection.channel.pending_packet().is_some() || connection.channel.pending_fragments() {
+            transport::send(
+                &mut connection.channel,
+                time,
+                &mut (),
+                |channel, ()| {
+                    channel
+                        .prepare(None, time)
+                        .is_ok_and(|packet| packet.is_some())
+                },
+                |bytes| {
+                    self.loopback
+                        .send(qa_core::loopback::Endpoint::Client, id, bytes)
+                        .is_ok()
+                },
+                |channel, (), _| !channel.pending_fragments(),
+            );
+            return false;
+        }
+        let Ok(maximum) = connection.channel.native_payload_capacity() else {
+            return false;
+        };
+        let Some(bytes) = self.output_native_bytes.get_mut(..maximum) else {
+            return false;
+        };
         let native_weapon = self.catalog.registry.command_weapon_number(command.weapon);
-        let Ok(length) = commands.encode(command, native_weapon, &connection.channel, &mut bytes)
-        else {
+        let Ok(length) = commands.encode(command, native_weapon, &connection.channel, bytes) else {
             return false;
         };
         let snapshot_request = commands.snapshot_request(&connection.channel);
         transport::send(
             &mut connection.channel,
             time,
-            &mut (),
-            |channel, ()| {
+            &mut false,
+            |channel, _| {
                 channel
                     .prepare_move(&bytes[..length], time, snapshot_request)
                     .is_ok_and(|packet| packet.is_some())
@@ -505,7 +577,10 @@ impl Runtime {
                     .send(qa_core::loopback::Endpoint::Client, id, bytes)
                     .is_ok()
             },
-            |_, (), disposition| disposition != qa_network::channel::Unreliable::Deferred,
+            |channel, included, disposition| {
+                *included |= disposition == qa_network::channel::Unreliable::Included;
+                *included && !channel.pending_fragments()
+            },
         )
         .complete
     }

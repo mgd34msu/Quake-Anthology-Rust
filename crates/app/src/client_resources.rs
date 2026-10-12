@@ -3,7 +3,8 @@ use crate::{client_scene::ClientModelBindings, model_assets::ModelCatalog};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     primitives::{
-        ClientId, EntityRecord, ModelRef, ModuleId, ResourceNamespace, RuleSetId, SpatialPolicy,
+        ClientId, EntityId, EntityRecord, ModelRef, ModuleId, ResourceNamespace, RuleSetId,
+        SpatialPolicy,
     },
 };
 use qa_network::commands::packet::Protocol;
@@ -11,6 +12,9 @@ use qa_network::commands::packet::Protocol;
 pub struct ClientResources {
     pub state: ResourceState,
     commands: qa_network::outputs::ConfigCommandReader,
+    selected: Box<qa_console::command_text::ParsedCommand>,
+    joined: qa_core::text::FixedText<8192>,
+    pub unsupported_commands: u64,
 }
 pub struct ResourceState {
     pub configs: ConfigStrings,
@@ -34,6 +38,9 @@ impl ClientResources {
         };
         Ok(Some(Self {
             commands: qa_network::outputs::ConfigCommandReader::load(),
+            selected: Box::default(),
+            joined: qa_core::text::FixedText::default(),
+            unsupported_commands: 0,
             state: ResourceState {
                 configs: ConfigStrings::load(
                     (0..layout.count).map(|index| layout.capacity(index).unwrap_or(0)),
@@ -65,21 +72,200 @@ impl ClientResources {
     ) -> bool {
         self.state.apply(index, text, catalog, bank)
     }
-    pub fn apply_command(
+}
+
+/// The retained channel and current argv storage are borrowed only for one
+/// synchronous cgame call or the identical engine configuration consumer.
+pub(crate) struct ClientCommandView<'a> {
+    client: ClientId,
+    lifetime: EntityId,
+    channel: &'a mut qa_network::channel::Channel,
+    resources: &'a mut ClientResources,
+    catalog: Option<&'a ModelCatalog>,
+    bank: Option<&'a qa_audio::Bank>,
+    pub(crate) disconnected: bool,
+}
+pub(crate) fn command_view<'a>(
+    client: ClientId,
+    lifetime: EntityId,
+    network: &'a mut qa_network::ingress::Connections,
+    resources: &'a mut [Option<ClientResources>],
+    catalog: Option<&'a ModelCatalog>,
+    bank: Option<&'a qa_audio::Bank>,
+) -> Option<ClientCommandView<'a>> {
+    let channel = &mut network
+        .get_mut(client, qa_core::loopback::Endpoint::Client)?
+        .channel;
+    let resources = resources.get_mut(client.0 as usize)?.as_mut()?;
+    Some(ClientCommandView::new(
+        client, lifetime, channel, resources, catalog, bank,
+    ))
+}
+impl<'a> ClientCommandView<'a> {
+    pub(crate) fn new(
+        client: ClientId,
+        lifetime: EntityId,
+        channel: &'a mut qa_network::channel::Channel,
+        resources: &'a mut ClientResources,
+        catalog: Option<&'a ModelCatalog>,
+        bank: Option<&'a qa_audio::Bank>,
+    ) -> Self {
+        Self {
+            client,
+            lifetime,
+            channel,
+            resources,
+            catalog,
+            bank,
+            disconnected: false,
+        }
+    }
+    fn reject<T>(
         &mut self,
-        text: &[u8],
-        catalog: Option<&ModelCatalog>,
-        bank: Option<&qa_audio::Bank>,
-    ) -> bool {
-        match self.commands.read(text) {
-            Ok(Some(config)) => self
-                .state
-                .apply(config.index as usize, config.text, catalog, bank),
-            Ok(None) => true,
-            Err(_) => {
-                self.state.rejected += 1;
-                false
+        error: qa_compat::services::CallError,
+    ) -> Result<T, qa_compat::services::CallError> {
+        self.resources.state.rejected += 1;
+        self.disconnected = true;
+        Err(error)
+    }
+    pub(crate) fn consume_configuration(
+        &mut self,
+        server: &mut qa_session::clients::Server,
+    ) -> Result<(), qa_compat::services::CallError> {
+        use qa_compat::services::{CallError, ClientServerCommands};
+        let received = self
+            .channel
+            .command_state()
+            .ok_or(CallError::Text)?
+            .received;
+        let executed = self
+            .channel
+            .last_executed_server_command()
+            .map_err(|_| CallError::Text)?;
+        for number in executed + 1..=received {
+            if self.select(number as i32, server)?
+                && !matches!(self.arguments().get_bytes(0), b"cs" | b"map_restart")
+            {
+                self.resources.unsupported_commands += 1;
             }
+        }
+        Ok(())
+    }
+}
+impl qa_compat::services::ClientServerCommands for ClientCommandView<'_> {
+    fn disconnected(&self) -> bool {
+        self.disconnected
+    }
+
+    fn arguments(&self) -> qa_console::command_text::Arguments<'_> {
+        self.resources.selected.arguments()
+    }
+    fn select(
+        &mut self,
+        number: i32,
+        server: &mut qa_session::clients::Server,
+    ) -> Result<bool, qa_compat::services::CallError> {
+        use qa_compat::services::CallError;
+        use qa_network::outputs::ConfigCommandStep;
+        let client = server
+            .clients
+            .get(self.client.0 as usize)
+            .ok_or(CallError::Entity)?;
+        if client.connection.is_none()
+            || client.entity != self.lifetime
+            || server.entities.resolve(self.lifetime).is_none()
+        {
+            return Err(CallError::Entity);
+        }
+        let Ok(sequence) = u32::try_from(number) else {
+            return self.reject(CallError::Text);
+        };
+        let text = match self.channel.server_command(sequence) {
+            Ok(text) => text,
+            Err(_) => return self.reject(CallError::Text),
+        };
+        let parsed = self.resources.selected.parse(text, RuleSetId::Quake3);
+        // Native execution precedes preprocessing, including bcs0/bcs1.
+        if self.channel.executed_server_command(sequence).is_err() || parsed.is_err() {
+            return self.reject(CallError::Text);
+        }
+        loop {
+            let arguments = self.resources.selected.arguments();
+            let step = self.resources.commands.read(
+                arguments.get_bytes(0),
+                arguments.get_bytes(1),
+                arguments.get_bytes(2),
+            );
+            match step {
+                Ok(ConfigCommandStep::Pending) => return Ok(false),
+                Ok(ConfigCommandStep::Rescan(text)) => {
+                    if self
+                        .resources
+                        .selected
+                        .parse(text, RuleSetId::Quake3)
+                        .is_err()
+                    {
+                        return self.reject(CallError::Text);
+                    }
+                    continue;
+                }
+                Ok(ConfigCommandStep::Pass) => {}
+                Err(_) => return self.reject(CallError::ConfigString),
+            }
+            let arguments = self.resources.selected.arguments();
+            match arguments.get_bytes(0) {
+                b"disconnect" => {
+                    self.disconnected = true;
+                    return Err(CallError::Aborted);
+                }
+                b"cs" => {
+                    let (index, _) = qa_core::text::integer_prefix(arguments.get_bytes(1));
+                    let Ok(index) = usize::try_from(index) else {
+                        return self.reject(CallError::ConfigString);
+                    };
+                    if index >= self.resources.state.layout.count
+                        || arguments.join_bytes(2, &mut self.resources.joined).is_err()
+                    {
+                        return self.reject(CallError::ConfigString);
+                    }
+                    if !self.resources.state.apply(
+                        index,
+                        self.resources.joined.as_bytes(),
+                        self.catalog,
+                        self.bank,
+                    ) {
+                        self.disconnected = true;
+                        return Err(CallError::ConfigString);
+                    }
+                    if index == ConfigLayout::Q3_SYSTEM_INFO {
+                        let info = self.resources.joined.as_bytes();
+                        let value = qa_core::text::info_value(info, b"sv_serverid", true)
+                            .map_or(&b""[..], |range| &info[range]);
+                        let mut context = self
+                            .channel
+                            .command_context()
+                            .map_err(|_| CallError::Text)?;
+                        context.server_id = qa_core::text::atoi_prefix(value);
+                        self.channel
+                            .set_command_context(context)
+                            .map_err(|_| CallError::Text)?;
+                    }
+                }
+                b"map_restart" => {
+                    server.clients[self.client.0 as usize]
+                        .hud
+                        .clear_notify(&mut server.events.texts);
+                    // Native CL_GetServerCommand clears CLIENT command history.
+                    // This host has none; authoritative SERVER input survives.
+                }
+                b"clientLevelShot" => {
+                    // Screenshot generation has no shared CLIENT service yet.
+                    self.resources.unsupported_commands += 1;
+                    return Ok(false);
+                }
+                _ => {}
+            }
+            return Ok(true);
         }
     }
 }

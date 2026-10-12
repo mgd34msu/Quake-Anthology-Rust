@@ -199,6 +199,6 @@ fn maximum_snapshot_body_uses_the_native_channel_limit() {
         (Protocol::Quake3_68, 8192),
     ] {
         let channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
-        assert_eq!(channel.snapshot_payload_capacity().unwrap(), expected);
+        assert_eq!(channel.native_payload_capacity().unwrap(), expected);
     }
 }

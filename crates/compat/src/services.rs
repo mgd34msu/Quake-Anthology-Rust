@@ -57,6 +57,14 @@ pub trait ModelLoader: ModelLookup {
     fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
 }
 
+/// One current native CLIENT command, selected from the channel's retained
+/// window for this synchronous module call. It never executes local commands.
+pub trait ClientServerCommands {
+    fn select(&mut self, number: i32, server: &mut Server) -> Result<bool, CallError>;
+    fn arguments(&self) -> qa_console::command_text::Arguments<'_>;
+    fn disconnected(&self) -> bool;
+}
+
 /// Supplied by the module host. No capability inherits another role's rules.
 #[derive(Clone, Copy)]
 pub struct CallContext {
@@ -617,6 +625,7 @@ pub struct EngineServices<'a> {
     pub input: &'a mut qa_input::Input,
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
+    pub client_commands: Option<&'a mut dyn ClientServerCommands>,
     pub vfs: &'a Vfs,
     pub model_loader: Option<&'a mut dyn ModelLoader>,
     pub model_lookup: Option<&'a dyn ModelLookup>,
@@ -676,6 +685,7 @@ pub enum ClipTarget {
     },
 }
 pub struct EngineCallTable {
+    pub server_command: fn(&mut EngineServices<'_>, i32) -> Result<bool, CallError>,
     pub pmove: fn(
         &mut EngineServices<'_>,
         ClientId,
@@ -779,6 +789,12 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
+    server_command: |s, number| {
+        s.client_commands
+            .as_deref_mut()
+            .ok_or(CallError::Text)?
+            .select(number, s.server)
+    },
     pmove: |services, id, native, options| services.pmove(id, native, options),
     in_visibility: |s, first, second, policy, check_portals| {
         let (world, _, row) = s.visibility.as_mut().ok_or(CallError::Geometry)?;

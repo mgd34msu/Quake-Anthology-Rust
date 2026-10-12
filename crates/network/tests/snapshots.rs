@@ -285,7 +285,7 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
                 },
                 channel: Channel::load(QUAKE3, Endpoint::Client, 8192, 16)
                     .map_err(|_| Error::Context)?,
-                commands: Some(Commands::load(Protocol::Quake3_68)),
+                commands: Some(Commands::load(Protocol::Quake3_68, 8192)),
                 output: None,
                 pending_output: None,
             },
@@ -431,9 +431,9 @@ fn native_snapshot_request_tracks_message_ack_before_stale_command_filtering() -
         Channel::load(QUAKE3, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
     let mut client =
         Channel::load(QUAKE3, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
-    let mut incoming = Commands::load(Protocol::Quake3_68);
-    let outgoing = Commands::load(Protocol::Quake3_68);
-    let mut client_output = Commands::load(Protocol::Quake3_68);
+    let mut incoming = Commands::load(Protocol::Quake3_68, 8192);
+    let outgoing = Commands::load(Protocol::Quake3_68, 8192);
+    let mut client_output = Commands::load(Protocol::Quake3_68, 8192);
     let mut ring = Q3Ring::load(8, 1024, 32, None)?;
     assert_eq!(
         deliver_client_move(&client, &outgoing, &mut server, &mut incoming, 20)?,
@@ -481,9 +481,9 @@ fn missing_snapshot_base_requests_full_without_acknowledging_an_invalid_frame() 
         Channel::load(QUAKE3, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
     let mut client =
         Channel::load(QUAKE3, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
-    let mut incoming = Commands::load(Protocol::Quake3_68);
-    let outgoing = Commands::load(Protocol::Quake3_68);
-    let mut client_output = Commands::load(Protocol::Quake3_68);
+    let mut incoming = Commands::load(Protocol::Quake3_68, 8192);
+    let outgoing = Commands::load(Protocol::Quake3_68, 8192);
+    let mut client_output = Commands::load(Protocol::Quake3_68, 8192);
     let mut ring = Q3Ring::load(8, 1024, 32, None)?;
     // First native message is consumed but contains no accepted snapshot.
     deliver_server_message(&mut server, &mut client, &mut client_output, None)?;
@@ -735,7 +735,7 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
     let policy = Protocol::Quake2_34.channel();
     let mut server =
         Channel::load(policy, Endpoint::Server, 8192, 16).map_err(|_| Error::Context)?;
-    let mut commands = Commands::load(Protocol::Quake2_34);
+    let mut commands = Commands::load(Protocol::Quake2_34, 8192);
     let mut connections = Connections::load(1);
     connections
         .bind(
@@ -748,7 +748,7 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
                 },
                 channel: Channel::load(policy, Endpoint::Client, 8192, 16)
                     .map_err(|_| Error::Context)?,
-                commands: Some(Commands::load(Protocol::Quake2_34)),
+                commands: Some(Commands::load(Protocol::Quake2_34, 8192)),
                 output: None,
                 pending_output: None,
             },
@@ -845,7 +845,7 @@ fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Re
     let mut client =
         Channel::load(policy, Endpoint::Client, 8192, 16).map_err(|_| Error::Context)?;
     client.configure_snapshots(Protocol::Quake2_34)?;
-    let mut commands = Commands::load(Protocol::Quake2_34);
+    let mut commands = Commands::load(Protocol::Quake2_34, 8192);
     let mut ring = snapshots::Q2Ring::load(8, 1024, 32, None)?;
     q2_store(&mut ring, 41, &[q2_entity(30, 7., 0)])?;
     let mut payload = [0; 1400];
@@ -1193,14 +1193,14 @@ fn byte_connection(protocol: Protocol) -> Result<(Channel, Commands, Connections
                     .map_err(|_| Error::Context)?,
                 output: None,
                 pending_output: None,
-                commands: Some(Commands::load(protocol)),
+                commands: Some(Commands::load(protocol, 8192)),
             },
         )
         .map_err(|_| Error::Context)?;
     let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
         .map_err(|_| Error::Context)?;
     server.configure_snapshots(protocol)?;
-    Ok((server, Commands::load(protocol), connections))
+    Ok((server, Commands::load(protocol, 8192), connections))
 }
 
 #[test]
@@ -1804,7 +1804,7 @@ fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() 
         &[0; states::QW_PLAYER_WORDS],
         ZERO_QW
     )?);
-    let mut codec = Commands::load(Protocol::QuakeWorld28);
+    let mut codec = Commands::load(Protocol::QuakeWorld28, 8192);
     for (channel, model) in [(&mut client.channel, 42), (&mut other, 88)] {
         let length = codec.stage(writer.bytes())?;
         let mut count = 0;
@@ -2331,7 +2331,7 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
             return Err(Error::Context);
         };
         assert_eq!(timestamp.to_bits(), expected.to_bits());
-        let mut server_commands = Commands::load(Protocol::NetQuake15);
+        let mut server_commands = Commands::load(Protocol::NetQuake15, 8192);
         let mut server_channel =
             Channel::load(Protocol::NetQuake15.channel(), Endpoint::Server, 8192, 16)
                 .map_err(|_| Error::Context)?;

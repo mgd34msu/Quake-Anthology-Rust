@@ -435,7 +435,7 @@ fn connected_channel_delivers_cues_in_order_and_continues_to_the_next_service() 
                     channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap(),
                     output: None,
                     pending_output: None,
-                    commands: Some(Commands::load(protocol)),
+                    commands: Some(Commands::load(protocol, 8192)),
                 },
             )
             .unwrap();

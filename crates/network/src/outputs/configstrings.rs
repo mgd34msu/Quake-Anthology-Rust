@@ -254,100 +254,79 @@ pub fn config_command(
     })
 }
 
-/// Bounded bcs0/1/2 assembly; ordinary commands borrow their incoming payload.
-/// This is native reliable-message decoding, not a second command queue.
+/// Native selection result; lexical parsing belongs to the shared tokenizer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigCommandStep<'a> {
+    Pass,
+    Pending,
+    Rescan(&'a [u8]),
+}
+
+/// One native bcs0/1/2 assembly, not another command queue or tokenizer.
 pub struct ConfigCommandReader {
-    text: Box<[u8]>,
-    length: usize,
-    index: Option<u32>,
+    text: FixedText<BIG_CONFIG_BYTES>,
+    active: bool,
 }
 impl ConfigCommandReader {
     pub fn load() -> Self {
         Self {
-            text: vec![0; BIG_CONFIG_BYTES].into_boxed_slice(),
-            length: 0,
-            index: None,
+            text: FixedText::default(),
+            active: false,
         }
     }
     pub fn reset(&mut self) {
-        self.length = 0;
-        self.index = None;
+        self.text.clear();
+        self.active = false;
     }
-    pub fn read<'a>(&'a mut self, command: &'a [u8]) -> Result<Option<ConfigString<'a>>, Error> {
-        let command = qa_core::text::until_nul(command);
-        let Some(first) = command.iter().position(|b| b.is_ascii_whitespace()) else {
-            return Ok(None);
-        };
-        let verb = &command[..first];
-        if !matches!(verb, b"cs" | b"bcs0" | b"bcs1" | b"bcs2") {
-            return Ok(None);
-        }
-        let rest = trim(&command[first..]);
-        let (index, used) = qa_core::text::integer_prefix(rest);
-        if used == 0
-            || index < 0
-            || index as usize >= ConfigLayout::QUAKE3.count
-            || rest.get(used).is_some_and(|b| !b.is_ascii_whitespace())
-        {
-            self.reset();
-            return Err(Error::Opcode);
-        }
-        let index = index as u32;
-        let value = trim(&rest[used..]);
-        let text = if let Some(quoted) = value.strip_prefix(b"\"") {
-            let end = quoted
-                .iter()
-                .position(|&b| b == b'"')
-                .ok_or(Error::Truncated)?;
-            &quoted[..end]
-        } else {
-            let end = value
-                .iter()
-                .position(|b| b.is_ascii_whitespace())
-                .unwrap_or(value.len());
-            &value[..end]
-        };
-        if verb == b"cs" {
-            return Ok(Some(ConfigString { index, text }));
+    pub fn read<'a>(
+        &'a mut self,
+        verb: &[u8],
+        index_text: &[u8],
+        fragment: &[u8],
+    ) -> Result<ConfigCommandStep<'a>, Error> {
+        if !matches!(verb, b"bcs0" | b"bcs1" | b"bcs2") {
+            return Ok(ConfigCommandStep::Pass);
         }
         if verb == b"bcs0" {
             self.reset();
-            self.index = Some(index);
-        } else if self.index != Some(index) {
-            self.reset();
+            for part in [b"cs ".as_slice(), index_text, b" \"".as_slice()] {
+                if self.text.append_bytes(part).is_err() {
+                    self.reset();
+                    return Err(Error::Opcode);
+                }
+            }
+            self.active = true;
+        } else if !self.active {
             return Err(Error::Opcode);
         }
+        // Native bcs1/2 ignore argv1. Only bcs0 owns the reconstructed index.
         let next = self
-            .length
-            .checked_add(text.len())
+            .text
+            .as_bytes()
+            .len()
+            .checked_add(fragment.len())
+            .and_then(|n| n.checked_add(usize::from(verb == b"bcs2")))
             .ok_or(Error::Truncated)?;
-        // Original BIG_INFO_STRING also includes `cs <index> "` and, on bcs2,
-        // the closing quote. Preserve that boundary rather than silently crop.
-        let prefix = config_prefix("cs", index)?;
-        if next + prefix.as_bytes().len() + usize::from(verb == b"bcs2") >= self.text.len() {
+        if next >= BIG_CONFIG_BYTES {
             self.reset();
             return Err(Error::Message(MessageError {
                 byte: next,
                 kind: ErrorKind::Capacity,
             }));
         }
-        self.text[self.length..next].copy_from_slice(text);
-        self.length = next;
-        if verb != b"bcs2" {
-            return Ok(None);
+        if self.text.append_bytes(fragment).is_err() {
+            self.reset();
+            return Err(Error::Truncated);
         }
-        self.index = None;
-        Ok(Some(ConfigString {
-            index,
-            text: &self.text[..self.length],
-        }))
+        if verb != b"bcs2" {
+            return Ok(ConfigCommandStep::Pending);
+        }
+        self.active = false;
+        self.text
+            .append_bytes(b"\"")
+            .map_err(|_| Error::Truncated)?;
+        Ok(ConfigCommandStep::Rescan(self.text.as_bytes()))
     }
-}
-fn trim(bytes: &[u8]) -> &[u8] {
-    &bytes[bytes
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(bytes.len())..]
 }
 fn config_prefix(verb: &str, index: u32) -> Result<FixedText<32>, Error> {
     let mut prefix = FixedText::default();

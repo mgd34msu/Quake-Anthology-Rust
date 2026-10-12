@@ -201,7 +201,7 @@ fn main() -> Result<(), String> {
                     channel,
                     output: *consumer,
                     pending_output: None,
-                    commands: Some(Commands::load(protocol(slot, q3))),
+                    commands: Some(Commands::load(protocol(slot, q3), 8192)),
                 },
             )
             .map_err(|e| format!("bind {e:?}"))?;
@@ -223,7 +223,7 @@ fn main() -> Result<(), String> {
             .collect::<Result<_, _>>()
             .map_err(|e| e.to_string())?,
         commands: (0..16)
-            .map(|slot| Commands::load(protocol(slot, q3)))
+            .map(|slot| Commands::load(protocol(slot, q3), 8192))
             .collect(),
         pending: vec![[0; 1400]; 16].into_boxed_slice(),
         lengths: [0; 16],

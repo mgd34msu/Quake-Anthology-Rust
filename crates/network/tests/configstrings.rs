@@ -1,8 +1,24 @@
+use qa_console::command_text::{Tokens, tokenize_bytes};
+use qa_core::primitives::RuleSetId;
 use qa_network::{
     commands::packet::Protocol,
-    outputs::{self, ConfigCommandReader, Error},
+    outputs::{self, ConfigCommandReader, ConfigCommandStep, Error},
 };
 mod support;
+
+fn config_step<'a>(
+    reader: &'a mut ConfigCommandReader,
+    bytes: &[u8],
+) -> Result<ConfigCommandStep<'a>, Error> {
+    let mut tokens = Tokens::default();
+    let args = tokenize_bytes(
+        qa_core::text::until_nul(bytes),
+        RuleSetId::Quake3,
+        &mut tokens,
+    )
+    .unwrap();
+    reader.read(args.get_bytes(0), args.get_bytes(1), args.get_bytes(2))
+}
 
 #[test]
 fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
@@ -41,7 +57,7 @@ fn connected_q2_channels_deliver_config_rows_and_continue_the_service_stream() {
     for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
         let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 4).unwrap();
         let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap();
-        let mut commands = Commands::load(protocol);
+        let mut commands = Commands::load(protocol, 8192);
         let mut payload = [0; 64];
         let mut count = outputs::configstring(protocol, 62, b"model\x80", &mut payload).unwrap();
         count += outputs::configstring(protocol, 63, b"", &mut payload[count..]).unwrap();
@@ -342,7 +358,7 @@ fn connected_qw_resources_and_static_sound_share_the_native_service_stream() {
     let protocol = Protocol::QuakeWorld28;
     let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 4).unwrap();
     let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap();
-    let mut commands = Commands::load(protocol);
+    let mut commands = Commands::load(protocol, 8192);
     support::admit_qw_reply(&mut server, 1);
     // Multirow sound list, model row, lightstyle, persistent sound, then print.
     let payload = b"\x2e\0first.wav\0second.wav\0\0\0\x2d\0maps/start.bsp\0\0\0\x0c\0m\0\x1d\x08\0\xf0\xff\x18\0\x02\xff\x40\x08\x02after\0";
@@ -394,7 +410,7 @@ fn connected_qw_resources_and_static_sound_share_the_native_service_stream() {
 }
 
 #[test]
-fn q3_config_chunks_follow_native_999_byte_boundaries_and_reassemble() {
+fn q3_config_chunks_follow_native_999_byte_boundaries_and_shared_cs_rescan() {
     for size in [0, 1, 998, 999, 1000, 1998, 1999, 5000] {
         let text = (0..size)
             .map(|i| if i % 17 == 0 { 0xff } else { b'x' })
@@ -406,14 +422,22 @@ fn q3_config_chunks_follow_native_999_byte_boundaries_and_reassemble() {
         loop {
             let chunk = outputs::config_command(32, &text, sent, &mut bytes).unwrap();
             assert!(chunk.length <= 1024);
-            let record = reader.read(&bytes[..chunk.length]).unwrap();
+            let step = config_step(&mut reader, &bytes[..chunk.length]).unwrap();
             if chunk.complete {
-                let config = record.unwrap();
-                assert_eq!(config.index, 32);
-                assert_eq!(config.text, &text);
+                let command = match step {
+                    ConfigCommandStep::Pass => qa_core::text::until_nul(&bytes[..chunk.length]),
+                    ConfigCommandStep::Rescan(command) => command,
+                    ConfigCommandStep::Pending => panic!("complete configstring"),
+                };
+                let mut tokens = Tokens::default();
+                let args = tokenize_bytes(command, RuleSetId::Quake3, &mut tokens).unwrap();
+                assert_eq!(args.len(), 3);
+                assert_eq!(args.get_bytes(0), b"cs");
+                assert_eq!(args.get_bytes(1), b"32");
+                assert_eq!(args.get_bytes(2), text);
                 break;
             }
-            assert!(record.is_none());
+            assert_eq!(step, ConfigCommandStep::Pending);
             assert_eq!(chunk.next - sent, 999);
             assert!(bytes.starts_with(if fragments == 0 { b"bcs0" } else { b"bcs1" }));
             sent = chunk.next;
@@ -424,25 +448,103 @@ fn q3_config_chunks_follow_native_999_byte_boundaries_and_reassemble() {
 }
 
 #[test]
-fn q3_config_reader_rejects_bad_sequence_and_bounds_without_partial_row() {
+fn q3_bcs_assembly_uses_only_the_initial_index_and_rescans_the_shared_tokens() {
     let mut reader = ConfigCommandReader::load();
-    assert!(reader.read(b"print \"x\"").unwrap().is_none());
-    assert_eq!(reader.read(b"bcs1 32 \"x\""), Err(Error::Opcode));
-    assert!(reader.read(b"bcs0 32 \"abc\"").unwrap().is_none());
-    assert_eq!(reader.read(b"bcs2 33 \"x\""), Err(Error::Opcode));
-    assert_eq!(reader.read(b"bcs2 32 \"x\""), Err(Error::Opcode));
-    assert_eq!(reader.read(b"cs 1024 \"x\""), Err(Error::Opcode));
-    assert_eq!(reader.read(b"cs 32 \"x"), Err(Error::Truncated));
-    let (config, _) = outputs::read_configstring(Protocol::Quake2_34, b"\r\x20\0\0").unwrap();
-    assert_eq!(config.text, b"");
-    let config = reader.read(b"cs 32 \"\"\n").unwrap().unwrap();
-    assert_eq!(config.text, b"");
+    assert_eq!(
+        config_step(&mut reader, b"print \"x\"").unwrap(),
+        ConfigCommandStep::Pass
+    );
+    assert_eq!(
+        config_step(&mut reader, b"bcs1 32 \"x\""),
+        Err(Error::Opcode)
+    );
+    assert_eq!(
+        config_step(&mut reader, b"bcs0 32 \"abc\"").unwrap(),
+        ConfigCommandStep::Pending
+    );
+    assert_eq!(
+        config_step(&mut reader, b"bcs1 ignored \"def\"").unwrap(),
+        ConfigCommandStep::Pending
+    );
+    let ConfigCommandStep::Rescan(command) = config_step(&mut reader, b"bcs2 33 \"ghi\"").unwrap()
+    else {
+        panic!("final BCS must reenter the sole lexer")
+    };
+    assert_eq!(command, b"cs 32 \"abcdefghi\"");
+    let mut tokens = Tokens::default();
+    let args = tokenize_bytes(command, RuleSetId::Quake3, &mut tokens).unwrap();
+    assert_eq!(
+        args.iter_bytes().collect::<Vec<_>>(),
+        [b"cs".as_slice(), b"32", b"abcdefghi"]
+    );
+    assert_eq!(
+        config_step(&mut reader, b"bcs2 32 \"x\""),
+        Err(Error::Opcode)
+    );
+}
+
+#[test]
+fn q3_non_bcs_commands_retain_native_shared_lexer_behavior_for_the_client_processor() {
+    let mut reader = ConfigCommandReader::load();
+    // Index validation belongs to CL_ConfigstringModified, not BCS selection.
+    assert_eq!(
+        config_step(&mut reader, b"cs 1024 \"x\"").unwrap(),
+        ConfigCommandStep::Pass
+    );
+    let mut tokens = Tokens::default();
+    let args = tokenize_bytes(b"cs 32 \"x", RuleSetId::Quake3, &mut tokens).unwrap();
+    assert_eq!(args.get_bytes(2), b"x"); // Native Cmd tokenizer accepts an unmatched final quote.
+    assert_eq!(
+        reader
+            .read(args.get_bytes(0), args.get_bytes(1), args.get_bytes(2))
+            .unwrap(),
+        ConfigCommandStep::Pass
+    );
+    let args = tokenize_bytes(b"cs 32 \"\"\n", RuleSetId::Quake3, &mut tokens).unwrap();
+    assert_eq!(args.len(), 3);
+    assert_eq!(args.get_bytes(2), b"");
+    assert_eq!(
+        reader
+            .read(args.get_bytes(0), args.get_bytes(1), args.get_bytes(2))
+            .unwrap(),
+        ConfigCommandStep::Pass
+    );
+}
+
+#[test]
+fn q3_bcs_capacity_failure_clears_the_unpublished_reconstruction() {
+    let mut reader = ConfigCommandReader::load();
+    let mut command = b"bcs0 32 \"".to_vec();
+    command.extend(std::iter::repeat_n(b'x', 4000));
+    command.push(b'"');
+    assert_eq!(
+        config_step(&mut reader, &command).unwrap(),
+        ConfigCommandStep::Pending
+    );
+    command[..4].copy_from_slice(b"bcs1");
+    assert_eq!(
+        config_step(&mut reader, &command).unwrap(),
+        ConfigCommandStep::Pending
+    );
+    let mut final_command = b"bcs2 ignored \"".to_vec();
+    final_command.extend(std::iter::repeat_n(b'y', 200));
+    final_command.push(b'"');
+    assert!(matches!(
+        config_step(&mut reader, &final_command),
+        Err(Error::Message(_))
+    ));
+    assert_eq!(
+        config_step(&mut reader, b"bcs2 32 \"x\""),
+        Err(Error::Opcode)
+    );
     let mut bytes = [0; 1024];
-    let text = vec![b'x'; 8191];
-    assert!(outputs::config_command(32, &text, 0, &mut bytes).is_err());
-    let mut malicious = b"bcs0 32 \"".to_vec();
-    malicious.extend_from_slice(&text);
-    malicious.push(b'"');
-    assert!(reader.read(&malicious).is_err());
-    assert_eq!(reader.read(b"bcs2 32 \"x\""), Err(Error::Opcode));
+    assert!(outputs::config_command(32, &[b'x'; 8191], 0, &mut bytes).is_err());
+    assert_eq!(
+        config_step(&mut reader, b"bcs0 7 \"new\"").unwrap(),
+        ConfigCommandStep::Pending
+    );
+    assert_eq!(
+        config_step(&mut reader, b"bcs2 999 \" value\"").unwrap(),
+        ConfigCommandStep::Rescan(b"cs 7 \"new value\"")
+    );
 }

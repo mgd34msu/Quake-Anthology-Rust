@@ -386,10 +386,12 @@ const fn client() -> CallTable {
     t.entries[6] = scalar!(cvar_string);
     t.entries[7] = scalar!(argc);
     t.entries[8] = scalar!(argv);
+    t.entries[9] = scalar!(client_args);
     t.entries[10] = scalar!(file_open);
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
+    t.entries[53] = scalar!(client_server_command);
     t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[71] = scalar!(snap_vector);
     t.entries[89] = scalar!(file_seek);
@@ -1723,15 +1725,41 @@ fn cvar_string(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(0)
 }
 fn argc(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    Ok(c.command.len() as u64)
+    Ok(c.services
+        .client_commands
+        .as_deref()
+        .map_or_else(|| c.command.len(), |commands| commands.arguments().len()) as u64)
 }
 fn argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let index = c.arg(0)? as u32 as usize;
     let target = c.pointer(1)?;
     let length = c.length(2)?;
-    c.memory
-        .write_string(target, length, c.command.get(index).copied().unwrap_or(b""))?;
+    let text = c.services.client_commands.as_deref().map_or_else(
+        || c.command.get(index).copied().unwrap_or(b""),
+        |commands| commands.arguments().get_bytes(index),
+    );
+    c.memory.write_string(target, length, text)?;
     Ok(0)
+}
+fn client_args(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let target = c.pointer(0)?;
+    let length = c.length(1)?;
+    let mut text = FixedText::<1024>::default();
+    c.services
+        .client_commands
+        .as_deref()
+        .ok_or(CallError::Text)?
+        .arguments()
+        .join_bytes(1, &mut text)
+        .map_err(|_| CallError::Text)?;
+    c.memory.write_string(target, length, text.as_bytes())?;
+    Ok(0)
+}
+fn client_server_command(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let number = c.arg(0)? as u32 as i32;
+    Ok(u64::from((ENGINE_CALLS.server_command)(
+        c.services, number,
+    )?))
 }
 fn native_argv(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     Ok(c.native_command

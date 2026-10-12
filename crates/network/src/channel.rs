@@ -169,7 +169,9 @@ impl Channel {
             assembly: vec![0; maximum_message].into_boxed_slice(),
             controls: PayloadQueue::load(controls, 1).map_err(|_| Error::Capacity)?,
             transmit: transmit::Transmit::load(policy, maximum_message, endpoint)?,
-            commands: policy.command_ack.then(commands::CommandMessages::load),
+            commands: policy
+                .command_ack
+                .then(|| commands::CommandMessages::load(endpoint, maximum_message)),
             snapshots: if policy.command_ack && endpoint == Endpoint::Client {
                 Some(
                     crate::snapshots::Storage::load(

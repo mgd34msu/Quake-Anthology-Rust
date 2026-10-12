@@ -431,7 +431,7 @@ fn connected_heap() -> Result<(), String> {
     server
         .configure_snapshots(protocol)
         .map_err(|e| e.to_string())?;
-    let mut server_commands = Commands::load(protocol);
+    let mut server_commands = Commands::load(protocol, 8192);
     let mut connections = Connections::load(1);
     connections
         .bind(
@@ -445,7 +445,7 @@ fn connected_heap() -> Result<(), String> {
                 },
                 channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
                     .map_err(|e| format!("{e:?}"))?,
-                commands: Some(Commands::load(protocol)),
+                commands: Some(Commands::load(protocol, 8192)),
                 output: None,
             },
         )
@@ -624,7 +624,7 @@ fn connected_qw_heap() -> Result<(), String> {
     server
         .configure_snapshots(Protocol::QuakeWorld28)
         .map_err(|e| e.to_string())?;
-    let mut server_commands = Commands::load(Protocol::QuakeWorld28);
+    let mut server_commands = Commands::load(Protocol::QuakeWorld28, 8192);
     let mut connections = Connections::load(1);
     connections
         .bind(
@@ -644,7 +644,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 .map_err(|e| e.to_string())?,
                 output: None,
                 pending_output: None,
-                commands: Some(Commands::load(Protocol::QuakeWorld28)),
+                commands: Some(Commands::load(Protocol::QuakeWorld28, 8192)),
             },
         )
         .map_err(|e| format!("QW bind {e:?}"))?;
@@ -878,7 +878,7 @@ fn connected_nq_heap() -> Result<(), String> {
                 },
                 channel: Channel::load(protocol.channel(), Endpoint::Client, 8192, 16)
                     .map_err(|e| e.to_string())?,
-                commands: Some(Commands::load(protocol)),
+                commands: Some(Commands::load(protocol, 8192)),
                 output: None,
             },
         )

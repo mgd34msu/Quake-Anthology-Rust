@@ -9,8 +9,8 @@ mod configstrings;
 mod cues;
 mod static_entities;
 pub use configstrings::{
-    ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring,
-    read_configstring, read_configstrings,
+    ConfigChunk, ConfigCommandReader, ConfigCommandStep, ConfigString, config_command,
+    configstring, read_configstring, read_configstrings,
 };
 use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};

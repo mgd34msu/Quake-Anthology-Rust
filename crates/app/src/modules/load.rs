@@ -12,7 +12,7 @@ use qa_console::{
     views::{Context, Role},
 };
 use qa_core::primitives::ThinkTime;
-use qa_core::primitives::{CallbackId, ModuleId, NativeEntity, RuleSetId};
+use qa_core::primitives::{CallbackId, ClientId, ModuleId, NativeEntity, RuleSetId};
 use qa_core::{loopback::Endpoint, sys_events::SeatId};
 use qa_formats::{archive::ArchiveReader, program::quakec::Image};
 use qa_session::timing::TickRate;
@@ -161,6 +161,7 @@ pub fn load_q3(
         // Native export ordinals live in game/g_public.h, cgame/cg_public.h,
         // and ui/ui_public.h. Each role selects its own import table and phase.
         let mut initialize = [Argument::Word(0); 9];
+        let mut client_binding = None;
         let (phase, side, role, imports, init, frame, shutdown, api) = match spec.role {
             Q3Role::Game => {
                 initialize[0] = Argument::ClockMilliseconds;
@@ -197,16 +198,14 @@ pub fn load_q3(
                         Endpoint::Client,
                     )
                     .ok_or("cgame needs a bound native channel")?;
-                // No native server-command execution exists yet. Restrict this
-                // initial host to fresh bindings, whose executed sequence is 0.
-                if connection
-                    .channel
-                    .command_state()
-                    .is_none_or(|state| state.received != 0)
-                {
-                    return Err("cgame restart needs native server-command dispatch".into());
-                }
+                client_binding = Some(ClientId(index as u32));
                 initialize[0] = Argument::Word(u64::from(connection.channel.state().sequence));
+                initialize[1] = Argument::Word(u64::from(
+                    connection
+                        .channel
+                        .last_executed_server_command()
+                        .map_err(|_| "cgame needs native server-command retention")?,
+                ));
                 initialize[2] = Argument::Word(u64::from(binding.native_client()));
                 (
                     Phase::Client,
@@ -311,7 +310,7 @@ pub fn load_q3(
         finalize.insert(
             0,
             Export {
-                client: None,
+                client: client_binding,
                 callback: CallbackId(shutdown),
                 arguments: [Argument::Word(0); 9],
             },
@@ -344,10 +343,13 @@ pub fn load_q3(
             anchor,
             program,
             entries,
-            frame: Export::clocked(CallbackId(frame)),
+            frame: Export {
+                client: client_binding,
+                ..Export::clocked(CallbackId(frame))
+            },
             prepare,
             initialize: vec![Export {
-                client: None,
+                client: client_binding,
                 callback: CallbackId(init),
                 arguments: initialize,
             }],

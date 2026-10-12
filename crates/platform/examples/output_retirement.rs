@@ -216,7 +216,7 @@ fn run(
                     channel,
                     output: runtime.server.clients[slot as usize].output,
                     pending_output: None,
-                    commands: Some(Commands::load(protocol)),
+                    commands: Some(Commands::load(protocol, 8192)),
                 },
             )
             .map_err(|_| "binding")?;
@@ -247,7 +247,7 @@ fn run(
             channel.set_qport([101, 211][slot]);
             channel
         }),
-        commands: std::array::from_fn(|_| Commands::load(protocol)),
+        commands: std::array::from_fn(|_| Commands::load(protocol, 8192)),
         ack: [0; 1400],
         ack_length: 0,
         unsent,

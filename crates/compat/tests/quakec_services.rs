@@ -238,6 +238,7 @@ fn with_collision_services(
         input: &mut input,
         cvars: &mut cvars,
         commands: &mut commands,
+        client_commands: None,
         vfs: &vfs,
         model_loader: model_loader
             .as_deref_mut()

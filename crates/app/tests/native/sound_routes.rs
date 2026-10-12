@@ -35,7 +35,9 @@ impl RemotePeer {
                     channel,
                     output: None,
                     pending_output: None,
-                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    commands: Some(qa_network::commands::connection::Commands::load(
+                        protocol, 8192,
+                    )),
                 },
             )
             .unwrap();
@@ -507,7 +509,9 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                     channel,
                     output: runtime.server.clients[remote.0 as usize].output,
                     pending_output: None,
-                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    commands: Some(qa_network::commands::connection::Commands::load(
+                        protocol, 8192,
+                    )),
                 },
             )
             .unwrap();
@@ -1040,7 +1044,9 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                     channel,
                     output: runtime.server.clients[remote.0 as usize].output,
                     pending_output: None,
-                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    commands: Some(qa_network::commands::connection::Commands::load(
+                        protocol, 8192,
+                    )),
                 },
             )
             .unwrap();
@@ -1330,7 +1336,9 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                     channel,
                     output: runtime.server.clients[remote.0 as usize].output,
                     pending_output: None,
-                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    commands: Some(qa_network::commands::connection::Commands::load(
+                        protocol, 8192,
+                    )),
                 },
             )
             .unwrap();

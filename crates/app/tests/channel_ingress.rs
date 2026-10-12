@@ -75,6 +75,7 @@ fn host(policy: Policy) -> Result<(FrameHost, [ClientId; 2]), String> {
                             .then(|| {
                                 qa_network::commands::connection::Commands::load(
                                     qa_network::commands::packet::Protocol::QuakeWorld28,
+                                    8192,
                                 )
                             }),
                     },

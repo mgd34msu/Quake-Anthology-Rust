@@ -71,10 +71,10 @@ fn recover<C: Copy>(
     }
 }
 impl Commands {
-    pub fn load(protocol: Protocol) -> Self {
+    pub fn load(protocol: Protocol, maximum_message: usize) -> Self {
         Self {
             protocol,
-            scratch: vec![0; 8192].into_boxed_slice(),
+            scratch: vec![0; maximum_message].into_boxed_slice(),
             previous_time: 0,
             qw_players: (protocol == Protocol::QuakeWorld28)
                 .then(|| crate::projection::PlayerProjection::load(protocol, &[])),
@@ -148,7 +148,7 @@ impl Commands {
                 ],
             },
             Protocol::Quake3_68 => {
-                let mut commands = [ZERO_Q3; 32];
+                let mut commands = [ZERO_Q3; packet::Q3_COMMANDS];
                 commands[0] = to_q3_usercmd(command, native_weapon);
                 Move::Quake3 {
                     commands,

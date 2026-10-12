@@ -153,7 +153,7 @@ fn native_recovery_obeys_packet_gaps_and_retains_only_one_previous_command() {
         for dropped in [0, 1, 2, 3, 19, 20] {
             let mut channel =
                 Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
-            let mut codec = Commands::load(protocol);
+            let mut codec = Commands::load(protocol, 8192);
             let first = admit(
                 &mut codec,
                 &mut channel,
@@ -245,7 +245,7 @@ fn q3_move(times: &[i32], delta: bool) -> Move {
 fn q3_admits_every_new_command_in_order_with_native_timestamp_filters() {
     let protocol = Protocol::Quake3_68;
     let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
-    let mut codec = Commands::load(protocol);
+    let mut codec = Commands::load(protocol, 8192);
     assert_eq!(
         admit(&mut codec, &mut channel, &q3_move(&[100], false), 1).len(),
         1
@@ -325,7 +325,7 @@ fn malformed_or_bad_crc_moves_never_reach_the_command_callback() {
         Protocol::Quake3_68,
     ] {
         let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
-        let mut codec = Commands::load(protocol);
+        let mut codec = Commands::load(protocol, 8192);
         let movement = if protocol == Protocol::Quake3_68 {
             q3_move(&[10, 20], false)
         } else {
@@ -386,7 +386,7 @@ fn ingress_dispatches_command_batches_synchronously_and_preserves_nq_frame_polic
                     channel: Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap(),
                     output: None,
                     pending_output: None,
-                    commands: Some(Commands::load(protocol)),
+                    commands: Some(Commands::load(protocol, 8192)),
                 },
             )
             .unwrap();

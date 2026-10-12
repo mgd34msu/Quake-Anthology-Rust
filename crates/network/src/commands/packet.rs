@@ -143,7 +143,7 @@ pub enum Move {
         commands: [Q2RrCmd; 3],
     },
     Quake3 {
-        commands: [Q3Cmd; 32],
+        commands: [Q3Cmd; Q3_COMMANDS],
         count: u8,
         delta: bool,
     },
@@ -193,6 +193,9 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+pub const Q3_MESSAGE_BYTES: usize = 16384;
+pub const Q3_COMMANDS: usize = 32;
 
 pub const ZERO_QW: QwCmd = QwCmd {
     msec: 0,
@@ -383,7 +386,7 @@ pub fn write_with_commands(
             count,
             delta: delta_snapshot,
         } => {
-            if !(1..=32).contains(count) {
+            if !(1..=Q3_COMMANDS as u8).contains(count) {
                 return Err(Error::Count);
             }
             for word in [
@@ -672,10 +675,10 @@ pub fn read_with_commands(
                     }
                     Protocol::Quake3_68 => {
                         let count = r.read_bits(8)? as u8;
-                        if !(1..=32).contains(&count) {
+                        if !(1..=Q3_COMMANDS as u8).contains(&count) {
                             return Err(Error::Count);
                         }
-                        let mut commands = [ZERO_Q3; 32];
+                        let mut commands = [ZERO_Q3; Q3_COMMANDS];
                         let command_key = key.checksum_feed
                             ^ acknowledgements.message as u32
                             ^ command_key(key.server_command);

@@ -227,7 +227,7 @@ fn replacing_client_resources_tears_down_then_reconnects_after_consumption() {
         channel: Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap(),
         output: None,
         pending_output: None,
-        commands: Some(Commands::load(protocol)),
+        commands: Some(Commands::load(protocol, 8192)),
     };
     assert!(
         runtime

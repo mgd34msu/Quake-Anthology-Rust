@@ -19,12 +19,48 @@ struct Span {
 pub struct Tokens {
     spans: [Span; 1024],
     len: usize,
+    raw: Range<usize>,
 }
 impl Default for Tokens {
     fn default() -> Self {
         Self {
             spans: [Span::default(); 1024],
             len: 0,
+            raw: 0..0,
+        }
+    }
+}
+
+/// The console and a selected native CLIENT command share this bounded parser.
+/// Token spans refer to its current line, never to retained packet storage.
+#[derive(Default)]
+pub struct ParsedCommand {
+    pub(crate) line: FixedText<MAX_TEXT>,
+    pub(crate) tokens: Tokens,
+}
+impl ParsedCommand {
+    pub fn parse(&mut self, text: &[u8], source: RuleSetId) -> Result<(), TextError> {
+        self.line.clear();
+        self.tokens.len = 0;
+        self.tokens.raw = 0..0;
+        self.line
+            .append_bytes(text)
+            .map_err(|_| TextError::TooLong)?;
+        tokenize_bytes(self.line.as_bytes(), source, &mut self.tokens)?;
+        Ok(())
+    }
+    pub fn arguments(&self) -> Arguments<'_> {
+        self.tokens.arguments(self.line.as_bytes())
+    }
+}
+impl Tokens {
+    fn arguments<'a>(&'a self, text: &'a [u8]) -> Arguments<'a> {
+        let raw = &text[self.raw.clone()];
+        Arguments {
+            text,
+            tokens: self,
+            raw_bytes: raw,
+            raw: std::str::from_utf8(raw).unwrap_or(""),
         }
     }
 }
@@ -113,6 +149,7 @@ pub fn tokenize_bytes<'a>(
     tokens: &'a mut Tokens,
 ) -> Result<Arguments<'a>, TextError> {
     tokens.len = 0;
+    tokens.raw = 0..0;
     if text.len() > 8192 {
         return Err(TextError::TooLong);
     }
@@ -224,12 +261,8 @@ pub fn tokenize_bytes<'a>(
             raw = &raw[..raw.len() - 1];
         }
     }
-    Ok(Arguments {
-        text,
-        tokens,
-        raw_bytes: raw,
-        raw: std::str::from_utf8(raw).unwrap_or(""),
-    })
+    tokens.raw = args_start..args_start + raw.len();
+    Ok(tokens.arguments(text))
 }
 
 /// Q2 expands outside quotes, repeats substituted macros, and scopes loops to

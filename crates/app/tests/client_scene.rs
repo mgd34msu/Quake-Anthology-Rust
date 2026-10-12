@@ -629,7 +629,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
     let mut channel =
         Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Client, 8192, 16).unwrap();
     channel.configure_snapshots(Protocol::QuakeWorld28).unwrap();
-    let mut commands = Commands::load(Protocol::QuakeWorld28);
+    let mut commands = Commands::load(Protocol::QuakeWorld28, 8192);
     let mut payload = [0; 1400];
     let mut writer = Writer::new(&mut payload, Encoding::Bytes);
     let mut peer = [0; states::QW_PLAYER_WORDS];

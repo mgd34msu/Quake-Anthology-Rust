@@ -39,3 +39,8 @@ harness = false
 name = "module_signon"
 path = "tests/module_signon.rs"
 harness = false
+
+[[test]]
+name = "client_commands"
+path = "tests/client_commands.rs"
+harness = false

@@ -77,6 +77,9 @@ impl Field {
             value,
         }
     }
+    pub(crate) const fn bit_width(self) -> u8 {
+        self.bits
+    }
     fn equal<const STATE: bool, const PREFIX: bool, const PACKED: bool, const FLOAT_BYTES: bool>(
         self,
         from: u32,

@@ -64,6 +64,11 @@ pub(crate) const Q3_MAX_BYTE_BITS: usize = {
     maximum
 };
 
+/// Maximum native Huffman width, including the raw low remainder bits.
+pub(crate) const fn q3_max_bits(width: u8) -> usize {
+    (width % 8) as usize + (width / 8) as usize * Q3_MAX_BYTE_BITS
+}
+
 /// The caller has already checked the native bit width.
 pub(crate) fn q3_bits(value: u32, width: u8) -> usize {
     let mut shift = width % 8;

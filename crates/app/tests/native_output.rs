@@ -81,7 +81,7 @@ fn remote(runtime: &mut Runtime, protocol: Protocol, port: u16) -> ClientId {
                 channel,
                 output: runtime.server.clients[id.0 as usize].output,
                 pending_output: None,
-                commands: Some(Commands::load(protocol)),
+                commands: Some(Commands::load(protocol, 8192)),
             },
         )
         .unwrap();
@@ -447,7 +447,7 @@ fn queue_move(host: &mut FrameHost, peer: &mut Channel, protocol: Protocol, time
         ..Default::default()
     };
     let mut bytes = [0; 1400];
-    let length = Commands::load(protocol)
+    let length = Commands::load(protocol, 8192)
         .encode(&command, 0, peer, &mut bytes)
         .unwrap();
     let packet = peer

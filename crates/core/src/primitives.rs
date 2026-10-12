@@ -1374,6 +1374,10 @@ impl HudState {
         if let Some(line) = self.centerprint.take() {
             texts.release(line.text);
         }
+        self.clear_notify(texts);
+    }
+
+    pub fn clear_notify(&mut self, texts: &mut crate::events::TextStore) {
         for line in &mut self.notify {
             if let Some(line) = line.take() {
                 texts.release(line.text);

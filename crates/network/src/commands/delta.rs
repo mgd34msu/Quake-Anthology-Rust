@@ -90,6 +90,40 @@ const Q3: [Group; 1] = [Group {
         Field::new(7, 8, 0, Value::Unsigned),
     ],
 }];
+/// Bound the native move series from the same descriptors used by write_q3.
+pub(crate) const fn q3_max_command_bits() -> usize {
+    let mut bits = 0;
+    let mut group = 0;
+    while group < Q3_TIME.len() {
+        let mut field = 0;
+        while field < Q3_TIME[group].fields.len() {
+            // Time chooses either an 8-bit delta or the full native word.
+            bits += 1 + crate::message::q3_max_bits(Q3_TIME[group].fields[field].bit_width());
+            field += 1;
+        }
+        group += 1;
+    }
+    group = 0;
+    while group < Q3.len() {
+        if matches!(
+            Q3[group].presence,
+            Presence::Changed {
+                aggregate: true,
+                ..
+            }
+        ) {
+            bits += 1;
+        }
+        let mut field = 0;
+        while field < Q3[group].fields.len() {
+            bits += 1 + crate::message::q3_max_bits(Q3[group].fields[field].bit_width());
+            field += 1;
+        }
+        group += 1;
+    }
+    bits
+}
+
 pub fn qw_words(c: QwCmd) -> [u32; 11] {
     let mut v = [0; 11];
     v[..3].copy_from_slice(&c.view_angles.0.map(f32::to_bits));

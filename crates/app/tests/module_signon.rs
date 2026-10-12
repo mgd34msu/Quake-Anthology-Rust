@@ -355,7 +355,7 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
                 channel: Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap(),
                 output: None,
                 pending_output: None,
-                commands: Some(Commands::load(protocol)),
+                commands: Some(Commands::load(protocol, 8192)),
             },
             0,
             None,

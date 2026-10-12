@@ -1,7 +1,7 @@
 //! One host-owned command table and fixed command/alias storage for every source.
 use crate::{
     command_buffer::CommandBuffer,
-    command_text::{self, Arguments, TextError, Tokens},
+    command_text::{self, Arguments, ParsedCommand, TextError},
     cvars::{Cvars, WriteError},
     text::MAX_TEXT,
     views::{Context, RuleSetId},
@@ -70,11 +70,6 @@ struct Alias {
     name: Option<NameId>,
     text: FixedText<1024>,
 }
-#[derive(Default)]
-struct Parser {
-    line: FixedText<MAX_TEXT>,
-    tokens: Tokens,
-}
 pub struct Console<H> {
     pub cvars: Cvars,
     pub editor: crate::editor::Editor,
@@ -85,7 +80,7 @@ pub struct Console<H> {
     aliases: Box<[Alias]>,
     alias_by_name: Box<[Option<usize>]>,
     alias_count: usize,
-    parser: Option<Box<Parser>>,
+    parser: Option<Box<ParsedCommand>>,
     joined: FixedText<MAX_TEXT>,
     script: Box<[u8]>,
 }

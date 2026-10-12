@@ -216,6 +216,7 @@ struct Module {
     physics: Option<QwPhysics>,
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
     signon: IndexSpan,
+    client_connection: Option<(ClientId, EntityId)>,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -514,6 +515,33 @@ impl FrameHost {
             if let Program::QuakeC(qc) = &mut request.program {
                 qc.vm.active = state == State::Running;
             }
+            let client_connection = if request.phase == Phase::Client {
+                request
+                    .frame
+                    .client
+                    .map(|id| {
+                        let client = host
+                            .runtime
+                            .server
+                            .clients
+                            .get(id.0 as usize)
+                            .filter(|client| client.connection.is_some())
+                            .ok_or("missing CLIENT module connection")?;
+                        if host
+                            .runtime
+                            .server
+                            .entities
+                            .resolve(client.entity)
+                            .is_none()
+                        {
+                            return Err("stale CLIENT module connection");
+                        }
+                        Ok((id, client.entity))
+                    })
+                    .transpose()?
+            } else {
+                None
+            };
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),
@@ -521,6 +549,7 @@ impl FrameHost {
                 counts: Counts::default(),
                 state,
                 client_api: None,
+                client_connection,
                 clock,
                 physics,
                 duration,
@@ -834,6 +863,7 @@ impl FrameHost {
     }
     pub fn client_modules(&mut self) {
         self.initialize_modules(Phase::Client);
+        self.client_configurations();
         let count = self.modules.as_ref().map_or(0, |m| m.rows.len());
         for index in 0..count {
             let Some(row) = self.module_row(ModuleId(index as u16)) else {
@@ -844,6 +874,40 @@ impl FrameHost {
             }
             let time = row.time(self.time);
             invoke_frame(self, ModuleId(index as u16), time);
+        }
+    }
+    fn client_configurations(&mut self) {
+        for index in 0..self.runtime.server.clients.len() {
+            let client = &self.runtime.server.clients[index];
+            if client.connection.is_none() {
+                continue;
+            }
+            let id = ClientId(index as u32);
+            let lifetime = client.entity;
+            let bound = self.modules.as_ref().is_some_and(|modules| {
+                modules.rows.iter().flatten().any(|row| {
+                    row.state.can_invoke() && row.client_connection == Some((id, lifetime))
+                })
+            });
+            if bound
+                || self
+                    .runtime
+                    .network
+                    .get(id, qa_core::loopback::Endpoint::Client)
+                    .is_none_or(|connection| connection.channel.command_state().is_none())
+            {
+                continue;
+            }
+            let disconnected =
+                if let Some((mut view, server)) = self.runtime.client_command_parts(id, lifetime) {
+                    let _ = view.consume_configuration(server);
+                    view.disconnected
+                } else {
+                    false
+                };
+            if disconnected {
+                self.disconnect_client(id);
+            }
         }
     }
     /// Providers invoke this at their native phase; it adds no think scan.
@@ -1096,9 +1160,31 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     if matches!(row.request.program, Program::QuakeC(_)) {
         return false;
     }
-    let mut services = host
-        .runtime
-        .engine_services(&mut host.console, storage, &mut row.scratch);
+    let client_connection = row.client_connection;
+    if let Some((id, lifetime)) = client_connection
+        && (native_player.is_some_and(|requested| requested != id)
+            || host
+                .runtime
+                .server
+                .clients
+                .get(id.0 as usize)
+                .is_none_or(|client| client.connection.is_none() || client.entity != lifetime)
+            || host.runtime.server.entities.resolve(lifetime).is_none())
+    {
+        return false;
+    }
+    let (mut services, mut client_commands) = host.runtime.engine_service_parts(
+        &mut host.console,
+        storage,
+        &mut row.scratch,
+        client_connection,
+    );
+    if client_connection.is_some() && client_commands.is_none() {
+        return false;
+    }
+    services.client_commands = client_commands
+        .as_mut()
+        .map(|view| view as &mut dyn qa_compat::services::ClientServerCommands);
     row.counts.calls += 1;
     let call_context = context(row.request.context, time);
     let result = match &mut row.request.program {
@@ -1156,7 +1242,16 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
         }
         Program::QuakeC(_) => return false,
     };
-    row.counts.record(result)
+    let accepted = row.counts.record(result);
+    let disconnected = services
+        .client_commands
+        .as_deref()
+        .is_some_and(|commands| commands.disconnected());
+    drop(services);
+    if disconnected && let Some((id, _)) = client_connection {
+        host.disconnect_client(id);
+    }
+    accepted
 }
 fn native_self(
     runtime: &Runtime,

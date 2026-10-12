@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             channel.set_command_context(context)?;
         }
         client.queue_reliable(&command)?;
-        let mut codec = Commands::load(Protocol::Quake3_68);
+        let mut codec = Commands::load(Protocol::Quake3_68, 8192);
         let mut bytes = [0; 16384];
         let n = codec.encode(
             &UserCmd {

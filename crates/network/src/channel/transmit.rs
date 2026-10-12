@@ -266,17 +266,7 @@ impl Channel {
         let endpoint = self.endpoint();
         if let Some(commands) = &mut self.commands {
             let receipt = NativeReceipt(self.transmit.receipt.wrapping_add(1));
-            commands.queue(
-                bytes,
-                receipt,
-                endpoint,
-                (endpoint == Endpoint::Server).then_some(
-                    self.transmit
-                        .command_output
-                        .len()
-                        .min(self.transmit.message.len()),
-                ),
-            )?;
+            commands.queue(bytes, receipt, endpoint)?;
             self.transmit.receipt = receipt.0;
             return Ok(receipt);
         }
@@ -341,9 +331,9 @@ impl Channel {
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         self.prepare_inner(unreliable, time, None, None, None)
     }
-    /// Maximum unreliable snapshot body before native reliable-flight pressure.
+    /// Maximum native message body before reliable-flight pressure.
     /// Successful serialization does not claim submission or acknowledgement.
-    pub fn snapshot_payload_capacity(&self) -> Result<usize, TransmitError> {
+    pub fn native_payload_capacity(&self) -> Result<usize, TransmitError> {
         let header_size = self
             .policy
             .format
@@ -516,7 +506,9 @@ impl Channel {
             length: size,
             unreliable: disposition,
             commit,
-            commands,
+            commands: (disposition == Unreliable::Included)
+                .then_some(commands)
+                .flatten(),
             snapshot_request,
             snapshot: (disposition == Unreliable::Included)
                 .then_some(snapshot)

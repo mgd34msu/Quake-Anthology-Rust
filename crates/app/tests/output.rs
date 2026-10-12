@@ -399,6 +399,7 @@ fn stalled_peer_progress(unsent: bool) {
                     pending_output: None,
                     commands: Some(qa_network::commands::connection::Commands::load(
                         qa_network::commands::packet::Protocol::QuakeWorld28,
+                        8192,
                     )),
                 },
             )

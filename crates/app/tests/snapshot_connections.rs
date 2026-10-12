@@ -79,7 +79,7 @@ impl RemoteReceiver {
                     channel,
                     output: None,
                     pending_output: None,
-                    commands: Some(Commands::load(protocol)),
+                    commands: Some(Commands::load(protocol, 8192)),
                 },
             )
             .unwrap();
@@ -246,7 +246,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId, ClientId, RemoteReceiver) {
                 channel,
                 output: None,
                 pending_output: None,
-                commands: Some(Commands::load(protocol)),
+                commands: Some(Commands::load(protocol, 8192)),
             },
             1,
             None,

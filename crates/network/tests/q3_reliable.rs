@@ -10,7 +10,7 @@ use qa_network::{
 };
 
 fn pair() -> (Channel, Channel) {
-    pair_with_limit(16384)
+    pair_with_limit(packet::Q3_MESSAGE_BYTES)
 }
 fn pair_with_limit(maximum: usize) -> (Channel, Channel) {
     let context = CommandContext {
@@ -51,7 +51,7 @@ fn encoded_command_window_drains_before_ack_and_refunds_only_after_ack() {
         assert!(received.iter().all(|received| received == &text));
         assert_eq!(server.command_state().unwrap().submitted, accepted as u32);
         assert_eq!(server.queue_reliable(&text), Err(TransmitError::Full));
-        let mut codec = Commands::load(Protocol::Quake3_68);
+        let mut codec = Commands::load(Protocol::Quake3_68, maximum);
         move_message(&mut client, &mut server, &mut codec, 16);
         assert_eq!(server.reliable_receipts().len(), accepted as usize);
         assert_eq!(
@@ -74,8 +74,9 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
         movement: [127., -127., 0.],
         ..UserCmd::default()
     };
-    let mut bytes = [0; 8192];
-    let encoder = Commands::load(Protocol::Quake3_68);
+    let maximum = client.native_payload_capacity().unwrap();
+    let mut bytes = vec![0; maximum];
+    let encoder = Commands::load(Protocol::Quake3_68, maximum);
     let n = encoder.encode(&command, 0, client, &mut bytes).unwrap();
     let data = client
         .prepare_move(&bytes[..n], EventTime(time as u64), None)
@@ -138,7 +139,7 @@ fn outputs(server: &mut Channel, client: &mut Channel) -> Vec<Vec<u8>> {
 fn native_commands_and_actual_message_ack_retire_each_direction() {
     let (mut client, mut server) = pair();
     let receipt = client.queue_reliable(b"userinfo \"name native\"").unwrap();
-    let mut codec = Commands::load(Protocol::Quake3_68);
+    let mut codec = Commands::load(Protocol::Quake3_68, 8192);
     move_message(&mut client, &mut server, &mut codec, 16);
     assert_eq!(
         server.received_command().unwrap(),
@@ -220,7 +221,7 @@ fn rejected_packet_and_partial_fragments_cannot_ack_queued_commands() {
     }
     assert_eq!(texts.len(), 64);
     assert_eq!(server.command_state().unwrap().submitted, 64);
-    let mut codec = Commands::load(Protocol::Quake3_68);
+    let mut codec = Commands::load(Protocol::Quake3_68, 8192);
     move_message(&mut client, &mut server, &mut codec, 16);
     assert_eq!(server.reliable_receipts().len(), 64);
     assert_eq!(server.reliable_receipts()[0], NativeReceipt(1));
@@ -280,7 +281,287 @@ fn native_string_width_gaps_duplicates_and_future_ack_are_bounded() {
     assert_eq!(server.command_state().unwrap().submitted, 1);
     assert!(server.acknowledge_commands(2, 1).is_err());
     assert!(server.acknowledge_commands(1, 0).is_err());
-    let mut codec = Commands::load(Protocol::Quake3_68);
+    let mut codec = Commands::load(Protocol::Quake3_68, 8192);
     move_message(&mut client, &mut server, &mut codec, 16);
     assert_eq!(server.reliable_receipts(), &[receipt]);
+}
+
+#[derive(Debug, PartialEq)]
+enum ClientRecord {
+    Reliable(u32, Vec<u8>),
+    Move {
+        time: i32,
+        movement: [f32; 3],
+        weapon: u8,
+    },
+}
+
+fn client_records(
+    server: &mut Channel,
+    codec: &mut Commands,
+    packet_bytes: &[u8],
+    records: &mut Vec<ClientRecord>,
+) -> bool {
+    let received = server.receive(packet_bytes, EventTime(1)).unwrap();
+    let sequence = received.header.sequence;
+    let Delivery::Payload(payload) = received.delivery else {
+        assert_eq!(received.delivery, Delivery::Pending);
+        return false;
+    };
+    let length = codec.stage(payload).unwrap();
+    assert_eq!(
+        codec
+            .decode(length, sequence, 100, server, None, |incoming| {
+                match incoming {
+                    qa_network::ingress::Incoming::CommandString { sequence, text, .. } => {
+                        records.push(ClientRecord::Reliable(sequence.unwrap(), text.to_vec()));
+                    }
+                    qa_network::ingress::Incoming::Command {
+                        command,
+                        native_weapon,
+                        ..
+                    } => {
+                        records.push(ClientRecord::Move {
+                            time: command.server_time_ms,
+                            movement: command.movement,
+                            weapon: native_weapon.unwrap(),
+                        });
+                    }
+                    _ => panic!("unexpected CLIENT record"),
+                }
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap(),
+        1
+    );
+    true
+}
+
+fn movement(time: i32) -> UserCmd {
+    UserCmd {
+        server_time_ms: time,
+        duration_ms: 16,
+        movement: [127., -127., 0.],
+        ..UserCmd::default()
+    }
+}
+
+#[test]
+fn client_encoded_windows_retain_rejected_fragments_and_refund_only_native_acks() {
+    for maximum in [8192, packet::Q3_MESSAGE_BYTES, 32768] {
+        let (mut client, mut server) = pair_with_limit(maximum);
+        let mut texts = Vec::new();
+        for sequence in 1..=64 {
+            let mut text = format!("command {sequence} ").into_bytes();
+            text.resize(900, b'x');
+            match client.queue_reliable(&text) {
+                Ok(receipt) => {
+                    assert_eq!(receipt, NativeReceipt(sequence));
+                    texts.push(text);
+                }
+                Err(TransmitError::Full) => break,
+                other => panic!("individually representable CLIENT command: {other:?}"),
+            }
+        }
+        let accepted = texts.len() as u32;
+        assert!(accepted > 2 && accepted < 64);
+        assert_eq!(client.queue_reliable(&texts[0]), Err(TransmitError::Full));
+        assert_eq!(client.command_state().unwrap().submitted, 0);
+        assert!(client.acknowledge_commands(accepted, 1).is_err());
+        let encoder = Commands::load(Protocol::Quake3_68, maximum);
+        let mut codec = Commands::load(Protocol::Quake3_68, maximum);
+        let mut encoded = vec![0; maximum];
+        let length = encoder
+            .encode(&movement(16), 7, &client, &mut encoded)
+            .unwrap();
+        assert!(length > 1400 && length <= maximum);
+        client
+            .prepare_move(&encoded[..length], EventTime(1), None)
+            .unwrap()
+            .unwrap();
+        let mut records = Vec::new();
+        let mut fragment = 0;
+        let mut rejected_middle = false;
+        let mut rejected_final = false;
+        loop {
+            if client.pending_packet().is_none() {
+                client.prepare(None, EventTime(1)).unwrap().unwrap();
+            }
+            let packet_bytes = client.pending_packet().unwrap().bytes.to_vec();
+            assert!(packet_bytes.len() <= 1400);
+            let (header, _) = qa_network::headers::decode(
+                qa_network::headers::QUAKE3,
+                qa_network::headers::Direction::ToServer,
+                &packet_bytes,
+            )
+            .unwrap();
+            let final_fragment = !header.fragment.unwrap().more;
+            if fragment == 1 || final_fragment {
+                let before = client.send_state();
+                assert_eq!(
+                    client
+                        .submit_with(EventTime(1), |offered| {
+                            assert_eq!(offered, packet_bytes);
+                            false
+                        })
+                        .unwrap(),
+                    None
+                );
+                assert_eq!(client.send_state(), before);
+                assert_eq!(client.pending_packet().unwrap().bytes, packet_bytes);
+                assert_eq!(client.command_state().unwrap().submitted, 0);
+                assert!(
+                    client
+                        .acknowledge_commands(accepted, header.sequence)
+                        .is_err()
+                );
+                assert_eq!(client.queue_reliable(&texts[0]), Err(TransmitError::Full));
+                rejected_middle |= fragment == 1;
+                rejected_final |= final_fragment;
+            }
+            assert!(
+                client
+                    .submit_with(EventTime(1), |offered| {
+                        assert_eq!(offered, packet_bytes);
+                        true
+                    })
+                    .unwrap()
+                    .is_some()
+            );
+            let completed = client_records(&mut server, &mut codec, &packet_bytes, &mut records);
+            assert_eq!(completed, final_fragment);
+            if completed {
+                break;
+            }
+            assert!(records.is_empty());
+            assert_eq!(client.command_state().unwrap().submitted, 0);
+            fragment += 1;
+        }
+        assert!(rejected_middle && rejected_final);
+        assert!(!client.pending_fragments());
+        assert_eq!(client.command_state().unwrap().submitted, accepted);
+        assert_eq!(client.command_state().unwrap().acknowledged, 0);
+        let mut expected: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| ClientRecord::Reliable(index as u32 + 1, text.clone()))
+            .collect();
+        expected.push(ClientRecord::Move {
+            time: 16,
+            movement: [127., -127., 0.],
+            weapon: 7,
+        });
+        assert_eq!(records, expected);
+        assert_eq!(client.queue_reliable(&texts[0]), Err(TransmitError::Full));
+
+        // The SERVER's ordinary native response carries the actual reliable
+        // acknowledgement; submission alone has not reclaimed this budget.
+        assert!(outputs(&mut server, &mut client).is_empty());
+        assert_eq!(client.command_state().unwrap().acknowledged, accepted);
+        assert_eq!(client.reliable_receipts().len(), accepted as usize);
+        for (index, receipt) in client.reliable_receipts().iter().enumerate() {
+            assert_eq!(*receipt, NativeReceipt(index as u64 + 1));
+        }
+        let receipt = client.queue_reliable(&texts[0]).unwrap();
+        assert_eq!(receipt, NativeReceipt(u64::from(accepted) + 1));
+    }
+}
+
+#[test]
+fn newer_client_command_cannot_inherit_an_older_fragment_flights_submission() {
+    let maximum = packet::Q3_MESSAGE_BYTES;
+    let (mut client, mut server) = pair_with_limit(maximum);
+    let a = [b'x'; 900];
+    let b = b"later command";
+    client.queue_reliable(&a).unwrap();
+    client.queue_reliable(&a).unwrap();
+    let encoder = Commands::load(Protocol::Quake3_68, maximum);
+    let mut codec = Commands::load(Protocol::Quake3_68, maximum);
+    let mut encoded = vec![0; maximum];
+    let length = encoder
+        .encode(&movement(16), 7, &client, &mut encoded)
+        .unwrap();
+    let first = client
+        .prepare_move(&encoded[..length], EventTime(1), None)
+        .unwrap()
+        .unwrap()
+        .bytes
+        .to_vec();
+    client.submit_with(EventTime(1), |_| true).unwrap().unwrap();
+    let mut records = Vec::new();
+    assert!(!client_records(
+        &mut server,
+        &mut codec,
+        &first,
+        &mut records
+    ));
+    assert_eq!(client.command_state().unwrap().submitted, 0);
+    client.queue_reliable(b).unwrap();
+    let next = encoder
+        .encode(&movement(32), 9, &client, &mut encoded)
+        .unwrap();
+    while client.pending_fragments() {
+        // Even this direct caller supplies a newer body and watermark. The
+        // channel must keep both attached to their original encoded flight.
+        let packet_bytes = client
+            .prepare_move(&encoded[..next], EventTime(2), None)
+            .unwrap()
+            .unwrap()
+            .bytes
+            .to_vec();
+        client.submit_with(EventTime(2), |_| true).unwrap().unwrap();
+        client_records(&mut server, &mut codec, &packet_bytes, &mut records);
+    }
+    assert_eq!(client.command_state().unwrap().queued, 3);
+    assert_eq!(client.command_state().unwrap().submitted, 2);
+    assert!(client.acknowledge_commands(3, 1).is_err());
+    assert_eq!(
+        records,
+        [
+            ClientRecord::Reliable(1, a.to_vec()),
+            ClientRecord::Reliable(2, a.to_vec()),
+            ClientRecord::Move {
+                time: 16,
+                movement: [127., -127., 0.],
+                weapon: 7
+            },
+        ]
+    );
+    assert!(outputs(&mut server, &mut client).is_empty());
+    assert_eq!(
+        client.reliable_receipts(),
+        &[NativeReceipt(1), NativeReceipt(2)]
+    );
+
+    // Only a fresh native message can submit B, after A's real ACK.
+    let length = encoder
+        .encode(&movement(32), 9, &client, &mut encoded)
+        .unwrap();
+    let packet_bytes = client
+        .prepare_move(&encoded[..length], EventTime(3), None)
+        .unwrap()
+        .unwrap()
+        .bytes
+        .to_vec();
+    client.submit_with(EventTime(3), |_| true).unwrap().unwrap();
+    assert!(client_records(
+        &mut server,
+        &mut codec,
+        &packet_bytes,
+        &mut records
+    ));
+    assert_eq!(
+        &records[3..],
+        &[
+            ClientRecord::Reliable(3, b.to_vec()),
+            ClientRecord::Move {
+                time: 32,
+                movement: [127., -127., 0.],
+                weapon: 9
+            },
+        ]
+    );
+    assert_eq!(client.command_state().unwrap().submitted, 3);
+    assert!(outputs(&mut server, &mut client).is_empty());
+    assert_eq!(client.reliable_receipts(), &[NativeReceipt(3)]);
 }

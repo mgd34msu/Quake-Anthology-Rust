@@ -32,8 +32,8 @@ fn q3_connection_preserves_every_projected_weapon_byte_without_casting_common_id
     let client = Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 8).unwrap();
     let mut server =
         Channel::load(Protocol::Quake3_68.channel(), Endpoint::Server, 8192, 8).unwrap();
-    let outgoing = Commands::load(Protocol::Quake3_68);
-    let mut incoming = Commands::load(Protocol::Quake3_68);
+    let outgoing = Commands::load(Protocol::Quake3_68, 8192);
+    let mut incoming = Commands::load(Protocol::Quake3_68, 8192);
     let mut bytes = [0; 1400];
     for number in 0..=u8::MAX {
         let command = UserCmd {
@@ -128,7 +128,7 @@ fn qw_delta_requests_are_outside_crc_and_replace_per_message()
         8192,
         8,
     )?;
-    let mut connection = Commands::load(Protocol::QuakeWorld28);
+    let mut connection = Commands::load(Protocol::QuakeWorld28, 8192);
     let n = connection.stage(&message)?;
     assert_eq!(
         connection.decode(n, 17, 0, &mut channel, None, |_| {

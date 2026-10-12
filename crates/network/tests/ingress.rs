@@ -285,7 +285,7 @@ fn negotiated_repro_bind_uses_channel_compatibility() -> Result<(), String> {
                     channel,
                     output: None,
                     pending_output: None,
-                    commands: Some(Commands::load(Protocol::Quake2Repro1038)),
+                    commands: Some(Commands::load(Protocol::Quake2Repro1038, 8192)),
                 },
             )
             .map_err(|e| format!("{e:?}"))?;

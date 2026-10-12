@@ -203,7 +203,7 @@ fn packet_ack_observations_preserve_retained_backup_origin_without_invented_samp
     let mut channel = channel();
     submit(&mut channel, 46, source(4));
     submit(&mut channel, 48, source(8));
-    let mut commands = Commands::load(Protocol::Quake2Repro1038);
+    let mut commands = Commands::load(Protocol::Quake2Repro1038, 8192);
     assert_eq!(
         moves(&mut commands, &mut channel, 1, 46, [0., 0., 10.]),
         [(10., Some(source(4)))]
@@ -328,7 +328,7 @@ fn different_protocol_ack_fields_project_the_same_native_provider_observation() 
             ..Default::default()
         };
         let length = packet::write(&mut bytes, &movement, 1, key).unwrap();
-        let mut commands = Commands::load(protocol);
+        let mut commands = Commands::load(protocol, 8192);
         let length = commands.stage(&bytes[..length]).unwrap();
         let mut observed = Vec::new();
         commands
@@ -381,7 +381,7 @@ fn classic_q2_repeats_keep_their_original_snapshot_observation() {
             .unwrap();
         channel.submitted(EventTime(1)).unwrap();
     }
-    let mut commands = Commands::load(Protocol::Quake2_34);
+    let mut commands = Commands::load(Protocol::Quake2_34, 8192);
     assert_eq!(
         moves(&mut commands, &mut channel, 1, 46, [0., 0., 10.]),
         [(10., Some(source(4)))]
@@ -439,7 +439,7 @@ fn qw_suffix_provenance_uses_only_delta_records_before_native_abort() {
         let Delivery::Payload(body) = received.delivery else {
             panic!("native request")
         };
-        let mut commands = Commands::load(protocol);
+        let mut commands = Commands::load(protocol, 8192);
         let length = commands.stage(body).unwrap();
         let mut observed = Vec::new();
         let result = commands.decode(length, sequence, 10, &mut channel, None, |incoming| {

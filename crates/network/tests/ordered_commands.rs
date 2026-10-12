@@ -99,7 +99,7 @@ fn seen(incoming: Incoming<'_>) -> Seen {
 }
 fn deliver(protocol: Protocol, bytes: &[u8]) -> (Result<usize, packet::Error>, Vec<Seen>) {
     let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
-    let mut commands = Commands::load(protocol);
+    let mut commands = Commands::load(protocol, 8192);
     let length = commands.stage(bytes).unwrap();
     let mut output = Vec::new();
     let result = commands.decode(length, 7, 16, &mut channel, None, |incoming| {
@@ -242,7 +242,7 @@ fn native_disconnect_and_callback_stop_leave_the_tail_unexecuted() {
         string(&mut bytes, b"disconnect");
         bytes.extend(move_bytes(protocol, 11));
         let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
-        let mut commands = Commands::load(protocol);
+        let mut commands = Commands::load(protocol, 8192);
         let length = commands.stage(&bytes).unwrap();
         let mut output = Vec::new();
         assert_eq!(
@@ -284,7 +284,7 @@ fn q3_new_reliable_strings_precede_moves_and_duplicates_never_execute_twice() {
     let bytes = q3_text_move(&[(1, b"say \x80%")]);
     let mut channel =
         Channel::load(Protocol::Quake3_68.channel(), Endpoint::Server, 8192, 16).unwrap();
-    let mut commands = Commands::load(Protocol::Quake3_68);
+    let mut commands = Commands::load(Protocol::Quake3_68, 8192);
     for (expected_count, expected) in [
         (1, vec![Seen::Text(b"say ..".to_vec()), Seen::Move(11)]),
         (0, vec![]),

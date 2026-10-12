@@ -39,7 +39,7 @@ pub fn admit_qw_reply(channel: &mut Channel, sequence: u32) {
     let Delivery::Payload(body) = received.delivery else {
         panic!("native QW request")
     };
-    let mut commands = Commands::load(Protocol::QuakeWorld28);
+    let mut commands = Commands::load(Protocol::QuakeWorld28, 8192);
     let length = commands.stage(body).unwrap();
     commands
         .decode(length, sequence, 0, channel, None, |_| {

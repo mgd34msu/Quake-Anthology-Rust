@@ -124,6 +124,8 @@ const fn span(first: u32, count: u32) -> IndexSpan {
     IndexSpan { first, count }
 }
 impl ConfigLayout {
+    pub const Q3_SYSTEM_INFO: usize = 1;
+
     pub const QUAKE: Self = Self {
         rules: RuleSetId::Quake,
         count: 576,

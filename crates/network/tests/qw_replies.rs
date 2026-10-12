@@ -6,7 +6,7 @@ use qa_network::{
 
 fn request(client: &mut Channel, server: &mut Channel, codec: &mut Commands) -> Vec<u8> {
     let mut body = [0; 1400];
-    let writer = Commands::load(Protocol::QuakeWorld28);
+    let writer = Commands::load(Protocol::QuakeWorld28, 8192);
     let length = writer
         .encode(&UserCmd::default(), 0, client, &mut body)
         .unwrap();
@@ -38,7 +38,7 @@ fn request(client: &mut Channel, server: &mut Channel, codec: &mut Commands) -> 
 fn qw_server_grants_one_reply_per_native_request_and_keeps_rejected_submission_pending() {
     let mut server = Channel::load(channel::QUAKEWORLD, Endpoint::Server, 8192, 16).unwrap();
     let mut client = Channel::load(channel::QUAKEWORLD, Endpoint::Client, 8192, 16).unwrap();
-    let mut codec = Commands::load(Protocol::QuakeWorld28);
+    let mut codec = Commands::load(Protocol::QuakeWorld28, 8192);
     let receipt = server.queue_reliable(b"retained").unwrap();
     assert!(server.prepare_output(EventTime(0)).unwrap().is_none());
     assert!(

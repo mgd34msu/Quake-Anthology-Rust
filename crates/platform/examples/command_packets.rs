@@ -47,6 +47,7 @@ fn main() -> Result<(), String> {
     }
     let mut qw_connection = qa_network::commands::connection::Commands::load(
         qa_network::commands::packet::Protocol::QuakeWorld28,
+        8192,
     );
     let mut qw_channel = qa_network::channel::Channel::load(
         qa_network::channel::QUAKEWORLD,

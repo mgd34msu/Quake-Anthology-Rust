@@ -241,7 +241,7 @@ impl SnapshotBinding {
         self.entities
             .prepare_qw_players(&mut source, &self.projection, numbers)?;
         let capacity = channel
-            .snapshot_payload_capacity()
+            .native_payload_capacity()
             .map_err(|_| Error::Context)?;
         let length = bytes.len().min(capacity);
         let bytes = &mut bytes[..length];
