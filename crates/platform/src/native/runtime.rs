@@ -480,6 +480,37 @@ pub fn function(number: u32) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.number == number)
 }
 impl Function {
+    /// Pointer-width admission is separate from resolving the import name.
+    /// The i386 platform gate currently admits scalar/byte-oriented services;
+    /// Windows object, TLS and CRT pointer-table layouts still require their
+    /// own verified 32-bit module boundary before admission can be widened.
+    pub(crate) fn supports_pointer_bytes(&self, pointer_bytes: u8) -> bool {
+        pointer_bytes == 8
+            || (pointer_bytes == 4
+                && matches!(
+                    self.operation,
+                    Operation::Format { .. }
+                        | Operation::Copy
+                        | Operation::Fill
+                        | Operation::Strncpy
+                        | Operation::Length
+                        | Operation::Compare(_)
+                        | Operation::Find(_)
+                        | Operation::Math(_, _)
+                        | Operation::Malloc
+                        | Operation::Calloc
+                        | Operation::Realloc
+                        | Operation::Free
+                        | Operation::TagMalloc
+                        | Operation::FreeTags
+                        | Operation::Crt(
+                            Crt::Zero | Crt::Sort | Crt::Errno | Crt::Substring | Crt::Float
+                        )
+                ))
+            || (pointer_bytes == 4
+                && matches!(self.operation, Operation::Crt(Crt::Integer))
+                && self.result == NativeScalar::I32)
+    }
     pub fn windows_provider(&self, name: &[u8]) -> bool {
         if self.provider == ENGINE_ABI {
             return false;

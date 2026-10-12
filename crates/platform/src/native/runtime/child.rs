@@ -200,8 +200,8 @@ struct Runtime {
 static CHILD: OnceLock<Runtime> = OnceLock::new();
 
 pub(super) enum ImportBinding {
-    Engine(Option<(crate::native::NativeAbi, crate::native::NativeListFilter)>),
-    Formatted(crate::native::NativeAbi, crate::native::NativeFormat),
+    Engine(NativeEntry, Option<crate::native::NativeListFilter>),
+    Formatted(NativeEntry, crate::native::NativeFormat),
     Runtime(&'static Function, NativeEntry),
     Trap,
 }
@@ -222,10 +222,12 @@ pub(super) fn initialize(
         if let ImportBinding::Formatted(_, format) = binding {
             memory.range(format.buffer, usize::from(format.capacity), 3)?;
         }
-        if let ImportBinding::Engine(Some((_, filter))) = binding {
+        if let ImportBinding::Engine(_, Some(filter)) = binding {
             memory.range(
                 filter.buffer,
-                filter.byte_length().ok_or(NativeError::Extent)?,
+                filter
+                    .byte_length_for_width(size_of::<usize>() as u8)
+                    .ok_or(NativeError::Extent)?,
                 3,
             )?;
         }
@@ -278,16 +280,17 @@ pub(super) fn invoke(
 ) -> Result<Option<ImportResult>, NativeError> {
     let runtime = CHILD.get().ok_or(NativeError::Protocol)?;
     let (function, entry) = match runtime.imports.get(ordinal).ok_or(NativeError::Protocol)? {
-        ImportBinding::Engine(filter) => {
-            return filter.map_or(Ok(None), |(abi, filter)| {
-                runtime.filtered(ordinal, abi, filter, words, floats)
+        ImportBinding::Engine(entry, filter) => {
+            return filter.map_or(Ok(None), |filter| {
+                runtime.filtered(ordinal, *entry, filter, words, floats)
             });
         }
-        ImportBinding::Formatted(abi, format) => {
+        ImportBinding::Formatted(entry, format) => {
             let formatted = || {
-                let arguments = format::Arguments::direct(
+                let mut arguments = entry.unpack(words, floats);
+                let cursor = format::Arguments::direct(
                     &runtime.memory,
-                    *abi,
+                    entry.abi,
                     usize::from(format.format) + 1,
                     words,
                     floats,
@@ -297,12 +300,12 @@ pub(super) fn invoke(
                     &runtime.memory,
                     format.buffer,
                     usize::from(format.capacity),
-                    words[usize::from(format.format)],
-                    arguments,
+                    arguments[usize::from(format.format)],
+                    cursor,
                     false,
                 )?;
-                let mut words = words;
-                words[usize::from(format.format)] = format.buffer;
+                arguments[usize::from(format.format)] = format.buffer;
+                let (words, floats) = entry.pack(arguments);
                 Ok(Some(super::host_import(ordinal as u64, words, floats, 1)))
             };
             return formatted().map_err(|_: NativeError| NativeError::ImportTrap {
@@ -358,12 +361,14 @@ impl Runtime {
     fn filtered(
         &self,
         ordinal: usize,
-        abi: crate::native::NativeAbi,
+        entry: NativeEntry,
         filter: crate::native::NativeListFilter,
         mut words: [u64; 13],
         floats: [u64; 8],
     ) -> Result<Option<ImportResult>, NativeError> {
         use crate::native::NativeScalar::{U32, Word};
+        words = entry.unpack(words, floats);
+        let pointer_bytes = size_of::<usize>();
         let callback = words[usize::from(filter.callback)];
         if callback == 0 {
             return Ok(None);
@@ -373,8 +378,13 @@ impl Runtime {
         let limit =
             usize::try_from(words[usize::from(filter.limit)]).map_err(|_| NativeError::Extent)?;
         if output != 0 && limit != 0 {
-            self.memory
-                .range(output, limit.checked_mul(8).ok_or(NativeError::Extent)?, 3)?;
+            self.memory.range(
+                output,
+                limit
+                    .checked_mul(pointer_bytes)
+                    .ok_or(NativeError::Extent)?,
+                3,
+            )?;
         }
         let data = words[usize::from(filter.data)];
         let depth = self.filter_depth.fetch_add(1, Ordering::Relaxed);
@@ -388,11 +398,13 @@ impl Runtime {
         if depth >= usize::from(filter.depth) {
             return Err(NativeError::Extent);
         }
-        let scratch = filter.buffer + depth as u64 * u64::from(filter.capacity) * 8;
+        let scratch =
+            filter.buffer + depth as u64 * u64::from(filter.capacity) * pointer_bytes as u64;
         words[usize::from(filter.list)] = scratch;
         words[usize::from(filter.limit)] = u64::from(filter.capacity);
         words[usize::from(filter.callback)] = 0;
         words[usize::from(filter.data)] = 0;
+        let (words, floats) = entry.pack(words);
         let result = super::host_import(ordinal as u64, words, floats, 1);
         if result.value > u64::from(filter.capacity) {
             return Err(NativeError::Protocol);
@@ -402,14 +414,21 @@ impl Runtime {
             if limit != 0 && kept == limit {
                 break;
             }
-            let entity = self.memory.unsigned(scratch + index * 8, 8)?;
+            let entity = self
+                .memory
+                .unsigned(scratch + index * pointer_bytes as u64, pointer_bytes)?;
             // All byte reads and the engine's area borrow end before the native
             // callback. Nested imports reuse the one kernel-parked shared slot;
             // nested filtered calls claim another fixed bank.
-            let decision = self.foreign(callback, abi, &[Word, Word], U32, &[entity, data])? as u32;
+            let decision =
+                self.foreign(callback, entry.abi, &[Word, Word], U32, &[entity, data])? as u32;
             if decision & !filter.end == filter.keep {
                 if output != 0 && limit != 0 {
-                    self.memory.put(output + kept as u64 * 8, 8, entity)?;
+                    self.memory.put(
+                        output + kept as u64 * pointer_bytes as u64,
+                        pointer_bytes,
+                        entity,
+                    )?;
                 }
                 kept += 1;
             }
@@ -458,7 +477,7 @@ impl Runtime {
         arguments: &[u64],
     ) -> Result<u64, NativeError> {
         self.memory.range(address, 1, 4)?;
-        let entry = NativeEntry::bind(address, abi, kinds, result)?;
+        let entry = NativeEntry::bind(address, abi, size_of::<usize>() as u8, kinds, result)?;
         if arguments.len() != entry.argument_count() {
             return Err(NativeError::Protocol);
         }
@@ -467,14 +486,14 @@ impl Runtime {
         let (words, floats) = entry.pack(words);
         // SAFETY: the hardware gate captures the current shared guest RSP.
         // A nested call uses untouched stack below it, preserving the red zone.
-        let top = unsafe { super::x64::callback_top() };
+        let top = unsafe { super::hardware::callback_top() };
         self.memory
             .range(top.checked_sub(112).ok_or(NativeError::Extent)?, 112, 3)?;
         // SAFETY: checked executable target and load-selected scalar ABI. All
         // mapped-byte accessors and heap locks have ended before foreign code;
         // the gate saves/restores its private frame and outer import state.
         let value = entry.result(unsafe {
-            super::x64::call(address, abi as u64, &words, top, &floats, entry.control)
+            super::hardware::call(address, abi as u64, &words, top, &floats, entry.control)
         });
         if let Some((ordinal, address)) = super::child_trap() {
             return Err(NativeError::ImportTrap { ordinal, address });

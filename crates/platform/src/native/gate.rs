@@ -9,13 +9,48 @@ use std::{
 };
 
 pub(super) const MAGIC: u64 = 0x5141_524e;
-pub(super) const SYSCALL: i32 = 39; // getpid is intercepted, never continued.
-pub(super) const ARCH: u32 = 0xc000_003e;
+#[derive(Clone, Copy)]
+pub(super) struct Architecture {
+    pub audit: u32,
+    pub gate: i32,
+    pub seccomp: std::ffi::c_long,
+    pub sendmsg: std::ffi::c_long,
+    pub close: u32,
+    pub exit: u32,
+    pub exit_group: u32,
+    pub signal_return: u32,
+}
+impl Architecture {
+    pub fn for_width(pointer_bytes: u8) -> Result<Self, NativeError> {
+        match pointer_bytes {
+            8 => Ok(Self {
+                audit: 0xc000_003e,
+                gate: 39,
+                seccomp: 317,
+                sendmsg: 46,
+                close: 3,
+                exit: 60,
+                exit_group: 231,
+                signal_return: 15,
+            }),
+            4 => Ok(Self {
+                audit: 0x4000_0003,
+                gate: 20,
+                seccomp: 354,
+                sendmsg: 370,
+                close: 6,
+                exit: 1,
+                exit_group: 252,
+                signal_return: 173,
+            }),
+            _ => Err(NativeError::Unsupported),
+        }
+    }
+}
 pub(super) const FLAGS: u32 = (1 << 3) | (1 << 5);
-pub(super) const SECCOMP: std::ffi::c_long = 317;
-const RECV: u64 = 0xc050_2100;
-const SEND: u64 = 0xc018_2101;
-const VALID: u64 = 0x4008_2102;
+const RECV: std::ffi::c_ulong = 0xc050_2100;
+const SEND: std::ffi::c_ulong = 0xc018_2101;
+const VALID: std::ffi::c_ulong = 0x4008_2102;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -63,17 +98,25 @@ pub(super) struct Parked {
 pub(super) struct Listener(OwnedFd);
 
 unsafe extern "C" {
-    fn ioctl(fd: i32, command: u64, ...) -> i32;
-    fn sendmsg(fd: i32, message: *const Message, flags: i32) -> isize;
+    fn ioctl(fd: i32, command: std::ffi::c_ulong, ...) -> i32;
     fn recvmsg(fd: i32, message: *mut Message, flags: i32) -> isize;
 }
 
 impl Listener {
     pub fn check_sizes() -> Result<(), NativeError> {
         let mut sizes = Sizes::default();
+        let architecture = Architecture::for_width(size_of::<usize>() as u8)?;
         // SAFETY: GET_NOTIF_SIZES writes this fixed UAPI structure. No filter
         // is installed in the engine. Unsupported kernels fail closed.
-        if unsafe { super::syscall(SECCOMP, 3, 0, &mut sizes as *mut Sizes) } < 0 {
+        if unsafe {
+            super::syscall(
+                architecture.seccomp,
+                3usize,
+                0usize,
+                &mut sizes as *mut Sizes,
+            )
+        } < 0
+        {
             return Err(io::Error::last_os_error().into());
         }
         if usize::from(sizes.notification) != size_of::<Notification>()
@@ -98,11 +141,13 @@ impl Listener {
     pub fn receive(
         &self,
         pid: u32,
+        pointer_bytes: u8,
         address: u64,
         expected: u64,
         started: &Stopwatch,
         timeout: Duration,
     ) -> Result<Parked, NativeError> {
+        let architecture = Architecture::for_width(pointer_bytes)?;
         let flags = wait(self.0.as_raw_fd(), started, timeout)?;
         if flags & 16 != 0 {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
@@ -126,8 +171,8 @@ impl Listener {
         }
         if notification.pid != pid
             || notification.flags != 0
-            || notification.data.number != SYSCALL
-            || notification.data.architecture != ARCH
+            || notification.data.number != architecture.gate
+            || notification.data.architecture != architecture.audit
             || notification.data.arguments
                 != [MAGIC, expected as u32 as u64, expected >> 32, address, 0, 0]
         {
@@ -218,7 +263,10 @@ pub(super) fn wait(fd: i32, started: &Stopwatch, timeout: Duration) -> Result<i1
             .as_secs()
             .try_into()
             .map_err(|_| NativeError::Extent)?,
-        nanos: remaining.subsec_nanos().into(),
+        nanos: remaining
+            .subsec_nanos()
+            .try_into()
+            .map_err(|_| NativeError::Extent)?,
     };
     // SAFETY: initialized fixed records; this descriptor has one owner. Unlike
     // bootstrap traffic, interruption of an active invocation tears it down.
@@ -279,7 +327,11 @@ pub(super) fn send_listener(stream: i32, listener: OwnedFd) -> Result<(), Native
     // SAFETY: bootstrap-only SCM_RIGHTS transfers one descriptor. Both child
     // descriptors close before foreign execution, so the guest cannot reply to
     // its own notifications or export IPC descriptors.
-    if unsafe { sendmsg(stream, &message, 0x4000) } != 1 {
+    // Use the direct syscall on i386 too. glibc's socketcall compatibility
+    // route would hide the fd inside a pointer the seccomp filter cannot check.
+    let architecture = Architecture::for_width(size_of::<usize>() as u8)?;
+    if unsafe { super::syscall(architecture.sendmsg, stream as usize, &message, 0x4000usize) } != 1
+    {
         return Err(io::Error::last_os_error().into());
     }
     drop(listener);

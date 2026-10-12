@@ -20,8 +20,12 @@ const LIMIT: usize = 512 * 1024 * 1024;
 const STACK: usize = 8 * 1024 * 1024;
 #[path = "gate.rs"]
 mod gate;
+#[cfg(target_arch = "x86_64")]
 #[path = "x64.rs"]
-mod x64;
+mod hardware;
+#[cfg(target_arch = "x86")]
+#[path = "x86.rs"]
+mod hardware;
 const START: u8 = 1;
 const READY: u8 = 2;
 const INVOKE: u8 = 3;
@@ -51,6 +55,7 @@ unsafe extern "C" {
     fn recv(fd: i32, bytes: *mut u8, length: usize, flags: i32) -> isize;
     fn send(fd: i32, bytes: *const u8, length: usize, flags: i32) -> isize;
     fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
+    #[link_name = "mmap64"]
     fn mmap(
         address: *mut std::ffi::c_void,
         length: usize,
@@ -92,8 +97,8 @@ struct PollFd {
 }
 #[repr(C)]
 struct Timespec {
-    seconds: i64,
-    nanos: i64,
+    seconds: std::ffi::c_long,
+    nanos: std::ffi::c_long,
 }
 
 struct Mapping {
@@ -193,7 +198,10 @@ pub(super) fn transfer(
                     .as_secs()
                     .try_into()
                     .map_err(|_| NativeError::Extent)?,
-                nanos: remaining.subsec_nanos().into(),
+                nanos: remaining
+                    .subsec_nanos()
+                    .try_into()
+                    .map_err(|_| NativeError::Extent)?,
             };
             // SAFETY: one live owned socket and initialized stack records.
             // ppoll uses the remaining absolute budget without changing socket
@@ -333,6 +341,7 @@ pub struct NativeProcess {
     stream: UnixStream,
     memory: Mapping,
     base: u64,
+    pointer_bytes: u8,
     regions: Box<[NativeRegion]>,
     listener: Option<gate::Listener>,
     parked: Option<gate::Parked>,
@@ -354,7 +363,23 @@ pub struct NativeProcess {
 }
 impl NativeProcess {
     pub fn load(image: NativeImage<'_>) -> Result<Self, NativeError> {
-        let mut command = Command::new(std::env::current_exe()?);
+        let executable = std::env::current_exe()?;
+        let executable = if usize::from(image.pointer_bytes) == size_of::<usize>() {
+            executable
+        } else if image.pointer_bytes == 4 {
+            executable.with_file_name("qa-native-i386")
+        } else {
+            return Err(NativeError::Unsupported);
+        };
+        Self::load_with_helper(image, executable)
+    }
+    /// The same backend accepts an explicitly packaged helper. START/READY
+    /// and every kernel notification validate the selected child's width.
+    pub fn load_with_helper(
+        image: NativeImage<'_>,
+        executable: impl AsRef<std::path::Path>,
+    ) -> Result<Self, NativeError> {
+        let mut command = Command::new(executable.as_ref());
         command.arg("--qa-native-child");
         Self::launch(command, image)
     }
@@ -363,7 +388,10 @@ impl NativeProcess {
         image: NativeImage<'_>,
     ) -> Result<Self, NativeError> {
         gate::Listener::check_sizes()?;
-        if image.pointer_bytes != 8 {
+        if !matches!(image.pointer_bytes, 4 | 8)
+            || (image.pointer_bytes == 4
+                && image.runtime.is_some_and(|runtime| runtime.teb.is_some()))
+        {
             return Err(NativeError::Unsupported);
         }
         if image.bytes.is_empty()
@@ -385,7 +413,11 @@ impl NativeProcess {
             .filter(|&n| n <= LIMIT)
             .ok_or(NativeError::Extent)?;
         let mapped_length = length.checked_add(PAGE).ok_or(NativeError::Extent)?;
-        if image.base.checked_add(mapped_length as u64).is_none() {
+        if image
+            .base
+            .checked_add(mapped_length as u64)
+            .is_none_or(|end| image.pointer_bytes == 4 && end > u64::from(u32::MAX))
+        {
             return Err(NativeError::Extent);
         }
         let imports = image
@@ -393,6 +425,13 @@ impl NativeProcess {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
+                if !entry.trap
+                    && super::runtime::function(entry.number).is_some_and(|function| {
+                        !function.supports_pointer_bytes(image.pointer_bytes)
+                    })
+                {
+                    return Err(NativeError::Unsupported);
+                }
                 if entry.trap
                     && (!entry.parameters.is_empty() || entry.result != NativeScalar::Void)
                 {
@@ -422,6 +461,7 @@ impl NativeProcess {
                     NativeEntry::bind(
                         Self::import_address(image.base, image.bytes.len(), index)?,
                         entry.abi,
+                        image.pointer_bytes,
                         entry.parameters,
                         entry.result,
                     )?,
@@ -510,6 +550,7 @@ impl NativeProcess {
             stream,
             memory,
             base: image.base,
+            pointer_bytes: image.pointer_bytes,
             regions: regions.into_boxed_slice(),
             listener: None,
             parked: None,
@@ -531,10 +572,19 @@ impl NativeProcess {
             let at = (entry.address - owner.base) as usize;
             let bytes = &mut owner.memory.bytes_mut()[at..at + 32];
             bytes.fill(0xcc);
-            bytes[..2].copy_from_slice(&[0x41, 0xbb]); // mov r11d,index
-            bytes[2..6].copy_from_slice(&(index as u32).to_le_bytes());
-            bytes[6..12].copy_from_slice(&[0xff, 0x25, 12, 0, 0, 0]); // jmp [rip+12]
-            bytes[24..].copy_from_slice(&owner.callbacks[2 + entry.abi as usize].to_le_bytes());
+            let callback = owner.callbacks[2 + entry.abi as usize];
+            if owner.pointer_bytes == 4 {
+                bytes[0] = 0xb8; // mov eax,index; caller-save ordinal
+                bytes[1..5].copy_from_slice(&(index as u32).to_le_bytes());
+                bytes[5..7].copy_from_slice(&[0xff, 0x25]); // jmp [absolute]
+                bytes[7..11].copy_from_slice(&((entry.address + 24) as u32).to_le_bytes());
+                bytes[24..28].copy_from_slice(&(callback as u32).to_le_bytes());
+            } else {
+                bytes[..2].copy_from_slice(&[0x41, 0xbb]); // mov r11d,index
+                bytes[2..6].copy_from_slice(&(index as u32).to_le_bytes());
+                bytes[6..12].copy_from_slice(&[0xff, 0x25, 12, 0, 0, 0]); // jmp [rip+12]
+                bytes[24..].copy_from_slice(&callback.to_le_bytes());
+            }
         }
         Ok(owner)
     }
@@ -548,6 +598,7 @@ impl NativeProcess {
         packet.arguments[0] = self.memory.length as u64;
         packet.arguments[1] = mapped.len() as u64;
         packet.arguments[2] = self.imports.len() as u64;
+        packet.arguments[6] = u64::from(self.pointer_bytes);
         if let Some(config) = runtime {
             packet.arguments[3] = config.base;
             packet.arguments[4] = config.heap_bytes as u64;
@@ -566,6 +617,7 @@ impl NativeProcess {
             packet.address = u64::from(number);
             packet.abi = entry.abi as u8;
             packet.value = u64::from(trap);
+            packet.arguments[7] = entry.signature();
             if let Some(filter) = filter {
                 packet.value = 2;
                 packet.arguments[..6].copy_from_slice(&[
@@ -603,7 +655,7 @@ impl NativeProcess {
             || ready.sequence != 0
             || ready.address != self.base
             || ready.arguments[0] != self.memory.length as u64
-            || ready.arguments[1] != 8
+            || ready.arguments[1] != u64::from(self.pointer_bytes)
             || ready.arguments[2] != self.pid() as u64
         {
             return Err(NativeError::Protocol);
@@ -726,7 +778,14 @@ impl NativeProcess {
             .listener
             .as_ref()
             .ok_or(NativeError::Protocol)?
-            .receive(self.pid(), address, handoff, started, self.timeout)?;
+            .receive(
+                self.pid(),
+                self.pointer_bytes,
+                address,
+                handoff,
+                started,
+                self.timeout,
+            )?;
         // SAFETY: RECV plus ID_VALID have established the owned sole thread's
         // kernel park. WAIT_KILLABLE_RECV prevents any nonfatal resumption.
         let packet = unsafe { gate::read(gate::address(&self.memory), handoff) }?;
@@ -759,7 +818,7 @@ impl NativeProcess {
         if self.parked.is_none() || !self.executable(address) {
             return Err(NativeError::Extent);
         }
-        NativeEntry::bind(address, abi, parameters, result)
+        NativeEntry::bind(address, abi, self.pointer_bytes, parameters, result)
     }
     pub fn invoke(
         &mut self,
@@ -770,7 +829,7 @@ impl NativeProcess {
         if self.parked.is_none() || self.child.is_none() {
             return Err(NativeError::Protocol);
         }
-        if !self.executable(entry.address) {
+        if entry.pointer_bytes != self.pointer_bytes || !self.executable(entry.address) {
             return Err(NativeError::Extent);
         }
         let started = Stopwatch::start();
@@ -988,6 +1047,30 @@ fn host_import(number: u64, arguments: [u64; 13], floats: [u64; 8], typed: u64) 
     }
 }
 
+// i386's C structure return has a hidden pointer. An explicit private result
+// pointer keeps its hardware gate independent of compiler sret cleanup.
+#[cfg(target_arch = "x86")]
+extern "C" fn import32(
+    result: *mut ImportResult,
+    words: *const [u64; 14],
+    typed: u32,
+    address: u32,
+    stack: u32,
+) {
+    let floats = [[0; 2]; 8];
+    let value = import(
+        words,
+        &floats,
+        u64::from(typed),
+        u64::from(address),
+        u64::from(stack),
+        0,
+    );
+    // SAFETY: assembly provides private aligned storage, read before restoring
+    // the native floating-point state or shared guest stack.
+    unsafe { result.write(value) };
+}
+
 fn child_exchange(packet: Packet) -> Result<Packet, NativeError> {
     let handoff = CHILD_HANDOFF
         .load(Ordering::Relaxed)
@@ -1005,14 +1088,15 @@ fn child_exchange(packet: Packet) -> Result<Packet, NativeError> {
     // magic/address. It never executes getpid. A zero emulated return certifies
     // a completed parent reply; EINTR/ENOSYS or any other result fails closed.
     let result = unsafe {
+        let architecture = gate::Architecture::for_width(size_of::<usize>() as u8)?;
         syscall(
-            gate::SYSCALL as std::ffi::c_long,
-            gate::MAGIC,
-            handoff as u32 as u64,
-            handoff >> 32,
-            address as u64,
-            0u64,
-            0u64,
+            architecture.gate as std::ffi::c_long,
+            gate::MAGIC as usize,
+            handoff as u32 as usize,
+            (handoff >> 32) as usize,
+            address,
+            0usize,
+            0usize,
         )
     };
     if result != 0 {
@@ -1046,12 +1130,14 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         || length % PAGE != 0
         || count > 65536
         || imports > 4096
+        || packet.arguments[6] != size_of::<usize>() as u64
+        || (size_of::<usize>() == 4 && packet.arguments[5] != 0)
         || packet.address < PAGE as u64
         || packet.address % PAGE as u64 != 0
         || packet
             .address
             .checked_add(length as u64 + PAGE as u64)
-            .is_none()
+            .is_none_or(|end| end > usize::MAX as u64)
         || file.metadata()?.len() != length as u64 + PAGE as u64
     {
         return Err(NativeError::Extent);
@@ -1136,6 +1222,8 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         } else {
             NativeAbi::Microsoft
         };
+        let descriptor =
+            NativeEntry::from_signature(0, abi, size_of::<usize>() as u8, binding.arguments[7])?;
         let entry = if binding.value == 3 {
             let format = super::NativeFormat {
                 buffer: binding.arguments[0],
@@ -1156,7 +1244,10 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             {
                 return Err(NativeError::Protocol);
             }
-            runtime::ImportBinding::Formatted(abi, format)
+            if descriptor.argument_count() != usize::from(format.format) + 1 {
+                return Err(NativeError::Protocol);
+            }
+            runtime::ImportBinding::Formatted(descriptor, format)
         } else if binding.value == 2 {
             let slots = u32::try_from(binding.arguments[3])
                 .map_err(|_| NativeError::Protocol)?
@@ -1183,18 +1274,31 @@ pub(super) fn child_main() -> Result<(), NativeError> {
             if number >= super::runtime::FIRST || !filter.valid(binding.arguments[6] as usize) {
                 return Err(NativeError::Protocol);
             }
-            runtime::ImportBinding::Engine(Some((abi, filter)))
+            if descriptor.argument_count() != binding.arguments[6] as usize {
+                return Err(NativeError::Protocol);
+            }
+            runtime::ImportBinding::Engine(descriptor, Some(filter))
         } else if binding.value == 1 {
             runtime::ImportBinding::Trap
         } else if let Some(function) = super::runtime::function(number) {
-            runtime::ImportBinding::Runtime(
-                function,
-                NativeEntry::bind(0, abi, function.parameters, function.result)?,
-            )
+            if !function.supports_pointer_bytes(size_of::<usize>() as u8) {
+                return Err(NativeError::Unsupported);
+            }
+            let expected = NativeEntry::bind(
+                0,
+                abi,
+                size_of::<usize>() as u8,
+                function.parameters,
+                function.result,
+            )?;
+            if expected.signature() != descriptor.signature() {
+                return Err(NativeError::Protocol);
+            }
+            runtime::ImportBinding::Runtime(function, descriptor)
         } else if number >= super::runtime::FIRST {
             return Err(NativeError::Unsupported);
         } else {
-            runtime::ImportBinding::Engine(None)
+            runtime::ImportBinding::Engine(descriptor, None)
         };
         bindings.push(entry);
     }
@@ -1219,7 +1323,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         // SAFETY: runtime::initialize validated and populated this child-owned
         // TEB. Linux x64 Rust TLS uses FS, so setting GS exposes the Windows
         // ABI only inside this child and never changes the parent's segments.
-        if unsafe { syscall(158, 0x1001u64, packet.arguments[5]) } < 0 {
+        if unsafe { syscall(158, 0x1001usize, packet.arguments[5] as usize) } < 0 {
             return Err(io::Error::last_os_error().into());
         }
     }
@@ -1241,15 +1345,19 @@ pub(super) fn child_main() -> Result<(), NativeError> {
     drop(stream);
     let mut ready = Packet::new(READY, 0);
     ready.address = packet.address;
-    ready.arguments[..7].copy_from_slice(&[
-        length as u64,
-        8,
-        pid as u64,
-        x64::system_v_import as *const () as usize as u64,
-        x64::microsoft_import as *const () as usize as u64,
-        x64::system_v_function as *const () as usize as u64,
-        x64::microsoft_function as *const () as usize as u64,
-    ]);
+    ready.arguments[..3].copy_from_slice(&[length as u64, size_of::<usize>() as u64, pid as u64]);
+    ready.arguments[3] = hardware::system_v_import as *const () as usize as u64;
+    ready.arguments[5] = hardware::system_v_function as *const () as usize as u64;
+    #[cfg(target_arch = "x86_64")]
+    {
+        ready.arguments[4] = hardware::microsoft_import as *const () as usize as u64;
+        ready.arguments[6] = hardware::microsoft_function as *const () as usize as u64;
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        ready.arguments[4] = hardware::MICROSOFT_IMPORT as u64;
+        ready.arguments[6] = hardware::MICROSOFT_FUNCTION as u64;
+    }
     let mut next = child_exchange(ready)?;
     loop {
         let packet = next;
@@ -1276,7 +1384,7 @@ pub(super) fn child_main() -> Result<(), NativeError> {
         // stack before Rust handles imports. No Rust reference into the guest
         // mapping spans this call; faults terminate/reap only this child.
         let value = unsafe {
-            x64::call(
+            hardware::call(
                 packet.address,
                 u64::from(packet.abi),
                 &packet.arguments,
@@ -1310,6 +1418,7 @@ struct FilterProgram {
     filters: *const Filter,
 }
 fn guard(slot_address: u64) -> Result<OwnedFd, NativeError> {
+    let architecture = gate::Architecture::for_width(size_of::<usize>() as u8)?;
     let load = |offset| Filter {
         code: 0x20,
         yes: 0,
@@ -1346,7 +1455,7 @@ fn guard(slot_address: u64) -> Result<OwnedFd, NativeError> {
     // then both child-side descriptors close before any foreign instruction.
     let filters = [
         load(4),
-        required(gate::ARCH),
+        required(architecture.audit),
         Filter {
             code: 0x06,
             yes: 0,
@@ -1354,7 +1463,7 @@ fn guard(slot_address: u64) -> Result<OwnedFd, NativeError> {
             value: 0x80000000,
         },
         load(0),
-        equal(gate::SYSCALL as u32, 13),
+        equal(architecture.gate as u32, 13),
         load(16),
         required(gate::MAGIC as u32),
         deny(),
@@ -1374,18 +1483,18 @@ fn guard(slot_address: u64) -> Result<OwnedFd, NativeError> {
             value: 0x7fc00000,
         },
         load(0),
-        equal(46, 3), // bootstrap sendmsg only
+        equal(architecture.sendmsg as u32, 3), // bootstrap sendmsg only
         load(16),
         equal(0, 1),
         allow(),
         load(0),
-        equal(3, 1), // close bootstrap descriptors
+        equal(architecture.close, 1), // close bootstrap descriptors
         allow(),
-        equal(60, 1),
+        equal(architecture.exit, 1),
         allow(),
-        equal(231, 1),
+        equal(architecture.exit_group, 1),
         allow(),
-        equal(15, 1),
+        equal(architecture.signal_return, 1),
         allow(),
         deny(),
     ];
@@ -1401,9 +1510,9 @@ fn guard(slot_address: u64) -> Result<OwnedFd, NativeError> {
     }
     let fd = unsafe {
         syscall(
-            gate::SECCOMP,
-            1,
-            gate::FLAGS,
+            architecture.seccomp,
+            1usize,
+            gate::FLAGS as usize,
             &program as *const FilterProgram,
         )
     };

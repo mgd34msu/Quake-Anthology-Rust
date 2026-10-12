@@ -16,6 +16,9 @@ pub(crate) struct Capture {
 }
 
 enum Source {
+    /// i386 cdecl has no argument registers. Promoted doubles occupy two
+    /// four-byte cells; integer and pointer arguments occupy one.
+    Stack(u64),
     Registers {
         words: [u64; 13],
         floats: [u64; 8],
@@ -47,6 +50,21 @@ impl<'a> Arguments<'a> {
         floats: [u64; 8],
         capture: Capture,
     ) -> Result<Self, NativeError> {
+        if size_of::<usize>() == 4 {
+            if abi != NativeAbi::SystemV || fixed > 6 {
+                return Err(NativeError::Unsupported);
+            }
+            return Ok(Self {
+                memory,
+                abi,
+                source: Source::Stack(
+                    capture
+                        .stack
+                        .checked_add(4 + fixed as u64 * 4)
+                        .ok_or(NativeError::Extent)?,
+                ),
+            });
+        }
         if (abi == NativeAbi::SystemV && capture.floats > 8) || fixed > 6 {
             return Err(NativeError::Extent);
         }
@@ -68,7 +86,12 @@ impl<'a> Arguments<'a> {
         })
     }
     pub fn list(memory: &'a Memory, abi: NativeAbi, address: u64) -> Result<Self, NativeError> {
-        let source = if abi == NativeAbi::SystemV {
+        let source = if size_of::<usize>() == 4 {
+            if abi != NativeAbi::SystemV {
+                return Err(NativeError::Unsupported);
+            }
+            Source::Stack(address)
+        } else if abi == NativeAbi::SystemV {
             let gp = memory.unsigned(address, 4)? as u32;
             let fp = memory.unsigned(address.checked_add(4).ok_or(NativeError::Extent)?, 4)? as u32;
             if gp > 48 || gp % 8 != 0 || !(48..=176).contains(&fp) || (fp - 48) % 16 != 0 {
@@ -94,7 +117,7 @@ impl<'a> Arguments<'a> {
             source,
         })
     }
-    fn next(&mut self, floating: bool) -> Result<u64, NativeError> {
+    fn next(&mut self, bytes: usize, floating: bool) -> Result<u64, NativeError> {
         let memory = self.memory;
         let stack_word = |at: &mut u64| {
             let word = memory.unsigned(*at, 8)?;
@@ -102,6 +125,12 @@ impl<'a> Arguments<'a> {
             Ok(word)
         };
         match &mut self.source {
+            Source::Stack(at) => {
+                let bytes = if floating { 8 } else { bytes.max(4) };
+                let value = memory.unsigned(*at, bytes)?;
+                *at = at.checked_add(bytes as u64).ok_or(NativeError::Extent)?;
+                Ok(value)
+            }
             Source::Registers {
                 words,
                 floats,
@@ -168,11 +197,11 @@ impl<'a> Arguments<'a> {
             Source::MicrosoftList(at) => stack_word(at),
         }
     }
-    fn integer(&mut self) -> Result<u64, NativeError> {
-        self.next(false)
+    fn integer(&mut self, bytes: usize) -> Result<u64, NativeError> {
+        self.next(bytes, false)
     }
     fn float(&mut self) -> Result<f64, NativeError> {
-        self.next(true).map(f64::from_bits)
+        self.next(8, true).map(f64::from_bits)
     }
 }
 
@@ -254,7 +283,8 @@ impl Length {
             Self::Char => 1,
             Self::Short => 2,
             Self::Int => 4,
-            Self::Long if abi == NativeAbi::Microsoft => 4,
+            Self::Long if abi == NativeAbi::Microsoft || size_of::<usize>() == 4 => 4,
+            Self::Pointer => size_of::<usize>(),
             _ => 8,
         }
     }
@@ -527,7 +557,7 @@ pub(super) fn write(
         }
         let width;
         if byte == b'*' {
-            let value = arguments.integer()? as i32;
+            let value = arguments.integer(4)? as i32;
             if value < 0 {
                 flags.left = true;
             }
@@ -542,7 +572,7 @@ pub(super) fn write(
         let precision = if byte == b'.' {
             byte = input.next()?;
             if byte == b'*' {
-                let value = arguments.integer()? as i32;
+                let value = arguments.integer(4)? as i32;
                 byte = input.next()?;
                 (value >= 0).then_some(value as usize)
             } else {
@@ -605,7 +635,7 @@ pub(super) fn write(
         match byte {
             b'd' | b'i' | b'u' | b'o' | b'x' | b'X' => {
                 let bits = length.bytes(arguments.abi) * 8;
-                let word = arguments.integer()?;
+                let word = arguments.integer(length.bytes(arguments.abi))?;
                 let word = if bits == 64 {
                     word
                 } else {
@@ -674,7 +704,7 @@ pub(super) fn write(
                 if !matches!(length, Length::Int) {
                     return Err(NativeError::Unsupported);
                 }
-                let pointer = arguments.integer()?;
+                let pointer = arguments.integer(4)?;
                 if precision == Some(0) {
                     flags.zero = false;
                     field(&mut output, b"", b"", width, 0, &flags)?;
@@ -718,14 +748,14 @@ pub(super) fn write(
                 field(
                     &mut output,
                     b"",
-                    &[arguments.integer()? as u8],
+                    &[arguments.integer(4)? as u8],
                     width,
                     0,
                     &flags,
                 )?;
             }
             b'p' => {
-                let pointer = arguments.integer()?;
+                let pointer = arguments.integer(4)?;
                 let mut text = FixedText::<1024>::default();
                 if arguments.abi == NativeAbi::Microsoft {
                     write!(text, "{pointer:016X}").map_err(|_| NativeError::Extent)?;
@@ -742,7 +772,7 @@ pub(super) fn write(
                 field(&mut output, prefix, text.as_bytes(), width, 0, &flags)?;
             }
             b'n' => {
-                let pointer = arguments.integer()?;
+                let pointer = arguments.integer(4)?;
                 memory.put(pointer, length.bytes(arguments.abi), output.count as u64)?;
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {

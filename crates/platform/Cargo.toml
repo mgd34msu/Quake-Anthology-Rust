@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 proof = []
 allocation-tracking = ["qa-console/lookup-tracking"]
+native-helper = []
 
 [dependencies]
 qa-core = { path = "../core" }
@@ -27,6 +28,10 @@ qa-formats = { path = "../formats" }
 [[example]]
 name = "native_child"
 test = false
+
+[[bin]]
+name = "qa-native-i386"
+required-features = ["native-helper"]
 
 [[example]]
 name = "output_retirement"

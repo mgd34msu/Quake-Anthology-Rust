@@ -40,9 +40,15 @@ impl NativeListFilter {
             && (0..slots.len()).all(|i| (i + 1..slots.len()).all(|j| slots[i] != slots[j]))
     }
     pub fn byte_length(self) -> Option<usize> {
+        self.byte_length_for_width(8)
+    }
+    pub fn byte_length_for_width(self, pointer_bytes: u8) -> Option<usize> {
+        if !matches!(pointer_bytes, 4 | 8) {
+            return None;
+        }
         (self.capacity as usize)
             .checked_mul(usize::from(self.depth))?
-            .checked_mul(8)
+            .checked_mul(usize::from(pointer_bytes))
     }
 }
 
@@ -144,13 +150,13 @@ impl From<io::Error> for NativeError {
     }
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "x86")))]
 #[path = "native/linux.rs"]
 mod implementation;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "x86")))]
 pub use implementation::{NativeProcess, native_child_bootstrap};
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "x86"))))]
 pub fn native_child_bootstrap() -> Option<i32> {
     std::env::args()
         .nth(1)

@@ -13,8 +13,16 @@ Owner ruling, 2026-10-10 (THE-2531): native modules execute only in owned child
 processes through one backend. Use a 64-bit child for x86-64 and a 32-bit child
 for i386 where supported; no x86 interpreter and no foreign code in the Rust
 engine process. Engine services and entity views use the shared owned memory
-and existing CallTable. Borrow shared bytes only at enforced stopped-child
+and existing CallTable. Borrow shared bytes only at enforced parked-child
 boundaries. This supersedes earlier in-process/interpreter proposals.
+
+Owner ruling, 2026-10-12 (THE-2406): the sole native child thread parks through
+one fixed shared request/reply slot and a seccomp user-notification gate with
+WAIT_KILLABLE_RECV. There is no signal-stop fallback. Validate the notification
+id, child identity and handoff sequence before borrowing shared memory, and end
+all borrows before replying to the kernel. Nested callbacks use the same slot.
+Keep clone/fork blocked and tear down the owned child on death or interruption.
+Pointer-width support does not admit unverified module ABI or runtime layouts.
 
 Owner correction, 2026-10-08 23:4x: finish common primitives and the event system
 before format parity or features. Migrate every caller and delete old copies
