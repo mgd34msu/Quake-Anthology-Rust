@@ -5,6 +5,8 @@ use qa_core::{names::NameTable, primitives::NameId};
 mod elf;
 mod pe;
 
+const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadRole {
     Library,
@@ -21,7 +23,7 @@ pub struct Target {
     pub bits: u32,
     pub encoding: Encoding,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Region {
     pub offset: usize,
     pub length: usize,
@@ -100,7 +102,7 @@ pub struct Image {
 }
 impl Image {
     pub fn parse(bytes: &[u8], base: Option<u64>, role: LoadRole) -> Result<Self, FormatError> {
-        if bytes.len() > 512 * 1024 * 1024 {
+        if bytes.len() > MAX_IMAGE_BYTES {
             return Err(FormatError::InvalidRange);
         }
         if bytes.starts_with(b"MZ") {
@@ -110,6 +112,47 @@ impl Image {
         } else {
             Err(FormatError::Unsupported)
         }
+    }
+    /// Append zeroed load-time storage after the aligned image tail. The length
+    /// stays exact; the returned region's entire virtual-address range is checked.
+    pub fn reserve_region(
+        &mut self,
+        length: usize,
+        alignment: usize,
+        read: bool,
+        write: bool,
+        execute: bool,
+    ) -> Result<Region, FormatError> {
+        if length == 0 || !alignment.is_power_of_two() {
+            return Err(FormatError::InvalidRange);
+        }
+        let offset = self
+            .bytes
+            .len()
+            .div_ceil(alignment)
+            .checked_mul(alignment)
+            .ok_or(FormatError::InvalidRange)?;
+        let end = offset
+            .checked_add(length)
+            .filter(|&end| end <= MAX_IMAGE_BYTES)
+            .ok_or(FormatError::InvalidRange)?;
+        self.base
+            .checked_add(end as u64)
+            .ok_or(FormatError::InvalidRange)?;
+        let region = Region {
+            offset,
+            length,
+            read,
+            write,
+            execute,
+        };
+        let mut bytes = std::mem::take(&mut self.bytes).into_vec();
+        bytes.resize(end, 0);
+        self.bytes = bytes.into_boxed_slice();
+        let mut regions = std::mem::take(&mut self.regions).into_vec();
+        regions.push(region);
+        self.regions = regions.into_boxed_slice();
+        Ok(region)
     }
     pub fn symbol(&self, name: &[u8]) -> Option<&Symbol> {
         self.symbol_version(name, None)
@@ -175,7 +218,7 @@ fn terminated(bytes: &[u8], offset: u64) -> Result<&[u8], FormatError> {
 fn owned_length(value: u64) -> Result<usize, FormatError> {
     usize::try_from(value)
         .ok()
-        .filter(|&n| n > 0 && n <= 512 * 1024 * 1024)
+        .filter(|&n| n > 0 && n <= MAX_IMAGE_BYTES)
         .ok_or(FormatError::InvalidRange)
 }
 fn names(raw: &[&[u8]]) -> Result<NameTable, FormatError> {

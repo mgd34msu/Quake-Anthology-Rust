@@ -377,7 +377,7 @@ fn unresolved_or_nonloop_samples_never_gain_fake_handles_and_module_slots_do_not
 }
 
 #[test]
-fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map() {
+fn resource_changes_do_not_republish_and_rebind_discards_old_map() {
     with_services(|services, [context, _]| {
         let mut initial: [SignonCursor; 2] = std::array::from_fn(|_| SignonCursor::default());
         let consumer = recipient(services, ClientId(0));
@@ -402,15 +402,15 @@ fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map()
         assert_eq!(
             services
                 .storage
-                .stop_ambients(services.server, context, Some(ClientId(0))),
-            Ok(1)
+                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            Ok(0)
         );
-        let stopped = sound(drain(services, consumer)[0]);
-        assert_eq!(stopped.action, SoundAction::Stop);
-        assert_eq!(stopped.sound, started.sound);
-        assert_eq!(stopped.entity, started.entity);
-        assert_eq!(stopped.channel, started.channel);
-        assert_eq!(stopped.client, started.client);
+        assert!(drain(services, consumer).is_empty());
+        assert!(cursor.has_publication_for(
+            context.module,
+            ClientId(0),
+            services.server.clients[0].entity
+        ));
         let SoundEmitter::Static { lifetime, .. } = started.entity.unwrap() else {
             panic!()
         };
@@ -444,12 +444,6 @@ fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map()
             services
                 .storage
                 .publish_signon(services.server, context, ClientId(0), &mut cursor),
-            Ok(0)
-        );
-        assert_eq!(
-            services
-                .storage
-                .stop_ambients(services.server, context, None),
             Ok(0)
         );
         assert_eq!(
@@ -577,14 +571,10 @@ fn mixed_static_and_sound_signon_keeps_one_order_and_independent_late_cursors() 
                 .publish_signon(services.server, context, ClientId(0), &mut cursor),
             Ok(0)
         );
-        assert_eq!(
-            services
-                .storage
-                .stop_ambients(services.server, context, Some(ClientId(0))),
-            Ok(1)
-        );
-        assert!(drain(services, consumer).iter().all(
-            |row| matches!(row.event, FrameEvent::Sound(sound) if sound.action == SoundAction::Stop)
+        assert!(cursor.has_publication_for(
+            context.module,
+            ClientId(0),
+            services.server.clients[0].entity
         ));
     });
 }

@@ -1,6 +1,6 @@
 //! CLIENT temporal presentation; native words remain in the connection ring.
 use qa_core::{primitives::ThinkTime, sys_events::EventTime};
-use qa_network::commands::packet::Protocol;
+use qa_gameplay::rules::presentation::ClockRules;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Interpolation {
@@ -39,11 +39,18 @@ pub struct GunAnimation {
 
 #[derive(Default)]
 pub struct PresentationClock {
+    rules: ClockRules,
     queued_at: Option<EventTime>,
     time: Option<ThinkTime>,
     sample: Interpolation,
 }
 impl PresentationClock {
+    pub fn load(rules: ClockRules) -> Self {
+        Self {
+            rules,
+            ..Self::default()
+        }
+    }
     pub fn sample(&self) -> Interpolation {
         self.sample
     }
@@ -53,7 +60,6 @@ impl PresentationClock {
         current: ThinkTime,
         previous: Option<ThinkTime>,
         native_period: Option<u16>,
-        protocol: Protocol,
     ) {
         // QW snapshots have no native timestamp. Their zero-length interval
         // stays at fraction one rather than borrowing renderer uptime.
@@ -94,8 +100,8 @@ impl PresentationClock {
                 time = ThinkTime::Milliseconds(value);
                 if high == low {
                     1.0
-                } else if protocol == Protocol::Quake2_34 {
-                    1.0 - (high - value) as f32 * 0.01
+                } else if let Some(scale) = self.rules.remaining_ms_scale {
+                    1.0 - (high - value) as f32 * scale
                 } else {
                     (value - low) as f32 * (1.0 / (high - low) as f32)
                 }

@@ -432,6 +432,9 @@ impl FrameSource for AudioSource {
         true
     }
     fn sound(&mut self, sound: SoundEvent) -> bool {
+        if sound.action == SoundAction::RetireClient {
+            return self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound));
+        }
         let client = sound.client.expect("only queued CLIENT playback");
         assert!(sound.positioned);
         assert_eq!(sound.channel, 2);
@@ -1464,20 +1467,76 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
                 .text,
             b"b.wav"
         );
-        // Stopping the publishing module cannot erase an already owned record.
+        // The rewritten ordinal is received through the live native channel
+        // before module shutdown tears that connection down.
         host.call_module_export(
             ModuleId(1),
             Export::words(actions.raw, &[0]),
             ThinkTime::module_clock(rules),
         )
         .unwrap();
-        host.shutdown_modules();
         for tick in 43..=48 {
             source.time = EventTime::from_milliseconds(tick * 25);
             host.frame(&mut source, true);
         }
         assert_eq!(source.played.len(), 3);
         assert_eq!(source.played[2].1, b);
+        assert_eq!(source.remote.as_ref().unwrap().sounds.len(), 3);
+
+        // A cue still queued for the old recipient must not cross shutdown
+        // and reappear on a replacement CLIENT lifetime.
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(actions.raw, &[0]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        let old = host.runtime.server.clients[client.0 as usize].entity;
+        host.shutdown_modules();
+        assert!(
+            host.runtime.server.clients[client.0 as usize]
+                .connection
+                .is_none()
+        );
+        assert!(
+            host.runtime.server.clients[remote.0 as usize]
+                .connection
+                .is_none()
+        );
+        source.time = EventTime::from_milliseconds(49 * 25);
+        host.frame(&mut source, true);
+        assert!(
+            host.runtime.server.clients[client.0 as usize]
+                .audio_retirement
+                .is_none()
+        );
+        let replacement = host
+            .runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                protocol,
+                0,
+            )
+            .unwrap();
+        assert_eq!(replacement, client);
+        assert_ne!(
+            host.runtime.server.clients[replacement.0 as usize].entity,
+            old
+        );
+        host.local_clients[0] = Some(replacement);
+        for tick in 50..=55 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(source.played.len(), 3);
+        assert_eq!(source.remote.as_ref().unwrap().sounds.len(), 3);
     }
 }
 

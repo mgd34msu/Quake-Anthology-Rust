@@ -7,7 +7,7 @@ use qa_formats::FormatError;
 use qa_formats::archive::ArchiveReader;
 use qa_formats::image::{
     AlphaFringe, Colormap, DecodedImage, ImageFormat, IndexedImage, MipTexture, Palette,
-    PaletteOptions, RgbaImage, decode,
+    PaletteOptions, RgbaImage, Wad, WadImage, decode,
 };
 
 #[derive(Debug)]
@@ -138,6 +138,17 @@ pub struct ImageConflict {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ImageRecipe {
+    Lmp {
+        palette: PaletteId,
+        transparent_index: Option<u8>,
+        usage: ImageUse,
+    },
+    Wad {
+        lump: NameId,
+        palette: PaletteId,
+        transparent_index: Option<u8>,
+        usage: ImageUse,
+    },
     Wal {
         palette: PaletteId,
         cutout: bool,
@@ -360,7 +371,15 @@ pub fn read_file(
     name: &[u8],
     reader: &mut ArchiveReader,
 ) -> Result<Vec<u8>, ResourceError> {
-    vfs.read_file(name, 256 * 1024 * 1024, reader)
+    read_file_with_limit(vfs, name, 256 * 1024 * 1024, reader)
+}
+fn read_file_with_limit(
+    vfs: &Vfs,
+    name: &[u8],
+    limit: usize,
+    reader: &mut ArchiveReader,
+) -> Result<Vec<u8>, ResourceError> {
+    vfs.read_file(name, limit, reader)
         .map_err(|error| match error {
             VfsError::Missing => ResourceError::Missing(String::from_utf8_lossy(name).into_owned()),
             VfsError::Size | VfsError::Limit | VfsError::Allocation => ResourceError::Size,
@@ -368,6 +387,8 @@ pub fn read_file(
             error => ResourceError::Vfs(error),
         })
 }
+
+const INDEXED_PIC_FILE_LIMIT: usize = 16 * 1024 * 1024;
 
 /// These are resource formats, not renderer pipelines. The selected palette
 /// can later present any world, independently of its movement/module family.
@@ -705,6 +726,102 @@ impl<'a> Images<'a> {
         let id = self.embedded(&mip, palette, cutout)?;
         self.remember(key, id, ImageUse::default());
         Ok(id)
+    }
+    /// Native qpic files retain exact indices and the explicitly selected
+    /// global palette. File admission matches the existing console loader.
+    pub fn indexed_lmp(
+        &mut self,
+        name: &str,
+        palette: PaletteId,
+        transparent_index: Option<u8>,
+        usage: ImageUse,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_name(name)
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::Lmp {
+                palette,
+                transparent_index,
+                usage,
+            },
+        };
+        if let Some(index) = self.find(key) {
+            return Ok(self.state.resolved[index].1);
+        }
+        let bytes = read_file_with_limit(
+            self.vfs,
+            name.as_bytes(),
+            INDEXED_PIC_FILE_LIMIT,
+            &mut self.state.reader,
+        )?;
+        let DecodedImage::Indexed(image) =
+            decode(&bytes, ImageFormat::Lmp, self.state.source_rules.lineage())?
+        else {
+            return Err(ResourceError::Asset("qpic resource must retain indices"));
+        };
+        self.indexed_pic(key, &image, palette, transparent_index, usage)
+    }
+    /// WAD lookup uses its native folded lump names. Recipe identities retain
+    /// the requested raw bytes separately from the canonical archive path.
+    pub fn indexed_wad(
+        &mut self,
+        name: &str,
+        lump: &[u8],
+        palette: PaletteId,
+        transparent_index: Option<u8>,
+        usage: ImageUse,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let key = ImageKey {
+            name: self
+                .assets
+                .intern_name(name)
+                .map_err(ResourceError::Asset)?,
+            recipe: ImageRecipe::Wad {
+                lump: self
+                    .assets
+                    .intern_resource_name(lump)
+                    .map_err(ResourceError::Asset)?,
+                palette,
+                transparent_index,
+                usage,
+            },
+        };
+        if let Some(index) = self.find(key) {
+            return Ok(self.state.resolved[index].1);
+        }
+        let bytes = read_file_with_limit(
+            self.vfs,
+            name.as_bytes(),
+            INDEXED_PIC_FILE_LIMIT,
+            &mut self.state.reader,
+        )?;
+        let wad = Wad::parse(&bytes)?;
+        let index = wad
+            .find(lump)
+            .ok_or(ResourceError::Asset("missing indexed WAD lump"))?;
+        let WadImage::Image(image) = wad.image(index)? else {
+            return Err(ResourceError::Asset(
+                "WAD resource is not an indexed bitmap",
+            ));
+        };
+        self.indexed_pic(key, &image, palette, transparent_index, usage)
+    }
+    fn indexed_pic(
+        &mut self,
+        key: ImageKey,
+        image: &IndexedImage<'_>,
+        palette: PaletteId,
+        transparent_index: Option<u8>,
+        usage: ImageUse,
+    ) -> Result<ResolvedImage, ResourceError> {
+        let texture =
+            IndexedTexture::load_base(image.width, image.height, &image.indices, transparent_index)
+                .map_err(ResourceError::Asset)?;
+        let id = self.register_indexed(texture, palette)?;
+        self.prepare(id, usage, None)?;
+        Ok(self.remember(key, id, usage))
     }
     /// Retain original PCX indices and select the presentation's global palette.
     /// A separate native RGBA resource supplies GL pixels (Q2 sky TGA). If the

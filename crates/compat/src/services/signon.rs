@@ -1,9 +1,7 @@
 use super::*;
 use qa_core::{
     events::{EventRing, OutputConsumerId},
-    primitives::{
-        NativeEmission, NativeTarget, ResourceNamespace, SoundAction, SoundEmitter, SoundId,
-    },
+    primitives::{NativeEmission, NativeTarget, ResourceNamespace, SoundAction, SoundEmitter},
 };
 
 /// Native signon sounds and static models share one fixed byte budget.
@@ -26,6 +24,18 @@ pub struct SignonCursor {
     end: Option<usize>,
 }
 impl SignonCursor {
+    /// A published native signon has no selective module-removal wire command.
+    pub fn has_publication_for(
+        &self,
+        module: ModuleId,
+        client: ClientId,
+        lifetime: EntityId,
+    ) -> bool {
+        self.next != 0
+            && self
+                .owner
+                .is_some_and(|owner| owner.0 == module && owner.2 == Some((client, lifetime)))
+    }
     fn bind(
         &mut self,
         module: ModuleId,
@@ -58,16 +68,12 @@ enum SignonRecord {
 struct Registration {
     native: SignonRecord,
     spatial: qa_core::primitives::SpatialPolicy,
-    /// A Stop retains a real sample that was successfully published, even if
-    /// its native resource row was later overwritten or cleared.
-    published_sound: Option<SoundId>,
 }
 impl Default for Registration {
     fn default() -> Self {
         Self {
             native: SignonRecord::Sound(AmbientSound::default()),
             spatial: qa_core::primitives::SpatialPolicy::default(),
-            published_sound: None,
         }
     }
 }
@@ -151,7 +157,6 @@ impl ServiceStorage {
         *row = Registration {
             native,
             spatial: context.sound_policy,
-            published_sound: None,
         };
         registry.length += 1;
         registry.bytes += bytes;
@@ -168,40 +173,6 @@ impl ServiceStorage {
         client: ClientId,
         cursor: &mut SignonCursor,
     ) -> Result<usize, CallError> {
-        self.publish_target_signon(
-            server,
-            context,
-            Some(client),
-            cursor,
-            SoundAction::StartLoop,
-        )
-    }
-
-    /// Stop the exact static identities previously published by this module.
-    /// The caller invokes this before dropping storage or rebinding its lifetime.
-    pub fn stop_ambients(
-        &mut self,
-        server: &mut Server,
-        context: CallContext,
-        client: Option<ClientId>,
-    ) -> Result<usize, CallError> {
-        self.publish_target_signon(
-            server,
-            context,
-            client,
-            &mut SignonCursor::default(),
-            SoundAction::Stop,
-        )
-    }
-
-    fn publish_target_signon(
-        &mut self,
-        server: &mut Server,
-        context: CallContext,
-        client: Option<ClientId>,
-        cursor: &mut SignonCursor,
-        action: SoundAction,
-    ) -> Result<usize, CallError> {
         let bank = self.sound_bank.as_deref();
         let row = self
             .ranges
@@ -210,48 +181,40 @@ impl ServiceStorage {
             .ok_or(CallError::ConfigString)?;
         let sounds = bank.zip(row.sound_bindings.as_ref());
         let lifetime = row.lifetime.ok_or(CallError::Entity)?;
-        if action == SoundAction::StartLoop && server.entities.resolve(lifetime).is_none() {
+        if server.entities.resolve(lifetime).is_none() {
             return Err(CallError::Entity);
         }
-        let recipient = client
-            .map(|id| {
-                let client = server.clients.get(id.0 as usize).ok_or(CallError::Entity)?;
-                if action == SoundAction::StartLoop
-                    && (client.connection.is_none()
-                        || client.connection == Some(qa_session::clients::Connection::Bot)
-                        || server.entities.resolve(client.entity).is_none())
-                {
-                    return Err(CallError::Entity);
-                }
-                Ok((id, client.entity))
-            })
-            .transpose()?;
-        let consumer = if action == SoundAction::StartLoop {
-            let id = client.ok_or(CallError::Entity)?;
-            let output = server.clients[id.0 as usize]
-                .output
-                .ok_or(CallError::Entity)?;
-            if server.events.counters(output).is_none() {
-                return Err(CallError::Entity);
-            }
-            if server.events.needs_resync(output) {
-                return Ok(0);
-            }
-            Some(output)
-        } else {
-            None
-        };
-        let end = (sounds.is_some() || action == SoundAction::Stop).then_some(row.signon.length);
-        cursor.bind(context.module, lifetime, recipient, end)?;
+        let recipient = server
+            .clients
+            .get(client.0 as usize)
+            .ok_or(CallError::Entity)?;
+        if recipient.connection.is_none()
+            || recipient.connection == Some(qa_session::clients::Connection::Bot)
+            || server.entities.resolve(recipient.entity).is_none()
+        {
+            return Err(CallError::Entity);
+        }
+        let consumer = recipient.output.ok_or(CallError::Entity)?;
+        if server.events.counters(consumer).is_none() {
+            return Err(CallError::Entity);
+        }
+        if server.events.needs_resync(consumer) {
+            return Ok(0);
+        }
+        cursor.bind(
+            context.module,
+            lifetime,
+            Some((client, recipient.entity)),
+            sounds.is_some().then_some(row.signon.length),
+        )?;
         publish(
             &mut server.events,
-            &mut row.signon.rows[..row.signon.length],
+            &row.signon.rows[..row.signon.length],
             cursor,
             context,
             row.native_rules,
             lifetime,
             client,
-            action,
             sounds,
             consumer,
         )
@@ -260,49 +223,40 @@ impl ServiceStorage {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "One publisher serves recipient and stop signon paths without copying the admission loop."
+    reason = "One publisher serves retained sound and static model records."
 )]
 fn publish(
     events: &mut EventRing,
-    rows: &mut [Registration],
+    rows: &[Registration],
     cursor: &mut SignonCursor,
     context: CallContext,
     source: RuleSetId,
     lifetime: EntityId,
-    client: Option<ClientId>,
-    action: SoundAction,
+    client: ClientId,
     sounds: Option<(&qa_audio::Bank, &qa_audio::SoundBindings)>,
-    consumer: Option<OutputConsumerId>,
+    consumer: OutputConsumerId,
 ) -> Result<usize, CallError> {
     let mut published = 0;
     let end = rows.len();
-    while let Some(row) = rows.get_mut(cursor.next) {
+    while let Some(row) = rows.get(cursor.next) {
         if cursor.end.is_some_and(|end| cursor.next >= end) {
             break;
         }
-        if consumer.is_some_and(|consumer| events.needs_resync(consumer)) {
+        if events.needs_resync(consumer) {
             break;
         }
-        let (event, position, sound) = match row.native {
+        let (event, position) = match row.native {
             SignonRecord::StaticEntity(entity) => {
-                if action == SoundAction::Stop {
-                    cursor.next += 1;
-                    continue;
-                }
                 cursor.end.get_or_insert(end);
-                (FrameEvent::StaticEntity(entity), entity.position, None)
+                (FrameEvent::StaticEntity(entity), entity.position)
             }
             SignonRecord::Sound(native) => {
-                let sound = if action == SoundAction::Stop {
-                    row.published_sound
-                } else {
-                    let Some((bank, bindings)) = sounds else {
-                        break;
-                    };
-                    bindings
-                        .sound(native.source_ordinal)
-                        .filter(|sound| bank.has_loop_marker(*sound))
+                let Some((bank, bindings)) = sounds else {
+                    break;
                 };
+                let sound = bindings
+                    .sound(native.source_ordinal)
+                    .filter(|sound| bank.has_loop_marker(*sound));
                 let Some(sound) = sound else {
                     cursor.next += 1;
                     continue;
@@ -322,18 +276,19 @@ fn publish(
                     position,
                     volume: f32::from(native.volume) / 255.0,
                     attenuation: f32::from(native.attenuation) / 64.0,
-                    action,
+                    action: SoundAction::StartLoop,
                     client: None,
+                    client_lifetime: None,
                     time_offset: 0.0,
                     positioned: true,
                 };
-                (FrameEvent::Sound(event), position, Some(sound))
+                (FrameEvent::Sound(event), position)
             }
         };
         let delivery = NativeDelivery {
             module: context.module,
             source,
-            target: client.map_or(NativeTarget::All, NativeTarget::Client),
+            target: NativeTarget::Client(client),
             origin: position,
             reliable: true,
             dupe_key: 0,
@@ -347,11 +302,8 @@ fn publish(
         let Ok(sequence) = events.push_delivered(delivery, event) else {
             break;
         };
-        if consumer.is_some_and(|consumer| !events.retained_for(consumer, sequence)) {
+        if !events.retained_for(consumer, sequence) {
             break;
-        }
-        if action == SoundAction::StartLoop {
-            row.published_sound = sound;
         }
         cursor.next += 1;
         published += 1;

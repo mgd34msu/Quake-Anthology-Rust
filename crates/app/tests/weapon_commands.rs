@@ -1,7 +1,7 @@
 use qa_app::{
     Runtime,
     client_policy::ClientPolicy,
-    host::{FrameHost, FrameResult},
+    host::{FrameHost, FrameResult, FrameSource},
     map::SpawnAnchor,
 };
 use qa_compat::{
@@ -12,13 +12,42 @@ use qa_compat::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
     primitives::{
-        ClientId, ModuleId, NativeEntity, PlayerTail, RuleSetId, ThinkTime, UserCmd, WeaponId,
+        ClientId, EntityId, ModuleId, NativeEntity, PlayerTail, RuleSetId, SoundAction, SoundEvent,
+        ThinkTime, UserCmd, WeaponId,
     },
-    sys_events::{EventTime, SeatId},
+    sys_events::{EventTime, SeatId, SysEventQueue},
 };
 use qa_network::commands::packet::Protocol;
 use qa_session::{clients::Connection, timing::TickRate};
 use qa_world::{area::LinkOrder, entities::AllocationPolicy};
+use std::time::Duration;
+
+#[derive(Default)]
+struct RetirementSource {
+    retired: Option<(ClientId, EntityId)>,
+}
+impl FrameSource for RetirementSource {
+    fn begin_frame(&mut self) -> Duration {
+        panic!("output-only fixture");
+    }
+    fn poll_events(&mut self, _: &mut SysEventQueue) {
+        panic!("output-only fixture");
+    }
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        panic!("output-only fixture");
+    }
+    fn elapsed(&self) -> Duration {
+        panic!("output-only fixture");
+    }
+    fn present(&mut self) {
+        panic!("output-only fixture");
+    }
+    fn sound(&mut self, event: SoundEvent) -> bool {
+        assert_eq!(event.action, SoundAction::RetireClient);
+        self.retired = Some((event.client.unwrap(), event.client_lifetime.unwrap()));
+        true
+    }
+}
 
 fn host() -> (FrameHost, [ClientId; 2]) {
     let mut runtime = Runtime::load(2, []).unwrap();
@@ -321,7 +350,37 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
         [commands[0].weapon, commands[1].weapon],
         [Some(rail), Some(bfg)]
     );
-    assert!(host.runtime.server.disconnect(clients[0]));
+    let old = host.runtime.server.clients[clients[0].0 as usize].entity;
+    let healthy = host.runtime.server.clients[clients[1].0 as usize].entity;
+    assert!(host.runtime.disconnect_client(clients[0]));
+    assert_eq!(
+        host.runtime.server.clients[clients[0].0 as usize]
+            .audio_retirement
+            .unwrap()
+            .lifetime,
+        old
+    );
+    let mut source = RetirementSource::default();
+    let output = qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.0,
+        2.0,
+    );
+    assert_eq!(source.retired, Some((clients[0], old)));
+    assert_eq!(output.unhandled_sounds, 0);
+    assert!(
+        host.runtime.server.clients[clients[0].0 as usize]
+            .audio_retirement
+            .is_none()
+    );
+    assert_eq!(
+        host.runtime.server.clients[clients[1].0 as usize].entity,
+        healthy
+    );
     assert_eq!(
         host.runtime
             .connect_local(

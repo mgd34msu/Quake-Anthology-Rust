@@ -1,6 +1,18 @@
 //! Native text placement and lightstyle arithmetic, independent of geometry.
 use qa_core::primitives::{RuleSetId, ThinkTime};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClockRules {
+    /// Native Q2 uses remaining milliseconds times its precomputed 0.01.
+    /// Other native clocks use the interval reciprocal, in a different order.
+    pub remaining_ms_scale: Option<f32>,
+}
+pub fn clock_rules(rules: RuleSetId) -> ClockRules {
+    ClockRules {
+        remaining_ms_scale: (rules == RuleSetId::Quake2).then_some(0.01),
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct TextRules {
     pub colors: bool,

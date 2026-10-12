@@ -439,6 +439,11 @@ impl Assets {
             .intern_path(path)
             .map_err(|_| "asset name table full")
     }
+    /// Lump names are byte identities, not paths. Their decoder owns native
+    /// folded lookup; slash conversion must not merge distinct lump names.
+    pub fn intern_resource_name(&mut self, name: &[u8]) -> Result<NameId, &'static str> {
+        self.names.intern(name).map_err(|_| "asset name table full")
+    }
     pub fn name(&self, id: NameId) -> Option<&str> {
         std::str::from_utf8(self.names.get(id)?).ok()
     }

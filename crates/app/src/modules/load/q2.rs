@@ -190,14 +190,7 @@ fn spawn_strings(
     strings: [&[u8]; 3],
     abi: &qa_compat::q2_abi::ClientLayout,
 ) -> Result<([u64; 3], u64, u64), String> {
-    use qa_formats::program::native::Region;
     use qa_platform::native::PAGE_BYTES;
-    let offset = image
-        .bytes
-        .len()
-        .div_ceil(PAGE_BYTES)
-        .checked_mul(PAGE_BYTES)
-        .ok_or("Q2 spawn strings too large")?;
     let size = strings
         .iter()
         .try_fold(0usize, |total, string| {
@@ -212,34 +205,17 @@ fn spawn_strings(
         .div_ceil(PAGE_BYTES)
         .checked_mul(PAGE_BYTES)
         .ok_or("Q2 spawn strings too large")?;
-    let end = offset
-        .checked_add(length)
-        .filter(|&end| end <= 512 * 1024 * 1024)
-        .ok_or("Q2 spawn strings too large")?;
-    image
-        .base
-        .checked_add(end as u64)
-        .ok_or("Q2 spawn strings too large")?;
-    let mut bytes = std::mem::take(&mut image.bytes).into_vec();
-    bytes.resize(end, 0);
-    let mut at = offset;
+    let region = image
+        .reserve_region(length, PAGE_BYTES, true, true, false)
+        .map_err(|_| "Q2 spawn strings too large")?;
+    let mut at = region.offset;
     let arguments = strings.map(|string| {
         let address = image.base + at as u64;
-        bytes[at..at + string.len()].copy_from_slice(string);
+        image.bytes[at..at + string.len()].copy_from_slice(string);
         at += string.len() + 1;
         address
     });
     let userinfo = image.base + at as u64;
     let usercmd = (userinfo + abi.userinfo_bytes as u64).div_ceil(4) * 4;
-    image.bytes = bytes.into_boxed_slice();
-    let mut regions = std::mem::take(&mut image.regions).into_vec();
-    regions.push(Region {
-        offset,
-        length,
-        read: true,
-        write: true,
-        execute: false,
-    });
-    image.regions = regions.into_boxed_slice();
     Ok((arguments, userinfo, usercmd))
 }

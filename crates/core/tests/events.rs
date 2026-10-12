@@ -799,3 +799,35 @@ fn dispatch_stop_preserves_pending_record_and_next_cursor() {
     assert_eq!(seen, [0, 1]);
     assert!(ring.is_empty());
 }
+
+#[test]
+fn client_audio_retirement_is_a_presentation_only_lifetime_control() {
+    use qa_core::primitives::{ClientId, EntityId, SoundAction};
+    let mut ring = EventRing::load(4, 3, 4, 64).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let lifetime = EntityId {
+        slot: 7,
+        generation: 3,
+    };
+    let event = SoundEvent::retire_client(ClientId(0), lifetime);
+    assert_eq!(event.action, SoundAction::RetireClient);
+    assert_eq!(event.client_lifetime, Some(lifetime));
+    assert!(event.native_fields.is_none());
+    let sequence = ring
+        .push_to(OutputTarget::Presentation, FrameEvent::Sound(event))
+        .unwrap();
+    assert!(ring.retained_for(presentation, sequence));
+    assert!(!ring.retained_for(client, sequence));
+    dispatch_consumer(
+        &mut ring,
+        presentation,
+        &mut |record: OutputRecord, _: &mut TextStore| {
+            assert!(
+                matches!(record.event, FrameEvent::Sound(sound) if sound.client_lifetime == Some(lifetime))
+            );
+            OutputSubmission::BestEffort
+        },
+    );
+    assert!(ring.is_empty());
+}

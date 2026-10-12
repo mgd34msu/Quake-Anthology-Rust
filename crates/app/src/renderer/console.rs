@@ -3,10 +3,6 @@ use super::text::BitmapFont;
 use qa_console::presentation::{ConsoleView, Layout, Style};
 use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
-use qa_formats::{
-    archive::ArchiveReader,
-    image::{self, DecodedImage, ImageFormat, IndexedImage, Wad, WadImage},
-};
 use qa_render::{
     Assets, CpuPresentation, Draw2d, Frame, MaterialId, PaletteId, Refdef, Viewport,
     assets::{AlphaTest, DepthFunc, Filter, MaterialSettings, Sampler, Stage, StageTexture, Wrap},
@@ -16,7 +12,7 @@ use qa_render::{
         world_load::compile_definition,
     },
     shader::{AlphaGen, Cull, RgbGen, StageBlend},
-    surface_cache::{IndexedLighting, IndexedTexture},
+    surface_cache::IndexedLighting,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -131,23 +127,23 @@ impl ConsoleAssets {
             }
         } else if let Some(palette) = console.palette {
             if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-                let mut reader = ArchiveReader::default();
-                let background = vfs
-                    .read_file(b"gfx/conback.lmp", 16 * 1024 * 1024, &mut reader)
+                let background = images
+                    .indexed_lmp(
+                        "gfx/conback.lmp",
+                        palette,
+                        None,
+                        ImageUse {
+                            sampler: bitmap_sampler(),
+                            ..ImageUse::pic()
+                        },
+                    )
                     .map_err(|error| format!("{error:?}"))
-                    .and_then(|bytes| {
-                        let DecodedImage::Indexed(image) =
-                            image::decode(&bytes, ImageFormat::Lmp, rules.lineage())
-                                .map_err(|error| format!("{error:?}"))?
-                        else {
-                            return Err("conback is not indexed".into());
-                        };
-                        indexed_material(
+                    .and_then(|image| {
+                        bitmap_material(
                             &mut images,
                             "gfx/conback.lmp",
-                            &image,
-                            palette,
-                            None,
+                            image.id,
+                            image.sampler,
                             Some(StageBlend::ALPHA),
                         )
                         .map_err(str::to_owned)
@@ -387,16 +383,19 @@ fn register_font(
     }
     let palette = palette.ok_or("native font palette unavailable")?;
     if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-        let mut reader = ArchiveReader::default();
-        let bytes = vfs
-            .read_file(b"gfx.wad", 16 * 1024 * 1024, &mut reader)
+        let image = images
+            .indexed_wad(
+                "gfx.wad",
+                b"conchars",
+                palette,
+                Some(0),
+                ImageUse {
+                    sampler: bitmap_sampler(),
+                    ..ImageUse::pic()
+                },
+            )
             .map_err(|error| format!("{error:?}"))?;
-        let wad = Wad::parse(&bytes).map_err(|error| format!("{error:?}"))?;
-        let index = wad.find(b"conchars").ok_or("missing conchars")?;
-        let WadImage::Image(image) = wad.image(index).map_err(|error| format!("{error:?}"))? else {
-            return Err("conchars is not a bitmap".into());
-        };
-        return indexed_material(images, "console/conchars", &image, palette, Some(0), None)
+        return bitmap_material(images, "console/conchars", image.id, image.sampler, None)
             .map_err(str::to_owned);
     }
     let sampler = bitmap_sampler();
@@ -446,24 +445,4 @@ fn bitmap_material(
             ..MaterialSettings::default()
         },
     )
-}
-fn indexed_material(
-    images: &mut Images<'_>,
-    name: &str,
-    image: &IndexedImage<'_>,
-    palette: PaletteId,
-    transparent: Option<u8>,
-    blend: Option<StageBlend>,
-) -> Result<MaterialId, &'static str> {
-    let texture =
-        IndexedTexture::load_base(image.width, image.height, &image.indices, transparent)?;
-    let id = images.assets.register_indexed_image(texture, palette)?;
-    let params = images
-        .upload_params(ImageUse {
-            sampler: bitmap_sampler(),
-            ..ImageUse::pic()
-        })
-        .map_err(|_| "console image settings")?;
-    images.assets.prepare_image(id, params)?;
-    bitmap_material(images, name, id, bitmap_sampler(), blend)
 }

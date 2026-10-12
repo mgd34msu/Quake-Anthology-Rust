@@ -749,7 +749,9 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
 #[test]
 fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() {
     use qa_core::sys_events::EventTime;
-    let mut clock = PresentationClock::default();
+    let mut clock = PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(
+        RuleSetId::Quake2,
+    ));
     for (queued, current, old, expected_time, expected_fraction) in [
         (10_000, 100, 0, 0, 0.0),
         (10_050, 100, 0, 50, 0.5),
@@ -763,7 +765,6 @@ fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() 
             ThinkTime::Milliseconds(current),
             Some(ThinkTime::Milliseconds(old)),
             Some(100),
-            Protocol::Quake2_34,
         );
         assert_eq!(clock.sample().time, ThinkTime::Milliseconds(expected_time));
         assert_eq!(clock.sample().fraction, expected_fraction);
@@ -774,7 +775,6 @@ fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() 
         ThinkTime::Milliseconds(0),
         Some(ThinkTime::Milliseconds(0)),
         None,
-        Protocol::QuakeWorld28,
     );
     assert_eq!(qw.sample().fraction, 1.0); // no native server-time field
     let mut q3 = PresentationClock::default();
@@ -783,14 +783,12 @@ fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() 
         ThinkTime::Milliseconds(100),
         Some(ThinkTime::Milliseconds(50)),
         None,
-        Protocol::Quake3_68,
     );
     q3.advance(
         EventTime::from_milliseconds(525),
         ThinkTime::Milliseconds(100),
         Some(ThinkTime::Milliseconds(50)),
         None,
-        Protocol::Quake3_68,
     );
     assert_eq!(q3.sample().fraction, 0.5);
     let mut nq = PresentationClock::default();
@@ -799,16 +797,58 @@ fn client_presentation_uses_queued_elapsed_time_in_the_native_snapshot_domain() 
         ThinkTime::Seconds(0.1),
         Some(ThinkTime::Seconds(0.05)),
         None,
-        Protocol::NetQuake15,
     );
     nq.advance(
         EventTime::from_milliseconds(525),
         ThinkTime::Seconds(0.1),
         Some(ThinkTime::Seconds(0.05)),
         None,
-        Protocol::NetQuake15,
     );
     assert!((nq.sample().fraction - 0.5).abs() < 0.00001);
+}
+
+#[test]
+fn cached_clock_policy_preserves_native_interpolation_rounding() {
+    use qa_core::sys_events::EventTime;
+    // Native remaining-time and interval-reciprocal forms intentionally differ.
+    let rows = [
+        (1, 0x3c23d740, 0x3c23d70a),
+        (3, 0x3cf5c2a0, 0x3cf5c28f),
+        (17, 0x3e2e147c, 0x3e2e147b),
+        (29, 0x3e947ae2, 0x3e947ae1),
+        (49, 0x3efae148, 0x3efae147),
+        (51, 0x3f028f5c, 0x3f028f5c),
+        (67, 0x3f2b851f, 0x3f2b851e),
+        (99, 0x3f7d70a4, 0x3f7d70a3),
+    ];
+    for rules in RuleSetId::ALL {
+        let mut clock =
+            PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(rules));
+        clock.advance(
+            EventTime::default(),
+            ThinkTime::Milliseconds(100),
+            Some(ThinkTime::Milliseconds(0)),
+            Some(100),
+        );
+        for (ms, q2_bits, interval_bits) in rows {
+            clock.advance(
+                EventTime::from_milliseconds(ms),
+                ThinkTime::Milliseconds(100),
+                Some(ThinkTime::Milliseconds(0)),
+                Some(100),
+            );
+            assert_eq!(clock.sample().time, ThinkTime::Milliseconds(ms as i64));
+            assert_eq!(
+                clock.sample().fraction.to_bits(),
+                if rules == RuleSetId::Quake2 {
+                    q2_bits
+                } else {
+                    interval_bits
+                },
+                "{rules:?}, {ms} ms",
+            );
+        }
+    }
 }
 
 #[test]

@@ -251,63 +251,165 @@ impl Runtime {
             .server
             .connect(Connection::Local, ModuleId::default(), tail, None)
             .ok_or("no local client slot")?;
-        self.output_duplicates.reset_client(id);
-        self.network.unbind(id);
-        self.input.reset_usercmd_value(seat);
-        self.loopback.clear_client(id);
-        let client = &mut self.server.clients[id.0 as usize];
-        client.client_rules = policy.client;
-        client.link_order = qa_gameplay::rules::link_order(policy.client);
-        for player in [
-            &mut client.player,
-            &mut self.prediction[seat.index()].player,
-        ] {
-            player.reset();
-            player.tail = tail;
-            player.movement_rules = policy.movement;
-            player.trace_rules = policy.trace;
-            qa_movement::set_bounds(player);
-            player.body.position = spawn.position;
-            player.view_angles = spawn.angles;
-            player.health = 100;
-        }
-        self.server
-            .entities
-            .columns
-            .set_body(client.entity.slot as usize, client.player.body);
-        self.server.entities.columns.angles[client.entity.slot as usize] = spawn.angles;
-        self.server.area.link(
-            &self.server.entities,
-            client.entity,
-            qa_world::area::LinkFlags::SOLID,
-            client.link_order,
-            qa_world::area::LinkIntent::Explicit,
-        );
-        for endpoint in [
-            qa_core::loopback::Endpoint::Client,
-            qa_core::loopback::Endpoint::Server,
-        ] {
-            let connection = qa_network::ingress::Connection {
-                route: qa_network::ingress::Route {
-                    socket: endpoint.socket(),
-                    peer: qa_core::sys_events::Peer::Loopback(id),
-                },
-                channel: qa_network::channel::Channel::load(protocol.channel(), endpoint, 8192, 16)
+        let result = (|| {
+            self.output_duplicates.reset_client(id);
+            self.network.unbind(id);
+            self.input.reset_usercmd_value(seat);
+            self.loopback.clear_client(id);
+            let client = &mut self.server.clients[id.0 as usize];
+            client.client_rules = policy.client;
+            client.link_order = qa_gameplay::rules::link_order(policy.client);
+            for player in [
+                &mut client.player,
+                &mut self.prediction[seat.index()].player,
+            ] {
+                player.reset();
+                player.tail = tail;
+                player.movement_rules = policy.movement;
+                player.trace_rules = policy.trace;
+                qa_movement::set_bounds(player);
+                player.body.position = spawn.position;
+                player.view_angles = spawn.angles;
+                player.health = 100;
+            }
+            self.server
+                .entities
+                .columns
+                .set_body(client.entity.slot as usize, client.player.body);
+            self.server.entities.columns.angles[client.entity.slot as usize] = spawn.angles;
+            self.server.area.link(
+                &self.server.entities,
+                client.entity,
+                qa_world::area::LinkFlags::SOLID,
+                client.link_order,
+                qa_world::area::LinkIntent::Explicit,
+            );
+            for endpoint in [
+                qa_core::loopback::Endpoint::Client,
+                qa_core::loopback::Endpoint::Server,
+            ] {
+                let connection = qa_network::ingress::Connection {
+                    route: qa_network::ingress::Route {
+                        socket: endpoint.socket(),
+                        peer: qa_core::sys_events::Peer::Loopback(id),
+                    },
+                    channel: qa_network::channel::Channel::load(
+                        protocol.channel(),
+                        endpoint,
+                        8192,
+                        16,
+                    )
                     .map_err(|e| e.to_string())?,
-                output: None,
-                pending_output: None,
-                commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                    output: None,
+                    pending_output: None,
+                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                };
+                if endpoint == qa_core::loopback::Endpoint::Server {
+                    self.bind_server_connection(id, connection, native_client, Some(seat))?;
+                } else {
+                    self.network
+                        .bind(id, endpoint, connection)
+                        .map_err(|e| format!("local channel {e:?}"))?;
+                }
+            }
+            self.input.set_view_angles(seat, spawn.angles);
+            Ok(id)
+        })();
+        if result.is_err() {
+            self.disconnect_client(id);
+        }
+        result
+    }
+
+    /// Tear down one connection; audio retains only its canonical CLIENT lifetime.
+    pub fn disconnect_client(&mut self, id: ClientId) -> bool {
+        let slot = id.0 as usize;
+        let Some(client) = self.server.clients.get_mut(slot) else {
+            return false;
+        };
+        if client.connection.is_none() {
+            return false;
+        }
+        if self.client_resources[slot].is_some() {
+            debug_assert!(client.audio_retirement.is_none());
+            client
+                .audio_retirement
+                .get_or_insert(qa_session::clients::AudioRetirement {
+                    lifetime: client.entity,
+                    publication: None,
+                });
+        }
+        self.output_duplicates.reset_client(id);
+        self.server.disconnect(id);
+        self.network.unbind(id);
+        self.loopback.clear_client(id);
+        self.snapshots[slot] = None;
+        self.client_resources[slot] = None;
+        self.config_publications[slot].reset();
+        self.native_numbers[slot].reset();
+        true
+    }
+
+    /// Retry canceled Presentation publications without copying sound events.
+    /// Completion is recorded only by the Presentation consumer after delivery.
+    pub fn publish_audio_retirements(&mut self) {
+        let server = &mut self.server;
+        if !server.events.resume_if_needed(&mut server.presentation) {
+            return;
+        }
+        let retained = server
+            .clients
+            .iter()
+            .filter(|client| {
+                client.audio_retirement.is_some_and(|retirement| {
+                    retirement.publication.is_some_and(|(owner, sequence)| {
+                        server.events.retained_for(owner, sequence)
+                    })
+                })
+            })
+            .count();
+        // Do not overflow Presentation with its own queued retirement controls.
+        // Ordinary stalled owners are retired by EventRing's existing policy.
+        let mut available = server.events.capacity().saturating_sub(retained);
+        for (slot, client) in server.clients.iter_mut().enumerate() {
+            let Some(retirement) = &mut client.audio_retirement else {
+                continue;
             };
-            if endpoint == qa_core::loopback::Endpoint::Server {
-                self.bind_server_connection(id, connection, native_client, Some(seat))?;
-            } else {
-                self.network
-                    .bind(id, endpoint, connection)
-                    .map_err(|e| format!("local channel {e:?}"))?;
+            if retirement
+                .publication
+                .is_some_and(|(owner, sequence)| server.events.retained_for(owner, sequence))
+            {
+                continue;
+            }
+            retirement.publication = None;
+            if available == 0 {
+                break;
+            }
+            let event = qa_core::primitives::SoundEvent::retire_client(
+                ClientId(slot as u32),
+                retirement.lifetime,
+            );
+            // A full ring can cancel Presentation itself. Resume that epoch and
+            // retry the same retained lifetime once, rather than mistaking a
+            // canceled admission for delivery or waiting forever on an ACK.
+            for _ in 0..2 {
+                if !server.events.resume_if_needed(&mut server.presentation) {
+                    break;
+                }
+                let consumer = server.presentation;
+                let Ok(sequence) = server.events.push_to(
+                    qa_core::events::OutputTarget::Presentation,
+                    qa_core::events::FrameEvent::Sound(event),
+                ) else {
+                    break;
+                };
+                if server.events.retained_for(consumer, sequence) {
+                    retirement.publication = Some((consumer, sequence));
+                    available -= 1;
+                    break;
+                }
             }
         }
-        self.input.set_view_angles(seat, spawn.angles);
-        Ok(id)
     }
 
     /// A connected native channel supplies its client number explicitly.
@@ -321,6 +423,12 @@ impl Runtime {
         seat: Option<qa_core::sys_events::SeatId>,
     ) -> Result<(), String> {
         let slot = id.0 as usize;
+        if self.client_resources.get(slot).is_some_and(Option::is_some) {
+            self.disconnect_client(id);
+            return Err(
+                "CLIENT resource replacement requires reconnect after audio retirement".into(),
+            );
+        }
         let client = self.server.clients.get(slot).ok_or("client slot")?;
         if !matches!(
             (client.connection, seat),

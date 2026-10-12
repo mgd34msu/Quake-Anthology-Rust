@@ -519,9 +519,12 @@ fn stalled_peer_progress(unsent: bool) {
             .overflow,
         0
     );
-    // The healthy peer's final real ACK enters at the normal quit-frame drain.
-    host.runtime.quit = true;
-    host.frame(&mut source, true);
+    // Admit the healthy peer's final real ACK at an ordinary frame intake,
+    // before shutdown removes its channel and consumer.
+    let final_ack = host.frame(&mut source, true);
+    assert_eq!(final_ack.server_ticks, 0);
+    assert_eq!(host.runtime.server.world_frame, 400);
+    assert_eq!(source.healthy, 700);
     assert_eq!(
         host.runtime
             .server
@@ -547,6 +550,7 @@ fn stalled_peer_progress(unsent: bool) {
             .get(line.text.id())
             .is_some()
     );
+    let center_text = line.text.id();
     assert_eq!(
         host.runtime
             .server
@@ -554,9 +558,57 @@ fn stalled_peer_progress(unsent: bool) {
             .acknowledge(stalled_cursor, NativeReceipt(7)),
         0
     );
-    assert!(host.runtime.server.disconnect(local)); // Explicitly retires display leases.
-    assert!(!host.runtime.server.disconnect(stalled));
-    assert!(host.runtime.server.disconnect(healthy));
+    host.runtime.quit = true;
+    host.frame(&mut source, true);
+    assert!(
+        host.runtime
+            .server
+            .events
+            .counters(healthy_cursor)
+            .is_none()
+    );
+    assert!(
+        host.runtime.server.clients[local.0 as usize]
+            .hud
+            .centerprint
+            .is_none()
+    );
+    assert!(host.runtime.server.events.texts.get(center_text).is_some());
+    // Slow synthetic module sinks legitimately retain the last ring page.
+    // Exercise ordinary bounded resync, then verify no HUD display lease
+    // keeps that canceled page alive after CLIENT teardown.
+    let retained = host.runtime.server.events.sequence_range();
+    for _ in 0..=host.runtime.server.events.capacity() {
+        host.runtime
+            .server
+            .events
+            .push(FrameEvent::Effect(EffectEvent {
+                effect: EffectId(0),
+                position: Vec3::default(),
+                direction: Vec3::default(),
+                count: 1,
+            }))
+            .unwrap();
+    }
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.0,
+        2.0,
+    );
+    assert!(host.runtime.server.events.sequence_range().start >= retained.end);
+    assert!(host.runtime.server.events.texts.get(center_text).is_none());
+    for client in [local, stalled, healthy] {
+        assert!(
+            host.runtime.server.clients[client.0 as usize]
+                .connection
+                .is_none()
+        );
+        assert!(!host.runtime.disconnect_client(client));
+    }
 }
 
 #[test]

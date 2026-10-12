@@ -29,7 +29,15 @@ impl FrameHost {
         }
     }
 
-    fn present_sound(&mut self, event: SoundEvent) {
+    fn present_sound(&mut self, mut event: SoundEvent) {
+        let Some(client) = event
+            .client
+            .and_then(|id| self.runtime.server.clients.get(id.0 as usize))
+            .filter(|client| client.connection == Some(qa_session::clients::Connection::Local))
+        else {
+            return;
+        };
+        event.client_lifetime = Some(client.entity);
         // Received CLIENT cues cannot be encoded again for SERVER consumers.
         let _ = self
             .runtime

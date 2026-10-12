@@ -528,3 +528,94 @@ fn moving_voices_keep_native_connection_namespace() {
     assert_eq!(pcm, [692, 692]);
     assert_eq!(m.counts.respatialized, 2);
 }
+
+#[test]
+fn retirement_removes_only_the_old_client_lifetime_including_delayed_voices() {
+    let mut m = mixer(vec![1000; 4], Some(0), 8);
+    let old = EntityId {
+        slot: 1,
+        generation: 4,
+    };
+    let replacement = EntityId {
+        generation: 5,
+        ..old
+    };
+    m.listen(
+        &[listener(0, Vec3::default()), listener(1, Vec3::default())],
+        1.0,
+    );
+    let mut old_event = event(&m);
+    old_event.client = Some(ClientId(0));
+    old_event.client_lifetime = Some(old);
+    old_event.action = SoundAction::StartLoop;
+    assert!(m.sound(old_event));
+    old_event.channel += 1;
+    old_event.time_offset = 1.0;
+    assert!(m.sound(old_event));
+    let mut fresh = event(&m);
+    fresh.client = Some(ClientId(0));
+    fresh.client_lifetime = Some(replacement);
+    fresh.action = SoundAction::StartLoop;
+    assert!(m.sound(fresh));
+    let mut other = fresh;
+    other.client = Some(ClientId(1));
+    assert!(m.sound(other));
+    let mut global = fresh;
+    global.client = None;
+    global.client_lifetime = None;
+    assert!(m.sound(global));
+    assert!(m.sound(SoundEvent::retire_client(ClientId(0), old)));
+    assert_eq!(m.counts.stopped, 2);
+    let mut pcm = [0; 4];
+    assert!(m.paint(&mut pcm));
+    assert!(pcm.iter().all(|sample| *sample > 0));
+    assert!(m.sound(SoundEvent::retire_client(ClientId(0), old)));
+    assert_eq!(m.counts.stopped, 2);
+    assert!(m.sound(SoundEvent::retire_client(ClientId(0), replacement)));
+    assert!(m.sound(SoundEvent::retire_client(ClientId(1), replacement)));
+    assert_eq!(m.counts.stopped, 4);
+    assert!(m.paint(&mut pcm));
+    assert!(
+        pcm.iter().all(|sample| *sample > 0),
+        "global console play survives"
+    );
+    global.action = SoundAction::Stop;
+    assert!(m.sound(global));
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [0; 4]);
+}
+
+#[test]
+fn reused_native_channel_does_not_replace_a_different_client_lifetime() {
+    let mut m = mixer(vec![1000; 4], Some(0), 4);
+    m.listen(&[listener(0, Vec3::default())], 1.0);
+    let old = EntityId {
+        slot: 8,
+        generation: 1,
+    };
+    let fresh = EntityId {
+        generation: 2,
+        ..old
+    };
+    let mut sound = event(&m);
+    sound.client = Some(ClientId(0));
+    sound.client_lifetime = Some(old);
+    sound.entity = Some(SoundEmitter::Native {
+        namespace: ResourceNamespace::Client(ClientId(0)),
+        slot: 1,
+    });
+    sound.channel = 2;
+    sound.action = SoundAction::StartLoop;
+    assert!(m.sound(sound));
+    sound.client_lifetime = Some(fresh);
+    assert!(m.sound(sound));
+    assert_eq!((m.counts.started, m.counts.replaced), (2, 0));
+    assert!(m.sound(SoundEvent::retire_client(ClientId(0), old)));
+    assert_eq!(m.counts.stopped, 1);
+    let mut pcm = [0; 4];
+    assert!(m.paint(&mut pcm));
+    assert!(pcm.iter().all(|sample| *sample > 0));
+    assert!(m.sound(SoundEvent::retire_client(ClientId(0), fresh)));
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [0; 4]);
+}

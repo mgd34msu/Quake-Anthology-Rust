@@ -76,6 +76,8 @@ pub struct SnapshotBinding {
 struct ClientPresentation {
     seat: SeatId,
     clock: PresentationClock,
+    fixed_period: Option<u16>,
+    negotiated_period: bool,
     sequence: Option<u32>,
     gun_animation: Option<GunAnimation>,
     context: PlayerContext,
@@ -121,17 +123,16 @@ impl SnapshotBinding {
             return;
         };
         let previous = channel.previous_snapshot();
-        let period = match self.protocol {
-            Protocol::Quake2_34 => Some(100),
-            Protocol::Quake2Repro1038 => channel.q2_repro_frame_ms(),
-            _ => None,
+        let period = if client.negotiated_period {
+            channel.q2_repro_frame_ms()
+        } else {
+            client.fixed_period
         };
         client.clock.advance(
             queued,
             current.time(),
             previous.map(ReceivedFrame::time),
             period,
-            self.protocol,
         );
     }
     pub fn entity_rejections(&self) -> u64 {
@@ -162,7 +163,13 @@ impl SnapshotBinding {
             projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
             presentation: seat.map(|seat| ClientPresentation {
                 seat,
-                clock: PresentationClock::default(),
+                // Native wire timestamps select their arithmetic at admission;
+                // movement, map format and module ownership do not select it.
+                clock: PresentationClock::load(qa_gameplay::rules::presentation::clock_rules(
+                    protocol.rule_set(),
+                )),
+                fixed_period: (protocol == Protocol::Quake2_34).then_some(100),
+                negotiated_period: protocol == Protocol::Quake2Repro1038,
                 sequence: None,
                 gun_animation: None,
                 context: PlayerContext {

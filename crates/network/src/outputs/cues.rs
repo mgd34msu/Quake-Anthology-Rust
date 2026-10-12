@@ -61,6 +61,7 @@ impl Sound {
             attenuation: f32::from(self.attenuation) / 64.0,
             time_offset: f32::from(self.time_offset) / 1000.0,
             client,
+            client_lifetime: None,
             action,
         }
     }
@@ -126,7 +127,7 @@ pub fn sound(
                 Cue::Sound(wire)
             }
             SoundAction::StartLoop => Cue::StaticSound(wire),
-            SoundAction::Stop => return Err(Error::Unsupported),
+            SoundAction::Stop | SoundAction::RetireClient => return Err(Error::Unsupported),
         };
         return write_cue(protocol, project_cue(protocol, cue)?, output);
     }

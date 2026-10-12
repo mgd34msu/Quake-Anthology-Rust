@@ -348,3 +348,47 @@ fn pending_command_keeps_its_snapshot_observation_once_and_disconnect_clears_it(
     );
     assert!(server.take_pending_command(id).is_none());
 }
+
+#[test]
+fn pending_client_audio_retirement_survives_reset_and_blocks_only_its_slot() {
+    use qa_session::clients::AudioRetirement;
+    let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
+    let old = server
+        .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+        .unwrap();
+    let lifetime = server.clients[old.0 as usize].entity;
+    server.clients[old.0 as usize].audio_retirement = Some(AudioRetirement {
+        lifetime,
+        publication: Some((server.presentation, 42)),
+    });
+    assert!(server.disconnect(old));
+    assert_eq!(
+        server.clients[old.0 as usize]
+            .audio_retirement
+            .unwrap()
+            .lifetime,
+        lifetime
+    );
+    let healthy = server
+        .connect(Connection::Bot, ModuleId(2), PlayerTail::None, None)
+        .unwrap();
+    assert_ne!(healthy, old);
+    assert!(
+        server
+            .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+            .is_none()
+    );
+    // The app's Presentation callback is the sole production completion owner.
+    server.clients[old.0 as usize].audio_retirement = None;
+    assert_eq!(
+        server.connect(Connection::Local, ModuleId(1), PlayerTail::None, None),
+        Some(old)
+    );
+    assert_ne!(server.clients[old.0 as usize].entity, lifetime);
+    assert!(server.disconnect(healthy));
+    // SERVER-only clients never acquire an audio retirement and reuse at once.
+    assert_eq!(
+        server.connect(Connection::Bot, ModuleId(2), PlayerTail::None, None),
+        Some(healthy)
+    );
+}

@@ -6,6 +6,73 @@ use qa_formats::{
     FormatError,
     program::native::{Image, LoadRole},
 };
+
+#[test]
+fn image_reservations_preserve_exact_extents_permissions_and_existing_storage() {
+    for bits in [32, 64] {
+        let mut image = Image::parse(&pe_fixture(bits), None, LoadRole::Library).unwrap();
+        let original_bytes = image.bytes.clone();
+        let original_regions = image.regions.clone();
+        let first = image.reserve_region(17, 4096, true, false, true).unwrap();
+        assert_eq!(first.offset, original_bytes.len());
+        assert_eq!(first.length, 17);
+        assert!(first.read && !first.write && first.execute);
+        assert_eq!(&image.bytes[..original_bytes.len()], &*original_bytes);
+        assert_eq!(&image.regions[..original_regions.len()], &*original_regions);
+        assert_eq!(image.regions.last(), Some(&first));
+        assert_eq!(&image.bytes[first.offset..], &[0; 17]);
+        image.bytes[first.offset..].fill(0x5a);
+
+        let second = image.reserve_region(4099, 4096, true, true, false).unwrap();
+        assert_eq!(second.offset, first.offset + 4096);
+        assert_eq!(second.length, 4099);
+        assert!(second.read && second.write && !second.execute);
+        assert_eq!(image.bytes.len(), second.offset + second.length);
+        assert_eq!(&image.bytes[first.offset..first.offset + 17], &[0x5a; 17]);
+        assert!(
+            image.bytes[first.offset + 17..]
+                .iter()
+                .all(|&byte| byte == 0)
+        );
+        assert_eq!(image.regions.last(), Some(&second));
+        assert_eq!(
+            image.base + second.offset as u64,
+            image.base + original_bytes.len() as u64 + 4096,
+        );
+    }
+}
+
+#[test]
+fn invalid_image_reservations_leave_the_image_unchanged() {
+    for bits in [32, 64] {
+        let mut image = Image::parse(&pe_fixture(bits), None, LoadRole::Library).unwrap();
+        let original_bytes = image.bytes.clone();
+        let original_regions = image.regions.clone();
+        for (length, alignment) in [
+            (0, 4096),
+            (1, 0),
+            (1, 3),
+            (usize::MAX, 4096),
+            (512 * 1024 * 1024, 4096),
+            (1, 1usize << (usize::BITS - 1)),
+        ] {
+            assert_eq!(
+                image.reserve_region(length, alignment, true, true, false),
+                Err(FormatError::InvalidRange),
+            );
+            assert_eq!(image.bytes, original_bytes);
+            assert_eq!(image.regions, original_regions);
+        }
+        image.base = u64::MAX - original_bytes.len() as u64;
+        assert_eq!(
+            image.reserve_region(1, 4096, true, true, false),
+            Err(FormatError::InvalidRange),
+        );
+        assert_eq!(image.bytes, original_bytes);
+        assert_eq!(image.regions, original_regions);
+    }
+}
+
 #[test]
 fn native_exports_keep_aliases_ordinals_and_full_width_rebasing() {
     for bits in [32, 64] {

@@ -97,7 +97,6 @@ pub(super) fn bind(
     let (config, startup) = if needs_heap || lifecycle || windows_thread {
         const BYTES: usize = 32 * 1024 * 1024;
         let page = qa_platform::native::PAGE_BYTES;
-        let offset = image.bytes.len().div_ceil(page) * page;
         let heap_bytes = if needs_heap { BYTES } else { 0 };
         let tls_bytes = image
             .tls
@@ -124,21 +123,6 @@ pub(super) fn bind(
             .checked_add(heap_bytes)
             .and_then(|n| n.checked_add(thread_bytes))
             .ok_or("native runtime extent")?;
-        let end = offset
-            .checked_add(bytes)
-            .filter(|&n| n <= 512 * 1024 * 1024)
-            .ok_or("native runtime extent")?;
-        let base = image
-            .base
-            .checked_add(offset as u64)
-            .ok_or("native runtime address")?;
-        base.checked_add(bytes as u64)
-            .ok_or("native runtime extent")?;
-        let config = RuntimeConfig {
-            base,
-            heap_bytes,
-            teb: windows_thread.then_some(base + page as u64 + heap_bytes as u64),
-        };
         let template = if windows_thread {
             image
                 .tls
@@ -167,8 +151,18 @@ pub(super) fn bind(
         } else {
             None
         };
-        let mut storage = std::mem::take(&mut image.bytes).into_vec();
-        storage.resize(end, 0);
+        let original_regions = image.regions.len();
+        let region = image
+            .reserve_region(bytes, page, true, true, false)
+            .map_err(|_| "native runtime extent")?;
+        let offset = region.offset;
+        let base = image.base + offset as u64;
+        let config = RuntimeConfig {
+            base,
+            heap_bytes,
+            teb: windows_thread.then_some(base + page as u64 + heap_bytes as u64),
+        };
+        let storage = &mut image.bytes;
         // The i386 admission covers scalar/byte services. Its startup vectors
         // and errno use the zeroed page; x64 CRT pointer tables are not exposed.
         if pointer_bytes == 8 {
@@ -191,7 +185,7 @@ pub(super) fn bind(
                     let at =
                         usize::try_from(index.checked_sub(image.base).ok_or("native TLS index")?)
                             .map_err(|_| "native TLS index")?;
-                    if !image.regions.iter().any(|r| {
+                    if !image.regions[..original_regions].iter().any(|r| {
                         r.write
                             && at >= r.offset
                             && at - r.offset <= r.length.saturating_sub(4)
@@ -208,16 +202,6 @@ pub(super) fn bind(
                 storage[at..at + 8].copy_from_slice(&tls_data.to_le_bytes());
             }
         }
-        image.bytes = storage.into_boxed_slice();
-        let mut regions = std::mem::take(&mut image.regions).into_vec();
-        regions.push(qa_formats::program::native::Region {
-            offset,
-            length: bytes,
-            read: true,
-            write: true,
-            execute: false,
-        });
-        image.regions = regions.into_boxed_slice();
         // argc is zero; argv and envp point to separate owned null terminators.
         (Some(config), lifecycle.then_some(base))
     } else {

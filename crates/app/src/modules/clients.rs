@@ -262,8 +262,7 @@ impl FrameHost {
                 if accepted {
                     self.disconnect_client(id);
                 } else {
-                    self.runtime.output_duplicates.reset_client(id);
-                    self.runtime.server.disconnect(id);
+                    self.runtime.disconnect_client(id);
                 }
             }
             result
@@ -471,10 +470,33 @@ impl FrameHost {
         Ok((address, time))
     }
     pub(super) fn disconnect_module_clients(&mut self) {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         for index in 0..self.runtime.server.clients.len() {
-            let id = ClientId(index as u32);
-            if self.runtime.server.module_moves(id).is_some() {
+            if self.runtime.server.clients[index].connection.is_some() {
+                self.disconnect_client(ClientId(index as u32));
+            }
+        }
+    }
+    /// Original signon protocols cannot selectively remove one module's loops
+    /// or static models. Drop recipients which have observed that module.
+    pub(super) fn disconnect_module_recipients(&mut self, module: ModuleId) {
+        for slot in 0..self.runtime.server.clients.len() {
+            let client = &self.runtime.server.clients[slot];
+            let id = ClientId(slot as u32);
+            let affected = client.connection.is_some()
+                && (client.module == module
+                // Dynamic native deliveries do not retain an owning-module
+                // voice list after CLIENT receipt. SERVER stop is therefore a
+                // conservative connection reset, never a fabricated stop wire.
+                || (client.connection != Some(qa_session::clients::Connection::Bot)
+                    && self.module_row(module).is_some_and(|row| row.request.phase == super::Phase::Server))
+                || self.modules.as_ref().is_some_and(|modules| {
+                    modules.row(module).is_some_and(|row| {
+                        modules.signon[row.signon.range()].get(slot).is_some_and(|cursor| {
+                            cursor.has_publication_for(module, id, client.entity)
+                        })
+                    })
+                }));
+            if affected {
                 self.disconnect_client(id);
             }
         }
@@ -495,17 +517,11 @@ impl FrameHost {
             let _ =
                 self.call_module_export(native.module, Export::words(callback, &[address]), time);
         }
-        self.runtime.output_duplicates.reset_client(id);
-        self.runtime.server.disconnect(id);
-        self.runtime.network.unbind(id);
+        self.runtime.disconnect_client(id);
         for local in &mut self.local_clients {
             if *local == Some(id) {
                 *local = None;
             }
         }
-        self.runtime.snapshots[id.0 as usize] = None;
-        self.runtime.client_resources[id.0 as usize] = None;
-        self.runtime.config_publications[id.0 as usize].reset();
-        self.runtime.native_numbers[id.0 as usize].reset();
     }
 }

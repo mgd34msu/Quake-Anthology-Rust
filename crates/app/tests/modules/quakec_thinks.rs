@@ -256,6 +256,9 @@ fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
         }
         fn present(&mut self) {}
         fn sound(&mut self, event: SoundEvent) -> bool {
+            if event.action == SoundAction::RetireClient {
+                return true;
+            }
             assert!(self.count < 2);
             assert_eq!(event.sound, self.sample);
             assert_eq!(event.action, SoundAction::StartLoop);

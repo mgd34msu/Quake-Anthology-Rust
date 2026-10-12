@@ -187,6 +187,8 @@ fn connect(host: &mut FrameHost, seat: SeatId, native_client: u32) -> ClientId {
 struct Source {
     time: EventTime,
     positions: Vec<(ClientId, f32)>,
+    retired: Vec<(ClientId, EntityId)>,
+    mixer: Option<qa_audio::Mixer>,
     blocked_packets: usize,
 }
 impl FrameSource for Source {
@@ -209,7 +211,13 @@ impl FrameSource for Source {
     }
     fn present(&mut self) {}
     fn sound(&mut self, sound: SoundEvent) -> bool {
+        if sound.action == SoundAction::RetireClient {
+            self.retired
+                .push((sound.client.unwrap(), sound.client_lifetime.unwrap()));
+            return self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound));
+        }
         assert_eq!(sound.action, SoundAction::StartLoop);
+        assert!(sound.client_lifetime.is_some());
         assert!(matches!(
             sound.entity,
             Some(SoundEmitter::Static {
@@ -219,7 +227,7 @@ impl FrameSource for Source {
         ));
         self.positions
             .push((sound.client.unwrap(), sound.position.0[0]));
-        true
+        self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound))
     }
     fn send_packet(&mut self, _: u16, _: std::net::SocketAddr, _: &[u8]) -> bool {
         self.blocked_packets += 1;
@@ -387,8 +395,128 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
     }
 }
 
+fn decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continue() {
+    let (mut host, bank) = host(2);
+    let first = connect(&mut host, SeatId::FIRST, 0);
+    let healthy = connect(&mut host, SeatId::new(1).unwrap(), 1);
+    let old = host.runtime.server.clients[first.0 as usize].entity;
+    let mut mixer = qa_audio::Mixer::load(Arc::clone(&bank), 16, 1);
+    let listen = |client| {
+        Some(qa_audio::Listener {
+            client,
+            entity: None,
+            origin: Vec3::default(),
+            right: Vec3([1.0, 0.0, 0.0]),
+        })
+    };
+    mixer.listen(&[listen(first)], 1.0);
+    let mut source = Source {
+        mixer: Some(mixer),
+        ..Source::default()
+    };
+    frames(&mut host, &mut source, 0, 16);
+    let mut pcm = [0; 8];
+    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(pcm.iter().any(|sample| *sample != 0));
+    let before = host.module_counts(ModuleId(2)).unwrap().calls;
+    host.runtime
+        .network
+        .get_mut(first, Endpoint::Client)
+        .unwrap()
+        .channel
+        .queue_reliable(b"\x04disconnect\0")
+        .unwrap();
+    frames(&mut host, &mut source, 16, 8);
+    assert!(
+        host.runtime.server.clients[first.0 as usize]
+            .connection
+            .is_none()
+    );
+    assert_eq!(source.retired, [(first, old)]);
+    assert!(
+        host.runtime.server.clients[first.0 as usize]
+            .audio_retirement
+            .is_none()
+    );
+    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert_eq!(pcm, [0; 8]);
+    source
+        .mixer
+        .as_mut()
+        .unwrap()
+        .listen(&[listen(healthy)], 1.0);
+    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(pcm.iter().any(|sample| *sample != 0));
+    assert_eq!(
+        host.runtime.server.clients[healthy.0 as usize].connection,
+        Some(Connection::Local)
+    );
+    assert!(host.module_counts(ModuleId(2)).unwrap().calls > before);
+}
+
+fn stopping_secondary_module_retires_primary_recipient_without_stopping_other_provider() {
+    let (mut host, bank) = host(1);
+    let client = connect(&mut host, SeatId::FIRST, 0);
+    assert_eq!(
+        host.runtime.server.clients[client.0 as usize].module,
+        ModuleId(2)
+    );
+    let lifetime = host.runtime.server.clients[client.0 as usize].entity;
+    let mut mixer = qa_audio::Mixer::load(bank, 8, 1);
+    mixer.listen(
+        &[Some(qa_audio::Listener {
+            client,
+            entity: None,
+            origin: Vec3::default(),
+            right: Vec3([1.0, 0.0, 0.0]),
+        })],
+        1.0,
+    );
+    let mut source = Source {
+        mixer: Some(mixer),
+        ..Source::default()
+    };
+    frames(&mut host, &mut source, 0, 16);
+    assert_eq!(positions(&source, client), [8.0, 16.0]);
+    let before = host.module_counts(ModuleId(2)).unwrap().calls;
+    assert!(host.shutdown_module(ModuleId(101)));
+    assert!(!host.shutdown_module(ModuleId(101)));
+    assert_eq!(host.module_state(ModuleId(101)), Some(State::Stopped));
+    assert_eq!(host.module_state(ModuleId(2)), Some(State::Running));
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .connection
+            .is_none()
+    );
+    assert!(
+        host.runtime.server.clients[client.0 as usize]
+            .audio_retirement
+            .is_some()
+    );
+    frames(&mut host, &mut source, 16, 8);
+    assert_eq!(source.retired, [(client, lifetime)]);
+    let mut pcm = [1; 8];
+    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert_eq!(pcm, [0; 8]);
+    assert!(host.module_counts(ModuleId(2)).unwrap().calls > before);
+    assert_eq!(host.module_counts(ModuleId(2)).unwrap().traps, 0);
+    // A fresh connection has a new canonical lifetime; the stopped module is
+    // not replayed, while the surviving module still publishes its signon.
+    let fresh = connect(&mut host, SeatId::FIRST, 0);
+    assert_ne!(
+        host.runtime.server.clients[fresh.0 as usize].entity,
+        lifetime
+    );
+    frames(&mut host, &mut source, 24, 16);
+    assert_eq!(positions(&source, client), [8.0, 16.0, 8.0]);
+    assert!(source.mixer.as_mut().unwrap().paint(&mut pcm));
+    assert!(pcm.iter().any(|sample| *sample != 0));
+}
+
 fn main() {
     late_connections_and_reused_client_slots_receive_each_module_signon_once();
     blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ticks_continue();
+    decoded_static_loops_stop_at_disconnect_while_other_clients_and_ticks_continue();
+    stopping_secondary_module_retires_primary_recipient_without_stopping_other_provider();
     println!("per-client module signon checks passed");
 }

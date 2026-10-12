@@ -21,6 +21,14 @@ pub enum Connection {
     Bot,
 }
 
+/// Retained until the Presentation consumer has applied the retirement.
+/// A canceled ring publication is retried with the same canonical lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioRetirement {
+    pub lifetime: EntityId,
+    pub publication: Option<(OutputConsumerId, u64)>,
+}
+
 pub struct Client {
     pub connection: Option<Connection>,
     pub entity: EntityId,
@@ -37,12 +45,14 @@ pub struct Client {
     pub command_observation: Option<SnapshotObservation>,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
+    pub audio_retirement: Option<AudioRetirement>,
     /// An admitted native Q2 client advances inside ClientThink through Pmove.
     pub module_movement: bool,
     command_pending: bool,
 }
 
 impl Client {
+    // audio_retirement is completed by Presentation, never by a state reset.
     fn reset(&mut self, texts: &mut qa_core::events::TextStore, module: ModuleId) {
         self.player.reset();
         self.hud.reset(texts);
@@ -131,6 +141,7 @@ impl Server {
                 command_pending: false,
                 module_movement: false,
                 output: None,
+                audio_retirement: None,
                 hud: HudState::with_capacity(items, powerups, weapons, values),
                 hud_publication: HudPublication::with_capacity(items, powerups),
             })
@@ -177,7 +188,9 @@ impl Server {
         native: Option<NativeEntity>,
     ) -> Option<ClientId> {
         let slot = self.clients.iter().position(|client| {
-            client.connection.is_none() && self.entities.resolve(client.entity).is_some()
+            client.connection.is_none()
+                && client.audio_retirement.is_none()
+                && self.entities.resolve(client.entity).is_some()
         })?;
         let output = if connection == Connection::Bot {
             None

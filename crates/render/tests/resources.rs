@@ -2,9 +2,11 @@ use qa_content::vfs::Vfs;
 use qa_core::primitives::RuleSetId;
 use qa_render::{
     Assets,
-    assets::{Sampler, Wrap},
-    material::resources::{ImageRole, ImageSettings, ImageUse, Images, IndexedTarget},
-    surface_cache::PaletteLighting,
+    assets::{Filter, Sampler, Wrap},
+    material::resources::{
+        ImageRole, ImageSettings, ImageUse, Images, IndexedTarget, ResourceError,
+    },
+    surface_cache::{IndexedTexture, PaletteLighting},
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -147,6 +149,38 @@ impl Fixture {
         }
         std::fs::write(self.0.join(name), bytes).unwrap();
     }
+    fn lmp(&self, name: &str, width: u32, height: u32, indices: &[u8]) {
+        std::fs::write(self.0.join(name), qpic(width, height, indices)).unwrap();
+    }
+    fn wad(&self, name: &str, lumps: &[(&[u8], u8, u8, Vec<u8>)]) {
+        let mut bytes = b"WAD2".to_vec();
+        bytes.extend_from_slice(&(lumps.len() as i32).to_le_bytes());
+        let directory = 12 + lumps.iter().map(|entry| entry.3.len()).sum::<usize>();
+        bytes.extend_from_slice(&(directory as i32).to_le_bytes());
+        for (_, _, _, data) in lumps {
+            bytes.extend_from_slice(data);
+        }
+        let mut offset = 12;
+        for (name, kind, compression, data) in lumps {
+            assert!(name.len() <= 16);
+            bytes.extend_from_slice(&(offset as i32).to_le_bytes());
+            bytes.extend_from_slice(&(data.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(&(data.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(&[*kind, *compression, 0, 0]);
+            let mut raw_name = [0; 16];
+            raw_name[..name.len()].copy_from_slice(name);
+            bytes.extend_from_slice(&raw_name);
+            offset += data.len();
+        }
+        std::fs::write(self.0.join(name), bytes).unwrap();
+    }
+}
+fn qpic(width: u32, height: u32, indices: &[u8]) -> Vec<u8> {
+    assert_eq!(indices.len(), width as usize * height as usize);
+    let mut bytes = width.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&height.to_le_bytes());
+    bytes.extend_from_slice(indices);
+    bytes
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -157,6 +191,262 @@ fn palette() -> PaletteLighting {
     let colors: Vec<_> = (0..256).flat_map(|_| [7, 11, 19]).collect();
     let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
     PaletteLighting::load(&colors, &shades, None, 256).unwrap()
+}
+
+fn bitmap_use() -> ImageUse {
+    ImageUse {
+        sampler: Sampler {
+            wrap: Wrap::Clamp,
+            filter: Filter::Nearest,
+            mipmaps: false,
+        },
+        ..ImageUse::pic()
+    }
+}
+
+#[test]
+fn indexed_qpic_and_wad_share_native_registration_upload_and_detached_recipe_cache() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let root = Fixture::new();
+        let pixels = [0, 17, 255];
+        root.lmp("env/pic.lmp", 3, 1, &pixels);
+        let font: Vec<_> = pixels.into_iter().cycle().take(128 * 128).collect();
+        root.wad("env/font.wad", &[(b"conchars", 66, 0, font.clone())]);
+        let mut vfs = Vfs::default();
+        vfs.mount_directory(&root.0, 0).unwrap();
+        let mut assets = Assets::load().unwrap();
+        let palette = assets.register_palette(palette()).unwrap();
+        let mut images = Images::new(
+            &vfs,
+            &mut assets,
+            rules,
+            rules,
+            ImageSettings::native(rules),
+            None,
+        )
+        .unwrap();
+        let usage = bitmap_use();
+        let params = images.upload_params(usage).unwrap();
+        for (indices, width, height, mask, resolved) in [
+            (
+                pixels.as_slice(),
+                3,
+                1,
+                None,
+                images
+                    .indexed_lmp("env/pic.lmp", palette, None, usage)
+                    .unwrap(),
+            ),
+            (
+                font.as_slice(),
+                128,
+                128,
+                Some(0),
+                images
+                    .indexed_wad("env/font.wad", b"conchars", palette, Some(0), usage)
+                    .unwrap(),
+            ),
+        ] {
+            assert_eq!(resolved.sampler, usage.sampler);
+            let oracle = images
+                .assets
+                .register_indexed_image(
+                    IndexedTexture::load_base(width, height, indices, mask).unwrap(),
+                    palette,
+                )
+                .unwrap();
+            images.assets.prepare_image(oracle, params).unwrap();
+            let actual = images.assets.image(resolved.id).unwrap();
+            let oracle = images.assets.image(oracle).unwrap();
+            assert_eq!((actual.width, actual.height), (width, height));
+            assert_eq!(actual.rgba, oracle.rgba);
+            assert_eq!(actual.prepared, oracle.prepared);
+            assert_eq!(actual.native_sampler, oracle.native_sampler);
+            let texture = actual.indexed.as_ref().unwrap();
+            assert_eq!(texture.mip(0).unwrap().indices(), indices);
+            assert_eq!(texture.transparent_index(), mask);
+        }
+        let file = images
+            .indexed_lmp("env/pic.lmp", palette, None, usage)
+            .unwrap();
+        let wad = images
+            .indexed_wad("env/font.wad", b"conchars", palette, Some(0), usage)
+            .unwrap();
+        let count = images.assets.images().len();
+        let state = images.into_state();
+        std::fs::remove_file(root.0.join("env/pic.lmp")).unwrap();
+        std::fs::remove_file(root.0.join("env/font.wad")).unwrap();
+        let mut images = Images::from_state(&vfs, &mut assets, state);
+        assert_eq!(
+            images
+                .indexed_lmp("ENV\\PIC.LMP", palette, None, usage)
+                .unwrap(),
+            file
+        );
+        assert_eq!(
+            images
+                .indexed_wad("ENV\\FONT.WAD", b"conchars", palette, Some(0), usage)
+                .unwrap(),
+            wad
+        );
+        assert_eq!(images.assets.images().len(), count);
+    }
+}
+
+#[test]
+fn wad_recipe_keeps_exact_lump_names_masks_and_samplers_separate() {
+    let root = Fixture::new();
+    root.wad(
+        "env/pics.wad",
+        &[
+            (b"folder\\pic", 66, 0, qpic(2, 1, &[17, 0])),
+            (b"folder/pic", 66, 0, qpic(2, 1, &[255, 17])),
+        ],
+    );
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palette = assets.register_palette(palette()).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake,
+        RuleSetId::Quake,
+        ImageSettings::native(RuleSetId::Quake),
+        None,
+    )
+    .unwrap();
+    let usage = bitmap_use();
+    let backslash = images
+        .indexed_wad("env/pics.wad", b"folder\\pic", palette, None, usage)
+        .unwrap();
+    let slash = images
+        .indexed_wad("env/pics.wad", b"folder/pic", palette, None, usage)
+        .unwrap();
+    assert_ne!(backslash, slash);
+    let folded = images
+        .indexed_wad("env/pics.wad", b"FOLDER\\PIC", palette, None, usage)
+        .unwrap();
+    assert_ne!(backslash.id, folded.id); // Native folded lookup retains exact recipe identities.
+    for (resolved, expected) in [(backslash, [17, 0]), (slash, [255, 17]), (folded, [17, 0])] {
+        assert_eq!(
+            images
+                .assets
+                .image(resolved.id)
+                .unwrap()
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices(),
+            expected
+        );
+    }
+    let masked = images
+        .indexed_wad("env/pics.wad", b"folder\\pic", palette, Some(0), usage)
+        .unwrap();
+    assert_ne!(masked.id, backslash.id);
+    assert_eq!(images.assets.image(masked.id).unwrap().rgba[7], 0);
+    assert_eq!(images.assets.image(backslash.id).unwrap().rgba[7], 255);
+    let mut repeat = usage;
+    repeat.sampler.wrap = Wrap::Repeat;
+    let repeated = images
+        .indexed_wad("env/pics.wad", b"folder\\pic", palette, None, repeat)
+        .unwrap();
+    assert_ne!(repeated.id, backslash.id);
+    assert_eq!(repeated.sampler.wrap, Wrap::Repeat);
+}
+
+#[test]
+fn indexed_qpic_and_wad_use_shared_palette_remap_without_changing_source_rgba() {
+    let root = Fixture::new();
+    root.lmp("env/remap.lmp", 2, 1, &[17, 0]);
+    root.wad("env/remap.wad", &[(b"pic", 66, 0, qpic(2, 1, &[17, 0]))]);
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let mut source_rgb = vec![200; 768];
+    source_rgb[17 * 3..18 * 3].copy_from_slice(&[7, 11, 19]);
+    let mut target_rgb = vec![99; 768];
+    target_rgb[42 * 3..43 * 3].copy_from_slice(&[7, 11, 19]);
+    let shades: Vec<_> = (0..64).flat_map(|_| 0..=255u8).collect();
+    let source = assets
+        .register_palette(PaletteLighting::load(&source_rgb, &shades, None, 256).unwrap())
+        .unwrap();
+    let target = assets
+        .register_palette(PaletteLighting::load(&target_rgb, &shades, None, 256).unwrap())
+        .unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake,
+        RuleSetId::Quake2,
+        ImageSettings::native(RuleSetId::Quake2),
+        Some((source, target)),
+    )
+    .unwrap();
+    let usage = bitmap_use();
+    let file = images
+        .indexed_lmp("env/remap.lmp", source, Some(0), usage)
+        .unwrap();
+    let wad = images
+        .indexed_wad("env/remap.wad", b"pic", source, Some(0), usage)
+        .unwrap();
+    for resolved in [file, wad] {
+        let image = images.assets.image(resolved.id).unwrap();
+        assert_eq!(&image.rgba[..4], &[7, 11, 19, 255]);
+        assert_eq!(image.rgba[7], 0);
+        let texture = image.indexed.as_ref().unwrap();
+        assert_eq!(texture.mip(0).unwrap().indices(), [42, 0]);
+        assert_eq!(texture.transparent_index(), Some(0));
+    }
+}
+
+#[test]
+fn indexed_resource_admission_preserves_file_limits_and_decoder_errors() {
+    let root = Fixture::new();
+    std::fs::write(root.0.join("env/bad.lmp"), [0; 8]).unwrap();
+    root.wad("env/bad.wad", &[(b"compressed", 66, 1, qpic(1, 1, &[17]))]);
+    for path in ["env/large.lmp", "env/large.wad"] {
+        std::fs::File::create(root.0.join(path))
+            .unwrap()
+            .set_len(16 * 1024 * 1024 + 1)
+            .unwrap();
+    }
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let palette = assets.register_palette(palette()).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake,
+        RuleSetId::Quake,
+        ImageSettings::native(RuleSetId::Quake),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        images.indexed_lmp("env/large.lmp", palette, None, bitmap_use()),
+        Err(ResourceError::Size)
+    ));
+    assert!(matches!(
+        images.indexed_wad("env/large.wad", b"pic", palette, None, bitmap_use()),
+        Err(ResourceError::Size)
+    ));
+    assert!(matches!(
+        images.indexed_lmp("env/bad.lmp", palette, None, bitmap_use()),
+        Err(ResourceError::Format(_))
+    ));
+    assert!(matches!(
+        images.indexed_wad("env/bad.wad", b"compressed", palette, None, bitmap_use()),
+        Err(ResourceError::Format(qa_formats::FormatError::Unsupported))
+    ));
+    assert!(matches!(
+        images.indexed_wad("env/bad.wad", b"missing", palette, None, bitmap_use()),
+        Err(ResourceError::Asset("missing indexed WAD lump"))
+    ));
 }
 
 #[test]

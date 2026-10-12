@@ -222,6 +222,88 @@ fn native_fonts_and_backgrounds_become_shared_2d_packets_and_cpu_pixels() {
 }
 
 #[test]
+fn quake_console_and_hud_fonts_keep_registered_indexed_pixels_and_uploads() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let root = Fixture::new();
+        root.native(rules);
+        let vfs = root.vfs();
+        let mut assets = Assets::load().unwrap();
+        let palette = palette(&mut assets);
+        let settings = ImageSettings::native(rules);
+        let console =
+            ConsoleAssets::load(&vfs, &mut assets, rules, Some(palette), settings, 160, 120)
+                .unwrap();
+        let hud = qa_app::renderer::console::FontAssets::load(
+            &vfs,
+            &mut assets,
+            rules,
+            Some(palette),
+            settings,
+        )
+        .unwrap();
+        let console_font = console.font_assets().font.unwrap();
+        let hud_font = hud.font.unwrap();
+        let image = |font: qa_app::renderer::text::BitmapFont| {
+            let material = assets.material(font.material).unwrap();
+            assert_eq!(
+                material.stages[0].sampler.wrap,
+                qa_render::assets::Wrap::Clamp
+            );
+            assert_eq!(
+                material.stages[0].sampler.filter,
+                qa_render::assets::Filter::Nearest
+            );
+            assert!(!material.stages[0].sampler.mipmaps);
+            let qa_render::assets::StageTexture::Image(image) = material.stages[0].texture else {
+                panic!("native font must select a registered image");
+            };
+            assets.image(image).unwrap()
+        };
+        let console_image = image(console_font);
+        let hud_image = image(hud_font);
+        assert_eq!(console_image.rgba, hud_image.rgba);
+        assert_eq!(console_image.prepared, hud_image.prepared);
+        let texture = console_image.indexed.as_ref().unwrap();
+        assert_eq!(
+            (
+                texture.mip(0).unwrap().width,
+                texture.mip(0).unwrap().height
+            ),
+            (128, 128)
+        );
+        assert_eq!(&texture.mip(0).unwrap().indices()[..2], &[1, 0]);
+        assert_eq!(texture.transparent_index(), Some(0));
+        assert_eq!(&console_image.rgba[..8], &[255, 255, 255, 255, 0, 0, 0, 0]);
+        assert_eq!(console_image.prepared.as_ref().unwrap().levels.len(), 1);
+        let background = assets
+            .materials()
+            .iter()
+            .find(|material| assets.name(material.name) == Some("gfx/conback.lmp"))
+            .unwrap();
+        assert_eq!(background.stages[0].blend, Some(StageBlend::ALPHA));
+        let qa_render::assets::StageTexture::Image(id) = background.stages[0].texture else {
+            panic!("native background must select a registered image");
+        };
+        let background = assets.image(id).unwrap();
+        assert_eq!(
+            background
+                .indexed
+                .as_ref()
+                .unwrap()
+                .mip(0)
+                .unwrap()
+                .indices(),
+            &[2; 16 * 16]
+        );
+        assert_eq!(
+            background.indexed.as_ref().unwrap().transparent_index(),
+            None
+        );
+        assert_eq!(&background.rgba[..4], &[17, 23, 31, 255]);
+    }
+}
+
+#[test]
 fn closed_console_adds_no_commands_and_missing_assets_are_counted() {
     let mut assets = Assets::load().unwrap();
     let mut console = ConsoleAssets::load(

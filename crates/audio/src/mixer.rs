@@ -78,7 +78,10 @@ struct Voice {
     order: u64,
 }
 fn same_channel(a: &SoundEvent, b: &SoundEvent) -> bool {
-    a.entity == b.entity && a.channel == b.channel && a.client == b.client
+    a.entity == b.entity
+        && a.channel == b.channel
+        && a.client == b.client
+        && a.client_lifetime == b.client_lifetime
 }
 #[derive(Default, Debug)]
 pub struct MixCounts {
@@ -157,6 +160,22 @@ impl Mixer {
     }
 
     pub fn sound(&mut self, event: SoundEvent) -> bool {
+        if event.action == SoundAction::RetireClient {
+            let (Some(client), Some(lifetime)) = (event.client, event.client_lifetime) else {
+                self.counts.invalid += 1;
+                return false;
+            };
+            for slot in &mut self.voices {
+                if slot.as_ref().is_some_and(|voice| {
+                    voice.event.client == Some(client)
+                        && voice.event.client_lifetime == Some(lifetime)
+                }) {
+                    *slot = None;
+                    self.counts.stopped += 1;
+                }
+            }
+            return true;
+        }
         if event.action == SoundAction::Stop {
             for slot in &mut self.voices {
                 if slot

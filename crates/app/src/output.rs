@@ -4,7 +4,7 @@ use qa_core::{
     events::{FrameEvent, OutputSubmission},
     primitives::{
         ClientId, ModuleId, NativeDelivery, NativeTarget, PrintKind, ResourceNamespace,
-        SoundEmitter, Vec3,
+        SoundAction, SoundEmitter, Vec3,
     },
     sys_events::{EventTime, SeatId},
 };
@@ -53,6 +53,29 @@ pub fn dispatch(
     notify_time: f64,
     center_time: f64,
 ) -> OutputCounts {
+    let mut counts = OutputCounts::default();
+    // Teardown must finish before borrowing SERVER state for the output pass.
+    for slot in 0..runtime.server.clients.len() {
+        let client = &runtime.server.clients[slot];
+        if client.connection == Some(Connection::Remote)
+            && let Some(output) = client.output
+            && runtime.server.events.needs_resync(output)
+        {
+            if let Some(counters) = runtime.server.events.counters(output) {
+                counts.native_overflow += counters.overflow;
+                counts.native_resync_retired += counters.retired_on_resync;
+            }
+            runtime.disconnect_client(ClientId(slot as u32));
+            counts.native_disconnected += 1;
+        }
+    }
+    if runtime
+        .server
+        .events
+        .resume_if_needed(&mut runtime.server.presentation)
+    {
+        runtime.publish_audio_retirements();
+    }
     let server = &mut runtime.server;
     runtime
         .output_duplicates
@@ -70,7 +93,6 @@ pub fn dispatch(
         });
     let output_range = server.events.sequence_range();
     let now = time.seconds();
-    let mut counts = OutputCounts::default();
     // In-process presentation resynchronization needs no native channel reset.
     if server.events.resume_if_needed(&mut server.presentation) {
         qa_core::events::dispatch_consumer(
@@ -82,6 +104,18 @@ pub fn dispatch(
                         counts.sounds += 1;
                         let sent = source.sound(event);
                         counts.unhandled_sounds += u64::from(!sent);
+                        if event.action == SoundAction::RetireClient
+                            && let (Some(id), Some(lifetime)) =
+                                (event.client, event.client_lifetime)
+                            && let Some(client) = server.clients.get_mut(id.0 as usize)
+                            && client.audio_retirement.is_some_and(|pending| {
+                                pending.lifetime == lifetime
+                                    && pending.publication
+                                        == Some((server.presentation, record.sequence))
+                            })
+                        {
+                            client.audio_retirement = None;
+                        }
                         // A missing or rejecting presentation backend is a
                         // counted drop, with no retry contract.
                         true
@@ -136,22 +170,6 @@ pub fn dispatch(
         };
         let client_id = ClientId(slot as u32);
         let is_local = local.contains(&Some(client_id));
-        if server.events.needs_resync(id) && client.connection == Some(Connection::Remote) {
-            // A slow peer cannot hold publication or another peer's native ACK.
-            // Drop its connection rather than invent a successful native reset.
-            if let Some(counters) = server.events.counters(id) {
-                counts.native_overflow += counters.overflow;
-                counts.native_resync_retired += counters.retired_on_resync;
-            }
-            runtime.network.unbind(client_id);
-            runtime.loopback.clear_client(client_id);
-            runtime.output_duplicates.reset_client(client_id);
-            server.disconnect(client_id);
-            runtime.config_publications[slot].reset();
-            runtime.native_numbers[slot].reset();
-            counts.native_disconnected += 1;
-            continue;
-        }
         if let Some(protocol) = runtime
             .network
             .get(client_id, qa_core::loopback::Endpoint::Server)

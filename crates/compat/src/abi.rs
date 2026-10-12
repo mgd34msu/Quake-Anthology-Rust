@@ -1538,6 +1538,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
             entity,
             position,
             client: None,
+            client_lifetime: None,
             volume,
             attenuation,
             time_offset,

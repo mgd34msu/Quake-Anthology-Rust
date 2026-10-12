@@ -1045,11 +1045,22 @@ pub struct SoundEvent {
     pub attenuation: f32,
     pub action: SoundAction,
     pub client: Option<ClientId>,
+    /// Canonical receiving CLIENT connection; SERVER emissions have no value.
+    pub client_lifetime: Option<EntityId>,
     pub time_offset: f32,
     /// The emission needs its supplied position rather than an entity origin.
     pub positioned: bool,
 }
 impl SoundEvent {
+    /// Presentation-only retirement; native protocols never encode this control.
+    pub fn retire_client(client: ClientId, lifetime: EntityId) -> Self {
+        Self {
+            client: Some(client),
+            client_lifetime: Some(lifetime),
+            action: SoundAction::RetireClient,
+            ..Self::default()
+        }
+    }
     pub fn applies_to_client(self, client: ClientId) -> bool {
         self.client.is_none_or(|recipient| recipient == client)
     }
@@ -1069,6 +1080,8 @@ pub enum SoundAction {
     Play,
     StartLoop,
     Stop,
+    /// Remove only voices received during one canonical CLIENT connection.
+    RetireClient,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct EffectEvent {

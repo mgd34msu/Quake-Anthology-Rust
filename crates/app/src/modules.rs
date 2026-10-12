@@ -728,39 +728,56 @@ impl FrameHost {
             if phase.is_some_and(|phase| row.request.phase != phase) {
                 continue;
             }
-            let api = (!shutdown).then_some(row.request.api).flatten();
-            let time = row.time(self.time);
-            let module = ModuleId(index as u16);
-            let sequence = if shutdown {
-                LifecycleSequence::Shutdown
-            } else {
-                LifecycleSequence::Prepare
-            };
-            let result = self.module_sequence(module, sequence, time).and_then(|()| {
-                if shutdown {
-                    return Ok(());
-                }
-                api.map_or(Ok(()), |api| self.check_module_api(module, api, time))
-                    .and_then(|()| {
-                        self.module_sequence(module, LifecycleSequence::Initialize, time)
-                    })
-                    .and_then(|()| self.initialize_quakec_map(module))
-            });
-            if let Some(row) = self.module_row_mut(ModuleId(index as u16)) {
-                if result.is_err() {
-                    row.counts.rejected += 1;
-                }
-                row.state = if shutdown {
-                    State::Stopped
-                } else if result.is_ok() {
-                    State::Running
-                } else {
-                    State::Failed
-                };
-                if let Program::QuakeC(qc) = &mut row.request.program {
-                    qc.vm.active = row.state == State::Running;
-                }
+            self.module_lifecycle_row(ModuleId(index as u16), shutdown);
+        }
+    }
+    /// Stop one module without stopping the shared frame loop or other providers.
+    pub fn shutdown_module(&mut self, module: ModuleId) -> bool {
+        if self.module_state(module) != Some(State::Running) {
+            return false;
+        }
+        self.module_lifecycle_row(module, true);
+        true
+    }
+    fn module_lifecycle_row(&mut self, module: ModuleId, shutdown: bool) {
+        if shutdown {
+            self.disconnect_module_recipients(module);
+        }
+        let Some(row) = self.module_row(module) else {
+            return;
+        };
+        let api = (!shutdown).then_some(row.request.api).flatten();
+        let time = row.time(self.time);
+        let sequence = if shutdown {
+            LifecycleSequence::Shutdown
+        } else {
+            LifecycleSequence::Prepare
+        };
+        let result = self.module_sequence(module, sequence, time).and_then(|()| {
+            if shutdown {
+                return Ok(());
             }
+            api.map_or(Ok(()), |api| self.check_module_api(module, api, time))
+                .and_then(|()| self.module_sequence(module, LifecycleSequence::Initialize, time))
+                .and_then(|()| self.initialize_quakec_map(module))
+        });
+        if let Some(row) = self.module_row_mut(module) {
+            if result.is_err() {
+                row.counts.rejected += 1;
+            }
+            row.state = if shutdown {
+                State::Stopped
+            } else if result.is_ok() {
+                State::Running
+            } else {
+                State::Failed
+            };
+            if let Program::QuakeC(qc) = &mut row.request.program {
+                qc.vm.active = row.state == State::Running;
+            }
+        }
+        if !shutdown && result.is_err() {
+            self.disconnect_module_recipients(module);
         }
     }
     fn check_module_api(
@@ -842,7 +859,19 @@ impl FrameHost {
                 .ok_or(CallError::MissingModule)?
                 .functions,
         );
-        functions.invoke(self, callback, call)
+        let module = self
+            .runtime
+            .server
+            .entities
+            .resolve(call.entity())
+            .map(|slot| self.runtime.server.entities.columns.owner[slot]);
+        let result = functions.invoke(self, callback, call);
+        if let Some(module) = module
+            && self.module_state(module) == Some(State::Failed)
+        {
+            self.disconnect_module_recipients(module);
+        }
+        result
     }
 }
 

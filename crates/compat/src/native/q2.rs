@@ -8,7 +8,7 @@ use qa_core::{
     names::NameTable,
     primitives::{NameId, RuleSetId},
 };
-use qa_formats::program::native::{Encoding, Image, Region};
+use qa_formats::program::native::{Encoding, Image};
 use qa_platform::native::{NativeAbi, NativeFormat, NativeImport, NativeScalar, PAGE_BYTES};
 use std::time::Duration;
 
@@ -382,12 +382,6 @@ impl Game {
             .map(|name| names.intern(name).map_err(|_| Error::Export))
             .collect::<Result<Vec<_>, _>>()?;
         image.names = names;
-        let offset = image
-            .bytes
-            .len()
-            .div_ceil(PAGE_BYTES)
-            .checked_mul(PAGE_BYTES)
-            .ok_or(Error::Export)?;
         let cvar_capacity = 1024;
         let cvar_bytes = NativeCvars::byte_length(cvar_capacity)
             .ok_or(Error::Export)?
@@ -399,15 +393,12 @@ impl Game {
                 .div_ceil(PAGE_BYTES)
                 .checked_mul(PAGE_BYTES)
                 .ok_or(Error::Export)?;
-        let command_offset = offset
-            .checked_add(PAGE_BYTES + cvar_bytes + surface_bytes)
+        let command_offset = PAGE_BYTES
+            .checked_add(cvar_bytes)
+            .and_then(|offset| offset.checked_add(surface_bytes))
             .ok_or(Error::Export)?;
         let command_bytes =
             crate::command::NativeCommand::byte_length().div_ceil(PAGE_BYTES) * PAGE_BYTES;
-        let command_address = image
-            .base
-            .checked_add(command_offset as u64)
-            .ok_or(Error::Export)?;
         let config_offset = command_offset
             .checked_add(command_bytes)
             .ok_or(Error::Export)?;
@@ -432,48 +423,45 @@ impl Game {
                 .div_ceil(PAGE_BYTES)
                 * PAGE_BYTES
         };
-        let config_address = image
-            .base
-            .checked_add(config_offset as u64)
-            .ok_or(Error::Export)?;
         let filter_offset = config_offset
             .checked_add(config_bytes)
             .ok_or(Error::Export)?;
-        let filter_address = image
-            .base
-            .checked_add(filter_offset as u64)
-            .ok_or(Error::Export)?;
-        let filter = (layout.version == 2023).then_some(qa_platform::native::NativeListFilter {
-            buffer: filter_address,
-            capacity: qa_world::entities::MAX_ENTITIES as u32,
-            depth: 8,
-            list: 2,
-            limit: 3,
-            callback: 5,
-            data: 6,
-            keep: 0,
-            end: 64,
-        });
+        let mut filter =
+            (layout.version == 2023).then_some(qa_platform::native::NativeListFilter {
+                buffer: 0,
+                capacity: qa_world::entities::MAX_ENTITIES as u32,
+                depth: 8,
+                list: 2,
+                limit: 3,
+                callback: 5,
+                data: 6,
+                keep: 0,
+                end: 64,
+            });
         let filter_bytes = filter
             .map_or(Some(0), |filter| filter.byte_length())
             .ok_or(Error::Export)?;
-        let end = filter_offset
+        let length = filter_offset
             .checked_add(filter_bytes)
-            .filter(|&n| n <= 512 * 1024 * 1024)
             .ok_or(Error::Export)?;
-        let address = image.base.checked_add(offset as u64).ok_or(Error::Export)?;
         // Classic print adapters share synchronous scratch in the load-owned
         // import page, past every pointer slot and before cvar storage.
         let format_offset = PAGE_BYTES / 2;
         if layout.import_header + layout.imports.len() * 8 > format_offset {
             return Err(Error::Export);
         }
-        let format_address = address
-            .checked_add(format_offset as u64)
-            .ok_or(Error::Export)?;
-        image.base.checked_add(end as u64).ok_or(Error::Export)?;
-        let mut bytes = std::mem::take(&mut image.bytes).into_vec();
-        bytes.resize(end, 0);
+        let region = image
+            .reserve_region(length, PAGE_BYTES, true, true, false)
+            .map_err(|_| Error::Export)?;
+        let offset = region.offset;
+        let address = image.base + offset as u64;
+        let command_address = address + command_offset as u64;
+        let config_address = address + config_offset as u64;
+        if let Some(filter) = &mut filter {
+            filter.buffer = address + filter_offset as u64;
+        }
+        let format_address = address + format_offset as u64;
+        let bytes = &mut image.bytes;
         if layout.import_header != 0 {
             bytes[offset..offset + 4].copy_from_slice(&(1000 / interval_ms).to_le_bytes());
             bytes[offset + 4..offset + 8].copy_from_slice(
@@ -483,16 +471,6 @@ impl Game {
             );
             bytes[offset + 8..offset + 12].copy_from_slice(&interval_ms.to_le_bytes());
         }
-        image.bytes = bytes.into_boxed_slice();
-        let mut regions = std::mem::take(&mut image.regions).into_vec();
-        regions.push(Region {
-            offset,
-            length: end - offset,
-            read: true,
-            write: true,
-            execute: false,
-        });
-        image.regions = regions.into_boxed_slice();
         let abi = if image.target.encoding == Encoding::Pe {
             NativeAbi::Microsoft
         } else {
