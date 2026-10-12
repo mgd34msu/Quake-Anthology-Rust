@@ -57,6 +57,36 @@ impl Invocation<'_, '_, '_> {
             Addresses::Native { .. } | Addresses::NativeFunction { .. } => self.arg(index)? == 0,
         })
     }
+    fn required_pointer(&self, index: usize) -> Result<u64, CallError> {
+        if self.null_pointer(index)? {
+            return Err(CallError::Memory);
+        }
+        self.pointer(index)
+    }
+    fn vector(&self, index: usize, nullable: bool) -> Result<qa_core::primitives::Vec3, CallError> {
+        if nullable && self.null_pointer(index)? {
+            return Ok(qa_core::primitives::Vec3::default());
+        }
+        let vector = self.memory.read_vec3(self.required_pointer(index)?)?;
+        vector
+            .is_finite()
+            .then_some(vector)
+            .ok_or(CallError::Geometry)
+    }
+    fn bounds(
+        &self,
+        first: usize,
+        nullable: bool,
+    ) -> Result<qa_core::primitives::Bounds, CallError> {
+        let bounds = qa_core::primitives::Bounds {
+            mins: self.vector(first, nullable)?,
+            maxs: self.vector(first + 1, nullable)?,
+        };
+        bounds
+            .is_valid()
+            .then_some(bounds)
+            .ok_or(CallError::Geometry)
+    }
     fn length(&self, index: usize) -> Result<usize, CallError> {
         match self.addresses {
             Addresses::NativeFunction { .. } => {
@@ -320,13 +350,19 @@ const fn server() -> CallTable {
     t.entries[31] = scalar!(native_unlink);
     t.entries[18] = scalar!(config_set);
     t.entries[19] = scalar!(config_get);
+    t.entries[23] = scalar!(q3_set_brush_model);
+    t.entries[24] = scalar!(q3_trace);
     t.entries[25] = scalar!(q3_point_contents);
     t.entries[26] = scalar!(q3_visibility::<false>);
     t.entries[27] = scalar!(q3_visibility::<true>);
     t.entries[29] = scalar!(q3_areas_connected);
+    t.entries[32] = scalar!(q3_entities_in_box);
+    t.entries[33] = scalar!(q3_entity_contact);
     t.entries[36] = scalar!(q3_usercmd);
     t.entries[37] = scalar!(entity_token);
     t.entries[42] = scalar!(snap_vector);
+    t.entries[43] = scalar!(q3_capsule_unsupported);
+    t.entries[44] = scalar!(q3_capsule_unsupported);
     t.entries[45] = scalar!(file_seek);
     t
 }
@@ -1799,28 +1835,13 @@ fn resource_index<const KIND: usize>(c: &mut Invocation<'_, '_, '_>) -> Result<u
 fn native_trace<const WIDE: bool, const CLIP: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    use qa_core::primitives::Vec3;
     use qa_world::collision::{Contents, TraceQuery, trace_policy};
     let output = c.pointer(0)?;
     c.memory.read(output, if WIDE { 96 } else { 72 })?;
     let first = if CLIP { 2 } else { 1 };
-    let start = c.memory.read_vec3(c.pointer(first)?)?;
-    let end = c.memory.read_vec3(c.pointer(first + 3)?)?;
-    let bounds = |pointer| {
-        if pointer == 0 {
-            Ok(Vec3::default())
-        } else {
-            c.memory.read_vec3(pointer).map_err(CallError::from)
-        }
-    };
-    let mins = bounds(c.pointer(first + 1)?)?;
-    let maxs = bounds(c.pointer(first + 2)?)?;
-    if !start.is_finite()
-        || !end.is_finite()
-        || !(qa_core::primitives::Bounds { mins, maxs }).is_valid()
-    {
-        return Err(CallError::Geometry);
-    }
+    let start = c.vector(first, false)?;
+    let end = c.vector(first + 3, false)?;
+    let bounds = c.bounds(first + 1, true)?;
     let mut mask = Contents::from_q2(c.arg(6)? as u32);
     if mask.intersects(Contents::SOLID) {
         mask |= Contents::SKY;
@@ -1831,8 +1852,8 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
         scope: qa_world::collision::TraceScope::Scene,
         start,
         end,
-        mins,
-        maxs,
+        mins: bounds.mins,
+        maxs: bounds.maxs,
         mask,
         pass: qa_core::primitives::CollisionOwner::None,
         rules,
@@ -1857,6 +1878,67 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
         (result, entity)
     };
     crate::traces::write_q2::<WIDE>(c.memory, output, result, surfaces, entity)
+}
+
+fn q3_trace(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_world::collision::{Contents, TraceQuery, trace_policy};
+    let output = c.required_pointer(0)?;
+    c.memory.read(output, 56)?;
+    let start = c.vector(1, false)?;
+    let end = c.vector(4, false)?;
+    let bounds = c.bounds(2, true)?;
+    let mask = Contents::from_q3(c.arg(6)? as u32);
+    let (rules, entity_rules) = trace_policy(c.context.trace_rules);
+    let view = native_collision_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let number = c.arg(5)? as u32 as i32;
+    let pass =
+        crate::entities::NativeTraceView::pass_number(view.as_ref(), c.context.module, number)?;
+    let query = TraceQuery {
+        mins: bounds.mins,
+        maxs: bounds.maxs,
+        mask,
+        pass,
+        ..TraceQuery::point(start, end, rules, entity_rules)
+    };
+    let result = (ENGINE_CALLS.trace)(
+        c.services,
+        query,
+        view.as_ref()
+            .map(|view| view as &dyn qa_world::collision::NativeTraceEntities),
+    )?;
+    if let Some(view) = &view {
+        view.finish()?;
+    }
+    let entity = crate::entities::NativeTraceView::number(
+        view.as_ref(),
+        &c.services.server.entities,
+        result.entity,
+    )?;
+    crate::traces::write_q3(c.memory, output, result, entity)?;
+    Ok(0)
+}
+
+fn q3_capsule_unsupported(_: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    Err(CallError::Geometry)
+}
+
+fn q3_entity_contact(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    use qa_core::primitives::Vec3;
+    use qa_world::collision::{Contents, TraceQuery, trace_policy};
+    let bounds = c.bounds(0, false)?;
+    let address = c.required_pointer(2)?;
+    let projection = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    let target = projection.clip_target(c.services, c.memory, c.context, address)?;
+    let (rules, entity_rules) = trace_policy(c.context.trace_rules);
+    let query = TraceQuery {
+        mins: bounds.mins,
+        maxs: bounds.maxs,
+        mask: Contents::from_q3(u32::MAX),
+        ..TraceQuery::point(Vec3::default(), Vec3::default(), rules, entity_rules)
+    };
+    Ok(u64::from(
+        (ENGINE_CALLS.clip)(c.services, query, target)?.start_solid,
+    ))
 }
 
 fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -2007,7 +2089,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     result
 }
-fn native_contents_view<'a, 'memory>(
+fn native_collision_view<'a, 'memory>(
     projection: Option<&'a crate::entities::EntityProjection>,
     memory: &'a crate::memory::ModuleMemory<'memory>,
     context: CallContext,
@@ -2024,7 +2106,7 @@ fn native_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErro
         return Err(CallError::Geometry);
     }
     let (_, rules) = qa_world::collision::trace_policy(c.context.trace_rules);
-    let view = native_contents_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let view = native_collision_view(c.native_entities.as_deref(), c.memory, c.context)?;
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
@@ -2117,7 +2199,7 @@ fn q3_point_contents(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         slot: c.arg(1)? as i32,
     });
     let rules = qa_world::collision::trace_policy(c.context.trace_rules).1;
-    let view = native_contents_view(c.native_entities.as_deref(), c.memory, c.context)?;
+    let view = native_collision_view(c.native_entities.as_deref(), c.memory, c.context)?;
     let contents = (ENGINE_CALLS.point_contents)(
         c.services,
         point,
@@ -2432,15 +2514,8 @@ fn area_connection(
 }
 
 fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    use qa_core::primitives::Bounds;
     use qa_world::area::LinkFlags;
-    let bounds = Bounds {
-        mins: c.memory.read_vec3(c.pointer(0)?)?,
-        maxs: c.memory.read_vec3(c.pointer(1)?)?,
-    };
-    if !bounds.is_valid() {
-        return Err(CallError::Geometry);
-    }
+    let bounds = c.bounds(0, false)?;
     let role = match c.arg(4)? as u32 as i32 {
         1 => LinkFlags::SOLID,
         2 => LinkFlags::TRIGGER,
@@ -2460,29 +2535,79 @@ fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result
         return Ok(0);
     }
     let output = c.pointer(2)?;
+    area_query(
+        c,
+        bounds,
+        role,
+        max,
+        (max != 0 && output != 0).then_some(output),
+        false,
+    )
+}
+
+fn q3_entities_in_box(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let bounds = c.bounds(0, false)?;
+    let max = usize::try_from(c.arg(3)? as u32 as i32).map_err(|_| CallError::Memory)?;
+    if max == 0 {
+        return Ok(0);
+    }
+    let output = c.required_pointer(2)?;
+    area_query(
+        c,
+        bounds,
+        qa_world::area::LinkFlags::LINKED,
+        max,
+        Some(output),
+        true,
+    )
+}
+
+fn area_query(
+    c: &mut Invocation<'_, '_, '_>,
+    bounds: qa_core::primitives::Bounds,
+    role: qa_world::area::LinkFlags,
+    max: usize,
+    output: Option<u64>,
+    numbers: bool,
+) -> Result<u64, CallError> {
     let projection = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    if numbers && !projection.ready() {
+        if let Some(output) = output {
+            c.memory.read(output, 4)?;
+        }
+        return Ok(0);
+    }
     let native = projection.boundary(c.memory, c.context)?;
-    let list = if max != 0 && output != 0 {
-        c.memory
-            .read_mut(output, max.min(c.services.server.entities.capacity()) * 8)?
-    } else {
-        &mut []
+    let limit = if max == 0 { usize::MAX } else { max };
+    let limit = limit
+        .min(native.capacity as usize)
+        .min(c.services.server.entities.capacity());
+    let width = if numbers { 4 } else { 8 };
+    let list = match output {
+        Some(output) => c.memory.read_mut(output, limit * width)?,
+        None => &mut [],
     };
     let mut count = 0;
     (ENGINE_CALLS.area_query)(c.services, bounds, role, &mut |id| {
-        let Some(address) = crate::entities::native_address(
-            native,
-            c.context.module,
-            &c.services.server.entities,
-            id,
-        ) else {
+        let Some(slot) =
+            crate::entities::native_slot(native, c.context.module, &c.services.server.entities, id)
+        else {
             return true;
         };
+        let value = if numbers {
+            u64::from(slot)
+        } else {
+            let Some(address) = crate::entities::slot_address(native, slot) else {
+                return true;
+            };
+            address
+        };
         if !list.is_empty() {
-            list[count * 8..count * 8 + 8].copy_from_slice(&address.to_le_bytes());
+            list[count * width..count * width + width]
+                .copy_from_slice(&value.to_le_bytes()[..width]);
         }
         count += 1;
-        max == 0 || count < max
+        count < limit
     });
     Ok(count as u64)
 }
@@ -2521,6 +2646,15 @@ fn native_set_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name = c.pointer(1)?;
     let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
     entities.set_model(c.services, c.memory, c.context, address, name)?;
+    Ok(0)
+}
+fn q3_set_brush_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let address = c.required_pointer(0)?;
+    let name = c.required_pointer(1)?;
+    c.native_entities
+        .as_mut()
+        .ok_or(CallError::Entity)?
+        .set_model(c.services, c.memory, c.context, address, name)?;
     Ok(0)
 }
 fn native_link(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

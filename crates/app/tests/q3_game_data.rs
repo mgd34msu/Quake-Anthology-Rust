@@ -160,6 +160,335 @@ impl Fixture {
             .map(|body| body.id)
             .collect()
     }
+    fn collision_model(&mut self) {
+        use qa_core::primitives::{Bounds, IndexSpan, Plane, SurfaceFlags};
+        use qa_world::collision::{
+            Contents,
+            brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
+            surfaces::SurfaceTable,
+        };
+        let planes = (0..6)
+            .map(|side| {
+                Plane::oriented(
+                    Vec3::axis(side / 2, if side % 2 == 0 { 1.0 } else { -1.0 }),
+                    1.0,
+                )
+            })
+            .collect();
+        let geometry = self
+            .runtime
+            .geometry
+            .load_brushes(
+                planes,
+                vec![Brush {
+                    sides: IndexSpan { first: 0, count: 6 },
+                    contents: Contents::SOLID,
+                }],
+                SurfaceTable::flags(vec![SurfaceFlags::from_q3(0x2002); 6]),
+                BrushTree {
+                    planes: vec![],
+                    nodes: vec![],
+                    leaves: vec![
+                        CollisionLeaf {
+                            stored_contents: None,
+                            brushes: IndexSpan::default(),
+                        },
+                        CollisionLeaf {
+                            stored_contents: None,
+                            brushes: IndexSpan { first: 0, count: 1 },
+                        },
+                    ],
+                    leaf_brushes: vec![0],
+                    models: vec![ModelRoot::Leaf(0), ModelRoot::Leaf(1)],
+                },
+                vec![
+                    Bounds {
+                        mins: Vec3([-10.0; 3]),
+                        maxs: Vec3([10.0; 3]),
+                    },
+                    Bounds {
+                        mins: Vec3([-2.0; 3]),
+                        maxs: Vec3([2.0; 3]),
+                    },
+                ],
+            )
+            .unwrap();
+        let collision = self.runtime.collision.as_mut().unwrap();
+        collision.geometry = geometry;
+        collision.scratch = self.runtime.geometry.scratch();
+        self.trace_rules = RuleSetId::Quake3;
+    }
+    fn vector(&mut self, address: u64, value: Vec3) -> i32 {
+        self.vm.memory.write_vec3(address, value).unwrap();
+        address as i32
+    }
+    fn trace(&mut self, start: Vec3, end: Vec3, pass: i32) -> i32 {
+        let start = self.vector(600, start);
+        let end = self.vector(616, end);
+        self.vm.memory.read_mut(512, 64).unwrap().fill(0xa5);
+        assert_eq!(self.call(24, &[0, 512, start, 0, 0, end, pass, -1]), Ok(0));
+        assert_eq!(self.vm.memory.read(568, 8).unwrap(), &[0xa5; 8]);
+        self.vm.memory.read_word(564).unwrap()
+    }
+}
+
+#[test]
+fn qvm_trace_and_area_query_before_locate_need_no_module_rows() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    assert_eq!(
+        f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 1023),
+        1023
+    );
+    let mins = f.vector(600, Vec3([-10.0; 3]));
+    let maxs = f.vector(616, Vec3([10.0; 3]));
+    f.vm.memory.read_mut(700, 16).unwrap().fill(0xa5);
+    assert_eq!(f.call(32, &[0, mins, maxs, 700, 4]), Ok(0));
+    assert_eq!(f.vm.memory.read(700, 16).unwrap(), &[0xa5; 16]);
+    assert!(f.call(32, &[0, mins, maxs, 0, 4]).is_err());
+    f.runtime.collision.as_mut().unwrap().index = 1;
+    assert_eq!(f.trace(Vec3::default(), Vec3::default(), 1023), 1022);
+    assert_eq!(
+        f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32),
+        0.0
+    );
+    assert_eq!(f.trace(Vec3::default(), Vec3::default(), 1022), 1022);
+}
+
+#[test]
+fn qvm_world_pass_is_a_weak_identity_without_an_ordinary_world_row() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    f.register(ENTITIES, 3).unwrap();
+    f.runtime.collision.as_mut().unwrap().index = 1;
+    assert_eq!(f.trace(Vec3::default(), Vec3::default(), 1022), 1022);
+    f.runtime.collision.as_mut().unwrap().index = 0;
+    f.row(ENTITIES, 0, 1);
+    f.vm.memory.write_word(ENTITIES + 512, 1023).unwrap();
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    assert_eq!(
+        f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 1022),
+        0
+    );
+    f.vm.memory.write_word(ENTITIES + 512, 1022).unwrap();
+    assert_eq!(
+        f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 1022),
+        1023
+    );
+}
+
+#[test]
+fn qvm_capsule_queries_reject_explicitly_without_box_results() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    f.register(ENTITIES, 3).unwrap();
+    f.row(ENTITIES, 0, 1);
+    f.vm.memory.read_mut(512, 56).unwrap().fill(0xa5);
+    for call in [43, 44] {
+        assert!(f.call(call, &[0, 512, 600, 616, 0, 0, 1023, -1]).is_err());
+    }
+    assert_eq!(f.unknown.calls, 0);
+    assert_eq!(f.vm.memory.read(512, 56).unwrap(), &[0xa5; 56]);
+    f.vm.memory.write_word(ENTITIES + 424, 0x400).unwrap();
+    let mins = f.vector(600, Vec3([-1.0; 3]));
+    let maxs = f.vector(616, Vec3([1.0; 3]));
+    assert!(f.call(33, &[0, mins, maxs, ENTITIES as i32]).is_err());
+}
+
+#[test]
+fn qvm_trace_and_contact_use_live_targets_native_zero_and_raw_null_bounds() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    f.register(ENTITIES, 3).unwrap();
+    f.row(ENTITIES, 0, 1);
+    f.row(ENTITIES + STRIDE, 1, 1);
+    f.vm.memory.write_word(ENTITIES + 512, 1023).unwrap();
+    f.vm.memory
+        .write_word(ENTITIES + STRIDE + 512, 1023)
+        .unwrap();
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    f.call(30, &[0, (ENTITIES + STRIDE) as i32]).unwrap();
+    assert_eq!(
+        f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 1023),
+        0
+    );
+    assert_eq!(f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 0), 1);
+    let bounds = f.runtime.server.area.bounds(f.binding(1));
+    let pose = f.runtime.server.entities.columns.position[f.binding(1).slot as usize];
+    f.vm.memory
+        .write_vec3(ENTITIES + STRIDE + 488, Vec3([4.0, 0.0, 0.0]))
+        .unwrap();
+    assert_eq!(f.trace(Vec3([0.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 0), 1);
+    assert!(f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32) > 0.5);
+    assert_eq!(f.runtime.server.area.bounds(f.binding(1)), bounds);
+    assert_eq!(
+        f.runtime.server.entities.columns.position[f.binding(1).slot as usize],
+        pose
+    );
+    f.call(31, &[0, (ENTITIES + STRIDE) as i32]).unwrap();
+    let mins = f.vector(640, Vec3([3.5, -0.5, -0.5]));
+    let maxs = f.vector(656, Vec3([4.5, 0.5, 0.5]));
+    let live = f.runtime.server.entities.active().count();
+    f.vm.memory
+        .write_vec3(ENTITIES + STRIDE + 500, Vec3([f32::NAN; 3]))
+        .unwrap();
+    assert_eq!(
+        f.call(33, &[0, mins, maxs, (ENTITIES + STRIDE) as i32]),
+        Ok(1)
+    );
+    assert_eq!(f.runtime.server.entities.active().count(), live);
+    assert!(f.runtime.server.area.bounds(f.binding(1)).is_none());
+    // Nonzero raw bounds pointers masked to zero refer to real vectors.
+    f.vm.memory.write_vec3(0, Vec3([1.0, 0.0, 0.0])).unwrap();
+    f.vm.memory.write_vec3(16, Vec3([1.0, 0.0, 0.0])).unwrap();
+    let start = f.vector(600, Vec3([-5.0, 0.0, 0.0]));
+    let end = f.vector(616, Vec3([5.0, 0.0, 0.0]));
+    assert_eq!(
+        f.call(24, &[0, 512, start, 65536, 65552, end, 1023, -1]),
+        Ok(0)
+    );
+    let shifted = f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32);
+    assert_eq!(
+        f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 1023),
+        0
+    );
+    assert!(shifted < f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32));
+    assert_eq!(
+        f.call(24, &[0, 0, start, 0, 0, end, 1023, 1]),
+        Err(Trap::Syscall)
+    );
+}
+
+#[test]
+fn qvm_trace_keeps_caller_rules_and_native_number_distinct_from_area_slot() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    f.register(ENTITIES, 3).unwrap();
+    f.row(ENTITIES, 0, 1);
+    f.vm.memory.write_word(ENTITIES + 512, 1023).unwrap();
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    let start = Vec3([-5.0, 0.0, 0.0]);
+    let end = Vec3([5.0, 0.0, 0.0]);
+    assert_eq!(f.trace(start, end, 1023), 0);
+    assert_eq!(
+        f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32),
+        0.1875
+    );
+    f.trace_rules = RuleSetId::Quake2;
+    assert_eq!(f.trace(start, end, 1023), 0);
+    assert_eq!(
+        f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32),
+        0.196875
+    );
+    f.trace_rules = RuleSetId::Quake3;
+    f.vm.memory.write_word(ENTITIES, 7).unwrap();
+    assert_eq!(f.trace(start, end, 1023), 7);
+    let mins = f.vector(600, Vec3([-10.0; 3]));
+    let maxs = f.vector(616, Vec3([10.0; 3]));
+    assert_eq!(f.call(32, &[0, mins, maxs, 700, 1]), Ok(1));
+    assert_eq!(f.vm.memory.read_word(700).unwrap(), 0);
+    // Startsolid alone with fraction one retains the clear native NONE.
+    assert_eq!(f.trace(Vec3([-2.0, 0.0, 0.0]), end, 1023), 1023);
+    assert_eq!(f.vm.memory.read_word(516).unwrap(), 1);
+    assert_eq!(
+        f32::from_bits(f.vm.memory.read_word(520).unwrap() as u32),
+        1.0
+    );
+}
+
+#[test]
+fn qvm_unlinked_box_contact_requires_no_world_and_ignores_box_angles() {
+    let mut f = Fixture::new();
+    f.runtime.collision = None;
+    f.trace_rules = RuleSetId::Quake3;
+    f.register(ENTITIES, 1).unwrap();
+    f.row(ENTITIES, 0, 1);
+    f.vm.memory
+        .write_vec3(ENTITIES + 500, Vec3([f32::NAN; 3]))
+        .unwrap();
+    let mins = f.vector(640, Vec3([-2.5, -0.5, -0.5]));
+    let maxs = f.vector(656, Vec3([-1.5, 0.5, 0.5]));
+    let live = f.runtime.server.entities.active().count();
+    assert_eq!(f.call(33, &[0, mins, maxs, ENTITIES as i32]), Ok(1));
+    assert_eq!(f.runtime.server.entities.active().count(), live);
+}
+
+#[test]
+fn qvm_brush_model_uses_inline_ordinals_and_contact_does_not_link_a_target() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    f.register(ENTITIES, 3).unwrap();
+    f.row(ENTITIES, 0, 1);
+    f.vm.memory.write_string(256, 16, b"*1").unwrap();
+    let events = f.runtime.server.events.sequence_range();
+    assert_eq!(f.call(23, &[0, ENTITIES as i32, 256]), Ok(0));
+    for (offset, value) in [(160, 1), (432, 1), (460, -1), (420, 1), (176, 0x00ff_ffff)] {
+        assert_eq!(f.vm.memory.read_word(ENTITIES + offset).unwrap(), value);
+    }
+    assert_eq!(
+        f.vm.memory.read_vec3(ENTITIES + 436).unwrap(),
+        Vec3([-2.0; 3])
+    );
+    assert_eq!(
+        f.vm.memory.read_vec3(ENTITIES + 448).unwrap(),
+        Vec3([2.0; 3])
+    );
+    assert_eq!(f.runtime.server.events.sequence_range(), events);
+    assert_eq!(
+        f.trace(Vec3([-5.0, 0.0, 0.0]), Vec3([5.0, 0.0, 0.0]), 1023),
+        0
+    );
+    assert_eq!(f.vm.memory.read_word(556).unwrap() as u32, 0x2002);
+    f.call(31, &[0, ENTITIES as i32]).unwrap();
+    f.vm.memory
+        .write_vec3(ENTITIES + 500, Vec3([0.0, 45.0, 0.0]))
+        .unwrap();
+    let mins = f.vector(640, Vec3([-2.1, -0.1, -0.1]));
+    let maxs = f.vector(656, Vec3([-1.9, 0.1, 0.1]));
+    let before = f.runtime.server.entities.active().count();
+    assert_eq!(f.call(33, &[0, mins, maxs, ENTITIES as i32]), Ok(1));
+    assert_eq!(f.runtime.server.entities.active().count(), before);
+    assert!(f.runtime.server.area.bounds(f.binding(0)).is_none());
+    f.vm.memory.write_string(256, 16, b"*0").unwrap();
+    assert_eq!(f.call(23, &[0, ENTITIES as i32, 256]), Ok(0));
+    assert_eq!(f.vm.memory.read_word(ENTITIES + 160).unwrap(), 0);
+    for name in [b"model".as_slice(), b"*-1", b"*2"] {
+        f.vm.memory.write_string(256, 16, name).unwrap();
+        assert_eq!(f.call(23, &[0, ENTITIES as i32, 256]), Err(Trap::Syscall));
+    }
+}
+
+#[test]
+fn qvm_entities_in_box_writes_native_ints_for_all_linked_roles_in_order() {
+    let mut f = Fixture::new();
+    f.collision_model();
+    f.register(ENTITIES, 3).unwrap();
+    for number in 0..3 {
+        let address = ENTITIES + number * STRIDE;
+        f.row(address, number as i32, if number == 2 { 0 } else { 1 });
+        f.call(30, &[0, address as i32]).unwrap();
+    }
+    let mins = f.vector(640, Vec3([-10.0; 3]));
+    let maxs = f.vector(656, Vec3([10.0; 3]));
+    f.vm.memory.read_mut(1024, 20).unwrap().fill(0xa5);
+    assert_eq!(f.call(32, &[0, mins, maxs, 1024, 3]), Ok(3));
+    assert_eq!(
+        (0..3)
+            .map(|index| f.vm.memory.read_word(1024 + index * 4).unwrap())
+            .collect::<Vec<_>>(),
+        vec![2, 1, 0]
+    );
+    assert_eq!(f.vm.memory.read(1036, 8).unwrap(), &[0xa5; 8]);
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    assert_eq!(f.call(32, &[0, mins, maxs, 1024, 1]), Ok(1));
+    assert_eq!(f.vm.memory.read_word(1024).unwrap(), 0);
+    assert_eq!(f.call(32, &[0, mins, maxs, 0, 0]), Ok(0));
+    assert_eq!(f.call(32, &[0, mins, maxs, 1024, -1]), Err(Trap::Syscall));
+    assert_eq!(f.call(32, &[0, mins, maxs, 0, 1]), Err(Trap::Syscall));
+    let mins = f.vector(640, Vec3([-4.0, -2.0, -2.0]));
+    let maxs = f.vector(656, Vec3([-4.0, 2.0, 2.0]));
+    assert_eq!(f.call(32, &[0, mins, maxs, 1024, 3]), Ok(1));
+    assert_eq!(f.vm.memory.read_word(1024).unwrap(), 0);
 }
 
 #[test]

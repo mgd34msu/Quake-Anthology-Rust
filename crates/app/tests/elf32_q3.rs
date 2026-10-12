@@ -102,6 +102,19 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
         player.movement.tuning,
     );
     runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    runtime
+        .geometry
+        .load_brushes(
+            vec![],
+            vec![],
+            qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
+            qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
+            vec![qa_core::primitives::Bounds {
+                mins: Vec3([-10.0; 3]),
+                maxs: Vec3([10.0; 3]),
+            }],
+        )
+        .unwrap();
     runtime.collision = Some(visibility_world::collision(
         &runtime.geometry,
         [Some(0), Some(1)],
@@ -166,6 +179,15 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
         }
         for (index, value) in [(36, 184), (37, 248), (38, 4), (39, 16), (40, 16)] {
             assert_eq!(memory.read_word(layout + index * 4).unwrap(), value);
+        }
+        for (index, value) in [0, 4, 8, 12, 24, 44, 48, 52, 23, 24, 32, 33]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                memory.read_word(layout + (41 + index as u64) * 4).unwrap(),
+                value
+            );
         }
     }
     if bits == 32 {

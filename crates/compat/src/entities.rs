@@ -145,6 +145,118 @@ impl NativeTraceView<'_, '_> {
             .and_then(|id| native_address(self.entities, self.module, entities, id))
             .unwrap_or(self.entities.address))
     }
+
+    pub(crate) fn pass_number(
+        view: Option<&Self>,
+        module: ModuleId,
+        number: i32,
+    ) -> Result<CollisionOwner, CallError> {
+        if number == q3::ENTITY_NONE {
+            return Ok(CollisionOwner::None);
+        }
+        if number != q3::ENTITY_WORLD {
+            view.ok_or(CallError::Entity)?.address_at(number)?;
+        }
+        Ok(CollisionOwner::Native(NativeEntity {
+            module,
+            slot: number,
+        }))
+    }
+
+    pub(crate) fn number(
+        view: Option<&Self>,
+        entities: &EntityTable,
+        hit: Option<EntityId>,
+    ) -> Result<i32, CallError> {
+        let Some(hit) = hit else {
+            return Ok(q3::ENTITY_NONE);
+        };
+        if hit.slot == 0 {
+            return Ok(q3::ENTITY_WORLD);
+        }
+        let Some(view) = view else {
+            return Ok(q3::ENTITY_WORLD);
+        };
+        let Some(address) = native_address(view.entities, view.module, entities, hit) else {
+            return Ok(q3::ENTITY_WORLD);
+        };
+        let number = view
+            .memory
+            .read_word(address + view.layout.number.ok_or(CallError::Entity)? as u64)?;
+        (0..=q3::ENTITY_NONE)
+            .contains(&number)
+            .then_some(number)
+            .ok_or(CallError::Entity)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The one native target resolver keeps pose selection and shared resource ownership explicit"
+    )]
+    fn target_at(
+        &self,
+        address: u64,
+        point_contents: bool,
+        direct: bool,
+        store: &CollisionStore,
+        geometry: Option<qa_core::primitives::GeometryId>,
+        names: Option<&dyn NativeModelNames>,
+    ) -> Result<NativeTraceTarget, CallError> {
+        let solid = field(self.memory, address, self.layout.solid)?;
+        if !self.layout.model_target(solid)
+            && self.memory.read_word(address + self.layout.flags as u64)? as u32
+                & self.layout.unsupported_flags
+                != 0
+        {
+            return Err(CallError::Geometry);
+        }
+        let model = || {
+            resolve_model(
+                self.layout,
+                self.models,
+                self.model_handles,
+                self.module,
+                self.memory,
+                address,
+                store,
+                geometry.ok_or(CallError::Geometry)?,
+                names,
+                None,
+            )
+        };
+        let shape = if self.layout.model_target(solid) {
+            model()?.0
+        } else if direct && self.layout.contents.is_none() && solid == 1 {
+            // Q2 direct clipping can select a trigger's registered brush model;
+            // ordinary linked movement still treats that trigger as a box.
+            model().map_or(CollisionShape::Box, |value| value.0)
+        } else if self.layout.contents.is_some() || (0..=2).contains(&solid) {
+            CollisionShape::Box
+        } else {
+            return Err(CallError::Entity);
+        };
+        let pose_fields = if point_contents {
+            self.layout.contents_pose
+        } else {
+            None
+        };
+        let (body, angles) = self.layout.query_body(
+            self.memory,
+            address,
+            pose_fields.unwrap_or((self.layout.origin, self.layout.angles)),
+            matches!(shape, CollisionShape::Model { .. }),
+        )?;
+        Ok(NativeTraceTarget {
+            body,
+            angles,
+            shape,
+            rules: self.layout.model_rules,
+            contents_pose: pose_fields.map(|_| qa_core::primitives::EntityPose {
+                position: body.position,
+                angles,
+            }),
+        })
+    }
 }
 
 pub fn slot_address(entities: Entities, slot: u32) -> Option<u64> {
@@ -160,19 +272,36 @@ pub(crate) fn native_address(
     entities: &EntityTable,
     id: EntityId,
 ) -> Option<u64> {
+    slot_address(native, native_slot(native, module, entities, id)?)
+}
+
+pub(crate) fn native_slot(
+    native: Entities,
+    module: ModuleId,
+    entities: &EntityTable,
+    id: EntityId,
+) -> Option<u32> {
     let slot = entities.resolve(id)?;
     let identity = entities.columns.native_entity[slot]?;
     if identity.module != module {
         return None;
     }
     let slot = u32::try_from(identity.slot).ok()?;
-    slot_address(native, slot)
+    (slot < native.capacity).then_some(slot)
 }
 impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     fn module(&self) -> ModuleId {
         self.module
     }
     fn owner(&self, slot: i32) -> Option<CollisionOwner> {
+        if self.layout.owner_number
+            && slot == q3::ENTITY_WORLD
+            && slot as u32 >= self.entities.capacity
+        {
+            // WORLD is a valid weak native identity even when LocateGameData
+            // publishes no ordinary row for it. No owner bytes are available.
+            return Some(CollisionOwner::None);
+        }
         self.error.capture(|| {
             read_owner(
                 self.memory,
@@ -228,54 +357,7 @@ impl qa_world::collision::NativeTraceEntities for NativeTraceView<'_, '_> {
     ) -> Option<NativeTraceTarget> {
         self.error.capture(|| {
             let address = self.address_at(slot)?;
-            let solid = field(self.memory, address, self.layout.solid)?;
-            if !self.layout.model_target(solid)
-                && self.memory.read_word(address + self.layout.flags as u64)? as u32
-                    & self.layout.unsupported_flags
-                    != 0
-            {
-                return Err(CallError::Geometry);
-            }
-            let shape = if self.layout.model_target(solid) {
-                resolve_model(
-                    self.layout,
-                    self.models,
-                    self.model_handles,
-                    self.module,
-                    self.memory,
-                    address,
-                    store,
-                    geometry,
-                    names,
-                    None,
-                )?
-                .0
-            } else if self.layout.contents.is_some() || (0..=2).contains(&solid) {
-                CollisionShape::Box
-            } else {
-                return Err(CallError::Entity);
-            };
-            let pose_fields = if point_contents {
-                self.layout.contents_pose
-            } else {
-                None
-            };
-            let (body, angles) = self.layout.query_body(
-                self.memory,
-                address,
-                pose_fields.unwrap_or((self.layout.origin, self.layout.angles)),
-                matches!(shape, CollisionShape::Model { .. }),
-            )?;
-            Ok(NativeTraceTarget {
-                body,
-                angles,
-                shape,
-                rules: self.layout.model_rules,
-                contents_pose: pose_fields.map(|_| qa_core::primitives::EntityPose {
-                    position: body.position,
-                    angles,
-                }),
-            })
+            self.target_at(address, point_contents, false, store, Some(geometry), names)
         })
     }
 }
@@ -1176,21 +1258,20 @@ impl EntityProjection {
         if identity.slot == 0 && self.native_layout()?.world_zero {
             return Ok(ClipTarget::World);
         }
-        let (body, angles) = self.body(memory, address)?;
-        let solid = field(memory, address, self.native_layout()?.solid)?;
-        let shape = match solid {
-            3 => self.model(services, memory, context, address)?.0,
-            1 => self
-                .model(services, memory, context, address)
-                .map_or(CollisionShape::Box, |model| model.0),
-            0 | 2 => CollisionShape::Box,
-            _ => return Err(CallError::Entity),
-        };
+        let view = self.trace_view(memory, context)?;
+        let target = view.target_at(
+            address,
+            false,
+            true,
+            services.geometry,
+            services.world.map(|world| world.0),
+            Some(services.storage),
+        )?;
         Ok(ClipTarget::Body {
-            body,
-            shape,
-            angles,
-            rules: self.native_layout()?.model_rules,
+            body: target.body,
+            shape: target.shape,
+            angles: target.angles,
+            rules: target.rules,
         })
     }
     pub fn set_model(
@@ -1202,7 +1283,27 @@ impl EntityProjection {
         name: u64,
     ) -> Result<(), CallError> {
         self.entity(services, memory, context, address)?;
+        let layout = self.native_layout()?;
         let name = memory.cstring(name)?;
+        if let Some(contents) = layout.contents {
+            let geometry = services.world.ok_or(CallError::Geometry)?.0;
+            let model =
+                qa_core::text::atoi_prefix(name.strip_prefix(b"*").ok_or(CallError::Geometry)?)
+                    as u32;
+            let bounds = services
+                .geometry
+                .model_bounds(geometry, model)
+                .ok_or(CallError::Geometry)?;
+            memory.write_word(
+                address + layout.appearance.models[0].ok_or(CallError::Geometry)? as u64,
+                model as i32,
+            )?;
+            memory.write_vec3(address + layout.mins as u64, bounds.mins)?;
+            memory.write_vec3(address + layout.maxs as u64, bounds.maxs)?;
+            write_field(memory, address + layout.solid.0 as u64, layout.solid.1, 1)?;
+            memory.write_word(address + contents as u64, -1)?;
+            return self.link(services, memory, context, address);
+        }
         let model = (ENGINE_CALLS.resource_index)(services, context.module, self.models, name)?;
         let inline = if name.starts_with(b"*") {
             Some(self.cache_model(services, context, model, Some(name))?)
@@ -1213,7 +1314,10 @@ impl EntityProjection {
                 .set(None);
             None
         };
-        memory.write_word(address + 40, model as i32)?;
+        memory.write_word(
+            address + layout.appearance.models[0].ok_or(CallError::Geometry)? as u64,
+            model as i32,
+        )?;
         if let Some((_, bounds)) = inline {
             memory.write_vec3(address + self.native_layout()?.mins as u64, bounds.mins)?;
             memory.write_vec3(address + self.native_layout()?.maxs as u64, bounds.maxs)?;

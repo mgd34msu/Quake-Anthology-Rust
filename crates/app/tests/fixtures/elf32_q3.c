@@ -22,6 +22,7 @@ struct qa_q3_fixture_state {
     char cvar_text[16];
     unsigned int text_length;
     unsigned int startup_valid;
+    unsigned int collision_checked;
 };
 
 struct qa_q3_fixture_state qa_q3_fixture_state;
@@ -67,6 +68,48 @@ static void entity_row(int number) {
     entity->s.angles[1] = 45.0f;
 }
 
+static void collision_checks(void) {
+    struct { unsigned int before; trace_t value; unsigned int after; } result;
+    struct { int values[2]; unsigned int guard; } list;
+    vec3_t start = {-5.0f, 0.0f, 0.0f}, end = {5.0f, 0.0f, 0.0f};
+    vec3_t mins = {-10.0f, -10.0f, -10.0f}, maxs = {10.0f, 10.0f, 10.0f};
+    vec3_t contact_mins = {5.5f, -0.5f, -0.5f}, contact_maxs = {6.5f, 0.5f, 0.5f};
+    qa_entities[0].r.ownerNum = qa_entities[1].r.ownerNum = ENTITYNUM_NONE;
+    result.before = result.after = 0xa5a5a5a5u;
+    trap_Trace(&result.value, start, NULL, NULL, end, ENTITYNUM_NONE, -1);
+    if (result.before != 0xa5a5a5a5u || result.after != 0xa5a5a5a5u ||
+        result.value.entityNum != 0 || result.value.fraction != 0.1875f ||
+        result.value.contents != CONTENTS_BODY || result.value.surfaceFlags != 0 ||
+        result.value.plane.normal[0] != -1.0f || result.value.plane.type != 3 ||
+        result.value.plane.signbits != 1) __builtin_trap();
+    trap_Trace(&result.value, start, NULL, NULL, end, 0, -1);
+    if (result.value.entityNum != 1 || result.value.fraction != 0.5875f)
+        __builtin_trap();
+    end[0] = start[0];
+    trap_Trace(&result.value, start, NULL, NULL, end, ENTITYNUM_NONE, -1);
+    if (result.value.entityNum != ENTITYNUM_NONE || result.value.fraction != 1.0f)
+        __builtin_trap();
+    list.guard = 0x5a5a5a5au;
+    if (trap_EntitiesInBox(mins, maxs, list.values, 2) != 2 ||
+        list.values[0] != 1 || list.values[1] != 0 || list.guard != 0x5a5a5a5au ||
+        trap_EntitiesInBox(mins, maxs, NULL, 0) != 0) __builtin_trap();
+    entity_row(2);
+    qa_entities[2].r.linked = 0;
+    if (!trap_EntityContact(contact_mins, contact_maxs, &qa_entities[2]) ||
+        qa_entities[2].r.linked != 0 || qa_entities[2].r.linkcount != 0)
+        __builtin_trap();
+    trap_SetBrushModel(&qa_entities[2], "*0");
+    if (qa_entities[2].s.modelindex != 0 || !qa_entities[2].r.bmodel ||
+        qa_entities[2].r.contents != -1 || qa_entities[2].r.linked != 1 ||
+        qa_entities[2].r.linkcount != 1 || qa_entities[2].r.mins[0] != -10.0f ||
+        qa_entities[2].r.maxs[0] != 10.0f) __builtin_trap();
+    if (trap_EntityContact(contact_mins, contact_maxs, &qa_entities[2]))
+        __builtin_trap(); /* The shared world model has no brushes. */
+    trap_UnlinkEntity(&qa_entities[2]);
+    qa_entities[0].r.ownerNum = qa_entities[1].r.ownerNum = ENTITYNUM_WORLD;
+    qa_q3_fixture_state.collision_checked = 1;
+}
+
 
 static void record(unsigned int value) {
     unsigned int index = qa_q3_fixture_state.order_count++;
@@ -102,7 +145,7 @@ int qa_fixture_passfloat(void) { return trap_BotLibStartFrame(-1.25f); }
 
 static void validate(void) {
     vmCvar_t *cvar = &qa_q3_fixture_state.cvar;
-    if (qa_q3_fixture_state.init_count != 1 ||
+    if (qa_q3_fixture_state.init_count != 1 || !qa_q3_fixture_state.collision_checked ||
         qa_q3_fixture_state.order[0] != 0 || qa_q3_fixture_state.order[1] != 1 ||
         qa_q3_fixture_state.order[2] != 2 || qa_q3_fixture_state.order[3] != 3 ||
         qa_q3_fixture_state.init_arguments[0] != 0 ||
@@ -146,7 +189,12 @@ const unsigned int qa_q3_layout[] __attribute__((section(".qa_layout"), used)) =
     G_FS_FOPEN_FILE, G_FS_READ, G_FS_FCLOSE_FILE, G_FS_SEEK,
     BOTLIB_START_FRAME,
     offsetof(playerState_t, stats), offsetof(playerState_t, persistant),
-    sizeof(((playerState_t *)0)->stats[0]), MAX_STATS, MAX_PERSISTANT
+    sizeof(((playerState_t *)0)->stats[0]), MAX_STATS, MAX_PERSISTANT,
+    offsetof(trace_t, allsolid), offsetof(trace_t, startsolid), offsetof(trace_t, fraction),
+    offsetof(trace_t, endpos), offsetof(trace_t, plane), offsetof(trace_t, surfaceFlags),
+    offsetof(trace_t, contents), offsetof(trace_t, entityNum),
+    G_SET_BRUSH_MODEL, G_TRACE, G_ENTITIES_IN_BOX, G_ENTITY_CONTACT,
+    offsetof(struct qa_q3_fixture_state, collision_checked)
 };
 
 int vmMain(int command, int arg0, int arg1, int arg2,
@@ -187,6 +235,7 @@ int vmMain(int command, int arg0, int arg1, int arg2,
         if (qa_entities[0].r.linked != 1 || qa_entities[1].r.linked != 1 ||
             qa_entities[0].r.linkcount != 1 || qa_entities[1].r.linkcount != 1)
             __builtin_trap();
+        collision_checks();
         return 0;
     }
     case GAME_RUN_FRAME: {

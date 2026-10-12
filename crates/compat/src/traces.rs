@@ -10,6 +10,26 @@ fn plane(memory: &mut ModuleMemory<'_>, address: u64, value: Plane) -> Result<()
     Ok(())
 }
 
+/// Q3's pointer-free trace_t has the same 56-byte layout in both native widths
+/// and QVM memory. The result entity is a native number, never an engine slot.
+pub fn write_q3(
+    memory: &mut ModuleMemory<'_>,
+    address: u64,
+    trace: Trace,
+    entity: i32,
+) -> Result<(), CallError> {
+    memory.read_mut(address, 56)?.fill(0);
+    memory.write_word(address, i32::from(trace.all_solid))?;
+    memory.write_word(address + 4, i32::from(trace.start_solid))?;
+    memory.write_word(address + 8, trace.fraction.to_bits() as i32)?;
+    memory.write_vec3(address + 12, trace.end)?;
+    plane(memory, address + 24, trace.plane)?;
+    memory.write_word(address + 44, trace.surface.to_q3() as i32)?;
+    memory.write_word(address + 48, trace.contents.to_q3() as i32)?;
+    memory.write_word(address + 52, entity)?;
+    Ok(())
+}
+
 /// API-3/2023 returns these large structs through the native hidden output
 /// pointer. The result layout is selected in the import table, never from the map.
 pub fn write_q2<const WIDE: bool>(

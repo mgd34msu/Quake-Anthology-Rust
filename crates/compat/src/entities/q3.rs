@@ -2,6 +2,7 @@
 use super::*;
 
 pub(crate) const ENTITY_NONE: i32 = 1023;
+pub(crate) const ENTITY_WORLD: i32 = ENTITY_NONE - 1;
 const ENTITY_BYTES: usize = 516;
 const PLAYER_BYTES: usize = 468;
 

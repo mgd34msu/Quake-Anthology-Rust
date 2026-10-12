@@ -1,4 +1,8 @@
-use qa_compat::{memory::ModuleMemory, surfaces::NativeSurfaces, traces::write_q2};
+use qa_compat::{
+    memory::ModuleMemory,
+    surfaces::NativeSurfaces,
+    traces::{write_q2, write_q3},
+};
 use qa_core::primitives::{Bounds, Plane, SurfaceFlags, SurfaceId, Vec3};
 use qa_world::collision::{
     CollisionStore, Contents, Trace,
@@ -45,6 +49,51 @@ fn native_slot_addresses_reject_capacity_and_arithmetic_overflow() {
 fn native_trace_layouts_preserve_fields_padding_and_null_surface_states() {
     check::<false>();
     check::<true>();
+}
+
+#[test]
+fn q3_trace_has_one_pointer_free_layout_and_preserves_native_bits_and_guards() {
+    for base in [0, 0x2000_0000, 0x1_2000_0000] {
+        let mut memory = ModuleMemory::load(base, 128, &[0xa5; 128]).unwrap();
+        let mut hit = Trace::clear(Vec3([-0.0, 1.25, -2.5]));
+        hit.all_solid = true;
+        hit.start_solid = true;
+        hit.fraction = f32::from_bits(0x3eaa_aaaa);
+        hit.plane = Plane {
+            encoding: Some([4, 6]),
+            ..Plane::oriented(Vec3([0.3, -0.4, -0.5]), -7.0)
+        };
+        hit.surface = SurfaceFlags::from_q3(0x8000_2005);
+        hit.contents = Contents::from_q3(u32::MAX);
+        for entity in [0, 1022, 1023] {
+            let output = base + 8;
+            write_q3(&mut memory, output, hit, entity).unwrap();
+            assert_eq!(memory.read_word(output).unwrap(), 1);
+            assert_eq!(memory.read_word(output + 4).unwrap(), 1);
+            assert_eq!(
+                memory.read_word(output + 8).unwrap() as u32,
+                hit.fraction.to_bits()
+            );
+            assert_eq!(
+                memory.read_vec3(output + 12).unwrap().0.map(f32::to_bits),
+                hit.end.0.map(f32::to_bits)
+            );
+            assert_eq!(
+                memory.read_vec3(output + 24).unwrap().0.map(f32::to_bits),
+                hit.plane.normal.0.map(f32::to_bits)
+            );
+            assert_eq!(
+                memory.read_word(output + 36).unwrap() as u32,
+                (-7.0_f32).to_bits()
+            );
+            assert_eq!(memory.read(output + 40, 4).unwrap(), &[4, 6, 0, 0]);
+            assert_eq!(memory.read_word(output + 44).unwrap() as u32, 0x8000_2005);
+            assert_eq!(memory.read_word(output + 48).unwrap() as u32, u32::MAX);
+            assert_eq!(memory.read_word(output + 52).unwrap(), entity);
+            assert_eq!(memory.read(base, 8).unwrap(), &[0xa5; 8]);
+            assert_eq!(memory.read(output + 56, 64).unwrap(), &[0xa5; 64]);
+        }
+    }
 }
 
 fn check<const WIDE: bool>() {
