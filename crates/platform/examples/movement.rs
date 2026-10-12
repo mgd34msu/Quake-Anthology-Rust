@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .connect(
                 [Connection::Local, Connection::Remote, Connection::Bot][slot % 3],
                 ModuleId((slot % 3) as u16),
-                PlayerTail::Q2 { weapon_frame: 0 },
+                PlayerTail::Q2,
                 None,
             )
             .ok_or("client capacity")?;

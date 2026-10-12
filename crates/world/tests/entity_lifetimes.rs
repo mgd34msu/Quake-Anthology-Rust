@@ -295,7 +295,7 @@ fn qw_displaces_last_owned_lifetime_and_reports_spatial_unlink_handle() {
         LinkOrder::Tail,
         LinkIntent::Explicit
     ));
-    table.columns.frame[last.slot as usize] = 7;
+    table.columns.appearance[last.slot as usize].frame = 7;
     let replacement = table
         .allocate(
             ThinkTime::Seconds(10.0),
@@ -309,7 +309,10 @@ fn qw_displaces_last_owned_lifetime_and_reports_spatial_unlink_handle() {
     assert!(table.resolve(last).is_none());
     assert!(table.resolve(first).is_some());
     assert!(table.resolve(foreign).is_some());
-    assert_eq!(table.columns.frame[replacement.id.slot as usize], 0);
+    assert_eq!(
+        table.columns.appearance[replacement.id.slot as usize].frame,
+        0
+    );
     assert!(area.unlink(replacement.displaced.unwrap()));
     assert!(area.link(
         &table,
@@ -342,7 +345,7 @@ fn protected_body_queue_and_never_free_lifetimes_cannot_be_displaced() {
         )
         .unwrap()
         .id;
-    table.columns.frame[last.slot as usize] = 9;
+    table.columns.appearance[last.slot as usize].frame = 9;
     assert!(table.set_never_free(last, true));
     assert!(!table.release(last, ThinkTime::Seconds(4.0)));
     let replacement = table
@@ -354,7 +357,7 @@ fn protected_body_queue_and_never_free_lifetimes_cannot_be_displaced() {
         .unwrap();
     assert_eq!(replacement.displaced, Some(first));
     assert!(table.resolve(last).is_some());
-    assert_eq!(table.columns.frame[last.slot as usize], 9);
+    assert_eq!(table.columns.appearance[last.slot as usize].frame, 9);
     assert!(table.set_never_free(replacement.id, true));
     assert!(
         table

@@ -239,6 +239,14 @@ impl Default for CubeSkyParams {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoftwareAlias {
+    /// Native fullbright aliases retain their software ambient/shade clamps.
+    pub fullbright_light: Option<[f32; 2]>,
+    /// Low/high alpha cutoffs select the native one-third/two-thirds map and
+    /// depth-write behavior, independently of the GL stage's continuous blend.
+    pub alpha_cutoffs: Option<[f32; 2]>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialSettings {
     pub cull: Cull,
     pub sort: f32,
@@ -251,6 +259,7 @@ pub struct MaterialSettings {
     pub surface_flags: u32,
     pub content_flags: u32,
     pub portal: bool,
+    pub software_alias: Option<SoftwareAlias>,
 }
 impl Default for MaterialSettings {
     fn default() -> Self {
@@ -266,6 +275,7 @@ impl Default for MaterialSettings {
             surface_flags: 0,
             content_flags: 0,
             portal: false,
+            software_alias: None,
         }
     }
 }
@@ -838,6 +848,17 @@ fn stage_valid(stage: Stage, assets: &Assets) -> bool {
 fn settings_valid(settings: MaterialSettings, assets: &Assets) -> bool {
     finite(&[settings.sort, settings.time_offset])
         && settings.clamp_time.is_none_or(f32::is_finite)
+        && settings.software_alias.is_none_or(|alias| {
+            alias
+                .fullbright_light
+                .is_none_or(|values| finite(&values) && values.iter().all(|&value| value >= 0.0))
+                && alias.alpha_cutoffs.is_none_or(|values| {
+                    finite(&values)
+                        && values[0] >= 0.0
+                        && values[0] <= values[1]
+                        && values[1] <= 1.0
+                })
+        })
         && settings.sky.is_none_or(|sky| match sky {
             Sky::Layered { images, sphere } => {
                 images.iter().all(|&id| assets.image(id).is_some())

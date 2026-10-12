@@ -101,6 +101,9 @@ impl FrameSource for Source {
                     n,
                     received.header.sequence,
                     &mut self.peers[slot],
+                    qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(
+                        0,
+                    )),
                     |incoming| {
                         let qa_network::ingress::Incoming::ReliableCommand { text, .. } = incoming
                         else {

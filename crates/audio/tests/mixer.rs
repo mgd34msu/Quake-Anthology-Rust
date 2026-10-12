@@ -22,10 +22,10 @@ fn mixer(pcm: Vec<i16>, loop_start: Option<usize>, voices: usize) -> Mixer {
 fn listener(client: u32, origin: Vec3) -> Option<Listener> {
     Some(Listener {
         client: ClientId(client),
-        entity: Some(EntityId {
+        entity: Some(SoundEmitter::Entity(EntityId {
             slot: client,
             generation: 1,
-        }),
+        })),
         origin,
         right: Vec3([1.0, 0.0, 0.0]),
     })
@@ -74,10 +74,10 @@ fn shared_native_spatial_policies_preserve_channel_side_and_full_volume_self() {
         m.paint(&mut pcm);
         assert_eq!(pcm[0], 0);
         assert_eq!(pcm[1], right, "{rules:?}");
-        e.entity = Some(EntityId {
+        e.entity = Some(SoundEmitter::Entity(EntityId {
             slot: 0,
             generation: 1,
-        });
+        }));
         assert!(m.sound(e));
         m.paint(&mut pcm);
         assert_eq!(pcm, [1020; 2]);
@@ -107,10 +107,10 @@ fn updating_loop_spatial_rules_preserves_its_pcm_cursor() {
     let mut m = mixer(vec![1024, 2048, 3072], None, 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let mut e = event(&m);
-    e.entity = Some(EntityId {
+    e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 9,
         generation: 1,
-    });
+    }));
     e.channel = 2;
     e.position = Vec3([400.0, 0.0, 0.0]);
     e.attenuation = 1.0;
@@ -157,10 +157,10 @@ fn looping_replacement_stop_generation_and_full_voice_table() {
     let mut m = mixer(vec![256, 512, 768], Some(1), 1);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let mut e = event(&m);
-    e.entity = Some(EntityId {
+    e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 9,
         generation: 1,
-    });
+    }));
     e.channel = 2;
     assert!(m.sound(e));
     assert!(m.sound(e));
@@ -169,10 +169,10 @@ fn looping_replacement_stop_generation_and_full_voice_table() {
     m.paint(&mut pcm);
     assert_eq!(pcm, [255, 255, 510, 510, 765, 765, 510, 510, 765, 765]);
     let mut other = e;
-    other.entity = Some(EntityId {
+    other.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 9,
         generation: 2,
-    });
+    }));
     assert!(!m.sound(other));
     assert_eq!(m.counts.full, 1);
     other.action = SoundAction::Stop;
@@ -248,10 +248,10 @@ fn private_channels_do_not_replace_another_clients_voice() {
         1.0,
     );
     let mut e = event(&m);
-    e.entity = Some(EntityId {
+    e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 3,
         generation: 1,
-    });
+    }));
     e.channel = 1;
     for client in [0, 1] {
         e.client = Some(ClientId(client));
@@ -268,10 +268,10 @@ fn delayed_weapon_bursts_replace_at_their_sample_time() {
     let mut m = mixer(vec![256, 512, 768, 1024, 1280], None, 4);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let mut e = event(&m);
-    e.entity = Some(EntityId {
+    e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 0,
         generation: 1,
-    });
+    }));
     e.channel = 1;
     assert!(m.sound(e));
     e.time_offset = 2.0 / 44100.0;
@@ -293,10 +293,10 @@ fn equal_time_pending_starts_keep_publication_order_and_stop_cancels_them() {
     let mut m = mixer(vec![1024; 8], None, 4);
     m.listen(&[listener(0, Vec3::default())], 1.0);
     let mut e = event(&m);
-    e.entity = Some(EntityId {
+    e.entity = Some(SoundEmitter::Entity(EntityId {
         slot: 0,
         generation: 1,
-    });
+    }));
     e.channel = 1;
     e.time_offset = 2.0 / 44100.0;
     assert!(m.sound(e));
@@ -314,4 +314,82 @@ fn equal_time_pending_starts_keep_publication_order_and_stop_cancels_them() {
     m.paint(&mut pcm);
     assert_eq!(pcm, [0; 6]);
     assert_eq!(m.counts.stopped, 2);
+}
+
+fn native_emitter(namespace: ResourceNamespace, slot: i32) -> SoundEmitter {
+    SoundEmitter::Native { namespace, slot }
+}
+
+#[test]
+fn native_channels_keep_client_namespaces_slots_and_private_recipients_distinct() {
+    let mut m = mixer(vec![1024; 2], Some(0), 6);
+    m.listen(&[listener(0, Vec3::default())], 1.0);
+    let emitters = [
+        native_emitter(ResourceNamespace::Client(ClientId(0)), 1),
+        native_emitter(ResourceNamespace::Client(ClientId(1)), 1),
+        native_emitter(ResourceNamespace::Module(ModuleId(0)), 1),
+        native_emitter(ResourceNamespace::Client(ClientId(0)), 2),
+    ];
+    let mut e = event(&m);
+    e.action = SoundAction::StartLoop;
+    e.channel = 1;
+    for emitter in emitters {
+        e.entity = Some(emitter);
+        assert!(m.sound(e));
+    }
+    e.entity = Some(emitters[0]);
+    for client in [0, 1] {
+        e.client = Some(ClientId(client));
+        assert!(m.sound(e));
+    }
+    assert_eq!(m.counts.started, 6);
+    assert_eq!(m.counts.replaced, 0);
+    assert!(m.sound(e)); // The same native voice updates without restarting.
+    assert_eq!(m.counts.started, 6);
+    e.action = SoundAction::Stop;
+    assert!(m.sound(e));
+    assert_eq!(m.counts.stopped, 1);
+    e.client = Some(ClientId(2));
+    assert!(m.sound(e));
+    assert_eq!(m.counts.stopped, 1);
+    e.client = None;
+    assert!(m.sound(e));
+    assert_eq!(m.counts.stopped, 2);
+    e.entity = Some(emitters[1]);
+    assert!(m.sound(e));
+    assert_eq!(m.counts.stopped, 3);
+}
+
+#[test]
+fn native_self_relative_gain_uses_the_client_voice_namespace() {
+    let mut m = mixer(vec![1024], None, 1);
+    let own = native_emitter(ResourceNamespace::Client(ClientId(3)), 0);
+    m.listen(
+        &[Some(Listener {
+            client: ClientId(3),
+            entity: Some(own),
+            origin: Vec3::default(),
+            right: Vec3([1.0, 0.0, 0.0]),
+        })],
+        1.0,
+    );
+    let mut e = event(&m);
+    e.entity = Some(own);
+    e.spatial_rules = RuleSetId::Quake2;
+    e.position = Vec3([400.0, 0.0, 0.0]);
+    e.attenuation = 1.0;
+    let mut pcm = [0; 2];
+    assert!(m.sound(e));
+    assert!(m.paint(&mut pcm));
+    assert_eq!(pcm, [1020; 2]);
+    for emitter in [
+        native_emitter(ResourceNamespace::Client(ClientId(4)), 0),
+        native_emitter(ResourceNamespace::Module(ModuleId(3)), 0),
+        native_emitter(ResourceNamespace::Client(ClientId(3)), 1),
+    ] {
+        e.entity = Some(emitter);
+        assert!(m.sound(e));
+        assert!(m.paint(&mut pcm));
+        assert_eq!(pcm, [0, 692]);
+    }
 }

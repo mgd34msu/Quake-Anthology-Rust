@@ -193,6 +193,10 @@ impl Channel {
     pub fn current_snapshot(&self) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.current()
     }
+    /// The prior accepted native snapshot, borrowing this connection's ring.
+    pub fn previous_snapshot(&self) -> Option<crate::snapshots::ReceivedFrame<'_>> {
+        self.snapshots.as_ref()?.previous()
+    }
     /// Called at connection binding, never while decoding an ordinary frame.
     /// Classic QW and Q2 have the same channel header, so the native payload
     /// protocol is supplied explicitly rather than inferred from that header.
@@ -269,6 +273,38 @@ impl Channel {
             return Err(Error::Context);
         }
         self.snapshots.as_mut().ok_or(Error::Context)?.store(frame)
+    }
+    /// Commit exactly the serialized candidate, retaining native first-person
+    /// suppression for future delta bases without mutating failed probes.
+    pub fn publish_written_snapshot(
+        &mut self,
+        frame: crate::snapshots::ReceivedFrame<'_>,
+        request: Option<u32>,
+    ) -> Result<(), crate::commands::packet::Error> {
+        let sequence = frame.sequence();
+        self.publish_snapshot(frame)?;
+        self.snapshots
+            .as_mut()
+            .ok_or(crate::commands::packet::Error::Context)?
+            .normalize_written(sequence, request)
+    }
+    /// Serialize a candidate against retained baselines/deltas without touching
+    /// publication counters, row age or snapshot provenance.
+    pub fn write_snapshot_candidate(
+        &self,
+        writer: &mut crate::message::Writer<'_>,
+        frame: crate::snapshots::ReceivedFrame<'_>,
+        request: Option<u32>,
+        native_clients: u32,
+    ) -> Result<(), crate::commands::packet::Error> {
+        use crate::commands::packet::Error;
+        if self.endpoint() != Endpoint::Server {
+            return Err(Error::Context);
+        }
+        self.snapshots
+            .as_ref()
+            .ok_or(Error::Context)?
+            .write_candidate(writer, frame, request, native_clients)
     }
     pub fn write_snapshot(
         &mut self,
@@ -359,7 +395,10 @@ impl Channel {
     pub(crate) fn qw_player_context(
         &mut self,
         sequence: u32,
-    ) -> Option<(&mut [crate::commands::QwCmd; 32], u32)> {
+    ) -> Option<(
+        &mut [crate::commands::QwCmd; crate::states::QW_PLAYER_SLOTS],
+        u32,
+    )> {
         let crate::snapshots::Storage::QuakeWorld {
             player_commands,
             player_model,

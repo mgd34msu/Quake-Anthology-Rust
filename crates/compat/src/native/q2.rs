@@ -2,9 +2,9 @@
 use super::{Error, NamedExport, ReturnedTable, TableFunction, Vm, runtime::ImportTrap};
 use crate::abi::{CallTable, Q2_CLASSIC, Q2_RERELEASE};
 use crate::cvars::NativeCvars;
-use crate::entities::EntityLayout;
-use qa_core::primitives::IndexSpan;
+use crate::entities::{AppearanceLayout, EntityLayout, ExtendedAppearance};
 use qa_core::{
+    configstrings::ConfigLayout,
     names::NameTable,
     primitives::{NameId, RuleSetId},
 };
@@ -31,7 +31,6 @@ struct Layout {
     import_header: usize,
     imports: &'static [&'static [u8]],
     functions: &'static [Function],
-    resources: [IndexSpan; 3],
     entity: EntityLayout,
 }
 const CLASSIC_IMPORTS: &[&[u8]] = &[
@@ -215,6 +214,7 @@ const CLASSIC: Layout = Layout {
     imports: CLASSIC_IMPORTS,
     functions: CLASSIC_FUNCTIONS,
     entity: EntityLayout {
+        source: RuleSetId::Quake2,
         bytes: 280,
         in_use: (96, false),
         linked: None,
@@ -233,25 +233,18 @@ const CLASSIC: Layout = Layout {
         area2: 196,
         clusters: Some((120, 124, 188)),
         network_solid: 72,
+        appearance: AppearanceLayout {
+            effects_wide: false,
+            render_flags: 68,
+            loop_sound: 76,
+            event: (80, false),
+            extended: None,
+        },
         model_rules: qa_core::primitives::ModelRules {
             rotation: qa_core::primitives::ModelRotation::NegativeEuler,
             link_bounds: qa_core::primitives::RotatedLinkBounds::MaxAbsCube,
         },
     },
-    resources: [
-        IndexSpan {
-            first: 32,
-            count: 256,
-        },
-        IndexSpan {
-            first: 288,
-            count: 256,
-        },
-        IndexSpan {
-            first: 544,
-            count: 256,
-        },
-    ],
 };
 const RERELEASE: Layout = Layout {
     version: 2023,
@@ -262,6 +255,7 @@ const RERELEASE: Layout = Layout {
     imports: RERELEASE_IMPORTS,
     functions: RERELEASE_FUNCTIONS,
     entity: EntityLayout {
+        source: RuleSetId::Quake2Rerelease,
         bytes: 1472,
         in_use: (1376, true),
         linked: Some(1377),
@@ -280,22 +274,23 @@ const RERELEASE: Layout = Layout {
         area2: 1388,
         clusters: None,
         network_solid: 76,
+        appearance: AppearanceLayout {
+            effects_wide: true,
+            render_flags: 72,
+            loop_sound: 80,
+            event: (84, true),
+            extended: Some(ExtendedAppearance {
+                alpha: 88,
+                scale: 92,
+                instance_bits: 96,
+                loop_volume: 100,
+                loop_attenuation: 104,
+                owner: 108,
+                old_frame: 112,
+            }),
+        },
         model_rules: CLASSIC.entity.model_rules,
     },
-    resources: [
-        IndexSpan {
-            first: 62,
-            count: 8192,
-        },
-        IndexSpan {
-            first: 8254,
-            count: 2048,
-        },
-        IndexSpan {
-            first: 10302,
-            count: 512,
-        },
-    ],
 };
 
 pub use crate::entities::Entities;
@@ -324,6 +319,7 @@ impl Game {
         timeout: Duration,
     ) -> Result<Self, Error> {
         let layout = layout(rules).ok_or(Error::Export)?;
+        let configs = ConfigLayout::for_rules(rules).ok_or(Error::Export)?;
         let client = crate::q2_abi::client_layout(rules).ok_or(Error::Export)?;
         if rules == RuleSetId::Quake2Rerelease && (interval_ms == 0 || 1000 % interval_ms != 0) {
             return Err(Error::Export);
@@ -387,25 +383,16 @@ impl Game {
         let config_offset = command_offset
             .checked_add(command_bytes)
             .ok_or(Error::Export)?;
-        // API2023 CS_SIZE: ordinary strings are 96 bytes; statusbar and general
-        // entries may span their native ranges. The common store bounds values
-        // at 8192 bytes, so no projection needs a larger individual slot.
+        // Native pointers and the common rows use the same CS_SIZE capacities.
         let config_capacities: Vec<usize> = if layout.version == 2023 {
-            let general = layout.resources[2].range().end + 4 * 256;
-            let wheels = general + 512;
-            let end = wheels + 3 * 32 + 2;
-            (0..32768)
+            (0..configs.count)
                 .map(|index| {
-                    let size = if (5..59).contains(&index) {
-                        (59 - index) * 96
-                    } else if (general..wheels).contains(&index) {
-                        (end - index) * 96
-                    } else {
-                        96
-                    };
-                    size.min(8193)
+                    configs
+                        .capacity(index)
+                        .map(|bytes| bytes + 1)
+                        .ok_or(Error::Export)
                 })
-                .collect()
+                .collect::<Result<_, _>>()?
         } else {
             Vec::new()
         };
@@ -874,7 +861,7 @@ impl Game {
                     .map_err(Error::Service)?,
             );
         }
-        vm.resources = Some(layout.resources);
+        vm.resources = Some(configs.resources);
         vm.surfaces = Some(
             crate::surfaces::NativeSurfaces::load(
                 address + (PAGE_BYTES + cvar_bytes) as u64,
@@ -888,9 +875,9 @@ impl Game {
             layout.entity_offset,
             layout.wide_stride,
             layout.entity,
-            layout.resources[0],
+            configs.resources[0],
         ));
-        vm.player_stats = Some(crate::players::PlayerStats::load(client.stats));
+        vm.player_stats = Some(crate::players::PlayerStats::load(client));
         vm.pmove = Some(crate::pmove::Pmove::load(
             if layout.version == 2023 {
                 &crate::pmove::RERELEASE

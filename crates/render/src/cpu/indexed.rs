@@ -1,7 +1,7 @@
 //! Native indexed mesh shading within the shared clip/triangle consumer.
 //! Q1 r_alias.c R_AliasSetupLighting/R_AliasTransformAndProjectFinalVerts;
 //! Q2 ref_soft/r_alias.c R_AliasSetupLighting/R_AliasTransformFinalVerts.
-use crate::assets::{Assets, Image, PaletteId, Wrap};
+use crate::assets::{Assets, Image, PaletteId, SoftwareAlias, Wrap};
 use crate::scene::CpuPresentation;
 use crate::shader::{RgbGen, StageBlend};
 use crate::stage::{EntityLighting, PreparedStage};
@@ -68,6 +68,8 @@ pub(super) struct Raster<'a> {
     alias_light: Option<AliasLight>,
     fullbright: bool,
     blend: bool,
+    alpha_cutoffs: Option<[f32; 2]>,
+    depth_write: bool,
 }
 
 impl<'a> Raster<'a> {
@@ -75,6 +77,7 @@ impl<'a> Raster<'a> {
         presentation: CpuPresentation,
         image: &'a Image,
         stage: &PreparedStage,
+        software_alias: Option<SoftwareAlias>,
         lighting: Option<EntityLighting>,
         assets: &'a Assets,
     ) -> Result<Option<Self>, &'static str> {
@@ -94,14 +97,24 @@ impl<'a> Raster<'a> {
             .ok_or("mesh image has no native indices")?;
         let blend = match stage.stage.blend {
             None => false,
-            Some(StageBlend::ALPHA) if palette_resource.translucency_map().is_some() => true,
+            Some(StageBlend::ALPHA)
+                if palette_resource.translucency_map().is_some()
+                    || software_alias.is_some_and(|alias| alias.alpha_cutoffs.is_some()) =>
+            {
+                true
+            }
             _ => return Err("unsupported indexed mesh blend"),
         };
-        let alias_light = if matches!(stage.stage.rgb_gen, RgbGen::LightingDiffuse) {
-            Some(
-                AliasLight::prepare(lighting.ok_or("missing alias lighting")?, policy)
-                    .ok_or("nonfinite alias lighting")?,
-            )
+        let fullbright_light = software_alias.and_then(|alias| alias.fullbright_light);
+        let alias_light = if matches!(stage.stage.rgb_gen, RgbGen::LightingDiffuse)
+            || fullbright_light.is_some()
+        {
+            let mut lighting = lighting.ok_or("missing alias lighting")?;
+            if let Some([ambient, shade]) = fullbright_light {
+                lighting.ambient = [ambient; 3];
+                lighting.directed = [shade; 3];
+            }
+            Some(AliasLight::prepare(lighting, policy).ok_or("nonfinite alias lighting")?)
         } else {
             None
         };
@@ -115,6 +128,8 @@ impl<'a> Raster<'a> {
             alias_light,
             fullbright,
             blend,
+            alpha_cutoffs: software_alias.and_then(|alias| alias.alpha_cutoffs),
+            depth_write: stage.stage.depth_write,
         }))
     }
 
@@ -136,7 +151,7 @@ impl<'a> Raster<'a> {
         alpha: f32,
         destination: u8,
         destination_palette: u32,
-    ) -> Option<u8> {
+    ) -> Option<(u8, bool)> {
         let x = super::texel(coordinates[0], self.mip.width, self.wrap);
         let y = super::texel(coordinates[1], self.mip.height, self.wrap);
         let raw = self.mip.indices()[y * self.mip.width as usize + x];
@@ -145,19 +160,36 @@ impl<'a> Raster<'a> {
         }
         let shade = (light as i32).clamp(0, 63 * 256 + 255) as usize & 0xff00;
         let color = self.palette.colormap()[shade + raw as usize];
-        if !self.blend || alpha >= 1.0 {
-            return Some(color);
-        }
-        if alpha <= 0.0 || destination_palette != self.palette_id.0 {
+        let (source_major, depth_write) = if !self.blend {
+            return Some((color, self.depth_write));
+        } else if let Some([low, high]) = self.alpha_cutoffs {
+            if alpha > high {
+                return Some((color, true));
+            }
+            let source_major = alpha > low;
+            (source_major, source_major)
+        } else {
+            if alpha >= 1.0 {
+                return Some((color, self.depth_write));
+            }
+            if alpha <= 0.0 {
+                return None;
+            }
+            (alpha > 0.33, self.depth_write)
+        };
+        if destination_palette != self.palette_id.0 {
             return None;
         }
         let map = self.palette.translucency_map()?;
-        let [major, minor] = if alpha > 0.33 {
+        let [major, minor] = if source_major {
             [color, destination]
         } else {
             [destination, color]
         };
-        Some(map[usize::from(major) * 256 + usize::from(minor)])
+        Some((
+            map[usize::from(major) * 256 + usize::from(minor)],
+            depth_write,
+        ))
     }
 }
 

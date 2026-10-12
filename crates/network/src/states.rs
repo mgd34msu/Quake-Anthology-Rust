@@ -1948,6 +1948,7 @@ pub const QW_PLAYER_LAYOUT: [(&str, i8); 14] = [
     ("body_yaw_input", 0),
 ];
 pub const QW_PLAYER_WORDS: usize = QW_PLAYER_LAYOUT.len();
+pub const QW_PLAYER_SLOTS: usize = 32;
 static QW_PLAYER_PREFIX: [Group<true, true, false, true>; 1] = [Group {
     fields: &[
         Field::new(
@@ -2032,7 +2033,7 @@ pub fn write_qw_player(
     to: &[u32; QW_PLAYER_WORDS],
     mut command: QwCmd,
 ) -> Result<bool, Error> {
-    if number >= 32 {
+    if number >= QW_PLAYER_SLOTS as u32 {
         return Ok(false);
     }
     let flags = to[12];
@@ -2066,7 +2067,7 @@ pub fn read_qw_player(
         return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     let number = reader.read_bits(8)?;
-    if number >= 32 {
+    if number >= QW_PLAYER_SLOTS as u32 {
         return Err(reader.error(crate::message::ErrorKind::Symbol));
     }
     let flags = reader.read_bits(16)?;

@@ -7,6 +7,7 @@ use qa_core::{
 };
 use qa_session::clients::Connection;
 
+mod config;
 mod native;
 
 #[derive(Default)]
@@ -85,6 +86,7 @@ pub fn dispatch(
                     // there is no second presentation copy of their payload.
                     FrameEvent::Native(_) => true,
                     FrameEvent::Hud(_) => true,
+                    FrameEvent::ConfigString { .. } => true,
                 };
                 if submitted {
                     OutputSubmission::BestEffort
@@ -146,7 +148,43 @@ pub fn dispatch(
             &mut server.events,
             id,
             &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
-                let submission = if let FrameEvent::Native(message) = record.event {
+                let submission = if let FrameEvent::ConfigString {
+                    source,
+                    index,
+                    text,
+                    ..
+                } = record.event
+                {
+                    if let (Some(text), Some(connection)) = (
+                        texts.get(text),
+                        runtime
+                            .network
+                            .get_mut(client_id, qa_core::loopback::Endpoint::Server),
+                    ) {
+                        if let Some(commands) = &connection.commands {
+                            match config::submit(
+                                &mut connection.channel,
+                                commands.protocol,
+                                record.sequence,
+                                source,
+                                index,
+                                text,
+                                &mut runtime.config_publications[slot].pending,
+                            ) {
+                                Ok(submission) => submission,
+                                Err(()) => {
+                                    counts.native_unsupported += 1;
+                                    OutputSubmission::BestEffort
+                                }
+                            }
+                        } else {
+                            OutputSubmission::BestEffort
+                        }
+                    } else {
+                        counts.stale_texts += 1;
+                        OutputSubmission::BestEffort
+                    }
+                } else if let FrameEvent::Native(message) = record.event {
                     let visible = match message.delivery.target {
                         qa_core::primitives::NativeTarget::All
                         | qa_core::primitives::NativeTarget::Client(_) => true,
@@ -349,6 +387,7 @@ pub fn dispatch(
             // Independently leased text stays valid through the resync.
             client.hud.reset_inventory();
             client.hud_publication.reset();
+            runtime.config_publications[slot].reset();
         }
     }
     counts

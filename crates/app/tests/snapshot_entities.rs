@@ -1,0 +1,887 @@
+use qa_app::{
+    Runtime,
+    host::{FrameHost, FrameSource},
+    snapshots::EntitySource,
+};
+use qa_console::{commands::Console, views::Context};
+use qa_core::{
+    loopback::Endpoint,
+    primitives::{
+        Bounds, ClientId, EntityAppearance, EntityId, IndexSpan, ModelRef, ModuleId, NativeEntity,
+        Plane, ResourceNamespace, RuleSetId, ThinkTime, Vec3,
+    },
+    sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
+};
+use qa_network::{commands::packet::Protocol, projection::EntityRecord, snapshots::ReceivedFrame};
+use qa_session::timing::TickRate;
+use qa_world::{
+    entities::AllocationPolicy,
+    leaves::LeafScratch,
+    portals::{AreaPortals, Portal},
+    visibility::{PvsRows, VisLeaf, VisNode, VisibilityWorld},
+};
+use std::time::Duration;
+
+const MODULE: ModuleId = ModuleId(7);
+
+#[derive(Default)]
+struct Clock(u64);
+impl FrameSource for Clock {
+    fn begin_frame(&mut self) -> Duration {
+        self.0 += 10_000_000;
+        Duration::from_nanos(self.0)
+    }
+    fn poll_events(&mut self, queue: &mut SysEventQueue) {
+        queue
+            .push(SysEvent {
+                time: EventTime(self.0),
+                kind: EventKind::Time,
+            })
+            .unwrap();
+    }
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::from_nanos(self.0)
+    }
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn present(&mut self) {}
+}
+
+fn host(protocol: Protocol, clients: usize) -> Result<(FrameHost, ClientId), String> {
+    let mut runtime = Runtime::load(clients, [])?;
+    let client = runtime.connect_local(
+        SeatId::FIRST,
+        qa_app::map::SpawnAnchor {
+            position: Vec3([32., 0., 0.]),
+            angles: Vec3::default(),
+            entity: 0,
+            fixture_fallback: false,
+        },
+        qa_app::client_policy::ClientPolicy::select(Some(RuleSetId::QuakeWorld), None, None, None)?,
+        protocol,
+        0,
+    )?;
+    Ok((
+        FrameHost::load(
+            Console::new(Context::default()).map_err(|error| error.to_string())?,
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )?,
+        client,
+    ))
+}
+
+fn add(
+    host: &mut FrameHost,
+    native: Option<NativeEntity>,
+    source: RuleSetId,
+    position: Vec3,
+) -> EntityId {
+    let entity = host
+        .runtime
+        .server
+        .entities
+        .allocate(ThinkTime::Seconds(0.), MODULE, AllocationPolicy::EDICT)
+        .unwrap()
+        .id;
+    let columns = &mut host.runtime.server.entities.columns;
+    let slot = entity.slot as usize;
+    columns.native_entity[slot] = native;
+    columns.position[slot] = position;
+    columns.mins[slot] = Vec3([-1.; 3]);
+    columns.maxs[slot] = Vec3([1.; 3]);
+    columns.angles[slot] = Vec3([0., 45., 0.]);
+    columns.appearance[slot] = EntityAppearance {
+        source,
+        models: [
+            ModelRef::native(ResourceNamespace::Module(MODULE), 5),
+            None,
+            None,
+            None,
+        ],
+        frame: 17,
+        ..Default::default()
+    };
+    entity
+}
+
+fn transmit(
+    host: &mut FrameHost,
+    client: ClientId,
+    time: EventTime,
+    delta: Option<u32>,
+    visibility: Option<(&VisibilityWorld, &mut LeafScratch, &mut [u8])>,
+    portals: Option<&AreaPortals>,
+) -> Result<u32, String> {
+    let runtime = &mut host.runtime;
+    let player = &runtime.server.clients[client.0 as usize];
+    let binding = runtime.local_snapshots[client.0 as usize]
+        .as_mut()
+        .ok_or("binding")?;
+    let channel = &mut runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .ok_or("server channel")?
+        .channel;
+    let sequence = binding.sequence(channel, time);
+    let mut bytes = [0; 1400];
+    let mut resolve = |model: ModelRef| {
+        (model.namespace == ResourceNamespace::Module(MODULE)).then_some(model.ordinal)
+    };
+    let source = EntitySource {
+        entities: &runtime.server.entities,
+        players: &runtime.server.clients,
+        native_module: Some(MODULE),
+        self_entity: player.entity,
+        native_clients: binding.native_clients(),
+        visibility,
+        portals,
+        resolve_model: &mut resolve,
+    };
+    let length = binding
+        .encode(
+            channel,
+            &player.player,
+            source,
+            sequence,
+            time,
+            delta,
+            &mut bytes,
+        )
+        .map_err(|error| error.to_string())?;
+    channel
+        .prepare_snapshot(sequence, None, &bytes[..length], time)
+        .map_err(|error| error.to_string())?
+        .ok_or("prepared snapshot")?;
+    assert!(
+        channel
+            .submit_with(time, |packet| runtime
+                .loopback
+                .send(Endpoint::Server, client, packet)
+                .is_ok())
+            .map_err(|error| error.to_string())?
+            .is_some()
+    );
+    while channel.pending_fragments() {
+        channel
+            .prepare_output(time)
+            .map_err(|error| error.to_string())?
+            .ok_or("prepared fragment")?;
+        assert!(
+            channel
+                .submit_with(time, |packet| runtime
+                    .loopback
+                    .send(Endpoint::Server, client, packet)
+                    .is_ok())
+                .map_err(|error| error.to_string())?
+                .is_some()
+        );
+    }
+    binding.submitted(sequence);
+    Ok(sequence)
+}
+
+fn records(host: &FrameHost, client: ClientId) -> Result<Vec<(u32, EntityRecord)>, String> {
+    let binding = host.runtime.local_snapshots[client.0 as usize]
+        .as_ref()
+        .ok_or("binding")?;
+    let frame = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
+        .ok_or("CLIENT channel")?
+        .channel
+        .current_snapshot()
+        .ok_or("CLIENT frame")?;
+    let mut rows = Vec::new();
+    macro_rules! decode {
+        ($frame:expr) => {
+            for entity in $frame.entities {
+                let mut record = EntityRecord::default();
+                assert!(binding.entity_projection().apply(
+                    &entity.words,
+                    &mut record,
+                    ResourceNamespace::Client(client)
+                ));
+                rows.push((entity.number, record));
+            }
+        };
+    }
+    match frame {
+        ReceivedFrame::NetQuake(frame) => decode!(frame),
+        ReceivedFrame::QuakeWorld(frame) => decode!(frame),
+        ReceivedFrame::Quake2(frame) => decode!(frame),
+        ReceivedFrame::Quake2Repro(frame) => decode!(frame),
+        ReceivedFrame::Quake3(frame) => decode!(frame),
+    }
+    Ok(rows)
+}
+
+#[test]
+fn netquake_and_quakeworld_project_entities_through_the_same_source_path() -> Result<(), String> {
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let (mut host, client) = host(protocol, 1)?;
+        add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 42,
+            }),
+            protocol.rule_set(),
+            Vec3([12.375, -24.625, 48.125]),
+        );
+        let mut clock = Clock::default();
+        if protocol == Protocol::QuakeWorld28 {
+            assert!(
+                host.runtime
+                    .send_local_command(client, &Default::default(), EventTime(0))
+            );
+            host.frame(&mut clock, true);
+        }
+        transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            None,
+            None,
+        )?;
+        assert!(
+            host.runtime
+                .network
+                .get(client, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+        host.frame(&mut clock, true);
+        let rows = records(&host, client)?;
+        let record = rows.iter().find(|(number, _)| *number == 42).unwrap().1;
+        assert_eq!(record.position, Vec3([12.375, -24.625, 48.125]));
+        assert_eq!(record.appearance.frame, 17);
+        assert_eq!(
+            record.appearance.models[0],
+            ModelRef::native(ResourceNamespace::Client(client), 5)
+        );
+        assert_eq!(host.runtime.network.command_errors, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn entity_updates_and_removals_reach_client_only_through_queued_native_snapshots()
+-> Result<(), String> {
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = host(protocol, 1)?;
+        let entity = add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 42,
+            }),
+            protocol.rule_set(),
+            Vec3([12.375, -24.625, 48.125]),
+        );
+        let first = transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            None,
+            None,
+        )?;
+        assert!(
+            host.runtime
+                .network
+                .get(client, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .is_none()
+        );
+        let mut clock = Clock::default();
+        let result = host.frame(&mut clock, true);
+        assert_eq!(result.drains, 2);
+        let initial = records(&host, client)?;
+        let record = initial.iter().find(|(number, _)| *number == 42).unwrap().1;
+        assert_eq!(record.position, Vec3([12.375, -24.625, 48.125]));
+        assert_eq!(record.appearance.frame, 17);
+        assert_eq!(
+            record.appearance.models[0],
+            ModelRef::native(ResourceNamespace::Client(client), 5)
+        );
+        host.runtime.server.entities.columns.position[entity.slot as usize] = Vec3([21., 22., 23.]);
+        host.runtime.server.entities.columns.appearance[entity.slot as usize].frame = 18;
+        let second = transmit(
+            &mut host,
+            client,
+            EventTime(1_100_000_000),
+            Some(first),
+            None,
+            None,
+        )?;
+        assert_eq!(records(&host, client)?, initial);
+        host.frame(&mut clock, true);
+        let updated = records(&host, client)?;
+        let record = updated.iter().find(|(number, _)| *number == 42).unwrap().1;
+        assert_eq!(
+            (record.position, record.appearance.frame),
+            (Vec3([21., 22., 23.]), 18)
+        );
+        assert!(
+            host.runtime
+                .server
+                .entities
+                .release(entity, ThinkTime::Seconds(0.))
+        );
+        transmit(
+            &mut host,
+            client,
+            EventTime(1_200_000_000),
+            Some(second),
+            None,
+            None,
+        )?;
+        host.frame(&mut clock, true);
+        assert!(
+            records(&host, client)?
+                .iter()
+                .all(|(number, _)| *number != 42)
+        );
+        let channel = &host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel;
+        assert_eq!(
+            channel.previous_snapshot().map(|frame| frame.sequence()),
+            Some(second)
+        );
+        assert_eq!(host.runtime.network.command_errors, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() -> Result<(), String>
+{
+    let (mut host, client) = host(Protocol::QuakeWorld28, 2)?;
+    let peer = host
+        .runtime
+        .server
+        .connect(
+            qa_session::clients::Connection::Remote,
+            MODULE,
+            qa_core::primitives::PlayerTail::Q1 {
+                attack_finished: 0.,
+            },
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 2,
+            }),
+        )
+        .ok_or("peer")?;
+    host.runtime.local_snapshots[0]
+        .as_mut()
+        .unwrap()
+        .set_native_clients(2);
+    let remote = &mut host.runtime.server.clients[peer.0 as usize];
+    remote.player.body.position = Vec3([48., 12., 24.]);
+    remote.player.body.velocity = Vec3([16., 0., 0.]);
+    remote.command.view_angles = Vec3([10., 45., 0.]);
+    let slot = remote.entity.slot as usize;
+    host.runtime
+        .server
+        .entities
+        .columns
+        .set_body(slot, remote.player.body);
+    host.runtime.server.entities.columns.angles[slot] = Vec3([0., 45., 0.]);
+    host.runtime.server.entities.columns.appearance[slot] = EntityAppearance {
+        source: RuleSetId::QuakeWorld,
+        frame: 17,
+        skin: 7,
+        models: [
+            ModelRef::native(ResourceNamespace::Module(MODULE), 5),
+            None,
+            None,
+            None,
+        ],
+        native: qa_core::primitives::NativeAppearanceTail {
+            effects: 2,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(
+        host.runtime
+            .send_local_command(client, &Default::default(), EventTime(0))
+    );
+    let mut clock = Clock::default();
+    host.frame(&mut clock, true);
+    let first = transmit(
+        &mut host,
+        client,
+        EventTime(1_000_000_000),
+        None,
+        None,
+        None,
+    )?;
+    host.frame(&mut clock, true);
+    let rows = records(&host, client)?;
+    let row = rows.iter().find(|(number, _)| *number == 2).unwrap().1;
+    assert_eq!(row.position, Vec3([48., 12., 24.]));
+    assert_eq!(
+        (
+            row.appearance.frame,
+            row.appearance.skin,
+            row.appearance.native.effects
+        ),
+        (17, 7, 2)
+    );
+    assert_eq!(
+        row.appearance.models[0],
+        ModelRef::native(ResourceNamespace::Client(client), 5)
+    );
+    assert_eq!(host.runtime.network.command_errors, 0);
+    host.runtime.server.clients[peer.0 as usize].connection = None;
+    // QW deltas answer a submitted client request; the advisory byte in the
+    // server message is not an independent choice of a CLIENT delta base.
+    assert!(
+        host.runtime
+            .send_local_command(client, &Default::default(), EventTime(1_100_000_000))
+    );
+    host.frame(&mut clock, true);
+    transmit(
+        &mut host,
+        client,
+        EventTime(1_100_000_000),
+        Some(first),
+        None,
+        None,
+    )?;
+    host.frame(&mut clock, true);
+    assert!(
+        records(&host, client)?
+            .iter()
+            .all(|(number, _)| *number != 2)
+    );
+    Ok(())
+}
+
+#[test]
+fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(), String> {
+    let (mut host, client) = host(Protocol::Quake2_34, 1)?;
+    let foreign = add(
+        &mut host,
+        Some(NativeEntity {
+            module: ModuleId(8),
+            slot: 2,
+        }),
+        RuleSetId::Quake2,
+        Vec3([20., 0., 0.]),
+    );
+    let native = add(
+        &mut host,
+        Some(NativeEntity {
+            module: MODULE,
+            slot: 2,
+        }),
+        RuleSetId::Quake2,
+        Vec3([40., 0., 0.]),
+    );
+    let hidden = add(
+        &mut host,
+        Some(NativeEntity {
+            module: MODULE,
+            slot: 99,
+        }),
+        RuleSetId::Quake2,
+        Vec3([60., 0., 0.]),
+    );
+    host.runtime.server.entities.columns.flags[hidden.slot as usize] = 1;
+    let mut clock = Clock::default();
+    let first = transmit(
+        &mut host,
+        client,
+        EventTime(1_000_000_000),
+        None,
+        None,
+        None,
+    )?;
+    host.frame(&mut clock, true);
+    let rows = records(&host, client)?;
+    assert_eq!(
+        rows.iter()
+            .find(|(number, _)| *number == 2)
+            .unwrap()
+            .1
+            .position
+            .0[0],
+        40.
+    );
+    let foreign_number = rows
+        .iter()
+        .find(|(_, row)| row.position.0[0] == 20.)
+        .unwrap()
+        .0;
+    assert_ne!(foreign_number, 2);
+    assert!(rows.iter().all(|(number, _)| *number != 99));
+    assert_eq!(
+        host.runtime.local_snapshots[0]
+            .as_ref()
+            .unwrap()
+            .view_entity(),
+        Some(1)
+    );
+    assert!(
+        host.runtime
+            .server
+            .entities
+            .release(foreign, ThinkTime::Seconds(0.))
+    );
+    let replacement = add(
+        &mut host,
+        Some(NativeEntity {
+            module: MODULE,
+            slot: 88,
+        }),
+        RuleSetId::Quake2,
+        Vec3([80., 0., 0.]),
+    );
+    assert_eq!(replacement.slot, foreign.slot);
+    assert_ne!(replacement.generation, foreign.generation);
+    transmit(
+        &mut host,
+        client,
+        EventTime(1_100_000_000),
+        Some(first),
+        None,
+        None,
+    )?;
+    host.frame(&mut clock, true);
+    let rows = records(&host, client)?;
+    assert!(rows.iter().all(|(number, _)| *number != foreign_number));
+    assert_eq!(
+        rows.iter()
+            .find(|(number, _)| *number == 88)
+            .unwrap()
+            .1
+            .position
+            .0[0],
+        80.
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|(number, _)| *number == 2)
+            .unwrap()
+            .1
+            .position
+            .0[0],
+        host.runtime.server.entities.columns.position[native.slot as usize].0[0]
+    );
+    Ok(())
+}
+
+#[test]
+fn oversized_worlds_select_a_native_packet_without_publishing_failed_trials() -> Result<(), String>
+{
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = host(protocol, 1)?;
+        let mut entities = Vec::new();
+        for index in 0..200 {
+            let entity = add(
+                &mut host,
+                Some(NativeEntity {
+                    module: MODULE,
+                    slot: index + 42,
+                }),
+                protocol.rule_set(),
+                Vec3([
+                    1024. + index as f32,
+                    -512. - index as f32,
+                    768. + index as f32,
+                ]),
+            );
+            let appearance =
+                &mut host.runtime.server.entities.columns.appearance[entity.slot as usize];
+            appearance
+                .models
+                .fill(ModelRef::native(ResourceNamespace::Module(MODULE), 5));
+            appearance.frame = 127;
+            appearance.skin = 127;
+            appearance.native.effects = 255;
+            appearance.native.colormap = 7;
+            host.runtime.server.entities.columns.angles[entity.slot as usize] =
+                Vec3([22.5, 45., 67.5]);
+            entities.push(entity);
+        }
+        let mut clock = Clock::default();
+        if protocol == Protocol::QuakeWorld28 {
+            assert!(
+                host.runtime
+                    .send_local_command(client, &Default::default(), EventTime(0))
+            );
+            host.frame(&mut clock, true);
+        }
+        let first = transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            None,
+            None,
+        )?;
+        let server = host
+            .runtime
+            .network
+            .get(client, Endpoint::Server)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        assert_eq!(server.sequence(), first);
+        assert!(
+            host.runtime
+                .network
+                .get(client, Endpoint::Server)
+                .unwrap()
+                .channel
+                .previous_snapshot()
+                .is_none()
+        );
+        host.frame(&mut clock, true);
+        let before = records(&host, client).map_err(|error| format!("{protocol:?}: first {error}; packets={} delivered={} malformed={} command_errors={}",
+            host.runtime.network.packets, host.runtime.network.delivered,
+            host.runtime.network.malformed, host.runtime.network.command_errors))?;
+        let visible = before.iter().filter(|(number, _)| *number >= 42).count();
+        assert!(
+            visible > 0 && visible < entities.len(),
+            "{protocol:?}: {visible}"
+        );
+        assert!(
+            host.runtime.local_snapshots[0]
+                .as_ref()
+                .unwrap()
+                .entity_rejections()
+                > 0
+        );
+        for entity in &entities {
+            let position = &mut host.runtime.server.entities.columns.position[entity.slot as usize];
+            *position = *position + Vec3([64., 32., 16.]);
+        }
+        if protocol == Protocol::QuakeWorld28 {
+            assert!(host.runtime.send_local_command(
+                client,
+                &Default::default(),
+                EventTime(1_100_000_000)
+            ));
+            host.frame(&mut clock, true);
+        }
+        let second = transmit(
+            &mut host,
+            client,
+            EventTime(1_100_000_000),
+            Some(first),
+            None,
+            None,
+        )?;
+        assert_eq!(records(&host, client)?, before);
+        let channel = &host
+            .runtime
+            .network
+            .get(client, Endpoint::Server)
+            .unwrap()
+            .channel;
+        assert_eq!(
+            channel.previous_snapshot().map(|frame| frame.sequence()),
+            Some(first)
+        );
+        host.frame(&mut clock, true);
+        let after = records(&host, client).map_err(|error| format!("{protocol:?}: second {error}; packets={} delivered={} malformed={} command_errors={}",
+            host.runtime.network.packets, host.runtime.network.delivered,
+            host.runtime.network.malformed, host.runtime.network.command_errors))?;
+        let row = after.iter().find(|(number, _)| *number == 42).unwrap().1;
+        assert_eq!(row.position, Vec3([1088., -480., 784.]));
+        assert_eq!(
+            host.runtime
+                .network
+                .get(client, Endpoint::Client)
+                .unwrap()
+                .channel
+                .current_snapshot()
+                .map(|frame| frame.sequence()),
+            Some(second)
+        );
+        assert_eq!(host.runtime.network.command_errors, 0);
+    }
+    Ok(())
+}
+
+fn visibility() -> VisibilityWorld {
+    let whole = Bounds {
+        mins: Vec3([-1024.; 3]),
+        maxs: Vec3([1024.; 3]),
+    };
+    VisibilityWorld::load(
+        vec![Plane::oriented(Vec3::axis(0, 1.), 0.)],
+        vec![VisNode {
+            plane: 0,
+            children: [-1, -2],
+            bounds: whole,
+            surfaces: IndexSpan::default(),
+        }],
+        vec![
+            VisLeaf {
+                selector: Some(0),
+                area: Some(1),
+                solid: false,
+                bounds: whole,
+                surfaces: IndexSpan::default(),
+            },
+            VisLeaf {
+                selector: Some(1),
+                area: Some(2),
+                solid: false,
+                bounds: whole,
+                surfaces: IndexSpan::default(),
+            },
+        ],
+        vec![],
+        0,
+        0,
+        PvsRows::load(vec![Some(0), Some(1)], vec![1, 2]).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn bounding_box_pvs_and_area_bits_keep_the_protocol_visibility_contract() -> Result<(), String> {
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = host(protocol, 1)?;
+        let world = visibility();
+        let mut scratch = LeafScratch::new(world.node_count() + 1);
+        let mut row = vec![0; world.pvs().row_bytes()];
+        host.runtime.local_snapshots[0]
+            .as_mut()
+            .unwrap()
+            .load_visibility(&world);
+        let spanning = add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 42,
+            }),
+            protocol.rule_set(),
+            Vec3([-10., 0., 0.]),
+        );
+        host.runtime.server.entities.columns.maxs[spanning.slot as usize].0[0] = 20.;
+        add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 43,
+            }),
+            protocol.rule_set(),
+            Vec3([-30., 0., 0.]),
+        );
+        let mut portals = AreaPortals::load(
+            3,
+            1,
+            vec![Portal {
+                number: 0,
+                first: 1,
+                second: 2,
+            }],
+        )
+        .unwrap();
+        let first = transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            Some((&world, &mut scratch, &mut row)),
+            Some(&portals),
+        )?;
+        let mut clock = Clock::default();
+        host.frame(&mut clock, true);
+        let rows = records(&host, client)?;
+        assert!(rows.iter().any(|(number, _)| *number == 42));
+        assert!(rows.iter().all(|(number, _)| *number != 43));
+        let frame = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        let bits = match frame {
+            ReceivedFrame::Quake2(f) => f.areas,
+            ReceivedFrame::Quake2Repro(f) => f.areas,
+            ReceivedFrame::Quake3(f) => f.areas,
+            _ => unreachable!(),
+        };
+        let visible = if protocol == Protocol::Quake3_68 {
+            !bits[0]
+        } else {
+            bits[0]
+        };
+        assert_ne!(visible & (1 << 1), 0);
+        assert_eq!(visible & (1 << 2), 0);
+        portals.set(0, true).unwrap();
+        transmit(
+            &mut host,
+            client,
+            EventTime(1_100_000_000),
+            Some(first),
+            Some((&world, &mut scratch, &mut row)),
+            Some(&portals),
+        )?;
+        host.frame(&mut clock, true);
+        let frame = host
+            .runtime
+            .network
+            .get(client, Endpoint::Client)
+            .unwrap()
+            .channel
+            .current_snapshot()
+            .unwrap();
+        let bits = match frame {
+            ReceivedFrame::Quake2(f) => f.areas,
+            ReceivedFrame::Quake2Repro(f) => f.areas,
+            ReceivedFrame::Quake3(f) => f.areas,
+            _ => unreachable!(),
+        };
+        let visible = if protocol == Protocol::Quake3_68 {
+            !bits[0]
+        } else {
+            bits[0]
+        };
+        assert_ne!(visible & (1 << 2), 0);
+        // Opening the portal does not make the hidden leaf's PVS bit visible.
+        assert!(
+            records(&host, client)?
+                .iter()
+                .all(|(number, _)| *number != 43)
+        );
+    }
+    Ok(())
+}

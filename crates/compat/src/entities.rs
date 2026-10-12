@@ -4,8 +4,9 @@ use crate::{
     services::{CallContext, CallError, ClipTarget, ENGINE_CALLS, EngineServices},
 };
 use qa_core::primitives::{
-    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityId, ModelRules, ModuleId,
-    NativeEntity, Vec3,
+    Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityAppearance, EntityId,
+    ModelRef, ModelRules, ModuleId, NativeAppearanceTail, NativeEntity, ResourceNamespace,
+    RuleSetId, Vec3,
 };
 use qa_world::area::LinkFlags;
 use qa_world::collision::Contents;
@@ -23,6 +24,7 @@ pub struct Entities {
 
 #[derive(Clone, Copy)]
 pub(crate) struct EntityLayout {
+    pub source: RuleSetId,
     pub bytes: usize,
     pub in_use: (usize, bool),
     pub linked: Option<usize>,
@@ -41,7 +43,26 @@ pub(crate) struct EntityLayout {
     pub area2: usize,
     pub clusters: Option<(usize, usize, usize)>,
     pub network_solid: usize,
+    pub appearance: AppearanceLayout,
     pub model_rules: ModelRules,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct AppearanceLayout {
+    pub effects_wide: bool,
+    pub render_flags: usize,
+    pub loop_sound: usize,
+    pub event: (usize, bool),
+    pub extended: Option<ExtendedAppearance>,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct ExtendedAppearance {
+    pub alpha: usize,
+    pub scale: usize,
+    pub instance_bits: usize,
+    pub loop_volume: usize,
+    pub loop_attenuation: usize,
+    pub owner: usize,
+    pub old_frame: usize,
 }
 impl EntityLayout {
     fn tags(self, flags: u32) -> CollisionTags {
@@ -193,6 +214,7 @@ pub struct EntityProjection {
     model_handles: Box<[Option<CachedModel>]>,
     owner: Option<ModuleId>,
     bindings: Box<[Option<Binding>]>,
+    observed_count: usize,
     leaves: [u32; 128],
 }
 impl EntityProjection {
@@ -210,6 +232,7 @@ impl EntityProjection {
             model_handles: vec![None; models.count as usize].into_boxed_slice(),
             owner: None,
             bindings: vec![None; MAX_ENTITIES].into_boxed_slice(),
+            observed_count: 0,
             leaves: [0; 128],
         }
     }
@@ -377,6 +400,117 @@ impl EntityProjection {
             return Err(CallError::Entity);
         }
         self.read(memory, table)
+    }
+    /// An export has parked its child. Observe every published native lifetime,
+    /// including active entities that never called LinkEntity. Presentation
+    /// pose edits update the shared columns but never reinsert area bounds;
+    /// only the explicit native LinkEntity service owns that operation.
+    pub(crate) fn project(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        table: u64,
+    ) -> Result<Entities, CallError> {
+        let native = self.boundary(memory, context, table)?;
+        let count = native.count as usize;
+        // A rejected row must not hide earlier admitted lifetimes from the
+        // next reconciliation when the module shrinks its published table.
+        let previous = std::mem::replace(&mut self.observed_count, count);
+        for slot in 1..count.max(previous) {
+            if slot >= count {
+                self.retire(services, context, slot)?;
+                continue;
+            }
+            let address = slot_address(native, slot as u32).ok_or(CallError::Entity)?;
+            if field(memory, address, self.layout.in_use)? == 0 {
+                if let Some(entity) = self.binding(
+                    &services.server.entities,
+                    NativeEntity {
+                        module: context.module,
+                        slot: slot as i32,
+                    },
+                )? {
+                    services.server.entities.columns.appearance[entity.slot as usize] =
+                        EntityAppearance::default();
+                }
+                self.retire(services, context, slot)?;
+                continue;
+            }
+            let (body, angles) = self.body(memory, address)?;
+            let appearance = self.appearance(memory, address, context.module)?;
+            let flags = memory.read_word(address + self.layout.flags as u64)? as u32;
+            let bound = self.binding(
+                &services.server.entities,
+                NativeEntity {
+                    module: context.module,
+                    slot: slot as i32,
+                },
+            )?;
+            let entity = self.bind(services, context, slot, bound)?;
+            let slot = entity.slot as usize;
+            let columns = &mut services.server.entities.columns;
+            columns.position[slot] = body.position;
+            columns.mins[slot] = body.mins;
+            columns.maxs[slot] = body.maxs;
+            columns.angles[slot] = angles;
+            columns.flags[slot] = flags;
+            columns.appearance[slot] = appearance;
+        }
+        Ok(native)
+    }
+    fn appearance(
+        &self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+        module: ModuleId,
+    ) -> Result<EntityAppearance, CallError> {
+        let layout = self.layout.appearance;
+        let mut models = [None; 4];
+        for (index, model) in models.iter_mut().enumerate() {
+            *model = ModelRef::native(
+                ResourceNamespace::Module(module),
+                memory.read_word(address + 40 + index as u64 * 4)? as u32,
+            );
+        }
+        let mut native = NativeAppearanceTail {
+            effects: if layout.effects_wide {
+                memory.read_u64(address + 64)?
+            } else {
+                u64::from(memory.read_word(address + 64)? as u32)
+            },
+            render_flags: memory.read_word(address + layout.render_flags as u64)? as u32,
+            event: field(memory, address, layout.event)?,
+            loop_sound: memory.read_word(address + layout.loop_sound as u64)? as u32,
+            solid: memory.read_word(address + self.layout.network_solid as u64)? as u32,
+            ..NativeAppearanceTail::default()
+        };
+        let (alpha, scale) = if let Some(extended) = layout.extended {
+            native.instance_bits = field(memory, address, (extended.instance_bits, true))? as u8;
+            native.loop_volume =
+                f32::from_bits(memory.read_word(address + extended.loop_volume as u64)? as u32);
+            native.loop_attenuation = f32::from_bits(
+                memory.read_word(address + extended.loop_attenuation as u64)? as u32,
+            );
+            native.owner = memory.read_word(address + extended.owner as u64)?;
+            native.old_frame = memory.read_word(address + extended.old_frame as u64)?;
+            (
+                f32::from_bits(memory.read_word(address + extended.alpha as u64)? as u32),
+                f32::from_bits(memory.read_word(address + extended.scale as u64)? as u32),
+            )
+        } else {
+            (1.0, 1.0)
+        };
+        Ok(EntityAppearance {
+            source: self.layout.source,
+            models,
+            frame: memory.read_word(address + 56)?,
+            skin: memory.read_word(address + 60)?,
+            old_origin: memory.read_vec3(address + 28)?,
+            alpha,
+            scale,
+            native,
+        })
     }
     pub(crate) fn identity(
         &self,
@@ -644,6 +778,10 @@ impl EntityProjection {
         slot: usize,
     ) -> Result<(), CallError> {
         if let Some(binding) = self.bindings[slot] {
+            if services.server.entities.resolve(binding.entity).is_none() {
+                self.bindings[slot] = None;
+                return Ok(());
+            }
             if binding.owned {
                 (ENGINE_CALLS.free)(services, context, binding.entity)?;
                 self.bindings[slot] = None;

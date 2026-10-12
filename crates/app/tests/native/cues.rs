@@ -1,38 +1,145 @@
 use super::*;
-use qa_core::primitives::{ClientId, EntityId, SoundEvent, Vec3};
+use qa_core::primitives::{ClientId, ResourceNamespace, SoundEmitter, SoundEvent, Vec3};
+
+fn send_payload(host: &mut FrameHost, client: ClientId, body: &[u8]) {
+    use qa_core::loopback::Endpoint;
+    let runtime = &mut host.runtime;
+    let channel = &mut runtime
+        .network
+        .get_mut(client, Endpoint::Server)
+        .unwrap()
+        .channel;
+    assert!(channel.prepare(Some(body), host.time).unwrap().is_some());
+    assert!(
+        channel
+            .submit_with(host.time, |packet| runtime
+                .loopback
+                .send(Endpoint::Server, client, packet)
+                .is_ok())
+            .unwrap()
+            .is_some()
+    );
+    host.drain(&mut Default::default());
+}
 
 fn send_cue(host: &mut FrameHost, client: ClientId, cue: qa_network::outputs::Cue) {
-    use qa_core::loopback::Endpoint;
     let protocol = host.runtime.local_snapshots[client.0 as usize]
         .as_ref()
         .unwrap()
         .protocol;
     let mut body = [0; 64];
     let length = qa_network::outputs::write_cue(protocol, cue, &mut body).unwrap();
-    let channel = &mut host
+    send_payload(host, client, &body[..length]);
+}
+
+fn emitter(client: ClientId, slot: i32) -> SoundEmitter {
+    SoundEmitter::Native {
+        namespace: ResourceNamespace::Client(client),
+        slot,
+    }
+}
+
+fn client_position(host: &FrameHost, client: ClientId, slot: u32) -> Vec3 {
+    use qa_core::loopback::Endpoint;
+    use qa_network::{projection::EntityProjection, snapshots::Frame};
+    fn position<const P: usize, const E: usize>(
+        projection: &EntityProjection,
+        frame: Frame<'_, P, E>,
+        client: ClientId,
+        slot: u32,
+    ) -> Vec3 {
+        let row = frame
+            .entities
+            .binary_search_by_key(&slot, |entity| entity.number)
+            .unwrap();
+        let mut record = qa_network::projection::EntityRecord::default();
+        assert!(projection.apply(
+            &frame.entities[row].words,
+            &mut record,
+            ResourceNamespace::Client(client)
+        ));
+        record.position
+    }
+    let projection = host.runtime.local_snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap()
+        .entity_projection();
+    let current = host
         .runtime
         .network
-        .get_mut(client, Endpoint::Server)
+        .get(client, Endpoint::Client)
         .unwrap()
-        .channel;
-    let packet = channel
-        .prepare(Some(&body[..length]), host.time)
+        .channel
+        .current_snapshot()
+        .unwrap();
+    match current {
+        qa_network::snapshots::ReceivedFrame::Quake2(frame) => {
+            position(projection, frame, client, slot)
+        }
+        qa_network::snapshots::ReceivedFrame::Quake2Repro(frame) => {
+            position(projection, frame, client, slot)
+        }
+        _ => panic!("Q2 cue fixture"),
+    }
+}
+
+fn accept_client_resources_and_pose(
+    host: &mut FrameHost,
+    client: ClientId,
+    bank: &std::sync::Arc<qa_audio::Bank>,
+) -> Vec3 {
+    use qa_core::loopback::Endpoint;
+    host.runtime.sound_bank = Some(std::sync::Arc::clone(bank));
+    let binding = host.runtime.local_snapshots[client.0 as usize]
+        .as_ref()
+        .unwrap();
+    let protocol = binding.protocol;
+    let native_slot = binding.native_client() + 1;
+    let resource = host.runtime.client_resources[client.0 as usize]
+        .as_ref()
         .unwrap()
+        .state
+        .layout
+        .resources[1]
+        .get(1)
+        .unwrap();
+    let mut body = [0; 1400];
+    let length =
+        qa_network::outputs::configstring(protocol, resource as u32, b"_qa_cue.wav", &mut body)
+            .unwrap();
+    send_payload(host, client, &body[..length]);
+    assert_eq!(
+        host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(1),
+        bank.find("sound/_qa_cue.wav")
+    );
+    let previous = host
+        .runtime
+        .network
+        .get(client, Endpoint::Client)
         .unwrap()
-        .bytes
-        .to_vec();
-    channel.submitted(host.time).unwrap();
-    host.runtime
-        .loopback
-        .send(Endpoint::Server, client, &packet)
+        .channel
+        .current_snapshot()
+        .map_or(0, |frame| frame.time().milliseconds());
+    let time = EventTime::from_milliseconds(u64::try_from(previous).unwrap() + 100);
+    assert!(host.runtime.send_local_snapshot(client, time, None));
+    host.queue
+        .push(SysEvent {
+            time,
+            kind: EventKind::Time,
+        })
         .unwrap();
     host.drain(&mut Default::default());
+    client_position(host, client, native_slot)
 }
 
 struct Audio {
     mixer: qa_audio::Mixer,
     client: ClientId,
-    entity: EntityId,
+    entity: SoundEmitter,
     origin: Vec3,
     count: usize,
 }
@@ -78,6 +185,19 @@ impl FrameSource for Audio {
                 );
             }
             2 => {
+                assert_eq!(event.entity, Some(emitter(self.client, 8191)));
+                assert_eq!(event.position, self.origin);
+                assert_eq!(
+                    (
+                        event.channel,
+                        event.volume,
+                        event.attenuation,
+                        event.time_offset
+                    ),
+                    (2, 1.0, 1.0, 0.0)
+                );
+            }
+            3 => {
                 assert_eq!(event.entity, None);
                 assert_eq!(event.position, Vec3::default());
                 assert_eq!(
@@ -109,7 +229,11 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         .unwrap()
         .protocol;
     let entity = host.runtime.server.clients[client.0 as usize].entity;
-    let origin = host.runtime.server.entities.columns.position[entity.slot as usize];
+    let server_origin = host.runtime.server.entities.columns.position[entity.slot as usize];
+    let server_player_origin = host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position;
     let mut precached = Vec::new();
     host.for_each_native_sound(|name, _| {
         precached.push(name.to_vec());
@@ -121,6 +245,16 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         [b"_qa_cue.wav".to_vec()],
         "{protocol:?} native precache"
     );
+    let origin = accept_client_resources_and_pose(host, client, &bank);
+    // A later SERVER mutation has not reached CLIENT. Sound coordinates and
+    // voice identity must keep using the last accepted native snapshot.
+    host.runtime.server.entities.columns.position[entity.slot as usize] =
+        server_origin + Vec3([512., -256., 128.]);
+    host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position = server_player_origin + Vec3([512., -256., 128.]);
+    assert_eq!(client_position(host, client, 1), origin);
     let output = host.runtime.server.clients[client.0 as usize]
         .output
         .unwrap();
@@ -134,28 +268,29 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
     let mut audio = Audio {
         mixer: qa_audio::Mixer::load(bank, 8, 1),
         client,
-        entity,
+        entity: emitter(client, 1),
         origin,
         count: 0,
     };
     audio.mixer.listen(
         &[Some(qa_audio::Listener {
             client,
-            entity: Some(entity),
+            entity: Some(emitter(client, 1)),
             origin,
             right: Vec3([0.0, 1.0, 0.0]),
         })],
         1.0,
     );
     // A native Init registered ordinal 1. Positioned world sounds need no
-    // emitter. Entity-channel pairs retain the exact mapped lifetime.
+    // emitter. Entity-channel pairs belong to the receiving CLIENT namespace;
+    // explicit positions preserve them even without a received entity pose.
     for (index, flags, native_entity, position, expected) in [
         (1, 1 | 2 | 8 | 16, 1, Vec3::default(), 1),
         (1, 1 | 2 | 4, 0, origin, 2),
         (2, 0, 0, Vec3::default(), 2), // no registered sound
-        (1, 8, 2, Vec3::default(), 2), // no bound entity
-        (1, 4 | 8, 8191, origin, 2),   // no channel identity, even with position
-        (1, 0, 0, Vec3::default(), 3), // default parameters, world origin
+        (1, 8, 2, Vec3::default(), 2), // no received pose
+        (1, 4 | 8, 8191, origin, 3),   // explicit native identity, no pose required
+        (1, 0, 0, Vec3::default(), 4), // default parameters, world origin
     ] {
         send_cue(
             host,
@@ -203,7 +338,7 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
     let mut pcm = [0; 64];
     audio.mixer.paint(&mut pcm);
     assert!(pcm.iter().any(|&value| value != 0));
-    assert_eq!(audio.mixer.counts.started, 3);
+    assert_eq!(audio.mixer.counts.started, 4);
     assert_eq!(
         (
             host.runtime.network.command_errors,
@@ -219,6 +354,11 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
             slot: 1
         })
     );
+    host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
+    host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position = server_player_origin;
 }
 
 struct Expected {
@@ -284,7 +424,19 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         .protocol
         == Protocol::Quake2Repro1038;
     let entity = host.runtime.server.clients[client.0 as usize].entity;
-    let origin = host.runtime.server.entities.columns.position[entity.slot as usize];
+    let server_origin = host.runtime.server.entities.columns.position[entity.slot as usize];
+    let server_player_origin = host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position;
+    let origin = accept_client_resources_and_pose(host, client, &bank);
+    host.runtime.server.entities.columns.position[entity.slot as usize] =
+        server_origin + Vec3([-1024., 512., 256.]);
+    host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position = server_player_origin + Vec3([-1024., 512., 256.]);
+    assert_eq!(client_position(host, client, 1), origin);
     let output = host.runtime.server.clients[client.0 as usize]
         .output
         .unwrap();
@@ -304,7 +456,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         audio: Audio {
             mixer: qa_audio::Mixer::load(std::sync::Arc::clone(&bank), 64, 1),
             client,
-            entity,
+            entity: emitter(client, 1),
             origin,
             count: 0,
         },
@@ -313,7 +465,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
     audio.audio.mixer.listen(
         &[Some(qa_audio::Listener {
             client,
-            entity: Some(entity),
+            entity: Some(emitter(client, 1)),
             origin,
             right: Vec3([0.0, 1.0, 0.0]),
         })],
@@ -488,7 +640,7 @@ pub(super) fn muzzle_packets_publish_product_sounds(
             &[(&["infantry/infatck1"], 1, 1.0, 1.0, 0.0)],
         );
     }
-    check(player, 0, false, 2, &[]); // Unmapped lifetime cannot claim a channel.
+    check(player, 0, false, 2, &[]); // No accepted pose for this native ordinal.
     check(player, 127, false, 1, &[]);
     check(monster, 101, false, 1, &[]); // Makron BFG has no native sound.
     let mut pcm = [0; 64];
@@ -512,4 +664,9 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         ),
         (0, 0)
     );
+    host.runtime.server.entities.columns.position[entity.slot as usize] = server_origin;
+    host.runtime.server.clients[client.0 as usize]
+        .player
+        .body
+        .position = server_player_origin;
 }

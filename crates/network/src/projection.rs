@@ -4,9 +4,13 @@ use crate::{commands::packet::Protocol, states};
 use qa_core::{
     math::{AngleShortForm, angle_to_short, eighth_to_short, short_to_angle, short_to_eighth},
     primitives::{
-        EntityId, MovementMode, MovementTimer, PlayerState, PlayerTail, ValueBinding, ValueWidth,
+        EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer, PlayerState, PlayerTail,
+        ResourceNamespace, ValueBinding, ValueWidth,
     },
 };
+
+mod entity;
+pub use entity::{EntityProjection, EntityRecord};
 
 pub const MOVEMENT_WORDS: usize = 13;
 pub const PM_FLAGS_WORD: usize = 8;
@@ -18,7 +22,8 @@ pub struct PlayerContext {
     pub client_number: Option<u32>,
     pub ground_number: Option<u32>,
     pub weapon_number: Option<u32>,
-    pub weapon_model: Option<u32>,
+    /// Native body presentation supplied independently of the view weapon.
+    pub appearance: Option<EntityAppearance>,
     pub gravity: f32,
     pub speed: f32,
     /// Visibility/self/spectator selection belongs to the QW snapshot provider.
@@ -48,6 +53,13 @@ enum Source {
     InWater,
     WeaponTime,
     WeaponFrame,
+    WeaponOffset(usize),
+    WeaponAngle(usize),
+    WeaponRate,
+    BodyFrame,
+    BodyModel,
+    BodySkin,
+    BodyEffects,
     Client,
     Ground,
     Weapon,
@@ -70,11 +82,16 @@ enum Convert {
     TimerEighth,
     Milliseconds16,
     ScaledShort(u16),
+    ScaledByte {
+        scale: u16,
+        nonzero: bool,
+        implicit: u8,
+    },
 }
 #[derive(Clone, Copy)]
-struct Field {
+struct Field<S = Source> {
     word: usize,
-    source: Source,
+    source: S,
     convert: Convert,
 }
 const fn f(word: usize, source: Source, convert: Convert) -> Field {
@@ -95,6 +112,7 @@ static NQ: &[Field] = &[
     f(5, Velocity(1), Bits),
     f(6, Punch(2), Bits),
     f(7, Velocity(2), Bits),
+    f(9, WeaponFrame, IntegerFloat),
     f(10, Armor, IntegerFloat),
     f(11, WeaponModel, Bits),
     f(12, Health, IntegerFloat),
@@ -106,10 +124,15 @@ static QW: &[Field] = &[
     f(0, Position(0), Bits),
     f(1, Position(1), Bits),
     f(2, Position(2), Bits),
+    f(3, BodyFrame, IntegerFloat),
     f(4, CommandAge, Bits),
     f(5, Velocity(0), Bits),
     f(6, Velocity(1), Bits),
     f(7, Velocity(2), Bits),
+    f(8, BodyModel, IntegerFloat),
+    f(9, BodySkin, IntegerFloat),
+    f(10, BodyEffects, IntegerFloat),
+    f(11, WeaponFrame, IntegerFloat),
     f(12, InfoFlags, Bits),
     f(13, BodyYaw, Bits),
 ];
@@ -138,12 +161,18 @@ const Q2: &[Field] = &[
     f(21, Punch(2), Bits),
     f(22, WeaponModel, Bits),
     f(23, WeaponFrame, Bits),
+    f(24, WeaponOffset(0), Bits),
+    f(25, WeaponOffset(1), Bits),
+    f(26, WeaponOffset(2), Bits),
+    f(27, WeaponAngle(0), Bits),
+    f(28, WeaponAngle(1), Bits),
+    f(29, WeaponAngle(2), Bits),
     f(37, Health, Bits),
     f(41, Armor, Bits),
     f(50, Frags, Bits),
 ];
-const fn q2_repro_fields() -> [Field; Q2.len() + 1] {
-    let mut fields = [f(0, Mode, Bits); Q2.len() + 1];
+const fn q2_repro_fields() -> [Field; Q2.len() + 2] {
+    let mut fields = [f(0, Mode, Bits); Q2.len() + 2];
     let mut i = 0;
     while i < Q2.len() {
         let mut field = Q2[i];
@@ -152,6 +181,8 @@ const fn q2_repro_fields() -> [Field; Q2.len() + 1] {
             ViewOffset(_) => ScaledShort(16),
             Punch(_) => ScaledShort(1024),
             View(_) => ShortAngle,
+            WeaponOffset(_) => ScaledShort(512),
+            WeaponAngle(_) => ScaledShort(4096),
             Timer => Milliseconds16,
             _ => field.convert,
         };
@@ -162,6 +193,7 @@ const fn q2_repro_fields() -> [Field; Q2.len() + 1] {
         i += 1;
     }
     fields[Q2.len()] = f(42, Client, Bits);
+    fields[Q2.len() + 1] = f(40, WeaponRate, Bits);
     fields
 }
 static Q2_REPRO: &[Field] = &q2_repro_fields();
@@ -196,6 +228,7 @@ static Q3: &[Field] = &[
 
 /// One walker; the native format selects data at load, not another player store.
 pub struct PlayerProjection {
+    protocol: Protocol,
     fields: Box<[Field]>,
     words: usize,
     modes: [u32; 7],
@@ -314,6 +347,7 @@ impl PlayerProjection {
             .filter(|(word, _)| *word < words)
             .collect();
         Self {
+            protocol,
             fields: fields
                 .iter()
                 .copied()
@@ -345,31 +379,20 @@ impl PlayerProjection {
 
     /// The module can supply fields absent from the common hot columns through
     /// load-resolved numeric bindings. Last binding wins in registration order.
-    pub fn reduce(&self, player: &PlayerState, context: &PlayerContext, out: &mut [u32]) -> bool {
+    pub fn reduce(
+        &self,
+        player: &PlayerState,
+        context: &PlayerContext,
+        out: &mut [u32],
+        mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
+    ) -> bool {
         let Some(out) = out.get_mut(..self.words) else {
             return false;
         };
         out.fill(0);
         for field in &self.fields {
-            let word = self.value(field.source, player, context);
-            out[field.word] = match field.convert {
-                Bits => word,
-                IntegerFloat => (word as i32 as f32).to_bits(),
-                FloatInteger => f32::from_bits(word) as i32 as u32,
-                Eighth => eighth_to_short(f32::from_bits(word)) as i32 as u32,
-                ShortAngle => angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide)
-                    as i16 as i32 as u32,
-                UnsignedShortAngle => {
-                    angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide) as u16
-                        as u32
-                }
-                TimerEighth => (word / 8).min(255),
-                Milliseconds16 => word.min(u32::from(u16::MAX)),
-                ScaledShort(scale) => {
-                    let scaled = f32::from_bits(word) * f32::from(scale);
-                    (scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i32) as u32
-                }
-            };
+            let word = self.value(field.source, player, context, &mut resolve_model);
+            out[field.word] = field.convert.export(word);
         }
         for &(word, binding) in &self.write_bindings {
             if let Some(value) = binding.export(&player.values) {
@@ -394,6 +417,7 @@ impl PlayerProjection {
         words: &[u32],
         player: &mut PlayerState,
         context: &mut PlayerContext,
+        namespace: ResourceNamespace,
         mut resolve_ground: impl FnMut(u32) -> Option<EntityId>,
     ) -> bool {
         let Some(words) = words.get(..self.words) else {
@@ -401,16 +425,7 @@ impl PlayerProjection {
         };
         for field in &self.fields {
             let word = words[field.word];
-            let value = match field.convert {
-                Bits | IntegerFloat => word,
-                FloatInteger => (word as i32 as f32).to_bits(),
-                Eighth => short_to_eighth(word as i16).to_bits(),
-                ShortAngle => short_to_angle(word as i16 as i32).to_bits(),
-                UnsignedShortAngle => short_to_angle(word as u16 as i32).to_bits(),
-                TimerEighth => u32::from(word as u8) * 8,
-                Milliseconds16 => u32::from(word as u16),
-                ScaledShort(scale) => (f32::from(word as i16) / f32::from(scale)).to_bits(),
-            };
+            let value = field.convert.import(word);
             match field.source {
                 Position(i) => player.body.position.0[i] = f32::from_bits(value),
                 Velocity(i) => player.body.velocity.0[i] = f32::from_bits(value),
@@ -480,9 +495,21 @@ impl PlayerProjection {
                         *weapon_time = value as i32;
                     }
                 }
-                WeaponFrame => {
-                    if let PlayerTail::Q2 { weapon_frame } = &mut player.tail {
-                        *weapon_frame = value as i32;
+                WeaponFrame => player.view_weapon.frame = value as i32,
+                WeaponOffset(i) => player.view_weapon.offset.0[i] = f32::from_bits(value),
+                WeaponAngle(i) => player.view_weapon.angles.0[i] = f32::from_bits(value),
+                WeaponRate => player.view_weapon.rate = value as i32,
+                BodyFrame | BodyModel | BodySkin | BodyEffects => {
+                    let body = context.appearance.get_or_insert_with(|| EntityAppearance {
+                        source: self.protocol.rule_set(),
+                        ..Default::default()
+                    });
+                    match field.source {
+                        BodyFrame => body.frame = value as i32,
+                        BodyModel => body.models[0] = ModelRef::native(namespace, value),
+                        BodySkin => body.skin = value as i32,
+                        BodyEffects => body.native.effects = u64::from(value),
+                        _ => {}
                     }
                 }
                 Client => context.client_number = (value < self.client_limit).then_some(value),
@@ -492,7 +519,15 @@ impl PlayerProjection {
                     player.movement.ground = context.ground_number.and_then(&mut resolve_ground);
                 }
                 Weapon => context.weapon_number = Some(value),
-                WeaponModel => context.weapon_model = Some(value),
+                WeaponModel => {
+                    let model = if self.protocol == Protocol::Quake2Repro1038 {
+                        player.view_weapon.skin = (value >> 13) as i32;
+                        value & 8191
+                    } else {
+                        value
+                    };
+                    player.view_weapon.model = ModelRef::native(namespace, model);
+                }
                 Gravity => context.gravity = f32::from_bits(value),
                 Speed => context.speed = f32::from_bits(value),
                 InfoFlags => context.player_info_flags = value as u16,
@@ -521,7 +556,13 @@ impl PlayerProjection {
         }]
     }
 
-    fn value(&self, source: Source, p: &PlayerState, c: &PlayerContext) -> u32 {
+    fn value(
+        &self,
+        source: Source,
+        p: &PlayerState,
+        c: &PlayerContext,
+        resolve_model: &mut impl FnMut(ModelRef) -> Option<u32>,
+    ) -> u32 {
         match source {
             Position(i) => p.body.position.0[i].to_bits(),
             Velocity(i) => p.body.velocity.0[i].to_bits(),
@@ -561,11 +602,32 @@ impl PlayerProjection {
                     0
                 }
             }
-            WeaponFrame => {
-                if let PlayerTail::Q2 { weapon_frame } = p.tail {
-                    weapon_frame as u32
-                } else {
+            WeaponFrame => p.view_weapon.frame as u32,
+            WeaponOffset(i) => p.view_weapon.offset.0[i].to_bits(),
+            WeaponAngle(i) => p.view_weapon.angles.0[i].to_bits(),
+            BodyFrame => c.appearance.map_or(0, |a| a.frame as u32),
+            BodyModel => c
+                .appearance
+                .and_then(|a| a.models[0])
+                .and_then(resolve_model)
+                .filter(|&n| n <= 255)
+                .unwrap_or(0),
+            BodySkin => c.appearance.map_or(0, |a| a.skin as u32),
+            BodyEffects => c
+                .appearance
+                .filter(|a| {
+                    matches!(
+                        a.source,
+                        qa_core::primitives::RuleSetId::Quake
+                            | qa_core::primitives::RuleSetId::QuakeWorld
+                    )
+                })
+                .map_or(0, |a| a.native.effects as u32 & 255),
+            WeaponRate => {
+                if p.view_weapon.rate == 10 {
                     0
+                } else {
+                    p.view_weapon.rate as u32
                 }
             }
             Client => c
@@ -574,13 +636,81 @@ impl PlayerProjection {
                 .unwrap_or(0),
             Ground => c.ground_number.filter(|&n| n < 1024).unwrap_or(1023),
             Weapon => c.weapon_number.unwrap_or(0),
-            WeaponModel => c.weapon_model.unwrap_or(0),
+            WeaponModel => {
+                let limit = if self.protocol == Protocol::Quake2Repro1038 {
+                    8191
+                } else {
+                    255
+                };
+                let model = p
+                    .view_weapon
+                    .model
+                    .and_then(resolve_model)
+                    .filter(|&n| n <= limit)
+                    .unwrap_or(0);
+                if self.protocol == Protocol::Quake2Repro1038 {
+                    model | ((p.view_weapon.skin as u32 & 7) << 13)
+                } else {
+                    model
+                }
+            }
             Gravity => c.gravity.to_bits(),
             Speed => c.speed.to_bits(),
             InfoFlags => u32::from(c.player_info_flags),
             CommandAge => c.command_age_ms.min(255),
             IdealPitch => p.ideal_pitch.to_bits(),
             BodyYaw => c.body_yaw.to_bits(),
+        }
+    }
+}
+
+impl Convert {
+    fn export(self, word: u32) -> u32 {
+        match self {
+            Bits => word,
+            IntegerFloat => (word as i32 as f32).to_bits(),
+            FloatInteger => f32::from_bits(word) as i32 as u32,
+            Eighth => eighth_to_short(f32::from_bits(word)) as i32 as u32,
+            ShortAngle => angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide)
+                as i16 as i32 as u32,
+            UnsignedShortAngle => {
+                angle_to_short(f32::from_bits(word), AngleShortForm::MultiplyDivide) as u16 as u32
+            }
+            TimerEighth => (word / 8).min(255),
+            Milliseconds16 => word.min(u32::from(u16::MAX)),
+            ScaledShort(scale) => {
+                let scaled = f32::from_bits(word) * f32::from(scale);
+                (scaled.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i32) as u32
+            }
+            ScaledByte {
+                scale,
+                nonzero,
+                implicit,
+            } => {
+                let value = f32::from_bits(word);
+                let mut packed = (value * f32::from(scale)).clamp(0., 255.) as u32;
+                if nonzero && value != 0.0 {
+                    packed = packed.max(1);
+                }
+                if implicit != 0 && packed == u32::from(implicit) {
+                    0
+                } else {
+                    packed
+                }
+            }
+        }
+    }
+    fn import(self, word: u32) -> u32 {
+        match self {
+            Bits | IntegerFloat => word,
+            FloatInteger => (word as i32 as f32).to_bits(),
+            Eighth => short_to_eighth(word as i16).to_bits(),
+            ShortAngle => short_to_angle(word as i16 as i32).to_bits(),
+            UnsignedShortAngle => short_to_angle(word as u16 as i32).to_bits(),
+            TimerEighth => u32::from(word as u8) * 8,
+            Milliseconds16 => u32::from(word as u16),
+            ScaledShort(scale) => (f32::from(word as i16) / f32::from(scale)).to_bits(),
+            ScaledByte { scale, .. } => (word as u8 as f32 / f32::from(scale)).to_bits(),
         }
     }
 }

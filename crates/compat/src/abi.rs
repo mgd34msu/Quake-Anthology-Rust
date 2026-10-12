@@ -934,7 +934,7 @@ fn native_localized_print(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallErr
 fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
     c: &mut Invocation<'_, '_, '_>,
 ) -> Result<u64, CallError> {
-    use qa_core::primitives::{SoundAction, SoundEvent};
+    use qa_core::primitives::{SoundAction, SoundEmitter, SoundEvent};
     let address = c.pointer(if LOCAL { 0 } else { usize::from(POSITIONED) })?;
     if address == 0 && (LOCAL || !POSITIONED) {
         return Ok(0);
@@ -987,7 +987,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
         SoundEvent {
             sound,
             spatial_rules: c.context.console.source,
-            entity,
+            entity: entity.map(SoundEmitter::Entity),
             position,
             client,
             volume,
@@ -1483,7 +1483,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     };
     let client = &mut c.services.server.clients[id.0 as usize];
     let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
-    codec.read_state(c.memory, address, &mut client.player)?;
+    codec.read_state(c.memory, address, c.context.module, &mut client.player)?;
     if layout.wide {
         client.player.movement.tuning.n64_physics = c
             .services

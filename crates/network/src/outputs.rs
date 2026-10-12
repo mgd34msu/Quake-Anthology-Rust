@@ -5,7 +5,11 @@ use crate::{
 };
 use qa_core::primitives::{PrintKind, RuleSetId};
 
+mod configstrings;
 mod cues;
+pub use configstrings::{
+    ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring, read_configstring,
+};
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, write_cue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

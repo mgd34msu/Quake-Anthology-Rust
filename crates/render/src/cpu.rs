@@ -654,6 +654,7 @@ impl CpuBackend {
                 camera.refdef.cpu_presentation,
                 image,
                 &stage,
+                material.settings.software_alias,
                 inputs.lighting,
                 assets,
             ) else {
@@ -857,7 +858,7 @@ impl CpuBackend {
                     let light = weights[0] * vertices[0].indexed_light
                         + weights[1] * vertices[1].indexed_light
                         + weights[2] * vertices[2].indexed_light;
-                    let Some(color) = indexed.sample(
+                    let Some((color, write_depth)) = indexed.sample(
                         coordinates,
                         light,
                         color[3],
@@ -871,10 +872,7 @@ impl CpuBackend {
                         color,
                         indexed.palette,
                         indexed.palette_id.0,
-                        pass.stage
-                            .stage
-                            .depth_write
-                            .then_some((depth_score, pass.draw_rank)),
+                        write_depth.then_some((depth_score, pass.draw_rank)),
                     );
                     continue;
                 }

@@ -2374,6 +2374,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             runtime.server.clients[id.0 as usize].player.movement_rules = RuleSetId::Quake3;
             runtime.server.clients[id.0 as usize].player.trace_rules = RuleSetId::Quake;
             runtime.local_snapshots[id.0 as usize] = Some(qa_app::snapshots::LocalSnapshot::load(
+                id,
                 qa_core::sys_events::SeatId::FIRST,
                 runtime.server.clients[id.0 as usize].output.unwrap(),
                 qa_network::commands::packet::Protocol::Quake2_34,
@@ -5182,7 +5183,15 @@ mod observations;
 #[path = "pmove.rs"]
 mod pmove;
 
+#[path = "appearance.rs"]
+mod appearance;
+
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--q2-appearance") {
+        appearance::native_appearance_uses_common_lifetimes_and_player_state();
+        println!("native Q2 appearance checks passed");
+        return;
+    }
     if std::env::args().any(|arg| arg == "--q2-command-stream") {
         commands::packet_commands_keep_native_order_and_borrowed_arguments();
         println!("native Q2 packet command stream checks passed");
@@ -5204,6 +5213,7 @@ pub fn run() {
         println!("native Q2 client command checks passed");
         return;
     }
+    appearance::native_appearance_uses_common_lifetimes_and_player_state();
     pmove::commands_move_a_native_client_once();
     commands::packet_commands_keep_native_order_and_borrowed_arguments();
     observations::snapshot_frames_follow_native_provider_lifetimes();

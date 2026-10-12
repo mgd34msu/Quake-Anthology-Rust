@@ -1,6 +1,8 @@
 //! Q2 module ABI limits are available independently of the host backend.
 use crate::{memory::ModuleMemory, services::CallError};
-use qa_core::primitives::{RuleSetId, UserCmd};
+use qa_core::primitives::{
+    ModelRef, ModuleId, PlayerState, ResourceNamespace, RuleSetId, UserCmd, ViewWeapon,
+};
 
 pub const INFO_KEY_BYTES: usize = 64;
 pub const INFO_VALUE_BYTES: usize = 256;
@@ -14,6 +16,20 @@ pub struct ClientLayout {
     write_command: fn(&UserCmd, u32, &mut [u8]),
     read_command: fn(&[u8], i32) -> UserCmd,
     pub(crate) stats: crate::players::StatsLayout,
+    presentation: PresentationLayout,
+}
+#[derive(Clone, Copy)]
+struct PresentationLayout {
+    view: usize,
+    offset: usize,
+    punch: usize,
+    gun_angles: usize,
+    gun_offset: usize,
+    gun_model: usize,
+    gun_frame: usize,
+    gun_skin: Option<usize>,
+    gun_rate: Option<usize>,
+    view_height: Option<usize>,
 }
 pub const CLASSIC: ClientLayout = ClientLayout {
     userinfo_bytes: 512,
@@ -25,6 +41,18 @@ pub const CLASSIC: ClientLayout = ClientLayout {
         client: 88,
         offset: 120,
         protocol: qa_network::commands::packet::Protocol::Quake2_34,
+    },
+    presentation: PresentationLayout {
+        view: 28,
+        offset: 40,
+        punch: 52,
+        gun_angles: 64,
+        gun_offset: 76,
+        gun_model: 88,
+        gun_frame: 92,
+        gun_skin: None,
+        gun_rate: None,
+        view_height: None,
     },
 };
 pub const RERELEASE: ClientLayout = ClientLayout {
@@ -38,6 +66,18 @@ pub const RERELEASE: ClientLayout = ClientLayout {
         offset: 166,
         protocol: qa_network::commands::packet::Protocol::Quake2Repro1038,
     },
+    presentation: PresentationLayout {
+        view: 52,
+        offset: 64,
+        punch: 76,
+        gun_angles: 88,
+        gun_offset: 100,
+        gun_model: 112,
+        gun_frame: 120,
+        gun_skin: Some(116),
+        gun_rate: Some(124),
+        view_height: Some(48),
+    },
 };
 pub fn client_layout(rules: RuleSetId) -> Option<&'static ClientLayout> {
     match rules {
@@ -47,6 +87,46 @@ pub fn client_layout(rules: RuleSetId) -> Option<&'static ClientLayout> {
     }
 }
 impl ClientLayout {
+    /// Shared native player-state presentation, independent of its selected
+    /// movement rules. These offsets are offsetof(player_state_t, ...) from
+    /// the original classic/rerelease game headers, not packet-word offsets.
+    pub(crate) fn import_presentation(
+        &self,
+        memory: &ModuleMemory<'_>,
+        pointer: u64,
+        module: ModuleId,
+        player: &mut PlayerState,
+    ) -> Result<(), CallError> {
+        let layout = self.presentation;
+        player.view_angles = memory.read_vec3(pointer + layout.view as u64)?;
+        player.view_offset = memory.read_vec3(pointer + layout.offset as u64)?;
+        if let Some(height) = layout.view_height {
+            player.view_offset.0[2] += f32::from(
+                memory.read_field(pointer + height as u64, crate::memory::Width::Byte)? as i8,
+            );
+        }
+        player.punch_angles = memory.read_vec3(pointer + layout.punch as u64)?;
+        player.view_weapon = ViewWeapon {
+            model: ModelRef::native(
+                ResourceNamespace::Module(module),
+                memory.read_word(pointer + layout.gun_model as u64)? as u32,
+            ),
+            frame: memory.read_word(pointer + layout.gun_frame as u64)?,
+            offset: memory.read_vec3(pointer + layout.gun_offset as u64)?,
+            angles: memory.read_vec3(pointer + layout.gun_angles as u64)?,
+            skin: layout
+                .gun_skin
+                .map(|at| memory.read_word(pointer + at as u64))
+                .transpose()?
+                .unwrap_or(0),
+            rate: layout
+                .gun_rate
+                .map(|at| memory.read_word(pointer + at as u64))
+                .transpose()?
+                .unwrap_or(0),
+        };
+        Ok(())
+    }
     pub fn read_command(
         &self,
         memory: &ModuleMemory<'_>,

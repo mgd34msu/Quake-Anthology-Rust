@@ -20,8 +20,9 @@ fn native_player_context() -> PlayerContext {
     PlayerContext {
         client_number: None,
         ground_number: None,
+        appearance: None,
         weapon_number: None,
-        weapon_model: None,
+
         gravity: 0.,
         speed: 0.,
         player_info_flags: 0,
@@ -312,7 +313,15 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
                 assert_eq!(frame.entities, [entity(1, 7.5)]);
                 assert_eq!(frame.sequence, 1);
                 assert_eq!(frame.command, 64);
-                assert!(projection.apply(frame.player, &mut imported, &mut native, |_| None));
+                assert!(projection.apply(
+                    frame.player,
+                    &mut imported,
+                    &mut native,
+                    qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(
+                        0
+                    )),
+                    |_| None
+                ));
                 assert_eq!(imported.body.position.0[0], 0.5);
                 assert_eq!(imported.health, 100);
                 assert_eq!(imported.movement.command_time_ms, 50);
@@ -361,7 +370,13 @@ fn deliver_server_message(
     };
     let n = client_commands.stage(payload)?;
     client_commands
-        .decode_output(n, sequence, client, |_| {})
+        .decode_output(
+            n,
+            sequence,
+            client,
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| {},
+        )
         .map(|_| ())
 }
 
@@ -774,6 +789,9 @@ fn q2_connected_frames_use_payload_numbers_and_invalid_frames_request_full() -> 
                             snapshot.player,
                             &mut imported,
                             &mut native,
+                            qa_core::primitives::ResourceNamespace::Client(
+                                qa_core::primitives::ClientId(0)
+                            ),
                             |_| None,
                         ));
                         assert_eq!(imported.body.position.0[0], frame as f32 * 0.125);
@@ -828,14 +846,35 @@ fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Re
     let mut writer = Writer::new(&mut payload, Encoding::Bytes);
     snapshots::write_q2(&mut writer, &ring, 41, None, 16)?;
     let n = commands.stage(writer.bytes())?;
-    assert_eq!(commands.decode_output(n, 1, &mut client, |_| {})?, Some(41));
+    assert_eq!(
+        commands.decode_output(
+            n,
+            1,
+            &mut client,
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| {}
+        )?,
+        Some(41)
+    );
     q2_store(&mut ring, 42, &[q2_entity(30, 8., 0)])?;
     let mut writer = Writer::new(&mut payload, Encoding::Bytes);
     snapshots::write_q2(&mut writer, &ring, 42, Some(41), 16)?;
     let length = writer.size();
     for cut in 1..length {
         let n = commands.stage(&payload[..cut])?;
-        assert!(commands.decode_output(n, 2, &mut client, |_| {}).is_err());
+        assert!(
+            commands
+                .decode_output(
+                    n,
+                    2,
+                    &mut client,
+                    qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(
+                        0
+                    )),
+                    |_| {}
+                )
+                .is_err()
+        );
         assert!(client.snapshot(42).is_none());
         assert!(client.snapshot(41).is_some());
         assert_eq!(commands.delta_request(), None);
@@ -848,10 +887,31 @@ fn q2_stream_rejection_is_bounded_and_the_existing_frame_is_not_replaced() -> Re
         &[10, 2, b'x'][..],
     ] {
         let n = commands.stage(bytes)?;
-        assert!(commands.decode_output(n, 3, &mut client, |_| {}).is_err());
+        assert!(
+            commands
+                .decode_output(
+                    n,
+                    3,
+                    &mut client,
+                    qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(
+                        0
+                    )),
+                    |_| {}
+                )
+                .is_err()
+        );
     }
     let n = commands.stage(&payload[..length])?;
-    assert_eq!(commands.decode_output(n, 4, &mut client, |_| {})?, Some(42));
+    assert_eq!(
+        commands.decode_output(
+            n,
+            4,
+            &mut client,
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| {}
+        )?,
+        Some(42)
+    );
     // Idempotent binding preserves received frames; a different native payload
     // cannot reuse their storage just because its channel header is identical.
     client.configure_snapshots(Protocol::Quake2_34)?;
@@ -1498,6 +1558,9 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
                             &info.words,
                             &mut players[slot],
                             &mut context,
+                            qa_core::primitives::ResourceNamespace::Client(
+                                qa_core::primitives::ClientId(0)
+                            ),
                             |_| None
                         ));
                         assert_eq!(players[slot].body.position.0[0], sequence as f32 * 0.125);
@@ -1516,6 +1579,102 @@ fn qw_connected_playerinfo_retains_native_slot_commands_and_imports_common_playe
         assert_eq!(records, if matches!(sequence, 1 | 65) { 2 } else { 1 });
     }
     assert_eq!(seen, 6);
+    assert_eq!(connections.command_errors, 0);
+    Ok(())
+}
+
+#[test]
+fn qw_accepted_playerinfo_shares_the_snapshot_ring_and_expires_without_a_new_record()
+-> Result<(), Error> {
+    use qa_core::primitives::{ResourceNamespace, Vec3};
+    use qa_network::{
+        commands::packet::ZERO_QW,
+        projection::{EntityProjection, EntityRecord},
+    };
+
+    let (mut server, mut commands, mut connections) = byte_connection(Protocol::QuakeWorld28)?;
+    let mut ring = snapshots::QwRing::load(64, 512, 0, None)?;
+    let projection = EntityProjection::load(Protocol::QuakeWorld28);
+    for sequence in 1..=2 {
+        let request = qw_move(&mut connections, &mut server, &mut commands, true)?;
+        assert_eq!(request, (sequence == 2).then_some(1));
+        let packet_entity = qw_entity(40, sequence as f32);
+        qw_store(&mut ring, sequence, &[packet_entity])?;
+        let mut payload = [0; 1400];
+        let mut writer = Writer::new(&mut payload, Encoding::Bytes);
+        if sequence == 1 {
+            let mut words = [0; states::QW_PLAYER_WORDS];
+            words[0] = 48.0f32.to_bits();
+            words[1] = 12.0f32.to_bits();
+            words[2] = 24.0f32.to_bits();
+            words[3] = 17.0f32.to_bits();
+            words[8] = 5.0f32.to_bits();
+            words[9] = 7.0f32.to_bits();
+            words[10] = 2.0f32.to_bits();
+            words[12] = (1 << 0) | (1 << 5) | (1 << 6) | (1 << 7);
+            let command = qa_network::commands::QwCmd {
+                view_angles: Vec3([0., 45., 0.]),
+                ..ZERO_QW
+            };
+            assert!(states::write_qw_player(&mut writer, 1, &words, command)?);
+        }
+        snapshots::write_qw(
+            &mut writer,
+            &ring,
+            sequence,
+            request.map(|base| (base, base as u8)),
+        )?;
+        server_payload(&mut server, &mut connections, writer.bytes(), |_, _, _| {})?;
+        let channel = &connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel;
+        let Some(snapshots::ReceivedFrame::QuakeWorld(frame)) = channel.current_snapshot() else {
+            return Err(Error::Context);
+        };
+        assert_eq!(frame.sequence, sequence);
+        assert_eq!(
+            frame
+                .entities
+                .iter()
+                .map(|row| row.number)
+                .collect::<Vec<_>>(),
+            if sequence == 1 { vec![2, 40] } else { vec![40] }
+        );
+        assert_eq!(
+            f32::from_bits(frame.entities.last().unwrap().words[5]),
+            sequence as f32
+        );
+        if sequence == 1 {
+            let mut record = EntityRecord::default();
+            assert!(projection.apply(
+                &frame.entities[0].words,
+                &mut record,
+                ResourceNamespace::Client(ClientId(0))
+            ));
+            assert_eq!(record.position, Vec3([48., 12., 24.]));
+            assert_eq!(
+                (
+                    record.appearance.frame,
+                    record.appearance.skin,
+                    record.appearance.native.effects
+                ),
+                (17, 7, 2)
+            );
+            assert_eq!(
+                record.appearance.models[0],
+                qa_core::primitives::ModelRef::native(ResourceNamespace::Client(ClientId(0)), 5)
+            );
+            assert_eq!(record.appearance.native.colormap, 2);
+        } else {
+            let Some(snapshots::ReceivedFrame::QuakeWorld(previous)) = channel.previous_snapshot()
+            else {
+                return Err(Error::Context);
+            };
+            assert_eq!(previous.sequence, 1);
+            assert_eq!(previous.entities[0].number, 2);
+        }
+    }
     assert_eq!(connections.command_errors, 0);
     Ok(())
 }
@@ -1602,14 +1761,20 @@ fn qw_playerinfo_default_model_and_omitted_command_context_are_per_connection() 
         let length = codec.stage(writer.bytes())?;
         let mut count = 0;
         assert_eq!(
-            codec.decode_output(length, 65, channel, |incoming| {
-                let Incoming::PlayerInfo(info) = incoming else {
-                    panic!("player record")
-                };
-                assert_eq!(info.words[8], model);
-                assert_eq!(info.command, ZERO_QW);
-                count += 1;
-            })?,
+            codec.decode_output(
+                length,
+                65,
+                channel,
+                qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+                |incoming| {
+                    let Incoming::PlayerInfo(info) = incoming else {
+                        panic!("player record")
+                    };
+                    assert_eq!(info.words[8], model);
+                    assert_eq!(info.command, ZERO_QW);
+                    count += 1;
+                }
+            )?,
             None
         );
         assert_eq!(count, 1);
@@ -1899,7 +2064,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
     source.view_offset.0[2] = 22.;
     let mut context = native_player_context();
     let mut player = [0; states::NQ_PLAYER_WORDS];
-    assert!(projection.reduce(&source, &context, &mut player));
+    assert!(projection.reduce(&source, &context, &mut player, |model| Some(model.ordinal)));
     player[18] = 3;
     let mut entities = [snapshots::Entity {
         number: 256,
@@ -1951,7 +2116,15 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
                 assert_eq!(frame.entities[0].words[5], baseline[5]);
                 assert_eq!(frame.entities[0].words[11], 1);
                 assert_eq!(frame.player[18], 8);
-                assert!(projection.apply(frame.player, &mut imported, &mut context, |_| None));
+                assert!(projection.apply(
+                    frame.player,
+                    &mut imported,
+                    &mut context,
+                    qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(
+                        0
+                    )),
+                    |_| None
+                ));
                 assert_eq!((imported.health, imported.armor), (-17, 55));
                 assert_eq!(imported.body.velocity.0[0], -32.);
                 assert_eq!(imported.movement_rules, RuleSetId::Quake3);
@@ -2263,5 +2436,35 @@ fn nq_truncated_and_invalid_streams_do_not_publish_or_replace_an_accepted_frame(
     };
     assert_eq!(frame.time, ThinkTime::Seconds(1.25));
     assert_eq!(frame.entities[0].words[5], 12.0f32.to_bits());
+    Ok(())
+}
+
+#[test]
+fn previous_snapshot_borrows_only_the_prior_accepted_ring_slot() -> Result<(), Error> {
+    let mut server = snapshots::Q2Ring::load(8, 1024, 32, None)?;
+    let mut client = snapshots::Q2Ring::load(8, 1024, 32, Some(896))?;
+    for sequence in 1..=5 {
+        q2_store(&mut server, sequence, &[q2_entity(30, sequence as f32, 0)])?;
+    }
+    assert!(q2_send(&server, &mut client, 1, None)?);
+    assert!(client.previous().is_none());
+    assert!(!q2_send(&server, &mut client, 3, Some(2))?);
+    assert!(client.current().is_none());
+    assert_eq!(client.previous().map(|frame| frame.sequence), Some(1));
+    assert!(!q2_send(&server, &mut client, 4, Some(2))?);
+    assert_eq!(client.previous().map(|frame| frame.sequence), Some(1));
+    assert!(q2_send(&server, &mut client, 5, None)?);
+    assert_eq!(client.current().map(|frame| frame.sequence), Some(5));
+    assert_eq!(client.previous().map(|frame| frame.sequence), Some(1));
+    // Replacing the same accepted sequence must not turn current into previous.
+    assert!(q2_send(&server, &mut client, 5, None)?);
+    assert_eq!(client.previous().map(|frame| frame.sequence), Some(1));
+    for sequence in [6, 38] {
+        q2_store(&mut server, sequence, &[q2_entity(30, sequence as f32, 0)])?;
+        assert!(q2_send(&server, &mut client, sequence, None)?);
+    }
+    // Frame38 overwrites frame6's slot; no copied fallback entity state exists.
+    assert_eq!(client.current().map(|frame| frame.sequence), Some(38));
+    assert!(client.previous().is_none());
     Ok(())
 }

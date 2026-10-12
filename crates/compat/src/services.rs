@@ -8,11 +8,12 @@ use qa_content::vfs::{FileRef, Vfs};
 use qa_core::names::NameTable;
 use qa_core::primitives::ThinkTime;
 use qa_core::{
+    configstrings::{ConfigLayout, ConfigRef, ConfigStrings},
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
         GeometryId, IndexSpan, ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity,
-        PrintKind, SoundEvent, UserCmd, Vec3,
+        PrintKind, RuleSetId, SoundEvent, UserCmd, Vec3,
     },
     text::FixedText,
 };
@@ -61,12 +62,6 @@ struct OpenFile {
     reference: FileRef,
     cursor: u64,
 }
-struct ConfigString {
-    text: FixedText<8192>,
-    integer: i32,
-    revision: u64,
-    resource_name: Option<NameId>,
-}
 /// Native Q2 resource names select player-relative or explicit file paths.
 pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, CallError> {
     if name.is_empty() || name.starts_with(b"*") {
@@ -101,7 +96,8 @@ struct EntityText {
 /// ordinals belong to each module's range, not the common entity reservation.
 pub struct ServiceStorage {
     files: Box<[Option<OpenFile>]>,
-    configs: Box<[ConfigString]>,
+    configs: ConfigStrings,
+    resource_keys: Box<[Option<NameId>]>,
     sounds: Box<[Option<qa_core::primitives::SoundId>]>,
     sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     ranges: Box<[ConfigRange]>,
@@ -121,11 +117,51 @@ impl ServiceStorage {
         files: usize,
         cvars: &Cvars,
     ) -> Result<Self, CallError> {
+        Self::load_with(
+            configs.iter().map(|&(module, count)| (module, count, None)),
+            files,
+            cvars,
+        )
+    }
+    pub fn load_native(
+        configs: &[(ModuleId, usize, RuleSetId)],
+        files: usize,
+        cvars: &Cvars,
+    ) -> Result<Self, CallError> {
+        Self::load_with(
+            configs
+                .iter()
+                .map(|&(module, count, rules)| (module, count, ConfigLayout::for_rules(rules))),
+            files,
+            cvars,
+        )
+    }
+    fn load_with(
+        configs: impl Iterator<Item = (ModuleId, usize, Option<ConfigLayout>)>,
+        files: usize,
+        cvars: &Cvars,
+    ) -> Result<Self, CallError> {
         let mut total = 0usize;
-        let mut ranges = Vec::with_capacity(configs.len());
-        for &(module, count) in configs {
+        let mut ranges = Vec::new();
+        let mut capacities = Vec::new();
+        for (module, count, layout) in configs {
             if ranges.iter().any(|r: &ConfigRange| r.module == module) {
                 return Err(CallError::ConfigString);
+            }
+            if layout.is_some_and(|layout| count > layout.count) {
+                return Err(CallError::ConfigString);
+            }
+            if total.checked_add(count).is_none_or(|total| total > 65536) {
+                return Err(CallError::Capacity);
+            }
+            for index in 0..count {
+                capacities.push(
+                    layout
+                        .map_or(Some(qa_core::configstrings::MAX_TEXT), |layout| {
+                            layout.capacity(index)
+                        })
+                        .ok_or(CallError::ConfigString)?,
+                );
             }
             ranges.push(ConfigRange {
                 module,
@@ -146,14 +182,8 @@ impl ServiceStorage {
         }
         Ok(Self {
             files: std::iter::repeat_with(|| None).take(files).collect(),
-            configs: std::iter::repeat_with(|| ConfigString {
-                text: FixedText::default(),
-                integer: 0,
-                revision: 0,
-                resource_name: None,
-            })
-            .take(total)
-            .collect(),
+            configs: ConfigStrings::load(capacities).map_err(|_| CallError::Capacity)?,
+            resource_keys: vec![None; total].into_boxed_slice(),
             sounds: vec![None; total].into_boxed_slice(),
             sound_bank: None,
             ranges: ranges.into_boxed_slice(),
@@ -240,19 +270,29 @@ impl ServiceStorage {
             .map(|range| range.revision)
             .ok_or(CallError::ConfigString)
     }
+    pub fn config_count(&self, module: ModuleId) -> Result<usize, CallError> {
+        self.range(module)
+            .map(|range| range.span.count as usize)
+            .ok_or(CallError::ConfigString)
+    }
+    pub fn config_row(&self, module: ModuleId, ordinal: usize) -> Result<ConfigRef<'_>, CallError> {
+        self.configs
+            .config(self.config(module, ordinal)?)
+            .ok_or(CallError::ConfigString)
+    }
     pub fn configstring(
         &self,
         module: ModuleId,
         ordinal: usize,
     ) -> Result<(&[u8], u64), CallError> {
-        let row = &self.configs[self.config(module, ordinal)?];
-        Ok((row.text.as_bytes(), row.revision))
+        let row = self.config_row(module, ordinal)?;
+        Ok((row.text, row.revision))
     }
     /// Numeric configstrings are projected once when their text changes.
     /// A module's undeclared ordinal carries no configuration value.
     pub fn config_integer(&self, module: ModuleId, ordinal: usize) -> Option<i32> {
         let index = self.range(module)?.span.get(ordinal)?;
-        Some(self.configs[index].integer)
+        Some(self.configs.config(index)?.integer)
     }
     /// Native ordinals share the load-bound cache with module sound imports.
     pub fn sound_id(
@@ -305,11 +345,12 @@ impl ServiceStorage {
     }
     fn bind_sound_at(&mut self, index: usize) -> Result<(), CallError> {
         self.sounds[index] = None;
-        let sound = match self
-            .sound_bank
-            .as_ref()
-            .zip(sound_path(self.configs[index].text.as_bytes())?)
-        {
+        let sound = match self.sound_bank.as_ref().zip(sound_path(
+            self.configs
+                .config(index)
+                .ok_or(CallError::ConfigString)?
+                .text,
+        )?) {
             Some((bank, path)) => {
                 bank.find(std::str::from_utf8(path.as_bytes()).map_err(|_| CallError::Text)?)
             }
@@ -333,12 +374,18 @@ impl ServiceStorage {
         index: usize,
         text: &[u8],
     ) -> Result<(), CallError> {
-        if text.len() > 8192 {
+        if text.len()
+            > self
+                .configs
+                .capacity(index)
+                .ok_or(CallError::ConfigString)?
+            || text.contains(&0)
+        {
             return Err(CallError::Text);
         }
-        let row = &mut self.configs[index];
-        if row.text.as_bytes() != text {
-            let name = if row.resource_name.is_some() && !text.is_empty() {
+        let row = self.configs.config(index).ok_or(CallError::ConfigString)?;
+        if row.text != text {
+            let name = if self.resource_keys[index].is_some() && !text.is_empty() {
                 Some(
                     self.resource_names
                         .intern(text)
@@ -347,10 +394,8 @@ impl ServiceStorage {
             } else {
                 None
             };
-            row.text.set_bytes(text).map_err(|_| CallError::Text)?;
-            row.integer = qa_core::text::atoi_prefix(text);
-            row.resource_name = name;
-            row.revision = row.revision.wrapping_add(1);
+            self.configs.set(index, text).map_err(|_| CallError::Text)?;
+            self.resource_keys[index] = name;
             let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
             range.revision = range.revision.wrapping_add(1);
             let ordinal = index - range.span.first as usize;
@@ -380,20 +425,23 @@ impl ServiceStorage {
         // SV_FindIndex stops at the first empty slot. Keep that native order,
         // including a gap made by a module's direct configstring update.
         for ordinal in 1..range.count as usize {
-            let row = &mut self.configs[first + ordinal];
-            if row.text.as_bytes().is_empty() {
+            let row = self
+                .configs
+                .config(first + ordinal)
+                .ok_or(CallError::ConfigString)?;
+            if row.text.is_empty() {
                 self.set_configstring_at(module, first + ordinal, name)?;
-                self.configs[first + ordinal].resource_name = Some(name_id);
+                self.resource_keys[first + ordinal] = Some(name_id);
                 return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
             }
-            let stored = if let Some(id) = row.resource_name {
+            let stored = if let Some(id) = self.resource_keys[first + ordinal] {
                 id
             } else {
                 let id = self
                     .resource_names
-                    .intern(row.text.as_bytes())
+                    .intern(row.text)
                     .map_err(|_| CallError::Capacity)?;
-                row.resource_name = Some(id);
+                self.resource_keys[first + ordinal] = Some(id);
                 id
             };
             if stored == name_id {

@@ -18,7 +18,7 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
         source.frags = -7;
         let original = PlayerProjection::load(protocol, &[]);
         let mut words = vec![0; original.words()];
-        original.reduce(&source, &context(), &mut words);
+        original.reduce(&source, &context(), &mut words, |model| Some(model.ordinal));
         let projection = PlayerProjection::load_stat_values(protocol, &[]);
         let mut target = player();
         target.body.position = Vec3([500.0, 600.0, 700.0]);
@@ -26,7 +26,13 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
         target.movement.mode = MovementMode::Noclip;
         let body = target.body;
         let movement = target.movement;
-        projection.apply(&words, &mut target, &mut context(), |_| None);
+        projection.apply(
+            &words,
+            &mut target,
+            &mut context(),
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| None,
+        );
         assert_eq!((target.health, target.armor, target.frags), (90, 41, -7));
         assert_eq!(target.body.position, body.position);
         assert_eq!(target.body.velocity, body.velocity);
@@ -51,7 +57,12 @@ fn trick_timer_uses_only_the_native_rerelease_flag_and_clears_on_receive() {
         source.movement.timer = MovementTimer::TRICK;
         source.movement.remaining_ms = 64;
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&source, &PlayerContext::default(), &mut words));
+        assert!(projection.reduce(
+            &source,
+            &PlayerContext::default(),
+            &mut words,
+            |model| Some(model.ordinal)
+        ));
         let flags = if protocol == Protocol::Quake3_68 {
             19
         } else {
@@ -60,15 +71,32 @@ fn trick_timer_uses_only_the_native_rerelease_flag_and_clears_on_receive() {
         assert_eq!(words[flags], expected);
         assert_eq!(projection.movement_flag_mask() & 1024, expected);
         let mut target = PlayerState::default();
-        assert!(projection.apply(&words, &mut target, &mut PlayerContext::default(), |_| None));
+        assert!(projection.apply(
+            &words,
+            &mut target,
+            &mut PlayerContext::default(),
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| None
+        ));
         assert_eq!(
             target.movement.timer.contains(MovementTimer::TRICK),
             expected != 0
         );
         source.movement.timer = MovementTimer::NONE;
         source.movement.remaining_ms = 0;
-        assert!(projection.reduce(&source, &PlayerContext::default(), &mut words));
-        assert!(projection.apply(&words, &mut target, &mut PlayerContext::default(), |_| None));
+        assert!(projection.reduce(
+            &source,
+            &PlayerContext::default(),
+            &mut words,
+            |model| Some(model.ordinal)
+        ));
+        assert!(projection.apply(
+            &words,
+            &mut target,
+            &mut PlayerContext::default(),
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| None
+        ));
         assert_eq!(target.movement.timer, MovementTimer::NONE);
         assert_eq!(target.movement.remaining_ms, 0);
     }
@@ -107,13 +135,21 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
             assert!(binding.import(&mut source.values, (binding.id.0 as i32 - 300) as u32));
         }
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&source, &context(), &mut words));
+        assert!(projection.reduce(&source, &context(), &mut words, |model| Some(model.ordinal)));
         let ordinary = PlayerProjection::load(protocol, &[]);
         let mut scalar = vec![0; ordinary.words()];
-        ordinary.reduce(&source, &context(), &mut scalar);
+        ordinary.reduce(&source, &context(), &mut scalar, |model| {
+            Some(model.ordinal)
+        });
         let mut target = player();
         target.values = qa_core::primitives::ValueBank::load(first as usize);
-        assert!(projection.apply(&words, &mut target, &mut context(), |_| None));
+        assert!(projection.apply(
+            &words,
+            &mut target,
+            &mut context(),
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| None
+        ));
         assert_eq!((target.health, target.armor), (123, 45));
         if protocol == Protocol::Quake3_68 {
             assert_eq!(target.score, -9);
@@ -138,8 +174,14 @@ fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values(
         source.armor = 0;
         source.score = 0;
         source.frags = 0;
-        assert!(projection.reduce(&source, &context(), &mut words));
-        assert!(projection.apply(&words, &mut target, &mut context(), |_| None));
+        assert!(projection.reduce(&source, &context(), &mut words, |model| Some(model.ordinal)));
+        assert!(projection.apply(
+            &words,
+            &mut target,
+            &mut context(),
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| None
+        ));
         assert_eq!((target.health, target.armor), (0, 0));
         if protocol == Protocol::Quake3_68 {
             assert_eq!(target.score, 0);
@@ -153,8 +195,9 @@ fn context() -> PlayerContext {
     PlayerContext {
         client_number: Some(17),
         ground_number: Some(1022),
+        appearance: None,
         weapon_number: Some(5),
-        weapon_model: Some(8),
+
         gravity: 800.,
         speed: 300.,
         player_info_flags: 28,
@@ -164,6 +207,10 @@ fn context() -> PlayerContext {
 }
 fn player() -> PlayerState {
     let mut p = PlayerState::with_capacity(2, 2, 4);
+    p.view_weapon.model = qa_core::primitives::ModelRef::native(
+        qa_core::primitives::ResourceNamespace::Module(qa_core::primitives::ModuleId(1)),
+        8,
+    );
     p.movement_rules = RuleSetId::Quake2;
     p.trace_rules = RuleSetId::QuakeWorld;
     p.body.position = Vec3([12.3, -47.17, -0.]);
@@ -187,6 +234,10 @@ fn player() -> PlayerState {
 
 fn destination() -> PlayerState {
     let mut p = PlayerState::with_capacity(2, 2, 4);
+    p.view_weapon.model = qa_core::primitives::ModelRef::native(
+        qa_core::primitives::ResourceNamespace::Module(qa_core::primitives::ModuleId(1)),
+        8,
+    );
     p.movement_rules = RuleSetId::Quake3;
     p.trace_rules = RuleSetId::Quake;
     p.body.position = Vec3([999.; 3]);
@@ -223,14 +274,13 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     p.movement.remaining_ms = 70_000;
     p.view_offset = Vec3([4096., -4096., 22.0625]);
     p.punch_angles = Vec3([0.03125, -0.0625, 32.]);
-    p.tail = PlayerTail::Q2 {
-        weapon_frame: 65535,
-    };
+    p.tail = PlayerTail::Q2;
+    p.view_weapon.frame = 65535;
     let mut native = context();
     native.client_number = Some(255);
     let projection = PlayerProjection::load(Protocol::Quake2Repro1038, &[]);
     let mut words = [0; states::Q2_REPRO_PLAYER_WORDS];
-    assert!(projection.reduce(&p, &native, &mut words));
+    assert!(projection.reduce(&p, &native, &mut words, |model| Some(model.ordinal)));
     assert_eq!(words[0], 2);
     assert_eq!(&words[1..4], &p.body.position.0.map(f32::to_bits));
     assert_eq!(&words[4..7], &p.body.velocity.0.map(f32::to_bits));
@@ -255,8 +305,14 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     words[..43].copy_from_slice(&decoded.words);
     words[43..].copy_from_slice(&decoded.stats);
     let mut imported = destination();
-    imported.tail = PlayerTail::Q2 { weapon_frame: 0 };
-    assert!(projection.apply(&words, &mut imported, &mut native, |_| None));
+    imported.tail = PlayerTail::Q2;
+    assert!(projection.apply(
+        &words,
+        &mut imported,
+        &mut native,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
     assert_eq!(
         imported.body.position.0.map(f32::to_bits),
         [
@@ -269,12 +325,8 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     assert_eq!(imported.movement.remaining_ms, 65535);
     assert_eq!(imported.movement.mode, MovementMode::Noclip);
     assert_eq!(native.client_number, Some(255));
-    assert_eq!(
-        imported.tail,
-        PlayerTail::Q2 {
-            weapon_frame: 65535
-        }
-    );
+    assert_eq!(imported.tail, PlayerTail::Q2);
+    assert_eq!(imported.view_weapon.frame, 65535);
     assert_eq!(
         (imported.movement_rules, imported.trace_rules),
         (RuleSetId::Quake3, RuleSetId::Quake)
@@ -296,7 +348,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     let mut bytes = [0; 1400];
     let nq = PlayerProjection::load(Protocol::NetQuake15, &[]);
     let mut words = [0; states::NQ_PLAYER_WORDS];
-    assert!(nq.reduce(&p, &c, &mut words));
+    assert!(nq.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
     assert_eq!(words[12], (-12.0f32).to_bits());
     assert_eq!(words[10], 55.0f32.to_bits());
     assert_eq!((words[19], words[20]), (1, 1));
@@ -310,9 +362,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(f32::from_bits(decoded[5]), -32.);
     let mut imported = destination();
     let mut native = context();
-    assert!(nq.apply(&decoded, &mut imported, &mut native, |_| {
-        panic!("NQ clientdata has no ground ordinal")
-    }));
+    assert!(nq.apply(
+        &decoded,
+        &mut imported,
+        &mut native,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| { panic!("NQ clientdata has no ground ordinal") }
+    ));
     assert_eq!((imported.health, imported.armor), (-12, 55));
     assert_eq!(imported.body.velocity.0[0..2], [16., -32.]);
     assert_eq!(imported.body.position, Vec3([999.; 3]));
@@ -323,7 +379,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 
     let qw = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
     let mut words = [0; states::QW_PLAYER_WORDS];
-    assert!(qw.reduce(&p, &c, &mut words));
+    assert!(qw.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
     let command = QwCmd {
         msec: 0,
         view_angles: Vec3::default(),
@@ -342,9 +398,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(f32::from_bits(decoded.words[0]), 12.25);
     assert_eq!(f32::from_bits(decoded.words[6]), -32.);
     let mut imported = destination();
-    assert!(qw.apply(&decoded.words, &mut imported, &mut native, |_| {
-        panic!("QW playerinfo has no ground ordinal")
-    }));
+    assert!(qw.apply(
+        &decoded.words,
+        &mut imported,
+        &mut native,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| { panic!("QW playerinfo has no ground ordinal") }
+    ));
     assert_eq!(imported.body.position.0[0], 12.25);
     assert_eq!(imported.body.velocity.0[1], -32.);
     assert_eq!(imported.health, 9876);
@@ -356,7 +416,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 
     let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut words = [0; states::Q2_PLAYER_WORDS];
-    assert!(q2.reduce(&p, &c, &mut words));
+    assert!(q2.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
     assert_eq!(words[1] as i32, 98);
     assert_eq!(words[2] as i32, -377);
     assert_eq!(words[7], 31);
@@ -378,9 +438,13 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(decoded[41], words[41]);
     assert_eq!(decoded[50], words[50]);
     let mut imported = destination();
-    assert!(q2.apply(&decoded, &mut imported, &mut native, |_| {
-        panic!("Q2 transmits ground presence, not its ordinal")
-    }));
+    assert!(q2.apply(
+        &decoded,
+        &mut imported,
+        &mut native,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| { panic!("Q2 transmits ground presence, not its ordinal") }
+    ));
     assert_eq!(imported.body.position.0[0..2], [12.25, -47.125]);
     assert_eq!(imported.movement.delta_angles, Vec3([90., -180., -90.]));
     assert_eq!(imported.movement.remaining_ms, 248);
@@ -397,7 +461,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
 
     let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let mut words = [0; states::PLAYER_WORDS];
-    assert!(q3.reduce(&p, &c, &mut words));
+    assert!(q3.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
     assert_eq!(words[1], p.body.position.0[0].to_bits());
     assert_eq!(words[19], 99);
     assert_eq!(words[20], 1022);
@@ -419,11 +483,17 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(decoded[36], words[36]);
     let mut imported = destination();
     let mut ground_calls = 0;
-    assert!(q3.apply(&decoded, &mut imported, &mut native, |number| {
-        ground_calls += 1;
-        assert_eq!(number, 1022); // native world, not a common lifetime handle
-        None
-    }));
+    assert!(q3.apply(
+        &decoded,
+        &mut imported,
+        &mut native,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |number| {
+            ground_calls += 1;
+            assert_eq!(number, 1022); // native world, not a common lifetime handle
+            None
+        }
+    ));
     assert_eq!(ground_calls, 1);
     assert_eq!(imported.body.position, p.body.position);
     assert_eq!(imported.body.velocity, p.body.velocity);
@@ -463,12 +533,12 @@ fn module_bindings_use_common_values_and_drop_only_unrepresentable_destinations(
     );
     assert_eq!(projection.dropped_bindings, 1);
     let mut words = [123; states::PLAYER_WORDS];
-    assert!(projection.reduce(&p, &context(), &mut words));
+    assert!(projection.reduce(&p, &context(), &mut words, |model| Some(model.ordinal)));
     assert_eq!(words[48] as i32, -2);
     assert_eq!(words[49], 0);
     assert_eq!(p.values.get(ValueId(0)), Some(NumericValue::integer(-2)));
     let mut short = [123; 8];
-    assert!(!projection.reduce(&p, &context(), &mut short));
+    assert!(!projection.reduce(&p, &context(), &mut short, |model| Some(model.ordinal)));
     assert_eq!(short, [123; 8]);
 }
 
@@ -491,7 +561,7 @@ fn native_ordinals_and_modes_remain_boundary_data() {
         (MovementMode::Frozen, 4),
     ] {
         p.movement.mode = mode;
-        assert!(projection.reduce(&p, &c, &mut words));
+        assert!(projection.reduce(&p, &c, &mut words, |model| Some(model.ordinal)));
         assert_eq!(words[34], native);
         assert_eq!(words[40], 0);
         assert_eq!(words[20], 1023);
@@ -511,8 +581,8 @@ fn delta_angles_keep_the_native_macro_order_and_signedness() {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         let angle = (seed as i32 as f32) / 4096.;
         p.movement.delta_angles = Vec3([angle; 3]);
-        assert!(q2.reduce(&p, &context(), &mut q2_words));
-        assert!(q3.reduce(&p, &context(), &mut q3_words));
+        assert!(q2.reduce(&p, &context(), &mut q2_words, |model| Some(model.ordinal)));
+        assert!(q3.reduce(&p, &context(), &mut q3_words, |model| Some(model.ordinal)));
         let native = (angle * 65536. / 360.) as i32;
         for word in &q2_words[10..13] {
             assert_eq!(*word, native as i16 as i32 as u32);
@@ -533,16 +603,35 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
     q2_words[0] = 1;
     p.movement.mode = MovementMode::Noclip;
     p.movement.timer = MovementTimer::KNOCKBACK;
-    assert!(q2.apply(&q2_words, &mut p, &mut c, |_| None));
+    assert!(q2.apply(
+        &q2_words,
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
     assert_eq!(p.movement.mode, MovementMode::Noclip);
     assert_eq!(p.movement.timer, MovementTimer::KNOCKBACK); // not in Q2's flags
     p.movement.mode = MovementMode::Walk;
-    assert!(q2.apply(&q2_words, &mut p, &mut c, |_| None));
+    assert!(q2.apply(
+        &q2_words,
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
     assert_eq!(p.movement.mode, MovementMode::Spectator);
-    p.tail = PlayerTail::Q2 { weapon_frame: 0 };
+    p.tail = PlayerTail::Q2;
     q2_words[23] = 42;
-    assert!(q2.apply(&q2_words, &mut p, &mut c, |_| None));
-    assert_eq!(p.tail, PlayerTail::Q2 { weapon_frame: 42 });
+    assert!(q2.apply(
+        &q2_words,
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
+    assert_eq!(p.tail, PlayerTail::Q2);
+    assert_eq!(p.view_weapon.frame, 42);
 
     let mut words = [0; states::PLAYER_WORDS];
     words[34] = 3;
@@ -553,10 +642,16 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
         generation: 44,
     };
     p.movement.mode = MovementMode::Gib;
-    assert!(q3.apply(&words, &mut p, &mut c, |number| {
-        assert_eq!(number, 27);
-        Some(lifetime)
-    }));
+    assert!(q3.apply(
+        &words,
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |number| {
+            assert_eq!(number, 27);
+            Some(lifetime)
+        }
+    ));
     assert_eq!(p.movement.mode, MovementMode::Gib);
     assert_eq!(p.movement.ground, Some(lifetime));
     assert_eq!(
@@ -575,9 +670,13 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
     ] {
         p.movement.mode = MovementMode::Walk;
         words[34] = native;
-        assert!(q3.apply(&words, &mut p, &mut c, |_| {
-            panic!("native none must not resolve")
-        }));
+        assert!(q3.apply(
+            &words,
+            &mut p,
+            &mut c,
+            qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+            |_| { panic!("native none must not resolve") }
+        ));
         assert_eq!(p.movement.mode, mode);
         assert!(!p.movement.grounded);
         assert_eq!(p.movement.ground, None);
@@ -605,16 +704,125 @@ fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
     let mut p = destination();
     let arena = p.inventory.item_counts.as_ptr();
     let mut c = context();
-    assert!(!projection.apply(&[7; 8], &mut p, &mut c, |_| panic!("short record")));
+    assert!(!projection.apply(
+        &[7; 8],
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| panic!("short record")
+    ));
     assert_eq!(p.health, 9876);
     assert_eq!(p.body.position, Vec3([999.; 3]));
     assert_eq!(c.ground_number, Some(1022));
     let mut words = [0; states::PLAYER_WORDS];
     words[48] = 65534;
     words[20] = 1023;
-    assert!(projection.apply(&words, &mut p, &mut c, |_| None));
+    assert!(projection.apply(
+        &words,
+        &mut p,
+        &mut c,
+        qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
+        |_| None
+    ));
     assert_eq!(p.values.get(ValueId(2)), Some(NumericValue::integer(-2)));
     assert_eq!(p.inventory.item_counts.as_ptr(), arena);
     assert_eq!(projection.dropped_bindings, 1);
     assert_independent_state(&p);
+}
+
+#[test]
+fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_packing()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{ClientId, ModelRef, ModuleId, ResourceNamespace, ViewWeapon};
+    let source_namespace = ResourceNamespace::Module(ModuleId(9));
+    let destination_namespace = ResourceNamespace::Client(ClientId(3));
+    for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let mut p = player();
+        p.view_weapon = ViewWeapon {
+            model: ModelRef::native(source_namespace, 900),
+            frame: 173,
+            offset: Vec3([1.25, -2.5, 3.75]),
+            angles: Vec3([0.5, -0.75, 1.25]),
+            skin: 5,
+            rate: 12,
+        };
+        p.tail = PlayerTail::Q1 {
+            attack_finished: 99.,
+        };
+        let mut words = vec![0; projection.words()];
+        assert!(projection.reduce(&p, &context(), &mut words, |model| {
+            assert_eq!(model.namespace, source_namespace);
+            assert_eq!(model.ordinal, 900);
+            Some(17)
+        }));
+        assert_eq!(
+            words[22],
+            if protocol == Protocol::Quake2Repro1038 {
+                17 | (5 << 13)
+            } else {
+                17
+            }
+        );
+        let mut bytes = [0; 1400];
+        let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
+        if protocol == Protocol::Quake2_34 {
+            states::write_q2_player(
+                &mut writer,
+                &[0; states::Q2_PLAYER_WORDS],
+                words.as_slice().try_into().unwrap(),
+            )?;
+            words = states::read_q2_player(
+                &mut Reader::new(writer.bytes(), Encoding::Bytes),
+                &[0; states::Q2_PLAYER_WORDS],
+            )?
+            .to_vec();
+        } else {
+            let mut src = states::Q2ReproPlayer::default();
+            src.words.copy_from_slice(&words[..43]);
+            src.stats.copy_from_slice(&words[43..]);
+            let flags = states::write_q2_repro_player(&mut writer, &Default::default(), &src)?;
+            let read = states::read_q2_repro_player(
+                &mut Reader::new(writer.bytes(), Encoding::Bytes),
+                &Default::default(),
+                flags,
+            )?;
+            words[..43].copy_from_slice(&read.words);
+            words[43..].copy_from_slice(&read.stats);
+        }
+        let mut imported = destination();
+        let previous_tail = imported.tail;
+        assert!(projection.apply(
+            &words,
+            &mut imported,
+            &mut context(),
+            destination_namespace,
+            |_| None
+        ));
+        assert_eq!(
+            imported.view_weapon.model,
+            ModelRef::native(destination_namespace, 17)
+        );
+        assert_eq!(imported.view_weapon.frame, 173);
+        assert_eq!(imported.view_weapon.offset, p.view_weapon.offset);
+        assert_eq!(imported.view_weapon.angles, p.view_weapon.angles);
+        assert_eq!(imported.tail, previous_tail);
+        if protocol == Protocol::Quake2Repro1038 {
+            assert_eq!(imported.view_weapon.skin, 5);
+            assert_eq!(imported.view_weapon.rate, 12);
+        }
+        p.view_weapon.model = None;
+        projection.reduce(&p, &context(), &mut words, |_| {
+            panic!("no native model to resolve")
+        });
+        projection.apply(
+            &words,
+            &mut imported,
+            &mut context(),
+            destination_namespace,
+            |_| None,
+        );
+        assert_eq!(imported.view_weapon.model, None);
+    }
+    Ok(())
 }

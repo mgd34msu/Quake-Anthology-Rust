@@ -23,6 +23,7 @@ pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, 
 mod clients;
 pub use clients::ClientCommandError;
 mod cues;
+mod resources;
 
 pub enum Program {
     Qvm {
@@ -320,8 +321,12 @@ impl FrameHost {
             {
                 return Err("invalid native export".into());
             }
-            let mut storage = ServiceStorage::load(
-                &[(request.context.module, request.configstrings)],
+            let mut storage = ServiceStorage::load_native(
+                &[(
+                    request.context.module,
+                    request.configstrings,
+                    request.context.console.source,
+                )],
                 request.files,
                 &host.console.cvars,
             )

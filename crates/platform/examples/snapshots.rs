@@ -433,8 +433,9 @@ fn connected_heap() -> Result<(), String> {
     let mut context = PlayerContext {
         client_number: None,
         ground_number: None,
+        appearance: None,
         weapon_number: None,
-        weapon_model: None,
+
         gravity: 800.,
         speed: 320.,
         player_info_flags: 0,
@@ -457,7 +458,7 @@ fn connected_heap() -> Result<(), String> {
         allocations::begin_frame();
         let result = (|| -> Result<(), qa_network::commands::packet::Error> {
             source.body.position.0[0] = frame as f32 * 0.125;
-            if !projection.reduce(&source, &context, &mut player) {
+            if !projection.reduce(&source, &context, &mut player, |model| Some(model.ordinal)) {
                 return Err(qa_network::commands::packet::Error::Context);
             }
             server.publish_snapshot(ReceivedFrame::Quake2(Frame {
@@ -503,6 +504,9 @@ fn connected_heap() -> Result<(), String> {
                                 received.player,
                                 &mut imported,
                                 &mut context,
+                                qa_core::primitives::ResourceNamespace::Client(
+                                    qa_core::primitives::ClientId(0),
+                                ),
                                 |_| None,
                             ) && imported.body.position == source.body.position
                                 && imported.body.velocity == source.body.velocity
@@ -633,8 +637,9 @@ fn connected_qw_heap() -> Result<(), String> {
     let mut context = PlayerContext {
         client_number: None,
         ground_number: None,
+        appearance: None,
         weapon_number: None,
-        weapon_model: None,
+
         gravity: 0.,
         speed: 0.,
         player_info_flags: 31,
@@ -717,7 +722,9 @@ fn connected_qw_heap() -> Result<(), String> {
             source.body.position.0[0] = x;
             source.body.velocity.0[0] = 300.;
             let mut player_words = [0; states::QW_PLAYER_WORDS];
-            if !projection.reduce(&source, &context, &mut player_words) {
+            if !projection.reduce(&source, &context, &mut player_words, |model| {
+                Some(model.ordinal)
+            }) {
                 return Err(Error::Context);
             }
             if !states::write_qw_player(
@@ -763,6 +770,9 @@ fn connected_qw_heap() -> Result<(), String> {
                                     &info.words,
                                     &mut destination,
                                     &mut context,
+                                    qa_core::primitives::ResourceNamespace::Client(
+                                        qa_core::primitives::ClientId(0),
+                                    ),
                                     |_| None,
                                 )
                                 || destination.body.position.0[0] != x
@@ -859,8 +869,9 @@ fn connected_nq_heap() -> Result<(), String> {
     let mut context = PlayerContext {
         client_number: None,
         ground_number: None,
+        appearance: None,
         weapon_number: None,
-        weapon_model: None,
+
         gravity: 0.,
         speed: 0.,
         player_info_flags: 0,
@@ -876,7 +887,7 @@ fn connected_nq_heap() -> Result<(), String> {
         allocations::begin_frame();
         let result = (|| -> Result<(), Error> {
             let mut player = [0; states::NQ_PLAYER_WORDS];
-            if !projection.reduce(&source, &context, &mut player) {
+            if !projection.reduce(&source, &context, &mut player, |model| Some(model.ordinal)) {
                 return Err(Error::Context);
             }
             let mut entity = Entity {
@@ -925,6 +936,9 @@ fn connected_nq_heap() -> Result<(), String> {
                                     frame.player,
                                     &mut imported,
                                     &mut context,
+                                    qa_core::primitives::ResourceNamespace::Client(
+                                        qa_core::primitives::ClientId(0),
+                                    ),
                                     |_| None,
                                 )
                                 || imported.health != 100

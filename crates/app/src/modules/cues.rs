@@ -1,20 +1,26 @@
-//! Received native cues resolve through the existing module resource bindings.
-use super::{FrameHost, Module, Program, State};
+//! Received cues use accepted CLIENT snapshots and configuration bindings.
+use super::FrameHost;
 use qa_core::{
     events::{FrameEvent, OutputTarget},
-    primitives::{ClientId, EntityId, NativeEntity, RuleSetId, SoundEvent, Vec3},
+    primitives::{ClientId, ResourceNamespace, SoundEmitter, SoundEvent, Vec3},
 };
 use qa_network::outputs::{Cue, MuzzleFlash, MuzzleFormat, Sound};
+use qa_network::{projection::EntityRecord, snapshots::ReceivedFrame};
 
 impl FrameHost {
-    pub(crate) fn received_cue(&mut self, client: ClientId, cue: Cue) {
+    pub(crate) fn received_cue(
+        &mut self,
+        client: ClientId,
+        cue: Cue,
+        current: Option<ReceivedFrame<'_>>,
+    ) {
         match cue {
             Cue::Sound(sound) => {
-                if let Some(event) = self.native_sound_event(client, sound) {
+                if let Some(event) = self.native_sound_event(client, sound, current) {
                     self.present_sound(event);
                 }
             }
-            Cue::MuzzleFlash(flash) => self.muzzle_flash(client, flash),
+            Cue::MuzzleFlash(flash) => self.muzzle_flash(client, flash, current),
         }
     }
 
@@ -27,33 +33,53 @@ impl FrameHost {
             .push_to(OutputTarget::Presentation, FrameEvent::Sound(event));
     }
 
-    fn cue_module(&self, client: ClientId) -> Option<&Module> {
-        let module = self.runtime.server.clients.get(client.0 as usize)?.module;
-        self.module_row(module)
-            .filter(|row| row.state == State::Running)
-    }
-
-    fn cue_entity(&self, row: &Module, slot: u16) -> Option<Option<EntityId>> {
+    fn cue_position(
+        &self,
+        client: ClientId,
+        slot: u16,
+        current: Option<ReceivedFrame<'_>>,
+    ) -> Option<Vec3> {
         if slot == 0 {
-            return Some(None);
+            return Some(Vec3::default());
         }
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        if let Program::Native { vm, .. } = &row.request.program {
-            return vm
-                .entity_binding(
-                    &self.runtime.server.entities,
-                    NativeEntity {
-                        module: row.request.context.module,
-                        slot: i32::from(slot),
-                    },
-                )
-                .map(Some);
+        let projection = self
+            .runtime
+            .local_snapshots
+            .get(client.0 as usize)?
+            .as_ref()?
+            .entity_projection();
+        macro_rules! position {
+            ($frame:expr) => {{
+                let frame = $frame;
+                let index = frame
+                    .entities
+                    .binary_search_by_key(&u32::from(slot), |entity| entity.number)
+                    .ok()?;
+                let mut record = EntityRecord::default();
+                projection
+                    .apply(
+                        &frame.entities[index].words,
+                        &mut record,
+                        ResourceNamespace::Client(client),
+                    )
+                    .then_some(record.position)
+            }};
         }
-        None
+        match current? {
+            ReceivedFrame::NetQuake(frame) => position!(frame),
+            ReceivedFrame::QuakeWorld(frame) => position!(frame),
+            ReceivedFrame::Quake2(frame) => position!(frame),
+            ReceivedFrame::Quake2Repro(frame) => position!(frame),
+            ReceivedFrame::Quake3(frame) => position!(frame),
+        }
     }
 
-    fn muzzle_flash(&mut self, client: ClientId, flash: MuzzleFlash) {
-        use qa_network::commands::packet::Protocol;
+    fn muzzle_flash(
+        &mut self,
+        client: ClientId,
+        flash: MuzzleFlash,
+        current: Option<ReceivedFrame<'_>>,
+    ) {
         // Product differences belong to this native message boundary. A map,
         // movement rule or provider kind must not select client sound recipes.
         let Some(snapshot) = self
@@ -64,18 +90,10 @@ impl FrameHost {
         else {
             return;
         };
-        let rules = match snapshot.protocol {
-            Protocol::Quake2_34 => RuleSetId::Quake2,
-            Protocol::Quake2Repro1038 => RuleSetId::Quake2Rerelease,
-            _ => return,
-        };
-        let Some(row) = self.cue_module(client) else {
+        let rules = snapshot.protocol.rule_set();
+        let Some(position) = self.cue_position(client, flash.entity, current) else {
             return;
         };
-        let Some(Some(entity)) = self.cue_entity(row, flash.entity) else {
-            return;
-        };
-        let position = self.runtime.server.entities.columns.position[entity.slot as usize];
         let recipes = match flash.format {
             MuzzleFormat::Player => qa_gameplay::rules::q2::sounds::player(rules, flash.flash),
             MuzzleFormat::Monster | MuzzleFormat::MonsterWide => {
@@ -87,7 +105,10 @@ impl FrameHost {
                 self.present_sound(SoundEvent {
                     sound,
                     spatial_rules: rules,
-                    entity: Some(entity),
+                    entity: Some(SoundEmitter::Native {
+                        namespace: ResourceNamespace::Client(client),
+                        slot: i32::from(flash.entity),
+                    }),
                     channel: recipe.channel,
                     position,
                     volume: recipe.volume(rules, flash.silenced),
@@ -100,48 +121,44 @@ impl FrameHost {
         }
     }
 
-    fn native_sound_event(&self, client: ClientId, wire: Sound) -> Option<SoundEvent> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            let row = self.cue_module(client)?;
-            let sound = row
-                .storage
-                .sound_id(
-                    row.request.context.module,
-                    row.native_sounds()?,
-                    i32::from(wire.index),
-                )
-                .ok()??;
-            let ordinal = wire.entity();
-            let entity = if let Some(slot) = ordinal {
-                self.cue_entity(row, slot)?
-            } else {
-                None
-            };
-            let position = if let Some(position) = wire.position() {
-                position
-            } else if ordinal.is_some_and(|slot| slot != 0) {
-                self.runtime.server.entities.columns.position[entity?.slot as usize]
-            } else {
-                Vec3::default()
-            };
-            Some(SoundEvent {
-                sound,
-                spatial_rules: row.request.context.console.source,
-                entity,
-                channel: u16::from(wire.channel),
-                position,
-                volume: f32::from(wire.volume) / 255.0,
-                attenuation: f32::from(wire.attenuation) / 64.0,
-                time_offset: f32::from(wire.time_offset) / 1000.0,
-                client: Some(client),
-                ..SoundEvent::default()
-            })
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        {
-            let _ = (client, wire);
-            None
-        }
+    fn native_sound_event(
+        &self,
+        client: ClientId,
+        wire: Sound,
+        current: Option<ReceivedFrame<'_>>,
+    ) -> Option<SoundEvent> {
+        let resources = &self
+            .runtime
+            .client_resources
+            .get(client.0 as usize)?
+            .as_ref()?
+            .state;
+        let sound = resources.sound(u32::from(wire.index))?;
+        let ordinal = wire.entity();
+        let entity = ordinal
+            .filter(|slot| *slot != 0)
+            .map(|slot| SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot: i32::from(slot),
+            });
+        let position = if let Some(position) = wire.position() {
+            position
+        } else if ordinal.is_some_and(|slot| slot != 0) {
+            self.cue_position(client, ordinal?, current)?
+        } else {
+            Vec3::default()
+        };
+        Some(SoundEvent {
+            sound,
+            spatial_rules: resources.layout.rules,
+            entity,
+            channel: u16::from(wire.channel),
+            position,
+            volume: f32::from(wire.volume) / 255.0,
+            attenuation: f32::from(wire.attenuation) / 64.0,
+            time_offset: f32::from(wire.time_offset) / 1000.0,
+            client: Some(client),
+            ..SoundEvent::default()
+        })
     }
 }

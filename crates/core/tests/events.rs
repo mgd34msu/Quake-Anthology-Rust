@@ -22,6 +22,59 @@ fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmiss
     sequences
 }
 #[test]
+fn configstring_text_stays_exact_and_leased_until_the_native_ack() {
+    let mut ring = EventRing::load(4, 2, 4, 8).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let other = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let sequence = ring
+        .publish_configstring(
+            Some(OutputTarget::Client(ClientId(0))),
+            ModuleId(2),
+            RuleSetId::Quake2Rerelease,
+            62,
+            b"m\x80\xff",
+        )
+        .unwrap();
+    let mut batch = ring.batch(client).unwrap();
+    let event = ring.next(&mut batch).unwrap();
+    let FrameEvent::ConfigString {
+        module,
+        source,
+        index,
+        text,
+    } = event.event
+    else {
+        panic!("wrong event")
+    };
+    assert_eq!(
+        (module, source, index),
+        (ModuleId(2), RuleSetId::Quake2Rerelease, 62)
+    );
+    assert_eq!(ring.texts.get(text), Some(&b"m\x80\xff"[..]));
+    assert!(consume(&mut ring, other, OutputSubmission::BestEffort).is_empty());
+    assert!(ring.submit(
+        client,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(7))
+    ));
+    assert_eq!(ring.acknowledge(client, NativeReceipt(6)), 0);
+    assert_eq!(ring.texts.get(text), Some(&b"m\x80\xff"[..]));
+    assert_eq!(ring.acknowledge(client, NativeReceipt(7)), 1);
+    assert!(ring.texts.get(text).is_none());
+    assert_eq!(
+        ring.publish_configstring(
+            Some(OutputTarget::Client(ClientId(0))),
+            ModuleId(2),
+            RuleSetId::Quake2,
+            32,
+            b"123456789"
+        ),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.texts.truncated(), 0);
+    assert_eq!(ring.rejected_publications(), 1);
+}
+#[test]
 fn targeted_publications_belong_only_to_the_selected_consumer() {
     let mut ring = EventRing::load(4, 3, 4, 32).unwrap();
     let presentation = ring.bind(OutputTarget::Presentation).unwrap();

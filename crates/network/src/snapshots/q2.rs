@@ -99,7 +99,7 @@ pub fn write_q2_kex(
     write_records::<false, KEX_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
         writer,
         ring,
-        sequence,
+        ring.frame(sequence).ok_or(packet::Error::Context)?,
         delta_request,
         WriteRules {
             area_limit: 255,
@@ -146,10 +146,25 @@ pub fn write_q2_repro(
     policy: Q2EntityPolicy,
 ) -> Result<(), packet::Error> {
     prepare_first_person(ring, sequence, delta_request, policy.first_person)?;
+    write_q2_repro_frame(
+        writer,
+        ring,
+        ring.frame(sequence).ok_or(packet::Error::Context)?,
+        delta_request,
+        policy,
+    )
+}
+pub(super) fn write_q2_repro_frame(
+    writer: &mut Writer<'_>,
+    ring: &Q2ReproRing,
+    to: Frame<'_, REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>,
+    delta_request: Option<u32>,
+    policy: Q2EntityPolicy,
+) -> Result<(), packet::Error> {
     write_records::<true, REPRO_PLAYER, { states::Q2_RERELEASE_ENTITY_WORDS }>(
         writer,
         ring,
-        sequence,
+        to,
         delta_request,
         WriteRules {
             area_limit: 255,
@@ -164,6 +179,9 @@ pub fn write_q2_repro(
             )
         },
         |writer, number, from, to, force| {
+            let transformed =
+                to.map(|row| first_person_words(*row, from, number, force, policy.first_person));
+            let to = transformed.as_ref();
             states::write_q2_extended_entity::<false>(
                 writer,
                 number as u16,
@@ -180,7 +198,7 @@ pub fn write_q2_repro(
     )
 }
 
-fn prepare_first_person<const P: usize>(
+pub(super) fn prepare_first_person<const P: usize>(
     ring: &mut Ring<P, { states::Q2_RERELEASE_ENTITY_WORDS }>,
     sequence: u32,
     request: Option<u32>,
@@ -202,10 +220,24 @@ fn prepare_first_person<const P: usize>(
         if let Ok(index) = current.binary_search_by_key(&number, |e| e.number) {
             // Native emit_packet_entities updates the retained client frame,
             // not only the temporary delta, when suppressing its own pose.
-            current[index].words[8..14].copy_from_slice(&previous[8..14]);
+            current[index].words =
+                first_person_words(current[index].words, &previous, number, false, Some(number));
         }
     }
     Ok(())
+}
+
+fn first_person_words(
+    mut words: [u32; states::Q2_RERELEASE_ENTITY_WORDS],
+    previous: &[u32; states::Q2_RERELEASE_ENTITY_WORDS],
+    number: u32,
+    new: bool,
+    first: Option<u32>,
+) -> [u32; states::Q2_RERELEASE_ENTITY_WORDS] {
+    if !new && first == Some(number) {
+        words[8..14].copy_from_slice(&previous[8..14]);
+    }
+    words
 }
 
 fn write_old_origin(
@@ -229,7 +261,7 @@ fn write_old_origin(
 pub(super) fn write_records<const PACKED: bool, const P: usize, const E: usize>(
     writer: &mut Writer<'_>,
     ring: &Ring<P, E>,
-    sequence: u32,
+    to: Frame<'_, P, E>,
     request: Option<u32>,
     rules: WriteRules,
     player: impl FnOnce(&mut Writer<'_>, &[u32; P], &[u32; P]) -> Result<u8, crate::message::Error>,
@@ -241,7 +273,7 @@ pub(super) fn write_records<const PACKED: bool, const P: usize, const E: usize>(
         bool,
     ) -> Result<bool, crate::message::Error>,
 ) -> Result<(), packet::Error> {
-    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let sequence = to.sequence;
     let from = delta_frame(ring, sequence, request);
     let start = writer.size();
     Q2Header {
@@ -420,6 +452,7 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
             terminator: 0,
             remove_advances_old: true,
         },
+        |_| false,
         |reader| {
             let header = states::read_q2_entity_prefix(reader, rules.extended_header)?;
             if usize::from(header.number) >= rules.entity_limit {

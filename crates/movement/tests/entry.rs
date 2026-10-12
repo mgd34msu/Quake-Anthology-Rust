@@ -5,7 +5,11 @@ fn player(rules: RuleSetId) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
         trace_rules: rules,
-        tail: PlayerTail::Q2 { weapon_frame: 17 },
+        tail: PlayerTail::Q2,
+        view_weapon: qa_core::primitives::ViewWeapon {
+            frame: 17,
+            ..Default::default()
+        },
         ..Default::default()
     };
     set_bounds(&mut state);
@@ -133,7 +137,8 @@ fn netquake_uses_precise_duration_and_module_owns_jump() {
     assert_eq!(state.body.velocity.0[0], speed);
     assert_eq!(state.body.position.0[0], speed * 0.011764705f32);
     assert_eq!(state.body.position.0[2], 24.0);
-    assert_eq!(state.tail, PlayerTail::Q2 { weapon_frame: 17 });
+    assert_eq!(state.tail, PlayerTail::Q2);
+    assert_eq!(state.view_weapon.frame, 17);
 }
 #[test]
 fn classic_quantizes_while_rerelease_keeps_floating_state() {

@@ -166,11 +166,9 @@ pub fn load_q2(
                 }),
                 shutdown,
                 instruction_budget: 10_000_000,
-                configstrings: if spec.rules == RuleSetId::Quake2 {
-                    2080
-                } else {
-                    32768
-                },
+                configstrings: qa_core::configstrings::ConfigLayout::for_rules(spec.rules)
+                    .ok_or("unsupported native configuration layout")?
+                    .count,
                 files: 32,
                 entity_source: None,
             });

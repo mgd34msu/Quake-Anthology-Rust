@@ -514,9 +514,7 @@ pub enum PlayerTail {
     Q1 {
         attack_finished: f64,
     },
-    Q2 {
-        weapon_frame: i32,
-    },
+    Q2,
     Q3 {
         weapon_time: i32,
     },
@@ -540,12 +538,90 @@ pub struct PlayerState {
     pub inventory: Inventory,
     pub view_offset: Vec3,
     pub punch_angles: Vec3,
+    pub view_weapon: ViewWeapon,
     /// Native view target supplied by the player/module boundary, not geometry.
     pub ideal_pitch: f32,
     pub flags: u32,
     pub score: i32,
     pub frags: i32,
     pub tail: PlayerTail,
+}
+
+/// Native resource ordinals are relative to their publishing module/client;
+/// they are never renderer asset handles or common entity reservations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceNamespace {
+    Module(ModuleId),
+    Client(ClientId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModelRef {
+    pub namespace: ResourceNamespace,
+    pub ordinal: u32,
+}
+impl ModelRef {
+    /// Native model ordinal zero means no model in module and wire ABIs.
+    pub const fn native(namespace: ResourceNamespace, ordinal: u32) -> Option<Self> {
+        if ordinal == 0 {
+            None
+        } else {
+            Some(Self { namespace, ordinal })
+        }
+    }
+}
+
+/// Residual source-native appearance bits are interpreted using the enclosing
+/// EntityAppearance's source, independently of movement or trace rules.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NativeAppearanceTail {
+    pub colormap: u32,
+    pub effects: u64,
+    pub render_flags: u32,
+    pub event: u32,
+    pub loop_sound: u32,
+    pub solid: u32,
+    pub instance_bits: u8,
+    pub loop_volume: f32,
+    pub loop_attenuation: f32,
+    pub owner: i32,
+    pub old_frame: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EntityAppearance {
+    pub source: RuleSetId,
+    pub models: [Option<ModelRef>; 4],
+    pub frame: i32,
+    pub skin: i32,
+    pub old_origin: Vec3,
+    pub alpha: f32,
+    pub scale: f32,
+    pub native: NativeAppearanceTail,
+}
+impl Default for EntityAppearance {
+    fn default() -> Self {
+        Self {
+            source: RuleSetId::default(),
+            models: [None; 4],
+            frame: 0,
+            skin: 0,
+            old_origin: Vec3::default(),
+            alpha: 1.0,
+            scale: 1.0,
+            native: NativeAppearanceTail::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewWeapon {
+    pub model: Option<ModelRef>,
+    pub frame: i32,
+    pub offset: Vec3,
+    pub angles: Vec3,
+    pub skin: i32,
+    pub rate: i32,
 }
 
 /// One rule identity type. Each capability role selects its own value;
@@ -902,12 +978,22 @@ impl DamageFlags {
         self.0 & flag != 0
     }
 }
+/// Voice identity is either a common entity lifetime or a native namespace slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundEmitter {
+    Entity(EntityId),
+    Native {
+        namespace: ResourceNamespace,
+        slot: i32,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SoundEvent {
     pub sound: SoundId,
     /// Spatial behavior belongs to this emission, independently of shared PCM.
     pub spatial_rules: RuleSetId,
-    pub entity: Option<EntityId>,
+    pub entity: Option<SoundEmitter>,
     pub channel: u16,
     pub position: Vec3,
     pub volume: f32,

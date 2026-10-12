@@ -94,12 +94,7 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
     .enumerate()
     {
         server
-            .connect(
-                connection,
-                ModuleId(2),
-                PlayerTail::Q2 { weapon_frame: 0 },
-                None,
-            )
+            .connect(connection, ModuleId(2), PlayerTail::Q2, None)
             .unwrap();
         server.clients[slot].player.movement_rules = rule;
         server.clients[slot].player.trace_rules = rule;

@@ -2,7 +2,7 @@
 use qa_core::{
     math,
     names::NameTable,
-    primitives::{ClientId, EntityId, Pcm, RuleSetId, SoundAction, SoundEvent, SoundId, Vec3},
+    primitives::{ClientId, Pcm, RuleSetId, SoundAction, SoundEmitter, SoundEvent, SoundId, Vec3},
 };
 use std::{num::NonZeroU32, sync::Arc};
 
@@ -75,7 +75,7 @@ impl Bank {
 #[derive(Clone, Copy)]
 pub struct Listener {
     pub client: ClientId,
-    pub entity: Option<EntityId>,
+    pub entity: Option<SoundEmitter>,
     pub origin: Vec3,
     pub right: Vec3,
 }

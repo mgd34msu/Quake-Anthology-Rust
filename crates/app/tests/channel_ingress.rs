@@ -304,18 +304,19 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
             Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
                 attack_finished: 0.,
             },
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2 { weapon_frame: 0 },
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2,
             Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
         };
         assert_eq!(host.runtime.server.clients[0].player.tail, initial_tail);
         assert_eq!(host.runtime.prediction[0].player.tail, initial_tail);
         let received_tail = match protocol {
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2 { weapon_frame: 173 },
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2,
             Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: -197 },
             _ => initial_tail,
         };
         let player = &mut host.runtime.server.clients[0].player;
         player.tail = received_tail;
+        player.view_weapon.frame = 173;
         player.body.position = Vec3([12.375, -24.625, 48.125]);
         player.body.velocity = Vec3([32., -48., 64.]);
         player.health = -17;
@@ -348,6 +349,9 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         assert_eq!((frame.drains, clock.polls), (2, 2));
         let predicted = &host.runtime.prediction[0].player;
         assert_eq!(predicted.tail, received_tail);
+        if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+            assert_eq!(predicted.view_weapon.frame, 173);
+        }
         assert_eq!(
             (predicted.movement_rules, predicted.trace_rules),
             (RuleSetId::Quake3, RuleSetId::Quake2)

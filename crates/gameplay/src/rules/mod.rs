@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod movement;
 pub mod q1;
 pub mod q2;

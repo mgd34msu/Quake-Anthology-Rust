@@ -34,7 +34,12 @@ pub trait FrameSource {
     /// Waits on time only. Physical intake occurs in the two poll_events calls.
     fn wait_time(&mut self, remaining: Duration) -> Duration;
     fn elapsed(&self) -> Duration;
-    fn render(&mut self, _views: &[Option<ClientView>; SeatId::COUNT]) {}
+    fn render(
+        &mut self,
+        _views: &[Option<ClientView>; SeatId::COUNT],
+        _scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+    ) {
+    }
     fn present(&mut self);
     /// False reports an unloaded backend, not successful audio/particle proof.
     fn sound(&mut self, _event: SoundEvent) -> bool {
@@ -93,8 +98,12 @@ impl FrameSource for LiveFrame<'_> {
     fn present(&mut self) {
         self.renderer.present(self.window);
     }
-    fn render(&mut self, views: &[Option<ClientView>; SeatId::COUNT]) {
-        self.renderer.frame(views);
+    fn render(
+        &mut self,
+        views: &[Option<ClientView>; SeatId::COUNT],
+        scenes: &[Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT],
+    ) {
+        self.renderer.frame(views, scenes);
     }
 }
 
@@ -327,6 +336,7 @@ impl FrameHost {
         }
         self.run_pending_commands(frame_span);
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
+        self.publish_module_configs();
         for id in self.local_clients.into_iter().flatten() {
             let observation = self.snapshot_observation(id, server_time);
             self.runtime
@@ -350,7 +360,7 @@ impl FrameHost {
         result.client_ns = client.elapsed().as_nanos() as u64;
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
-        source.render(&self.client_views());
+        source.render(&self.client_views(), &self.client_scene_inputs());
         source.present();
         result.total_ns = source.elapsed().as_nanos() as u64;
         result
@@ -370,6 +380,39 @@ impl FrameHost {
                 angles: player.view_angles,
                 fov_x: self.console.cvars.value(self.fov),
                 time_ms: self.time.milliseconds(),
+            })
+        })
+    }
+
+    pub fn client_scene_inputs(
+        &self,
+    ) -> [Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT] {
+        std::array::from_fn(|seat| {
+            let (client, _, player) = self.local_seat(seat)?;
+            let snapshot = self
+                .runtime
+                .local_snapshots
+                .get(client.0 as usize)?
+                .as_ref()?;
+            let resources = self
+                .runtime
+                .client_resources
+                .get(client.0 as usize)?
+                .as_ref()?;
+            let channel = &self
+                .runtime
+                .network
+                .get(client, qa_core::loopback::Endpoint::Client)?
+                .channel;
+            Some(crate::client_scene::ClientSceneInput {
+                client,
+                current: channel.current_snapshot(),
+                previous: channel.previous_snapshot(),
+                projection: snapshot.entity_projection(),
+                bindings: &resources.state.models,
+                models: self.runtime.models.as_deref()?,
+                player,
+                view_entity: snapshot.view_entity(),
             })
         })
     }
@@ -413,7 +456,18 @@ impl FrameHost {
             let (client, row, player) = self.local_seat(seat)?;
             Some(qa_audio::Listener {
                 client,
-                entity: Some(row.entity),
+                entity: Some(
+                    self.runtime.local_snapshots[client.0 as usize]
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.view_entity())
+                        .map_or(
+                            qa_core::primitives::SoundEmitter::Entity(row.entity),
+                            |slot| qa_core::primitives::SoundEmitter::Native {
+                                namespace: qa_core::primitives::ResourceNamespace::Client(client),
+                                slot: slot as i32,
+                            },
+                        ),
+                ),
                 origin: player.eye(),
                 right: qa_core::math::angle_vectors(player.view_angles).right,
             })
@@ -466,7 +520,30 @@ impl FrameHost {
                                     print.text,
                                 );
                             }
-                            Incoming::Cue(cue) => self.received_cue(id, cue),
+                            Incoming::Cue { cue, current } => self.received_cue(id, cue, current),
+                            Incoming::ConfigString(config) => {
+                                if let Some(resources) =
+                                    self.runtime.client_resources[id.0 as usize].as_mut()
+                                {
+                                    resources.apply(
+                                        config.index as usize,
+                                        config.text,
+                                        self.runtime.models.as_deref(),
+                                        self.runtime.sound_bank.as_deref(),
+                                    );
+                                }
+                            }
+                            Incoming::ReliableCommand { text, .. } => {
+                                if let Some(resources) =
+                                    self.runtime.client_resources[id.0 as usize].as_mut()
+                                {
+                                    resources.apply_command(
+                                        text,
+                                        self.runtime.models.as_deref(),
+                                        self.runtime.sound_bank.as_deref(),
+                                    );
+                                }
+                            }
                             incoming => {
                                 if let Some(binding) =
                                     self.runtime.local_snapshots[id.0 as usize].as_mut()
@@ -556,9 +633,6 @@ impl FrameHost {
         });
         if let Some(id) = disconnected {
             network.unbind(id);
-            if let Some(binding) = self.runtime.local_snapshots[id.0 as usize].take() {
-                self.local_clients[binding.seat.index()] = None;
-            }
         }
         self.runtime.network = network;
     }

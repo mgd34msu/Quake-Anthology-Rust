@@ -81,7 +81,11 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
             let mut player = PlayerState {
                 movement_rules,
                 trace_rules,
-                tail: PlayerTail::Q2 { weapon_frame: 9 },
+                tail: PlayerTail::Q2,
+                view_weapon: qa_core::primitives::ViewWeapon {
+                    frame: 9,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             qa_movement::set_bounds(&mut player);
@@ -134,7 +138,8 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
                 assert!(queries.position_tests > 0);
                 assert!(!player.movement.ducked);
             }
-            assert_eq!(player.tail, PlayerTail::Q2 { weapon_frame: 9 });
+            assert_eq!(player.tail, PlayerTail::Q2);
+            assert_eq!(player.view_weapon.frame, 9);
             assert_eq!(player.movement_rules, movement_rules);
             assert_eq!(player.trace_rules, trace_rules);
         }

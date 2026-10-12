@@ -1,5 +1,8 @@
 //! Client composition uses the same scene packets for either renderer.
-use crate::host::ClientView;
+use crate::{
+    client_scene::{ClientSceneInput, SceneCounts},
+    host::ClientView,
+};
 use qa_core::{math::angle_vectors, sys_events::SeatId};
 use qa_platform::{Stopwatch, Window, WorkerError, Workers};
 use qa_render::{
@@ -165,6 +168,7 @@ pub struct Sample {
     pub stats: BackendStats,
     pub presented: bool,
     pub visible_surfaces: u32,
+    pub client_scene: SceneCounts,
 }
 #[expect(
     clippy::large_enum_variant,
@@ -321,7 +325,11 @@ impl Renderer {
             Backend::Gl(_) => caller,
         }
     }
-    pub fn frame(&mut self, views: &[Option<ClientView>; SeatId::COUNT]) {
+    pub fn frame(
+        &mut self,
+        views: &[Option<ClientView>; SeatId::COUNT],
+        scenes: &[Option<ClientSceneInput<'_>>; SeatId::COUNT],
+    ) {
         self.sample = Sample::default();
         self.draw_failed = false;
         let timer = Stopwatch::start();
@@ -366,15 +374,27 @@ impl Renderer {
                 refdef.blend_phase = BlendPhase::AfterView;
                 refdef.palette_transform = None;
             }
-            let Ok(surfaces) = scene.views[seat].query(world, refdef, None, &[]) else {
+            // Native snapshot areas use at most 255 bytes. This bounded stack
+            // scratch is shared by visibility and the copied scene command.
+            let mut area_mask = [0; 256];
+            let hidden_areas = if let Some(client_scene) = &scenes[seat] {
+                let (mask, truncated) = client_scene.hidden_areas(&mut area_mask);
+                self.sample.client_scene.unsupported += u32::from(truncated);
+                mask
+            } else {
+                &[]
+            };
+            let Ok(surfaces) = scene.views[seat].query(world, refdef, None, hidden_areas) else {
                 rejected += 1;
                 continue;
             };
             self.sample.visible_surfaces += surfaces.len() as u32;
             frame.clear_scene();
-            if !frame.add_world(client.world, surfaces)
-                || !frame.render_scene(refdef, &[], &self.assets)
-            {
+            let world_added = frame.add_world(client.world, surfaces);
+            if let Some(client_scene) = &scenes[seat] {
+                self.sample.client_scene += client_scene.append(&mut frame, &self.assets, &refdef);
+            }
+            if !world_added || !frame.render_scene(refdef, hidden_areas, &self.assets) {
                 rejected += 1;
             }
         }

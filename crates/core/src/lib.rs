@@ -3,6 +3,7 @@
 pub mod bits;
 pub mod bsp;
 pub mod checksum;
+pub mod configstrings;
 pub mod events;
 pub mod heap;
 pub mod loopback;

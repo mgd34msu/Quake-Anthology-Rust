@@ -329,6 +329,25 @@ impl Channel {
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         self.prepare_inner(unreliable, time, None, None, None)
     }
+    /// Maximum unreliable snapshot body before native reliable-flight pressure.
+    /// Successful serialization does not claim submission or acknowledgement.
+    pub fn snapshot_payload_capacity(&self) -> Result<usize, TransmitError> {
+        let header_size = self
+            .policy
+            .format
+            .size(self.transmit.direction, false)
+            .map_err(TransmitError::Header)?;
+        Ok(self.payload_capacity(header_size))
+    }
+    fn payload_capacity(&self, header_size: usize) -> usize {
+        self.transmit.message.len().min(if self.policy.datagram {
+            1024
+        } else if self.policy.fragment_payload == 0 {
+            PACKET_BYTES - header_size
+        } else {
+            32768
+        })
+    }
     fn prepare_inner(
         &mut self,
         unreliable: Option<&[u8]>,
@@ -343,12 +362,13 @@ impl Channel {
         if !self.transmit.reply_allowed {
             return Ok(None);
         }
-        let tx = &mut self.transmit;
         let header_size = self
             .policy
             .format
-            .size(tx.direction, false)
+            .size(self.transmit.direction, false)
             .map_err(TransmitError::Header)?;
+        let body_capacity = self.payload_capacity(header_size);
+        let tx = &mut self.transmit;
         let mut header = Header {
             sequence: tx.state.sequence,
             acknowledgement: self.state.sequence,
@@ -357,9 +377,7 @@ impl Channel {
             ..Header::default()
         };
         let body = unreliable.unwrap_or(&[]);
-        if self.policy.fragment_payload != 0
-            && (body.len() > tx.message.len() || body.len() > 32768)
-        {
+        if self.policy.fragment_payload != 0 && body.len() > body_capacity {
             return Err(TransmitError::MessageTooLarge);
         }
         let mut disposition = Unreliable::Included;
@@ -395,7 +413,7 @@ impl Channel {
                 disposition = Unreliable::Deferred;
                 commit = Commit::ReliableDatagram { repeat };
             } else if unreliable.is_some() {
-                if body.len() > 1024 || body.len() > tx.message.len() {
+                if body.len() > body_capacity {
                     return Err(TransmitError::MessageTooLarge);
                 }
                 header.sequence = tx.state.datagram_sequence;
@@ -429,11 +447,7 @@ impl Channel {
             if self.policy.fragment_inclusive {
                 tx.state.fragment_offset = 0;
             }
-            let capacity = if self.policy.fragment_payload == 0 {
-                (PACKET_BYTES - header_size).min(tx.flight.len())
-            } else {
-                tx.flight.len().min(32768)
-            };
+            let capacity = body_capacity.min(tx.flight.len());
             let fresh = tx.select_flight(capacity);
             if fresh {
                 tx.state.reliable_sequence ^= true;
@@ -447,15 +461,7 @@ impl Channel {
             if length > 0 {
                 tx.message[..length].copy_from_slice(&tx.flight[..length]);
             }
-            let message_capacity = if self.policy.fragment_payload == 0 {
-                tx.message.len()
-            } else {
-                tx.message.len().min(32768)
-            };
-            if body.len() <= message_capacity - length
-                && (self.policy.fragment_payload != 0
-                    || body.len() <= PACKET_BYTES - header_size - length)
-            {
+            if body.len() <= body_capacity - length {
                 tx.message[length..length + body.len()].copy_from_slice(body);
                 length += body.len();
             } else {

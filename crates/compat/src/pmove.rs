@@ -3,7 +3,7 @@ use crate::{
     memory::{ModuleMemory, Width},
     services::CallError,
 };
-use qa_core::primitives::{PlayerState, UserCmd};
+use qa_core::primitives::{ModuleId, PlayerState, ResourceNamespace, UserCmd};
 use qa_network::projection::{
     GRAVITY_WORD, MOVEMENT_WORDS, PM_FLAGS_WORD, PlayerContext, PlayerProjection,
 };
@@ -31,9 +31,6 @@ pub(crate) struct Layout {
     pub water: usize,
     pub level: usize,
     pub player: Option<usize>,
-    pub client_view: usize,
-    pub client_offset: usize,
-    pub client_punch: usize,
     pub wide: bool,
 }
 pub(crate) const CLASSIC: Layout = Layout {
@@ -66,9 +63,6 @@ pub(crate) const CLASSIC: Layout = Layout {
     water: 360,
     level: 364,
     player: None,
-    client_view: 28,
-    client_offset: 40,
-    client_punch: 52,
     wide: false,
 };
 pub(crate) const RERELEASE: Layout = Layout {
@@ -105,9 +99,6 @@ pub(crate) const RERELEASE: Layout = Layout {
     water: 3236,
     level: 3240,
     player: Some(3248),
-    client_view: 52,
-    client_offset: 64,
-    client_punch: 76,
     wide: true,
 };
 pub struct Pmove {
@@ -146,6 +137,7 @@ impl Pmove {
         &mut self,
         memory: &ModuleMemory<'_>,
         address: u64,
+        module: ModuleId,
         player: &mut PlayerState,
     ) -> Result<(), CallError> {
         for (word, &(offset, width)) in self.words.iter_mut().zip(&self.layout.state) {
@@ -156,8 +148,13 @@ impl Pmove {
         self.words[GRAVITY_WORD] = self.words[GRAVITY_WORD] as i16 as i32 as u32;
         let ground = player.movement.ground;
         let mut context = PlayerContext::default();
-        self.projection
-            .apply(&self.words, player, &mut context, |_| None);
+        self.projection.apply(
+            &self.words,
+            player,
+            &mut context,
+            ResourceNamespace::Module(module),
+            |_| None,
+        );
         player.movement.tuning.gravity = Some(context.gravity);
         if player.movement.grounded {
             player.movement.ground = ground;
@@ -178,7 +175,8 @@ impl Pmove {
             gravity: player.movement.tuning.gravity.unwrap_or(800.0),
             ..Default::default()
         };
-        self.projection.reduce(player, &context, &mut self.words);
+        self.projection
+            .reduce(player, &context, &mut self.words, |_| None);
         let clear_flags = self.layout.wide
             && matches!(
                 player.movement.mode,
@@ -215,15 +213,11 @@ impl Pmove {
         &mut self,
         memory: &ModuleMemory<'_>,
         pointer: u64,
+        module: ModuleId,
         player: &mut PlayerState,
     ) -> Result<(), CallError> {
-        self.read_state(memory, pointer, player)?;
-        player.view_angles = memory.read_vec3(pointer + self.layout.client_view as u64)?;
-        player.view_offset = memory.read_vec3(pointer + self.layout.client_offset as u64)?;
-        if self.layout.wide {
-            player.view_offset.0[2] += f32::from(memory.read_field(pointer + 48, Byte)? as i8);
-        }
-        player.punch_angles = memory.read_vec3(pointer + self.layout.client_punch as u64)?;
-        Ok(())
+        self.read_state(memory, pointer, module, player)?;
+        self.client
+            .import_presentation(memory, pointer, module, player)
     }
 }

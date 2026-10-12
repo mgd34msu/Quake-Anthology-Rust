@@ -541,3 +541,120 @@ fn stalled_reliable_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks
 fn unsent_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks() {
     stalled_peer_progress(true);
 }
+
+#[test]
+fn configuration_reaches_client_only_through_reliable_packets_and_retires_on_ack() {
+    use qa_core::{configstrings::ConfigLayout, events::OutputTarget};
+    use qa_network::commands::packet::Protocol;
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let id = runtime
+            .connect_local(
+                SeatId::FIRST,
+                qa_app::map::SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                qa_app::client_policy::ClientPolicy {
+                    client: RuleSetId::Quake3,
+                    movement: RuleSetId::Quake,
+                    trace: RuleSetId::Quake2,
+                },
+                protocol,
+                0,
+            )
+            .unwrap();
+        let layout = ConfigLayout::for_rules(protocol.rule_set()).unwrap();
+        let index = layout.resources[0].first as usize + 1;
+        let text = if protocol == Protocol::Quake3_68 {
+            vec![b'x'; 8000]
+        } else {
+            b"models/actor/tris.md2".to_vec()
+        };
+        runtime
+            .server
+            .events
+            .publish_configstring(
+                Some(OutputTarget::Client(id)),
+                ModuleId(7),
+                layout.rules,
+                index as u32,
+                &text,
+            )
+            .unwrap();
+        assert_eq!(
+            runtime.client_resources[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .configs
+                .config(index)
+                .unwrap()
+                .text,
+            b""
+        );
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![],
+        )
+        .unwrap();
+        host.local_clients[0] = Some(id);
+        let mut source = Source {
+            time: 100,
+            ..Default::default()
+        };
+        host.frame(&mut source, true);
+        assert_eq!(
+            host.runtime.client_resources[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .configs
+                .config(index)
+                .unwrap()
+                .text,
+            b"",
+            "publication is not a CLIENT write"
+        );
+        assert!(
+            !host.runtime.server.events.is_empty(),
+            "native receipt still waits for a real ACK"
+        );
+        for time in [200, 300, 400] {
+            source.time = time;
+            host.frame(&mut source, true);
+        }
+        assert_eq!(
+            host.runtime.client_resources[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .configs
+                .config(index)
+                .unwrap()
+                .text,
+            text,
+            "{protocol:?}"
+        );
+        assert!(
+            host.runtime.server.events.is_empty(),
+            "{protocol:?} config text lease retires after native ACK"
+        );
+        assert_eq!(
+            (
+                host.runtime.network.malformed,
+                host.runtime.network.command_errors
+            ),
+            (0, 0)
+        );
+        assert_eq!(host.runtime.server.events.rejected_publications(), 0);
+    }
+}

@@ -7,6 +7,10 @@ struct Consumer {
 impl EventConsumer for Consumer {
     fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission {
         self.events.push(match record.event {
+            FrameEvent::ConfigString { index, text, .. } => {
+                assert!(texts.get(text).is_some());
+                index
+            }
             FrameEvent::Sound(s) => s.sound.0,
             FrameEvent::Effect(e) => e.effect.0,
             FrameEvent::Native(event) => event.delivery.module.0 as u32,

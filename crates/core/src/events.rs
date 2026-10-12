@@ -1,6 +1,6 @@
 use crate::primitives::{
     ClientId, EffectEvent, HudEvent, ModuleId, NativeDelivery, NativeMessage, NativePayload,
-    NativeTarget, PrintEvent, PrintKind, SoundEvent, TextId, TextLease,
+    NativeTarget, PrintEvent, PrintKind, RuleSetId, SoundEvent, TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -11,6 +11,12 @@ pub enum FrameEvent {
     Print(PrintEvent),
     Hud(HudEvent),
     Native(NativeMessage),
+    ConfigString {
+        module: ModuleId,
+        source: RuleSetId,
+        index: u32,
+        text: TextId,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventStorageError {
@@ -265,6 +271,7 @@ impl EventRing {
         let mut texts = [const { None }; 4];
         let pages = match event {
             FrameEvent::Print(p) => [Some(p.text), None, None, None],
+            FrameEvent::ConfigString { text, .. } => [Some(text), None, None, None],
             FrameEvent::Native(message) => message.payload.pages,
             _ => [None; 4],
         };
@@ -363,6 +370,30 @@ impl EventRing {
             texts.insert_formatted(text)
         })
     }
+    /// Configuration is exact text, unlike a display print which may truncate.
+    pub fn publish_configstring(
+        &mut self,
+        target: Option<OutputTarget>,
+        module: ModuleId,
+        source: RuleSetId,
+        index: u32,
+        text: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        if text.len() > self.texts.width || text.contains(&0) {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.publish_text(
+            target,
+            |texts| texts.insert(text),
+            |text| FrameEvent::ConfigString {
+                module,
+                source,
+                index,
+                text,
+            },
+        )
+    }
     /// Native module strings are byte strings, including palette-font glyphs.
     pub fn print_bytes(
         &mut self,
@@ -411,20 +442,27 @@ impl EventRing {
         level: u8,
         write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
     ) -> Result<u64, EventStorageError> {
+        self.publish_text(target, write, |text| {
+            FrameEvent::Print(PrintEvent {
+                client,
+                kind,
+                level,
+                text,
+            })
+        })
+    }
+    fn publish_text(
+        &mut self,
+        target: Option<OutputTarget>,
+        write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
+        event: impl FnOnce(TextId) -> FrameEvent,
+    ) -> Result<u64, EventStorageError> {
         self.make_room();
         let Some(lease) = write(&mut self.texts) else {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         };
-        let result = self.publish(
-            target,
-            FrameEvent::Print(PrintEvent {
-                client,
-                kind,
-                level,
-                text: lease.id(),
-            }),
-        );
+        let result = self.publish(target, event(lease.id()));
         self.texts.release(lease);
         result
     }

@@ -23,6 +23,7 @@ pub struct Commands {
     previous_time: i32,
     delta_request: Option<u32>,
     previous_command: Option<NativeBackup>,
+    qw_players: Option<crate::projection::PlayerProjection>,
 }
 
 /// Native loss recovery retains one command, not an input history.
@@ -76,6 +77,8 @@ impl Commands {
             protocol,
             scratch: vec![0; 8192].into_boxed_slice(),
             previous_time: 0,
+            qw_players: (protocol == Protocol::QuakeWorld28)
+                .then(|| crate::projection::PlayerProjection::load(protocol, &[])),
             delta_request: None,
             previous_command: match protocol {
                 Protocol::QuakeWorld28 => Some(NativeBackup::QuakeWorld(ZERO_QW, None)),
@@ -452,6 +455,7 @@ impl Commands {
         length: usize,
         sequence: u32,
         channel: &mut Channel,
+        namespace: qa_core::primitives::ResourceNamespace,
         mut consume: impl FnMut(Incoming<'_>),
     ) -> Result<Option<u32>, packet::Error> {
         let scratch = &mut self.scratch[..length];
@@ -473,6 +477,7 @@ impl Commands {
         }
         let result = (|| {
             let mut at = 0;
+            let mut players = [None; crate::states::QW_PLAYER_SLOTS];
             let mut snapshot = None;
             let mut nq = if self.protocol == Protocol::NetQuake15 {
                 Some(
@@ -526,6 +531,7 @@ impl Commands {
                             prior[usize::from(number)]
                         })?;
                         prior[usize::from(player.number)] = player.command;
+                        players[usize::from(player.number)] = Some(player);
                         at += reader.byte_position();
                         consume(Incoming::PlayerInfo(player));
                     }
@@ -535,13 +541,16 @@ impl Commands {
                         let ring = channel.qw_snapshots_mut().ok_or(packet::Error::Context)?;
                         let request = ring.requested_base(sequence).flatten();
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
-                        let accepted = crate::snapshots::read_qw(
+                        let accepted = crate::snapshots::read_qw_players(
                             &mut reader,
                             ring,
                             sequence,
                             opcode == 48,
                             request,
                             outgoing,
+                            &players,
+                            self.qw_players.as_ref().ok_or(packet::Error::Context)?,
+                            namespace,
                         )?;
                         at += 1 + reader.byte_position();
                         snapshot = if accepted {
@@ -577,9 +586,19 @@ impl Commands {
                         let (cue, count) = crate::outputs::read_cue(self.protocol, &scratch[at..])
                             .map_err(|_| packet::Error::Opcode)?;
                         at += count;
-                        consume(Incoming::Cue(cue));
+                        consume(Incoming::Cue {
+                            cue,
+                            current: channel.current_snapshot(),
+                        });
                     }
-                    // Signon/configstrings, temp entities, inventory and
+                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 13) => {
+                        let (config, count) =
+                            crate::outputs::read_configstring(self.protocol, &scratch[at..])
+                                .map_err(|_| packet::Error::Opcode)?;
+                        at += count;
+                        consume(Incoming::ConfigString(config));
+                    }
+                    // Signon, temp entities, inventory and
                     // stuffed commands require their own service bindings later.
                     _ => return Err(packet::Error::Opcode),
                 }

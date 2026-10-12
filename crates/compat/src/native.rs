@@ -517,20 +517,24 @@ impl Vm {
             return Err(Error::DllAttach);
         }
         if let Some(table) = self.table_address()
-            && let (Some(stats), Some(entities)) = (&mut self.player_stats, &self.entities)
+            && let Some(entities) = &mut self.entities
         {
-            let memory = process_memory(&mut self.process)?;
-            let table = entities.read(&memory, table).map_err(Error::Service)?;
-            stats
-                .project(
-                    &memory,
-                    table,
-                    entities,
-                    calls.context.module,
-                    calls.services.server,
-                    self.pmove.as_mut(),
-                )
+            let mut memory = process_memory(&mut self.process)?;
+            let table = entities
+                .project(calls.services, &mut memory, calls.context, table)
                 .map_err(Error::Service)?;
+            if let Some(stats) = &mut self.player_stats {
+                stats
+                    .project(
+                        &memory,
+                        table,
+                        entities,
+                        calls.context.module,
+                        calls.services.server,
+                        self.pmove.as_mut(),
+                    )
+                    .map_err(Error::Service)?;
+            }
         }
         Ok(value)
     }

@@ -364,6 +364,7 @@ fn run() -> Result<(), String> {
         );
     }
     let mut loaded_world = None;
+    let mut map_rules = None;
     let mut local_clients = [None; SeatId::COUNT];
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
@@ -431,6 +432,7 @@ fn run() -> Result<(), String> {
             policy.client.name(),
             qa_gameplay::rules::link_order(policy.client) == qa_world::area::LinkOrder::Head,
         );
+        map_rules = Some(loaded.native_source);
         native_entity_source = Some(runtime.entity_sources.len());
         runtime.entity_sources.push(loaded.entity_source);
         runtime.server.area = qa_world::area::AreaGrid::load(
@@ -597,6 +599,72 @@ fn run() -> Result<(), String> {
             module.0
         );
     }
+    // Model filenames are resolved and assets registered once, after native
+    // ClientBegin has finished its startup precache. CLIENT uses received
+    // configstrings to bind those immutable assets at numeric native indices.
+    let mut model_reader = qa_formats::archive::ArchiveReader::default();
+    let precaches = host.model_precaches();
+    let mut palettes = [None; 5];
+    if let Some(world) = &loaded_world
+        && let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu
+        && let Some(rules) = map_rules
+    {
+        palettes[rules as usize] = Some(palette);
+    }
+    let mut requests = Vec::with_capacity(precaches.len());
+    for (rules, name) in precaches {
+        let path = std::str::from_utf8(name).map_err(|error| format!("model precache: {error}"))?;
+        let palette_source = match rules {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => {
+                Some(qa_render::material::resources::PaletteSource::Lmp {
+                    colors: b"gfx/palette.lmp",
+                    shades: b"gfx/colormap.lmp",
+                })
+            }
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
+                Some(qa_render::material::resources::PaletteSource::Pcx {
+                    image: b"pics/colormap.pcx",
+                })
+            }
+            RuleSetId::Quake3 => None,
+        };
+        if palettes[rules as usize].is_none()
+            && let Some(source) = palette_source
+        {
+            palettes[rules as usize] = Some(
+                qa_render::material::resources::load_palette(
+                    &host.runtime.vfs,
+                    &mut assets,
+                    source,
+                )
+                .map_err(|error| format!("model palette: {error:?}"))?,
+            );
+        }
+        let mut request =
+            qa_app::model_assets::ModelRequest::native(path, rules, palettes[rules as usize]);
+        request.required = false;
+        requests.push(request);
+    }
+    let models = qa_app::model_assets::ModelCatalog::load(
+        &host.runtime.vfs,
+        &mut model_reader,
+        &mut assets,
+        requests,
+        render_world,
+        Default::default(),
+    )?;
+    for diagnostic in &models.diagnostics {
+        host.runtime.print_event(
+            None,
+            qa_core::primitives::PrintKind::Console,
+            format_args!(
+                "model precache {}: {}\n",
+                models.name(diagnostic.name).unwrap_or("<unknown>"),
+                diagnostic.error
+            ),
+        );
+    }
+    host.set_model_catalog(std::sync::Arc::new(models));
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
     for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {
@@ -626,7 +694,7 @@ fn run() -> Result<(), String> {
     if matches!(renderer_kind, Kind::Cpu) {
         host.console.cvars.set_latch_active(band_cvar, true);
     }
-    renderer.frame(&host.client_views());
+    renderer.frame(&host.client_views(), &host.client_scene_inputs());
     #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
     let _ = renderer.merge_worker_counts(qa_platform::allocations::Counts::default());
     renderer.present(&mut window);

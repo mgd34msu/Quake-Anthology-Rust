@@ -484,14 +484,10 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
     {
         let mut server = Server::load(1, 8, 1, 0, 0, 0).map_err(|_| "server capacity")?;
         let id = server
-            .connect(
-                Connection::Local,
-                ModuleId(2),
-                PlayerTail::Q2 { weapon_frame: 29 },
-                None,
-            )
+            .connect(Connection::Local, ModuleId(2), PlayerTail::Q2, None)
             .ok_or("client slot")?;
         let client = &mut server.clients[id.0 as usize];
+        client.player.view_weapon.frame = 29;
         client.player.movement_rules = RuleSetId::Quake3;
         client.player.trace_rules = trace_rules;
         client.player.health = 100;
@@ -556,7 +552,8 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
         assert_eq!(player.body.velocity, prediction.player.body.velocity);
         assert_eq!(player.movement, prediction.player.movement);
         assert_eq!(player.trace_rules, prediction.player.trace_rules);
-        assert_eq!(player.tail, PlayerTail::Q2 { weapon_frame: 29 });
+        assert_eq!(player.tail, PlayerTail::Q2);
+        assert_eq!(player.view_weapon.frame, 29);
         assert_eq!(prediction.player.tail, PlayerTail::None);
     }
     Ok(())

@@ -86,7 +86,11 @@ pub enum Incoming<'a> {
     Snapshot(crate::snapshots::ReceivedFrame<'a>),
     PlayerInfo(crate::states::QwPlayerInfo),
     Print(crate::outputs::Print<'a>),
-    Cue(crate::outputs::Cue),
+    ConfigString(crate::outputs::ConfigString<'a>),
+    Cue {
+        cue: crate::outputs::Cue,
+        current: Option<crate::snapshots::ReceivedFrame<'a>>,
+    },
     Command {
         command: qa_core::primitives::UserCmd,
         /// Q3's byte ordinal is mapped through the registry before execution.
@@ -302,6 +306,7 @@ impl Connections {
                                 length,
                                 sequence,
                                 &mut connection.channel,
+                                qa_core::primitives::ResourceNamespace::Client(client),
                                 |incoming| {
                                     let _ = consume(client, endpoint, incoming);
                                 },

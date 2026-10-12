@@ -1,7 +1,8 @@
 use qa_core::bits::BitSet;
 use qa_core::primitives::{
-    Body, BodyAttachment, CallbackId, CollisionOwner, CollisionShape, CollisionTags, EntityId,
-    EntityPose, ModelRules, ModuleId, NameId, NativeEntity, ThinkTime, Vec3,
+    Body, BodyAttachment, CallbackId, CollisionOwner, CollisionShape, CollisionTags,
+    EntityAppearance, EntityId, EntityPose, ModelRules, ModuleId, NameId, NativeEntity, ThinkTime,
+    Vec3,
 };
 
 pub const MAX_ENTITIES: usize = 8192;
@@ -140,10 +141,7 @@ pub struct EntityColumns {
     targetname: Box<[Option<NameId>]>,
     attachment: Box<[Option<BodyAttachment>]>,
     pub flags: Box<[u32]>,
-    pub model: Box<[u32]>,
-    pub frame: Box<[u32]>,
-    pub skin: Box<[i32]>,
-    pub effects: Box<[u32]>,
+    pub appearance: Box<[EntityAppearance]>,
 }
 
 impl EntityColumns {
@@ -174,10 +172,7 @@ impl EntityColumns {
             targetname: vec![None; capacity].into_boxed_slice(),
             attachment: vec![None; capacity].into_boxed_slice(),
             flags: vec![0; capacity].into_boxed_slice(),
-            model: vec![0; capacity].into_boxed_slice(),
-            frame: vec![0; capacity].into_boxed_slice(),
-            skin: vec![0; capacity].into_boxed_slice(),
-            effects: vec![0; capacity].into_boxed_slice(),
+            appearance: vec![EntityAppearance::default(); capacity].into_boxed_slice(),
         }
     }
 
@@ -206,10 +201,7 @@ impl EntityColumns {
         self.targetname[slot] = None;
         self.attachment[slot] = None;
         self.flags[slot] = 0;
-        self.model[slot] = 0;
-        self.frame[slot] = 0;
-        self.skin[slot] = 0;
-        self.effects[slot] = 0;
+        self.appearance[slot] = EntityAppearance::default();
     }
 
     pub fn body(&self, slot: usize) -> Body {

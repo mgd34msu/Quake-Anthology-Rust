@@ -105,6 +105,7 @@ fn prepare(
         assets.image(image).unwrap(),
         &prepared,
         None,
+        None,
         assets,
     )
     .unwrap()
@@ -131,18 +132,21 @@ fn indexed_mesh_sampler_retains_raw_cutouts_colormap_rows_and_native_wrap() {
     let raster = prepare(&assets, image, None, false);
     assert_eq!(
         raster.sample([0.25, 0.5], 5.0 * 256.0 + 255.0, 1.0, 0, u32::MAX),
-        Some(12)
+        Some((12, true))
     );
     assert_eq!(
         raster.sample([1.25, 0.5], 5.0 * 256.0, 1.0, 0, u32::MAX),
-        Some(12)
+        Some((12, true))
     );
     assert_eq!(raster.sample([0.75, 0.5], 0.0, 1.0, 0, u32::MAX), None);
     assert_eq!(
         raster.sample([0.25, 0.5], 63.0 * 256.0 + 255.0, 1.0, 0, u32::MAX),
-        Some(70)
+        Some((70, true))
     );
-    assert_eq!(raster.sample([0.25, 0.5], -1.0, 1.0, 0, u32::MAX), Some(7));
+    assert_eq!(
+        raster.sample([0.25, 0.5], -1.0, 1.0, 0, u32::MAX),
+        Some((7, true))
+    );
     let unlit = prepare(&assets, image, None, true);
     assert_eq!(unlit.light(Vec3([0.0, 0.0, 1.0]), [0; 4]), 0.0);
 }
@@ -158,9 +162,15 @@ fn indexed_mesh_translucency_uses_native_one_third_and_two_thirds_table_order() 
         )
         .unwrap();
     let raster = prepare(&assets, image, Some(StageBlend::ALPHA), false);
-    assert_eq!(raster.sample([0.0; 2], 0.0, 0.33, 19, 0), Some(19 * 3 + 7));
-    assert_eq!(raster.sample([0.0; 2], 0.0, 0.66, 19, 0), Some(7 * 3 + 19));
-    assert_eq!(raster.sample([0.0; 2], 0.0, 1.0, 19, 0), Some(7));
+    assert_eq!(
+        raster.sample([0.0; 2], 0.0, 0.33, 19, 0),
+        Some((19 * 3 + 7, true))
+    );
+    assert_eq!(
+        raster.sample([0.0; 2], 0.0, 0.66, 19, 0),
+        Some((7 * 3 + 19, true))
+    );
+    assert_eq!(raster.sample([0.0; 2], 0.0, 1.0, 19, 0), Some((7, true)));
     assert_eq!(raster.sample([0.0; 2], 0.0, 0.0, 19, 0), None);
     assert_eq!(raster.sample([0.0; 2], 0.0, 0.66, 19, u32::MAX), None);
 }
@@ -186,4 +196,129 @@ fn indexed_light_selection_keeps_native_ties_and_rejects_nonfinite_inputs() {
     ] {
         assert!(AliasLight::prepare(lighting, IndexedLighting::Gray).is_none());
     }
+}
+
+#[test]
+fn q2_alias_policy_keeps_native_alpha_cutoffs_map_order_and_depth_writes() {
+    let mut assets = Assets::load().unwrap();
+    assets.register_palette(palette(true)).unwrap();
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load_base(1, 1, &[7], None).unwrap(),
+            PaletteId(0),
+        )
+        .unwrap();
+    let stage = Stage {
+        texture: StageTexture::Image(image),
+        blend: Some(StageBlend::ALPHA),
+        depth_write: false, // GL translucent depth policy stays independent.
+        ..Stage::default()
+    };
+    let prepared = StageEvaluator::load()
+        .prepare(&stage, Default::default(), DrawInputs::default())
+        .unwrap();
+    let presentation = CpuPresentation::Indexed {
+        palette: PaletteId(0),
+        lighting: IndexedLighting::Gray,
+        ambient: 0,
+        fullbright: false,
+    };
+    let raster = Raster::prepare(
+        presentation,
+        assets.image(image).unwrap(),
+        &prepared,
+        Some(SoftwareAlias {
+            fullbright_light: None,
+            alpha_cutoffs: Some([0.33, 0.66]),
+        }),
+        None,
+        &assets,
+    )
+    .unwrap()
+    .unwrap();
+    for alpha in [0.0, 0.1, 0.33] {
+        assert_eq!(
+            raster.sample([0.0; 2], 0.0, alpha, 19, 0),
+            Some((19 * 3 + 7, false))
+        );
+    }
+    for alpha in [f32::from_bits(0.33f32.to_bits() + 1), 0.5, 0.66] {
+        assert_eq!(
+            raster.sample([0.0; 2], 0.0, alpha, 19, 0),
+            Some((7 * 3 + 19, true))
+        );
+    }
+    for alpha in [f32::from_bits(0.66f32.to_bits() + 1), 0.9, 1.0] {
+        assert_eq!(
+            raster.sample([0.0; 2], 0.0, alpha, 19, u32::MAX),
+            Some((7, true))
+        );
+    }
+    assert_eq!(raster.sample([0.0; 2], 0.0, 0.5, 19, u32::MAX), None);
+    let ordinary = Raster::prepare(
+        presentation,
+        assets.image(image).unwrap(),
+        &prepared,
+        None,
+        None,
+        &assets,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        ordinary.sample([0.0; 2], 0.0, 0.9, 19, 0),
+        Some((7 * 3 + 19, false))
+    );
+    assert_eq!(ordinary.sample([0.0; 2], 0.0, 0.0, 19, 0), None);
+}
+
+#[test]
+fn q2_alias_fullbright_retains_native_clamps_and_the_supplied_local_direction() {
+    let mut assets = Assets::load().unwrap();
+    assets.register_palette(palette(false)).unwrap();
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load_base(1, 1, &[7], None).unwrap(),
+            PaletteId(0),
+        )
+        .unwrap();
+    let stage = Stage {
+        texture: StageTexture::Image(image),
+        rgb_gen: RgbGen::Identity,
+        ..Stage::default()
+    };
+    let prepared = StageEvaluator::load()
+        .prepare(&stage, Default::default(), DrawInputs::default())
+        .unwrap();
+    let direction = Vec3([-1.0, 0.0, 0.0]);
+    let raster = Raster::prepare(
+        CpuPresentation::Indexed {
+            palette: PaletteId(0),
+            lighting: IndexedLighting::Gray,
+            ambient: 0,
+            fullbright: false,
+        },
+        assets.image(image).unwrap(),
+        &prepared,
+        Some(SoftwareAlias {
+            fullbright_light: Some([128.0, 64.0]),
+            alpha_cutoffs: None,
+        }),
+        Some(EntityLighting {
+            ambient: [0.0; 3],
+            directed: [0.0; 3],
+            direction,
+        }),
+        &assets,
+    )
+    .unwrap()
+    .unwrap();
+    for normal in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.5, 0.0, 0.75]] {
+        assert_eq!(
+            raster.light(Vec3(normal), [255; 4]).to_bits(),
+            (native_light(128.0, 64.0, normal, direction.0) as f32).to_bits()
+        );
+    }
+    assert_eq!(raster.light(Vec3([1.0, 0.0, 0.0]), [255; 4]), 4032.0);
+    assert_eq!(raster.light(Vec3([-1.0, 0.0, 0.0]), [255; 4]), 8128.0);
 }

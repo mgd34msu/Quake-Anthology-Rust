@@ -178,7 +178,7 @@ fn connected_channel_delivers_cues_in_order_and_continues_to_the_next_service() 
             EventTime(2),
             |_, _, incoming| {
                 match incoming {
-                    Incoming::Cue(cue) => cues.push(cue),
+                    Incoming::Cue { cue, .. } => cues.push(cue),
                     Incoming::Print(print) => prints.push(print.text.to_vec()),
                     _ => {}
                 };

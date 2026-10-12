@@ -18,25 +18,25 @@ pub(crate) struct StatsLayout {
     pub protocol: Protocol,
 }
 pub(crate) struct PlayerStats {
-    layout: StatsLayout,
+    client: &'static crate::q2_abi::ClientLayout,
     projection: Option<PlayerProjection>,
     words: Box<[u32]>,
     stats: IndexSpan,
 }
 impl PlayerStats {
-    pub fn load(layout: StatsLayout) -> Self {
+    pub fn load(client: &'static crate::q2_abi::ClientLayout) -> Self {
         Self {
-            layout,
+            client,
             projection: None,
             words: Box::default(),
-            stats: qa_network::states::player_value_layout(layout.protocol).1[0],
+            stats: qa_network::states::player_value_layout(client.stats.protocol).1[0],
         }
     }
     pub fn bind(&mut self, bindings: &[ValueBinding]) -> Result<(), CallError> {
         if bindings.len() != self.stats.count as usize {
             return Err(CallError::Capacity);
         }
-        let projection = PlayerProjection::load_stat_values(self.layout.protocol, bindings);
+        let projection = PlayerProjection::load_stat_values(self.client.stats.protocol, bindings);
         self.words = vec![0; projection.words()].into_boxed_slice();
         self.projection = Some(projection);
         Ok(())
@@ -51,9 +51,6 @@ impl PlayerStats {
         server: &mut Server,
         mut pmove: Option<&mut crate::pmove::Pmove>,
     ) -> Result<(), CallError> {
-        let Some(projection) = &self.projection else {
-            return Ok(());
-        };
         if table.address == 0 {
             return Ok(());
         }
@@ -67,33 +64,39 @@ impl PlayerStats {
                 continue;
             };
             let slot = client.entity.slot as usize;
-            let pointer = memory.read_u64(edict + self.layout.client as u64)?;
+            let pointer = memory.read_u64(edict + self.client.stats.client as u64)?;
             if pointer == 0 {
                 continue;
             }
             let address = pointer
-                .checked_add(self.layout.offset as u64)
+                .checked_add(self.client.stats.offset as u64)
                 .ok_or(CallError::Memory)?;
-            let words = &mut self.words[self.stats.range()];
-            memory.read(address, words.len() * Width::Short.len())?;
-            for (index, word) in words.iter_mut().enumerate() {
-                *word = memory
-                    .read_field(address + (index * Width::Short.len()) as u64, Width::Short)?
-                    as i16 as i32 as u32;
+            if let Some(projection) = &self.projection {
+                let words = &mut self.words[self.stats.range()];
+                memory.read(address, words.len() * Width::Short.len())?;
+                for (index, word) in words.iter_mut().enumerate() {
+                    *word = memory
+                        .read_field(address + (index * Width::Short.len()) as u64, Width::Short)?
+                        as i16 as i32 as u32;
+                }
+                projection.apply(
+                    &self.words,
+                    &mut client.player,
+                    &mut PlayerContext::default(),
+                    qa_core::primitives::ResourceNamespace::Module(module),
+                    |_| None,
+                );
             }
-            projection.apply(
-                &self.words,
-                &mut client.player,
-                &mut PlayerContext::default(),
-                |_| None,
-            );
             if module_moves && let Some(pmove) = pmove.as_deref_mut() {
                 let (body, _) = entities.body(memory, edict)?;
-                pmove.import_client(memory, pointer, &mut client.player)?;
+                pmove.import_client(memory, pointer, module, &mut client.player)?;
                 client.player.body.position = body.position;
                 client.player.body.mins = body.mins;
                 client.player.body.maxs = body.maxs;
                 server.entities.columns.set_body(slot, client.player.body);
+            } else {
+                self.client
+                    .import_presentation(memory, pointer, module, &mut client.player)?;
             }
         }
         Ok(())

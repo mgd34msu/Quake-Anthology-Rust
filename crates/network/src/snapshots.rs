@@ -13,6 +13,36 @@ pub use q2::{
 
 pub const SLOTS: usize = 32;
 
+/// Native snapshot storage and usable entity-number boundaries selected once
+/// by the connection protocol, never inferred from common reservations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotLimits {
+    pub native_numbers: usize,
+    pub entity_capacity: usize,
+    pub area_capacity: usize,
+    pub first_entity: u32,
+    pub end_entity: u32,
+    retained_rows: Option<u64>,
+}
+pub const fn snapshot_limits(protocol: packet::Protocol) -> SnapshotLimits {
+    let (native_numbers, entity_capacity, area_capacity, first_entity, end_entity, retained_rows) =
+        match protocol {
+            packet::Protocol::NetQuake15 => (600, 600, 0, 1, 600, None),
+            packet::Protocol::QuakeWorld28 => (512, 64, 0, 1, 512, None),
+            packet::Protocol::Quake2_34 => (1024, 1023, 32, 1, 1024, Some(896)),
+            packet::Protocol::Quake2Repro1038 => (8192, 8191, 255, 1, 8192, Some(8192)),
+            packet::Protocol::Quake3_68 => (1024, 1023, 32, 0, 1023, Some(1920)),
+        };
+    SnapshotLimits {
+        native_numbers,
+        entity_capacity,
+        area_capacity,
+        first_entity,
+        end_entity,
+        retained_rows,
+    }
+}
+
 const fn slot(sequence: u32) -> usize {
     sequence as usize & (SLOTS - 1)
 }
@@ -36,6 +66,7 @@ struct Slot<const P: usize> {
     area_bytes: usize,
     count: usize,
     first_entity: u64,
+    qw_peers: u32,
     player: [u32; P],
 }
 impl<const P: usize> Slot<P> {
@@ -51,6 +82,7 @@ impl<const P: usize> Slot<P> {
         area_bytes: 0,
         count: 0,
         first_entity: 0,
+        qw_peers: 0,
         player: [0; P],
     };
 }
@@ -85,6 +117,7 @@ pub struct Ring<const P: usize, const E: usize> {
     retained_rows: Option<u64>,
     parsed_rows: u64,
     latest: Option<u32>,
+    previous: Option<u32>,
     counts: Counts,
 }
 
@@ -122,6 +155,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             retained_rows,
             parsed_rows: 0,
             latest: None,
+            previous: None,
             counts: Counts::default(),
         })
     }
@@ -205,6 +239,11 @@ impl<const P: usize, const E: usize> Ring<P, E> {
     pub fn current(&self) -> Option<Frame<'_, P, E>> {
         self.frame(self.latest?)
     }
+    /// The prior accepted frame borrows the same bounded ring. An invalid
+    /// latest frame never replaces this source, and expired rows return None.
+    pub fn previous(&self) -> Option<Frame<'_, P, E>> {
+        self.frame(self.previous?)
+    }
     /// The provider supplies native numbers and reduced words. Unrepresentable
     /// capabilities are mapped/dropped before this connection boundary.
     pub fn store(&mut self, frame: Frame<'_, P, E>) -> Result<(), packet::Error> {
@@ -257,6 +296,12 @@ impl<const P: usize, const E: usize> Ring<P, E> {
         let Some(sequence) = slot.sequence else {
             return;
         };
+        if let Some(latest) = self.latest
+            && latest != sequence
+            && self.frame(latest).is_some()
+        {
+            self.previous = Some(latest);
+        }
         let start = self
             .latest
             .map_or(1, |n| n.saturating_add(1))
@@ -332,13 +377,19 @@ impl NqStorage {
     fn load(endpoint: qa_core::loopback::Endpoint) -> Result<Self, packet::Error> {
         // Protocol 15 stock CL_EntityNum uses MAX_EDICTS=600. Raised native
         // limits belong to explicit later protocol/capability negotiation.
+        let limits = snapshot_limits(packet::Protocol::NetQuake15);
         let scratch = if endpoint == qa_core::loopback::Endpoint::Client {
-            600
+            limits.native_numbers
         } else {
             0
         };
         Ok(Self {
-            ring: NqRing::load(600, 600, 0, None)?,
+            ring: NqRing::load(
+                limits.entity_capacity,
+                limits.native_numbers,
+                limits.area_capacity,
+                limits.retained_rows,
+            )?,
             weapon_is_mask: false,
             marks: qa_core::stamps::StampSet::new(scratch),
             indices: vec![0; scratch].into_boxed_slice(),
@@ -479,7 +530,7 @@ pub(crate) enum Storage {
         // CL_ParsePlayerinfo preserves an omitted PF_COMMAND in its native
         // 64-slot frame. Only that received decoder context is retained here;
         // engine player state and the 32-slot snapshot ring remain independent.
-        player_commands: Box<[[crate::commands::QwCmd; 32]]>,
+        player_commands: Box<[[crate::commands::QwCmd; states::QW_PLAYER_SLOTS]]>,
         player_model: u32,
     },
     Quake2(Box<Q2Ring>),
@@ -522,12 +573,23 @@ impl Storage {
         protocol: packet::Protocol,
         endpoint: qa_core::loopback::Endpoint,
     ) -> Result<Self, packet::Error> {
+        let limits = snapshot_limits(protocol);
         Ok(match protocol {
             packet::Protocol::NetQuake15 => Self::NetQuake(Box::new(NqStorage::load(endpoint)?)),
             packet::Protocol::QuakeWorld28 => Self::QuakeWorld {
-                ring: Box::new(QwRing::load(64, 512, 0, None)?),
+                ring: Box::new(QwRing::load(
+                    limits.entity_capacity
+                        + if endpoint == qa_core::loopback::Endpoint::Client {
+                            states::QW_PLAYER_SLOTS
+                        } else {
+                            0
+                        },
+                    limits.native_numbers,
+                    limits.area_capacity,
+                    limits.retained_rows,
+                )?),
                 player_commands: vec![
-                    [packet::ZERO_QW; 32];
+                    [packet::ZERO_QW; states::QW_PLAYER_SLOTS];
                     if endpoint == qa_core::loopback::Endpoint::Client {
                         64
                     } else {
@@ -537,20 +599,31 @@ impl Storage {
                 .into_boxed_slice(),
                 player_model: 0,
             },
-            packet::Protocol::Quake2_34 => {
-                Self::Quake2(Box::new(Q2Ring::load(1023, 1024, 32, Some(1024 - 128))?))
-            }
+            packet::Protocol::Quake2_34 => Self::Quake2(Box::new(Q2Ring::load(
+                limits.entity_capacity,
+                limits.native_numbers,
+                limits.area_capacity,
+                limits.retained_rows,
+            )?)),
             packet::Protocol::Quake2Repro1038 => Self::Quake2Repro {
-                ring: Box::new(Q2ReproRing::load(8191, 8192, 255, Some(8192))?),
+                ring: Box::new(Q2ReproRing::load(
+                    limits.entity_capacity,
+                    limits.native_numbers,
+                    limits.area_capacity,
+                    limits.retained_rows,
+                )?),
                 frame_ms: 25,
                 entity_policy: Q2EntityPolicy {
                     beam_old_origin_fix: true,
                     ..Default::default()
                 },
             },
-            packet::Protocol::Quake3_68 => {
-                Self::Quake3(Box::new(Q3Ring::load(1023, 1024, 32, Some(2048 - 128))?))
-            }
+            packet::Protocol::Quake3_68 => Self::Quake3(Box::new(Q3Ring::load(
+                limits.entity_capacity,
+                limits.native_numbers,
+                limits.area_capacity,
+                limits.retained_rows,
+            )?)),
         })
     }
     pub(crate) fn protocol(&self) -> packet::Protocol {
@@ -587,6 +660,15 @@ impl Storage {
         }?;
         self.frame(sequence)
     }
+    pub(crate) fn previous(&self) -> Option<ReceivedFrame<'_>> {
+        match self {
+            Self::NetQuake(storage) => storage.ring.previous().map(ReceivedFrame::NetQuake),
+            Self::QuakeWorld { ring, .. } => ring.previous().map(ReceivedFrame::QuakeWorld),
+            Self::Quake2(ring) => ring.previous().map(ReceivedFrame::Quake2),
+            Self::Quake2Repro { ring, .. } => ring.previous().map(ReceivedFrame::Quake2Repro),
+            Self::Quake3(ring) => ring.previous().map(ReceivedFrame::Quake3),
+        }
+    }
     pub(crate) fn store(&mut self, frame: ReceivedFrame<'_>) -> Result<(), packet::Error> {
         match (self, frame) {
             (Self::NetQuake(storage), ReceivedFrame::NetQuake(frame)) => storage.ring.store(frame),
@@ -599,6 +681,63 @@ impl Storage {
             _ => Err(packet::Error::Context),
         }
     }
+    pub(crate) fn write_candidate(
+        &self,
+        writer: &mut Writer<'_>,
+        frame: ReceivedFrame<'_>,
+        request: Option<u32>,
+        native_clients: u32,
+    ) -> Result<(), packet::Error> {
+        match (self, frame) {
+            (Self::NetQuake(storage), ReceivedFrame::NetQuake(frame)) => {
+                write_nq_frame(writer, &storage.ring, frame)
+            }
+            (Self::QuakeWorld { ring, .. }, ReceivedFrame::QuakeWorld(frame)) => write_qw_frame(
+                writer,
+                ring,
+                frame,
+                request.and_then(|request| {
+                    let base = ring.slots[slot(request)].sequence?;
+                    (base & 63 == request & 63 && ring.frame(base).is_some())
+                        .then_some((base, request as u8))
+                }),
+            ),
+            (Self::Quake2(ring), ReceivedFrame::Quake2(frame)) => {
+                write_q2_frame(writer, ring, frame, request, native_clients)
+            }
+            (
+                Self::Quake2Repro {
+                    ring,
+                    entity_policy,
+                    ..
+                },
+                ReceivedFrame::Quake2Repro(frame),
+            ) => {
+                let mut policy = *entity_policy;
+                policy.native_clients = native_clients;
+                q2::write_q2_repro_frame(writer, ring, frame, request, policy)
+            }
+            (Self::Quake3(ring), ReceivedFrame::Quake3(frame)) => {
+                write_q3_frame(writer, ring, frame, request)
+            }
+            _ => Err(packet::Error::Context),
+        }
+    }
+    pub(crate) fn normalize_written(
+        &mut self,
+        sequence: u32,
+        request: Option<u32>,
+    ) -> Result<(), packet::Error> {
+        if let Self::Quake2Repro {
+            ring,
+            entity_policy,
+            ..
+        } = self
+        {
+            q2::prepare_first_person(ring, sequence, request, entity_policy.first_person)?;
+        }
+        Ok(())
+    }
     pub(crate) fn write(
         &mut self,
         writer: &mut Writer<'_>,
@@ -606,31 +745,9 @@ impl Storage {
         request: Option<u32>,
         native_clients: u32,
     ) -> Result<(), packet::Error> {
-        match self {
-            Self::NetQuake(storage) => write_nq(writer, &storage.ring, sequence),
-            Self::QuakeWorld { ring, .. } => {
-                // SV_EmitPacketEntities selects delta_sequence & UPDATE_MASK,
-                // not an assumed full frame number made from the request byte.
-                let request = request.and_then(|request| {
-                    let slot = ring.slots[slot(request)];
-                    let base = slot.sequence?;
-                    (base & 63 == request & 63 && ring.frame(base).is_some())
-                        .then_some((base, request as u8))
-                });
-                write_qw(writer, ring, sequence, request)
-            }
-            Self::Quake2(ring) => write_q2(writer, ring, sequence, request, native_clients),
-            Self::Quake2Repro {
-                ring,
-                entity_policy,
-                ..
-            } => {
-                let mut policy = *entity_policy;
-                policy.native_clients = native_clients;
-                write_q2_repro(writer, ring, sequence, request, policy)
-            }
-            Self::Quake3(ring) => write_q3(writer, ring, sequence, request),
-        }
+        self.normalize_written(sequence, request)?;
+        let frame = self.frame(sequence).ok_or(packet::Error::Context)?;
+        self.write_candidate(writer, frame, request, native_clients)
     }
 }
 
@@ -668,6 +785,7 @@ pub fn read_q3(
             terminator: 1023,
             remove_advances_old: false,
         },
+        |_| false,
         |reader| {
             Ok(states::EntityHeader {
                 number: reader.read_bits(10)? as u16,
@@ -731,6 +849,54 @@ pub fn read_qw(
     requested_base: Option<u32>,
     outgoing_sequence: u32,
 ) -> Result<bool, packet::Error> {
+    read_qw_records(
+        reader,
+        ring,
+        sequence,
+        delta,
+        requested_base,
+        outgoing_sequence,
+        None,
+    )
+}
+pub(crate) fn read_qw_players(
+    reader: &mut Reader<'_>,
+    ring: &mut QwRing,
+    sequence: u32,
+    delta: bool,
+    requested_base: Option<u32>,
+    outgoing_sequence: u32,
+    players: &[Option<states::QwPlayerInfo>; states::QW_PLAYER_SLOTS],
+    projection: &crate::projection::PlayerProjection,
+    namespace: qa_core::primitives::ResourceNamespace,
+) -> Result<bool, packet::Error> {
+    read_qw_records(
+        reader,
+        ring,
+        sequence,
+        delta,
+        requested_base,
+        outgoing_sequence,
+        Some((players, projection, namespace)),
+    )
+}
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Native player records share the existing snapshot merge and load-built projector"
+)]
+fn read_qw_records(
+    reader: &mut Reader<'_>,
+    ring: &mut QwRing,
+    sequence: u32,
+    delta: bool,
+    requested_base: Option<u32>,
+    outgoing_sequence: u32,
+    players: Option<(
+        &[Option<states::QwPlayerInfo>; states::QW_PLAYER_SLOTS],
+        &crate::projection::PlayerProjection,
+        qa_core::primitives::ResourceNamespace,
+    )>,
+) -> Result<bool, packet::Error> {
     if delta {
         reader.read_bits(8)?;
     }
@@ -746,14 +912,25 @@ pub fn read_qw(
         ring.slots[index].count
     };
     let mut invalid_full = false;
-    let (count, overflow) = read_entities(
+    let old = rows(&ring.entities, ring.capacity, index, count);
+    let previous_peers = if players.is_some() {
+        ring.slots[index].qw_peers
+    } else {
+        0
+    };
+    let (mut count, mut overflow) = read_entities(
         reader,
-        rows(&ring.entities, ring.capacity, index, count),
+        old,
         &ring.baselines,
         &mut ring.scratch,
         MergeRules {
             terminator: 0,
             remove_advances_old: false,
+        },
+        |row| {
+            row.number.checked_sub(1).is_some_and(|n| {
+                n < states::QW_PLAYER_SLOTS as u32 && previous_peers & (1 << n) != 0
+            })
         },
         |reader| {
             let mut header = states::read_qw_entity_header(reader)?;
@@ -772,14 +949,74 @@ pub fn read_qw(
     if invalid_full {
         return Err(packet::Error::Opcode);
     }
+    overflow |= count > 64;
+    let mut peer_mask = 0;
+    if !overflow
+        && base_valid
+        && let Some((players, projection, namespace)) = players
+    {
+        let peers = players.iter().flatten().count();
+        if count + peers > ring.scratch.len() {
+            overflow = true;
+        } else {
+            let total = count + peers;
+            let mut out = total;
+            let entity_projection =
+                crate::projection::EntityProjection::load(packet::Protocol::QuakeWorld28);
+            let mut infos = players.iter().flatten().rev().peekable();
+            while count != 0 || infos.peek().is_some() {
+                let peer_number = infos.peek().map(|info| u32::from(info.number) + 1);
+                let packet = if count != 0 {
+                    Some(ring.scratch[count - 1])
+                } else {
+                    None
+                };
+                let row = if let Some(info) = infos.peek()
+                    && packet
+                        .is_none_or(|row| peer_number.is_some_and(|number| number >= row.number))
+                {
+                    let info = **info;
+                    infos.next();
+                    if packet.is_some_and(|row| peer_number == Some(row.number)) {
+                        count -= 1;
+                    }
+                    let mut player = qa_core::primitives::PlayerState::default();
+                    let mut context = crate::projection::PlayerContext::default();
+                    projection.apply(&info.words, &mut player, &mut context, namespace, |_| None);
+                    let mut record = crate::projection::EntityRecord {
+                        position: player.body.position,
+                        velocity: player.body.velocity,
+                        angles: info.command.view_angles,
+                        appearance: context.appearance.ok_or(packet::Error::Context)?,
+                    };
+                    record.appearance.native.colormap = u32::from(info.number) + 1;
+                    let mut words = [0; states::QW_ENTITY_WORDS];
+                    entity_projection.reduce(&record, &mut words, |model| Some(model.ordinal));
+                    peer_mask |= 1 << info.number;
+                    Entity {
+                        number: u32::from(info.number) + 1,
+                        words,
+                    }
+                } else {
+                    count -= 1;
+                    ring.scratch[count]
+                };
+                out -= 1;
+                ring.scratch[out] = row;
+            }
+            ring.scratch.copy_within(out..total, 0);
+            count = total - out;
+        }
+    }
     Ok(ring.publish_received(
         Slot {
             sequence: Some(sequence),
             count,
+            qw_peers: peer_mask,
             ..Slot::ZERO
         },
         base_valid,
-        overflow || count > 64,
+        overflow,
         true,
     ))
 }
@@ -801,6 +1038,7 @@ fn read_entities<const E: usize>(
     baselines: &[[u32; E]],
     scratch: &mut [Entity<E>],
     rules: MergeRules,
+    skip_old: impl Fn(&Entity<E>) -> bool,
     mut header: impl FnMut(&mut Reader<'_>) -> Result<states::EntityHeader, packet::Error>,
     mut body: impl FnMut(
         &mut Reader<'_>,
@@ -809,7 +1047,7 @@ fn read_entities<const E: usize>(
     ) -> Result<Option<[u32; E]>, packet::Error>,
     unchanged: impl Fn(&[u32; E]) -> [u32; E],
 ) -> Result<(usize, bool), packet::Error> {
-    let mut old_index = 0;
+    let mut old = old.iter().filter(|row| !skip_old(row)).peekable();
     let mut count = 0;
     let mut overflow = false;
     let mut previous = None;
@@ -823,19 +1061,22 @@ fn read_entities<const E: usize>(
             return Err(packet::Error::Count);
         }
         previous = Some(number);
-        while old_index < old.len() {
-            let mut entity = old[old_index];
-            if entity.number >= u32::from(number) {
+        while let Some(row) = old.peek() {
+            if row.number >= u32::from(number) {
                 break;
             }
+            let mut entity = **row;
             entity.words = unchanged(&entity.words);
             append(scratch, entity, &mut count, &mut overflow);
-            old_index += 1;
+            old.next();
         }
-        let matched = old.get(old_index).filter(|e| e.number == u32::from(number));
-        let from = if let Some(e) = matched {
-            old_index += 1;
-            e.words
+        let matched = old
+            .peek()
+            .filter(|row| row.number == u32::from(number))
+            .map(|row| **row);
+        let from = if let Some(entity) = matched {
+            old.next();
+            entity.words
         } else {
             *baselines.get(number as usize).ok_or(packet::Error::Count)?
         };
@@ -850,16 +1091,13 @@ fn read_entities<const E: usize>(
                 &mut overflow,
             );
         } else if rules.remove_advances_old && matched.is_none() {
-            // Native Q2 advances the old cursor on every U_REMOVE, including
-            // an unmatched number; QW/Q3 keep their own removal behaviour.
-            old_index += 1;
+            old.next();
         }
     }
-    while old_index < old.len() {
-        let mut entity = old[old_index];
+    for row in old {
+        let mut entity = *row;
         entity.words = unchanged(&entity.words);
         append(scratch, entity, &mut count, &mut overflow);
-        old_index += 1;
     }
     Ok((count, overflow))
 }
@@ -915,7 +1153,16 @@ pub fn write_q3(
     sequence: u32,
     delta_request: Option<u32>,
 ) -> Result<(), packet::Error> {
-    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let frame = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    write_q3_frame(writer, ring, frame, delta_request)
+}
+pub(super) fn write_q3_frame(
+    writer: &mut Writer<'_>,
+    ring: &Q3Ring,
+    to: Frame<'_, { states::PLAYER_WORDS }, { states::ENTITY_WORDS }>,
+    delta_request: Option<u32>,
+) -> Result<(), packet::Error> {
+    let sequence = to.sequence;
     let areas = &to.areas[..to.areas.len().min(32)];
     // 1023 is the native packet-entity terminator. Higher common/native
     // namespace entries cannot be represented by this negotiated protocol.
@@ -953,10 +1200,20 @@ pub fn write_q2(
     delta_request: Option<u32>,
     native_clients: u32,
 ) -> Result<(), packet::Error> {
+    let frame = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    write_q2_frame(writer, ring, frame, delta_request, native_clients)
+}
+pub(super) fn write_q2_frame(
+    writer: &mut Writer<'_>,
+    ring: &Q2Ring,
+    to: Frame<'_, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>,
+    delta_request: Option<u32>,
+    native_clients: u32,
+) -> Result<(), packet::Error> {
     q2::write_records::<false, { states::Q2_PLAYER_WORDS }, { states::Q2_ENTITY_WORDS }>(
         writer,
         ring,
-        sequence,
+        to,
         delta_request,
         q2::WriteRules {
             area_limit: 32,
@@ -985,7 +1242,15 @@ pub fn write_qw(
     sequence: u32,
     delta_request: Option<(u32, u8)>,
 ) -> Result<(), packet::Error> {
-    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let frame = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    write_qw_frame(writer, ring, frame, delta_request)
+}
+pub(super) fn write_qw_frame(
+    writer: &mut Writer<'_>,
+    ring: &QwRing,
+    to: Frame<'_, 0, { states::QW_ENTITY_WORDS }>,
+    delta_request: Option<(u32, u8)>,
+) -> Result<(), packet::Error> {
     let from = delta_request.and_then(|(n, byte)| ring.frame(n).map(|frame| (frame, byte)));
     writer.write_bits(if from.is_some() { 48 } else { 47 }, 8)?;
     if let Some((_, byte)) = from {
@@ -1011,7 +1276,14 @@ pub fn write_nq(
     ring: &NqRing,
     sequence: u32,
 ) -> Result<(), packet::Error> {
-    let to = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    let frame = ring.frame(sequence).ok_or(packet::Error::Context)?;
+    write_nq_frame(writer, ring, frame)
+}
+pub(super) fn write_nq_frame(
+    writer: &mut Writer<'_>,
+    ring: &NqRing,
+    to: Frame<'_, { states::NQ_PLAYER_WORDS }, { states::NQ_ENTITY_WORDS }>,
+) -> Result<(), packet::Error> {
     let seconds = to.time.seconds() as f32;
     writer.write_bits(4, 8)?;
     writer.write_bits(seconds.to_bits(), 32)?;

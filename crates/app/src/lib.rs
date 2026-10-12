@@ -1,8 +1,11 @@
 pub mod audio;
 pub mod catalog;
 pub mod client_policy;
+pub mod client_resources;
+pub mod client_scene;
 pub mod host;
 pub mod map;
+pub mod model_assets;
 pub mod modules;
 pub mod options;
 pub mod output;
@@ -38,6 +41,9 @@ pub struct Runtime {
     pub collision: Option<WorldCollision>,
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub local_snapshots: Box<[Option<snapshots::LocalSnapshot>]>,
+    pub client_resources: Box<[Option<client_resources::ClientResources>]>,
+    pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
+    pub models: Option<std::sync::Arc<model_assets::ModelCatalog>>,
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
@@ -159,6 +165,11 @@ impl Runtime {
         let value_slots = catalog.hud.values.capacity();
         Ok(Self {
             sound_bank: None,
+            models: None,
+            client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),
+            config_publications: std::iter::repeat_with(client_resources::ConfigPublication::load)
+                .take(max_clients)
+                .collect(),
             catalog,
             vfs: Vfs::default(),
             localization: qa_content::localization::Catalog::default(),
@@ -200,7 +211,7 @@ impl Runtime {
             Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
                 attack_finished: 0.0,
             },
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2 { weapon_frame: 0 },
+            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2,
             Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
         };
         let id = self
@@ -268,12 +279,28 @@ impl Runtime {
             qa_world::area::LinkIntent::Explicit,
         );
         self.local_snapshots[id.0 as usize] = Some(snapshots::LocalSnapshot::load(
+            id,
             seat,
             client.output.ok_or("local output consumer")?,
             protocol,
             native_client,
             &self.catalog.hud.values,
         ));
+        if let Some(snapshot) = self.local_snapshots[id.0 as usize].as_mut() {
+            snapshot.set_native_clients(self.server.clients.len() as u32);
+        }
+        if let Some(visibility) = self
+            .collision
+            .as_ref()
+            .and_then(|world| world.visibility.as_deref())
+        {
+            if let Some(snapshot) = self.local_snapshots[id.0 as usize].as_mut() {
+                snapshot.load_visibility(visibility);
+            }
+        }
+        self.client_resources[id.0 as usize] =
+            client_resources::ClientResources::load(id, protocol)?;
+        self.config_publications[id.0 as usize].reset();
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)
     }
@@ -343,7 +370,15 @@ impl Runtime {
         if connection.pending_output.is_some() {
             return false;
         }
-        let mut bytes = [0; 1400];
+        let mut bytes = &mut *self.output_bytes;
+        let native_module = self.server.entities.columns.native_entity[client.entity.slot as usize]
+            .map(|native| native.module);
+        let model_limit = self.client_resources[id.0 as usize]
+            .as_ref()
+            .map_or(0, |resources| resources.state.layout.resources[0].count);
+        let mut resolve_model =
+            |reference| client_resources::model_ordinal(reference, native_module, id, model_limit);
+        let collision = &mut self.collision;
         transport::send(
             &mut connection.channel,
             time,
@@ -362,9 +397,33 @@ impl Runtime {
                         .commands
                         .as_ref()
                         .and_then(|commands| commands.delta_request());
-                    let Ok(length) =
-                        binding.encode(channel, &client.player, sequence, time, delta, &mut bytes)
-                    else {
+                    let (visibility, portals) = match collision.as_mut() {
+                        Some(world) => (
+                            world.visibility.as_deref().map(|visibility| {
+                                (visibility, &mut world.leaves, &mut *world.visibility_row)
+                            }),
+                            world.portals.as_ref(),
+                        ),
+                        None => (None, None),
+                    };
+                    let Ok(length) = binding.encode(
+                        channel,
+                        &client.player,
+                        snapshots::EntitySource {
+                            entities: &self.server.entities,
+                            players: &self.server.clients,
+                            native_module,
+                            self_entity: client.entity,
+                            native_clients: binding.native_clients(),
+                            visibility,
+                            portals,
+                            resolve_model: &mut resolve_model,
+                        },
+                        sequence,
+                        time,
+                        delta,
+                        &mut bytes,
+                    ) else {
                         return false;
                     };
                     let Ok(Some(packet)) =
