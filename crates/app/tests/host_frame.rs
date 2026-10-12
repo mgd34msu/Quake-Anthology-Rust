@@ -9,7 +9,7 @@ use qa_console::{
 };
 use qa_core::{
     loopback::Endpoint,
-    primitives::{CommandIntent, ModuleId, PlayerTail, RuleSetId},
+    primitives::{CommandIntent, ModuleId, RuleSetId},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
 use qa_session::{
@@ -289,7 +289,7 @@ fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
     let mut runtime = Runtime::load(2, []).unwrap();
     runtime
         .server
-        .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(2), None)
         .unwrap();
     let id = runtime
         .connect_local(
@@ -843,7 +843,7 @@ fn startup_epoch_and_world_ticks_keep_bot_commands_out_of_client_frames() {
     let bot = host
         .runtime
         .server
-        .connect(Connection::Bot, ModuleId(2), PlayerTail::default(), None)
+        .connect(Connection::Bot, ModuleId(2), None)
         .unwrap();
     host.runtime.server.clients[bot.0 as usize]
         .player

@@ -3,8 +3,8 @@ mod support;
 use qa_core::{
     math,
     primitives::{
-        EntityId, MovementMode, MovementTimer, Plane, PlayerState, PlayerTail, RuleSetId, UserCmd,
-        Vec3, buttons,
+        EntityId, MovementMode, MovementTimer, Plane, PlayerState, RuleSetId, UserCmd, Vec3,
+        buttons,
     },
 };
 use qa_movement::{TraceServices, pmove, set_bounds};
@@ -62,7 +62,7 @@ fn player(rules: RuleSetId, mode: MovementMode) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
         trace_rules: RuleSetId::Quake2,
-        tail: PlayerTail::Q2,
+        weapon_state: None,
         view_weapon: qa_core::primitives::ViewWeapon {
             frame: 17,
             ..Default::default()
@@ -108,7 +108,7 @@ fn q3_spectator_clips_while_noclip_uses_direct_motion_and_foreign_trace_rules() 
         assert_eq!(result.traces, world.traces);
         assert_eq!(state.movement_rules, RuleSetId::Quake3);
         assert_eq!(state.trace_rules, RuleSetId::Quake2);
-        assert_eq!(state.tail, PlayerTail::Q2);
+        assert_eq!(state.weapon_state, None);
         assert_eq!(state.view_weapon.frame, 17);
     }
 }

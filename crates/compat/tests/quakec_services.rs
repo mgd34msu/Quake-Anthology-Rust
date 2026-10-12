@@ -89,7 +89,12 @@ fn vm_with_definitions(
         &[0, 1, 2, 5, 8, -16, 11, 13, 15, 17, -41],
         globals,
         fields,
-        37,
+        fields
+            .iter()
+            .map(|(kind, offset, _)| usize::from(*offset) + if *kind == 3 { 3 } else { 1 })
+            .max()
+            .unwrap_or(37)
+            .max(37),
         96,
     );
     Vm::load(
@@ -626,7 +631,6 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
                 .connect(
                     qa_session::clients::Connection::Remote,
                     ModuleId::default(),
-                    PlayerTail::default(),
                     None,
                 )
                 .unwrap();
@@ -2630,11 +2634,17 @@ fn native_mixed_print_and_sound_components_use_one_ring_in_source_order() {
                             assert_eq!(event.native_fields.unwrap().flags, expected_flags.unwrap());
                             assert_eq!(event.spatial, calls.context.sound_policy);
                         }
-                        FrameEvent::Native(payload) => {
-                            assert_eq!(
-                                ring.texts.copy_payload(payload, &mut [0; 64]).unwrap(),
-                                expected_text.unwrap()
-                            );
+                        FrameEvent::Print(print) => {
+                            let qa_core::primitives::PrintText::Native { wire, text, .. } =
+                                print.text
+                            else {
+                                panic!("native print must retain the original wire pages")
+                            };
+                            let mut scratch = [0; 64];
+                            let bytes = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+                            assert_eq!(bytes, expected_text.unwrap());
+                            assert_eq!(&bytes[text.range()], &expected_text.unwrap()[2..3]);
+                            assert_eq!((print.kind, print.level), (PrintKind::Console, 2));
                         }
                         _ => panic!("unexpected component"),
                     }
@@ -2646,6 +2656,116 @@ fn native_mixed_print_and_sound_components_use_one_ring_in_source_order() {
             assert_eq!(ring.rejected_publications(), 0);
         });
     }
+}
+
+#[test]
+fn native_print_retains_long_rr_text_and_opaque_classic_continuation_once() {
+    use qa_core::events::{FrameEvent, OutputTarget};
+    use qa_core::primitives::PrintText;
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        with_services(rules, |calls| {
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            let mut bytes = vec![10, 0];
+            bytes.extend(std::iter::repeat_n(
+                b'x',
+                if rules == RuleSetId::Quake2 {
+                    2050
+                } else {
+                    9000
+                },
+            ));
+            bytes.push(0);
+            bytes.extend_from_slice(b"\x0fnext\0");
+            stage_native_message(calls, &bytes);
+            (ENGINE_CALLS.native_message)(
+                calls.services,
+                native_message_delivery(rules),
+                calls.context.sound_policy,
+            )
+            .unwrap();
+            let ring = &calls.services.server.events;
+            let mut batch = ring.batch(consumer).unwrap();
+            let record = ring.next(&mut batch).unwrap();
+            let FrameEvent::Print(print) = record.event else {
+                panic!("typed native print")
+            };
+            let PrintText::Native {
+                wire,
+                text,
+                consumed,
+            } = print.text
+            else {
+                panic!("one raw owner")
+            };
+            let mut scratch = vec![0; bytes.len()];
+            let raw = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+            if rules == RuleSetId::Quake2 {
+                assert_eq!(raw, bytes);
+                assert_eq!(consumed, 2049);
+                assert_eq!(text.count, 2047);
+                assert!(
+                    ring.next(&mut batch).is_none(),
+                    "unknown tail must not be independently sent after an oversized prefix"
+                );
+            } else {
+                assert_eq!(raw, &bytes[..9003]);
+                assert_eq!(consumed, 9003);
+                assert_eq!(text.count, 9000);
+                let FrameEvent::Print(after) = ring.next(&mut batch).unwrap().event else {
+                    panic!("later RR print")
+                };
+                let PrintText::Native { wire, text, .. } = after.text else {
+                    panic!("typed next")
+                };
+                let mut scratch = [0; 16];
+                let raw = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+                assert_eq!(&raw[text.range()], b"next");
+                assert!(ring.next(&mut batch).is_none());
+            }
+            assert_eq!((print.kind, print.level), (PrintKind::Notify, 0));
+            assert_eq!(ring.texts.truncated(), 0);
+        });
+    }
+    with_services(RuleSetId::Quake2, |calls| {
+        let consumer = calls
+            .services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let bytes = b"\x0a\x01a\x80\xff\0opaque";
+        stage_native_message(calls, bytes);
+        (ENGINE_CALLS.native_message)(
+            calls.services,
+            native_message_delivery(RuleSetId::Quake2),
+            calls.context.sound_policy,
+        )
+        .unwrap();
+        let ring = &calls.services.server.events;
+        let mut batch = ring.batch(consumer).unwrap();
+        let FrameEvent::Print(print) = ring.next(&mut batch).unwrap().event else {
+            panic!("print")
+        };
+        let PrintText::Native {
+            wire,
+            text,
+            consumed,
+        } = print.text
+        else {
+            panic!("raw native print")
+        };
+        let mut scratch = [0; 64];
+        let raw = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+        assert_eq!(raw, bytes);
+        assert_eq!(&raw[text.range()], b"a\x80");
+        assert_eq!(consumed, 5);
+        assert!(ring.next(&mut batch).is_none());
+    });
 }
 
 #[test]
@@ -2743,13 +2863,16 @@ fn unresolved_native_sound_preserves_sibling_print_runs() {
             for (component, expected) in [(0, &bytes[..4]), (7, &bytes[7..])] {
                 let record = ring.next(&mut batch).unwrap();
                 assert_eq!(record.delivery.unwrap().component, component);
-                let FrameEvent::Native(payload) = record.event else {
+                let FrameEvent::Print(print) = record.event else {
                     panic!("unresolved sound must not publish")
                 };
-                assert_eq!(
-                    ring.texts.copy_payload(payload, &mut [0; 32]).unwrap(),
-                    expected
-                );
+                let qa_core::primitives::PrintText::Native { wire, text, .. } = print.text else {
+                    panic!("native print storage")
+                };
+                let mut scratch = [0; 32];
+                let bytes = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+                assert_eq!(bytes, expected);
+                assert_eq!(&bytes[text.range()], &expected[2..3]);
                 assert!(ring.submit(consumer, record.sequence, OutputSubmission::BestEffort));
             }
             assert!(ring.next(&mut batch).is_none());
@@ -2886,7 +3009,6 @@ fn makestatic_copies_native_signon_values_then_frees_the_original_lifetime() {
                 .connect(
                     qa_session::clients::Connection::Remote,
                     calls.context.module,
-                    PlayerTail::default(),
                     None,
                 )
                 .unwrap();
@@ -3006,7 +3128,6 @@ fn makestatic_rejects_protected_and_malformed_removal_without_retained_ghosts() 
             .connect(
                 qa_session::clients::Connection::Remote,
                 ModuleId::default(),
-                PlayerTail::default(),
                 None,
             )
             .unwrap();
@@ -3086,5 +3207,143 @@ fn makestatic_capacity_drop_still_releases_the_source_edict() {
         assert_eq!(vm.make_static(calls.services, calls.context, value), Ok(()));
         assert!(calls.services.server.entities.resolve(id).is_none());
         assert_eq!(calls.services.server.events.rejected_publications(), 1);
+    });
+}
+
+#[test]
+fn native_weapon_deadlines_publish_for_the_owning_client_with_independent_roles() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let max_clients = calls
+                .services
+                .cvars
+                .bind("sv_maxclients", calls.context.console)
+                .unwrap();
+            calls.services.cvars.force_write(max_clients, "2").unwrap();
+            let client = calls
+                .services
+                .server
+                .connect(
+                    qa_session::clients::Connection::Local,
+                    calls.context.module,
+                    Some(NativeEntity {
+                        module: calls.context.module,
+                        slot: 2,
+                    }),
+                )
+                .unwrap();
+            let mut fields = FIELDS.to_vec();
+            fields.push((2, 37, b"attack_finished"));
+            let image = vm_with_definitions(40, GLOBALS, &fields);
+            let mut vm = seed_vm(calls, image);
+            let value = (2 * vm.stride) as u32;
+            let canonical = calls.services.server.clients[client.0 as usize].entity;
+            assert_eq!(entity(calls, &vm, value), canonical);
+            assert_ne!(canonical.slot, 2);
+            calls.context.console.source = RuleSetId::Quake2;
+            calls.context.trace_rules = RuleSetId::Quake3;
+            let player = &mut calls.services.server.clients[client.0 as usize].player;
+            player.movement_rules = RuleSetId::Quake3;
+            player.trace_rules = RuleSetId::Quake2Rerelease;
+            assert_eq!(player.weapon_state, None);
+
+            for bits in [
+                0,
+                (-3.25f32).to_bits(),
+                0x8000_0000,
+                0x3f80_0001,
+                0xffc0_1234,
+            ] {
+                write(&mut vm, value, b"attack_finished", &[bits]);
+                vm.project_entities(calls.services, calls.context).unwrap();
+                let player = &calls.services.server.clients[client.0 as usize].player;
+                let state = player.weapon_state.unwrap();
+                assert_eq!(state.source, rules);
+                assert_eq!(
+                    state.namespace,
+                    ResourceNamespace::Module(calls.context.module)
+                );
+                let WeaponReadiness::DeadlineSeconds(deadline) = state.readiness else {
+                    panic!("native QC seconds");
+                };
+                assert_eq!(deadline.to_bits(), bits);
+                assert_eq!(
+                    (player.movement_rules, player.trace_rules),
+                    (RuleSetId::Quake3, RuleSetId::Quake2Rerelease)
+                );
+            }
+
+            // Exercise real StorePF dirty publication rather than direct importer setup.
+            vm.image.globals[28] = 7.125f32.to_bits();
+            vm.image.globals[31] = vm.field_address(value, 37, 1).unwrap() as u32;
+            vm.call(calls, 6, 100, false).unwrap();
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            assert_eq!(
+                calls.services.server.clients[client.0 as usize]
+                    .player
+                    .weapon_state,
+                Some(WeaponState {
+                    source: rules,
+                    namespace: ResourceNamespace::Module(calls.context.module),
+                    readiness: WeaponReadiness::DeadlineSeconds(7.125),
+                })
+            );
+
+            let other = vm.spawn_entity(calls.services, calls.context).unwrap();
+            write(&mut vm, other, b"attack_finished", &[99.0f32.to_bits()]);
+            vm.project_entities(calls.services, calls.context).unwrap();
+            assert_eq!(
+                calls.services.server.clients[client.0 as usize]
+                    .player
+                    .weapon_state
+                    .unwrap()
+                    .readiness,
+                WeaponReadiness::DeadlineSeconds(7.125)
+            );
+            calls.services.server.clients[client.0 as usize].module = ModuleId(17);
+            write(&mut vm, value, b"attack_finished", &[123.0f32.to_bits()]);
+            vm.project_entities(calls.services, calls.context).unwrap();
+            assert_eq!(
+                calls.services.server.clients[client.0 as usize]
+                    .player
+                    .weapon_state
+                    .unwrap()
+                    .readiness,
+                WeaponReadiness::DeadlineSeconds(7.125)
+            );
+        });
+    }
+}
+
+#[test]
+fn a_missing_native_weapon_deadline_does_not_fabricate_zero() {
+    with_services(RuleSetId::Quake, |calls| {
+        let client = calls
+            .services
+            .server
+            .connect(
+                qa_session::clients::Connection::Local,
+                calls.context.module,
+                Some(NativeEntity {
+                    module: calls.context.module,
+                    slot: 1,
+                }),
+            )
+            .unwrap();
+        let mut vm = seeded_vm(calls, 8);
+        assert_eq!(
+            calls.services.server.clients[client.0 as usize]
+                .player
+                .weapon_state,
+            None
+        );
+        vm.project_entities(calls.services, calls.context).unwrap();
+        assert_eq!(
+            calls.services.server.clients[client.0 as usize]
+                .player
+                .weapon_state,
+            None
+        );
     });
 }

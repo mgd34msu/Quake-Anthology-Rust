@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    EntityId, MovementMode, MovementTimer, NumericValue, PlayerState, PlayerTail, RuleSetId,
-    ValueBinding, ValueId, ValueReset, ValueWidth, Vec3,
+    EntityId, MovementMode, MovementTimer, NumericValue, PlayerState, RuleSetId, ValueBinding,
+    ValueId, ValueReset, ValueWidth, Vec3,
 };
 use qa_network::{
     commands::{QwCmd, packet::Protocol},
@@ -246,24 +246,24 @@ fn destination() -> PlayerState {
     p.inventory.item_counts[1] = 19;
     p.movement.tuning.max_speed = Some(17.);
     p.movement.tuning.speed_multiplier = 2.;
-    p.tail = PlayerTail::Q1 {
-        attack_finished: 5.,
-    };
+    p.weapon_state = Some(qa_core::primitives::WeaponState {
+        source: qa_core::primitives::RuleSetId::Quake,
+        namespace: qa_core::primitives::ResourceNamespace::Module(qa_core::primitives::ModuleId(1)),
+        readiness: qa_core::primitives::WeaponReadiness::DeadlineSeconds(5.),
+    });
     p
 }
 
-fn assert_independent_state(p: &PlayerState) {
+fn assert_independent_state(
+    p: &PlayerState,
+    weapon_state: Option<qa_core::primitives::WeaponState>,
+) {
     assert_eq!(p.movement_rules, RuleSetId::Quake3);
     assert_eq!(p.trace_rules, RuleSetId::Quake);
     assert_eq!(p.inventory.item_counts[1], 19);
     assert_eq!(p.movement.tuning.max_speed, Some(17.));
     assert_eq!(p.movement.tuning.speed_multiplier, 2.);
-    assert_eq!(
-        p.tail,
-        PlayerTail::Q1 {
-            attack_finished: 5.
-        }
-    );
+    assert_eq!(p.weapon_state, weapon_state);
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     p.movement.remaining_ms = 70_000;
     p.view_offset = Vec3([4096., -4096., 22.0625]);
     p.punch_angles = Vec3([0.03125, -0.0625, 32.]);
-    p.tail = PlayerTail::Q2;
+    p.weapon_state = None;
     p.view_weapon.frame = 65535;
     let mut native = context();
     native.client_number = Some(255);
@@ -305,7 +305,7 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     words[..43].copy_from_slice(&decoded.words);
     words[43..].copy_from_slice(&decoded.stats);
     let mut imported = destination();
-    imported.tail = PlayerTail::Q2;
+    imported.weapon_state = None;
     assert!(projection.apply(
         &words,
         &mut imported,
@@ -325,7 +325,7 @@ fn repro_projection_preserves_float_motion_and_native_packed_fields()
     assert_eq!(imported.movement.remaining_ms, 65535);
     assert_eq!(imported.movement.mode, MovementMode::Noclip);
     assert_eq!(native.client_number, Some(255));
-    assert_eq!(imported.tail, PlayerTail::Q2);
+    assert_eq!(imported.weapon_state, None);
     assert_eq!(imported.view_weapon.frame, 65535);
     assert_eq!(
         (imported.movement_rules, imported.trace_rules),
@@ -375,7 +375,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(imported.view_angles, Vec3([-111.; 3]));
     assert!(imported.movement.grounded);
     assert_eq!(imported.movement.water_level, 2);
-    assert_independent_state(&imported);
+    assert_independent_state(&imported, destination().weapon_state);
 
     let qw = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
     let mut words = [0; states::QW_PLAYER_WORDS];
@@ -412,7 +412,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(native.command_age_ms, 0); // PF_MSEC is absent in flags 28
     assert_eq!(native.player_info_flags, 28);
     assert_eq!(native.body_yaw, 75.); // writer-only command input
-    assert_independent_state(&imported);
+    assert_independent_state(&imported, destination().weapon_state);
 
     let q2 = PlayerProjection::load(Protocol::Quake2_34, &[]);
     let mut words = [0; states::Q2_PLAYER_WORDS];
@@ -457,7 +457,7 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
         (-12, 55, 7)
     );
     assert_eq!(native.gravity, 800.);
-    assert_independent_state(&imported);
+    assert_independent_state(&imported, destination().weapon_state);
 
     let q3 = PlayerProjection::load(Protocol::Quake3_68, &[]);
     let mut words = [0; states::PLAYER_WORDS];
@@ -508,7 +508,16 @@ fn one_player_projects_into_all_native_layouts_without_changing_role_choices()
     assert_eq!(native.client_number, Some(17));
     assert_eq!(native.weapon_number, Some(5));
     assert_eq!(native.speed, 300.);
-    assert_independent_state(&imported);
+    assert_independent_state(
+        &imported,
+        Some(qa_core::primitives::WeaponState {
+            source: RuleSetId::Quake3,
+            namespace: qa_core::primitives::ResourceNamespace::Client(
+                qa_core::primitives::ClientId(0),
+            ),
+            readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(0),
+        }),
+    );
     assert_eq!(p.movement_rules, RuleSetId::Quake2);
     assert_eq!(p.trace_rules, RuleSetId::QuakeWorld);
     Ok(())
@@ -621,7 +630,7 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
         |_| None
     ));
     assert_eq!(p.movement.mode, MovementMode::Spectator);
-    p.tail = PlayerTail::Q2;
+    p.weapon_state = None;
     q2_words[23] = 42;
     assert!(q2.apply(
         &q2_words,
@@ -630,7 +639,7 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
         qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
         |_| None
     ));
-    assert_eq!(p.tail, PlayerTail::Q2);
+    assert_eq!(p.weapon_state, None);
     assert_eq!(p.view_weapon.frame, 42);
 
     let mut words = [0; states::PLAYER_WORDS];
@@ -661,7 +670,7 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
     words[20] = 1023;
     words[19] = 0;
     words[8] = 77;
-    p.tail = PlayerTail::Q3 { weapon_time: 0 };
+    p.weapon_state = None;
     for (native, mode) in [
         (3, MovementMode::Dead),
         (5, MovementMode::Frozen),
@@ -682,7 +691,16 @@ fn imports_keep_lossy_modes_and_resolve_native_lifetimes_at_the_caller() {
         assert_eq!(p.movement.ground, None);
         assert_eq!(c.ground_number, None);
         assert_eq!(p.movement.timer, MovementTimer::NONE);
-        assert_eq!(p.tail, PlayerTail::Q3 { weapon_time: 77 });
+        assert_eq!(
+            p.weapon_state,
+            Some(qa_core::primitives::WeaponState {
+                source: RuleSetId::Quake3,
+                namespace: qa_core::primitives::ResourceNamespace::Client(
+                    qa_core::primitives::ClientId(0)
+                ),
+                readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(77),
+            })
+        );
     }
 }
 
@@ -711,11 +729,13 @@ fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
         qa_core::primitives::ResourceNamespace::Client(qa_core::primitives::ClientId(0)),
         |_| panic!("short record")
     ));
+    assert_eq!(p.weapon_state, destination().weapon_state);
     assert_eq!(p.health, 9876);
     assert_eq!(p.body.position, Vec3([999.; 3]));
     assert_eq!(c.ground_number, Some(1022));
     let mut words = [0; states::PLAYER_WORDS];
     words[48] = 65534;
+    words[8] = (-17i32) as u32;
     words[20] = 1023;
     assert!(projection.apply(
         &words,
@@ -727,7 +747,16 @@ fn import_bindings_use_the_one_value_bank_and_short_records_do_not_mutate() {
     assert_eq!(p.values.get(ValueId(2)), Some(NumericValue::integer(-2)));
     assert_eq!(p.inventory.item_counts.as_ptr(), arena);
     assert_eq!(projection.dropped_bindings, 1);
-    assert_independent_state(&p);
+    assert_independent_state(
+        &p,
+        Some(qa_core::primitives::WeaponState {
+            source: RuleSetId::Quake3,
+            namespace: qa_core::primitives::ResourceNamespace::Client(
+                qa_core::primitives::ClientId(0),
+            ),
+            readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(-17),
+        }),
+    );
 }
 
 #[test]
@@ -747,9 +776,13 @@ fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_pa
             skin: 5,
             rate: 12,
         };
-        p.tail = PlayerTail::Q1 {
-            attack_finished: 99.,
-        };
+        p.weapon_state = Some(qa_core::primitives::WeaponState {
+            source: qa_core::primitives::RuleSetId::Quake,
+            namespace: qa_core::primitives::ResourceNamespace::Module(
+                qa_core::primitives::ModuleId(1),
+            ),
+            readiness: qa_core::primitives::WeaponReadiness::DeadlineSeconds(99.),
+        });
         let mut words = vec![0; projection.words()];
         assert!(projection.reduce(&p, &context(), &mut words, |model| {
             assert_eq!(model.namespace, source_namespace);
@@ -791,7 +824,7 @@ fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_pa
             words[43..].copy_from_slice(&read.stats);
         }
         let mut imported = destination();
-        let previous_tail = imported.tail;
+        let previous_tail = imported.weapon_state;
         assert!(projection.apply(
             &words,
             &mut imported,
@@ -806,7 +839,7 @@ fn view_weapon_uses_one_primitive_with_connection_model_resolution_and_native_pa
         assert_eq!(imported.view_weapon.frame, 173);
         assert_eq!(imported.view_weapon.offset, p.view_weapon.offset);
         assert_eq!(imported.view_weapon.angles, p.view_weapon.angles);
-        assert_eq!(imported.tail, previous_tail);
+        assert_eq!(imported.weapon_state, previous_tail);
         if protocol == Protocol::Quake2Repro1038 {
             assert_eq!(imported.view_weapon.skin, 5);
             assert_eq!(imported.view_weapon.rate, 12);
@@ -900,4 +933,62 @@ fn q2_player_interpolation_rejects_only_native_discontinuities() {
             assert!(!projection.can_interpolate_player(&from, &to));
         }
     }
+}
+
+#[test]
+fn q3_weapon_readiness_is_projected_without_a_protocol_selected_player_tail()
+-> Result<(), qa_network::message::Error> {
+    use qa_core::primitives::{
+        ClientId, ModuleId, ResourceNamespace, WeaponReadiness, WeaponState,
+    };
+    let projection = PlayerProjection::load(Protocol::Quake3_68, &[]);
+    let namespace = ResourceNamespace::Client(ClientId(7));
+    for timer in [i32::MIN, -197_000_071, -1, 0, i32::MAX] {
+        let mut server = player();
+        server.weapon_state = Some(WeaponState {
+            source: RuleSetId::Quake3,
+            namespace: ResourceNamespace::Module(ModuleId(13)),
+            readiness: WeaponReadiness::RemainingMilliseconds(timer),
+        });
+        let native_state = server.weapon_state;
+        let mut words = [0; states::PLAYER_WORDS];
+        assert!(projection.reduce(&server, &context(), &mut words, |_| None));
+        assert_eq!(words[8], timer as u32);
+        let mut bytes = [0; 1400];
+        let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+        states::write_q3_player(&mut writer, &[0; states::PLAYER_WORDS], &words)?;
+        let received = states::read_q3_player(
+            &mut Reader::new(writer.bytes(), Encoding::Q3),
+            &[0; states::PLAYER_WORDS],
+        )?;
+        for previous in [None, destination().weapon_state] {
+            let mut client = destination();
+            client.weapon_state = previous;
+            assert!(projection.apply(&received, &mut client, &mut context(), namespace, |_| None));
+            assert_eq!(
+                client.weapon_state,
+                Some(WeaponState {
+                    source: RuleSetId::Quake3,
+                    namespace,
+                    readiness: WeaponReadiness::RemainingMilliseconds(timer as i16 as i32),
+                })
+            );
+            assert_eq!(
+                (client.movement_rules, client.trace_rules),
+                (RuleSetId::Quake3, RuleSetId::Quake)
+            );
+        }
+        assert_eq!(server.weapon_state, native_state);
+    }
+    let mut server = destination();
+    let deadline = server.weapon_state;
+    let mut words = [0; states::PLAYER_WORDS];
+    assert!(projection.reduce(&server, &context(), &mut words, |_| None));
+    assert_eq!(words[8], 0); // The native wire carries a duration, never a QC seconds deadline.
+    assert_eq!(server.weapon_state, deadline);
+    let movement = PlayerProjection::load_movement(Protocol::Quake3_68);
+    words[8] = 99;
+    assert!(movement.apply(&words, &mut server, &mut context(), namespace, |_| None));
+    assert_eq!(server.weapon_state, deadline);
+    Ok(())
 }

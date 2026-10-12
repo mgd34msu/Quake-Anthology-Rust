@@ -258,8 +258,27 @@ fn late_connections_and_reused_client_slots_receive_each_module_signon_once() {
         .output
         .unwrap();
     let old_entity = host.runtime.server.clients[first.0 as usize].entity;
+    let sound = bank.find("sound/loop.wav").unwrap();
+    // Signon loops precede their configstring admission. A resource wait must
+    // let those later configstrings through, without advancing later services.
+    assert_eq!(
+        host.runtime.client_resources[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(1),
+        None,
+    );
     let mut source = Source::default();
     frames(&mut host, &mut source, 0, 16);
+    assert_eq!(
+        host.runtime.client_resources[first.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state
+            .sound(1),
+        Some(sound),
+    );
     assert_eq!(positions(&source, first), [8.0, 16.0]);
     assert!(
         host.runtime
@@ -322,14 +341,7 @@ fn blocked_native_peer_keeps_its_own_receipts_while_healthy_signon_and_server_ti
     let stalled = host
         .runtime
         .server
-        .connect(
-            Connection::Remote,
-            ModuleId(2),
-            PlayerTail::Q1 {
-                attack_finished: 0.0,
-            },
-            None,
-        )
+        .connect(Connection::Remote, ModuleId(2), None)
         .unwrap();
     let protocol = Protocol::QuakeWorld28;
     host.runtime

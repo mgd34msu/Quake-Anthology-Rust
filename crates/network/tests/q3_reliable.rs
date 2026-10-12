@@ -10,17 +10,62 @@ use qa_network::{
 };
 
 fn pair() -> (Channel, Channel) {
+    pair_with_limit(16384)
+}
+fn pair_with_limit(maximum: usize) -> (Channel, Channel) {
     let context = CommandContext {
         server_id: 13,
         challenge: 0x8765_abcd,
         checksum_feed: 0x1234_7654,
     };
-    let mut client = Channel::load(channel::QUAKE3, Endpoint::Client, 16384, 8).unwrap();
-    let mut server = Channel::load(channel::QUAKE3, Endpoint::Server, 16384, 8).unwrap();
+    let mut client = Channel::load(channel::QUAKE3, Endpoint::Client, maximum, 8).unwrap();
+    let mut server = Channel::load(channel::QUAKE3, Endpoint::Server, maximum, 8).unwrap();
     for c in [&mut client, &mut server] {
         c.set_command_context(context).unwrap();
     }
     (client, server)
+}
+
+#[test]
+fn encoded_command_window_drains_before_ack_and_refunds_only_after_ack() {
+    for maximum in [16384, 32768] {
+        let (mut client, mut server) = pair_with_limit(maximum);
+        let text = [b'x'; 900];
+        let mut accepted = 0;
+        for _ in 0..64 {
+            match server.queue_reliable(&text) {
+                Ok(receipt) => {
+                    accepted += 1;
+                    assert_eq!(receipt, NativeReceipt(accepted));
+                }
+                Err(TransmitError::Full) => break,
+                other => panic!("individually representable command: {other:?}"),
+            }
+        }
+        assert!(accepted > 0 && accepted < 64);
+        assert_eq!(server.queue_reliable(&text), Err(TransmitError::Full));
+        assert_eq!(server.command_state().unwrap().queued, accepted as u32);
+        assert!(server.acknowledge_commands(accepted as u32, 1).is_err());
+        let received = outputs(&mut server, &mut client);
+        assert_eq!(received.len(), accepted as usize);
+        assert!(received.iter().all(|received| received == &text));
+        assert_eq!(server.command_state().unwrap().submitted, accepted as u32);
+        assert_eq!(server.queue_reliable(&text), Err(TransmitError::Full));
+        let mut codec = Commands::load(Protocol::Quake3_68);
+        move_message(&mut client, &mut server, &mut codec, 16);
+        assert_eq!(server.reliable_receipts().len(), accepted as usize);
+        assert_eq!(
+            server.command_state().unwrap().acknowledged,
+            accepted as u32
+        );
+        assert_eq!(
+            server.queue_reliable(&text),
+            Ok(NativeReceipt(accepted + 1))
+        );
+        assert_eq!(outputs(&mut server, &mut client), [text.to_vec()]);
+        move_message(&mut client, &mut server, &mut codec, 32);
+        assert_eq!(server.reliable_receipts(), &[NativeReceipt(accepted + 1)]);
+    }
 }
 fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands, time: i32) {
     let command = UserCmd {

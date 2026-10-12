@@ -1,6 +1,6 @@
 use qa_core::primitives::{
-    Body, Bounds, CollisionOwner, CollisionShape, CommandExecution, ModuleId, Plane, PlayerTail,
-    RuleSetId, SurfaceFlags, ThinkTime, UserCmd, Vec3,
+    Body, Bounds, CollisionOwner, CollisionShape, CommandExecution, ModuleId, Plane, RuleSetId,
+    SurfaceFlags, ThinkTime, UserCmd, Vec3,
 };
 use qa_session::{
     clients::{Connection, Server},
@@ -46,7 +46,7 @@ fn failed_client_is_consumed_once_and_healthy_client_commits() {
     assert!(store.remove(stale));
     for slot in 0..2 {
         let id = server
-            .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+            .connect(Connection::Local, ModuleId(2), None)
             .unwrap();
         assert_eq!(id.0 as usize, slot);
         let client = &mut server.clients[slot];
@@ -156,7 +156,7 @@ fn prediction_rejects_stale_world_without_changing_its_hot_state() {
     let mut scratch = store.scratch();
     assert!(store.remove(geometry));
     let id = server
-        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(2), None)
         .unwrap();
     let source = &mut server.clients[id.0 as usize].player;
     source.movement_rules = RuleSetId::Quake3;

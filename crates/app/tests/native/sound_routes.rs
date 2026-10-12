@@ -482,7 +482,6 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
             .connect(
                 qa_session::clients::Connection::Remote,
                 ModuleId(1),
-                PlayerTail::Q2,
                 Some(NativeEntity {
                     module: ModuleId(1),
                     slot: 2,
@@ -1010,7 +1009,6 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
             .connect(
                 qa_session::clients::Connection::Remote,
                 ModuleId(1),
-                PlayerTail::Q2,
                 Some(NativeEntity {
                     module: ModuleId(1),
                     slot: 2,
@@ -1308,7 +1306,6 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
             .connect(
                 qa_session::clients::Connection::Remote,
                 ModuleId(1),
-                PlayerTail::Q2,
                 Some(NativeEntity {
                     module: ModuleId(1),
                     slot: 2,

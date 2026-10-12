@@ -1,6 +1,6 @@
 mod support;
 
-use qa_core::primitives::{PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3};
+use qa_core::primitives::{PlayerState, RuleSetId, UserCmd, Vec3};
 use qa_movement::TraceServices;
 use qa_world::collision::{Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules};
 use std::cell::Cell;
@@ -91,7 +91,7 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
             let mut player = PlayerState {
                 movement_rules,
                 trace_rules,
-                tail: PlayerTail::Q2,
+                weapon_state: None,
                 view_weapon: qa_core::primitives::ViewWeapon {
                     frame: 9,
                     ..Default::default()
@@ -149,7 +149,7 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
                 assert!(queries.position_tests > 0);
                 assert!(!player.movement.ducked);
             }
-            assert_eq!(player.tail, PlayerTail::Q2);
+            assert_eq!(player.weapon_state, None);
             assert_eq!(player.view_weapon.frame, 9);
             assert_eq!(player.movement_rules, movement_rules);
             assert_eq!(player.trace_rules, trace_rules);

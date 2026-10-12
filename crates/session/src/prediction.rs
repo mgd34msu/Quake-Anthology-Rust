@@ -9,7 +9,7 @@ pub struct Prediction {
     pub player: PlayerState,
 }
 impl Prediction {
-    /// Copy hot movement fields only; inventory and module tails stay owned by
+    /// Copy hot movement fields only; inventory and weapon readiness stay owned by
     /// the authoritative client. Applying a snapshot never clones an arena.
     pub fn apply_snapshot(&mut self, source: &PlayerState) {
         self.player.body = source.body;

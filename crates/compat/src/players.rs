@@ -4,7 +4,9 @@ use crate::{
     memory::{ModuleMemory, Width},
     services::CallError,
 };
-use qa_core::primitives::{ClientId, ModuleId, ValueBinding};
+use qa_core::primitives::{
+    ClientId, ModuleId, ResourceNamespace, RuleSetId, ValueBinding, WeaponReadiness, WeaponState,
+};
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
@@ -36,6 +38,7 @@ pub(crate) struct PlayerValues {
     address: PlayerAddress,
     protocol: Protocol,
     arrays: [ArrayLayout; 2],
+    weapon_time: Option<usize>,
     fields: Box<[MemoryField]>,
     projection: Option<PlayerProjection>,
     words: Box<[u32]>,
@@ -79,6 +82,10 @@ impl PlayerValues {
             address,
             protocol,
             arrays,
+            weapon_time: match address {
+                PlayerAddress::Registered => Some(44),
+                PlayerAddress::EntityClient(_) => None,
+            },
             fields: Box::default(),
             projection: None,
             words: Box::default(),
@@ -159,6 +166,16 @@ impl PlayerValues {
                     (pointer, None)
                 }
             };
+            if let Some(offset) = self.weapon_time {
+                let address = pointer
+                    .checked_add(offset as u64)
+                    .ok_or(CallError::Memory)?;
+                client.player.weapon_state = Some(WeaponState {
+                    source: RuleSetId::Quake3,
+                    namespace: ResourceNamespace::Module(module),
+                    readiness: WeaponReadiness::RemainingMilliseconds(memory.read_word(address)?),
+                });
+            }
             if let Some(projection) = &self.projection {
                 for field in &self.fields {
                     let address = pointer.checked_add(field.offset).ok_or(CallError::Memory)?;

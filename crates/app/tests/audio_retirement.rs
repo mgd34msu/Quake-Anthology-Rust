@@ -256,14 +256,14 @@ fn rejected_local_setup_and_headless_server_disconnect_do_not_leave_owned_audio(
     runtime.network = qa_network::ingress::Connections::load(1);
     let id = runtime
         .server
-        .connect(Connection::Remote, ModuleId(3), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(3), None)
         .unwrap();
     assert!(runtime.disconnect_client(id));
     assert!(runtime.server.clients[0].audio_retirement.is_none());
     assert_eq!(
         runtime
             .server
-            .connect(Connection::Remote, ModuleId(3), PlayerTail::None, None),
+            .connect(Connection::Remote, ModuleId(3), None),
         Some(id)
     );
 }

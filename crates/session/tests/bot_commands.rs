@@ -1,5 +1,5 @@
 use qa_core::{
-    primitives::{CommandIntent, ModuleId, PlayerTail, RuleSetId, Vec3, WeaponId, buttons},
+    primitives::{CommandIntent, ModuleId, RuleSetId, Vec3, WeaponId, buttons},
     sys_events::EventTime,
 };
 use qa_input::UserCmdBuilder;
@@ -19,12 +19,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     ];
     for slot in 0..64 {
         let id = server
-            .connect(
-                Connection::Bot,
-                ModuleId((slot % 3) as u16),
-                PlayerTail::default(),
-                None,
-            )
+            .connect(Connection::Bot, ModuleId((slot % 3) as u16), None)
             .unwrap();
         assert_eq!(id.0 as usize, slot);
         server.clients[slot].player.movement_rules = rules[slot % rules.len()];
@@ -69,9 +64,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
         |rules| handles.policy(&cvars, rules),
     );
     assert_eq!(server.clients[63].command.duration_ms, 77); // disconnected slot excluded
-    let reused = server
-        .connect(Connection::Bot, ModuleId(2), PlayerTail::default(), None)
-        .unwrap();
+    let reused = server.connect(Connection::Bot, ModuleId(2), None).unwrap();
     assert_eq!(reused, id);
     server.build_bot_commands(
         EventTime(5_100_000_000),
@@ -97,9 +90,7 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
     .into_iter()
     .enumerate()
     {
-        server
-            .connect(connection, ModuleId(2), PlayerTail::Q2, None)
-            .unwrap();
+        server.connect(connection, ModuleId(2), None).unwrap();
         server.clients[slot].player.movement_rules = rule;
         server.clients[slot].player.trace_rules = rule;
         server.clients[slot].command.duration_ms = 7;

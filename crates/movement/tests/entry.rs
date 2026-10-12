@@ -1,11 +1,11 @@
 mod support;
-use qa_core::primitives::{PlayerState, PlayerTail, RuleSetId, UserCmd, Vec3};
+use qa_core::primitives::{PlayerState, RuleSetId, UserCmd, Vec3};
 use qa_movement::{pmove, set_bounds};
 fn player(rules: RuleSetId) -> PlayerState {
     let mut state = PlayerState {
         movement_rules: rules,
         trace_rules: rules,
-        tail: PlayerTail::Q2,
+        weapon_state: None,
         view_weapon: qa_core::primitives::ViewWeapon {
             frame: 17,
             ..Default::default()
@@ -16,6 +16,45 @@ fn player(rules: RuleSetId) -> PlayerState {
     state.body.position = Vec3([0.0, 0.0, 24.0]);
     state.movement.grounded = true;
     state
+}
+
+#[test]
+fn movement_preserves_module_owned_weapon_readiness_for_every_movement_role() {
+    use qa_core::primitives::{ModuleId, ResourceNamespace, WeaponReadiness, WeaponState};
+    for rules in [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ] {
+        for readiness in [
+            WeaponReadiness::DeadlineSeconds(4.25),
+            WeaponReadiness::RemainingMilliseconds(-197_000_071),
+        ] {
+            let mut state = player(rules);
+            let owned = Some(WeaponState {
+                source: RuleSetId::QuakeWorld,
+                namespace: ResourceNamespace::Module(ModuleId(17)),
+                readiness,
+            });
+            state.weapon_state = owned;
+            let mut world = support::FixtureWorld::default();
+            pmove(
+                UserCmd {
+                    duration_ms: 16,
+                    server_time_ms: 16,
+                    movement: [127.0, 0.0, 0.0],
+                    ..Default::default()
+                },
+                &mut state,
+                &mut world,
+                Default::default(),
+            )
+            .expect("valid movement query");
+            assert_eq!(state.weapon_state, owned);
+        }
+    }
 }
 #[test]
 fn q3_view_angles_use_native_signed_shorts_and_pitch_delta_clamp() {
@@ -143,7 +182,7 @@ fn netquake_uses_precise_duration_and_module_owns_jump() {
     assert_eq!(state.body.velocity.0[0], speed);
     assert_eq!(state.body.position.0[0], speed * 0.011764705f32);
     assert_eq!(state.body.position.0[2], 24.0);
-    assert_eq!(state.tail, PlayerTail::Q2);
+    assert_eq!(state.weapon_state, None);
     assert_eq!(state.view_weapon.frame, 17);
 }
 #[test]

@@ -449,7 +449,7 @@ fn q3_pointcontents_uses_native_pass_identity_over_shared_world_geometry() {
 
 #[test]
 fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
-    use qa_core::primitives::{NativeEntity, PlayerTail, UserCmd, Vec3, WeaponId, buttons};
+    use qa_core::primitives::{NativeEntity, UserCmd, Vec3, WeaponId, buttons};
     use qa_session::clients::Connection;
     for addresses in [
         Addresses::Qvm { mask: 127 },
@@ -476,12 +476,7 @@ fn q3_usercmd_reads_native_clients_and_projects_exact_abi_fields() {
         .map(|native| {
             runtime
                 .server
-                .connect(
-                    Connection::Bot,
-                    native.module,
-                    PlayerTail::None,
-                    Some(native),
-                )
+                .connect(Connection::Bot, native.module, Some(native))
                 .unwrap()
         });
         assert_eq!(clients[1].0, 1);
@@ -830,6 +825,7 @@ fn local_native_and_received_priority_prints_have_identical_hud_effects() {
                             print.kind,
                             print.level,
                             texts.get(print.text).unwrap(),
+                            None,
                             &mut wire,
                         )
                         .unwrap();

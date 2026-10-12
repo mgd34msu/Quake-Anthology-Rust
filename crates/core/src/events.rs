@@ -1,8 +1,8 @@
 use crate::primitives::{
-    ClientId, EffectEvent, EntityRecord, HudEvent, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
+    ClientId, EffectEvent, EntityRecord, HudEvent, IndexSpan, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
     NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES,
-    NativeDelivery, NativePayload, NativeTarget, PrintEvent, PrintKind, RuleSetId, SoundEvent,
-    TextId, TextLease,
+    NativeDelivery, NativePayload, NativeTarget, PrintEvent, PrintKind, PrintText, RuleSetId,
+    SoundEvent, TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -114,10 +114,44 @@ impl OutputGroup<'_> {
         wire: &[u8],
         captures: &[u8],
     ) -> Result<u64, EventStorageError> {
+        self.payload(delivery, wire, captures, FrameEvent::Native)
+    }
+    pub fn print(
+        &mut self,
+        delivery: NativeDelivery,
+        kind: PrintKind,
+        level: u8,
+        wire: &[u8],
+        text: IndexSpan,
+        consumed: u32,
+    ) -> Result<u64, EventStorageError> {
+        if consumed as usize > wire.len() || !text.fits(consumed as usize) {
+            return Err(EventStorageError::TextCapacity);
+        }
+        self.payload(delivery, wire, &[], |wire| {
+            FrameEvent::Print(PrintEvent {
+                client: None,
+                kind,
+                level,
+                text: PrintText::Native {
+                    wire,
+                    text,
+                    consumed,
+                },
+            })
+        })
+    }
+    fn payload(
+        &mut self,
+        delivery: NativeDelivery,
+        wire: &[u8],
+        captures: &[u8],
+        event: impl FnOnce(NativePayload) -> FrameEvent,
+    ) -> Result<u64, EventStorageError> {
         self.room()?;
         let (payload, texts) = self.ring.native_payload(wire, captures)?;
         let fresh = (1u32 << texts.iter().flatten().count()) - 1;
-        Ok(self.stage(delivery, FrameEvent::Native(payload), texts, fresh))
+        Ok(self.stage(delivery, event(payload), texts, fresh))
     }
     fn room(&self) -> Result<(), EventStorageError> {
         if self.next == self.end {
@@ -355,7 +389,10 @@ impl EventRing {
         let mut texts = [const { None }; NATIVE_PAYLOAD_PAGES];
         let mut pages = [None; NATIVE_PAYLOAD_PAGES];
         match event {
-            FrameEvent::Print(p) => pages[0] = Some(p.text),
+            FrameEvent::Print(p) => match p.text {
+                PrintText::Text(id) => pages[0] = Some(id),
+                PrintText::Native { wire, .. } => pages = wire.pages,
+            },
             FrameEvent::ConfigString { text, .. } => pages[0] = Some(text),
             FrameEvent::Native(payload) => pages = payload.pages,
             _ => {}
@@ -667,7 +704,7 @@ impl EventRing {
                 client,
                 kind,
                 level,
-                text,
+                text: text.into(),
             })
         })
     }
@@ -910,7 +947,8 @@ impl TextStore {
         self.truncated += u64::from(writer.truncated);
         Some(lease)
     }
-    pub fn lease(&mut self, id: TextId) -> Option<TextLease> {
+    pub fn lease(&mut self, id: impl Into<PrintText>) -> Option<TextLease> {
+        let id = id.into().display()?;
         self.get(id)?;
         self.refs[id.slot as usize] = self.refs[id.slot as usize].checked_add(1)?;
         Some(TextLease { id })
@@ -925,7 +963,8 @@ impl TextStore {
             self.release(lease);
         }
     }
-    pub fn get(&self, id: TextId) -> Option<&[u8]> {
+    pub fn get(&self, id: impl Into<PrintText>) -> Option<&[u8]> {
+        let id = id.into().display()?;
         let slot = id.slot as usize;
         if id.generation == 0
             || self.generations.get(slot).copied()? != id.generation

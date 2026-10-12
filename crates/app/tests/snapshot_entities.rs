@@ -404,9 +404,6 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
         .connect(
             qa_session::clients::Connection::Remote,
             MODULE,
-            qa_core::primitives::PlayerTail::Q1 {
-                attack_finished: 0.,
-            },
             Some(NativeEntity {
                 module: MODULE,
                 slot: 2,

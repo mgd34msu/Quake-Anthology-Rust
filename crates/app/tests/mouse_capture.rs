@@ -4,7 +4,7 @@ use qa_app::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::{ModuleId, PlayerTail},
+    primitives::ModuleId,
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
 use qa_session::{clients::Connection, timing::TickRate};
@@ -61,7 +61,7 @@ fn connect(host: &mut FrameHost) -> qa_core::primitives::ClientId {
     let client = host
         .runtime
         .server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::default(), None)
+        .connect(Connection::Local, ModuleId(1), None)
         .unwrap();
     host.local_clients[0] = Some(client);
     host.local_worlds[0] = Some(qa_render::world::WorldId(0));

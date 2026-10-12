@@ -6,7 +6,7 @@ use qa_console::{commands::Console, views::Context};
 use qa_core::{
     events::OutputSubmission,
     loopback::Endpoint,
-    primitives::{ClientId, ModuleId, PlayerTail, PrintKind},
+    primitives::{ClientId, ModuleId, PrintKind},
     sys_events::{EventKind, EventTime, Peer, SysEvent, SysEventQueue},
 };
 use qa_network::{
@@ -52,7 +52,7 @@ fn host(policy: Policy) -> Result<(FrameHost, [ClientId; 2]), String> {
     for id in &mut clients {
         *id = runtime
             .server
-            .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+            .connect(Connection::Remote, ModuleId(0), None)
             .ok_or("client")?;
         for endpoint in [Endpoint::Client, Endpoint::Server] {
             runtime
@@ -302,7 +302,7 @@ fn netquake_move_duration_uses_queued_server_frame_time_instead_of_packet_or_pac
 #[test]
 fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_roles()
 -> Result<(), String> {
-    use qa_core::primitives::{PlayerTail, RuleSetId, Vec3};
+    use qa_core::primitives::{RuleSetId, Vec3};
     use qa_network::commands::packet::Protocol;
     for protocol in [
         Protocol::NetQuake15,
@@ -312,22 +312,21 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         Protocol::Quake3_68,
     ] {
         let (mut host, client) = local_host(protocol)?;
-        let initial_tail = match protocol {
-            Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
-                attack_finished: 0.,
-            },
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2,
-            Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
-        };
-        assert_eq!(host.runtime.server.clients[0].player.tail, initial_tail);
-        assert_eq!(host.runtime.prediction[0].player.tail, initial_tail);
-        let received_tail = match protocol {
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2,
-            Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: -197 },
-            _ => initial_tail,
-        };
+        assert_eq!(host.runtime.server.clients[0].player.weapon_state, None);
+        assert_eq!(host.runtime.prediction[0].player.weapon_state, None);
+        let native_weapon = Some(qa_core::primitives::WeaponState {
+            source: RuleSetId::Quake3,
+            namespace: qa_core::primitives::ResourceNamespace::Module(ModuleId(7)),
+            readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(-197),
+        });
+        let received_weapon =
+            (protocol == Protocol::Quake3_68).then_some(qa_core::primitives::WeaponState {
+                source: RuleSetId::Quake3,
+                namespace: qa_core::primitives::ResourceNamespace::Client(client),
+                readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(-197),
+            });
         let player = &mut host.runtime.server.clients[0].player;
-        player.tail = received_tail;
+        player.weapon_state = native_weapon;
         player.view_weapon.frame = 173;
         player.body.position = Vec3([12.375, -24.625, 48.125]);
         player.body.velocity = Vec3([32., -48., 64.]);
@@ -367,7 +366,11 @@ fn local_native_snapshots_import_only_after_packet_dispatch_and_preserve_client_
         let frame = host.frame(&mut clock, true);
         assert_eq!((frame.drains, clock.polls), (2, 2));
         let predicted = &host.runtime.prediction[0].player;
-        assert_eq!(predicted.tail, received_tail);
+        assert_eq!(predicted.weapon_state, received_weapon);
+        assert_eq!(
+            host.runtime.server.clients[0].player.weapon_state,
+            native_weapon
+        );
         if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
             assert_eq!(predicted.view_weapon.frame, 173);
         }
@@ -490,7 +493,7 @@ fn delayed_local_snapshot_cannot_mutate_a_reused_client_lifetime() -> Result<(),
     assert_eq!(
         host.runtime
             .server
-            .connect(Connection::Local, ModuleId(0), PlayerTail::None, None),
+            .connect(Connection::Local, ModuleId(0), None),
         Some(client)
     );
     let before = host.runtime.prediction[0].player.body.position;
@@ -519,7 +522,7 @@ fn old_connection_commands_cannot_mutate_a_reused_client_lifetime() -> Result<()
     assert_eq!(
         host.runtime
             .server
-            .connect(Connection::Local, ModuleId(0), PlayerTail::None, None),
+            .connect(Connection::Local, ModuleId(0), None),
         Some(client)
     );
     host.frame(&mut Clock::default(), true);
@@ -757,7 +760,7 @@ fn delayed_ack_keeps_the_original_consumer_generation_on_slot_reuse() -> Result<
     let replacement = host
         .runtime
         .server
-        .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(0), None)
         .ok_or("replacement")?;
     assert_eq!(client, replacement);
     let output = host.runtime.server.clients[client.0 as usize]

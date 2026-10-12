@@ -134,12 +134,7 @@ fn recipient(services: &mut EngineServices<'_>, id: ClientId) -> OutputConsumerI
     while services.server.clients[id.0 as usize].connection.is_none() {
         services
             .server
-            .connect(
-                Connection::Remote,
-                ModuleId::default(),
-                PlayerTail::default(),
-                None,
-            )
+            .connect(Connection::Remote, ModuleId::default(), None)
             .unwrap();
     }
     services.server.clients[id.0 as usize].output.unwrap()

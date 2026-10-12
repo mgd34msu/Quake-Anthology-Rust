@@ -1,6 +1,6 @@
 use qa_core::{
     primitives::{
-        Bounds, CollisionOwner, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail, RuleSetId,
+        Bounds, CollisionOwner, CommandIntent, GeometryId, ModuleId, Plane, RuleSetId,
         SurfaceFlags, UserCmd, Vec3,
     },
     sys_events::EventTime,
@@ -48,11 +48,9 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
     let (store, geometry) = floor();
     let mut scratch = store.scratch();
     let moving = server
-        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(2), None)
         .unwrap();
-    let attached = server
-        .connect(Connection::Bot, ModuleId(1), PlayerTail::None, None)
-        .unwrap();
+    let attached = server.connect(Connection::Bot, ModuleId(1), None).unwrap();
     for (slot, rules, order) in [
         (0, RuleSetId::Quake3, LinkOrder::Tail),
         (1, RuleSetId::Quake, LinkOrder::Head),
@@ -139,18 +137,14 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
     let mut predictions: [Prediction; 15] = std::array::from_fn(|_| Prediction::default());
     for (slot, prediction) in predictions.iter_mut().enumerate() {
         let connection = [Connection::Local, Connection::Remote, Connection::Bot][slot / 5];
-        let id = server
-            .connect(
-                connection,
-                ModuleId(2),
-                PlayerTail::Q1 {
-                    attack_finished: 7.0,
-                },
-                None,
-            )
-            .unwrap();
+        let id = server.connect(connection, ModuleId(2), None).unwrap();
         let client = &mut server.clients[slot];
         client.player.movement_rules = rules[slot % 5];
+        client.player.weapon_state = Some(qa_core::primitives::WeaponState {
+            source: RuleSetId::Quake,
+            namespace: qa_core::primitives::ResourceNamespace::Module(ModuleId(1)),
+            readiness: qa_core::primitives::WeaponReadiness::DeadlineSeconds(7.0),
+        });
         client.player.trace_rules = rules[slot % 5];
         qa_movement::set_bounds(&mut client.player);
         client.player.body.position = Vec3([0.0, slot as f32 * 128.0, 24.125]);
@@ -207,10 +201,14 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         assert_eq!(client.player.body.velocity, prediction.player.body.velocity);
         assert_eq!(client.player.movement, prediction.player.movement);
         assert_eq!(
-            client.player.tail,
-            PlayerTail::Q1 {
-                attack_finished: 7.0
-            }
+            client.player.weapon_state,
+            Some(qa_core::primitives::WeaponState {
+                source: qa_core::primitives::RuleSetId::Quake,
+                namespace: qa_core::primitives::ResourceNamespace::Module(
+                    qa_core::primitives::ModuleId(1)
+                ),
+                readiness: qa_core::primitives::WeaponReadiness::DeadlineSeconds(7.0)
+            })
         );
         assert!(client.player.body.position.0[0] > 0.0);
         assert_eq!(
@@ -230,10 +228,10 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
     let (store, geometry) = floor();
     let mut scratch = store.scratch();
     let moving = server
-        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(2), None)
         .unwrap();
     let obstacle = server
-        .connect(Connection::Remote, ModuleId(1), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(1), None)
         .unwrap();
     for (id, x, rules, order) in [
         (moving, 0.0, RuleSetId::Quake3, LinkOrder::Tail),
@@ -394,7 +392,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
     let mut scratch = store.scratch();
     let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
     let id = server
-        .connect(Connection::Local, ModuleId(2), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(2), None)
         .unwrap();
     let client = &mut server.clients[id.0 as usize];
     client.player.movement_rules = RuleSetId::Quake3;
@@ -494,7 +492,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
     {
         let mut server = Server::load(1, 8, 1, 0, 0, 0).map_err(|_| "server capacity")?;
         let id = server
-            .connect(Connection::Local, ModuleId(2), PlayerTail::Q2, None)
+            .connect(Connection::Local, ModuleId(2), None)
             .ok_or("client slot")?;
         let client = &mut server.clients[id.0 as usize];
         client.player.view_weapon.frame = 29;
@@ -568,9 +566,9 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
         assert_eq!(player.body.velocity, prediction.player.body.velocity);
         assert_eq!(player.movement, prediction.player.movement);
         assert_eq!(player.trace_rules, prediction.player.trace_rules);
-        assert_eq!(player.tail, PlayerTail::Q2);
+        assert_eq!(player.weapon_state, None);
         assert_eq!(player.view_weapon.frame, 29);
-        assert_eq!(prediction.player.tail, PlayerTail::None);
+        assert_eq!(prediction.player.weapon_state, None);
     }
     Ok(())
 }

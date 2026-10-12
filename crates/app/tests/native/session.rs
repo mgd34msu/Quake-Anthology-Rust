@@ -433,7 +433,7 @@ fn checked_exports_preserve_names_and_native_command_arguments() {
 }
 
 fn native_usercmd_uses_session_dispatch_and_native_client_identity() {
-    use qa_core::primitives::{NativeEntity, PlayerTail, UserCmd};
+    use qa_core::primitives::{NativeEntity, UserCmd};
     use qa_session::clients::Connection;
     for encoding in [Encoding::Elf, Encoding::Pe] {
         // GetUsercmd(0, stack_buffer), then return stack_buffer.serverTime.
@@ -490,7 +490,6 @@ fn native_usercmd_uses_session_dispatch_and_native_client_identity() {
                 .connect(
                     Connection::Bot,
                     module,
-                    PlayerTail::None,
                     Some(NativeEntity { module, slot: 0 }),
                 )
                 .unwrap()
@@ -2253,7 +2252,7 @@ fn native_import_code(
 fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
     use qa_app::modules::{ApiCheck, Q2Clients};
     use qa_compat::native::q2::Game;
-    use qa_core::primitives::{NativeEntity, PlayerTail};
+    use qa_core::primitives::NativeEntity;
     use qa_session::clients::Connection;
     fn error_text(error: impl std::fmt::Display) -> qa_core::text::FixedText<256> {
         use std::fmt::Write;
@@ -2424,7 +2423,7 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             let mut runtime = Runtime::load(2, []).unwrap();
             let id = runtime
                 .server
-                .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+                .connect(Connection::Local, ModuleId(0), None)
                 .unwrap();
             runtime.server.clients[id.0 as usize].player.movement_rules = RuleSetId::Quake3;
             runtime.server.clients[id.0 as usize].player.trace_rules = RuleSetId::Quake;
@@ -4858,7 +4857,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 game.vm.process.memory().unwrap()[(entity_address - base) as usize + 1377],
                 0
             );
-            use qa_core::primitives::{NativeEntity, PlayerTail, PrintKind};
+            use qa_core::primitives::{NativeEntity, PrintKind};
             let native = NativeEntity {
                 module: ModuleId(1),
                 slot: 2,
@@ -4871,7 +4870,6 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                 .connect(
                     qa_session::clients::Connection::Local,
                     ModuleId(1),
-                    PlayerTail::None,
                     Some(native),
                 )
                 .unwrap();

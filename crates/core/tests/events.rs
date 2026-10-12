@@ -831,3 +831,138 @@ fn client_audio_retirement_is_a_presentation_only_lifetime_control() {
     );
     assert!(ring.is_empty());
 }
+
+#[test]
+fn grouped_native_prints_retain_multi_page_raw_text_until_each_real_receipt() {
+    let mut ring = EventRing::load(8, 2, 8, OUTPUT_PAGE_BYTES).unwrap();
+    let first = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let mut delivery = native_delivery(NativeTarget::All);
+    delivery.source = RuleSetId::Quake2Rerelease;
+    delivery.reliable = true;
+    let mut bytes = vec![b'x'; OUTPUT_PAGE_BYTES + 100];
+    bytes[0] = 10;
+    bytes[1] = 0;
+    let last = bytes.len() - 1;
+    bytes[last] = 0;
+    let span = IndexSpan {
+        first: 2,
+        count: (bytes.len() - 3) as u32,
+    };
+    let range = ring
+        .publish_group(2, |group| {
+            group.print(
+                delivery,
+                PrintKind::Notify,
+                0,
+                &bytes,
+                span,
+                bytes.len() as u32,
+            )?;
+            group.print(
+                NativeDelivery {
+                    component: bytes.len() as u32,
+                    ..delivery
+                },
+                PrintKind::Center,
+                2,
+                b"\x0fafter\0",
+                IndexSpan { first: 1, count: 5 },
+                7,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut batch = ring.batch(first).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Print(print) = record.event else {
+        panic!("typed print")
+    };
+    let PrintText::Native { wire, text, .. } = print.text else {
+        panic!("raw page owner")
+    };
+    let mut scratch = vec![0; bytes.len()];
+    let stored = ring.texts.copy_payload(wire, &mut scratch).unwrap();
+    assert_eq!(stored, bytes);
+    assert_eq!(text, span);
+    assert_eq!(&stored[text.range()], &bytes[2..last]);
+    assert_eq!(ring.texts.truncated(), 0);
+    assert!(
+        ring.texts.get(print.text).is_none(),
+        "SERVER wire is not a CLIENT display lease"
+    );
+    for sequence in range.clone() {
+        assert!(ring.submit(
+            first,
+            sequence,
+            OutputSubmission::Reliable(NativeReceipt(sequence + 1))
+        ));
+        assert!(ring.submit(second, sequence, OutputSubmission::BestEffort));
+    }
+    assert_eq!(ring.len(), 2);
+    assert!(ring.texts.copy_payload(wire, &mut scratch).is_some());
+    assert_eq!(ring.acknowledge(first, NativeReceipt(1)), 1);
+    assert!(ring.texts.copy_payload(wire, &mut scratch).is_none());
+    assert_eq!(ring.len(), 1);
+    assert_eq!(ring.acknowledge(first, NativeReceipt(2)), 1);
+    assert!(ring.is_empty());
+}
+
+#[test]
+fn grouped_native_print_failure_has_no_visible_prefix_or_leaked_pages() {
+    let mut ring = EventRing::load(4, 1, 1, 8).unwrap();
+    let consumer = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let delivery = native_delivery(NativeTarget::All);
+    let checkpoint = (
+        ring.sequence_range(),
+        ring.texts.reused(),
+        ring.texts.truncated(),
+    );
+    assert_eq!(
+        ring.publish_group(2, |group| {
+            group.print(
+                delivery,
+                PrintKind::Console,
+                2,
+                b"\x0a\x02p\0",
+                IndexSpan { first: 2, count: 1 },
+                4,
+            )?;
+            group.print(
+                delivery,
+                PrintKind::Console,
+                2,
+                b"\x0a\x02q\0",
+                IndexSpan { first: 2, count: 1 },
+                4,
+            )?;
+            Ok(())
+        }),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(
+        (
+            ring.sequence_range(),
+            ring.texts.reused(),
+            ring.texts.truncated()
+        ),
+        checkpoint
+    );
+    assert_eq!(ring.rejected_publications(), 1);
+    assert!(ring.next(&mut ring.batch(consumer).unwrap()).is_none());
+    assert!(ring.texts.insert(b"reusable").is_some());
+    assert_eq!(
+        ring.publish_group(1, |group| {
+            group.print(
+                delivery,
+                PrintKind::Console,
+                2,
+                b"\x0a\x02p\0",
+                IndexSpan { first: 3, count: 2 },
+                4,
+            )?;
+            Ok(())
+        }),
+        Err(EventStorageError::TextCapacity)
+    );
+}

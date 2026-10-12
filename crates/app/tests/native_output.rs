@@ -57,7 +57,7 @@ impl FrameSource for Source {
 fn remote(runtime: &mut Runtime, protocol: Protocol, port: u16) -> ClientId {
     let id = runtime
         .server
-        .connect(Connection::Remote, ModuleId(7), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(7), None)
         .unwrap();
     assert!(runtime.server.bind_client_native(
         id,
@@ -703,6 +703,7 @@ fn q3_common_prints_keep_the_native_width_limit_and_wait_for_a_real_queued_ack()
             PrintKind::Console,
             PrintKind::Console.default_level(),
             &text,
+            None,
             &mut native,
         )
         .unwrap();
@@ -1809,4 +1810,513 @@ fn local_owner_disconnect_releases_dead_flights_but_preserves_completed_physical
             );
         }
     }
+}
+
+fn publish_typed_prints(
+    runtime: &mut Runtime,
+    delivery: NativeDelivery,
+    bytes: &[u8],
+) -> std::ops::Range<u64> {
+    let protocol = Protocol::native(delivery.source);
+    let mut rest = bytes;
+    let mut count = 0;
+    while !rest.is_empty() {
+        let (_, consumed) = qa_network::outputs::read_native_service(protocol, rest).unwrap();
+        count += 1;
+        rest = &rest[consumed..];
+    }
+    runtime
+        .server
+        .events
+        .publish_group(count, |group| {
+            let mut rest = bytes;
+            while !rest.is_empty() {
+                let component = bytes.len() - rest.len();
+                let (service, consumed) =
+                    qa_network::outputs::read_native_service(protocol, rest).unwrap();
+                let delivery = NativeDelivery {
+                    component: component as u32,
+                    ..delivery
+                };
+                match service {
+                    qa_network::outputs::NativeService::Print(print) => {
+                        let first = print.text.as_ptr() as usize - rest.as_ptr() as usize;
+                        group.print(
+                            delivery,
+                            print.kind,
+                            print.level.unwrap_or(print.kind.default_level()),
+                            &rest[..consumed],
+                            IndexSpan {
+                                first: first as u32,
+                                count: print.text.len() as u32,
+                            },
+                            consumed as u32,
+                        )?;
+                    }
+                    qa_network::outputs::NativeService::Cue(qa_network::outputs::Cue::Sound(
+                        sound,
+                    )) => {
+                        group.push_delivered(
+                            delivery,
+                            qa_core::events::FrameEvent::Sound(sound.into_event(
+                                SoundId(1),
+                                qa_gameplay::rules::sound_policy(delivery.source),
+                                None,
+                                Vec3::default(),
+                                None,
+                                SoundAction::Play,
+                            )),
+                        )?;
+                    }
+                    _ => {
+                        group.native_message_parts(delivery, &rest[..consumed], &[])?;
+                    }
+                }
+                rest = &rest[consumed..];
+            }
+            Ok(())
+        })
+        .unwrap()
+}
+
+#[test]
+fn typed_native_prints_queue_separate_q3_commands_and_retire_only_on_real_ack() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let target = remote(&mut runtime, Protocol::Quake3_68, 2000);
+    let healthy = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    let owner = runtime.server.clients[target.0 as usize].output.unwrap();
+    // The one known muzzle flash and unrepresentable layout are separate drops;
+    // they cannot prevent the recognized following print from being queued.
+    let range = publish_typed_prints(
+        &mut runtime,
+        NativeDelivery {
+            module: ModuleId(7),
+            source: RuleSetId::Quake2,
+            target: NativeTarget::Client(target),
+            origin: Vec3::default(),
+            reliable: false,
+            dupe_key: 0,
+            component: 0,
+            emission: None,
+            check_portals: false,
+        },
+        b"\x0a\x00first\x80%\0\x09\0\x01\x01\x01\0\0\x04layout\0\x0fsecond\0\x06",
+    );
+    publish(
+        &mut runtime,
+        false,
+        NativeTarget::Client(healthy),
+        b"\x0fhealthy\0",
+    );
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    let mut source = Source::default();
+    let first = host.frame(&mut source, true);
+    assert_eq!(first.output.native_unsupported, 3);
+    let state = host
+        .runtime
+        .network
+        .get(target, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap();
+    assert_eq!(
+        (state.queued, state.submitted, state.acknowledged),
+        (2, 2, 0)
+    );
+    assert!(host.runtime.server.events.retained_for(owner, range.start));
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(owner, range.end - 2)
+    );
+    let mut peer =
+        Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 16).unwrap();
+    peer.set_qport(2000);
+    let mut healthy_peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let mut commands = Vec::new();
+    for (port, bytes) in &source.packets {
+        if *port == 2000 {
+            let received = peer.receive(bytes, EventTime(1)).unwrap();
+            let sequence = received.header.sequence;
+            if let Delivery::Payload(body) = received.delivery {
+                let mut body = body.to_vec();
+                peer.decode_server_output(&mut body, sequence, |sequence, text| {
+                    commands.push((sequence, text.to_vec()))
+                })
+                .unwrap();
+            }
+        } else {
+            assert_eq!(*port, 2001);
+            assert_eq!(receive(&mut healthy_peer, bytes), b"\x0fhealthy\0");
+        }
+    }
+    assert_eq!(
+        commands,
+        [
+            (1, b"print \"first..\"".to_vec()),
+            (2, b"cp \"second\"".to_vec())
+        ]
+    );
+    source.now = EventTime::from_milliseconds(25);
+    queue_move(&mut host, &mut peer, Protocol::Quake3_68, source.now);
+    source.packets.clear();
+    let next = host.frame(&mut source, true);
+    assert_eq!(next.server_ticks, 1);
+    assert_eq!(next.output.native_unsupported, 0);
+    assert!(!host.runtime.server.events.retained_for(owner, range.start));
+    assert!(
+        !host
+            .runtime
+            .server
+            .events
+            .retained_for(owner, range.end - 2)
+    );
+    assert_eq!(
+        host.runtime
+            .network
+            .get(target, Endpoint::Server)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .acknowledged,
+        2
+    );
+}
+
+#[test]
+fn typed_native_oversized_print_drops_once_and_keeps_following_q3_command() {
+    for length in [1015, 9000] {
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let client = remote(&mut runtime, Protocol::Quake3_68, 2000);
+        let owner = runtime.server.clients[client.0 as usize].output.unwrap();
+        let mut bytes = vec![10, 2];
+        bytes.extend(std::iter::repeat_n(b'x', length));
+        bytes.extend_from_slice(b"\0\x0fafter\0");
+        let range = publish_typed_prints(
+            &mut runtime,
+            NativeDelivery {
+                module: ModuleId(7),
+                source: RuleSetId::Quake2Rerelease,
+                target: NativeTarget::Client(client),
+                origin: Vec3::default(),
+                reliable: false,
+                dupe_key: 0,
+                component: 0,
+                emission: None,
+                check_portals: false,
+            },
+            &bytes,
+        );
+        let mut source = Source::default();
+        let counts = dispatch(&mut runtime, &mut source);
+        assert_eq!(counts.native_unsupported, 1);
+        assert!(!runtime.server.events.retained_for(owner, range.start));
+        assert!(runtime.server.events.retained_for(owner, range.end - 1));
+        assert_eq!(
+            runtime
+                .network
+                .get(client, Endpoint::Server)
+                .unwrap()
+                .channel
+                .command_state()
+                .unwrap()
+                .queued,
+            1
+        );
+        let mut peer =
+            Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 16).unwrap();
+        peer.set_qport(2000);
+        let mut commands = Vec::new();
+        for (_, bytes) in &source.packets {
+            let received = peer.receive(bytes, EventTime(1)).unwrap();
+            let sequence = received.header.sequence;
+            if let Delivery::Payload(body) = received.delivery {
+                let mut body = body.to_vec();
+                peer.decode_server_output(&mut body, sequence, |_, text| {
+                    commands.push(text.to_vec())
+                })
+                .unwrap();
+            }
+        }
+        assert_eq!(commands, [b"cp \"after\"".to_vec()]);
+    }
+}
+
+#[test]
+fn classic_full_byte_queue_cannot_reorder_a_large_print_behind_its_smaller_sibling() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let blocked = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let healthy = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    let owner = runtime.server.clients[blocked.0 as usize].output.unwrap();
+    let connection = runtime.network.get_mut(blocked, Endpoint::Server).unwrap();
+    connection.channel =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Server, 100, 16).unwrap();
+    connection.channel.set_qport(2000);
+    let mut prefix = [b'p'; 90];
+    prefix[0] = 10;
+    prefix[1] = 2;
+    prefix[89] = 0;
+    connection.channel.queue_reliable(&prefix).unwrap();
+    connection.channel.queue_reliable(&prefix).unwrap(); // 20 bytes remain; only the smaller sibling would fit.
+    let mut bytes = vec![10, 2];
+    bytes.extend(std::iter::repeat_n(b'l', 97));
+    bytes.extend_from_slice(b"\0\x0a\x02small\0");
+    let range = publish_typed_prints(
+        &mut runtime,
+        NativeDelivery {
+            module: ModuleId(7),
+            source: RuleSetId::Quake2,
+            target: NativeTarget::Client(blocked),
+            origin: Vec3::default(),
+            reliable: true,
+            dupe_key: 0,
+            component: 0,
+            emission: None,
+            check_portals: false,
+        },
+        &bytes,
+    );
+    publish(
+        &mut runtime,
+        false,
+        NativeTarget::Client(healthy),
+        b"\x0fhealthy\0",
+    );
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    peer.set_qport(2000);
+    let mut healthy_peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let mut source = Source::default();
+    let first = host.frame(&mut source, true);
+    assert_eq!(first.output.native_unsupported, 0);
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(owner)
+            .unwrap()
+            .submissions,
+        0
+    );
+    assert!(host.runtime.server.events.retained_for(owner, range.start));
+    assert!(
+        host.runtime
+            .server
+            .events
+            .retained_for(owner, range.end - 1)
+    );
+    let mut delivered = Vec::new();
+    for (port, packet) in &source.packets {
+        if *port == 2000 {
+            delivered.push(receive(&mut peer, packet));
+        } else {
+            assert_eq!(receive(&mut healthy_peer, packet), b"\x0fhealthy\0");
+        }
+    }
+    assert_eq!(delivered, [prefix.to_vec()]);
+    for frame in 1..=3 {
+        source.now = EventTime::from_milliseconds(frame * 25);
+        queue_move(&mut host, &mut peer, Protocol::Quake2_34, source.now);
+        source.packets.clear();
+        let result = host.frame(&mut source, true);
+        assert_eq!(result.server_ticks, 1);
+        assert_eq!(result.output.native_unsupported, 0);
+        for (port, packet) in &source.packets {
+            if *port == 2000 {
+                delivered.push(receive(&mut peer, packet));
+            }
+        }
+    }
+    assert_eq!(
+        delivered,
+        [
+            prefix.to_vec(),
+            prefix.to_vec(),
+            bytes[..100].to_vec(),
+            bytes[100..].to_vec()
+        ]
+    );
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(owner)
+            .unwrap()
+            .submissions,
+        2
+    );
+}
+
+#[test]
+fn typed_print_waits_for_q3_window_space_and_then_its_own_native_ack() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let target = remote(&mut runtime, Protocol::Quake3_68, 2000);
+    let healthy = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    let owner = runtime.server.clients[target.0 as usize].output.unwrap();
+    let channel = &mut runtime
+        .network
+        .get_mut(target, Endpoint::Server)
+        .unwrap()
+        .channel;
+    for _ in 0..64 {
+        channel.queue_reliable(b"print \"occupied\"\0").unwrap();
+    }
+    let range = publish_typed_prints(
+        &mut runtime,
+        NativeDelivery {
+            module: ModuleId(7),
+            source: RuleSetId::Quake2,
+            target: NativeTarget::Client(target),
+            origin: Vec3::default(),
+            reliable: true,
+            dupe_key: 0,
+            component: 0,
+            emission: None,
+            check_portals: false,
+        },
+        b"\x0a\x02after\0",
+    );
+    publish(
+        &mut runtime,
+        false,
+        NativeTarget::Client(healthy),
+        b"\x0fhealthy\0",
+    );
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    let mut peer =
+        Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 16).unwrap();
+    peer.set_qport(2000);
+    let mut healthy_peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let mut source = Source::default();
+    let first = host.frame(&mut source, true);
+    assert_eq!(first.output.native_unsupported, 0);
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(owner)
+            .unwrap()
+            .submissions,
+        0
+    );
+    assert!(host.runtime.server.events.retained_for(owner, range.start));
+    let mut commands = Vec::new();
+    for (port, bytes) in &source.packets {
+        if *port == 2000 {
+            let received = peer.receive(bytes, EventTime(1)).unwrap();
+            let sequence = received.header.sequence;
+            if let Delivery::Payload(body) = received.delivery {
+                let mut body = body.to_vec();
+                peer.decode_server_output(&mut body, sequence, |sequence, text| {
+                    commands.push((sequence, text.to_vec()))
+                })
+                .unwrap();
+            }
+        } else {
+            assert_eq!(*port, 2001);
+            assert_eq!(receive(&mut healthy_peer, bytes), b"\x0fhealthy\0");
+        }
+    }
+    assert_eq!(commands.len(), 64);
+    assert!(
+        commands
+            .iter()
+            .all(|(_, text)| text == b"print \"occupied\"")
+    );
+    let state = host
+        .runtime
+        .network
+        .get(target, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap();
+    assert_eq!(
+        (state.queued, state.submitted, state.acknowledged),
+        (64, 64, 0)
+    );
+    source.now = EventTime::from_milliseconds(25);
+    queue_move(&mut host, &mut peer, Protocol::Quake3_68, source.now);
+    source.packets.clear();
+    let resumed = host.frame(&mut source, true);
+    assert_eq!(resumed.server_ticks, 1);
+    assert_eq!(resumed.output.native_unsupported, 0);
+    assert_eq!(
+        host.runtime
+            .server
+            .events
+            .counters(owner)
+            .unwrap()
+            .submissions,
+        1
+    );
+    assert!(host.runtime.server.events.retained_for(owner, range.start));
+    commands.clear();
+    for (port, bytes) in &source.packets {
+        if *port == 2000 {
+            let received = peer.receive(bytes, source.now).unwrap();
+            let sequence = received.header.sequence;
+            if let Delivery::Payload(body) = received.delivery {
+                let mut body = body.to_vec();
+                peer.decode_server_output(&mut body, sequence, |sequence, text| {
+                    commands.push((sequence, text.to_vec()))
+                })
+                .unwrap();
+            }
+        }
+    }
+    assert_eq!(commands, [(65, b"print \"after\"".to_vec())]);
+    let state = host
+        .runtime
+        .network
+        .get(target, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap();
+    assert_eq!(
+        (state.queued, state.submitted, state.acknowledged),
+        (65, 65, 64)
+    );
+    source.now = EventTime::from_milliseconds(50);
+    queue_move(&mut host, &mut peer, Protocol::Quake3_68, source.now);
+    source.packets.clear();
+    assert_eq!(host.frame(&mut source, true).server_ticks, 1);
+    assert!(!host.runtime.server.events.retained_for(owner, range.start));
+    assert_eq!(
+        host.runtime
+            .network
+            .get(target, Endpoint::Server)
+            .unwrap()
+            .channel
+            .command_state()
+            .unwrap()
+            .acknowledged,
+        65
+    );
 }

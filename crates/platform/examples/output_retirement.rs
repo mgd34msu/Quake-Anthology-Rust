@@ -195,7 +195,7 @@ fn run(
     for connection in [Connection::Remote, Connection::Remote, Connection::Local] {
         runtime
             .server
-            .connect(connection, ModuleId(0), PlayerTail::None, None)
+            .connect(connection, ModuleId(0), None)
             .ok_or("clients")?;
     }
     let stalled = runtime.server.clients[0].output.ok_or("stalled cursor")?;

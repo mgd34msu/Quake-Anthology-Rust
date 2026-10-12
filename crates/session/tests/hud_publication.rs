@@ -8,7 +8,7 @@ use qa_session::clients::{Connection, Server};
 fn hud_publication_keeps_float_bits_and_resets_for_the_next_client_lifetime() {
     let mut server = Server::load(1, 8, 2, 2, 2, 0).unwrap();
     let id = server
-        .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(0), None)
         .unwrap();
     let client = &mut server.clients[0];
     client.player.inventory.item_acquired_at[1] = -0.0;
@@ -40,7 +40,7 @@ fn hud_publication_keeps_float_bits_and_resets_for_the_next_client_lifetime() {
     );
     assert!(server.disconnect(id));
     assert_eq!(
-        server.connect(Connection::Local, ModuleId(0), PlayerTail::None, None),
+        server.connect(Connection::Local, ModuleId(0), None),
         Some(id)
     );
     let client = &mut server.clients[0];

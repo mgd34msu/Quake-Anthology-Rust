@@ -12,8 +12,8 @@ use qa_compat::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
     primitives::{
-        ClientId, EntityId, ModuleId, NativeEntity, PlayerTail, RuleSetId, SoundAction, SoundEvent,
-        ThinkTime, UserCmd, WeaponId,
+        ClientId, EntityId, ModuleId, NativeEntity, RuleSetId, SoundAction, SoundEvent, ThinkTime,
+        UserCmd, WeaponId,
     },
     sys_events::{EventTime, SeatId, SysEventQueue},
 };
@@ -297,7 +297,7 @@ fn queued_weapon_selection_cannot_cross_a_reused_connection_generation() {
     assert_eq!(
         host.runtime
             .server
-            .connect(Connection::Local, ModuleId(7), PlayerTail::None, None),
+            .connect(Connection::Local, ModuleId(7), None),
         Some(client)
     );
     host.drain(&mut FrameResult::default());

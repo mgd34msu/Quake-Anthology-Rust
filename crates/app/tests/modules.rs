@@ -1166,12 +1166,7 @@ fn quakec_client_prints_resolve_native_namespaces_and_keep_native_payloads() {
                     calls
                         .services
                         .server
-                        .connect(
-                            Connection::Remote,
-                            native.module,
-                            PlayerTail::None,
-                            Some(native),
-                        )
+                        .connect(Connection::Remote, native.module, Some(native))
                         .unwrap()
                 });
                 let target = clients[1];
@@ -1241,9 +1236,15 @@ fn quakec_client_prints_resolve_native_namespaces_and_keep_native_payloads() {
                     Protocol::Quake3_68,
                 ] {
                     let mut output = [0; 64];
-                    let count =
-                        qa_network::outputs::print(protocol, kind, wire_level, text, &mut output)
-                            .unwrap();
+                    let count = qa_network::outputs::print(
+                        protocol,
+                        kind,
+                        wire_level,
+                        text,
+                        None,
+                        &mut output,
+                    )
+                    .unwrap();
                     let mut expected = match protocol {
                         Protocol::NetQuake15 | Protocol::QuakeWorld28 => {
                             vec![if builtin == 73 { 26 } else { 8 }]
@@ -1344,12 +1345,7 @@ fn quakec_client_prints_resolve_native_namespaces_and_keep_native_payloads() {
                 let target = host
                     .runtime
                     .server
-                    .connect(
-                        Connection::Remote,
-                        ModuleId(1),
-                        PlayerTail::None,
-                        Some(identities[1]),
-                    )
+                    .connect(Connection::Remote, ModuleId(1), Some(identities[1]))
                     .unwrap();
                 host.call_module_export(
                     ModuleId(1),
@@ -1808,7 +1804,8 @@ fn quakec_broadcast_and_localcmd_share_output_and_deferred_commands() {
             Protocol::NetQuake15
         };
         let mut wire = [0; 64];
-        let size = qa_network::outputs::print(protocol, kind, wire_level, text, &mut wire).unwrap();
+        let size =
+            qa_network::outputs::print(protocol, kind, wire_level, text, None, &mut wire).unwrap();
         let mut expected = vec![8];
         if protocol == Protocol::QuakeWorld28 {
             expected.push(wire_level);

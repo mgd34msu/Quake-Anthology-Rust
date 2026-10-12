@@ -52,6 +52,29 @@ const DECODE: [(u16, u8); 2048] = decode_table();
 
 pub const COMMAND_STRING_BYTES: usize = 1024;
 
+pub(crate) const Q3_MAX_BYTE_BITS: usize = {
+    let mut maximum = 0;
+    let mut index = 0;
+    while index < CODES.len() {
+        if CODES[index].1 as usize > maximum {
+            maximum = CODES[index].1 as usize;
+        }
+        index += 1;
+    }
+    maximum
+};
+
+/// The caller has already checked the native bit width.
+pub(crate) fn q3_bits(value: u32, width: u8) -> usize {
+    let mut shift = width % 8;
+    let mut bits = usize::from(shift);
+    while shift < width {
+        bits += usize::from(CODES[((value >> shift) & 255) as usize].1);
+        shift += 8;
+    }
+    bits
+}
+
 /// Native string boundaries are wire policy, separate from a caller's storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StringPolicy {
@@ -361,13 +384,7 @@ impl<'a> Writer<'a> {
         }
         let low = width % 8;
         let bits = if self.encoding == Encoding::Q3 {
-            let mut bits = usize::from(low);
-            let mut shift = low;
-            while shift < width {
-                bits += usize::from(CODES[((value >> shift) & 255) as usize].1);
-                shift += 8;
-            }
-            bits
+            q3_bits(value, width)
         } else {
             usize::from(width)
         };

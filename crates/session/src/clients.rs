@@ -1,8 +1,8 @@
 use qa_core::events::{EventRing, OutputConsumerId, OutputTarget};
 use qa_core::primitives::{
     Bounds, ClientId, CollisionOwner, CollisionShape, CommandExecution, CommandIntent, EntityId,
-    GeometryId, HudState, ModuleId, NativeEntity, PlayerState, PlayerTail, RuleSetId,
-    SnapshotObservation, UserCmd, Vec3,
+    GeometryId, HudState, ModuleId, NativeEntity, PlayerState, RuleSetId, SnapshotObservation,
+    UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
@@ -184,7 +184,6 @@ impl Server {
         &mut self,
         connection: Connection,
         module: ModuleId,
-        tail: PlayerTail,
         native: Option<NativeEntity>,
     ) -> Option<ClientId> {
         let slot = self.clients.iter().position(|client| {
@@ -203,7 +202,6 @@ impl Server {
         let client = &mut self.clients[slot];
         client.output = output;
         client.reset(&mut self.events.texts, module);
-        client.player.tail = tail;
         client.connection = Some(connection);
         let entity_slot = client.entity.slot as usize;
         self.entities.columns.owner[entity_slot] = module;
@@ -254,8 +252,13 @@ impl Server {
             return false;
         }
         let client = &mut self.clients[id.0 as usize];
-        client.module = native.module;
         let slot = client.entity.slot as usize;
+        if client.module != native.module
+            || self.entities.columns.native_entity[slot] != Some(native)
+        {
+            client.player.weapon_state = None;
+        }
+        client.module = native.module;
         self.entities.columns.owner[slot] = native.module;
         self.entities.columns.native_entity[slot] = Some(native);
         true

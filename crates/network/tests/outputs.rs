@@ -13,6 +13,7 @@ fn rerelease_center_levels_keep_svc_print_and_legacy_clients_get_centerprint() {
             PrintKind::Center,
             level,
             b"center",
+            None,
             &mut bytes,
         )
         .unwrap();
@@ -31,6 +32,7 @@ fn rerelease_center_levels_keep_svc_print_and_legacy_clients_get_centerprint() {
             PrintKind::Center,
             level,
             b"center",
+            None,
             &mut bytes,
         )
         .unwrap();
@@ -53,6 +55,7 @@ fn print_opcodes_and_all_native_priority_bytes_remain_exact() -> Result<(), Erro
                 PrintKind::Notify,
                 level,
                 b"raw\x80\xff",
+                None,
                 &mut bytes,
             )?;
             assert_eq!(&bytes[..n], &[opcode, level, b'r', b'a', b'w', 128, 0]);
@@ -168,8 +171,16 @@ fn generated_legacy_prints_leave_room_for_the_native_terminator() {
         (Protocol::Quake2_34, PrintKind::Console, 2046),
     ] {
         let mut bytes = [0xcc; 4096];
-        let mut n = outputs::print(protocol, kind, 2, &[b'x'; 2050], &mut bytes).unwrap();
-        n += outputs::print(protocol, PrintKind::Center, 2, b"next", &mut bytes[n..]).unwrap();
+        let mut n = outputs::print(protocol, kind, 2, &[b'x'; 2050], None, &mut bytes).unwrap();
+        n += outputs::print(
+            protocol,
+            PrintKind::Center,
+            2,
+            b"next",
+            None,
+            &mut bytes[n..],
+        )
+        .unwrap();
         let mut prints = Prints::new(protocol, &bytes[..n]);
         assert_eq!(prints.next().unwrap().unwrap().text.len(), length);
         assert_eq!(prints.next().unwrap().unwrap().text, b"next");
@@ -181,7 +192,14 @@ fn generated_legacy_prints_leave_room_for_the_native_terminator() {
 fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Result<(), Error> {
     let mut short = [0xcc; 3];
     assert!(matches!(
-        outputs::print(Protocol::Quake2_34, PrintKind::Console, 2, b"a", &mut short),
+        outputs::print(
+            Protocol::Quake2_34,
+            PrintKind::Console,
+            2,
+            b"a",
+            None,
+            &mut short
+        ),
         Err(Error::Message(_))
     ));
     assert_eq!(short, [0xcc; 3]);
@@ -210,7 +228,7 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
             _ => b"center",
         };
         let mut bytes = [0; 128];
-        let n = outputs::print(protocol, kind, 2, text, &mut bytes)?;
+        let n = outputs::print(protocol, kind, 2, text, None, &mut bytes)?;
         assert_eq!(&bytes[..n], expected);
         let print = Prints::new(protocol, &bytes[..n])
             .next()
@@ -223,6 +241,7 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
         PrintKind::Console,
         0,
         b"first\0ignored",
+        None,
         &mut bytes,
     )?;
     let m = outputs::print(
@@ -230,6 +249,7 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
         PrintKind::Console,
         1,
         b"second",
+        None,
         &mut bytes[n..],
     )?;
     let mut prints = Prints::new(Protocol::Quake2_34, &bytes[..n + m]);
@@ -242,6 +262,7 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
             PrintKind::Layout,
             2,
             b"layout",
+            None,
             &mut bytes
         ),
         Err(Error::Unsupported)
@@ -252,6 +273,7 @@ fn center_layout_chat_nuls_and_concatenated_native_records_are_bounded() -> Resu
             PrintKind::Console,
             2,
             b"print",
+            None,
             &mut bytes
         ),
         Ok(14)
@@ -538,7 +560,8 @@ fn pending_resource_stops_submission_and_foreign_opaque_suffix_is_explicit() {
     use qa_core::primitives::{RuleSetId, Vec3};
     let protocol = Protocol::Quake2_34;
     let mut bytes = [0; 128];
-    let prefix = outputs::print(protocol, PrintKind::Console, 2, b"prefix", &mut bytes).unwrap();
+    let prefix =
+        outputs::print(protocol, PrintKind::Console, 2, b"prefix", None, &mut bytes).unwrap();
     let n = outputs::write_cue(
         protocol,
         outputs::Cue::Sound(outputs::Sound {
@@ -646,4 +669,144 @@ fn legacy_static_native_stream_uses_the_shared_parser_and_drops_no_fake_one_shot
     .unwrap();
     assert_eq!(&encoded[..result.length], bytes);
     assert_eq!(result.unsupported, 0);
+}
+
+#[test]
+fn retained_print_source_keeps_raw_priority_bytes_and_native_string_limits() {
+    use outputs::{NativeService, PrintSource};
+    use qa_core::primitives::RuleSetId;
+    for (protocol, rules, header, length) in [
+        (Protocol::NetQuake15, RuleSetId::Quake, &b"\x08"[..], 2050),
+        (
+            Protocol::QuakeWorld28,
+            RuleSetId::QuakeWorld,
+            &b"\x08\0"[..],
+            2050,
+        ),
+        (
+            Protocol::Quake2_34,
+            RuleSetId::Quake2,
+            &b"\x0a\x01"[..],
+            2050,
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            RuleSetId::Quake2Rerelease,
+            &b"\x0a\x05"[..],
+            9000,
+        ),
+    ] {
+        let mut source = header.to_vec();
+        source.extend(std::iter::repeat_n(b'x', length));
+        source.push(0);
+        source.extend_from_slice(b"\x1anext\0");
+        let (NativeService::Print(print), consumed) =
+            outputs::read_native_service(protocol, &source).unwrap()
+        else {
+            panic!("native print")
+        };
+        let mut output = vec![0; source.len()];
+        let count = outputs::print(
+            protocol,
+            print.kind,
+            print.level.unwrap_or(print.kind.default_level()),
+            print.text,
+            Some(PrintSource {
+                source: rules,
+                primary: true,
+                wire: &source[..consumed],
+                consumed,
+            }),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(&output[..count], &source[..consumed]);
+        assert_eq!(count, consumed);
+        assert_eq!(
+            print.text.len(),
+            if rules == RuleSetId::Quake2Rerelease {
+                length
+            } else {
+                2047
+            }
+        );
+        // The unconsumed classic body remains an opaque tail, not extra print text.
+        if rules != RuleSetId::Quake2Rerelease {
+            assert_eq!(&source[consumed..consumed + 3], b"xxx");
+        }
+    }
+    for level in [0, 1, 4, 5, 6] {
+        let source = [10, level, b'a', 0x80, 0xff, 0];
+        let (NativeService::Print(print), consumed) =
+            outputs::read_native_service(Protocol::Quake2Repro1038, &source).unwrap()
+        else {
+            panic!("RR print")
+        };
+        let mut output = [0; 64];
+        let count = outputs::print(
+            Protocol::Quake2Repro1038,
+            print.kind,
+            level,
+            print.text,
+            Some(PrintSource {
+                source: RuleSetId::Quake2Rerelease,
+                primary: true,
+                wire: &source[..consumed],
+                consumed,
+            }),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(&output[..count], source);
+        assert_eq!(print.level, Some(level));
+    }
+}
+
+#[test]
+fn opaque_print_continuation_is_raw_only_for_the_original_primary_namespace() {
+    use outputs::{NativeService, PrintSource};
+    use qa_core::primitives::RuleSetId;
+    let bytes = b"\x0a\0a\x80\xff\0opaque";
+    let (NativeService::Print(print), consumed) =
+        outputs::read_native_service(Protocol::Quake2_34, bytes).unwrap()
+    else {
+        panic!("print")
+    };
+    let mut encoded = [0; 64];
+    let source = PrintSource {
+        source: RuleSetId::Quake2,
+        primary: true,
+        wire: bytes,
+        consumed,
+    };
+    let count = outputs::print(
+        Protocol::Quake2_34,
+        print.kind,
+        0,
+        print.text,
+        Some(source),
+        &mut encoded,
+    )
+    .unwrap();
+    assert_eq!(&encoded[..count], bytes);
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        assert_eq!(
+            outputs::print(
+                protocol,
+                print.kind,
+                0,
+                print.text,
+                Some(PrintSource {
+                    primary: false,
+                    ..source
+                }),
+                &mut encoded
+            ),
+            Err(Error::Unsupported)
+        );
+    }
 }

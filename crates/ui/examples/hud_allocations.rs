@@ -60,7 +60,7 @@ fn main() -> Result<(), &'static str> {
                     client: Some(ClientId(index as u32)),
                     kind: PrintKind::Notify,
                     level: 1,
-                    text: leases[index].id(),
+                    text: leases[index].id().into(),
                 },
                 frame as f64,
                 3.0,

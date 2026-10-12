@@ -1,8 +1,8 @@
 //! Developer allocation checks and pinned timing of shared movement primitives.
 use qa_core::{
     primitives::{
-        Bounds, ClientId, CollisionOwner, CommandIntent, GeometryId, ModuleId, Plane, PlayerTail,
-        RuleSetId, SurfaceFlags, Vec3,
+        Bounds, ClientId, CollisionOwner, CommandIntent, GeometryId, ModuleId, Plane, RuleSetId,
+        SurfaceFlags, Vec3,
     },
     sys_events::EventTime,
 };
@@ -129,7 +129,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .connect(
                 [Connection::Local, Connection::Remote, Connection::Bot][slot % 3],
                 ModuleId((slot % 3) as u16),
-                PlayerTail::Q2,
                 None,
             )
             .ok_or("client capacity")?;

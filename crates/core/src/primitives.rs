@@ -514,17 +514,19 @@ impl Bounds {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum PlayerTail {
-    #[default]
-    None,
-    Q1 {
-        attack_finished: f64,
-    },
-    Q2,
-    Q3 {
-        weapon_time: i32,
-    },
+/// Native readiness quantities retain their units and original numeric width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WeaponReadiness {
+    DeadlineSeconds(f32),
+    RemainingMilliseconds(i32),
+}
+
+/// Weapon ownership is independent of movement, presentation and wire format.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponState {
+    pub source: RuleSetId,
+    pub namespace: ResourceNamespace,
+    pub readiness: WeaponReadiness,
 }
 
 #[derive(Debug, Default)]
@@ -551,7 +553,7 @@ pub struct PlayerState {
     pub flags: u32,
     pub score: i32,
     pub frags: i32,
-    pub tail: PlayerTail,
+    pub weapon_state: Option<WeaponState>,
 }
 
 /// Native resource ordinals are relative to their publishing module/client;
@@ -1127,7 +1129,31 @@ pub struct PrintEvent {
     /// Native byte priority is independent of display kind. Protocols without
     /// this field omit it at their boundary; 0 and 1 must remain distinct.
     pub level: u8,
-    pub text: TextId,
+    pub text: PrintText,
+}
+/// Native print bytes and their semantic view share the ring's leased pages.
+#[derive(Clone, Copy, Debug)]
+pub enum PrintText {
+    Text(TextId),
+    Native {
+        wire: NativePayload,
+        text: IndexSpan,
+        /// Parsed native-service extent; an undecodable suffix remains opaque.
+        consumed: u32,
+    },
+}
+impl PrintText {
+    pub fn display(self) -> Option<TextId> {
+        match self {
+            Self::Text(id) => Some(id),
+            Self::Native { .. } => None,
+        }
+    }
+}
+impl From<TextId> for PrintText {
+    fn from(id: TextId) -> Self {
+        Self::Text(id)
+    }
 }
 #[derive(Debug, PartialEq, Eq)]
 pub struct TextLease {

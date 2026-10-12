@@ -74,15 +74,15 @@ fn mixed_provider_output_drains_once_and_routes_only_local_huds() {
     let mut runtime = Runtime::load(64, std::iter::empty()).unwrap();
     let first = runtime
         .server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::default(), None)
+        .connect(Connection::Local, ModuleId(1), None)
         .unwrap();
     let remote = runtime
         .server
-        .connect(Connection::Remote, ModuleId(2), PlayerTail::default(), None)
+        .connect(Connection::Remote, ModuleId(2), None)
         .unwrap();
     let second = runtime
         .server
-        .connect(Connection::Local, ModuleId(3), PlayerTail::default(), None)
+        .connect(Connection::Local, ModuleId(3), None)
         .unwrap();
     let mut host = FrameHost::load(
         Console::new(Context::default()).unwrap(),
@@ -196,7 +196,7 @@ fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() 
     for _ in 0..512 {
         runtime
             .server
-            .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+            .connect(Connection::Local, ModuleId(1), None)
             .unwrap();
     }
     let local = [
@@ -361,15 +361,15 @@ fn stalled_peer_progress(unsent: bool) {
         .unwrap();
     let stalled = runtime
         .server
-        .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(0), None)
         .unwrap();
     let healthy = runtime
         .server
-        .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(0), None)
         .unwrap();
     let local = runtime
         .server
-        .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(0), None)
         .unwrap();
     let stalled_cursor = runtime.server.clients[stalled.0 as usize].output.unwrap();
     let healthy_cursor = runtime.server.clients[healthy.0 as usize].output.unwrap();

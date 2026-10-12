@@ -50,6 +50,7 @@ fn connected_q2_channels_deliver_config_rows_and_continue_the_service_stream() {
             qa_core::primitives::PrintKind::Console,
             2,
             b"next",
+            None,
             &mut payload[count..],
         )
         .unwrap();
@@ -153,6 +154,7 @@ fn generated_config_rows_map_signed_terminators_and_leave_following_services_rea
             qa_core::primitives::PrintKind::Console,
             2,
             b"next",
+            None,
             &mut bytes[n..],
         )
         .unwrap();

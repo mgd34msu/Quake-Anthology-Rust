@@ -93,6 +93,7 @@ pub fn native(
     primary: bool,
     mut project: impl FnMut(Cue, usize) -> Result<Cue, Error>,
 ) -> Result<NativeEncoding, Error> {
+    let source_rules = source;
     let source = Protocol::native(source);
     if source == Protocol::Quake3_68 {
         return Err(Error::Unsupported);
@@ -126,25 +127,19 @@ pub fn native(
             NativeService::Cue(cue) => project(cue, offset)
                 .and_then(|cue| project_cue(protocol, cue))
                 .and_then(|cue| write_cue(protocol, cue, target)),
-            NativeService::Print(_) if primary && source == protocol => {
-                let mut writer = Writer::new(target, Encoding::Bytes);
-                writer
-                    .write_data(&bytes[offset..offset + consumed])
-                    .map(|()| writer.size())
-                    .map_err(Error::from)
-            }
-            NativeService::Print(value) => {
-                let mut level = value.level.unwrap_or(value.kind.default_level());
-                // Rerelease levels 4/5 request localized center display; classic
-                // print priorities with those bytes still mean console output.
-                if protocol == Protocol::Quake2Repro1038
-                    && value.kind != PrintKind::Center
-                    && PrintKind::from_localized_level(level) != value.kind
-                {
-                    level = value.kind.default_level();
-                }
-                print(protocol, value.kind, level, value.text, target)
-            }
+            NativeService::Print(value) => print(
+                protocol,
+                value.kind,
+                value.level.unwrap_or(value.kind.default_level()),
+                value.text,
+                Some(PrintSource {
+                    source: source_rules,
+                    primary,
+                    wire: &bytes[offset..offset + consumed],
+                    consumed,
+                }),
+                target,
+            ),
             NativeService::Nop => {
                 let mut writer = Writer::new(target, Encoding::Bytes);
                 writer
@@ -214,13 +209,39 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
         _ => return Err(Error::Unsupported),
     }))
 }
+/// Original source bytes are retained only for the primary native namespace.
+#[derive(Clone, Copy)]
+pub struct PrintSource<'a> {
+    pub source: RuleSetId,
+    pub primary: bool,
+    pub wire: &'a [u8],
+    pub consumed: usize,
+}
 pub fn print(
     protocol: Protocol,
     kind: PrintKind,
-    level: u8,
+    mut level: u8,
     text: &[u8],
+    source: Option<PrintSource<'_>>,
     output: &mut [u8],
 ) -> Result<usize, Error> {
+    if let Some(source) = source {
+        if source.primary && protocol == Protocol::native(source.source) {
+            let mut writer = Writer::new(output, Encoding::Bytes);
+            writer.write_data(source.wire)?;
+            return Ok(writer.size());
+        }
+        if source.consumed != source.wire.len() {
+            return Err(Error::Unsupported);
+        }
+        // Rerelease levels 4/5 request center display, unlike classic priorities.
+        if protocol == Protocol::Quake2Repro1038
+            && kind != PrintKind::Center
+            && PrintKind::from_localized_level(level) != kind
+        {
+            level = kind.default_level();
+        }
+    }
     let Format::Bytes(format) = format(protocol)? else {
         let verb = match kind {
             PrintKind::Center => &b"cp \""[..],

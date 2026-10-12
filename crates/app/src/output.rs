@@ -223,10 +223,17 @@ pub fn dispatch(
             }
         }
         let stopped = std::cell::Cell::new(false);
+        let mut waiting_resources = false;
         qa_core::events::dispatch_consumer_until(
             &mut server.events,
             id,
             &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
+                // Resource-dependent services keep their source order while
+                // allowing later configstrings to publish their prerequisites.
+                if waiting_resources && !matches!(record.event, FrameEvent::ConfigString { .. }) {
+                    return OutputSubmission::Unsent;
+                }
+                let mut resource_pending = false;
                 let submission = if let FrameEvent::ConfigString {
                     destination_index,
                     text,
@@ -285,7 +292,10 @@ pub fn dispatch(
                             output_range.clone(),
                         ) {
                             duplicates::Admission::Send => (),
-                            duplicates::Admission::Pending => return OutputSubmission::Unsent,
+                            duplicates::Admission::Pending => {
+                                stopped.set(true);
+                                return OutputSubmission::Unsent;
+                            }
                             duplicates::Admission::Suppressed => {
                                 counts.native_dupe_suppressed += 1;
                                 return OutputSubmission::BestEffort;
@@ -347,6 +357,38 @@ pub fn dispatch(
                                     OutputSubmission::BestEffort
                                 }
                             }
+                            FrameEvent::Print(print) => {
+                                match native::submit_print(
+                                    connection,
+                                    record.sequence,
+                                    Some(delivery),
+                                    print,
+                                    texts,
+                                    &mut runtime.output_bytes,
+                                    &mut runtime.output_native_bytes,
+                                    time,
+                                    client.module == delivery.module,
+                                    |bytes| {
+                                        crate::transport::admit_output(
+                                            &mut runtime.loopback,
+                                            source,
+                                            route,
+                                            bytes,
+                                        )
+                                    },
+                                ) {
+                                    Ok((submission, submitted)) => {
+                                        completed = submitted.complete;
+                                        counts.prints += 1;
+                                        counts.add_native(&submitted);
+                                        submission
+                                    }
+                                    Err(()) => {
+                                        counts.native_unsupported += 1;
+                                        OutputSubmission::BestEffort
+                                    }
+                                }
+                            }
                             FrameEvent::Sound(_) | FrameEvent::StaticEntity(_) => {
                                 let encoded = connection
                                     .commands
@@ -367,6 +409,8 @@ pub fn dispatch(
                                     });
                                 match encoded {
                                     Err(qa_network::outputs::Error::Pending) => {
+                                        waiting_resources = true;
+                                        resource_pending = true;
                                         OutputSubmission::Unsent
                                     }
                                     Err(_) => {
@@ -444,33 +488,36 @@ pub fn dispatch(
                         OutputSubmission::Unsent
                     }
                 } else if client.connection == Some(Connection::Remote) {
-                    let text = match record.event {
-                        FrameEvent::Print(p) => texts.get(p.text),
-                        _ => None,
-                    };
                     if let FrameEvent::Print(print) = record.event
-                        && let Some(text) = text
                         && let Some(connection) = runtime
                             .network
                             .get_mut(client_id, qa_core::loopback::Endpoint::Server)
-                        && let Some(commands) = &connection.commands
                     {
-                        let mut bytes = [0; qa_core::primitives::OUTPUT_PAGE_BYTES];
-                        match qa_network::outputs::print(
-                            commands.protocol,
-                            print.kind,
-                            print.level,
-                            text,
-                            &mut bytes,
-                        ) {
-                            Ok(n) => match native::reliable(&mut connection.channel, &bytes[..n]) {
-                                Ok(submission) => submission,
-                                Err(()) => {
-                                    counts.native_unsupported += 1;
-                                    OutputSubmission::BestEffort
-                                }
+                        let route = connection.route;
+                        match native::submit_print(
+                            connection,
+                            record.sequence,
+                            None,
+                            print,
+                            texts,
+                            &mut runtime.output_bytes,
+                            &mut runtime.output_native_bytes,
+                            time,
+                            false,
+                            |bytes| {
+                                crate::transport::admit_output(
+                                    &mut runtime.loopback,
+                                    source,
+                                    route,
+                                    bytes,
+                                )
                             },
-                            Err(_) => {
+                        ) {
+                            Ok((submission, submitted)) => {
+                                counts.add_native(&submitted);
+                                submission
+                            }
+                            Err(()) => {
                                 counts.native_unsupported += 1;
                                 OutputSubmission::BestEffort
                             }
@@ -485,10 +532,11 @@ pub fn dispatch(
                     OutputSubmission::BestEffort
                 };
                 stopped.set(
-                    runtime
-                        .network
-                        .get(client_id, qa_core::loopback::Endpoint::Server)
-                        .is_some_and(|connection| connection.pending_output.is_some()),
+                    submission == OutputSubmission::Unsent && !resource_pending
+                        || runtime
+                            .network
+                            .get(client_id, qa_core::loopback::Endpoint::Server)
+                            .is_some_and(|connection| connection.pending_output.is_some()),
                 );
                 submission
             },

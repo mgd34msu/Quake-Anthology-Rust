@@ -1,5 +1,9 @@
 use crate::transport::{self, Submission};
-use qa_core::{events::OutputSubmission, primitives::NativeDelivery, sys_events::EventTime};
+use qa_core::{
+    events::{OutputSubmission, TextStore},
+    primitives::{NativeDelivery, PrintEvent, PrintText},
+    sys_events::EventTime,
+};
 use qa_network::{
     channel::{Channel, TransmitError, Unreliable},
     ingress::Connection,
@@ -106,6 +110,17 @@ pub(super) fn submit(
     admit: impl FnMut(&[u8]) -> bool,
 ) -> Result<(OutputSubmission, Submission, u64), ()> {
     let protocol = connection.commands.as_ref().ok_or(())?.protocol;
+    if protocol == qa_network::commands::packet::Protocol::Quake3_68
+        && qa_network::outputs::read_native_service(
+            qa_network::commands::packet::Protocol::native(delivery.source),
+            bytes,
+        )
+        .is_ok_and(|(service, length)| {
+            length == bytes.len() && matches!(service, qa_network::outputs::NativeService::Nop)
+        })
+    {
+        return Ok((OutputSubmission::BestEffort, Submission::default(), 0));
+    }
     let encoded = match qa_network::outputs::native(
         protocol,
         delivery.source,
@@ -159,5 +174,65 @@ pub(super) fn reliable(channel: &mut Channel, bytes: &[u8]) -> Result<OutputSubm
         Ok(receipt) => Ok(OutputSubmission::Reliable(receipt)),
         Err(TransmitError::Full) => Ok(OutputSubmission::Unsent),
         Err(_) => Err(()),
+    }
+}
+
+/// One print record produces one native service or one Q3 reliable command.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Print text borrows the existing ring and fixed transport scratch."
+)]
+pub(super) fn submit_print(
+    connection: &mut Connection,
+    sequence: u64,
+    delivery: Option<NativeDelivery>,
+    print: PrintEvent,
+    texts: &TextStore,
+    input: &mut [u8],
+    output: &mut [u8],
+    time: EventTime,
+    primary: bool,
+    admit: impl FnMut(&[u8]) -> bool,
+) -> Result<(OutputSubmission, Submission), ()> {
+    let protocol = connection.commands.as_ref().ok_or(())?.protocol;
+    let (text, source) = match print.text {
+        PrintText::Text(id) => (texts.get(id).ok_or(())?, None),
+        PrintText::Native {
+            wire,
+            text,
+            consumed,
+        } => {
+            let delivery = delivery.ok_or(())?;
+            let bytes = texts.copy_payload(wire, input).ok_or(())?;
+            let text = bytes.get(text.range()).ok_or(())?;
+            (
+                text,
+                Some(qa_network::outputs::PrintSource {
+                    source: delivery.source,
+                    primary,
+                    wire: &bytes[..wire.len()],
+                    consumed: consumed as usize,
+                }),
+            )
+        }
+    };
+    let length =
+        qa_network::outputs::print(protocol, print.kind, print.level, text, source, output)
+            .map_err(|_| ())?;
+    let bytes = &output[..length];
+    if delivery.is_none_or(|delivery| delivery.reliable)
+        || protocol == qa_network::commands::packet::Protocol::Quake3_68
+    {
+        reliable(&mut connection.channel, bytes)
+            .map(|submission| (submission, Submission::default()))
+    } else {
+        submit_encoded(
+            connection,
+            sequence,
+            delivery.ok_or(())?,
+            bytes,
+            time,
+            admit,
+        )
     }
 }

@@ -4,8 +4,8 @@ use crate::{commands::packet::Protocol, states};
 use qa_core::{
     math::{AngleShortForm, angle_to_short, eighth_to_short, short_to_angle, short_to_eighth},
     primitives::{
-        EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer, PlayerState, PlayerTail,
-        ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon,
+        EntityAppearance, EntityId, ModelRef, MovementMode, MovementTimer, PlayerState,
+        ResourceNamespace, ValueBinding, ValueWidth, ViewWeapon, WeaponReadiness, WeaponState,
     },
 };
 
@@ -250,7 +250,9 @@ impl PlayerProjection {
             .fields
             .iter()
             .copied()
-            .filter(|field| field.word < MOVEMENT_WORDS)
+            .filter(|field| {
+                field.word < MOVEMENT_WORDS && !matches!(field.source, Source::WeaponTime)
+            })
             .collect();
         projection
     }
@@ -568,9 +570,11 @@ impl PlayerProjection {
                     };
                 }
                 WeaponTime => {
-                    if let PlayerTail::Q3 { weapon_time } = &mut player.tail {
-                        *weapon_time = value as i32;
-                    }
+                    player.weapon_state = Some(WeaponState {
+                        source: self.protocol.rule_set(),
+                        namespace,
+                        readiness: WeaponReadiness::RemainingMilliseconds(value as i32),
+                    });
                 }
                 WeaponFrame | WeaponOffset(_) | WeaponAngle(_) | WeaponRate | WeaponModel => {
                     self.apply_weapon(field.source, value, &mut player.view_weapon, namespace);
@@ -662,13 +666,10 @@ impl PlayerProjection {
             Frags => p.frags as u32,
             Grounded => u32::from(p.movement.grounded),
             InWater => u32::from(p.movement.water_level >= 2),
-            WeaponTime => {
-                if let PlayerTail::Q3 { weapon_time } = p.tail {
-                    weapon_time as u32
-                } else {
-                    0
-                }
-            }
+            WeaponTime => match p.weapon_state.map(|state| state.readiness) {
+                Some(WeaponReadiness::RemainingMilliseconds(time)) => time as u32,
+                _ => 0,
+            },
             WeaponFrame => p.view_weapon.frame as u32,
             WeaponOffset(i) => p.view_weapon.offset.0[i].to_bits(),
             WeaponAngle(i) => p.view_weapon.angles.0[i].to_bits(),

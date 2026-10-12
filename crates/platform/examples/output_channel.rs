@@ -6,7 +6,7 @@ use qa_app::{
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
     loopback::Endpoint,
-    primitives::{ClientId, ModuleId, PlayerTail, PrintKind, UserCmd},
+    primitives::{ClientId, ModuleId, PrintKind, UserCmd},
     sys_events::{EventKind, EventTime, Peer, SysEvent, SysEventQueue},
 };
 use qa_network::{
@@ -179,7 +179,7 @@ fn main() -> Result<(), String> {
     for (slot, consumer) in consumers.iter_mut().enumerate() {
         let client = runtime
             .server
-            .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+            .connect(Connection::Remote, ModuleId(0), None)
             .ok_or("client")?;
         *consumer = runtime.server.clients[slot].output;
         let mut channel = Channel::load(protocol(slot, q3).channel(), Endpoint::Server, 8192, 16)

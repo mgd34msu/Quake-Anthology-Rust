@@ -4,7 +4,7 @@ use qa_app::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::{
-    primitives::{ClientId, HudLine, ItemId, ModuleId, PlayerTail, RuleSetId, WeaponId},
+    primitives::{ClientId, HudLine, ItemId, ModuleId, RuleSetId, WeaponId},
     sys_events::{EventKind, EventTime, SysEvent, SysEventQueue},
 };
 use qa_gameplay::registry::ItemKind;
@@ -54,11 +54,11 @@ fn map_and_module_names_share_owned_registry_ids_and_one_target_index() {
     }
     let first = runtime
         .server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(1), None)
         .unwrap();
     let second = runtime
         .server
-        .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(2), None)
         .unwrap();
     let entities = [first, second].map(|id| runtime.server.clients[id.0 as usize].entity);
     for entity in entities {
@@ -156,7 +156,6 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
             .connect(
                 [Connection::Local, Connection::Remote, Connection::Bot][slot % 3],
                 ModuleId((slot % 3 + 1) as u16),
-                PlayerTail::None,
                 None,
             )
             .unwrap();
@@ -178,7 +177,7 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
     assert!(
         runtime
             .server
-            .connect(Connection::Bot, ModuleId(3), PlayerTail::None, None)
+            .connect(Connection::Bot, ModuleId(3), None)
             .is_none()
     );
     let highest_client = ClientId((capacity - 1) as u32);

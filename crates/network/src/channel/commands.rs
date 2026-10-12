@@ -11,6 +11,12 @@ const SLOTS: usize = 64;
 const fn slot(sequence: u32) -> usize {
     sequence as usize & (SLOTS - 1)
 }
+const fn command_opcode(endpoint: Endpoint) -> u8 {
+    match endpoint {
+        Endpoint::Server => 5,
+        Endpoint::Client => 4,
+    }
+}
 pub(crate) use crate::message::COMMAND_STRING_BYTES as STRING_BYTES;
 
 struct Slot {
@@ -19,12 +25,14 @@ struct Slot {
     sequence: u32,
     receipt: Option<NativeReceipt>,
     first_message: Option<u32>,
+    encoded_bits: usize,
 }
 struct Window {
     slots: Box<[Slot]>,
     sequence: u32,
     acknowledged: u32,
     sent: u32,
+    encoded_bits: usize,
 }
 impl Window {
     fn load() -> Self {
@@ -36,11 +44,13 @@ impl Window {
                     sequence: 0,
                     receipt: None,
                     first_message: None,
+                    encoded_bits: 0,
                 })
                 .collect(),
             sequence: 0,
             acknowledged: 0,
             sent: 0,
+            encoded_bits: 0,
         }
     }
     fn text(&self, sequence: u32) -> &[u8] {
@@ -56,9 +66,16 @@ impl Window {
         slot.sequence = sequence;
         slot.receipt = receipt;
         slot.first_message = None;
+        slot.encoded_bits = 0;
         self.sequence = sequence;
     }
-    fn queue(&mut self, text: &[u8], receipt: NativeReceipt) -> Result<(), TransmitError> {
+    fn queue(
+        &mut self,
+        text: &[u8],
+        receipt: NativeReceipt,
+        opcode: u8,
+        maximum: Option<usize>,
+    ) -> Result<(), TransmitError> {
         // MSG_ReadString stops after STRING_BYTES - 1 payload bytes. Keep
         // room for its terminator so the next service remains readable.
         if qa_core::text::until_nul(text).len() >= STRING_BYTES - 1 {
@@ -67,7 +84,28 @@ impl Window {
         if self.sequence - self.acknowledged >= SLOTS as u32 || self.sequence == i32::MAX as u32 {
             return Err(TransmitError::Full);
         }
+        let sequence = self.sequence + 1;
+        let encoded_bits = crate::message::q3_bits(u32::from(opcode), 8)
+            + crate::message::q3_bits(sequence, 32)
+            + command_bytes(text)
+                .map(|byte| crate::message::q3_bits(u32::from(byte), 8))
+                .sum::<usize>();
+        if let Some(maximum) = maximum {
+            // Reserve the changing native ACK field, svc_EOF and MSG's padding
+            // bit. Every admitted SERVER window must drain in a command-only
+            // message, even before any of its commands can receive an ACK.
+            let reserved = 4 * crate::message::Q3_MAX_BYTE_BITS + crate::message::q3_bits(8, 8) + 1;
+            let budget = maximum.saturating_mul(8).saturating_sub(reserved);
+            if encoded_bits > budget {
+                return Err(TransmitError::MessageTooLarge);
+            }
+            if self.encoded_bits + encoded_bits > budget {
+                return Err(TransmitError::Full);
+            }
+        }
         self.store(self.sequence + 1, text, Some(receipt));
+        self.slots[slot(sequence)].encoded_bits = encoded_bits;
+        self.encoded_bits += encoded_bits;
         Ok(())
     }
     fn submitted(&mut self, sequence: u32, message: u32) {
@@ -97,6 +135,7 @@ impl Window {
         }
         let mut count = 0;
         for n in self.acknowledged + 1..=sequence {
+            self.encoded_bits -= self.slots[slot(n)].encoded_bits;
             if let Some(receipt) = self.slots[slot(n)].receipt {
                 receipts[count] = receipt;
                 count += 1;
@@ -156,8 +195,11 @@ impl CommandMessages {
         &mut self,
         text: &[u8],
         receipt: NativeReceipt,
+        endpoint: Endpoint,
+        maximum: Option<usize>,
     ) -> Result<(), TransmitError> {
-        self.outgoing.queue(text, receipt)
+        self.outgoing
+            .queue(text, receipt, command_opcode(endpoint), maximum)
     }
     pub(super) fn submitted(&mut self, sequence: u32, message: u32) {
         self.outgoing.submitted(sequence, message);
@@ -165,14 +207,18 @@ impl CommandMessages {
 }
 
 // msg.c uses bytewise native string conversion inside its existing MSG stream.
-pub fn write_string(writer: &mut Writer<'_>, text: &[u8]) -> Result<(), packet::Error> {
+fn command_bytes(text: &[u8]) -> impl Iterator<Item = u8> + '_ {
     let n = qa_core::text::until_nul(text).len();
-    if n < STRING_BYTES {
-        for &b in &text[..n] {
-            writer.write_bits(u32::from(if b > 127 { b'.' } else { b }), 8)?;
-        }
+    text[..if n < STRING_BYTES { n } else { 0 }]
+        .iter()
+        .copied()
+        .map(|byte| if byte > 127 { b'.' } else { byte })
+        .chain(std::iter::once(0))
+}
+pub fn write_string(writer: &mut Writer<'_>, text: &[u8]) -> Result<(), packet::Error> {
+    for byte in command_bytes(text) {
+        writer.write_bits(u32::from(byte), 8)?;
     }
-    writer.write_bits(0, 8)?;
     Ok(())
 }
 impl Channel {
@@ -251,13 +297,9 @@ impl Channel {
     }
     pub fn write_command_records(&self, writer: &mut Writer<'_>) -> Result<(), packet::Error> {
         let c = self.commands.as_ref().ok_or(packet::Error::Context)?;
-        let opcode = if self.endpoint() == Endpoint::Server {
-            5
-        } else {
-            4
-        };
+        let opcode = command_opcode(self.endpoint());
         for n in c.outgoing.acknowledged + 1..=c.outgoing.sequence {
-            writer.write_bits(opcode, 8)?;
+            writer.write_bits(u32::from(opcode), 8)?;
             writer.write_bits(n, 32)?;
             write_string(writer, c.outgoing.text(n))?;
         }

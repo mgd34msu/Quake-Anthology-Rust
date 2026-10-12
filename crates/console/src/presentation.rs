@@ -2,7 +2,7 @@
 use crate::editor::Editor;
 use qa_core::{
     events::TextStore,
-    primitives::{RuleSetId, TextId, TextLease},
+    primitives::{RuleSetId, TextLease},
     sys_events::EventTime,
 };
 
@@ -35,7 +35,11 @@ impl Scrollback {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    pub fn append(&mut self, texts: &mut TextStore, id: TextId) -> bool {
+    pub fn append(
+        &mut self,
+        texts: &mut TextStore,
+        id: impl Into<qa_core::primitives::PrintText>,
+    ) -> bool {
         let Some(lease) = texts.lease(id) else {
             self.rejected += 1;
             return false;

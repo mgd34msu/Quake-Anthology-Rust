@@ -1,4 +1,4 @@
-use qa_core::primitives::{ClientId, ModuleId, NativeEntity, PlayerTail, WeaponId};
+use qa_core::primitives::{ClientId, ModuleId, NativeEntity, WeaponId};
 use qa_session::clients::{Connection, Server};
 
 #[test]
@@ -6,11 +6,9 @@ fn post_load_native_binding_rejects_duplicate_lifetimes_without_changing_roles()
     use qa_core::primitives::RuleSetId;
     let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
     let first = server
-        .connect(Connection::Local, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(0), None)
         .unwrap();
-    let second = server
-        .connect(Connection::Bot, ModuleId(0), PlayerTail::None, None)
-        .unwrap();
+    let second = server.connect(Connection::Bot, ModuleId(0), None).unwrap();
     let native = NativeEntity {
         module: ModuleId(10),
         slot: 7,
@@ -35,14 +33,77 @@ fn post_load_native_binding_rejects_duplicate_lifetimes_without_changing_roles()
 }
 
 #[test]
+fn native_weapon_owner_handoff_clears_readiness_and_identical_binding_preserves_it() {
+    use qa_core::primitives::{ResourceNamespace, RuleSetId, WeaponReadiness, WeaponState};
+    let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
+    let original = NativeEntity {
+        module: ModuleId(3),
+        slot: 1,
+    };
+    let id = server
+        .connect(Connection::Local, original.module, Some(original))
+        .unwrap();
+    let other_native = NativeEntity {
+        module: ModuleId(8),
+        slot: 0,
+    };
+    server
+        .connect(Connection::Remote, other_native.module, Some(other_native))
+        .unwrap();
+    let player = &mut server.clients[id.0 as usize].player;
+    player.movement_rules = RuleSetId::Quake3;
+    player.trace_rules = RuleSetId::Quake2;
+    let seconds = Some(WeaponState {
+        source: RuleSetId::QuakeWorld,
+        namespace: ResourceNamespace::Module(original.module),
+        readiness: WeaponReadiness::DeadlineSeconds(4.25),
+    });
+    player.weapon_state = seconds;
+    assert!(server.bind_client_native(id, original));
+    assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
+    assert!(!server.bind_client_native(id, other_native));
+    assert_eq!(server.clients[id.0 as usize].player.weapon_state, seconds);
+
+    let same_owner_new_row = NativeEntity {
+        slot: 2,
+        ..original
+    };
+    assert!(server.bind_client_native(id, same_owner_new_row));
+    assert_eq!(server.clients[id.0 as usize].player.weapon_state, None);
+    let milliseconds = Some(WeaponState {
+        source: RuleSetId::Quake3,
+        namespace: ResourceNamespace::Module(original.module),
+        readiness: WeaponReadiness::RemainingMilliseconds(-197_000_071),
+    });
+    server.clients[id.0 as usize].player.weapon_state = milliseconds;
+    assert!(server.bind_client_native(id, same_owner_new_row));
+    assert_eq!(
+        server.clients[id.0 as usize].player.weapon_state,
+        milliseconds
+    );
+    // Q2's public player ABI has no readiness field to replace the old timer.
+    let q2_owner = NativeEntity {
+        module: ModuleId(9),
+        slot: 1,
+    };
+    assert!(server.bind_client_native(id, q2_owner));
+    let client = &server.clients[id.0 as usize];
+    assert_eq!(client.player.weapon_state, None);
+    assert_eq!(
+        (client.player.movement_rules, client.player.trace_rules),
+        (RuleSetId::Quake3, RuleSetId::Quake2)
+    );
+    assert_eq!(client.module, q2_owner.module);
+    assert_eq!(server.client_for_native(q2_owner), Some(id));
+}
+
+#[test]
 fn authoritative_attachment_commit_updates_local_remote_and_bot_hot_state() {
     use qa_core::primitives::{BodyAttachment, BodyFollow, Vec3};
     use qa_world::area::{LinkFlags, LinkIntent, LinkOrder};
     let mut server = Server::load(3, 8, 2, 2, 2, 0).unwrap();
     for connection in [Connection::Local, Connection::Remote, Connection::Bot] {
-        server
-            .connect(connection, ModuleId(1), PlayerTail::None, None)
-            .unwrap();
+        server.connect(connection, ModuleId(1), None).unwrap();
     }
     let root = server.clients[0].entity;
     let parent = server.clients[1].entity;
@@ -91,10 +152,10 @@ fn authoritative_attachment_commit_updates_local_remote_and_bot_hot_state() {
 fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     let mut server = Server::load(2, 512, 256, 16, 8, 0).unwrap();
     let first = server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::default(), None)
+        .connect(Connection::Local, ModuleId(1), None)
         .unwrap();
     let second = server
-        .connect(Connection::Local, ModuleId(2), PlayerTail::default(), None)
+        .connect(Connection::Local, ModuleId(2), None)
         .unwrap();
     assert_ne!(first, second);
     assert_ne!(server.clients[0].entity, server.clients[1].entity);
@@ -110,18 +171,14 @@ fn two_local_players_keep_independent_inventory_and_reuse_preallocated_state() {
     server.clients[1].player.inventory.weapon = WeaponId(3);
     assert_eq!(server.clients[1].player.inventory.item_counts[4], 0);
     assert_eq!(server.clients[0].player.inventory.weapon, WeaponId(0));
-    assert!(
-        server
-            .connect(Connection::Bot, ModuleId(3), PlayerTail::default(), None)
-            .is_none()
-    );
+    assert!(server.connect(Connection::Bot, ModuleId(3), None).is_none());
     let memory = server.clients[0].player.inventory.item_counts.as_ptr();
     let timers = server.clients[0].player.inventory.powerup_until.as_ptr();
     let hud_weapons = server.clients[0].hud.owned_weapons.words().as_ptr();
     let old_entity = server.clients[0].entity;
     assert!(server.disconnect(first));
     assert_eq!(
-        server.connect(Connection::Local, ModuleId(3), PlayerTail::default(), None),
+        server.connect(Connection::Local, ModuleId(3), None),
         Some(first)
     );
     assert_eq!(
@@ -154,14 +211,14 @@ fn native_q2_capacity_and_larger_common_namespaces_do_not_truncate_client_ids() 
         assert_eq!(server.clients.len(), count);
         for slot in 0..count {
             let id = server
-                .connect(Connection::Remote, ModuleId(7), PlayerTail::default(), None)
+                .connect(Connection::Remote, ModuleId(7), None)
                 .unwrap();
             assert_eq!(id, ClientId(slot as u32));
             server.clients[slot].player.inventory.item_counts[1] = slot as i32;
         }
         assert!(
             server
-                .connect(Connection::Remote, ModuleId(7), PlayerTail::default(), None)
+                .connect(Connection::Remote, ModuleId(7), None)
                 .is_none()
         );
         assert_eq!(
@@ -186,20 +243,10 @@ fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
         slot: 1,
     };
     let first = server
-        .connect(
-            Connection::Local,
-            ModuleId(10),
-            PlayerTail::None,
-            Some(arena),
-        )
+        .connect(Connection::Local, ModuleId(10), Some(arena))
         .unwrap();
     let second = server
-        .connect(
-            Connection::Remote,
-            ModuleId(11),
-            PlayerTail::None,
-            Some(classic),
-        )
+        .connect(Connection::Remote, ModuleId(11), Some(classic))
         .unwrap();
     let entity = server.clients[first.0 as usize].entity;
     let slot = entity.slot as usize;
@@ -220,7 +267,7 @@ fn native_slot_and_namespace_are_explicit_and_reset_on_client_reuse() {
     assert!(server.disconnect(first));
     assert_eq!(server.entities.columns.native_entity[slot], None);
     assert_eq!(
-        server.connect(Connection::Bot, ModuleId(12), PlayerTail::None, None),
+        server.connect(Connection::Bot, ModuleId(12), None),
         Some(first)
     );
     assert_eq!(server.entities.columns.native_entity[slot], None);
@@ -256,7 +303,7 @@ fn untrusted_command_client_ids_are_scoped_and_disconnected_slots_stay_idle() {
     );
     assert_eq!(server.clients[0].command.duration_ms, 0);
     let id = server
-        .connect(Connection::Remote, ModuleId(1), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(1), None)
         .unwrap();
     server.submit_command(
         id,
@@ -279,7 +326,7 @@ fn module_movement_requires_admission_owner_and_current_entity_lifetime() {
             slot: index as i32 + 1,
         };
         let id = server
-            .connect(connection, native.module, PlayerTail::None, Some(native))
+            .connect(connection, native.module, Some(native))
             .unwrap();
         assert_eq!(server.module_moves(id), None);
         server.clients[id.0 as usize].module_movement = true;
@@ -310,7 +357,7 @@ fn pending_command_keeps_its_snapshot_observation_once_and_disconnect_clears_it(
     };
     let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
     let id = server
-        .connect(Connection::Remote, ModuleId(7), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(7), None)
         .unwrap();
     let observation = SnapshotObservation {
         module: ModuleId(7),
@@ -343,7 +390,7 @@ fn pending_command_keeps_its_snapshot_observation_once_and_disconnect_clears_it(
     server.disconnect(id);
     assert_eq!(server.clients[id.0 as usize].command_observation, None);
     assert_eq!(
-        server.connect(Connection::Remote, ModuleId(7), PlayerTail::None, None),
+        server.connect(Connection::Remote, ModuleId(7), None),
         Some(id)
     );
     assert!(server.take_pending_command(id).is_none());
@@ -354,7 +401,7 @@ fn pending_client_audio_retirement_survives_reset_and_blocks_only_its_slot() {
     use qa_session::clients::AudioRetirement;
     let mut server = Server::load(2, 8, 2, 2, 2, 0).unwrap();
     let old = server
-        .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+        .connect(Connection::Local, ModuleId(1), None)
         .unwrap();
     let lifetime = server.clients[old.0 as usize].entity;
     server.clients[old.0 as usize].audio_retirement = Some(AudioRetirement {
@@ -369,26 +416,24 @@ fn pending_client_audio_retirement_survives_reset_and_blocks_only_its_slot() {
             .lifetime,
         lifetime
     );
-    let healthy = server
-        .connect(Connection::Bot, ModuleId(2), PlayerTail::None, None)
-        .unwrap();
+    let healthy = server.connect(Connection::Bot, ModuleId(2), None).unwrap();
     assert_ne!(healthy, old);
     assert!(
         server
-            .connect(Connection::Local, ModuleId(1), PlayerTail::None, None)
+            .connect(Connection::Local, ModuleId(1), None)
             .is_none()
     );
     // The app's Presentation callback is the sole production completion owner.
     server.clients[old.0 as usize].audio_retirement = None;
     assert_eq!(
-        server.connect(Connection::Local, ModuleId(1), PlayerTail::None, None),
+        server.connect(Connection::Local, ModuleId(1), None),
         Some(old)
     );
     assert_ne!(server.clients[old.0 as usize].entity, lifetime);
     assert!(server.disconnect(healthy));
     // SERVER-only clients never acquire an audio retirement and reuse at once.
     assert_eq!(
-        server.connect(Connection::Bot, ModuleId(2), PlayerTail::None, None),
+        server.connect(Connection::Bot, ModuleId(2), None),
         Some(healthy)
     );
 }

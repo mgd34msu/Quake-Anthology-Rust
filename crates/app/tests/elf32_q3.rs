@@ -11,8 +11,7 @@ use qa_compat::{
 };
 use qa_console::{commands::Console, views::Context};
 use qa_core::primitives::{
-    CallbackId, ClientId, ModuleId, NativeEntity, NumericValue, PlayerTail, RuleSetId, ThinkTime,
-    Vec3,
+    CallbackId, ClientId, ModuleId, NativeEntity, NumericValue, RuleSetId, ThinkTime, Vec3,
 };
 use qa_formats::program::native::{Image, LoadRole};
 use qa_platform::native::{NativeAbi, NativeScalar};
@@ -64,12 +63,9 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
     std::fs::write(files.0.join("fixture.dat"), b"0123456789").unwrap();
     let mut runtime = Runtime::load(2, std::iter::empty()).unwrap();
     assert_eq!(
-        runtime.server.connect(
-            qa_session::clients::Connection::Remote,
-            ModuleId(2),
-            PlayerTail::None,
-            None
-        ),
+        runtime
+            .server
+            .connect(qa_session::clients::Connection::Remote, ModuleId(2), None),
         Some(ClientId(0))
     );
     let id = runtime
@@ -77,7 +73,6 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
         .connect(
             qa_session::clients::Connection::Local,
             ModuleId(1),
-            PlayerTail::Q3 { weapon_time: 777 },
             Some(NativeEntity {
                 module: ModuleId(1),
                 slot: 0,
@@ -289,7 +284,14 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
             (player.movement_rules, player.trace_rules),
             (RuleSetId::QuakeWorld, RuleSetId::Quake2)
         );
-        assert_eq!(player.tail, PlayerTail::Q3 { weapon_time: 777 });
+        assert_eq!(
+            player.weapon_state,
+            Some(qa_core::primitives::WeaponState {
+                source: RuleSetId::Quake3,
+                namespace: qa_core::primitives::ResourceNamespace::Module(ModuleId(1)),
+                readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(-99),
+            })
+        );
         assert!(!client.module_movement);
         assert_eq!(host.runtime.server.clients[0].player.health, 0);
     };

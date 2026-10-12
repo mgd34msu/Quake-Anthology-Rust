@@ -108,9 +108,15 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             .is_ok()
         {}
         let mut bytes = [0; 128];
-        let length =
-            qa_network::outputs::print(protocol, PrintKind::Console, 2, b"old flight", &mut bytes)
-                .unwrap();
+        let length = qa_network::outputs::print(
+            protocol,
+            PrintKind::Console,
+            2,
+            b"old flight",
+            None,
+            &mut bytes,
+        )
+        .unwrap();
         let receipt = host
             .runtime
             .network

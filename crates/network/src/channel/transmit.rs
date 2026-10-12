@@ -263,9 +263,20 @@ impl Channel {
         &self.transmit.receipts[..self.transmit.receipt_count]
     }
     pub fn queue_reliable(&mut self, bytes: &[u8]) -> Result<NativeReceipt, TransmitError> {
+        let endpoint = self.endpoint();
         if let Some(commands) = &mut self.commands {
             let receipt = NativeReceipt(self.transmit.receipt.wrapping_add(1));
-            commands.queue(bytes, receipt)?;
+            commands.queue(
+                bytes,
+                receipt,
+                endpoint,
+                (endpoint == Endpoint::Server).then_some(
+                    self.transmit
+                        .command_output
+                        .len()
+                        .min(self.transmit.message.len()),
+                ),
+            )?;
             self.transmit.receipt = receipt.0;
             return Ok(receipt);
         }

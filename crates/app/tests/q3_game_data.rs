@@ -528,13 +528,13 @@ fn qvm_entities_in_box_writes_native_ints_for_all_linked_roles_in_order() {
 
 #[test]
 fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
-    use qa_core::primitives::{ClientId, NumericValue, PlayerTail};
+    use qa_core::primitives::{ClientId, NumericValue};
     use qa_session::clients::Connection;
     let mut f = Fixture::with_clients(2);
     assert_eq!(
         f.runtime
             .server
-            .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None),
+            .connect(Connection::Remote, ModuleId(2), None),
         Some(ClientId(0))
     );
     let native = NativeEntity {
@@ -544,12 +544,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
     let id = f
         .runtime
         .server
-        .connect(
-            Connection::Local,
-            native.module,
-            PlayerTail::Q3 { weapon_time: 777 },
-            Some(native),
-        )
+        .connect(Connection::Local, native.module, Some(native))
         .unwrap();
     assert_eq!(id, ClientId(1));
     let player = &mut f.runtime.server.clients[id.0 as usize].player;
@@ -579,6 +574,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
     f.row(ENTITIES, 0, 1);
     // Native pose/timing and private client padding must never enter stats-only import.
     f.vm.memory.read_mut(PLAYERS, 512).unwrap().fill(0x7f);
+    f.vm.memory.write_word(PLAYERS + 44, -197_000_071).unwrap();
     let stats = std::array::from_fn::<_, 16, _>(|i| match i {
         0 => 71,
         3 => 29,
@@ -609,7 +605,14 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
         (RuleSetId::QuakeWorld, RuleSetId::Quake2)
     );
     assert!(!row.module_movement);
-    assert_eq!(player.tail, PlayerTail::Q3 { weapon_time: 777 });
+    assert_eq!(
+        player.weapon_state,
+        Some(qa_core::primitives::WeaponState {
+            source: RuleSetId::Quake3,
+            namespace: qa_core::primitives::ResourceNamespace::Module(ModuleId(1)),
+            readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(-197_000_071),
+        })
+    );
     assert_eq!(
         (
             [
@@ -641,6 +644,7 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
     // Re-register a different base and stride; no mirrored pointer may survive.
     let replacement = PLAYERS + 8192;
     f.vm.memory.read_mut(replacement, 640).unwrap().fill(0);
+    f.vm.memory.write_word(replacement + 44, i32::MAX).unwrap();
     f.vm.memory.write_word(replacement + 184, 81).unwrap();
     f.vm.memory.write_word(replacement + 248, -9).unwrap();
     f.call(
@@ -662,6 +666,14 @@ fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
             f.runtime.server.clients[1].player.score
         ),
         (81, -9)
+    );
+    assert_eq!(
+        f.runtime.server.clients[1]
+            .player
+            .weapon_state
+            .unwrap()
+            .readiness,
+        qa_core::primitives::WeaponReadiness::RemainingMilliseconds(i32::MAX)
     );
     // Client.module and NativeEntity.module are separate checks, not interchangeable.
     f.runtime.server.entities.columns.native_entity[entity.slot as usize] = Some(NativeEntity {
@@ -703,13 +715,12 @@ fn registered_player_binding_requires_both_native_array_sizes() {
 
 #[test]
 fn registered_player_values_accept_wrapped_nonnull_qvm_zero_bases() {
-    use qa_core::primitives::PlayerTail;
     use qa_session::clients::Connection;
     for (entity_base, player_base) in [(0, PLAYERS), (ENTITIES, 0), (0, 0)] {
         let mut f = Fixture::with_clients(2);
         f.runtime
             .server
-            .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None)
+            .connect(Connection::Remote, ModuleId(2), None)
             .unwrap();
         let id = f
             .runtime
@@ -717,7 +728,6 @@ fn registered_player_values_accept_wrapped_nonnull_qvm_zero_bases() {
             .connect(
                 Connection::Local,
                 ModuleId(1),
-                PlayerTail::None,
                 Some(NativeEntity {
                     module: ModuleId(1),
                     slot: 0,
@@ -728,6 +738,7 @@ fn registered_player_values_accept_wrapped_nonnull_qvm_zero_bases() {
         f.row(entity_base, 0, 1);
         f.vm.memory.write_word(player_base + 184, 777).unwrap();
         f.vm.memory.write_word(player_base + 248, -901).unwrap();
+        f.vm.memory.write_word(player_base + 44, i32::MIN).unwrap();
         f.call(
             15,
             &[
@@ -751,6 +762,14 @@ fn registered_player_values_accept_wrapped_nonnull_qvm_zero_bases() {
         f.publish();
         let player = &f.runtime.server.clients[id.0 as usize].player;
         assert_eq!((player.health, player.score), (777, -901));
+        assert_eq!(
+            player.weapon_state,
+            Some(qa_core::primitives::WeaponState {
+                source: RuleSetId::Quake3,
+                namespace: qa_core::primitives::ResourceNamespace::Module(ModuleId(1)),
+                readiness: qa_core::primitives::WeaponReadiness::RemainingMilliseconds(i32::MIN),
+            })
+        );
         assert_eq!(f.binding(0), f.runtime.server.clients[id.0 as usize].entity);
     }
 }

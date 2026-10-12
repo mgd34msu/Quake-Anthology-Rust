@@ -7,9 +7,7 @@ static ALLOCATOR: qa_platform::allocations::CountingAllocator =
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use qa_core::{
-        primitives::{
-            ClientId, CommandIntent, ModuleId, NativeEntity, PlayerTail, RuleSetId, Vec3,
-        },
+        primitives::{ClientId, CommandIntent, ModuleId, NativeEntity, RuleSetId, Vec3},
         sys_events::EventTime,
     };
     use qa_platform::allocations::{begin_frame, end_frame};
@@ -38,7 +36,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .connect(
                 connection,
                 ModuleId(10),
-                PlayerTail::None,
                 Some(NativeEntity {
                     module: ModuleId((slot / 256) as u16),
                     slot: (slot % 256) as i32,
@@ -70,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("disconnect".into());
         }
         let id = server
-            .connect(Connection::Bot, ModuleId(42), PlayerTail::None, None)
+            .connect(Connection::Bot, ModuleId(42), None)
             .ok_or("reconnect")?;
         if id != ClientId(511)
             || server.entities.resolve(old).is_some()

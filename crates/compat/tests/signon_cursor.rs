@@ -113,7 +113,7 @@ fn register(services: &mut EngineServices<'_>, context: CallContext, ordinal: u3
 
 fn connect(server: &mut Server) -> ClientId {
     server
-        .connect(Connection::Remote, ModuleId(1), PlayerTail::default(), None)
+        .connect(Connection::Remote, ModuleId(1), None)
         .unwrap()
 }
 

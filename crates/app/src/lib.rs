@@ -21,7 +21,7 @@ use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::loopback::Loopback;
 use qa_core::primitives::{
-    ClientId, GeometryId, ModuleId, NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, PlayerTail, PrintKind,
+    ClientId, GeometryId, ModuleId, NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, PrintKind,
 };
 use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
@@ -239,17 +239,9 @@ impl Runtime {
         protocol: qa_network::commands::packet::Protocol,
         native_client: u32,
     ) -> Result<ClientId, String> {
-        use qa_network::commands::packet::Protocol;
-        let tail = match protocol {
-            Protocol::NetQuake15 | Protocol::QuakeWorld28 => PlayerTail::Q1 {
-                attack_finished: 0.0,
-            },
-            Protocol::Quake2_34 | Protocol::Quake2Repro1038 => PlayerTail::Q2,
-            Protocol::Quake3_68 => PlayerTail::Q3 { weapon_time: 0 },
-        };
         let id = self
             .server
-            .connect(Connection::Local, ModuleId::default(), tail, None)
+            .connect(Connection::Local, ModuleId::default(), None)
             .ok_or("no local client slot")?;
         let result = (|| {
             self.output_duplicates.reset_client(id);
@@ -264,7 +256,6 @@ impl Runtime {
                 &mut self.prediction[seat.index()].player,
             ] {
                 player.reset();
-                player.tail = tail;
                 player.movement_rules = policy.movement;
                 player.trace_rules = policy.trace;
                 qa_movement::set_bounds(player);

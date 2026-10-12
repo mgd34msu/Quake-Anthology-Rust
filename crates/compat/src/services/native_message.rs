@@ -1,15 +1,15 @@
-//! Native staging is decoded once at this boundary into shared sound records.
+//! Native staging is decoded once into shared sound and print records.
 use super::{CallError, EngineServices};
 use qa_core::{
     events::{EventStorageError, FrameEvent},
     primitives::{
-        NATIVE_CUE_CAPTURE_BYTES, NativeCueBinding, NativeDelivery, NativeEntity,
+        IndexSpan, NATIVE_CUE_CAPTURE_BYTES, NativeCueBinding, NativeDelivery, NativeEntity,
         ResourceNamespace, SoundAction, SoundEmitter, SpatialPolicy, Vec3,
     },
 };
 use qa_network::{
     commands::packet::Protocol,
-    outputs::{self, Cue, NativeService, Sound},
+    outputs::{self, Cue, NativeService, Print, Sound},
 };
 
 enum Part<'a> {
@@ -17,6 +17,12 @@ enum Part<'a> {
         offset: usize,
         wire: Sound,
         static_sound: bool,
+    },
+    Print {
+        offset: usize,
+        wire: &'a [u8],
+        print: Print<'a>,
+        consumed: usize,
     },
     Native {
         offset: usize,
@@ -40,34 +46,43 @@ impl<'a> Parts<'a> {
 impl<'a> Iterator for Parts<'a> {
     type Item = Part<'a>;
     fn next(&mut self) -> Option<Self::Item> {
-        let start = self.next;
-        while self.next < self.bytes.len() {
-            let at = self.next;
-            let Ok((service, length)) =
-                outputs::read_native_service(self.protocol, &self.bytes[at..])
-            else {
-                self.next = self.bytes.len();
-                break; // An unknown-length tail remains opaque, never guessed.
-            };
-            if let NativeService::Cue(Cue::Sound(wire) | Cue::StaticSound(wire)) = service {
-                if at != start {
-                    return Some(Part::Native {
-                        offset: start,
-                        bytes: &self.bytes[start..at],
-                    });
-                }
-                self.next += length;
-                return Some(Part::Sound {
-                    offset: at,
+        let offset = self.next;
+        let bytes = self.bytes.get(offset..).filter(|bytes| !bytes.is_empty())?;
+        let Ok((service, length)) = outputs::read_native_service(self.protocol, bytes) else {
+            self.next = self.bytes.len();
+            // An unknown-length tail remains opaque, never guessed.
+            return Some(Part::Native { offset, bytes });
+        };
+        self.next += length;
+        Some(match service {
+            NativeService::Cue(Cue::Sound(wire) | Cue::StaticSound(wire)) => Part::Sound {
+                offset,
+                wire,
+                static_sound: matches!(service, NativeService::Cue(Cue::StaticSound(_))),
+            },
+            NativeService::Print(print) => {
+                // A native reader can stop at its signed/width boundary before
+                // a producer's string ends. Keep an undecodable continuation
+                // with these raw pages so a rejected prefix cannot send it alone.
+                let opaque_tail = length < bytes.len()
+                    && outputs::read_native_service(self.protocol, &bytes[length..]).is_err();
+                let wire = if opaque_tail {
+                    self.next = self.bytes.len();
+                    bytes
+                } else {
+                    &bytes[..length]
+                };
+                Part::Print {
+                    offset,
                     wire,
-                    static_sound: matches!(service, NativeService::Cue(Cue::StaticSound(_))),
-                });
+                    print,
+                    consumed: length,
+                }
             }
-            self.next += length;
-        }
-        (start != self.next).then(|| Part::Native {
-            offset: start,
-            bytes: &self.bytes[start..self.next],
+            _ => Part::Native {
+                offset,
+                bytes: &bytes[..length],
+            },
         })
     }
 }
@@ -101,6 +116,7 @@ pub(super) fn publish(
                     rejected_sounds += 1;
                 }
             }
+            Part::Print { .. } => count += 1,
             Part::Native { offset, bytes } => {
                 count += 1;
                 let mut local = 0;
@@ -189,6 +205,30 @@ pub(super) fn publish(
                                     ..delivery
                                 },
                                 FrameEvent::Sound(event),
+                            )?;
+                        }
+                        Part::Print {
+                            offset,
+                            wire,
+                            print,
+                            consumed,
+                        } => {
+                            let first = (print.text.as_ptr() as usize)
+                                .checked_sub(wire.as_ptr() as usize)
+                                .ok_or(EventStorageError::TextCapacity)?;
+                            group.print(
+                                NativeDelivery {
+                                    component: offset as u32,
+                                    ..delivery
+                                },
+                                print.kind,
+                                print.level.unwrap_or(print.kind.default_level()),
+                                wire,
+                                IndexSpan {
+                                    first: first as u32,
+                                    count: print.text.len() as u32,
+                                },
+                                consumed as u32,
                             )?;
                         }
                         Part::Native { offset, bytes } => {

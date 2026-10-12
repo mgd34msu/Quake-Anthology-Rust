@@ -1,6 +1,7 @@
 //! QuakeC byte-offset edicts use the same namespace/lifetime projection as
 //! native modules. Only ABI field storage and ordinal reuse live here.
 use super::*;
+use qa_core::primitives::{WeaponReadiness, WeaponState};
 use qa_formats::program::quakec::Image;
 use qa_world::entities::FullTable;
 
@@ -50,6 +51,7 @@ pub(crate) struct QuakeCLayout {
     solid: Option<usize>,
     flags: Option<usize>,
     ground_entity: Option<usize>,
+    attack_finished: Option<usize>,
     owner: Option<usize>,
     model: Option<usize>,
     model_index: Option<usize>,
@@ -86,6 +88,7 @@ impl QuakeCLayout {
             solid: field(b"solid", 2),
             flags: field(b"flags", 2),
             ground_entity: field(b"groundentity", 4),
+            attack_finished: field(b"attack_finished", 2),
             owner: field(b"owner", 4),
             model: field(b"model", 1),
             model_index: field(b"modelindex", 2),
@@ -952,6 +955,18 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
+        let weapon_state = layout
+            .attack_finished
+            .map(|field| {
+                layout
+                    .number(memory, address, Some(field))
+                    .map(|deadline| WeaponState {
+                        source: context.native_rules,
+                        namespace: ResourceNamespace::Module(context.module),
+                        readiness: WeaponReadiness::DeadlineSeconds(deadline),
+                    })
+            })
+            .transpose()?;
         let mut names = [None; 3];
         for (field, name) in layout.name_fields.into_iter().zip(&mut names) {
             if let Some(field) = field {
@@ -1019,6 +1034,12 @@ impl EntityProjection {
         }
         if layout.effects.is_some() {
             appearance.native.effects = u64::from(number(layout.effects)? as u32);
+        }
+        if let Some(client) = services.server.client_for_native(native) {
+            let client = &mut services.server.clients[client.0 as usize];
+            if client.module == context.module {
+                client.player.weapon_state = weapon_state;
+            }
         }
         services.server.entities.set_targetname(entity, names[2]);
         let columns = &mut services.server.entities.columns;

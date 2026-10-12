@@ -210,7 +210,7 @@ fn host(protocol: Protocol) -> (FrameHost, ClientId, ClientId, RemoteReceiver) {
     runtime.server.clients[local.0 as usize].module = RESOURCES;
     let remote = runtime
         .server
-        .connect(Connection::Remote, RESOURCES, PlayerTail::None, None)
+        .connect(Connection::Remote, RESOURCES, None)
         .unwrap();
     assert!(runtime.server.bind_client_native(
         remote,
@@ -419,6 +419,7 @@ fn queued_qw_requests_grant_one_reply_while_other_frames_keep_running() {
         PrintKind::Console,
         2,
         b"first request",
+        None,
         &mut bytes,
     )
     .unwrap();
@@ -476,6 +477,7 @@ fn reliable_output_flushes_between_native_snapshot_boundaries() {
             PrintKind::Console,
             2,
             b"between frames",
+            None,
             &mut bytes,
         )
         .unwrap();

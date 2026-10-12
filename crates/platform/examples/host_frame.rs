@@ -11,7 +11,7 @@ use qa_core::{
     events::FrameEvent,
     loopback::Endpoint,
     primitives::{
-        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, PlayerTail, PrintKind, RuleSetId,
+        ClientId, CommandIntent, EffectEvent, EffectId, ModuleId, PrintKind, RuleSetId,
         SoundAction, SoundEvent, SoundId, Vec3, WeaponId, buttons,
     },
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
@@ -231,12 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let id = host
                 .runtime
                 .server
-                .connect(
-                    Connection::Bot,
-                    ModuleId((slot % 3 + 1) as u16),
-                    PlayerTail::default(),
-                    None,
-                )
+                .connect(Connection::Bot, ModuleId((slot % 3 + 1) as u16), None)
                 .ok_or("bot capacity")?;
             if id.0 as usize != slot {
                 return Err("bot slot ordering".into());
