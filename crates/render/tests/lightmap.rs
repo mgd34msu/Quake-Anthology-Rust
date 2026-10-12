@@ -158,7 +158,7 @@ fn q3_overbright_shifts_and_preserves_color_ratios() {
 #[test]
 fn dimensions_style_lengths_and_nonfinite_scalars_fail_before_page_mutation() {
     assert!(matches!(
-        AtlasBuilder::load(256, 1),
+        AtlasBuilder::load(129, 1),
         Err(LightmapError::PageSize)
     ));
     assert!(matches!(
@@ -195,4 +195,34 @@ fn dimensions_style_lengths_and_nonfinite_scalars_fail_before_page_mutation() {
         shift_quake3_rgb(&[1, 2, 3], 9, 0),
         Err(LightmapError::Overbright)
     );
+}
+
+#[test]
+fn independent_grids_use_load_owned_page_dimensions_and_sample_centres() {
+    let mut builder = AtlasBuilder::load(1024, 2).unwrap();
+    let source: Vec<_> = (0..300 * 2 * 3).map(|value| (value % 251) as u8).collect();
+    let first = builder.insert(300, 2, &source).unwrap();
+    let second = builder.insert(300, 2, &source).unwrap();
+    assert_eq!((first.page_size, first.x, first.y), (1024, 0, 0));
+    assert_eq!((second.page_size, second.x, second.y), (1024, 300, 0));
+    assert_eq!(first.uv_at_sample([0.0, 0.0]), [0.5 / 1024.0; 2]);
+    assert_eq!(
+        second.uv_at_sample([7.25, 1.0]),
+        [307.75 / 1024.0, 1.5 / 1024.0]
+    );
+    assert_eq!(
+        builder.insert(1024, 1, &pixels(1024, 1, 0)),
+        Err(LightmapError::Dimensions)
+    );
+    let atlas = builder.finish();
+    assert_eq!(atlas.page_size(), 1024);
+    assert_eq!(atlas.page_count(), 1);
+    let page = atlas.page(0).unwrap();
+    assert_eq!(&page[..900], &source[..900]);
+    assert_eq!(&page[1024 * 3..1024 * 3 + 900], &source[900..]);
+    assert_eq!(page.len(), 1024 * 1024 * 3);
+    assert!(matches!(
+        AtlasBuilder::load(16384, 1),
+        Err(LightmapError::PageSize)
+    ));
 }

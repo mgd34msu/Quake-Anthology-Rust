@@ -67,6 +67,7 @@ fn fixture_world(
             texture_projection: [[0.0, -8.0 / size, 0.0, 8.0], [0.0, 0.0, -8.0 / size, 8.0]],
             texture_minima: [0; 2],
             texture_extents: [16; 2],
+            lightmap_projection: None,
             lightmap_grid: [2; 2],
             styles: [0, 255, 255, 255],
             light_source: if light.is_some() {
@@ -1457,6 +1458,279 @@ fn indexed_palette(assets: &mut Assets) -> crate::assets::PaletteId {
         .unwrap()
 }
 
+fn projected_fixture(
+    mutate: impl FnOnce(&mut WorldGeometry),
+) -> (Assets, WorldId, crate::assets::PaletteId) {
+    use crate::surface_cache::{IndexedTexture, PaletteLighting};
+    let mut assets = Assets::load().unwrap();
+    let colors: Vec<_> = (0..=255_u8).flat_map(|v| [v; 3]).collect();
+    let colormap: Vec<_> = (0..64_u8).flat_map(|grade| [grade; 256]).collect();
+    let palette = assets
+        .register_palette(PaletteLighting::load(&colors, &colormap, None, 256).unwrap())
+        .unwrap();
+    let mips: [Vec<u8>; 4] = std::array::from_fn(|mip| vec![17; (16 >> mip) * (16 >> mip)]);
+    let image = assets
+        .register_indexed_image(
+            IndexedTexture::load(16, 16, mips.each_ref().map(Vec::as_slice), false).unwrap(),
+            palette,
+        )
+        .unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let world = fixture_world(
+        &mut assets,
+        4.0,
+        1.0,
+        SurfaceMaterial {
+            material,
+            ..SurfaceMaterial::default()
+        },
+        Some(0),
+        GeometryPartition::SplitBsp,
+        |geometry| {
+            let surface = &mut geometry.surfaces[0];
+            surface.lightmap_projection = Some([[0.0, -0.5, 0.0, 2.0], [0.0, 0.0, -0.25, 1.0]]);
+            surface.lightmap_grid = [5, 3];
+            surface.light_samples.count = 15;
+            geometry.light_samples = (0..15)
+                .map(|i| [(i % 5 * 40 + i / 5 * 20) as u8; 3])
+                .collect();
+            mutate(geometry);
+        },
+    );
+    (assets, world, palette)
+}
+
+#[test]
+fn projected_lightmap_world_fits_once_and_draws_through_the_indexed_cache() {
+    use crate::surface_cache::IndexedLighting;
+    let (assets, world, palette) = projected_fixture(|_| {});
+    let geometry = assets.world(world).unwrap().geometry();
+    assert_eq!(
+        indexed_lightmap_layout(geometry, &geometry.surfaces[0])
+            .unwrap()
+            .and_then(|layout| layout.mapping.lightmap),
+        Some([[0.25, 0.0, 0.0], [0.0, 0.125, 0.0]])
+    );
+    let mut cpu = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::Four,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    let view = Refdef {
+        cpu_presentation: CpuPresentation::Indexed {
+            palette,
+            lighting: IndexedLighting::Gray,
+            ambient: 0,
+            fullbright: false,
+        },
+        ..test_view()
+    };
+    let frame = packet(&assets, &[world], view);
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    let first = cpu.frame.indices.clone();
+    assert!(cpu.world_stats().indexed_pixels > 0);
+    assert!(cpu.world_stats().cache.fills > 0);
+    let grades: std::collections::BTreeSet<_> = cpu
+        .frame
+        .indices
+        .iter()
+        .zip(cpu.frame.inverse_depth.iter())
+        .filter_map(|(&grade, &depth)| (depth > 0.0).then_some(grade))
+        .collect();
+    assert!(grades.len() > 4);
+    let first_cache = cpu.world_stats().cache;
+    assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+    assert_eq!(cpu.frame.indices, first);
+    assert_eq!(cpu.world_stats().cache.fills, first_cache.fills);
+    assert!(cpu.world_stats().cache.hits > first_cache.hits);
+}
+
+#[test]
+fn rank_one_and_zero_extent_texture_axes_use_the_same_indexed_cache_and_bands() {
+    use crate::surface_cache::IndexedLighting;
+    for (texture_rank_one, light_rank_one, world_has_lightdata, has_samples, fullbright) in [
+        (true, false, true, true, false),
+        (false, true, true, true, false),
+        (false, true, true, false, false),
+        (false, true, false, false, false),
+        (false, true, true, false, true),
+    ] {
+        let (assets, world, palette) = projected_fixture(|geometry| {
+            let surface = &mut geometry.surfaces[0];
+            surface.texture_projection = [
+                [0.0, 0.0, 0.0, 16.0],
+                if texture_rank_one {
+                    [0.0, 0.0, -2.0, 8.0]
+                } else {
+                    [0.0; 4]
+                },
+            ];
+            surface.texture_minima = [16, 0];
+            surface.texture_extents = [0, if texture_rank_one { 16 } else { 0 }];
+            if light_rank_one {
+                surface.lightmap_projection = Some([[0.0, -0.5, 0.0, 2.0], [0.0, -0.5, 0.0, 2.0]]);
+                surface.lightmap_grid = [5; 2];
+                surface.light_samples.count = 25;
+                geometry.light_samples = (0..25)
+                    .map(|i| [(i % 5 * 30 + i / 5 * 10) as u8; 3])
+                    .collect();
+            }
+            if !has_samples {
+                surface.light_samples.count = 0;
+                surface.light_source = LightSource::None;
+                geometry.light_samples.clear();
+            }
+            geometry.world_has_lightdata = world_has_lightdata;
+            for vertex in &mut geometry.vertices {
+                vertex.vertex.texcoord = surface
+                    .texture_projection
+                    .map(|axis| project_texture(axis, vertex.vertex.position));
+            }
+        });
+        let geometry = assets.world(world).unwrap().geometry();
+        let layout = indexed_lightmap_layout(geometry, &geometry.surfaces[0])
+            .unwrap()
+            .unwrap();
+        assert!(layout.chart.is_some());
+        assert!(layout.extents.iter().all(|&v| v > 0));
+        assert!(layout.mapping.texture.is_some());
+        assert_eq!(layout.mapping.lightmap.is_some(), has_samples);
+        let mut cpu = CpuBackend::load_with_limits(
+            29,
+            19,
+            &assets,
+            CpuLimits {
+                bands: RasterBands::Four,
+                ..CpuLimits::default()
+            },
+        )
+        .unwrap();
+        let info = cpu
+            .world
+            .as_ref()
+            .unwrap()
+            .prepare
+            .geometry
+            .catalog
+            .surfaces[0];
+        assert!(info.cache_supported);
+        assert!(info.indexed_chart.is_some());
+        let frame = packet(
+            &assets,
+            &[world],
+            Refdef {
+                cpu_presentation: CpuPresentation::Indexed {
+                    palette,
+                    lighting: IndexedLighting::Gray,
+                    ambient: 0,
+                    fullbright,
+                },
+                ..test_view()
+            },
+        );
+        assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+        assert!(cpu.world_stats().indexed_pixels > 0);
+        assert!(cpu.world_stats().cache.fills > 0);
+        let first = cpu.frame.indices.clone();
+        let grades: std::collections::BTreeSet<_> = cpu
+            .frame
+            .indices
+            .iter()
+            .zip(cpu.frame.inverse_depth.iter())
+            .filter_map(|(&grade, &depth)| (depth > 0.0).then_some(grade))
+            .collect();
+        if has_samples {
+            assert!(
+                grades.len() > 4,
+                "rank-one texture must not flatten lighting"
+            );
+        } else {
+            assert_eq!(
+                grades,
+                std::collections::BTreeSet::from([if world_has_lightdata && !fullbright {
+                    63
+                } else {
+                    0
+                }])
+            );
+        }
+        let first_cache = cpu.world_stats().cache;
+        assert_eq!(cpu.render(&frame, &assets).rejected, 0);
+        assert_eq!(cpu.frame.indices, first);
+        assert_eq!(cpu.world_stats().cache.fills, first_cache.fills);
+        assert!(cpu.world_stats().cache.hits > first_cache.hits);
+    }
+}
+
+#[test]
+fn spatial_cache_chart_preserves_rounded_geometry_off_the_declared_plane() {
+    let (assets, world, _) = projected_fixture(|geometry| {
+        let surface = &mut geometry.surfaces[0];
+        surface.plane = Some(Plane::oriented(Vec3([0.0, 0.9284767, -0.37139067]), 0.0));
+        surface.texture_projection = [[0.0, 0.0, 0.0, 16.0], [0.0; 4]];
+        surface.texture_extents = [0; 2];
+        surface.lightmap_projection = Some([[0.0, -0.5, 0.0, 2.0]; 2]);
+        surface.lightmap_grid = [5; 2];
+        surface.light_samples.count = 25;
+        geometry.light_samples = vec![[64; 3]; 25];
+    });
+    let geometry = assets.world(world).unwrap().geometry();
+    let surface = &geometry.surfaces[0];
+    assert!(!boundary_is_collinear(
+        &geometry.vertices,
+        &geometry.indices[geometry.boundaries[0].range()]
+    ));
+    let layout = indexed_lightmap_layout(geometry, surface).unwrap().unwrap();
+    // Y-dominant declared plane prefers XZ, but all rounded vertices have
+    // constant X. The same fitter selects YZ instead of discarding the face.
+    assert_eq!(
+        layout.chart.unwrap().projection,
+        [[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
+    );
+    assert_eq!(layout.mapping.lightmap, Some([[-0.5, 0.0, 2.0]; 2]));
+    assert_eq!(layout.mapping.texture, Some([[0.0, 0.0, 16.0], [0.0; 3]]));
+}
+
+#[test]
+fn projected_fit_remaps_a_rotated_repeated_anchor_without_changing_the_boundary() {
+    let (assets, world, _) = projected_fixture(|geometry| {
+        geometry.vertices[2] = geometry.vertices[0];
+    });
+    let geometry = assets.world(world).unwrap().geometry();
+    let surface = &geometry.surfaces[0];
+    let vertices = &geometry.vertices[surface.vertices.range()];
+    assert!(
+        crate::affine::widest_fan_basis(vertices.len(), |index| {
+            vertices[index].vertex.texcoord.map(f64::from)
+        })
+        .is_none()
+    );
+    let layout = indexed_lightmap_layout(geometry, surface).unwrap().unwrap();
+    assert!(layout.chart.is_none());
+    assert_eq!(
+        layout.mapping.lightmap,
+        Some([[0.25, 0.0, 0.0], [0.0, 0.125, 0.0]])
+    );
+    assert!(layout.mapping.texture.is_none());
+    assert_eq!(geometry.indices, [0, 1, 2, 0, 2, 3, 0, 1, 2, 3]);
+    assert_eq!(geometry.boundaries, [RangeSpan { first: 6, count: 4 }]);
+}
+
 #[test]
 fn indexed_wall_on_eye_plane_skips_without_rejecting_nearby_drawable_wall() {
     use crate::surface_cache::{IndexedLighting, IndexedTexture};
@@ -2719,7 +2993,15 @@ fn native_inverse_depth_uses_winquake_reciprocal_multiply_order() {
         let origin = normal.0[2] * inverse_distance - center[0] * x - center[1] * y;
         let plane = surface.plane.unwrap();
         let eye = plane.distance - plane.normal.dot(camera.refdef.origin);
-        let (actual, _) = native_planes(&camera, &surface, surface.texture_minima, 0, eye).unwrap();
+        let (actual, _) = native_planes(
+            &camera,
+            &surface,
+            surface.texture_projection,
+            surface.texture_minima,
+            0,
+            eye,
+        )
+        .unwrap();
         assert_eq!(
             [
                 actual.inverse_depth.x,

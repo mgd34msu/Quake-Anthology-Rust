@@ -308,13 +308,7 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
     let mut unchanged = [0; 1400];
     let mut expected = Writer::new(&mut unchanged, Encoding::Bytes);
     let mut delta = Writer::new(&mut second, Encoding::Bytes);
-    let emitted = states::write_qw_entity(
-        &mut delta,
-        17,
-        &from,
-        Some(&to),
-        false
-    )?;
+    let emitted = states::write_qw_entity(&mut delta, 17, &from, Some(&to), false)?;
     assert_eq!(
         emitted,
         states::write_qw_entity(&mut expected, 17, &from, Some(&from), false)?

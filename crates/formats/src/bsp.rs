@@ -383,6 +383,16 @@ pub struct Extension<'a> {
     pub bytes: &'a [u8],
 }
 
+/// BSPX lightmap sample coordinates are independent of the base texture axes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecoupledLightmap {
+    pub width: u32,
+    pub height: u32,
+    /// A checked byte offset into Lighting; unlit or malformed spans are None.
+    pub offset: Option<u32>,
+    pub projection: [[f32; 4]; 2],
+}
+
 pub struct Map<'a> {
     pub bsp: Bsp<'a>,
     pub planes: Vec<Plane>,
@@ -407,6 +417,8 @@ pub struct Map<'a> {
     pub areas: Vec<IndexSpan>,
     pub area_portals: Vec<AreaPortal>,
     pub extensions: Vec<Extension<'a>>,
+    /// Face-indexed BSPX records. None retains the ordinary face lighting.
+    pub decoupled_lightmaps: Vec<Option<DecoupledLightmap>>,
 }
 impl<'a> Map<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, FormatError> {

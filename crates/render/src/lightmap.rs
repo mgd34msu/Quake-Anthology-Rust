@@ -1,7 +1,6 @@
 //! Load-time lightmap packing and native GL lighting conversions.
 
 pub const PAGE_SIZE: u32 = 128;
-const PAGE_BYTES: usize = PAGE_SIZE as usize * PAGE_SIZE as usize * 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LightmapError {
@@ -18,6 +17,7 @@ pub enum LightmapError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AtlasRegion {
     pub page: u32,
+    pub page_size: u32,
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -28,8 +28,8 @@ impl AtlasRegion {
     /// Sample zero is the center of the region's first lightmap texel.
     pub fn uv_at_sample(self, sample: [f32; 2]) -> [f32; 2] {
         [
-            (self.x as f32 + sample[0] + 0.5) / PAGE_SIZE as f32,
-            (self.y as f32 + sample[1] + 0.5) / PAGE_SIZE as f32,
+            (self.x as f32 + sample[0] + 0.5) / self.page_size as f32,
+            (self.y as f32 + sample[1] + 0.5) / self.page_size as f32,
         ]
     }
 
@@ -40,7 +40,7 @@ impl AtlasRegion {
             coordinate[axis] -= texture_minimum[axis] as f32;
             coordinate[axis] += (origin * 16) as f32;
             coordinate[axis] += 8.0;
-            coordinate[axis] /= (PAGE_SIZE * 16) as f32;
+            coordinate[axis] /= (self.page_size * 16) as f32;
         }
         coordinate
     }
@@ -51,12 +51,13 @@ pub struct AtlasPage {
 }
 
 pub struct Atlas {
+    page_size: u32,
     pages: Box<[AtlasPage]>,
 }
 
 impl Atlas {
     pub fn page_size(&self) -> u32 {
-        PAGE_SIZE
+        self.page_size
     }
 
     pub fn page_count(&self) -> usize {
@@ -73,11 +74,12 @@ impl Atlas {
 }
 
 struct PackingPage {
-    columns: [u16; PAGE_SIZE as usize],
+    columns: Box<[u16]>,
     rgb: Box<[u8]>,
 }
 
 pub struct AtlasBuilder {
+    page_size: u32,
     pages: Vec<PackingPage>,
     current: Option<usize>,
     max_pages: usize,
@@ -85,7 +87,9 @@ pub struct AtlasBuilder {
 
 impl AtlasBuilder {
     pub fn load(page_size: u32, max_pages: u32) -> Result<Self, LightmapError> {
-        if page_size != PAGE_SIZE {
+        if crate::assets::upload::validate_dimensions(page_size, page_size).is_err()
+            || !page_size.is_power_of_two()
+        {
             return Err(LightmapError::PageSize);
         }
         if max_pages == 0 {
@@ -96,6 +100,7 @@ impl AtlasBuilder {
             .try_reserve_exact(max_pages as usize)
             .map_err(|_| LightmapError::Allocation)?;
         Ok(Self {
+            page_size,
             pages,
             current: None,
             max_pages: max_pages as usize,
@@ -108,8 +113,8 @@ impl AtlasBuilder {
         height: u32,
         rgb: &[u8],
     ) -> Result<AtlasRegion, LightmapError> {
-        // Native LM_AllocBlock excludes x == BLOCK_WIDTH-w, including w == 128.
-        if width == 0 || width >= PAGE_SIZE || height == 0 || height > PAGE_SIZE {
+        // Native LM_AllocBlock excludes x == BLOCK_WIDTH-w.
+        if width == 0 || width >= self.page_size || height == 0 || height > self.page_size {
             return Err(LightmapError::Dimensions);
         }
         check_samples(width, height, 1, rgb)?;
@@ -120,7 +125,7 @@ impl AtlasBuilder {
         if location.is_none() {
             let page = self.append_page(&[])?;
             self.current = Some(page);
-            // Width < 128 and height <= 128 guarantee a location on the fresh page.
+            // Admitted dimensions guarantee a location on the fresh page.
             let Some((x, y)) = allocate_columns(&mut self.pages[page].columns, width, height)
             else {
                 return Err(LightmapError::Dimensions);
@@ -132,12 +137,13 @@ impl AtlasBuilder {
         };
         for row in 0..height as usize {
             let from = row * width as usize * 3;
-            let to = ((y as usize + row) * PAGE_SIZE as usize + x as usize) * 3;
+            let to = ((y as usize + row) * self.page_size as usize + x as usize) * 3;
             self.pages[page].rgb[to..to + width as usize * 3]
                 .copy_from_slice(&rgb[from..from + width as usize * 3]);
         }
         Ok(AtlasRegion {
             page: page as u32,
+            page_size: self.page_size,
             x,
             y,
             width,
@@ -147,20 +153,22 @@ impl AtlasBuilder {
 
     /// Authored Q3 pages stay intact; subsequent packed grids begin a new page.
     pub fn insert_page(&mut self, rgb: &[u8]) -> Result<AtlasRegion, LightmapError> {
-        check_samples(PAGE_SIZE, PAGE_SIZE, 1, rgb)?;
+        check_samples(self.page_size, self.page_size, 1, rgb)?;
         let page = self.append_page(rgb)?;
         self.current = None;
         Ok(AtlasRegion {
             page: page as u32,
+            page_size: self.page_size,
             x: 0,
             y: 0,
-            width: PAGE_SIZE,
-            height: PAGE_SIZE,
+            width: self.page_size,
+            height: self.page_size,
         })
     }
 
     pub fn finish(self) -> Atlas {
         Atlas {
+            page_size: self.page_size,
             pages: self
                 .pages
                 .into_iter()
@@ -175,16 +183,17 @@ impl AtlasBuilder {
             return Err(LightmapError::PageLimit);
         }
         let mut pixels = Vec::new();
+        let page_bytes = self.page_size as usize * self.page_size as usize * 3;
         pixels
-            .try_reserve_exact(PAGE_BYTES)
+            .try_reserve_exact(page_bytes)
             .map_err(|_| LightmapError::Allocation)?;
-        pixels.resize(PAGE_BYTES, 0);
+        pixels.resize(page_bytes, 0);
         if !initial.is_empty() {
             pixels.copy_from_slice(initial);
         }
         let index = self.pages.len();
         self.pages.push(PackingPage {
-            columns: [0; PAGE_SIZE as usize],
+            columns: vec![0; self.page_size as usize].into_boxed_slice(),
             rgb: pixels.into_boxed_slice(),
         });
         Ok(index)
@@ -192,14 +201,11 @@ impl AtlasBuilder {
 }
 
 /// qsrc quake-2/ref_gl/gl_rsurf.c:1408 LM_AllocBlock, including its strict ties.
-fn allocate_columns(
-    columns: &mut [u16; PAGE_SIZE as usize],
-    width: u32,
-    height: u32,
-) -> Option<(u32, u32)> {
-    let mut best = PAGE_SIZE;
+fn allocate_columns(columns: &mut [u16], width: u32, height: u32) -> Option<(u32, u32)> {
+    let page_size = columns.len() as u32;
+    let mut best = page_size;
     let mut spot = None;
-    for x in 0..PAGE_SIZE - width {
+    for x in 0..page_size - width {
         let mut maximum = 0;
         let mut scanned = 0;
         for &column in &columns[x as usize..(x + width) as usize] {
@@ -214,7 +220,7 @@ fn allocate_columns(
             spot = Some((x, best));
         }
     }
-    if best + height > PAGE_SIZE {
+    if best + height > page_size {
         return None;
     }
     let (x, y) = spot?;

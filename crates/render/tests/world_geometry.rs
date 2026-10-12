@@ -1,6 +1,6 @@
 use qa_core::primitives::{Bounds, Plane, Vec3};
 use qa_formats::bsp::{
-    Bsp, Face, IndexSpan, Map, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
+    Bsp, DecoupledLightmap, Face, IndexSpan, Map, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
 };
 use qa_render::scene::Span;
 use qa_render::world::geometry::{
@@ -52,6 +52,7 @@ fn empty_map(bytes: &[u8]) -> Map<'_> {
         areas: vec![],
         area_portals: vec![],
         extensions: vec![],
+        decoupled_lightmaps: vec![],
     }
 }
 fn vertex(position: [f32; 3]) -> Vertex {
@@ -155,6 +156,69 @@ fn q2_rgb_is_retained_and_last_style_cannot_read_past_lighting() {
         load_geometry(&legacy_map(&truncated), GeometryOptions::default()),
         Err(GeometryError::LightSpan(0))
     ));
+}
+
+#[test]
+fn decoupled_grid_preserves_texture_lattice_styles_and_rotates_sample_coordinates() {
+    let mut lighting = vec![250; 3];
+    let expected: Vec<_> = (0..11 * 10 * 2)
+        .map(|sample| [sample as u8, (sample * 3) as u8, (sample * 7) as u8])
+        .collect();
+    lighting.extend(expected.as_flattened());
+    let bytes = bsp_bytes(2, &lighting);
+    let mut map = legacy_map(&bytes);
+    let projection = [[0.0, 0.25, 0.0, 0.25], [-0.5, 0.0, 0.0, 8.5]];
+    map.decoupled_lightmaps = vec![Some(DecoupledLightmap {
+        width: 11,
+        height: 10,
+        offset: Some(3),
+        projection,
+    })];
+    let geometry = load_geometry(&map, GeometryOptions::default()).unwrap();
+    let face = &geometry.surfaces[0];
+    assert_eq!(face.texture_minima, [-16, 0]);
+    assert_eq!(face.texture_extents, [32, 48]);
+    assert_eq!(face.styles, [0, 7, 255, 255]);
+    assert_eq!(face.lightmap_grid, [11, 10]);
+    assert_eq!(face.lightmap_projection, Some(projection));
+    assert_eq!(face.light_samples.count, 220);
+    assert_eq!(geometry.light_samples, expected);
+    assert_eq!(
+        geometry
+            .vertices
+            .iter()
+            .map(|v| v.vertex.lightmap_coord)
+            .collect::<Vec<_>>(),
+        [[1.0, 9.0], [1.0, 0.0], [8.75, 0.0], [8.75, 9.0]]
+    );
+    assert_eq!(geometry.vertices[0].vertex.texcoord, [-2.0, 4.0]);
+    assert_eq!(
+        face.lightmap_sample(Vec3([17.0, 34.0, 2.0])),
+        Some([8.75, 0.0])
+    );
+}
+
+#[test]
+fn decoupled_unlit_sentinel_never_falls_back_to_the_vanilla_offset() {
+    let bytes = bsp_bytes(2, &[100; 74]);
+    for dimensions in [[0, 0], [7, 5]] {
+        let mut map = legacy_map(&bytes);
+        let projection = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 2.0]];
+        map.decoupled_lightmaps = vec![Some(DecoupledLightmap {
+            width: dimensions[0],
+            height: dimensions[1],
+            offset: None,
+            projection,
+        })];
+        let geometry = load_geometry(&map, GeometryOptions::default()).unwrap();
+        let face = &geometry.surfaces[0];
+        assert_eq!(face.lightmap_grid, dimensions);
+        assert_eq!(face.lightmap_projection, Some(projection));
+        assert_eq!(face.light_source, LightSource::None);
+        assert_eq!(face.light_samples.count, 0);
+        assert!(geometry.light_samples.is_empty());
+        assert_eq!(geometry.vertices[0].vertex.lightmap_coord, [0.0, 5.0]);
+    }
 }
 
 fn q3_surface(kind: SurfaceKind, first: u32, count: u32) -> Surface<'static> {

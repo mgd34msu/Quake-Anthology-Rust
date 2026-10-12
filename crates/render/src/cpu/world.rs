@@ -11,7 +11,9 @@ use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, Cull, RgbGen, TexCoordGen}
 use crate::stage::{
     DeformOp, DrawInputs, PreparedStage, PreparedTiled, StageEvaluator, alpha_pass,
 };
-use crate::surface_cache::{BuildState, CacheStats, LightGrid, SurfaceCache, SurfaceSource};
+use crate::surface_cache::{
+    BuildState, CacheStats, IndexedProjection, LightGrid, SurfaceCache, SurfaceSource,
+};
 use crate::world::WorldId;
 use crate::world::geometry::{GeometryPartition, TextureCoordinates};
 use qa_core::primitives::IndexSpan;
@@ -197,6 +199,29 @@ struct SurfaceInfo {
     sky: Option<super::sky::Source>,
     raster_empty: bool,
     preparation: PrepareCapacity,
+    indexed_chart: Option<IndexedChart>,
+}
+
+#[derive(Clone, Copy)]
+struct IndexedChart {
+    projection: [[f32; 4]; 2],
+    minima: [i32; 2],
+}
+
+impl SurfaceInfo {
+    fn indexed_coordinates(
+        self,
+        surface: &crate::world::geometry::WorldSurface,
+        source: IndexedSource,
+    ) -> ([[f32; 4]; 2], [i32; 2]) {
+        if source.tiled.is_some() {
+            (surface.texture_projection, SoftwareTiled::MINIMA)
+        } else if let Some(chart) = self.indexed_chart {
+            (chart.projection, chart.minima)
+        } else {
+            (surface.texture_projection, surface.texture_minima)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -323,15 +348,6 @@ struct Primitive {
 struct IndexedSource {
     image: ImageId,
     tiled: Option<PreparedTiled>,
-}
-impl IndexedSource {
-    fn minima(self, surface: &crate::world::geometry::WorldSurface) -> [i32; 2] {
-        if self.tiled.is_some() {
-            SoftwareTiled::MINIMA
-        } else {
-            surface.texture_minima
-        }
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -617,10 +633,36 @@ impl WorldRaster {
                 let material = assets
                     .material(binding.material)
                     .ok_or("invalid world material")?;
-                let cache_supported = material.settings.software_tiled.is_none()
-                    && surface.texture_coordinates == TextureCoordinates::Texels
-                    && surface
-                        .texture_extents
+                let loops = geometry
+                    .boundaries
+                    .get(surface.boundaries.range())
+                    .ok_or("invalid world polygon boundary range")?;
+                let mut raster_empty = material.settings.deforms.iter().all(Option::is_none);
+                for boundary in loops {
+                    let indices = geometry
+                        .indices
+                        .get(boundary.range())
+                        .ok_or("invalid world polygon index range")?;
+                    if indices.len() < 3
+                        || indices
+                            .iter()
+                            .any(|&i| i as usize >= geometry.vertices.len())
+                    {
+                        return Err("invalid world polygon vertices");
+                    }
+                    raster_empty &= boundary_is_collinear(&geometry.vertices, indices);
+                }
+                let indexed_candidate = !raster_empty
+                    && material.settings.software_tiled.is_none()
+                    && surface.texture_coordinates == TextureCoordinates::Texels;
+                let projected = if indexed_candidate {
+                    indexed_lightmap_layout(geometry, surface)?
+                } else {
+                    None
+                };
+                let extents = projected.map_or(surface.texture_extents, |p| p.extents);
+                let cache_supported = indexed_candidate
+                    && extents
                         .iter()
                         .all(|&e| e > 0 && e <= 8192 && e.is_multiple_of(16));
                 let lightmap = if cache_supported && surface.light_samples.count != 0 {
@@ -638,29 +680,34 @@ impl WorldRaster {
                     None
                 };
                 let source = SurfaceSource::load(
-                    surface.texture_minima,
+                    projected.map_or(surface.texture_minima, |p| p.minima),
                     if cache_supported {
-                        surface.texture_extents
+                        projected.map_or(surface.texture_extents, |p| p.extents)
                     } else {
                         [16; 2]
                     },
                     lightmap,
                     geometry.world_has_lightdata,
+                    cache_supported
+                        .then_some(projected)
+                        .flatten()
+                        .map(|p| p.mapping),
                 )?;
                 let cache = u32::try_from(sources.len()).map_err(|_| "too many world surfaces")?;
                 sources.push(source);
                 surfaces.push(SurfaceInfo {
                     cache,
                     cache_supported,
-                    mip_adjust: mip_adjust(surface.texture_projection),
+                    mip_adjust: mip_adjust(
+                        projected
+                            .and_then(|p| p.chart)
+                            .map_or(surface.texture_projection, |chart| chart.projection),
+                    ),
                     sky: None,
-                    raster_empty: false,
+                    raster_empty,
                     preparation: PrepareCapacity::default(),
+                    indexed_chart: projected.and_then(|p| p.chart),
                 });
-                let loops = geometry
-                    .boundaries
-                    .get(surface.boundaries.range())
-                    .ok_or("invalid world polygon boundary range")?;
                 if let Some(info) = surfaces.last_mut() {
                     info.sky = super::sky::Source::load(material, assets);
                 }
@@ -675,7 +722,6 @@ impl WorldRaster {
                 boundaries = boundaries
                     .checked_add(loops.len())
                     .ok_or("world polygon count overflow")?;
-                let mut raster_empty = material.settings.deforms.iter().all(Option::is_none);
                 let mut reference_coverage = 0usize;
                 for (loop_index, boundary) in loops.iter().enumerate() {
                     let boundary_index = surface.boundaries.first as usize + loop_index;
@@ -696,14 +742,6 @@ impl WorldRaster {
                         .indices
                         .get(boundary.range())
                         .ok_or("invalid world polygon index range")?;
-                    if indices.len() < 3
-                        || indices
-                            .iter()
-                            .any(|&i| i as usize >= geometry.vertices.len())
-                    {
-                        return Err("invalid world polygon vertices");
-                    }
-                    raster_empty &= boundary_is_collinear(&geometry.vertices, indices);
                     let clipped = indices
                         .len()
                         .checked_add(6)
@@ -1544,7 +1582,8 @@ impl SurfacePrepare {
                         };
                     }
                     let Some((planes, adjust)) = eye.and_then(|eye| {
-                        native_planes(camera, surface, source.minima(surface), primitive.mip, eye)
+                        let (projection, minima) = info.indexed_coordinates(surface, source);
+                        native_planes(camera, surface, projection, minima, primitive.mip, eye)
                     }) else {
                         self.reject(stats);
                         continue;
@@ -1848,10 +1887,12 @@ impl SurfacePrepare {
                 ..loaded.vertex
             };
             if let Some(source) = primitive.indexed {
-                let minima = source.minima(surface);
+                let info = self
+                    .catalog
+                    .surface_info(primitive.world, primitive.surface)?;
+                let (projection, minima) = info.indexed_coordinates(surface, source);
                 vertex.texcoord = std::array::from_fn(|axis| {
-                    let projection = surface.texture_projection[axis];
-                    (crate::world::geometry::project_texture(projection, vertex.position)
+                    (crate::world::geometry::project_texture(projection[axis], vertex.position)
                         - minima[axis] as f32)
                         / (1u32 << primitive.mip) as f32
                 });
@@ -1974,11 +2015,140 @@ fn exact_difference(point: [f32; 3], origin: [f32; 3]) -> Option<[f64; 3]> {
     Some(delta)
 }
 
+#[derive(Clone, Copy)]
+struct IndexedCacheLayout {
+    mapping: IndexedProjection,
+    chart: Option<IndexedChart>,
+    minima: [i32; 2],
+    extents: [u32; 2],
+}
+
+fn indexed_lightmap_layout(
+    geometry: &crate::world::geometry::WorldGeometry,
+    surface: &crate::world::geometry::WorldSurface,
+) -> Result<Option<IndexedCacheLayout>, &'static str> {
+    let Some(light_projection) = surface.lightmap_projection else {
+        return Ok(None);
+    };
+    let vertices = geometry
+        .vertices
+        .get(surface.vertices.range())
+        .ok_or("invalid projected lightmap vertex range")?;
+    let coordinate = |projection: [[f32; 4]; 2], position| {
+        projection.map(|axis| f64::from(crate::world::geometry::project_texture(axis, position)))
+    };
+    let basis = |projection| {
+        let origin = coordinate(projection, vertices.first()?.vertex.position);
+        crate::affine::widest_fan_basis(vertices.len(), |index| {
+            coordinate(projection, vertices[index].vertex.position)
+        })
+        .or_else(|| {
+            // A native boundary can repeat its origin between distinct points,
+            // making every anchored fan triangle zero despite a spatial basis.
+            let anchor = (1..vertices.len())
+                .find(|&index| coordinate(projection, vertices[index].vertex.position) != origin)?;
+            crate::affine::widest_fan_basis(vertices.len(), |index| {
+                coordinate(
+                    projection,
+                    vertices[(anchor + index) % vertices.len()].vertex.position,
+                )
+            })
+            .map(|(indices, area)| (indices.map(|index| (anchor + index) % vertices.len()), area))
+        })
+    };
+    let mut projection = surface.texture_projection;
+    let mut selected = basis(projection);
+    let alternate = selected.is_none();
+    if !alternate && surface.light_samples.count == 0 {
+        return Ok(None);
+    }
+    if alternate {
+        projection = light_projection.map(|axis| axis.map(|value| value * 16.0));
+        selected = basis(projection);
+        if selected.is_none() {
+            let normal = surface
+                .plane
+                .ok_or("projected cache has no surface plane")?
+                .normal
+                .0
+                .map(f32::abs);
+            let major = if normal[0] >= normal[1] && normal[0] >= normal[2] {
+                0
+            } else if normal[1] >= normal[2] {
+                1
+            } else {
+                2
+            };
+            // Native clipped slivers can lie slightly off their declared
+            // plane. Keep the preferred plane chart, then choose another
+            // canonical spatial chart only if it has the retained fan basis.
+            let candidate = (0..3)
+                .map(|offset| {
+                    [[1, 2], [0, 2], [0, 1]][(major + offset) % 3].map(|axis| {
+                        let mut field = [0.0; 4];
+                        field[axis] = 1.0;
+                        field
+                    })
+                })
+                .find_map(|projection| basis(projection).map(|basis| (projection, basis)))
+                .ok_or("projected lightmap has no spatial cache basis")?;
+            projection = candidate.0;
+            selected = Some(candidate.1);
+        }
+    }
+    let (indices, area) = selected.ok_or("projected lightmap has no spatial cache basis")?;
+    let positions = indices.map(|index| vertices[index].vertex.position);
+    let coordinates = positions.map(|position| coordinate(projection, position));
+    let mut samples = [[0.0_f64; 2]; 3];
+    for (sample, position) in samples.iter_mut().zip(positions) {
+        *sample = surface
+            .lightmap_sample(position)
+            .ok_or("projected lightmap has no sample projection")?
+            .map(f64::from);
+    }
+    let lightmap = (surface.light_samples.count != 0).then(|| {
+        std::array::from_fn(|axis| crate::affine::fit3(coordinates, samples.map(|s| s[axis]), area))
+    });
+    let texture = alternate.then(|| {
+        let texture = positions.map(|position| coordinate(surface.texture_projection, position));
+        std::array::from_fn(|axis| crate::affine::fit3(coordinates, texture.map(|s| s[axis]), area))
+    });
+    if lightmap
+        .is_some_and(|mapping: [[f64; 3]; 2]| mapping.as_flattened().iter().any(|v| !v.is_finite()))
+        || texture.is_some_and(|mapping: [[f64; 3]; 2]| {
+            mapping.as_flattened().iter().any(|v| !v.is_finite())
+        })
+    {
+        return Err("projected lightmap has nonfinite texture-coordinate mapping");
+    }
+    let (minima, extents) = if alternate {
+        let mut bounds = qa_core::primitives::Bounds::empty();
+        for vertex in vertices {
+            let uv = coordinate(projection, vertex.vertex.position);
+            bounds.add_point(qa_core::primitives::Vec3([uv[0] as f32, uv[1] as f32, 0.0]));
+        }
+        crate::world::geometry::texture_lattice(
+            [bounds.mins.0[0], bounds.mins.0[1]],
+            [bounds.maxs.0[0], bounds.maxs.0[1]],
+        )
+        .map_err(|_| "invalid projected cache lattice")?
+    } else {
+        (surface.texture_minima, surface.texture_extents)
+    };
+    Ok(Some(IndexedCacheLayout {
+        mapping: IndexedProjection { lightmap, texture },
+        chart: alternate.then_some(IndexedChart { projection, minima }),
+        minima,
+        extents,
+    }))
+}
+
 /// WinQuake D_CalcGradients and ref_soft D_CalcGradients keep camera-space
 /// texture gradients separate from their fixed-point texture-minimum offset.
 fn native_planes(
     camera: &Camera,
     surface: &crate::world::geometry::WorldSurface,
+    projection: [[f32; 4]; 2],
     minima: [i32; 2],
     mip: u8,
     eye: f32,
@@ -1991,7 +2161,7 @@ fn native_planes(
     }
     let inverse_depth = camera.gradient(normal, inverse_distance, GradientForm::ScaleThenFactor);
     let mip_scale = 1.0 / (1u32 << mip) as f32;
-    let axes = surface.texture_projection.map(|projection| {
+    let axes = projection.map(|projection| {
         let axis = crate::world::geometry::projection_axis(projection);
         camera.direction_to_view(axis)
     });
@@ -2002,7 +2172,7 @@ fn native_planes(
     let transformed_origin = camera.direction_to_view(camera.refdef.origin);
     let scaled_origin = transformed_origin * mip_scale;
     let adjust = std::array::from_fn(|i| {
-        let projection = surface.texture_projection[i];
+        let projection = projection[i];
         let camera_fixed = (scaled_origin.dot(axes[i]) * 65536.0 + 0.5) as i64;
         let minimum = (i64::from(minima[i]) << 16) >> mip;
         ((camera_fixed - minimum) as f32 + projection[3] * (65536.0 * mip_scale)) as i64

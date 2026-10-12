@@ -101,6 +101,7 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
                 texture_projection: [[0.0; 4]; 2],
                 texture_minima: [0; 2],
                 texture_extents: [0; 2],
+                lightmap_projection: None,
                 lightmap_grid: [0; 2],
                 styles: [255; 4],
                 light_source: LightSource::None,

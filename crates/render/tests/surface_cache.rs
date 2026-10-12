@@ -3,6 +3,9 @@ use qa_render::surface_cache::{
     SurfaceSource,
 };
 
+#[path = "surface_cache/projected.rs"]
+mod projected;
+
 fn palette(grade_rows: bool, first_fullbright: u16) -> PaletteLighting {
     let rgb: Vec<_> = (0..256u16).flat_map(|index| [index as u8; 3]).collect();
     let colormap: Vec<_> = (0..64u8)
@@ -24,6 +27,7 @@ fn gray_surface(samples: &[u8], styles: [u8; 4]) -> SurfaceSource {
         [16; 2],
         Some(LightGrid::gray(2, 2, styles, samples).unwrap()),
         true,
+        None,
     )
     .unwrap()
 }
@@ -150,7 +154,7 @@ fn owner_brightest_rgb_policy_preserves_red_green_ties() {
         &[100, 100, 20, 100, 100, 20, 100, 100, 20, 100, 100, 20],
     )
     .unwrap();
-    let source = SurfaceSource::load([0; 2], [16; 2], Some(grid), true).unwrap();
+    let source = SurfaceSource::load([0; 2], [16; 2], Some(grid), true, None).unwrap();
     let mut cache = SurfaceCache::load(vec![source], 256).unwrap();
     let span = cache
         .prepare(
@@ -231,7 +235,7 @@ fn supplied_colormap_and_negative_texture_minima_wrap_exactly() {
         (0..side * side).map(|pixel| (pixel % 256) as u8).collect()
     });
     let texture = IndexedTexture::load(32, 32, mips.each_ref().map(Vec::as_slice), false).unwrap();
-    let source = SurfaceSource::load([-16, 48], [16; 2], None, false).unwrap();
+    let source = SurfaceSource::load([-16, 48], [16; 2], None, false, None).unwrap();
     let mut cache = SurfaceCache::load(vec![source], 512).unwrap();
     for mip in 0..4 {
         let span = cache
@@ -298,9 +302,9 @@ fn rover_coalesces_and_invalidates_each_evicted_owner() {
     let palette = palette(true, 256);
     let texture = texture(17, false);
     let sources = vec![
-        SurfaceSource::load([0; 2], [16; 2], None, false).unwrap(),
-        SurfaceSource::load([0; 2], [16; 2], None, false).unwrap(),
-        SurfaceSource::load([0; 2], [32, 16], None, false).unwrap(),
+        SurfaceSource::load([0; 2], [16; 2], None, false, None).unwrap(),
+        SurfaceSource::load([0; 2], [16; 2], None, false, None).unwrap(),
+        SurfaceSource::load([0; 2], [32, 16], None, false, None).unwrap(),
     ];
     let mut cache = SurfaceCache::load(sources, 512).unwrap();
     let a = cache
@@ -371,7 +375,7 @@ fn numeric_resource_and_cache_owner_ids_prevent_cross_world_aliases() {
     let palette = palette(false, 256);
     let texture_a = texture(17, false);
     let texture_b = texture(18, false);
-    let source = || SurfaceSource::load([0; 2], [16; 2], None, false).unwrap();
+    let source = || SurfaceSource::load([0; 2], [16; 2], None, false, None).unwrap();
     let mut cache_a = SurfaceCache::load(vec![source()], 256).unwrap();
     let mut cache_b = SurfaceCache::load(vec![source()], 256).unwrap();
     let span_a = cache_a
@@ -400,13 +404,14 @@ fn malformed_load_inputs_are_scoped_errors() {
     assert!(PaletteLighting::load(&[0; 768], &[0; 16384], Some(&[0; 1]), 256).is_err());
     assert!(IndexedTexture::load(16, 16, [&[]; 4], false).is_err());
     assert!(LightGrid::gray(2, 2, [0, 255, 1, 255], &[0; 8]).is_err());
-    assert!(SurfaceSource::load([0; 2], [17, 16], None, false).is_err());
+    assert!(SurfaceSource::load([0; 2], [17, 16], None, false, None).is_err());
     assert!(
         SurfaceSource::load(
             [0; 2],
             [16; 2],
             Some(LightGrid::gray(3, 2, [0, 255, 255, 255], &[0; 6]).unwrap()),
             true,
+            None,
         )
         .is_err()
     );
@@ -426,7 +431,7 @@ fn native_cloud_zero_mask_is_preserved_at_each_original_mip() {
             .unwrap();
     assert_eq!(texture.transparent_index(), Some(0));
     let mut cache = SurfaceCache::load(
-        vec![SurfaceSource::load([0; 2], [16; 2], None, false).unwrap()],
+        vec![SurfaceSource::load([0; 2], [16; 2], None, false, None).unwrap()],
         512,
     )
     .unwrap();
@@ -450,7 +455,7 @@ fn base_only_indexed_images_do_not_invent_native_mips() {
     }
     let palette = palette(false, 224);
     let mut cache = SurfaceCache::load(
-        vec![SurfaceSource::load([0; 2], [16; 2], None, false).unwrap()],
+        vec![SurfaceSource::load([0; 2], [16; 2], None, false, None).unwrap()],
         512,
     )
     .unwrap();

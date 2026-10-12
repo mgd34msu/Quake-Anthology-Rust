@@ -266,7 +266,11 @@ pub fn load_world(
         {
             for vertex in &mut geometry.vertices[surface.vertices.range()] {
                 vertex.vertex.lightmap_coord =
-                    region.uv_from_texture(vertex.vertex.texcoord, surface.texture_minima);
+                    if let Some(sample) = surface.lightmap_sample(vertex.vertex.position) {
+                        region.uv_at_sample(sample)
+                    } else {
+                        region.uv_from_texture(vertex.vertex.texcoord, surface.texture_minima)
+                    };
             }
         }
     }
@@ -533,7 +537,33 @@ fn prepare_lightmaps(
     styles: &[LightStyle; 256],
     rules: RuleSetId,
 ) -> Result<(Vec<Option<ImageId>>, Vec<Option<AtlasRegion>>), WorldMaterialError> {
-    let mut atlas = AtlasBuilder::load(128, 4096)?;
+    let decoupled = geometry
+        .surfaces
+        .iter()
+        .any(|surface| surface.lightmap_projection.is_some());
+    let mut page_size = if decoupled {
+        1024
+    } else {
+        crate::lightmap::PAGE_SIZE
+    };
+    if decoupled {
+        for surface in &geometry.surfaces {
+            if surface.no_draw || surface.light_source != LightSource::Samples {
+                continue;
+            }
+            // Keep native LM_AllocBlock's excluded rightmost start position.
+            let required = surface.lightmap_grid[0]
+                .checked_add(1)
+                .map(|width| width.max(surface.lightmap_grid[1]))
+                .ok_or(LightmapError::Dimensions)?;
+            page_size = page_size.max(
+                required
+                    .checked_next_power_of_two()
+                    .ok_or(LightmapError::Dimensions)?,
+            );
+        }
+    }
+    let mut atlas = AtlasBuilder::load(page_size, 4096)?;
     let mut regions = vec![None; geometry.surfaces.len()];
     let mut page_regions: Vec<(u32, AtlasRegion)> = Vec::new();
     for surface in &geometry.surfaces {
@@ -611,7 +641,7 @@ fn prepare_lightmaps(
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect();
         let id = assets
-            .register_image(128, 128, &rgba)
+            .register_image(atlas.page_size(), atlas.page_size(), &rgba)
             .map_err(WorldMaterialError::Boundary)?;
         // Atlas bytes already include native lightstyle/modulate/overbright.
         // Image intensity/gamma and ordinary mip generation do not apply.

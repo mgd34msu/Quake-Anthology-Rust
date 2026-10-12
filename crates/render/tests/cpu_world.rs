@@ -605,6 +605,7 @@ fn world_bound(
             texture_projection: [[0.0, -8.0 / size, 0.0, 8.0], [0.0, 0.0, -8.0 / size, 8.0]],
             texture_minima: [0; 2],
             texture_extents: [16; 2],
+            lightmap_projection: None,
             lightmap_grid: [2; 2],
             styles: [0, 255, 255, 255],
             light_source: if light.is_some() {
@@ -833,6 +834,7 @@ fn cached_face_lightmap_clamps_taps_to_its_atlas_rectangle() {
         UNIT_UV,
         Some(qa_render::lightmap::AtlasRegion {
             page: 99,
+            page_size: 128,
             x: 1,
             y: 0,
             width: 2,
@@ -1459,6 +1461,7 @@ fn prepared_lightmap_region_mismatch_is_scoped_before_sampling() {
         UNIT_UV,
         Some(qa_render::lightmap::AtlasRegion {
             page: 0,
+            page_size: 128,
             x: 4,
             y: 0,
             width: 4,

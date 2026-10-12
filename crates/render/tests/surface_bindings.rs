@@ -46,6 +46,7 @@ fn inputs(count: usize) -> (WorldGeometry, VisibilityWorld) {
                 texture_projection: [[0.0; 4]; 2],
                 texture_minima: [0; 2],
                 texture_extents: [16; 2],
+                lightmap_projection: None,
                 lightmap_grid: [2; 2],
                 styles: [0, 255, 255, 255],
                 light_source: LightSource::Page(0),
@@ -150,6 +151,7 @@ fn packed_bounds_fail_once_before_world_or_mesh_registration() {
     let models_before = assets.models().len();
     let valid = AtlasRegion {
         page: 19,
+        page_size: 128,
         x: 0,
         y: 0,
         width: 4,

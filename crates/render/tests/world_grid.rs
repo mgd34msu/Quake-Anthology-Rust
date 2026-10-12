@@ -63,6 +63,7 @@ fn geometry(points: &[[f32; 3]], offset: [f32; 2]) -> WorldGeometry {
         areas: vec![],
         area_portals: vec![],
         extensions: vec![],
+        decoupled_lightmaps: vec![],
     };
     load_geometry(&map, GeometryOptions::default()).unwrap()
 }

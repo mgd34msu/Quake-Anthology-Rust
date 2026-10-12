@@ -71,6 +71,7 @@ fn fixture_world(
             texture_projection: [[0.0; 4]; 2],
             texture_minima: [0; 2],
             texture_extents: [0; 2],
+            lightmap_projection: None,
             lightmap_grid: [0; 2],
             styles: [255; 4],
             light_source: LightSource::Page(0),
@@ -272,6 +273,7 @@ fn compare(
         lightmap: light,
         lightmap_region: region.then_some(AtlasRegion {
             page: 0,
+            page_size: 128,
             x: 2,
             y: 2,
             width: 4,
@@ -403,6 +405,7 @@ fn invalid_prepared_region_preserves_each_generic_stage_and_depth() {
                 texture_scale: [1.0; 2],
                 lightmap_region: Some(AtlasRegion {
                     page: 0,
+                    page_size: 128,
                     x: 4,
                     y: 0,
                     width: 4,
@@ -473,6 +476,7 @@ fn numeric_factor_sources_share_native_mips_and_distinguish_regions() {
     );
     let region = AtlasRegion {
         page: 0,
+        page_size: 128,
         x: 1,
         y: 1,
         width: 2,

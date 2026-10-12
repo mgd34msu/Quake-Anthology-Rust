@@ -19,6 +19,7 @@ fn lit_source() -> SurfaceSource {
         [16; 2],
         Some(LightGrid::gray(2, 2, [0, 255, 255, 255], &[64; 4]).unwrap()),
         true,
+        None,
     )
     .unwrap()
 }
@@ -168,7 +169,7 @@ fn mixed_payloads_have_independent_pins_eviction_and_cross_cache_ownership() {
 #[test]
 fn catalog_metadata_and_lifetime_survive_independent_rover_drop() {
     let catalog = SurfaceCatalog::load(vec![
-        SurfaceSource::load([0; 2], [16, 32], None, false).unwrap(),
+        SurfaceSource::load([0; 2], [16, 32], None, false, None).unwrap(),
         SurfaceSource::load_rgba_texels([-1; 2], [3; 2], 3).unwrap(),
         SurfaceSource::load_rgba([0; 2], [1, 11], 32).unwrap(),
     ])
@@ -320,7 +321,7 @@ fn catalog_indexed_layouts_match_original_formulas_at_extreme_origins() {
         ([i32::MAX, i32::MIN + 1], [16, 16]),
     ] {
         let catalog = SurfaceCatalog::load(vec![
-            SurfaceSource::load(minima, extents, None, false).unwrap(),
+            SurfaceSource::load(minima, extents, None, false, None).unwrap(),
         ])
         .unwrap();
         assert_eq!(

@@ -226,6 +226,7 @@ fn stratified_native_sampling_matches_frozen_output_bits() {
         ] {
             let Some(mut native) = full.region(Some(AtlasRegion {
                 page: 4,
+                page_size: 128,
                 x,
                 y,
                 width: region_width,
@@ -264,6 +265,7 @@ fn copied_roi_preserves_native_taps_and_output_bits() {
         let rgba = pixels(width, height);
         let Some(mut native) = TexelView::cache(width, height, &rgba).region(Some(AtlasRegion {
             page: 0,
+            page_size: 128,
             x,
             y,
             width: region_width,
@@ -419,6 +421,7 @@ fn copied_roi_rejects_malformed_storage_and_region_extension() {
     let view = TexelView::cache(8, 6, &rgba);
     let region = AtlasRegion {
         page: 0,
+        page_size: 128,
         x: 2,
         y: 1,
         width: 3,

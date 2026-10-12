@@ -328,6 +328,14 @@ fn payload_bytes(layout: CacheLayout, [width, height]: [u32; 2]) -> Option<usize
         .checked_mul(layout.bytes_per_pixel())
 }
 
+/// Coordinates on the indexed cache lattice select independent lighting and,
+/// when native texture axes have no two-dimensional basis, source texture UVs.
+#[derive(Clone, Copy)]
+pub struct IndexedProjection {
+    pub lightmap: Option<[[f64; 3]; 2]>,
+    pub texture: Option<[[f64; 3]; 2]>,
+}
+
 pub struct SurfaceSource {
     texture_mins: [i32; 2],
     extents: [u32; 2],
@@ -335,6 +343,8 @@ pub struct SurfaceSource {
     mip_count: u8,
     slot_start: usize,
     lightmap: Option<LightGrid>,
+    /// Texture texel coordinates to the raw, independent lightmap lattice.
+    lightmap_projection: Option<IndexedProjection>,
     world_has_lightdata: bool,
     texel_grid: bool,
 }
@@ -345,12 +355,25 @@ impl SurfaceSource {
         extents: [u32; 2],
         lightmap: Option<LightGrid>,
         world_has_lightdata: bool,
+        lightmap_projection: Option<IndexedProjection>,
     ) -> Result<Self, &'static str> {
         if validate_dimensions(extents[0], extents[1]).is_err()
             || extents.iter().any(|&e| !e.is_multiple_of(16))
-            || lightmap
-                .as_ref()
-                .is_some_and(|grid| grid.dimensions() != [extents[0] / 16 + 1, extents[1] / 16 + 1])
+            || match lightmap_projection {
+                Some(projection) => {
+                    lightmap.is_some() != projection.lightmap.is_some()
+                        || projection.lightmap.is_none() && projection.texture.is_none()
+                        || projection.lightmap.is_some_and(|mapping| {
+                            mapping.as_flattened().iter().any(|v| !v.is_finite())
+                        })
+                        || projection.texture.is_some_and(|mapping| {
+                            mapping.as_flattened().iter().any(|v| !v.is_finite())
+                        })
+                }
+                None => lightmap.as_ref().is_some_and(|grid| {
+                    grid.dimensions() != [extents[0] / 16 + 1, extents[1] / 16 + 1]
+                }),
+            }
         {
             return Err("invalid indexed surface lightmap layout");
         }
@@ -361,6 +384,7 @@ impl SurfaceSource {
             mip_count: 4,
             slot_start: 0,
             lightmap,
+            lightmap_projection,
             world_has_lightdata,
             texel_grid: false,
         })
@@ -390,6 +414,7 @@ impl SurfaceSource {
             mip_count,
             slot_start: 0,
             lightmap: None,
+            lightmap_projection: None,
             world_has_lightdata: false,
             texel_grid: false,
         })
@@ -479,7 +504,13 @@ impl SurfaceSource {
 
     fn grid_cells(&self) -> usize {
         if self.layout == CacheLayout::Indexed8 {
-            (self.extents[0] as usize / 16 + 1) * (self.extents[1] as usize / 16 + 1)
+            if self.lightmap_projection.is_some() {
+                self.lightmap
+                    .as_ref()
+                    .map_or(1, |grid| grid.width as usize * grid.height as usize)
+            } else {
+                (self.extents[0] as usize / 16 + 1) * (self.extents[1] as usize / 16 + 1)
+            }
         } else {
             0
         }
@@ -1236,6 +1267,20 @@ fn fill_surface(
     lights: &[i32],
     output: &mut [u8],
 ) {
+    if let Some(projection) = source.lightmap_projection {
+        fill_projected_surface(
+            source,
+            mip,
+            texture,
+            transparent_index,
+            palette,
+            lights,
+            projection,
+            source.lightmap.as_ref().map(LightGrid::dimensions),
+            output,
+        );
+        return;
+    }
     let shift = 4 - mip;
     let block_size = 1usize << shift;
     let width = (source.extents[0] >> mip) as usize;
@@ -1288,6 +1333,84 @@ fn fill_surface(
                     sample_y = 0;
                 }
             }
+        }
+    }
+}
+
+/// Independent BSPX grids are sampled directly at each cache mip texel center.
+/// This keeps the accumulated native scalar styles and colormap quantization;
+/// there is no original rerelease software renderer rounding contract.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "One cache fill consumes its validated indexed source, projected grid and owned payload."
+)]
+fn fill_projected_surface(
+    source: &SurfaceSource,
+    mip: u8,
+    texture: &IndexedMip,
+    transparent_index: Option<u8>,
+    palette: &PaletteLighting,
+    lights: &[i32],
+    projection: IndexedProjection,
+    grid: Option<[u32; 2]>,
+    output: &mut [u8],
+) {
+    let width = (source.extents[0] >> mip) as usize;
+    let height = (source.extents[1] >> mip) as usize;
+    let texture_width = texture.width as usize;
+    let texture_height = texture.height as usize;
+    let texture_x =
+        i64::from(source.texture_mins[0] >> mip).rem_euclid(i64::from(texture.width)) as usize;
+    let texture_y =
+        i64::from(source.texture_mins[1] >> mip).rem_euclid(i64::from(texture.height)) as usize;
+    let step = f64::from(1u32 << mip);
+    for y in 0..height {
+        let sample_y = (texture_y + y) % texture_height;
+        for x in 0..width {
+            let coordinate = [
+                f64::from(source.texture_mins[0]) + (x as f64 + 0.5) * step,
+                f64::from(source.texture_mins[1]) + (y as f64 + 0.5) * step,
+            ];
+            let [sample_x, sample_y] =
+                projection
+                    .texture
+                    .map_or([(texture_x + x) % texture_width, sample_y], |mapping| {
+                        std::array::from_fn(|axis| {
+                            ((crate::affine::eval(mapping[axis], coordinate) / step).floor() as i64)
+                                .rem_euclid(i64::from([texture.width, texture.height][axis]))
+                                as usize
+                        })
+                    });
+            let index = texture.indices[sample_y * texture_width + sample_x];
+            output[y * width + x] = if Some(index) == transparent_index {
+                index
+            } else {
+                let light = if let (Some(mapping), Some(grid)) = (projection.lightmap, grid) {
+                    let samples: [f64; 2] = std::array::from_fn(|axis| {
+                        crate::affine::eval(mapping[axis], coordinate)
+                            .clamp(0.0, f64::from(grid[axis] - 1))
+                    });
+                    let first = samples.map(|v| v as usize);
+                    let last: [usize; 2] =
+                        std::array::from_fn(|axis| (first[axis] + 1).min(grid[axis] as usize - 1));
+                    let fraction: [f32; 2] =
+                        std::array::from_fn(|axis| (samples[axis] - first[axis] as f64) as f32);
+                    let top = qa_core::math::lerp(
+                        lights[first[1] * grid[0] as usize + first[0]] as f32,
+                        lights[first[1] * grid[0] as usize + last[0]] as f32,
+                        fraction[0],
+                    );
+                    let bottom = qa_core::math::lerp(
+                        lights[last[1] * grid[0] as usize + first[0]] as f32,
+                        lights[last[1] * grid[0] as usize + last[0]] as f32,
+                        fraction[0],
+                    );
+                    qa_core::math::lerp(top, bottom, fraction[1]) as usize
+                } else {
+                    lights[0] as usize
+                };
+                palette.colormap[(light & 0xff00) + index as usize]
+            };
         }
     }
 }

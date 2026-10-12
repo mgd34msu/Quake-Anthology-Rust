@@ -208,7 +208,15 @@ fn opaque_tiled_world_draws_raw_native_indices_with_depth_and_no_cache_fill() {
             let surface = &assets.world(world).unwrap().geometry().surfaces[0];
             let plane = surface.plane.unwrap();
             let eye = plane.distance - plane.normal.dot(view.origin);
-            let (planes, adjust) = native_planes(&camera, surface, [-8192; 2], 0, eye).unwrap();
+            let (planes, adjust) = native_planes(
+                &camera,
+                surface,
+                surface.texture_projection,
+                [-8192; 2],
+                0,
+                eye,
+            )
+            .unwrap();
             for y in view.viewport.y..view.viewport.y + view.viewport.height {
                 let first = (view.viewport.x..view.viewport.x + view.viewport.width)
                     .find(|&x| cpu.frame.inverse_depth[(y * 29 + x) as usize] > 0.0);

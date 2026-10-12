@@ -56,9 +56,9 @@ fn resource_dimensions_keep_the_same_inclusive_limit_and_payload_checks() {
     assert!(IndexedTexture::load_masked(1, 1, [&[17], &[17], &[17], &[]], None).is_err());
     assert!(LightGrid::gray(1, 1, [0, 255, 255, 255], &[]).is_err());
     assert!(SurfaceSource::load_rgba([0; 2], [1; 2], 0).is_err());
-    assert!(SurfaceSource::load([0; 2], [MAX_DIMENSION, 16], None, false).is_ok());
-    assert!(SurfaceSource::load([0; 2], [MAX_DIMENSION + 16, 16], None, false).is_err());
-    assert!(SurfaceSource::load([0; 2], [17, 16], None, false).is_err());
+    assert!(SurfaceSource::load([0; 2], [MAX_DIMENSION, 16], None, false, None).is_ok());
+    assert!(SurfaceSource::load([0; 2], [MAX_DIMENSION + 16, 16], None, false, None).is_err());
+    assert!(SurfaceSource::load([0; 2], [17, 16], None, false, None).is_err());
 }
 
 #[test]

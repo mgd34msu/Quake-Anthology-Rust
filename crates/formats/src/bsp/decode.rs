@@ -344,6 +344,7 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
     })?;
     let textures = textures(&bsp)?;
     let extensions = extensions(&bsp)?;
+    let decoupled_lightmaps = decoupled_lightmaps(&bsp, &faces, &extensions)?;
     Ok(Map {
         bsp,
         planes,
@@ -368,7 +369,79 @@ pub(super) fn map<'a>(bsp: Bsp<'a>) -> Result<Map<'a>, FormatError> {
         areas,
         area_portals,
         extensions,
+        decoupled_lightmaps,
     })
+}
+
+/// FTE specs/bspx.txt DECOUPLED_LM and q2repro common/bsp.c:412-454.
+/// Invalid whole-lump sizes leave ordinary face lighting untouched; bad sample
+/// spans remain unlit while retaining the authored dimensions and projection.
+fn decoupled_lightmaps(
+    bsp: &Bsp<'_>,
+    faces: &[Face],
+    extensions: &[Extension<'_>],
+) -> Result<Vec<Option<DecoupledLightmap>>, FormatError> {
+    const STRIDE: usize = 40;
+    let mut result = vec![None; faces.len()];
+    let Some(extension) = extensions
+        .iter()
+        .find(|entry| entry.name == b"DECOUPLED_LM")
+    else {
+        return Ok(result);
+    };
+    if !extension.bytes.len().is_multiple_of(STRIDE) || extension.bytes.len() / STRIDE < faces.len()
+    {
+        return Ok(result);
+    }
+    let sample_bytes = match bsp.format {
+        BspFormat::Quake64 => 2,
+        BspFormat::HalfLife | BspFormat::Quake2 | BspFormat::Qbsp => 3,
+        _ => 1,
+    };
+    let lighting = bsp.bytes(Lighting);
+    for ((output, face), bytes) in result
+        .iter_mut()
+        .zip(faces)
+        .zip(extension.bytes.chunks_exact(STRIDE))
+    {
+        let mut row = Row::new(bytes);
+        let width = u32::from(row.u16()?);
+        let height = u32::from(row.u16()?);
+        let source_offset = row.u32()?;
+        let mut projection = [[0.0; 4]; 2];
+        for axis in &mut projection {
+            for value in axis {
+                *value = row.raw_float()?;
+            }
+        }
+        if projection.iter().flatten().any(|value| !value.is_finite()) {
+            continue;
+        }
+        let styles = face
+            .styles
+            .iter()
+            .take_while(|&&style| style != 255)
+            .count();
+        let span = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|count| count.checked_mul(styles))
+            .and_then(|count| count.checked_mul(sample_bytes))
+            .and_then(|length| (source_offset as usize).checked_add(length));
+        let offset = (source_offset != u32::MAX
+            && width != 0
+            && height != 0
+            && styles != 0
+            && face.styles[styles..].iter().all(|&style| style == 255)
+            && span.is_some_and(|end| end <= lighting.len()))
+        .then_some(source_offset);
+        *output = Some(DecoupledLightmap {
+            width,
+            height,
+            offset,
+            projection,
+        });
+    }
+    Ok(result)
 }
 
 fn surface<'a>(r: &mut Row<'a>, format: BspFormat) -> Result<Surface<'a>, FormatError> {

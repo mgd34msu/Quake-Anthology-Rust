@@ -170,6 +170,7 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
             texture_projection: [[0.0; 4]; 2],
             texture_minima: [0; 2],
             texture_extents: [0; 2],
+            lightmap_projection: None,
             lightmap_grid: [0; 2],
             styles: [0, 255, 255, 255],
             light_source: LightSource::Page(0),
@@ -203,6 +204,7 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
             lightmap,
             lightmap_region: Some(AtlasRegion {
                 page: 7,
+                page_size: 128,
                 x: 1,
                 y: 1,
                 width: 2,
@@ -835,6 +837,7 @@ fn invalid_roi_nonaffine_color_and_budget_have_scoped_fallbacks() {
     assert!(product(&fixture, 36).is_none());
     fixture.binding.lightmap_region = Some(AtlasRegion {
         page: 0,
+        page_size: 128,
         x: 3,
         y: 3,
         width: 2,

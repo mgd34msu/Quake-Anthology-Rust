@@ -5,7 +5,7 @@ use qa_render::surface_cache::{
 use std::cell::Cell;
 
 fn indexed_source(extents: [u32; 2]) -> SurfaceSource {
-    SurfaceSource::load([0; 2], extents, None, false).unwrap()
+    SurfaceSource::load([0; 2], extents, None, false, None).unwrap()
 }
 
 fn indexed_resources() -> (IndexedTexture, PaletteLighting) {

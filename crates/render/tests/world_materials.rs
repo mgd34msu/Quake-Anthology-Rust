@@ -2,7 +2,8 @@ use qa_content::vfs::Vfs;
 use qa_core::primitives::{Bounds, Plane, RuleSetId, Vec3};
 use qa_formats::{
     bsp::{
-        Bsp, Face, IndexSpan, Leaf, Map, Model, Shader, Surface, SurfaceKind, TextureInfo, Vertex,
+        Bsp, DecoupledLightmap, Face, IndexSpan, Leaf, Map, Model, Shader, Surface, SurfaceKind,
+        TextureInfo, Vertex,
     },
     image::MipTexture,
 };
@@ -72,6 +73,7 @@ fn empty_map(bytes: &[u8]) -> Result<Map<'_>, String> {
         areas: vec![],
         area_portals: vec![],
         extensions: vec![],
+        decoupled_lightmaps: vec![],
     })
 }
 
@@ -153,6 +155,88 @@ fn legacy_map<'a>(bytes: &'a [u8], family: u8) -> Result<Map<'a>, String> {
         membership_from_tree: false,
     });
     Ok(map)
+}
+
+#[test]
+fn independent_lightmap_projection_packs_large_grids_with_original_styles() -> Result<(), String> {
+    let root = resources("independent-lightmaps")?;
+    let vfs = mount(&root)?;
+    for (width, expected_page_size) in [(129u32, 1024u32), (1024, 2048)] {
+        let cells = width as usize * 2;
+        let lighting: Vec<_> = std::iter::repeat_n([20, 40, 80], cells)
+            .chain(std::iter::repeat_n([5, 10, 20], cells))
+            .flatten()
+            .collect();
+        let mut bytes = map_bytes(2);
+        let header = 8 + 19 * 8;
+        bytes.truncate(header);
+        let light_length = 8 + 7 * 8 + 4;
+        bytes[light_length..light_length + 4]
+            .copy_from_slice(&(lighting.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&lighting);
+        let mut map = legacy_map(&bytes, 2)?;
+        map.faces[0].styles = [0, 7, 255, 255];
+        let projection = [[0.0, 1.0 / 16.0, 0.0, 0.0], [-1.0 / 16.0, 0.0, 0.0, 1.0]];
+        map.decoupled_lightmaps = vec![
+            Some(DecoupledLightmap {
+                width,
+                height: 2,
+                offset: Some(0),
+                projection,
+            }),
+            Some(DecoupledLightmap {
+                width: 0,
+                height: 0,
+                offset: None,
+                projection,
+            }),
+        ];
+        let mut assets = Assets::load().map_err(|e| format!("assets: {e:?}"))?;
+        let loaded = load_world(
+            &vfs,
+            &map,
+            &mut assets,
+            RuleSetId::Quake2,
+            WorldLoadOptions::default(),
+        )
+        .map_err(|e| format!("independent materials: {e:?}"))?;
+        assert!(matches!(
+            loaded.presentation.cpu,
+            CpuPresentation::Indexed {
+                lighting: IndexedLighting::NativeRgb,
+                ..
+            }
+        ));
+        let world = assets.world(loaded.world).ok_or("world")?;
+        let binding = world.bindings()[0];
+        let region = binding.lightmap_region.ok_or("lit region")?;
+        assert_eq!(region.page_size, expected_page_size);
+        assert_eq!((region.width, region.height), (width, 2));
+        let image = assets.image(binding.lightmap).ok_or("lightmap image")?;
+        assert_eq!(
+            (image.width, image.height),
+            (expected_page_size, expected_page_size)
+        );
+        assert_eq!(&image.rgba[..4], &[25, 50, 100, 255]);
+        let geometry = world.geometry();
+        let surface = &geometry.surfaces[0];
+        assert_eq!(surface.texture_minima, [0; 2]);
+        assert_eq!(surface.texture_extents, [16; 2]);
+        assert_eq!(surface.styles, [0, 7, 255, 255]);
+        for (vertex, raw) in geometry.vertices[surface.vertices.range()].iter().zip([
+            [0.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ]) {
+            assert_eq!(vertex.vertex.lightmap_coord, region.uv_at_sample(raw));
+        }
+        assert!(world.bindings()[1].lightmap_region.is_none());
+        assert_eq!(world.bindings()[1].lightmap, qa_render::assets::ImageId(0));
+        assert_eq!(geometry.surfaces[1].light_samples.count, 0);
+    }
+    std::fs::remove_dir_all(root).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn resources(label: &str) -> Result<std::path::PathBuf, String> {

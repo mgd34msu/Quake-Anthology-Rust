@@ -122,6 +122,9 @@ pub struct WorldSurface {
     pub texture_projection: [[f32; 4]; 2],
     pub texture_minima: [i32; 2],
     pub texture_extents: [u32; 2],
+    /// Independent world-to-sample coordinates from BSPX DECOUPLED_LM.
+    /// Texture minima/extents still describe the native texture cache lattice.
+    pub lightmap_projection: Option<[[f32; 4]; 2]>,
     pub lightmap_grid: [u32; 2],
     pub styles: [u8; 4],
     pub light_source: LightSource,
@@ -141,6 +144,16 @@ pub struct WorldSurface {
     pub lightmap_origin: Vec3,
     pub lightmap_vectors: [Vec3; 3],
     pub patch: Option<PatchGrid>,
+}
+impl WorldSurface {
+    pub fn lightmap_sample(&self, point: Vec3) -> Option<[f32; 2]> {
+        self.lightmap_projection
+            .map(|projection| project_lightmap(projection, point))
+    }
+}
+
+fn project_lightmap(projection: [[f32; 4]; 2], point: Vec3) -> [f32; 2] {
+    projection.map(|axis| project_texture(axis, point))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -313,23 +326,25 @@ fn load_legacy(
                 normal: plane.normal,
             });
         }
-        let mut minima = [0i32; 2];
-        let mut extents = [0u32; 2];
-        for axis in 0..2 {
-            let low = (uv_min[axis] / 16.0).floor() as f64 * 16.0;
-            let high = (uv_max[axis] / 16.0).ceil() as f64 * 16.0;
-            if low < i32::MIN as f64 || low > i32::MAX as f64 || high - low > u32::MAX as f64 {
-                return Err(GeometryError::SizeLimit);
-            }
-            minima[axis] = low as i32;
-            extents[axis] = (high - low) as u32;
-        }
-        let grid = [extents[0] / 16 + 1, extents[1] / 16 + 1];
+        let (minima, extents) = texture_lattice(uv_min, uv_max)?;
+        let decoupled = map.decoupled_lightmaps.get(id as usize).copied().flatten();
+        let grid = decoupled.map_or([extents[0] / 16 + 1, extents[1] / 16 + 1], |light| {
+            [light.width, light.height]
+        });
+        let lightmap_projection = decoupled.map(|light| light.projection);
         for value in &mut out.vertices[vertex_start..] {
-            value.vertex.lightmap_coord = std::array::from_fn(|axis| {
-                (value.vertex.texcoord[axis] - minima[axis] as f32 + 8.0)
-                    / (grid[axis] as f32 * 16.0)
-            });
+            value.vertex.lightmap_coord = if let Some(projection) = lightmap_projection {
+                let coordinate = project_lightmap(projection, value.vertex.position);
+                if coordinate.iter().any(|value| !value.is_finite()) {
+                    return Err(GeometryError::NonFinite("lightmap projection", id));
+                }
+                coordinate
+            } else {
+                std::array::from_fn(|axis| {
+                    (value.vertex.texcoord[axis] - minima[axis] as f32 + 8.0)
+                        / (grid[axis] as f32 * 16.0)
+                })
+            };
         }
         let vertices = span(vertex_start, count)?;
         let boundary_start = out.boundaries.len();
@@ -345,9 +360,21 @@ fn load_legacy(
             _ if matches!(rules, RuleSetId::Quake2) => LightEncoding::Rgb,
             _ => LightEncoding::Luminance,
         };
+        let offset = if let Some(light) = decoupled {
+            light.offset
+        } else {
+            // Q64's native face reader already narrowed bytes to sample offsets.
+            u32::try_from(face.lighting_offset).ok().map(|offset| {
+                if light_encoding == LightEncoding::PackedRgb {
+                    offset * 2
+                } else {
+                    offset
+                }
+            })
+        };
         let samples = legacy_samples(
             map.bsp.bytes(Lump::Lighting),
-            face.lighting_offset,
+            offset,
             face.styles,
             grid,
             light_encoding,
@@ -367,6 +394,7 @@ fn load_legacy(
             texture_projection: info.projection,
             texture_minima: minima,
             texture_extents: extents,
+            lightmap_projection,
             lightmap_grid: grid,
             styles: face.styles,
             light_source: if samples.count > 0 {
@@ -404,7 +432,7 @@ fn load_legacy(
 )]
 fn legacy_samples(
     bytes: &[u8],
-    offset: i32,
+    offset: Option<u32>,
     styles: [u8; 4],
     grid: [u32; 2],
     encoding: LightEncoding,
@@ -412,9 +440,9 @@ fn legacy_samples(
     options: GeometryOptions,
     out: &mut Vec<[u8; 3]>,
 ) -> Result<Span, GeometryError> {
-    if offset < 0 || bytes.is_empty() {
+    let Some(offset) = offset.filter(|_| !bytes.is_empty()) else {
         return Ok(Span::default());
-    }
+    };
     let style_count = styles.iter().take_while(|&&style| style != 255).count();
     let count = (grid[0] as usize)
         .checked_mul(grid[1] as usize)
@@ -425,14 +453,7 @@ fn legacy_samples(
         LightEncoding::Rgb => 3,
         LightEncoding::PackedRgb => 2,
     };
-    // Q64's reader already converts its byte offset to a sample offset.
-    let start = (offset as usize)
-        .checked_mul(if encoding == LightEncoding::PackedRgb {
-            2
-        } else {
-            1
-        })
-        .ok_or(GeometryError::LightSpan(id))?;
+    let start = offset as usize;
     let end = count
         .checked_mul(stride)
         .and_then(|n| start.checked_add(n))
@@ -639,6 +660,7 @@ fn load_modern(
             texture_projection: [[0.0; 4]; 2],
             texture_minima: [0; 2],
             texture_extents: [0; 2],
+            lightmap_projection: None,
             lightmap_grid: [128; 2],
             styles: [0, 255, 255, 255],
             light_source,
@@ -741,6 +763,24 @@ pub(crate) fn projection_axis(projection: [f32; 4]) -> Vec3 {
 
 pub(crate) fn project_texture(projection: [f32; 4], point: Vec3) -> f32 {
     point.dot(projection_axis(projection)) + projection[3]
+}
+
+pub(crate) fn texture_lattice(
+    minimum: [f32; 2],
+    maximum: [f32; 2],
+) -> Result<([i32; 2], [u32; 2]), GeometryError> {
+    let mut minima = [0i32; 2];
+    let mut extents = [0u32; 2];
+    for axis in 0..2 {
+        let low = (minimum[axis] / 16.0).floor() as f64 * 16.0;
+        let high = (maximum[axis] / 16.0).ceil() as f64 * 16.0;
+        if low < i32::MIN as f64 || low > i32::MAX as f64 || high - low > u32::MAX as f64 {
+            return Err(GeometryError::SizeLimit);
+        }
+        minima[axis] = low as i32;
+        extents[axis] = (high - low) as u32;
+    }
+    Ok((minima, extents))
 }
 
 fn color_shift(color: [u8; 4], shift: i8) -> [u8; 4] {
