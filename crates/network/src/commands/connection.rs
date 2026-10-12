@@ -9,7 +9,6 @@ use crate::channel::Channel;
 use crate::{
     ingress::Incoming,
     message::{Encoding, Reader},
-    outputs::Prints,
 };
 use qa_core::{
     events::OutputConsumerId,
@@ -572,16 +571,8 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26) => {
-                        let mut prints = Prints::new(self.protocol, &scratch[at..]);
-                        let print = prints
-                            .next()
-                            .ok_or(packet::Error::Opcode)?
-                            .map_err(|_| packet::Error::Opcode)?;
-                        at = scratch.len() - prints.remaining().len();
-                        consume(Incoming::Print(print));
-                    }
-                    (
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26 | 29)
+                    | (
                         Protocol::Quake2_34 | Protocol::Quake2Repro1038,
                         1 | 2 | 4 | 9 | 10 | 15 | 32,
                     ) => {
@@ -600,12 +591,15 @@ impl Commands {
                             crate::outputs::NativeService::Nop => {}
                         }
                     }
-                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 13) => {
-                        let (config, count) =
-                            crate::outputs::read_configstring(self.protocol, &scratch[at..])
-                                .map_err(|_| packet::Error::Opcode)?;
+                    (Protocol::QuakeWorld28, 12 | 45 | 46)
+                    | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 13) => {
+                        let count = crate::outputs::read_configstrings(
+                            self.protocol,
+                            &scratch[at..],
+                            |config| consume(Incoming::ConfigString(config)),
+                        )
+                        .map_err(|_| packet::Error::Opcode)?;
                         at += count;
-                        consume(Incoming::ConfigString(config));
                     }
                     // Signon, temp entities, inventory and
                     // stuffed commands require their own service bindings later.

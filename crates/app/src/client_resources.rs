@@ -17,6 +17,7 @@ pub struct ResourceState {
     pub rejected: u64,
     sounds: qa_audio::SoundBindings,
     sound_rules: RuleSetId,
+    static_sounds: u32,
 }
 impl ClientResources {
     pub fn load(
@@ -39,6 +40,7 @@ impl ClientResources {
                 rejected: 0,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_rules,
+                static_sounds: 0,
             },
         }))
     }
@@ -71,6 +73,19 @@ impl ClientResources {
     }
 }
 impl ResourceState {
+    pub(crate) fn static_emitter(
+        &mut self,
+        client: ClientId,
+        lifetime: qa_core::primitives::EntityId,
+    ) -> Option<qa_core::primitives::SoundEmitter> {
+        let slot = self.static_sounds;
+        self.static_sounds = self.static_sounds.checked_add(1)?;
+        Some(qa_core::primitives::SoundEmitter::Static {
+            namespace: ResourceNamespace::Client(client),
+            lifetime,
+            slot,
+        })
+    }
     pub fn sound_rules(&self) -> RuleSetId {
         self.sound_rules
     }

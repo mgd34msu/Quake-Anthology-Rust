@@ -535,7 +535,28 @@ impl FrameHost {
             }
         }
         self.bind_output_sounds(bank);
+        self.publish_module_ambients();
         Ok(())
+    }
+    pub(crate) fn publish_module_ambients(&mut self) {
+        let Some(modules) = &mut self.modules else {
+            return;
+        };
+        for row in modules.rows.iter_mut().flatten() {
+            if row.state != State::Running {
+                continue;
+            }
+            let mut context = row.request.context;
+            context.clock = row.time(self.time);
+            if row
+                .storage
+                .publish_initial_ambients(&mut self.runtime.server, context)
+                .is_err()
+            {
+                row.counts.rejected += 1;
+                row.state = State::Failed;
+            }
+        }
     }
     /// Read the existing native entity view only at its stopped-child boundary.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

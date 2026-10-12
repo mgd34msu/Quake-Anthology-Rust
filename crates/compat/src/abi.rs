@@ -577,6 +577,17 @@ const fn quakec() -> CallTable {
     t.entries[14] = qc!(qc_spawn, 0, 0, true);
     t.entries[15] = qc!(qc_remove, 1, 0, false);
     t.entries[16] = qc!(qc_trace_line, 4, 3, false);
+    t.entries[18] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_find),
+        quakec: Some(QcSignature::new(
+            QcArgc::Fixed(3),
+            QcArgs::Mixed {
+                vectors: 0,
+                strings: 4,
+            },
+            true,
+        )),
+    });
     t.entries[19] = Some(CallEntry {
         handler: Handler::QuakeC(qc_precache::<false>),
         quakec: Some(strings),
@@ -647,6 +658,17 @@ const fn quakec() -> CallTable {
     t.entries[68] = Some(CallEntry {
         handler: Handler::QuakeC(qc_precache_file),
         quakec: Some(strings),
+    });
+    t.entries[74] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_ambient_sound),
+        quakec: Some(QcSignature::new(
+            QcArgc::Fixed(4),
+            QcArgs::Mixed {
+                vectors: 1,
+                strings: 2,
+            },
+            true,
+        )),
     });
     t.entries[75] = t.entries[20];
     t.entries[76] = t.entries[19];
@@ -794,6 +816,19 @@ fn qc_remove(
     vm.remove_entity(c.services, c.context, qc_word(arguments, 0)?)?;
     Ok(CallValue::Word(0))
 }
+fn qc_find(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    Ok(CallValue::Word(u64::from(vm.find_entity(
+        &c.services.server.entities,
+        c.context.module,
+        qc_word(arguments, 0)?,
+        qc_word(arguments, 1)?,
+        qc_word(arguments, 2)? as i32,
+    )?)))
+}
 fn qc_set_origin(
     c: &mut QuakeCCalls<'_, '_>,
     vm: &mut quakec::Vm,
@@ -909,6 +944,62 @@ fn qc_precache_file(
 ) -> Result<CallValue, CallError> {
     Ok(CallValue::Word(u64::from(qc_word(arguments, 0)?)))
 }
+fn qc_precached_sound(
+    c: &mut QuakeCCalls<'_, '_>,
+    name: &[u8],
+    prefix: &[u8],
+    suffix: &[u8],
+) -> Result<Option<(qa_core::primitives::IndexSpan, u32)>, CallError> {
+    let sounds = c
+        .services
+        .storage
+        .resources(c.context.module)
+        .ok_or(CallError::ConfigString)?[1];
+    if let Some(ordinal) = (ENGINE_CALLS.resource_find)(c.services, c.context.module, sounds, name)?
+    {
+        return Ok(Some((sounds, ordinal)));
+    }
+    let mut text = qa_core::text::FixedText::<8240>::default();
+    text.append_bytes(prefix).map_err(|_| CallError::Capacity)?;
+    text.append_bytes(name).map_err(|_| CallError::Capacity)?;
+    text.append_bytes(suffix).map_err(|_| CallError::Capacity)?;
+    match (ENGINE_CALLS.console)(c.services, text.as_bytes()) {
+        Ok(_) | Err(CallError::Capacity) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+fn qc_ambient_sound(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    let name = vm.strings.cstring(u64::from(qc_word(arguments, 3)?))?;
+    let Some((_, source_ordinal)) = qc_precached_sound(c, name, b"no precache: ", b"\n")? else {
+        return Ok(CallValue::Word(0));
+    };
+    let result = (ENGINE_CALLS.ambient)(
+        c.services,
+        c.context,
+        crate::services::AmbientSound {
+            source_ordinal,
+            origin: qc_vector(arguments, 0)?
+                .0
+                .map(qa_core::math::eighth_to_short),
+            volume: crate::numbers::native_integer(f64::from(
+                f32::from_bits(qc_word(arguments, 4)?) * 255.0,
+            )) as u8,
+            attenuation: crate::numbers::native_integer(f64::from(
+                f32::from_bits(qc_word(arguments, 5)?) * 64.0,
+            )) as u8,
+        },
+    );
+    if let Err(error) = result
+        && error != CallError::Capacity
+    {
+        return Err(error);
+    }
+    Ok(CallValue::Word(0))
+}
 fn qc_sound(
     c: &mut QuakeCCalls<'_, '_>,
     vm: &mut quakec::Vm,
@@ -932,23 +1023,9 @@ fn qc_sound(
         return Err(CallError::Text);
     }
     let name = vm.strings.cstring(u64::from(qc_word(arguments, 2)?))?;
-    let sounds = c
-        .services
-        .storage
-        .resources(c.context.module)
-        .ok_or(CallError::ConfigString)?[1];
-    let Some(ordinal) = (ENGINE_CALLS.resource_find)(c.services, c.context.module, sounds, name)?
+    let Some((sounds, ordinal)) =
+        qc_precached_sound(c, name, b"SV_StartSound: ", b" not precached\n")?
     else {
-        let mut text = qa_core::text::FixedText::<8240>::default();
-        text.append_bytes(b"SV_StartSound: ")
-            .map_err(|_| CallError::Capacity)?;
-        text.append_bytes(name).map_err(|_| CallError::Capacity)?;
-        text.append_bytes(b" not precached\n")
-            .map_err(|_| CallError::Capacity)?;
-        match (ENGINE_CALLS.console)(c.services, text.as_bytes()) {
-            Ok(_) | Err(CallError::Capacity) => (),
-            Err(error) => return Err(error),
-        }
         return Ok(CallValue::Word(0));
     };
     let Some(sound) =

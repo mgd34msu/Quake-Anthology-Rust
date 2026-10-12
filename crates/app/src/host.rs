@@ -358,6 +358,7 @@ impl FrameHost {
         self.run_pending_commands(frame_span);
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         self.publish_module_configs();
+        self.publish_module_ambients();
         for id in self.local_clients.into_iter().flatten() {
             let observation = self.snapshot_observation(id, server_time);
             self.runtime

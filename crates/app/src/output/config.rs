@@ -13,9 +13,8 @@ pub(super) fn submit(
     text: &[u8],
     pending: &mut Option<(u64, usize)>,
 ) -> Result<OutputSubmission, ()> {
-    let target = protocol.config_layout().ok_or(())?;
     let index = index as usize;
-    if text.len() > target.capacity(index).ok_or(())? {
+    if text.len() > protocol.config_capacity(index).ok_or(())? {
         return Err(());
     }
     let mut bytes = [0; 8196];

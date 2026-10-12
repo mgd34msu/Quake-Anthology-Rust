@@ -26,6 +26,9 @@ pub fn configstring(
         }
         return Ok(config_command(index, text, 0, output)?.length);
     }
+    if protocol == Protocol::QuakeWorld28 {
+        return qw_configstring(index, text, output);
+    }
     if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
         return Err(Error::Unsupported);
     }
@@ -62,6 +65,24 @@ pub fn read_configstring(
     protocol: Protocol,
     bytes: &[u8],
 ) -> Result<(ConfigString<'_>, usize), Error> {
+    if protocol == Protocol::QuakeWorld28 {
+        let header = bytes.get(..2).ok_or(Error::Truncated)?;
+        if header[0] != 12 {
+            return Err(Error::Opcode);
+        }
+        let index = ConfigLayout::QUAKEWORLD
+            .style_index(usize::from(header[1]))
+            .ok_or(Error::Opcode)? as u32;
+        let text = qa_core::text::terminated(&bytes[2..]).ok_or(Error::Truncated)?;
+        if text.len()
+            > protocol
+                .config_capacity(index as usize)
+                .ok_or(Error::Unsupported)?
+        {
+            return Err(Error::Unsupported);
+        }
+        return Ok((ConfigString { index, text }, text.len() + 3));
+    }
     if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
         return Err(Error::Unsupported);
     }
@@ -72,6 +93,89 @@ pub fn read_configstring(
     let index = u16::from_le_bytes([header[1], header[2]]).into();
     let text = qa_core::text::terminated(&bytes[3..]).ok_or(Error::Truncated)?;
     Ok((ConfigString { index, text }, text.len() + 4))
+}
+
+/// QW retail list chunks contain several consecutive resource rows. Borrow
+/// and publish each accepted row in wire order, without a second resource list.
+pub fn read_configstrings<'a>(
+    protocol: Protocol,
+    bytes: &'a [u8],
+    mut consume: impl FnMut(ConfigString<'a>),
+) -> Result<usize, Error> {
+    if protocol != Protocol::QuakeWorld28 || !matches!(bytes.first(), Some(45 | 46)) {
+        let (row, length) = read_configstring(protocol, bytes)?;
+        consume(row);
+        return Ok(length);
+    }
+    let header = bytes.get(..2).ok_or(Error::Truncated)?;
+    let range = ConfigLayout::QUAKEWORLD.resources[usize::from(header[0] == 46)];
+    let mut ordinal = u32::from(header[1]);
+    let mut at = 2;
+    loop {
+        let text = qa_core::text::terminated(&bytes[at..]).ok_or(Error::Truncated)?;
+        at += text.len() + 1;
+        if text.is_empty() {
+            // Original CL_Parse{Model,Sound}list reads the continuation byte
+            // after the empty terminator, even on the final zero continuation.
+            bytes.get(at).ok_or(Error::Truncated)?;
+            return Ok(at + 1);
+        }
+        ordinal += 1;
+        let index = range.get(ordinal as usize).ok_or(Error::Unsupported)? as u32;
+        if text.len()
+            > protocol
+                .config_capacity(index as usize)
+                .ok_or(Error::Unsupported)?
+        {
+            return Err(Error::Unsupported);
+        }
+        consume(ConfigString { index, text });
+    }
+}
+
+fn qw_configstring(index: u32, text: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+    let layout = ConfigLayout::QUAKEWORLD;
+    let index = index as usize;
+    if text.contains(&0)
+        || text.len()
+            > Protocol::QuakeWorld28
+                .config_capacity(index)
+                .ok_or(Error::Unsupported)?
+    {
+        return Err(Error::Unsupported);
+    }
+    let (opcode, ordinal, list) = if layout.lights.contains(index) {
+        (12, index - layout.lights.first as usize, false)
+    } else {
+        let (kind, range) = layout.resources[..2]
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, range)| range.contains(index))
+            .ok_or(Error::Unsupported)?;
+        let ordinal = index - range.first as usize;
+        // A zero/empty resource is a native list terminator, not a row update.
+        if ordinal == 0 || text.is_empty() {
+            return Err(Error::Unsupported);
+        }
+        (45 + kind as u32, ordinal - 1, true)
+    };
+    let need = text.len() + 3 + 2 * usize::from(list);
+    let capacity = output.len();
+    let bytes = output.get_mut(..need).ok_or(Error::Message(MessageError {
+        byte: capacity,
+        kind: ErrorKind::Capacity,
+    }))?;
+    let mut writer = Writer::new(bytes, Encoding::Bytes);
+    writer.write_bits(opcode, 8)?;
+    writer.write_bits(ordinal as u32, 8)?;
+    writer.write_data(text)?;
+    writer.write_bits(0, 8)?;
+    if list {
+        writer.write_bits(0, 8)?; // empty resource terminates this chunk
+        writer.write_bits(0, 8)?; // no further native list chunk requested
+    }
+    Ok(writer.size())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -481,3 +481,59 @@ fn pending_resource_stops_submission_and_foreign_opaque_suffix_is_explicit() {
     .unwrap();
     assert_eq!(&encoded[..result.length], source);
 }
+
+#[test]
+fn legacy_static_native_stream_uses_the_shared_parser_and_drops_no_fake_one_shot() {
+    use qa_core::primitives::RuleSetId;
+    use qa_network::outputs::{Cue, NativeService};
+    let bytes = b"\x1d\x08\0\xf0\xff\x18\0\x01\xff\x40\x08\x02after\0\x01";
+    let (NativeService::Cue(Cue::StaticSound(sound)), consumed) =
+        outputs::read_native_service(Protocol::QuakeWorld28, bytes).unwrap()
+    else {
+        panic!("static native service")
+    };
+    assert_eq!(consumed, 10);
+    assert_eq!(sound.index, 1);
+    let mut encoded = [0xcc; 128];
+    let same = outputs::native(
+        Protocol::QuakeWorld28,
+        RuleSetId::QuakeWorld,
+        bytes,
+        &mut encoded,
+        true,
+        |cue, offset| {
+            assert_eq!(offset, 0);
+            assert!(matches!(cue, Cue::StaticSound(_)));
+            Ok(cue)
+        },
+    )
+    .unwrap();
+    assert_eq!(&encoded[..same.length], bytes);
+    assert_eq!(same.unsupported, 0);
+    for target in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
+        let result = outputs::native(
+            target,
+            RuleSetId::QuakeWorld,
+            bytes,
+            &mut encoded,
+            false,
+            |cue, _| Ok(cue),
+        )
+        .unwrap();
+        assert_eq!(result.unsupported, 1);
+        assert_eq!(&encoded[..result.length], b"\x0a\x02after\0\x06");
+    }
+    // NetQuake's print has no native priority byte, unlike QuakeWorld.
+    let nq = b"\x1d\x08\0\xf0\xff\x18\0\x01\xff\x40\x08after\0\x01";
+    let result = outputs::native(
+        Protocol::QuakeWorld28,
+        RuleSetId::Quake,
+        nq,
+        &mut encoded,
+        false,
+        |cue, _| Ok(cue),
+    )
+    .unwrap();
+    assert_eq!(&encoded[..result.length], bytes);
+    assert_eq!(result.unsupported, 0);
+}

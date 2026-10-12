@@ -77,6 +77,12 @@ impl Bank {
     pub fn name(&self, sound: SoundId) -> Option<&[u8]> {
         self.names.get(qa_core::primitives::NameId(sound.0))
     }
+    pub fn has_loop_marker(&self, sound: SoundId) -> bool {
+        self.samples
+            .get(sound.0 as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|pcm| pcm.loop_start.is_some())
+    }
     pub fn len(&self) -> usize {
         self.samples.len()
     }

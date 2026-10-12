@@ -31,13 +31,30 @@ impl Protocol {
         }
     }
     /// Storage availability does not imply a native configstring wire adapter.
-    /// NQ/QW lightstyle opcode 12 is not implemented yet.
+    /// NQ serverinfo resource lists still require their native signon adapter.
     pub const fn config_layout(self) -> Option<qa_core::configstrings::ConfigLayout> {
         match self {
-            Self::NetQuake15 | Self::QuakeWorld28 => None,
+            Self::NetQuake15 => None,
             _ => Some(qa_core::configstrings::ConfigLayout::for_rules(
                 self.rule_set(),
             )),
+        }
+    }
+    /// Native wire limits are independent of a module's resource storage.
+    pub fn config_capacity(self, index: usize) -> Option<usize> {
+        let layout = self.config_layout()?;
+        if self != Self::QuakeWorld28 {
+            return layout.capacity(index);
+        }
+        if layout.lights.contains(index)
+            || layout.resources[..2]
+                .iter()
+                .any(|range| range.contains(index) && index != range.first as usize)
+        {
+            // MAX_QPATH includes NUL, as does the native lightstyle buffer.
+            Some(63)
+        } else {
+            None
         }
     }
     pub const fn command_execution(self) -> CommandExecution {

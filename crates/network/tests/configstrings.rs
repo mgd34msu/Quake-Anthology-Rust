@@ -5,7 +5,7 @@ use qa_network::{
 
 #[test]
 fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
-    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+    for protocol in [Protocol::NetQuake15] {
         assert_eq!(protocol.config_layout(), None);
         assert_eq!(
             qa_core::configstrings::ConfigLayout::for_rules(protocol.rule_set()).count,
@@ -13,6 +13,7 @@ fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
         );
     }
     for protocol in [
+        Protocol::QuakeWorld28,
         Protocol::Quake2_34,
         Protocol::Quake2Repro1038,
         Protocol::Quake3_68,
@@ -110,7 +111,7 @@ fn q2_live_configstrings_keep_u16_index_raw_bytes_and_message_boundaries() {
         assert!(outputs::configstring(protocol, 65536, b"", &mut short).is_err());
         assert_eq!(short, [0xcc; 4]);
     }
-    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+    for protocol in [Protocol::NetQuake15] {
         assert_eq!(
             outputs::configstring(protocol, 0, b"", &mut [0; 8]),
             Err(Error::Unsupported)
@@ -120,6 +121,168 @@ fn q2_live_configstrings_keep_u16_index_raw_bytes_and_message_boundaries() {
             Err(Error::Unsupported)
         );
     }
+}
+
+#[test]
+fn qw_single_rows_match_native_list_and_lightstyle_bytes() {
+    let protocol = Protocol::QuakeWorld28;
+    let cases: &[(u32, &[u8], &[u8])] = &[
+        (1, b"maps/start.bsp", b"\x2d\0maps/start.bsp\0\0\0"),
+        (255, b"progs/\x80.mdl", b"\x2d\xfeprogs/\x80.mdl\0\0\0"),
+        (
+            257,
+            b"ambience/water1.wav",
+            b"\x2e\0ambience/water1.wav\0\0\0",
+        ),
+        (511, b"last.wav", b"\x2e\xfelast.wav\0\0\0"),
+        (512, b"m", b"\x0c\0m\0"),
+        (575, b"", b"\x0c\x3f\0"),
+    ];
+    for &(index, text, expected) in cases {
+        let mut bytes = [0xcc; 128];
+        let count = outputs::configstring(protocol, index, text, &mut bytes).unwrap();
+        assert_eq!(&bytes[..count], expected);
+        assert_eq!(bytes[count], 0xcc);
+        let mut rows = Vec::new();
+        let consumed =
+            outputs::read_configstrings(protocol, expected, |row| rows.push(row)).unwrap();
+        assert_eq!(consumed, expected.len());
+        assert_eq!(rows, [outputs::ConfigString { index, text }]);
+        for cut in 0..expected.len() {
+            assert!(outputs::read_configstrings(protocol, &expected[..cut], |_| {}).is_err());
+        }
+        let mut short = [0xcc; 2];
+        assert!(outputs::configstring(protocol, index, text, &mut short).is_err());
+        assert_eq!(short, [0xcc; 2]);
+    }
+    for index in [0, 256, 576, u32::MAX] {
+        assert_eq!(protocol.config_capacity(index as usize), None);
+        assert_eq!(
+            outputs::configstring(protocol, index, b"x", &mut [0; 128]),
+            Err(Error::Unsupported)
+        );
+    }
+    assert_eq!(protocol.config_capacity(257), Some(63));
+    assert!(outputs::configstring(protocol, 257, &[b'x'; 63], &mut [0; 128]).is_ok());
+    assert_eq!(
+        outputs::configstring(protocol, 257, &[b'x'; 64], &mut [0; 128]),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        outputs::configstring(protocol, 257, b"", &mut [0; 128]),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        outputs::configstring(protocol, 257, b"x\0y", &mut [0; 128]),
+        Err(Error::Unsupported)
+    );
+}
+
+#[test]
+fn qw_retail_multirow_chunks_borrow_prefix_rows_and_consume_continuations() {
+    let protocol = Protocol::QuakeWorld28;
+    // CL_ParseSoundlist begins at preceding ordinal5 and increments per name.
+    let bytes = b"\x2e\x05a.wav\0b\x80.wav\0\0\x07\x01";
+    let mut rows = Vec::new();
+    let used = outputs::read_configstrings(protocol, bytes, |row| rows.push(row)).unwrap();
+    assert_eq!(used, bytes.len() - 1);
+    assert_eq!(
+        rows,
+        [
+            outputs::ConfigString {
+                index: 262,
+                text: b"a.wav"
+            },
+            outputs::ConfigString {
+                index: 263,
+                text: b"b\x80.wav"
+            },
+        ]
+    );
+    assert!(std::ptr::eq(rows[0].text.as_ptr(), bytes[2..].as_ptr()));
+    rows.clear();
+    assert_eq!(
+        outputs::read_configstrings(protocol, &bytes[..bytes.len() - 2], |row| rows.push(row)),
+        Err(Error::Truncated)
+    );
+    assert_eq!(
+        rows.len(),
+        2,
+        "accepted native prefix rows survive a truncated continuation"
+    );
+    assert_eq!(
+        outputs::read_configstrings(protocol, b"\x2d\xfeone\0two\0\0\0", |_| {}),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        outputs::read_configstrings(protocol, b"\x2e\xff\0\0", |_| {}).unwrap(),
+        4
+    );
+}
+
+#[test]
+fn connected_qw_resources_and_static_sound_share_the_native_service_stream() {
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{ClientId, ResourceNamespace},
+        sys_events::EventTime,
+    };
+    use qa_network::{
+        channel::{Channel, Delivery},
+        commands::connection::Commands,
+        ingress::Incoming,
+    };
+    let protocol = Protocol::QuakeWorld28;
+    let mut server = Channel::load(protocol.channel(), Endpoint::Server, 8192, 4).unwrap();
+    let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap();
+    let mut commands = Commands::load(protocol);
+    // Multirow sound list, model row, lightstyle, persistent sound, then print.
+    let payload = b"\x2e\0first.wav\0second.wav\0\0\0\x2d\0maps/start.bsp\0\0\0\x0c\0m\0\x1d\x08\0\xf0\xff\x18\0\x02\xff\x40\x08\x02after\0";
+    server.queue_reliable(payload).unwrap();
+    let packet = server
+        .prepare(None, EventTime(1))
+        .unwrap()
+        .unwrap()
+        .bytes
+        .to_vec();
+    server.submitted(EventTime(1)).unwrap();
+    let received = client.receive(&packet, EventTime(2)).unwrap();
+    let Delivery::Payload(bytes) = received.delivery else {
+        panic!("payload")
+    };
+    let count = commands.stage(bytes).unwrap();
+    let mut rows = Vec::new();
+    let mut cues = Vec::new();
+    let mut prints = Vec::new();
+    commands
+        .decode_output(
+            count,
+            received.header.sequence,
+            &mut client,
+            ResourceNamespace::Client(ClientId(0)),
+            |incoming| match incoming {
+                Incoming::ConfigString(row) => rows.push((row.index, row.text.to_vec())),
+                Incoming::Cue { cue, .. } => cues.push(cue),
+                Incoming::Print(print) => prints.push(print.text.to_vec()),
+                _ => {}
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (257, b"first.wav".to_vec()),
+            (258, b"second.wav".to_vec()),
+            (1, b"maps/start.bsp".to_vec()),
+            (512, b"m".to_vec())
+        ]
+    );
+    let [outputs::Cue::StaticSound(sound)] = cues.as_slice() else {
+        panic!("static sound")
+    };
+    assert_eq!(sound.index, 2);
+    assert_eq!(sound.position.0, [1.0, -2.0, 3.0]);
+    assert_eq!(prints, [b"after".to_vec()]);
 }
 
 #[test]

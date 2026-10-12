@@ -1,0 +1,471 @@
+use qa_compat::services::{
+    AMBIENT_CAPACITY, AmbientCursor, AmbientSound, CallContext, CallError, ENGINE_CALLS,
+    EngineServices, ServiceStorage,
+};
+use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
+use qa_core::{
+    events::{FrameEvent, OutputConsumerId, OutputRecord, OutputSubmission, OutputTarget},
+    names::NameTable,
+    primitives::*,
+};
+use qa_session::clients::Server;
+use qa_world::{area::LinkOrder, collision::CollisionStore, entities::AllocationPolicy};
+use std::{num::NonZeroU32, sync::Arc};
+
+fn context(module: ModuleId, native_rules: RuleSetId) -> CallContext {
+    CallContext {
+        module,
+        clock: ThinkTime::Seconds(1.0),
+        server_frame: 17,
+        native_rules,
+        trace_rules: RuleSetId::Quake2,
+        sound_rules: RuleSetId::Quake3,
+        console: Context {
+            source: RuleSetId::Quake2Rerelease,
+            ..Context::default()
+        },
+        allocation: AllocationPolicy::EDICT,
+        link_order: LinkOrder::Tail,
+    }
+}
+
+fn with_services(run: impl FnOnce(&mut EngineServices<'_>, [CallContext; 2])) {
+    let mut server = Server::load(2, 16, 1, 1, 1, 1).unwrap();
+    let mut cvars = Cvars::new().unwrap();
+    let mut input = qa_input::Input::load();
+    let mut commands = CommandBuffer::new();
+    let vfs = qa_content::vfs::Vfs::default();
+    let localization = qa_content::localization::Catalog::default();
+    let names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
+    let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
+    let contexts = [
+        context(ModuleId(1), RuleSetId::Quake),
+        context(ModuleId(2), RuleSetId::QuakeWorld),
+    ];
+    let configs = contexts.map(|context| {
+        (
+            context.module,
+            qa_core::configstrings::ConfigLayout::for_rules(context.native_rules).count,
+            context.native_rules,
+        )
+    });
+    let mut storage = ServiceStorage::load_native(&configs, 0, &cvars).unwrap();
+    for context in contexts {
+        let lifetime = server
+            .entities
+            .allocate(context.clock, context.module, context.allocation)
+            .unwrap()
+            .id;
+        storage.bind_lifetime(context.module, lifetime).unwrap();
+    }
+    let geometry = CollisionStore::new();
+    let mut scratch = geometry.scratch();
+    run(
+        &mut EngineServices {
+            server: &mut server,
+            input: &mut input,
+            cvars: &mut cvars,
+            commands: &mut commands,
+            vfs: &vfs,
+            model_loader: None,
+            model_lookup: None,
+            localization: &localization,
+            registry: &registry,
+            storage: &mut storage,
+            geometry: &geometry,
+            world: None,
+            visibility: None,
+            portals: None,
+            scratch: &mut scratch,
+        },
+        contexts,
+    );
+}
+
+fn bank() -> Arc<qa_audio::Bank> {
+    let rate = NonZeroU32::new(44100).unwrap();
+    Arc::new(
+        qa_audio::Bank::load(
+            rate,
+            [
+                ("sound/misc/loop.wav", Some(0)),
+                ("sound/misc/late.wav", Some(1)),
+                ("sound/misc/nonloop.wav", None),
+            ]
+            .into_iter()
+            .map(|(name, loop_start)| {
+                (
+                    name.into(),
+                    Pcm {
+                        rate,
+                        channels: PcmChannels::Mono,
+                        samples: vec![1000, 2000, 1000],
+                        loop_start,
+                    },
+                )
+            })
+            .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn precache(services: &mut EngineServices<'_>, context: CallContext, name: &[u8]) -> u32 {
+    let sounds = services.storage.resources(context.module).unwrap()[1];
+    (ENGINE_CALLS.resource_index)(services, context.module, sounds, name).unwrap()
+}
+fn attach(services: &mut EngineServices<'_>, context: CallContext, bank: &Arc<qa_audio::Bank>) {
+    let sounds = services.storage.resources(context.module).unwrap()[1];
+    services
+        .storage
+        .bind_sound_bank(context.module, sounds, Arc::clone(bank))
+        .unwrap();
+}
+fn descriptor(source_ordinal: u32) -> AmbientSound {
+    AmbientSound {
+        source_ordinal,
+        origin: [-1, 2, 27],
+        volume: 129,
+        attenuation: 65,
+    }
+}
+fn drain(services: &mut EngineServices<'_>, consumer: OutputConsumerId) -> Vec<OutputRecord> {
+    let mut records = Vec::new();
+    let mut batch = services.server.events.batch(consumer).unwrap();
+    while let Some(record) = services.server.events.next(&mut batch) {
+        records.push(record);
+        assert!(services.server.events.submit(
+            consumer,
+            record.sequence,
+            OutputSubmission::BestEffort
+        ));
+    }
+    records
+}
+fn sound(record: OutputRecord) -> SoundEvent {
+    let FrameEvent::Sound(sound) = record.event else {
+        panic!("sound record")
+    };
+    sound
+}
+
+#[test]
+fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_roles() {
+    with_services(|services, [mut context, _]| {
+        let consumer = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let ordinal = precache(services, context, b"misc/loop.wav");
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)),
+            Ok(0)
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_ambients(services.server, context),
+            Ok(0)
+        );
+        assert!(drain(services, consumer).is_empty());
+        let bank = bank();
+        attach(services, context, &bank);
+        context.sound_rules = RuleSetId::Quake2;
+        context.console.source = RuleSetId::QuakeWorld;
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_ambients(services.server, context),
+            Ok(1)
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_ambients(services.server, context),
+            Ok(0)
+        );
+        let records = drain(services, consumer);
+        assert_eq!(records.len(), 1);
+        let record = records[0];
+        let event = sound(record);
+        assert_eq!(event.sound, bank.find("sound/misc/loop.wav").unwrap());
+        assert_eq!(event.source_ordinal, Some(ordinal));
+        assert_eq!(event.spatial_rules, RuleSetId::Quake3);
+        assert_eq!(event.action, SoundAction::StartLoop);
+        assert_eq!(
+            event.position.0.map(f32::to_bits),
+            [-0.125f32, 0.25, 3.375].map(f32::to_bits)
+        );
+        assert_eq!(event.volume.to_bits(), (129.0f32 / 255.0).to_bits());
+        assert_eq!(event.attenuation.to_bits(), (65.0f32 / 64.0).to_bits());
+        let delivery = record.delivery.unwrap();
+        let lifetime = delivery.emission.unwrap().module_lifetime;
+        assert!(services.server.entities.resolve(lifetime).is_some());
+        assert_eq!(delivery.source, RuleSetId::Quake);
+        assert_eq!(delivery.target, NativeTarget::All);
+        assert_eq!(delivery.emission.unwrap().provider_frame, 17);
+        assert_eq!(
+            event.entity,
+            Some(SoundEmitter::Static {
+                namespace: ResourceNamespace::Module(context.module),
+                lifetime,
+                slot: 0,
+            })
+        );
+        let presentation = services.server.presentation;
+        assert!(drain(services, presentation).is_empty());
+    });
+}
+
+#[test]
+fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
+    with_services(|services, [context, _]| {
+        let first = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let second = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(1)))
+            .unwrap();
+        let ordinal = precache(services, context, b"misc/loop.wav");
+        (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)).unwrap();
+        let bank = bank();
+        attach(services, context, &bank);
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_ambients(services.server, context),
+            Ok(1)
+        );
+        assert_eq!(drain(services, first).len(), 1);
+        assert_eq!(drain(services, second).len(), 1);
+        let late = precache(services, context, b"misc/late.wav");
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(late)),
+            Ok(1)
+        );
+        // Reattaching the same bank cannot extend the initial broadcast range.
+        attach(services, context, &bank);
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_ambients(services.server, context),
+            Ok(0)
+        );
+        assert!(drain(services, first).is_empty());
+        assert!(drain(services, second).is_empty());
+        let mut cursor = AmbientCursor::default();
+        assert_eq!(
+            services
+                .storage
+                .publish_ambients(services.server, context, ClientId(1), &mut cursor),
+            Ok(2)
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_ambients(services.server, context, ClientId(1), &mut cursor),
+            Ok(0)
+        );
+        assert!(drain(services, first).is_empty());
+        let records = drain(services, second);
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            sound(records[1]).sound,
+            bank.find("sound/misc/late.wav").unwrap()
+        );
+        assert!(
+            records
+                .iter()
+                .all(|r| r.delivery.unwrap().target == NativeTarget::Client(ClientId(1)))
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_ambients(services.server, context, ClientId(0), &mut cursor),
+            Err(CallError::Entity)
+        );
+        let mut other = AmbientCursor::default();
+        assert_eq!(
+            services
+                .storage
+                .publish_ambients(services.server, context, ClientId(0), &mut other),
+            Ok(2)
+        );
+        assert_eq!(drain(services, first).len(), 2);
+        assert!(drain(services, second).is_empty());
+    });
+}
+
+#[test]
+fn unresolved_or_nonloop_samples_never_gain_fake_handles_and_module_slots_do_not_alias() {
+    with_services(|services, contexts| {
+        let consumer = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        for context in contexts {
+            for name in [
+                b"misc/missing.wav".as_slice(),
+                b"misc/nonloop.wav",
+                b"misc/loop.wav",
+            ] {
+                let ordinal = precache(services, context, name);
+                (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)).unwrap();
+            }
+        }
+        let bank = bank();
+        for context in contexts {
+            attach(services, context, &bank);
+            assert_eq!(
+                services
+                    .storage
+                    .publish_initial_ambients(services.server, context),
+                Ok(1)
+            );
+            assert_eq!(
+                services
+                    .storage
+                    .publish_initial_ambients(services.server, context),
+                Ok(0)
+            );
+        }
+        let records = drain(services, consumer);
+        assert_eq!(records.len(), 2);
+        let events = records.iter().copied().map(sound).collect::<Vec<_>>();
+        assert_eq!(events[0].sound, events[1].sound);
+        assert_ne!(events[0].entity, events[1].entity);
+        for (record, context) in records.into_iter().zip(contexts) {
+            assert_eq!(record.delivery.unwrap().source, context.native_rules);
+            assert!(matches!(
+                sound(record).entity,
+                Some(SoundEmitter::Static { slot: 2, .. })
+            ));
+        }
+    });
+}
+
+#[test]
+fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map() {
+    with_services(|services, [context, _]| {
+        let consumer = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let ordinal = precache(services, context, b"misc/loop.wav");
+        (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)).unwrap();
+        let bank = bank();
+        attach(services, context, &bank);
+        let mut cursor = AmbientCursor::default();
+        services
+            .storage
+            .publish_ambients(services.server, context, ClientId(0), &mut cursor)
+            .unwrap();
+        let started = sound(drain(services, consumer)[0]);
+        let sounds = services.storage.resources(context.module).unwrap()[1];
+        (ENGINE_CALLS.configstring)(
+            services,
+            context.module,
+            sounds.get(ordinal as usize).unwrap(),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(
+            services
+                .storage
+                .stop_ambients(services.server, context, Some(ClientId(0))),
+            Ok(1)
+        );
+        let stopped = sound(drain(services, consumer)[0]);
+        assert_eq!(stopped.action, SoundAction::Stop);
+        assert_eq!(stopped.sound, started.sound);
+        assert_eq!(stopped.entity, started.entity);
+        assert_eq!(stopped.channel, started.channel);
+        assert_eq!(stopped.client, started.client);
+        let SoundEmitter::Static { lifetime, .. } = started.entity.unwrap() else {
+            panic!()
+        };
+        assert!(
+            services
+                .server
+                .entities
+                .release(lifetime, ThinkTime::Seconds(1.0))
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_ambients(services.server, context),
+            Err(CallError::Entity)
+        );
+        let replacement = services
+            .server
+            .entities
+            .allocate(ThinkTime::Seconds(5.0), context.module, context.allocation)
+            .unwrap()
+            .id;
+        assert_ne!(replacement, lifetime);
+        services
+            .storage
+            .bind_lifetime(context.module, replacement)
+            .unwrap();
+        assert_eq!(
+            services
+                .storage
+                .publish_ambients(services.server, context, ClientId(0), &mut cursor),
+            Err(CallError::Entity)
+        );
+        assert_eq!(
+            services
+                .storage
+                .stop_ambients(services.server, context, None),
+            Ok(0)
+        );
+        assert_eq!(
+            services.storage.publish_ambients(
+                services.server,
+                context,
+                ClientId(0),
+                &mut AmbientCursor::default()
+            ),
+            Ok(0)
+        );
+    });
+}
+
+#[test]
+fn reservation_is_bounded_and_does_not_publish_during_registration() {
+    with_services(|services, [context, _]| {
+        let consumer = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let ordinal = precache(services, context, b"misc/loop.wav");
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(0)),
+            Err(CallError::ConfigString)
+        );
+        let sounds = services.storage.resources(context.module).unwrap()[1];
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(sounds.count)),
+            Err(CallError::ConfigString)
+        );
+        for slot in 0..AMBIENT_CAPACITY {
+            assert_eq!(
+                (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)),
+                Ok(slot as u32)
+            );
+        }
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)),
+            Err(CallError::Capacity)
+        );
+        assert!(drain(services, consumer).is_empty());
+    });
+}

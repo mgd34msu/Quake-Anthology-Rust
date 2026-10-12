@@ -226,6 +226,274 @@ fn native_entity(host: &FrameHost, module: ModuleId, native: i32) -> EntityId {
 }
 
 #[test]
+fn cold_qc_ambients_reach_the_mixer_once_through_qw_resources_and_packets() {
+    use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::{configstrings::ConfigLayout, loopback::Endpoint};
+    use qa_network::commands::packet::Protocol;
+    use std::{num::NonZeroU32, sync::Arc};
+
+    struct AmbientSource {
+        clock: Source,
+        mixer: qa_audio::Mixer,
+        sample: qa_core::primitives::SoundId,
+        client: ClientId,
+        lifetime: EntityId,
+        count: usize,
+        audible_blocks: usize,
+    }
+    impl FrameSource for AmbientSource {
+        fn begin_frame(&mut self) -> Duration {
+            self.clock.begin_frame()
+        }
+        fn poll_events(&mut self, queue: &mut SysEventQueue) {
+            self.clock.poll_events(queue);
+        }
+        fn wait_time(&mut self, remaining: Duration) -> Duration {
+            self.clock.wait_time(remaining)
+        }
+        fn elapsed(&self) -> Duration {
+            self.clock.elapsed()
+        }
+        fn present(&mut self) {}
+        fn sound(&mut self, event: SoundEvent) -> bool {
+            assert!(self.count < 2);
+            assert_eq!(event.sound, self.sample);
+            assert_eq!(event.action, SoundAction::StartLoop);
+            assert_eq!(event.spatial_rules, RuleSetId::Quake);
+            assert_eq!(event.client, Some(self.client));
+            assert!(event.positioned);
+            assert_eq!(
+                event.position,
+                [Vec3([0.0, 64.0, 22.0]), Vec3([0.0, -64.0, 22.0])][self.count]
+            );
+            assert_eq!(
+                event.entity,
+                Some(SoundEmitter::Static {
+                    namespace: ResourceNamespace::Client(self.client),
+                    lifetime: self.lifetime,
+                    slot: self.count as u32,
+                })
+            );
+            self.count += 1;
+            self.mixer.sound(event)
+        }
+        fn listeners(
+            &mut self,
+            listeners: &[Option<qa_audio::Listener>; SeatId::COUNT],
+            volume: f32,
+        ) {
+            self.mixer.listen(listeners, volume);
+        }
+        fn mix_audio(
+            &mut self,
+            entities: &[Option<qa_app::client_scene::ClientEntities<'_>>; SeatId::COUNT],
+        ) {
+            qa_app::audio::respatialize(&mut self.mixer, entities);
+            let mut pcm = [0; 16];
+            assert!(self.mixer.paint(&mut pcm));
+            self.audible_blocks += usize::from(pcm.iter().any(|&sample| sample != 0));
+        }
+    }
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let precache = code.builtin(19);
+        let ambient = code.builtin(74);
+        let initialize = code.function(&[
+            (StoreS, 80, 4, 0),
+            (Call1, 83, 0, 0),
+            (StoreV, 86, 4, 0),
+            (StoreS, 80, 7, 0),
+            (StoreF, 48, 10, 0),
+            (StoreF, 48, 13, 0),
+            (Call4, 84, 0, 0),
+            (StoreV, 89, 4, 0),
+            (StoreS, 80, 7, 0),
+            (StoreF, 48, 10, 0),
+            (StoreF, 48, 13, 0),
+            (Call4, 84, 0, 0),
+            (Return, 1, 0, 0),
+        ]);
+        let frame = code.function(&[(Return, 1, 0, 0)]);
+        let mut vm = code.vm();
+        vm.image.globals[80] = vm.insert_string(b"ambient.wav").unwrap() as u32;
+        vm.image.globals[83] = precache;
+        vm.image.globals[84] = ambient;
+        for (first, position) in [
+            (86, Vec3([0.0, 64.0625, 22.0])),
+            (89, Vec3([0.0, -64.0625, 22.0])),
+        ] {
+            vm.image.globals[first..first + 3].copy_from_slice(&position.0.map(f32::to_bits));
+        }
+        let module = ModuleId(1);
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let client = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy {
+                    client: RuleSetId::Quake3,
+                    movement: RuleSetId::Quake2,
+                    trace: RuleSetId::QuakeWorld,
+                },
+                Protocol::QuakeWorld28,
+                0,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .server
+                .bind_client_native(client, NativeEntity { module, slot: 1 })
+        );
+        runtime.client_resources[client.0 as usize]
+            .as_mut()
+            .unwrap()
+            .state
+            .set_sound_rules(RuleSetId::Quake);
+        let (mut request, _) = request(
+            &mut runtime,
+            module,
+            rules,
+            vm,
+            vec![initialize, frame],
+            frame,
+            10,
+            &[],
+        );
+        request.configstrings = ConfigLayout::for_rules(rules).count;
+        request.initialize = vec![Export::clocked(CallbackId(0))];
+        let mut host = load(runtime, vec![request]);
+        host.local_clients[0] = Some(client);
+        host.initialize_modules(Phase::Server);
+        assert_eq!(
+            host.module_state(module),
+            Some(qa_app::modules::State::Running)
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        assert!(host.runtime.sound_bank.is_none());
+        let cursor = host
+            .runtime
+            .network
+            .get(client, Endpoint::Server)
+            .unwrap()
+            .output
+            .unwrap();
+        let mut cold = host.runtime.server.events.batch(cursor).unwrap();
+        while let Some(record) = host.runtime.server.events.next(&mut cold) {
+            assert!(!matches!(record.event, FrameEvent::Sound(_)));
+        }
+        assert_eq!(
+            host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .sound(1),
+            None,
+        );
+
+        let rate = NonZeroU32::new(44100).unwrap();
+        let bank = Arc::new(
+            qa_audio::Bank::load(
+                rate,
+                vec![(
+                    "sound/ambient.wav".to_owned(),
+                    Pcm {
+                        rate,
+                        channels: PcmChannels::Mono,
+                        samples: vec![1000, -1000, 1000, -1000],
+                        loop_start: Some(1),
+                    },
+                )],
+            )
+            .unwrap(),
+        );
+        let sound = bank.find("sound/ambient.wav").unwrap();
+        host.runtime.sound_bank = Some(Arc::clone(&bank));
+        host.bind_sounds(&bank).unwrap();
+        let mut initial = host.runtime.server.events.batch(cursor).unwrap();
+        let mut starts = 0;
+        let mut ambient_end = 0;
+        while let Some(record) = host.runtime.server.events.next(&mut initial) {
+            if let FrameEvent::Sound(event) = record.event {
+                assert_eq!(event.action, SoundAction::StartLoop);
+                assert_eq!(event.sound, sound);
+                assert_eq!(event.source_ordinal, Some(1));
+                assert_eq!(event.spatial_rules, RuleSetId::Quake2);
+                assert_eq!(record.delivery.unwrap().source, rules);
+                assert!(record.delivery.unwrap().reliable);
+                starts += 1;
+                ambient_end = record.sequence + 1;
+            }
+        }
+        assert_eq!(starts, 2);
+        let mut source = AmbientSource {
+            clock: Source {
+                time: EventTime(0),
+                polls: 0,
+            },
+            mixer: qa_audio::Mixer::load(Arc::clone(&bank), 4, 1),
+            sample: sound,
+            client,
+            lifetime: host
+                .runtime
+                .server
+                .clients
+                .get(client.0 as usize)
+                .unwrap()
+                .entity,
+            count: 0,
+            audible_blocks: 0,
+        };
+        for tick in 0..=24 {
+            source.clock.time = EventTime::from_milliseconds(tick * 25);
+            let result = host.frame(&mut source, true);
+            assert_eq!(result.output.native_unsupported, 0);
+        }
+        assert_eq!(source.count, 2);
+        assert_eq!(source.mixer.counts.started, 2);
+        assert_eq!(source.mixer.counts.replaced, 0);
+        assert_eq!(source.mixer.counts.invalid, 0);
+        assert!(source.audible_blocks > 1);
+        assert!(source.mixer.counts.frames > 4);
+        let counters = host.runtime.server.events.counters(cursor).unwrap();
+        assert!(
+            counters.acknowledged_records >= 3,
+            "resource row and both loops require real native ACKs"
+        );
+        assert_eq!(counters.overflow, 0);
+        assert_eq!(counters.resyncs, 0);
+        assert_eq!(counters.retired_on_resync, 0);
+        assert!(host.runtime.server.events.sequence_range().start >= ambient_end);
+        assert_eq!(host.runtime.network.command_errors, 0);
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        assert_eq!(
+            host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .sound(1),
+            Some(sound)
+        );
+
+        // Binding and the ordinary publication retry must not replay signon loops.
+        host.bind_sounds(&bank).unwrap();
+        for tick in 25..=36 {
+            source.clock.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(source.count, 2);
+        assert_eq!(source.mixer.counts.started, 2);
+        assert_eq!(source.mixer.counts.replaced, 0);
+        assert!(source.audible_blocks > 12);
+    }
+}
+
+#[test]
 fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
     use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
     use qa_core::configstrings::ConfigLayout;

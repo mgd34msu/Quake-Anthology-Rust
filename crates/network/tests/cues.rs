@@ -24,6 +24,83 @@ fn exact(protocol: Protocol, bytes: &[u8]) -> Cue {
 }
 
 #[test]
+fn native_static_sound_keeps_q1_qw_wire_fields_and_persistent_kind() {
+    let bytes = [29, 247, 255, 162, 0, 1, 4, 255, 204, 128];
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        let Cue::StaticSound(sound) = exact(protocol, &bytes) else {
+            panic!("static sound")
+        };
+        assert_eq!(sound.index, 255);
+        assert_eq!(
+            (sound.volume, sound.attenuation, sound.time_offset),
+            (204, 128, 0)
+        );
+        assert_eq!((sound.entity(), sound.channel), (None, 0));
+        assert_eq!(
+            sound.position(),
+            Some(qa_core::primitives::Vec3([-1.125, 20.25, 128.125]))
+        );
+        for target in [
+            Protocol::Quake2_34,
+            Protocol::Quake2Repro1038,
+            Protocol::Quake3_68,
+        ] {
+            assert_eq!(
+                outputs::write_cue(target, Cue::StaticSound(sound), &mut [0; 32]),
+                Err(outputs::Error::Unsupported)
+            );
+        }
+        let mut wide = sound.with_index(256).unwrap();
+        assert_eq!(
+            outputs::write_cue(protocol, Cue::StaticSound(wide), &mut [0; 32]),
+            Err(outputs::Error::Unsupported)
+        );
+        wide.index = 1;
+        wide.flags = 7;
+        wide.channel = 1;
+        assert_eq!(
+            outputs::write_cue(protocol, Cue::StaticSound(wide), &mut [0; 32]),
+            Err(outputs::Error::Unsupported)
+        );
+    }
+}
+
+#[test]
+fn common_ambient_qw_sound_encodes_native_loop_and_never_a_one_shot() {
+    use qa_core::primitives::{SoundAction, SoundEvent, Vec3};
+    let event = SoundEvent {
+        action: SoundAction::StartLoop,
+        position: Vec3([-1.125, 20.25, 128.125]),
+        volume: 0.8,
+        attenuation: 2.0,
+        ..SoundEvent::default()
+    };
+    let mut bytes = [0xcc; 32];
+    let count = outputs::sound(Protocol::QuakeWorld28, event, 49, None, true, &mut bytes).unwrap();
+    assert_eq!(&bytes[..count], &[29, 247, 255, 162, 0, 1, 4, 49, 204, 128]);
+    assert_eq!(bytes[count], 0xcc);
+    assert!(matches!(
+        exact(Protocol::QuakeWorld28, &bytes[..count]),
+        Cue::StaticSound(_)
+    ));
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        assert_eq!(
+            outputs::sound(protocol, event, 49, None, true, &mut bytes),
+            Err(outputs::Error::Unsupported)
+        );
+    }
+    assert_eq!(
+        outputs::sound(Protocol::QuakeWorld28, event, 256, None, true, &mut bytes),
+        Err(outputs::Error::Unsupported)
+    );
+}
+
+#[test]
 fn native_sound_defaults_and_present_parameters_keep_the_original_byte_order() {
     for protocol in [Protocol::Quake2_34, Protocol::Quake2Repro1038] {
         let Cue::Sound(sound) = exact(protocol, &[9, 0, 49]) else {

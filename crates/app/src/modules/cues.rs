@@ -2,7 +2,7 @@
 use super::FrameHost;
 use qa_core::{
     events::{FrameEvent, OutputTarget},
-    primitives::{ClientId, ResourceNamespace, SoundEmitter, SoundEvent, Vec3},
+    primitives::{ClientId, ResourceNamespace, SoundAction, SoundEmitter, SoundEvent, Vec3},
 };
 use qa_network::outputs::{Cue, MuzzleFlash, MuzzleFormat, Sound};
 use qa_network::snapshots::ReceivedFrame;
@@ -16,7 +16,12 @@ impl FrameHost {
     ) {
         match cue {
             Cue::Sound(sound) => {
-                if let Some(event) = self.native_sound_event(client, sound, current) {
+                if let Some(event) = self.native_sound_event(client, sound, current, false) {
+                    self.present_sound(event);
+                }
+            }
+            Cue::StaticSound(sound) => {
+                if let Some(event) = self.native_sound_event(client, sound, current, true) {
                     self.present_sound(event);
                 }
             }
@@ -107,22 +112,40 @@ impl FrameHost {
     }
 
     fn native_sound_event(
-        &self,
+        &mut self,
         client: ClientId,
         wire: Sound,
         current: Option<ReceivedFrame<'_>>,
+        static_sound: bool,
     ) -> Option<SoundEvent> {
-        let resources = &self
-            .runtime
-            .client_resources
-            .get(client.0 as usize)?
-            .as_ref()?
-            .state;
-        let sound = resources.sound(u32::from(wire.index))?;
-        let ordinal = wire.entity();
-        let entity = ordinal.map(|slot| SoundEmitter::Native {
-            namespace: ResourceNamespace::Client(client),
-            slot: i32::from(slot),
+        let lifetime = self.runtime.server.clients.get(client.0 as usize)?.entity;
+        let (sound, sound_rules, static_emitter) = {
+            let resources = &mut self
+                .runtime
+                .client_resources
+                .get_mut(client.0 as usize)?
+                .as_mut()?
+                .state;
+            let static_emitter = if static_sound {
+                Some(resources.static_emitter(client, lifetime)?)
+            } else {
+                None
+            };
+            (
+                resources.sound(u32::from(wire.index))?,
+                resources.sound_rules(),
+                static_emitter,
+            )
+        };
+        if static_sound && !self.runtime.sound_bank.as_ref()?.has_loop_marker(sound) {
+            return None;
+        }
+        let ordinal = if static_sound { None } else { wire.entity() };
+        let entity = static_emitter.or_else(|| {
+            ordinal.map(|slot| SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(client),
+                slot: i32::from(slot),
+            })
         });
         let position = if let Some(position) = wire.position() {
             position
@@ -133,7 +156,7 @@ impl FrameHost {
         };
         Some(SoundEvent {
             sound,
-            spatial_rules: resources.sound_rules(),
+            spatial_rules: sound_rules,
             entity,
             channel: u16::from(wire.channel),
             position,
@@ -142,6 +165,11 @@ impl FrameHost {
             attenuation: f32::from(wire.attenuation) / 64.0,
             time_offset: f32::from(wire.time_offset) / 1000.0,
             client: Some(client),
+            action: if static_sound {
+                SoundAction::StartLoop
+            } else {
+                SoundAction::Play
+            },
             ..SoundEvent::default()
         })
     }

@@ -27,6 +27,9 @@ use qa_world::{
     entities::AllocationPolicy,
 };
 
+mod ambient;
+pub use ambient::{AMBIENT_CAPACITY, AmbientCursor, AmbientSound};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallError {
     Aborted,
@@ -88,6 +91,7 @@ struct ConfigRange {
     entity_text: Option<EntityText>,
     sounds: Option<IndexSpan>,
     sound_bindings: Option<qa_audio::SoundBindings>,
+    ambients: ambient::AmbientRegistry,
 }
 struct EntityText {
     bytes: std::sync::Arc<[u8]>,
@@ -191,6 +195,11 @@ impl ServiceStorage {
                 entity_text: None,
                 sounds: None,
                 sound_bindings: None,
+                ambients: ambient::AmbientRegistry::load(if resources.is_some() {
+                    AMBIENT_CAPACITY
+                } else {
+                    0
+                }),
             });
             total = total.checked_add(count).ok_or(CallError::Capacity)?;
         }
@@ -220,9 +229,11 @@ impl ServiceStorage {
         self.ranges.iter_mut().find(|range| range.module == module)
     }
     pub fn bind_lifetime(&mut self, module: ModuleId, lifetime: EntityId) -> Result<(), CallError> {
-        self.range_mut(module)
-            .ok_or(CallError::ConfigString)?
-            .lifetime = Some(lifetime);
+        let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
+        if range.lifetime.is_some_and(|old| old != lifetime) {
+            range.ambients.reset();
+        }
+        range.lifetime = Some(lifetime);
         Ok(())
     }
     pub fn emission(&self, context: CallContext) -> Option<qa_core::primitives::NativeEmission> {
@@ -380,6 +391,7 @@ impl ServiceStorage {
                     let index = self.config(owner, ordinal)?;
                     self.bind_sound_at(owner, index)?;
                 }
+                self.ranges[i].ambients.freeze_initial();
             }
         }
         Ok(())
@@ -643,6 +655,7 @@ pub struct EngineCallTable {
         f32,
     ),
     pub sound: fn(&mut EngineServices<'_>, NativeDelivery, SoundEvent) -> Result<u64, CallError>,
+    pub ambient: fn(&mut EngineServices<'_>, CallContext, AmbientSound) -> Result<u32, CallError>,
     pub sound_id: fn(
         &EngineServices<'_>,
         ModuleId,
@@ -746,7 +759,8 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
                         return Err(CallError::Capacity);
                     };
                     let (sound, entity) = match cue {
-                        qa_network::outputs::Cue::Sound(sound) => (
+                        qa_network::outputs::Cue::Sound(sound)
+                        | qa_network::outputs::Cue::StaticSound(sound) => (
                             row.sound_bindings
                                 .as_ref()
                                 .and_then(|bindings| bindings.sound(u32::from(sound.index))),
@@ -838,6 +852,13 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     usercmd: |s, native| s.usercmd(native),
     set_usercmd_value: |s, seat, weapon, scale| s.input.set_usercmd_value(seat, weapon, scale),
     sound: |s, delivery, e| s.sound(delivery, e),
+    ambient: |s, context, sound| {
+        let result = s.storage.register_ambient(context, sound);
+        if result == Err(CallError::Capacity) {
+            s.server.events.reject_publication();
+        }
+        result
+    },
     sound_id: |s, module, range, index| s.storage.sound_id(module, range, index),
     effect: |s, e| s.effect(e),
     trace: |s, q, native| s.trace(q, native),

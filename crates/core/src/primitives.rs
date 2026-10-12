@@ -985,13 +985,19 @@ impl DamageFlags {
         self.0 & flag != 0
     }
 }
-/// Voice identity is either a common entity lifetime or a native namespace slot.
+/// Voice identity retains a common lifetime, native slot or static registration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundEmitter {
     Entity(EntityId),
     Native {
         namespace: ResourceNamespace,
         slot: i32,
+    },
+    /// Persistent map registrations have no native edict or moving pose.
+    Static {
+        namespace: ResourceNamespace,
+        lifetime: EntityId,
+        slot: u32,
     },
 }
 

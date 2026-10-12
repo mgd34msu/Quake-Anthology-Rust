@@ -733,6 +733,250 @@ fn seed_vm(calls: &mut QuakeCCalls<'_, '_>, mut vm: Vm) -> Vm {
     vm
 }
 
+fn find(
+    calls: &mut QuakeCCalls<'_, '_>,
+    vm: &mut Vm,
+    start: u32,
+    field: u32,
+    text: i32,
+) -> Result<u32, Trap> {
+    parameters(vm, &[&[start], &[field], &[text as u32]]);
+    calls.call(vm, 18, 3)?;
+    Ok(vm.image.globals[1])
+}
+
+#[test]
+fn find_includes_frozen_native_clients_without_common_bindings() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let max_clients = calls
+                .services
+                .cvars
+                .bind("sv_maxclients", calls.context.console)
+                .unwrap();
+            calls.services.cvars.force_write(max_clients, "3").unwrap();
+            let mut vm = seeded_vm(calls, 8);
+            let clients = if rules == RuleSetId::QuakeWorld {
+                32
+            } else {
+                3
+            };
+            let stride = vm.stride as u32;
+            let field = vm.image.field(b"model").unwrap() as u32;
+            let live = calls.services.server.entities.len();
+            let relinks = calls.services.server.area.relinks;
+            for changed in ["0", "63"] {
+                calls
+                    .services
+                    .cvars
+                    .force_write(max_clients, changed)
+                    .unwrap();
+                for ordinal in 0..clients {
+                    assert_eq!(
+                        find(calls, &mut vm, ordinal * stride, field, 0),
+                        Ok((ordinal + 1) * stride)
+                    );
+                }
+                assert_eq!(find(calls, &mut vm, clients * stride, field, 0), Ok(0));
+            }
+            let mut cursor = 1;
+            assert!(
+                vm.physics_entity(&calls.services.server.entities, &mut cursor, rules)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(calls.services.server.entities.len(), live);
+            assert_eq!(calls.services.server.area.relinks, relinks);
+        });
+    }
+}
+
+#[test]
+fn find_uses_native_order_exact_bytes_and_raw_field_words() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let first = if rules == RuleSetId::QuakeWorld {
+                33
+            } else {
+                2
+            };
+            let mut mapped = Vec::new();
+            for ordinal in [first + 2, first, first + 1] {
+                let id = calls
+                    .services
+                    .server
+                    .entities
+                    .allocate(
+                        calls.context.clock,
+                        calls.context.module,
+                        AllocationPolicy::EDICT,
+                    )
+                    .unwrap()
+                    .id;
+                calls.services.server.entities.columns.native_entity[id.slot as usize] =
+                    Some(NativeEntity {
+                        module: calls.context.module,
+                        slot: ordinal,
+                    });
+                mapped.push(id);
+            }
+            let mut vm = seeded_vm(calls, 8);
+            let stride = vm.stride as u32;
+            let stored = vm.insert_string(b"Door\x80").unwrap();
+            let matching = vm.insert_string(b"Door\x80").unwrap();
+            let folded = vm.insert_string(b"door\x80").unwrap();
+            assert_ne!(stored, matching);
+            // The declared float field is deliberately used as the original
+            // raw string-word operand, without a second field-type gate.
+            let field = vm.image.field(b"skin").unwrap() as u32;
+            for ordinal in first..first + 3 {
+                write(&mut vm, ordinal as u32 * stride, b"skin", &[stored as u32]);
+            }
+            assert!(mapped[0].slot < mapped[1].slot);
+            assert_eq!(
+                find(calls, &mut vm, 0, field, matching),
+                Ok(first as u32 * stride)
+            );
+            assert_eq!(
+                find(calls, &mut vm, first as u32 * stride, field, matching),
+                Ok((first + 1) as u32 * stride)
+            );
+            assert_eq!(
+                find(calls, &mut vm, (first + 2) as u32 * stride, field, matching),
+                Ok(0)
+            );
+            assert_eq!(find(calls, &mut vm, 0, field, folded), Ok(0));
+        });
+    }
+}
+
+#[test]
+fn find_reads_live_vm_string_stores_without_entity_publication() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        calls.call(&mut vm, 14, 0).unwrap();
+        let native = vm.image.globals[1];
+        let id = entity(calls, &vm, native);
+        let field = vm.image.field(b"model").unwrap() as u32;
+        let text = vm.insert_string(b"live\x80").unwrap();
+        assert_eq!(find(calls, &mut vm, 0, field, text), Ok(0));
+        vm.image.statements[11].opcode = Opcode::StorePS;
+        vm.image.globals[28] = text as u32;
+        vm.image.globals[31] = vm.field_address(native, field, 1).unwrap() as u32;
+        vm.call(calls, 6, 100, false).unwrap();
+        let relinks = calls.services.server.area.relinks;
+        let before = body_bits(
+            calls
+                .services
+                .server
+                .entities
+                .columns
+                .body(id.slot as usize),
+        );
+        parameters(&mut vm, &[&[0], &[field], &[text as u32]]);
+        let mut expected_globals = vm.image.globals.to_vec();
+        expected_globals[1] = native;
+        calls.call(&mut vm, 18, 3).unwrap();
+        assert_eq!(&*vm.image.globals, expected_globals);
+        assert_eq!(
+            body_bits(
+                calls
+                    .services
+                    .server
+                    .entities
+                    .columns
+                    .body(id.slot as usize)
+            ),
+            before
+        );
+        assert_eq!(calls.services.server.area.relinks, relinks);
+    });
+}
+
+#[test]
+fn find_skips_freed_generations_and_never_uses_a_foreign_replacement() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            calls.context.clock = ThinkTime::Seconds(1.0);
+            let mut vm = seeded_vm(calls, 8);
+            calls.call(&mut vm, 14, 0).unwrap();
+            let first = vm.image.globals[1];
+            let old = entity(calls, &vm, first);
+            calls.call(&mut vm, 14, 0).unwrap();
+            let second = vm.image.globals[1];
+            let field = vm.image.field(b"model").unwrap() as u32;
+            let text = vm.insert_string(b"match").unwrap();
+            write(&mut vm, first, b"model", &[text as u32]);
+            write(&mut vm, second, b"model", &[text as u32]);
+            parameters(&mut vm, &[&[first]]);
+            calls.call(&mut vm, 15, 1).unwrap();
+            // Stale native bytes must not be read after canonical release.
+            write(&mut vm, first, b"model", &[u32::MAX]);
+            assert_eq!(find(calls, &mut vm, first, field, text), Ok(second));
+            assert_eq!(find(calls, &mut vm, 0, field, text), Ok(second));
+            let foreign = calls
+                .services
+                .server
+                .entities
+                .allocate(calls.context.clock, ModuleId(9), AllocationPolicy::EDICT)
+                .unwrap()
+                .id;
+            assert_eq!(foreign.slot, old.slot);
+            calls.services.server.entities.columns.native_entity[foreign.slot as usize] =
+                Some(NativeEntity {
+                    module: ModuleId(9),
+                    slot: vm.entity_number(first).unwrap() as i32,
+                });
+            write(&mut vm, first, b"model", &[text as u32]);
+            assert_eq!(find(calls, &mut vm, 0, field, text), Ok(second));
+            calls.call(&mut vm, 14, 0).unwrap();
+            assert_eq!(vm.image.globals[1], first);
+            let current = entity(calls, &vm, first);
+            assert_ne!(current, old);
+            assert!(calls.services.server.entities.resolve(old).is_none());
+            assert!(calls.services.server.entities.resolve(foreign).is_some());
+            write(&mut vm, first, b"model", &[text as u32]);
+            assert_eq!(find(calls, &mut vm, 0, field, text), Ok(first));
+        });
+    }
+}
+
+#[test]
+fn find_validates_only_executed_native_fields_and_strings() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        calls.call(&mut vm, 14, 0).unwrap();
+        let first = vm.image.globals[1];
+        calls.call(&mut vm, 14, 0).unwrap();
+        let last = vm.image.globals[1];
+        let field = vm.image.field(b"model").unwrap() as u32;
+        let text = vm.insert_string(b"first").unwrap();
+        write(&mut vm, first, b"model", &[text as u32]);
+        write(&mut vm, last, b"model", &[u32::MAX]);
+        assert_eq!(find(calls, &mut vm, 0, field, text), Ok(first));
+        assert_eq!(find(calls, &mut vm, first, field, text), Err(Trap::Builtin));
+        assert_eq!(find(calls, &mut vm, last, u32::MAX, text), Ok(0));
+        for invalid in [
+            1,
+            last + vm.stride as u32,
+            vm.entities.len() as u32,
+            u32::MAX,
+        ] {
+            assert_eq!(
+                find(calls, &mut vm, invalid, field, text),
+                Err(Trap::Builtin)
+            );
+        }
+        for invalid in [vm.image.entityfields as u32, u32::MAX] {
+            assert_eq!(find(calls, &mut vm, 0, invalid, text), Err(Trap::Builtin));
+        }
+        assert_eq!(find(calls, &mut vm, last, field, -1), Err(Trap::String));
+        assert_eq!(calls.call(&mut vm, 18, 2), Err(Trap::Builtin));
+        let mut unseeded = vm_with_definitions(8, GLOBALS, FIELDS);
+        assert_eq!(find(calls, &mut unseeded, 0, field, 0), Err(Trap::Builtin));
+    });
+}
+
 #[test]
 fn spawn_remove_use_native_ordinals_and_independent_common_generations() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {

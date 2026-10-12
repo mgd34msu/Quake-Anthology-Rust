@@ -327,10 +327,7 @@ impl Vm {
         entities: &qa_world::entities::EntityTable,
         native: qa_core::primitives::NativeEntity,
     ) -> Result<Option<qa_core::primitives::EntityId>, crate::services::CallError> {
-        Ok(self
-            .projection
-            .binding(entities, native)?
-            .filter(|entity| entities.columns.owner[entity.slot as usize] == native.module))
+        self.projection.quakec_bound_entity(entities, native)
     }
     /// Map admission and builtin spawn use the existing native ordinal
     /// allocator. This does not change the VM's return globals.
@@ -367,6 +364,35 @@ impl Vm {
                 slot: slot as i32,
             },
         )
+    }
+    pub(crate) fn find_entity(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        module: qa_core::primitives::ModuleId,
+        start: u32,
+        field: u32,
+        match_offset: i32,
+    ) -> Result<u32, crate::services::CallError> {
+        use crate::services::CallError;
+        let ordinal = self.entity_number(start).map_err(|_| CallError::Memory)?;
+        let mut cursor = self.projection.quakec_find_start(module, ordinal)?;
+        let text = self.string(match_offset).map_err(|_| CallError::Memory)?;
+        while let Some((native, _)) = self.projection.quakec_next_entity(entities, &mut cursor)? {
+            let native = (native.slot as usize)
+                .checked_mul(self.stride)
+                .and_then(|offset| u32::try_from(offset).ok())
+                .ok_or(CallError::Memory)?;
+            // PF_Find takes a raw field word offset, without a definition or
+            // classname lookup. Check only the native field it actually reads.
+            let address = self
+                .field_address(native, field, 1)
+                .map_err(|_| CallError::Memory)?;
+            let offset = self.entities.read_word(address)?;
+            if self.string(offset).map_err(|_| CallError::Memory)? == text {
+                return Ok(native);
+            }
+        }
+        Ok(0)
     }
     /// Native droptofloor reads the current self row and uses the shared
     /// caller-selected trace and explicit no-touch entity link service.

@@ -8,7 +8,8 @@ use qa_core::primitives::{PrintKind, RuleSetId};
 mod configstrings;
 mod cues;
 pub use configstrings::{
-    ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring, read_configstring,
+    ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring,
+    read_configstring, read_configstrings,
 };
 use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
@@ -38,15 +39,14 @@ pub fn read_native_service(
     protocol: Protocol,
     bytes: &[u8],
 ) -> Result<(NativeService<'_>, usize), Error> {
-    if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
-        return Err(Error::Unsupported);
-    }
-    match bytes.first().copied().ok_or(Error::Truncated)? {
-        1 | 2 | 9 | 32 => {
+    match (protocol, bytes.first().copied().ok_or(Error::Truncated)?) {
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 29)
+        | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 1 | 2 | 9 | 32) => {
             let (cue, length) = read_cue(protocol, bytes)?;
             Ok((NativeService::Cue(cue), length))
         }
-        4 | 10 | 15 => {
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26)
+        | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 4 | 10 | 15) => {
             let mut prints = Prints::new(protocol, bytes);
             let value = prints.next().ok_or(Error::Truncated)??;
             Ok((
@@ -54,7 +54,8 @@ pub fn read_native_service(
                 bytes.len() - prints.remaining().len(),
             ))
         }
-        6 => Ok((NativeService::Nop, 1)),
+        (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
+        | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 6) => Ok((NativeService::Nop, 1)),
         _ => Err(Error::Unsupported),
     }
 }
@@ -79,11 +80,13 @@ pub fn native(
     mut project: impl FnMut(Cue, usize) -> Result<Cue, Error>,
 ) -> Result<NativeEncoding, Error> {
     let source = match source {
+        RuleSetId::Quake => Protocol::NetQuake15,
+        RuleSetId::QuakeWorld => Protocol::QuakeWorld28,
         RuleSetId::Quake2 => Protocol::Quake2_34,
         RuleSetId::Quake2Rerelease => Protocol::Quake2Repro1038,
         _ => return Err(Error::Unsupported),
     };
-    if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+    if protocol == Protocol::Quake3_68 {
         return Err(Error::Unsupported);
     }
     let mut encoded = NativeEncoding::default();
@@ -127,7 +130,14 @@ pub fn native(
             NativeService::Nop => {
                 let mut writer = Writer::new(target, Encoding::Bytes);
                 writer
-                    .write_bits(6, 8)
+                    .write_bits(
+                        if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
+                            1
+                        } else {
+                            6
+                        },
+                        8,
+                    )
                     .map(|()| writer.size())
                     .map_err(Error::from)
             }

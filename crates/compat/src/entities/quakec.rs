@@ -409,19 +409,11 @@ impl EntityProjection {
     ) -> Result<Option<crate::quakec::PhysicsEntity>, CallError> {
         let layout = self.quakec_layout()?;
         let clients = layout.client_edicts.ok_or(CallError::Entity)?;
-        let module = self.owner.ok_or(CallError::Entity)?;
-        while *cursor < self.observed_count {
-            let native_slot = *cursor;
-            *cursor += 1;
-            let native = NativeEntity {
-                module,
-                slot: native_slot as i32,
-            };
-            // The namespace rows establish observable native order, while
-            // EntityTable's generation and sole liveness bitset own lifetime.
-            let Some(entity) = self.binding(entities, native)? else {
+        while let Some((native, entity)) = self.quakec_next_entity(entities, cursor)? {
+            let Some(entity) = entity else {
                 continue;
             };
+            let native_slot = native.slot as usize;
             let client = native_slot > 0 && native_slot <= clients;
             let phase = if !client && layout.move_type.is_some() {
                 let move_type = layout.number(
@@ -450,6 +442,51 @@ impl EntityProjection {
                 native,
                 phase,
             }));
+        }
+        Ok(None)
+    }
+    pub(crate) fn quakec_find_start(
+        &self,
+        module: ModuleId,
+        ordinal: u32,
+    ) -> Result<usize, CallError> {
+        if self.owner != Some(module) || ordinal as usize >= self.observed_count {
+            return Err(CallError::Entity);
+        }
+        Ok(ordinal as usize + 1)
+    }
+    pub(crate) fn quakec_bound_entity(
+        &self,
+        entities: &EntityTable,
+        native: NativeEntity,
+    ) -> Result<Option<EntityId>, CallError> {
+        Ok(self
+            .binding(entities, native)?
+            .filter(|entity| entities.columns.owner[entity.slot as usize] == native.module))
+    }
+    pub(crate) fn quakec_next_entity(
+        &self,
+        entities: &EntityTable,
+        cursor: &mut usize,
+    ) -> Result<Option<(NativeEntity, Option<EntityId>)>, CallError> {
+        let clients = self
+            .quakec_layout()?
+            .client_edicts
+            .ok_or(CallError::Entity)?;
+        let module = self.owner.ok_or(CallError::Entity)?;
+        while *cursor < self.observed_count {
+            let slot = *cursor;
+            *cursor += 1;
+            let native = NativeEntity {
+                module,
+                slot: slot as i32,
+            };
+            let entity = self.quakec_bound_entity(entities, native)?;
+            // Native client edicts remain allocated when disconnected. They
+            // are ABI-visible without inventing a common entity lifetime.
+            if entity.is_some() || (slot > 0 && slot <= clients) {
+                return Ok(Some((native, entity)));
+            }
         }
         Ok(None)
     }

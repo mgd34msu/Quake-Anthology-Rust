@@ -59,6 +59,25 @@ pub fn sound(
     positioned: bool,
     output: &mut [u8],
 ) -> Result<usize, Error> {
+    if event.action == SoundAction::StartLoop && protocol == Protocol::QuakeWorld28 {
+        if ordinal == 0 || ordinal >= 256 || event.time_offset != 0.0 {
+            return Err(Error::Unsupported);
+        }
+        return write_cue(
+            protocol,
+            Cue::StaticSound(Sound {
+                flags: VOLUME | ATTENUATION | POSITION,
+                index: ordinal as u16,
+                volume: (event.volume * 255.0) as i32 as u8,
+                attenuation: (event.attenuation * 64.0) as i32 as u8,
+                time_offset: 0,
+                entity: 0,
+                channel: 0,
+                position: event.position,
+            }),
+            output,
+        );
+    }
     let format = format(protocol)?;
     if event.action != SoundAction::Play
         || ordinal == 0
@@ -127,6 +146,8 @@ pub struct MuzzleFlash {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cue {
     Sound(Sound),
+    /// svc_spawnstaticsound is persistent level ambience, never a one-shot.
+    StaticSound(Sound),
     MuzzleFlash(MuzzleFlash),
 }
 struct Format {
@@ -157,6 +178,15 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
 /// Resource-relative ordinals have already been translated by configuration
 /// publication. Only native representation limits are selected here.
 pub(super) fn project_cue(protocol: Protocol, mut cue: Cue) -> Result<Cue, Error> {
+    if let Cue::StaticSound(sound) = cue {
+        return if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28)
+            && sound.index <= u8::MAX.into()
+        {
+            Ok(cue)
+        } else {
+            Err(Error::Unsupported)
+        };
+    }
     let format = format(protocol)?;
     match &mut cue {
         Cue::Sound(sound) => {
@@ -183,13 +213,31 @@ pub(super) fn project_cue(protocol: Protocol, mut cue: Cue) -> Result<Cue, Error
                 muzzle.format = MuzzleFormat::Monster;
             }
         }
+        Cue::StaticSound(_) => return Err(Error::Unsupported),
     }
     Ok(cue)
 }
 pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error> {
-    let format = format(protocol)?;
     let mut reader = Reader::new(bytes, Encoding::Bytes);
     let opcode = reader.read_bits(8)? as u8;
+    if matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
+        if opcode != 29 {
+            return Err(Error::Unsupported);
+        }
+        let position = read_position(&mut reader, false)?;
+        let sound = Sound {
+            flags: VOLUME | ATTENUATION | POSITION,
+            index: reader.read_bits(8)? as u16,
+            volume: reader.read_bits(8)? as u8,
+            attenuation: reader.read_bits(8)? as u8,
+            time_offset: 0,
+            entity: 0,
+            channel: 0,
+            position,
+        };
+        return Ok((Cue::StaticSound(sound), reader.byte_position()));
+    }
+    let format = format(protocol)?;
     let cue = match opcode {
         9 => {
             let flags = reader.read_bits(8)? as u8;
@@ -221,13 +269,7 @@ pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error>
                 sound.channel = channel as u8 & 7;
             }
             if flags & POSITION != 0 {
-                for value in &mut sound.position.0 {
-                    *value = if format.float_position {
-                        reader.read_float()?
-                    } else {
-                        short_to_eighth(reader.read_signed(16)? as i16)
-                    };
-                }
+                sound.position = read_position(&mut reader, format.float_position)?;
             }
             Cue::Sound(sound)
         }
@@ -270,6 +312,24 @@ pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error>
 }
 
 pub fn write_cue(protocol: Protocol, cue: Cue, output: &mut [u8]) -> Result<usize, Error> {
+    if let Cue::StaticSound(sound) = cue {
+        if !matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28)
+            || sound.flags != (VOLUME | ATTENUATION | POSITION)
+            || sound.index > u8::MAX.into()
+            || sound.time_offset != 0
+            || sound.entity != 0
+            || sound.channel != 0
+        {
+            return Err(Error::Unsupported);
+        }
+        let mut writer = Writer::new(output, Encoding::Bytes);
+        writer.write_bits(29, 8)?;
+        write_position(&mut writer, sound.position, false)?;
+        writer.write_bits(sound.index.into(), 8)?;
+        writer.write_bits(sound.volume.into(), 8)?;
+        writer.write_bits(sound.attenuation.into(), 8)?;
+        return Ok(writer.size());
+    }
     let format = format(protocol)?;
     let mut writer = Writer::new(output, Encoding::Bytes);
     match cue {
@@ -302,13 +362,7 @@ pub fn write_cue(protocol: Protocol, cue: Cue, output: &mut [u8]) -> Result<usiz
                 )?;
             }
             if sound.flags & POSITION != 0 {
-                for value in sound.position.0 {
-                    if format.float_position {
-                        writer.write_float(value)?;
-                    } else {
-                        writer.write_bits(eighth_to_short(value) as u16 as u32, 16)?;
-                    }
-                }
+                write_position(&mut writer, sound.position, format.float_position)?;
             }
         }
         Cue::MuzzleFlash(muzzle) => {
@@ -342,6 +396,30 @@ pub fn write_cue(protocol: Protocol, cue: Cue, output: &mut [u8]) -> Result<usiz
             writer.write_bits(entity.into(), 16)?;
             writer.write_bits(flash.into(), width)?;
         }
+        Cue::StaticSound(_) => return Err(Error::Unsupported),
     }
     Ok(writer.size())
+}
+
+fn read_position(reader: &mut Reader<'_>, float: bool) -> Result<Vec3, Error> {
+    let mut position = Vec3::default();
+    for value in &mut position.0 {
+        *value = if float {
+            reader.read_float()?
+        } else {
+            short_to_eighth(reader.read_signed(16)? as i16)
+        };
+    }
+    Ok(position)
+}
+
+fn write_position(writer: &mut Writer<'_>, position: Vec3, float: bool) -> Result<(), Error> {
+    for value in position.0 {
+        if float {
+            writer.write_float(value)?;
+        } else {
+            writer.write_bits(eighth_to_short(value) as u16 as u32, 16)?;
+        }
+    }
+    Ok(())
 }

@@ -200,7 +200,10 @@ impl FrameHost {
                         } else {
                             text
                         };
-                    if text.len() > target.capacity(destination).unwrap_or(0) {
+                    if protocol
+                        .config_capacity(destination)
+                        .is_none_or(|limit| text.len() > limit)
+                    {
                         publication.unsupported += 1;
                         publication.published(destination, None);
                         publication.seen(native_index, revision);
@@ -259,6 +262,7 @@ impl FrameHost {
                             row.request.context.native_rules,
                             sounds.first + ordinal,
                             target,
+                            protocol,
                             bank,
                             sound,
                         ) {
@@ -280,6 +284,7 @@ impl FrameHost {
                         target.rules,
                         target.resources[1].first,
                         target,
+                        protocol,
                         bank,
                         qa_core::primitives::SoundId(sound as u32),
                     ) {
@@ -317,6 +322,7 @@ fn publish_sound(
     source: RuleSetId,
     source_index: u32,
     target: ConfigLayout,
+    protocol: qa_network::commands::packet::Protocol,
     bank: &qa_audio::Bank,
     sound: qa_core::primitives::SoundId,
 ) -> bool {
@@ -334,7 +340,10 @@ fn publish_sound(
         publication.published(index, None);
         return true;
     };
-    if name.as_bytes().len() > target.capacity(index).unwrap_or(0) {
+    if protocol
+        .config_capacity(index)
+        .is_none_or(|limit| name.as_bytes().len() > limit)
+    {
         publication.unsupported += 1;
         publication.published(index, None);
         return true;

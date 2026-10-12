@@ -345,7 +345,13 @@ pub fn dispatch(
                                                 event.entity,
                                                 delivery.module,
                                             );
-                                            if event.entity.is_some() && entity.is_none() {
+                                            if event.entity.is_some()
+                                                && entity.is_none()
+                                                && !matches!(
+                                                    event.entity,
+                                                    Some(SoundEmitter::Static { .. })
+                                                )
+                                            {
                                                 counts.native_unsupported += 1;
                                                 return OutputSubmission::BestEffort;
                                             }
@@ -620,7 +626,8 @@ fn project_cue(
     use qa_network::outputs::{Cue, Error};
     let native_entity_namespace = numbers.is_native_module(module);
     Ok(match cue {
-        Cue::Sound(mut sound) => {
+        Cue::Sound(mut sound) | Cue::StaticSound(mut sound) => {
+            let static_sound = matches!(cue, Cue::StaticSound(_));
             let id = captured
                 .and_then(|binding| binding.sound)
                 .ok_or(Error::Unsupported)?;
@@ -650,7 +657,11 @@ fn project_cue(
                 })
                 .map_err(|_| Error::Unsupported)?;
             }
-            Cue::Sound(sound)
+            if static_sound {
+                Cue::StaticSound(sound)
+            } else {
+                Cue::Sound(sound)
+            }
         }
         Cue::MuzzleFlash(mut flash) => {
             flash.entity = u16::try_from(if native_entity_namespace {
