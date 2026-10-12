@@ -44,3 +44,8 @@ harness = false
 name = "client_commands"
 path = "tests/client_commands.rs"
 harness = false
+
+[[test]]
+name = "client_loops"
+path = "tests/client_loops.rs"
+harness = false

@@ -15,6 +15,7 @@ use qa_network::{
 };
 
 mod entities;
+mod loops;
 mod presentation;
 pub use entities::EntitySource;
 pub use presentation::{GunAnimation, Interpolation, PresentationClock};
@@ -82,6 +83,7 @@ struct ClientPresentation {
     sequence: Option<u32>,
     gun_animation: Option<GunAnimation>,
     context: PlayerContext,
+    loops: Option<loops::LoopPublication>,
 }
 
 impl SnapshotBinding {
@@ -139,6 +141,60 @@ impl SnapshotBinding {
             period,
         );
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Presentation borrows the connection's existing snapshot, resource and output owners"
+    )]
+    pub(crate) fn publish_loops(
+        &mut self,
+        lifetime: qa_core::primitives::EntityId,
+        owner: OutputConsumerId,
+        events: &mut qa_core::events::EventRing,
+        channel: &Channel,
+        resources: &crate::client_resources::ResourceState,
+        alias_roll: qa_gameplay::rules::appearance::AliasRoll,
+        budget: &mut usize,
+    ) {
+        let projection = self.entities.projection();
+        let Some(presentation) = self.presentation.as_mut() else {
+            return;
+        };
+        let Some(loops) = presentation.loops.as_mut() else {
+            return;
+        };
+        loops.publish(
+            self.client,
+            lifetime,
+            owner,
+            events,
+            crate::client_scene::ClientEntities {
+                client: self.client,
+                current: channel.current_snapshot(),
+                previous: channel.previous_snapshot(),
+                projection,
+                appearance: presentation.appearance,
+                alias_roll,
+                interpolation: presentation.clock.sample(),
+            },
+            resources,
+            budget,
+        );
+    }
+    pub(crate) fn loop_completed(
+        &mut self,
+        owner: OutputConsumerId,
+        sequence: u64,
+        event: qa_core::primitives::SoundEvent,
+        accepted: bool,
+    ) {
+        if let Some(loops) = self
+            .presentation
+            .as_mut()
+            .and_then(|row| row.loops.as_mut())
+        {
+            loops.completed(owner, sequence, event, accepted);
+        }
+    }
     pub fn entity_rejections(&self) -> u64 {
         self.entities.rejected
     }
@@ -175,6 +231,12 @@ impl SnapshotBinding {
                 )),
                 fixed_period: (protocol == Protocol::Quake2_34).then_some(100),
                 negotiated_period: protocol == Protocol::Quake2Repro1038,
+                loops: qa_gameplay::rules::loop_rules(protocol.rule_set()).map(|rules| {
+                    loops::LoopPublication::load(
+                        rules,
+                        qa_network::snapshots::snapshot_limits(protocol).native_numbers,
+                    )
+                }),
                 sequence: None,
                 gun_animation: None,
                 context: PlayerContext {

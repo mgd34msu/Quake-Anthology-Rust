@@ -103,6 +103,11 @@ struct ConfigRange {
     sound_bindings: Option<qa_audio::SoundBindings>,
     signon: signon::SignonRegistry,
 }
+impl ConfigRange {
+    fn bound_sound(&self, ordinal: u32) -> Option<qa_core::primitives::SoundId> {
+        self.sound_bindings.as_ref()?.sound(ordinal)
+    }
+}
 struct EntityText {
     bytes: std::sync::Arc<[u8]>,
     syntax: qa_formats::entities::EntitySyntax,
@@ -425,10 +430,15 @@ impl ServiceStorage {
         if row.sounds.is_some_and(|sounds| sounds != range) {
             return Err(CallError::ConfigString);
         }
-        Ok(row
-            .sound_bindings
-            .as_ref()
-            .and_then(|bindings| bindings.sound(index as u32)))
+        Ok(row.bound_sound(index as u32))
+    }
+    /// Load-bound PCM identity; a native ordinal never becomes a SoundId cast.
+    pub fn bound_sound(
+        &self,
+        module: ModuleId,
+        ordinal: u32,
+    ) -> Option<qa_core::primitives::SoundId> {
+        self.range(module)?.bound_sound(ordinal)
     }
     /// Cold attachment binds all registered module ranges to this one PCM bank.
     pub fn bind_sound_bank(

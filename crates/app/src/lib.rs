@@ -593,6 +593,7 @@ impl Runtime {
         time: qa_core::sys_events::EventTime,
         observation: Option<qa_core::primitives::SnapshotObservation>,
         source: &mut impl host::FrameSource,
+        mut bound_sound: impl FnMut(ModuleId, u32) -> Option<qa_core::primitives::SoundId>,
     ) -> bool {
         use qa_core::loopback::Endpoint;
         use qa_network::channel::Unreliable;
@@ -616,6 +617,9 @@ impl Runtime {
         let mut resolve_model = |reference| {
             client_resources::model_ordinal(reference, Some(client.module), id, model_limit)
         };
+        let publication = &self.config_publications[id.0 as usize];
+        let mut resolve_sound =
+            |reference| publication.project_sound_ref(reference, id, &mut bound_sound);
         let collision = &mut self.collision;
         let route = connection.route;
         let mut dropped = false;
@@ -663,6 +667,7 @@ impl Runtime {
                             visibility,
                             portals,
                             resolve_model: &mut resolve_model,
+                            resolve_sound: &mut resolve_sound,
                         },
                         &mut self.native_numbers[id.0 as usize],
                         sequence,

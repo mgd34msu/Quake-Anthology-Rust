@@ -43,6 +43,7 @@ impl Sound {
         action: SoundAction,
     ) -> SoundEvent {
         SoundEvent {
+            looping: None,
             sound,
             source_ordinal: Some(u32::from(self.index)),
             native_fields: Some(NativeSoundFields {
@@ -96,6 +97,9 @@ pub fn sound(
     positioned: bool,
     output: &mut [u8],
 ) -> Result<usize, Error> {
+    if event.looping.is_some() {
+        return Err(Error::Unsupported);
+    }
     if let Some(fields) = event.native_fields {
         let mut wire = Sound {
             flags: fields.flags,
@@ -127,7 +131,10 @@ pub fn sound(
                 Cue::Sound(wire)
             }
             SoundAction::StartLoop => Cue::StaticSound(wire),
-            SoundAction::Stop | SoundAction::RetireClient => return Err(Error::Unsupported),
+            SoundAction::Stop
+            | SoundAction::StopLoop
+            | SoundAction::ResetClientLoops
+            | SoundAction::RetireClient => return Err(Error::Unsupported),
         };
         return write_cue(protocol, project_cue(protocol, cue)?, output);
     }

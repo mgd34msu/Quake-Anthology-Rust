@@ -2,7 +2,9 @@
 //! This value borrows no engine ownership; namespaces remain caller-selected.
 use super::{Convert, Field};
 use crate::{commands::packet::Protocol, states};
-use qa_core::primitives::{EntityAppearance, EntityRecord, ModelRef, ResourceNamespace, RuleSetId};
+use qa_core::primitives::{
+    EntityAppearance, EntityRecord, ModelRef, ResourceNamespace, RuleSetId, SoundRef,
+};
 
 #[derive(Clone, Copy)]
 enum Source {
@@ -18,6 +20,8 @@ enum Source {
     EffectsHigh,
     RenderFlags,
     Event,
+    EntityType,
+    OtherEntity,
     Sound,
     Solid,
     Alpha,
@@ -140,7 +144,9 @@ const Q3: &[Field<Source>] = &[
     f(6, Angle(1), Bits),
     f(41, Angle(2), Bits),
     f(9, Event, Bits),
+    f(11, EntityType, Bits),
     f(17, RenderFlags, Bits),
+    f(18, OtherEntity, Bits),
     f(27, Solid, Bits),
     f(29, Model(0), Bits),
     f(36, Model(1), Bits),
@@ -152,6 +158,8 @@ pub struct EntityProjection {
     protocol: Protocol,
     fields: &'static [Field<Source>],
     words: usize,
+    resource_limit: u32,
+    sound_limit: u32,
 }
 impl EntityProjection {
     pub fn load(protocol: Protocol) -> Self {
@@ -166,6 +174,18 @@ impl EntityProjection {
             protocol,
             fields,
             words,
+            resource_limit: if protocol == Protocol::Quake2Repro1038 {
+                65535
+            } else {
+                255
+            },
+            // Rerelease loop sound occupies the lower fourteen packed bits;
+            // the upper two select its volume and attenuation fields.
+            sound_limit: if protocol == Protocol::Quake2Repro1038 {
+                0x3fff
+            } else {
+                255
+            },
         }
     }
     pub fn rule_set(&self) -> RuleSetId {
@@ -174,13 +194,14 @@ impl EntityProjection {
     pub fn words(&self) -> usize {
         self.words
     }
-    /// The resolver maps a publishing namespace's ordinal into this connection's
-    /// precache. Missing/unrepresentable resources become native model zero.
+    /// The resolvers map publishing resource namespaces into this connection's
+    /// precaches. Missing/unrepresentable resources become native ordinal zero.
     pub fn reduce(
         &self,
         record: &EntityRecord,
         out: &mut [u32],
         mut resolve_model: impl FnMut(ModelRef) -> Option<u32>,
+        mut resolve_sound: impl FnMut(SoundRef) -> Option<u32>,
     ) -> bool {
         let Some(out) = out.get_mut(..self.words) else {
             return false;
@@ -203,13 +224,7 @@ impl EntityProjection {
                 OldOrigin(i) => a.old_origin.0[i].to_bits(),
                 Model(i) => a.models[i]
                     .and_then(&mut resolve_model)
-                    .filter(|&n| {
-                        n <= if self.protocol == Protocol::Quake2Repro1038 {
-                            65535
-                        } else {
-                            255
-                        }
-                    })
+                    .filter(|&n| n <= self.resource_limit)
                     .unwrap_or(0),
                 Frame => a.frame as u32,
                 Skin => a.skin as u32,
@@ -254,13 +269,25 @@ impl EntityProjection {
                         0
                     }
                 }
-                Sound => {
-                    if same || q2_pair {
-                        a.native.loop_sound
+                EntityType => {
+                    if same {
+                        a.native.entity_type
                     } else {
                         0
                     }
                 }
+                OtherEntity => {
+                    if same {
+                        a.native.other_entity
+                    } else {
+                        0
+                    }
+                }
+                Sound => a
+                    .loop_sound
+                    .and_then(&mut resolve_sound)
+                    .filter(|&n| n <= self.sound_limit)
+                    .unwrap_or(0),
                 Solid => {
                     if same || q2_pair {
                         a.native.solid
@@ -314,7 +341,9 @@ impl EntityProjection {
                 }
                 RenderFlags => a.native.render_flags = value,
                 Event => a.native.event = value,
-                Sound => a.native.loop_sound = value,
+                EntityType => a.native.entity_type = value,
+                OtherEntity => a.native.other_entity = value,
+                Sound => a.loop_sound = SoundRef::native(namespace, value),
                 Solid => a.native.solid = value,
                 Alpha => a.alpha = f32::from_bits(value),
                 Scale => a.scale = f32::from_bits(value),

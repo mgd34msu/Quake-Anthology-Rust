@@ -51,10 +51,7 @@ fn configs() -> ConfigStrings {
 }
 
 fn reference(client: ClientId) -> ModelRef {
-    ModelRef {
-        namespace: ResourceNamespace::Client(client),
-        ordinal: 50,
-    }
+    ModelRef::native(ResourceNamespace::Client(client), 50).unwrap()
 }
 
 #[test]
@@ -159,7 +156,12 @@ fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() 
     source_edict.appearance.frame = 0;
     source_edict.appearance.native.colormap = 0;
     let mut words = [0; states::QW_ENTITY_WORDS];
-    assert!(projection.reduce(&source_edict, &mut words, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &source_edict,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal)
+    ));
     let rows = [Entity { number: 3, words }];
     let native_player = [];
     let current = Frame {
@@ -306,10 +308,7 @@ fn connection_model_names_bind_once_and_reset_with_their_owner() {
     assert_ne!(selected.model.0, 50);
     assert_eq!(
         bindings.resolve(
-            ModelRef {
-                namespace: ResourceNamespace::Module(ModuleId(7)),
-                ordinal: 50
-            },
+            ModelRef::native(ResourceNamespace::Module(ModuleId(7)), 50).unwrap(),
             1,
             &catalog,
             policy
@@ -443,7 +442,12 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
             ..Default::default()
         };
         let mut words = [0; states::Q2_ENTITY_WORDS];
-        assert!(projection.reduce(&record, &mut words, |reference| Some(reference.ordinal)));
+        assert!(projection.reduce(
+            &record,
+            &mut words,
+            |reference| Some(reference.ordinal),
+            |sound| Some(sound.ordinal)
+        ));
         let entities = [Entity { number: 12, words }];
         let mut native_player = PlayerState::default();
         native_player.view_weapon = ViewWeapon {
@@ -1150,7 +1154,12 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     };
     let encode = |record: EntityRecord| {
         let mut words = [0; states::Q2_ENTITY_WORDS];
-        assert!(projection.reduce(&record, &mut words, |model| Some(model.ordinal)));
+        assert!(projection.reduce(
+            &record,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal)
+        ));
         [Entity { number: 12, words }]
     };
     let old_rows = encode(old);
@@ -1188,7 +1197,7 @@ fn client_pose_query_keeps_native_discontinuities_without_assets_or_server_state
     assert!(entities.get(11).is_none());
     assert!(entities.get(13).is_none());
     assert!(entities.get(0).is_none());
-    assert_eq!(entities.sound_origin(0), Some(Vec3::default()));
+    assert_eq!(entities.sound_origin(0, None), Some(Vec3::default()));
     assert_eq!(
         entities.get(12).unwrap().record.appearance.models[0],
         Some(reference(client))
@@ -1304,7 +1313,12 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         ..Default::default()
     };
     let mut words = [0; states::ENTITY_WORDS];
-    assert!(projection.reduce(&record, &mut words, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &record,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal)
+    ));
     let rows = [Entity { number: 0, words }];
     let frame = Frame {
         sequence: 1,
@@ -1325,7 +1339,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         alias_roll: AliasRoll::default(),
         interpolation: Interpolation::default(),
     };
-    assert_eq!(entities.sound_origin(0), Some(record.position));
+    assert_eq!(entities.sound_origin(0, None), Some(record.position));
     let absent = ClientEntities {
         current: Some(ReceivedFrame::Quake3(Frame {
             entities: &[],
@@ -1333,7 +1347,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
         })),
         ..entities
     };
-    assert_eq!(absent.sound_origin(0), None);
+    assert_eq!(absent.sound_origin(0, None), None);
     for protocol in [
         Protocol::NetQuake15,
         Protocol::QuakeWorld28,
@@ -1348,7 +1362,7 @@ fn native_world_sound_zero_is_static_but_q3_entity_zero_has_a_client_pose() {
             alias_roll: AliasRoll::default(),
             ..entities
         };
-        assert_eq!(world.sound_origin(0), Some(Vec3::default()));
-        assert_eq!(world.sound_origin(1), None);
+        assert_eq!(world.sound_origin(0, None), Some(Vec3::default()));
+        assert_eq!(world.sound_origin(1, None), None);
     }
 }

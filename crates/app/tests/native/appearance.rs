@@ -1,6 +1,6 @@
 use super::*;
 use qa_core::primitives::{
-    EntityAppearance, ModelRef, NativeAppearanceTail, ResourceNamespace, Vec3,
+    EntityAppearance, ModelRef, NativeAppearanceTail, ResourceNamespace, SoundRef, Vec3,
 };
 
 const BASE: u64 = 0x180000000;
@@ -333,6 +333,7 @@ fn appearance(source: RuleSetId, module: ModuleId, phase: u32) -> EntityAppearan
             ModelRef::native(ResourceNamespace::Module(module), 9),
             ModelRef::native(ResourceNamespace::Module(module), 255),
         ],
+        loop_sound: SoundRef::native(ResourceNamespace::Module(module), 0x9234_5678),
         frame: 1024 + phase as i32,
         skin: -456 - phase as i32,
         old_origin: Vec3([-0.0, 45., -67.]),
@@ -355,7 +356,8 @@ fn appearance(source: RuleSetId, module: ModuleId, phase: u32) -> EntityAppearan
             },
             render_flags: 0xfedc_ba98,
             event: if rr { 234 } else { 0x1234_abcd },
-            loop_sound: 0x9234_5678,
+            entity_type: 0,
+            other_entity: 0,
             solid: 0xa234_5678,
             instance_bits: if rr { 197 } else { 0 },
             loop_volume: if rr { f32::from_bits(0x7fc0_1234) } else { 0. },
@@ -383,7 +385,12 @@ fn write_edict(bytes: &mut [u8], rr: bool, value: EntityAppearance, position: Ve
     let render = if rr { 72 } else { 68 };
     put(bytes, render, value.native.render_flags.into(), 4);
     put(bytes, render + 4, value.native.solid.into(), 4);
-    put(bytes, render + 8, value.native.loop_sound.into(), 4);
+    put(
+        bytes,
+        render + 8,
+        value.loop_sound.map_or(0, |sound| u64::from(sound.ordinal)),
+        4,
+    );
     put(
         bytes,
         render + 12,
@@ -492,7 +499,7 @@ fn assert_appearance(actual: EntityAppearance, expected: EntityAppearance) {
             actual.native.effects,
             actual.native.render_flags,
             actual.native.event,
-            actual.native.loop_sound,
+            actual.loop_sound,
             actual.native.solid,
             actual.native.instance_bits,
             actual.native.owner,
@@ -502,7 +509,7 @@ fn assert_appearance(actual: EntityAppearance, expected: EntityAppearance) {
             expected.native.effects,
             expected.native.render_flags,
             expected.native.event,
-            expected.native.loop_sound,
+            expected.loop_sound,
             expected.native.solid,
             expected.native.instance_bits,
             expected.native.owner,

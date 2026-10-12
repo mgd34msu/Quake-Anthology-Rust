@@ -7,7 +7,9 @@ use crate::snapshots::{GunAnimation, Interpolation};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
     math::{angle_vectors, lerp_angle},
-    primitives::{ClientId, IndexSpan, ModelRef, PlayerState, ResourceNamespace, Vec3, ViewWeapon},
+    primitives::{
+        ClientId, IndexSpan, LoopOrigin, ModelRef, PlayerState, ResourceNamespace, Vec3, ViewWeapon,
+    },
 };
 use qa_gameplay::rules::appearance::{
     AliasPose, AliasRoll, AppearanceCapabilities, AppearancePolicy, WeaponInterpolation,
@@ -255,6 +257,33 @@ impl ClientEntities<'_> {
         }
     }
 
+    /// Walk the sole accepted frame in its native entity order. A malformed
+    /// row remains visible to the caller as a rejected admission, not a copy.
+    pub fn visit(&self, mut visit: impl FnMut(u32, Option<PresentedEntity>)) {
+        fn rows<const P: usize, const E: usize>(
+            entities: &ClientEntities<'_>,
+            frame: SnapshotFrame<'_, P, E>,
+            visit: &mut impl FnMut(u32, Option<PresentedEntity>),
+        ) {
+            for row in frame.entities {
+                visit(
+                    row.number,
+                    entities.decode(&row.words).map(|record| {
+                        entities.present(row.number, record, frame.qw_player(row.number))
+                    }),
+                );
+            }
+        }
+        match self.current {
+            Some(ReceivedFrame::NetQuake(frame)) => rows(self, frame, &mut visit),
+            Some(ReceivedFrame::QuakeWorld(frame)) => rows(self, frame, &mut visit),
+            Some(ReceivedFrame::Quake2(frame)) => rows(self, frame, &mut visit),
+            Some(ReceivedFrame::Quake2Repro(frame)) => rows(self, frame, &mut visit),
+            Some(ReceivedFrame::Quake3(frame)) => rows(self, frame, &mut visit),
+            None => {}
+        }
+    }
+
     /// Numeric lookup in accepted CLIENT rows. The pose uses the same native
     /// discontinuity and interpolation path as the copied scene entities.
     pub fn get(&self, number: u32) -> Option<PresentedEntity> {
@@ -264,11 +293,14 @@ impl ClientEntities<'_> {
 
     /// NQ/QW/Q2 reserve ordinal zero for the world and never receive a pose
     /// for it. Q3 client/entity zero is a real row and must be resolved.
-    pub fn sound_origin(&self, number: u32) -> Option<Vec3> {
+    pub fn sound_origin(&self, number: u32, origin: Option<LoopOrigin>) -> Option<Vec3> {
         if number == 0 && self.appearance.world_zero() {
             Some(Vec3::default())
         } else {
-            self.get(number).map(|entity| entity.origin)
+            self.get(number).map(|entity| match origin {
+                Some(LoopOrigin::Accepted) => entity.record.position,
+                None | Some(LoopOrigin::Presented) => entity.origin,
+            })
         }
     }
 }
@@ -351,20 +383,23 @@ impl ClientSceneInput<'_> {
         software: bool,
     ) -> SceneCounts {
         let mut counts = SceneCounts::default();
-        if let Some(current) = self.current {
-            macro_rules! append {
-                ($variant:ident, $current:expr) => {{
-                    self.append_entities($current, frame, assets, software, &mut counts);
-                }};
-            }
-            match current {
-                ReceivedFrame::NetQuake(current) => append!(NetQuake, current),
-                ReceivedFrame::QuakeWorld(current) => append!(QuakeWorld, current),
-                ReceivedFrame::Quake2(current) => append!(Quake2, current),
-                ReceivedFrame::Quake2Repro(current) => append!(Quake2Repro, current),
-                ReceivedFrame::Quake3(current) => append!(Quake3, current),
-            }
-        }
+        let fraction = self.interpolation.fraction;
+        self.entities().visit(|number, pose| {
+            counts.entities += 1;
+            let Some(pose) = pose else {
+                counts.rejected += 1;
+                return;
+            };
+            self.append_presented(
+                pose,
+                Some(number),
+                fraction,
+                frame,
+                assets,
+                software,
+                &mut counts,
+            );
+        });
         for &record in self.static_entities {
             counts.entities += 1;
             self.append_presented(
@@ -385,35 +420,6 @@ impl ClientSceneInput<'_> {
         }
         self.append_weapon(frame, assets, refdef, software, &mut counts);
         counts
-    }
-
-    fn append_entities<const P: usize, const E: usize>(
-        &self,
-        current: SnapshotFrame<'_, P, E>,
-        frame: &mut Frame,
-        assets: &Assets,
-        software: bool,
-        counts: &mut SceneCounts,
-    ) {
-        let entities = self.entities();
-        let fraction = self.interpolation.fraction;
-        for entity in current.entities {
-            counts.entities += 1;
-            let Some(record) = entities.decode(&entity.words) else {
-                counts.rejected += 1;
-                continue;
-            };
-            let pose = entities.present(entity.number, record, current.qw_player(entity.number));
-            self.append_presented(
-                pose,
-                Some(entity.number),
-                fraction,
-                frame,
-                assets,
-                software,
-                counts,
-            );
-        }
     }
 
     #[expect(

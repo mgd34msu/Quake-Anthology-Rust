@@ -436,11 +436,13 @@ fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() 
             .map_err(|e| format!("{e:?}"))?;
     }
     host.runtime.server.clients[0].player.body.position.0[0] = 12.375;
-    assert!(
-        !host
-            .runtime
-            .send_snapshot(client, EventTime(0), None, &mut Clock::default())
-    );
+    assert!(!host.runtime.send_snapshot(
+        client,
+        EventTime(0),
+        None,
+        &mut Clock::default(),
+        |_, _| None
+    ));
     let channel = &host
         .runtime
         .network
@@ -455,7 +457,8 @@ fn blocked_local_snapshot_retries_exact_prepared_state_before_new_publication() 
         client,
         EventTime(100_000_000),
         None,
-        &mut Clock::default()
+        &mut Clock::default(),
+        |_, _| None
     ));
     let channel = &host
         .runtime
@@ -486,10 +489,13 @@ fn delayed_local_snapshot_cannot_mutate_a_reused_client_lifetime() -> Result<(),
     use qa_network::commands::packet::Protocol;
     let (mut host, client) = local_host(Protocol::Quake2_34)?;
     host.runtime.server.clients[0].player.body.position.0[0] = 123.125;
-    assert!(
-        host.runtime
-            .send_snapshot(client, EventTime(0), None, &mut Clock::default())
-    );
+    assert!(host.runtime.send_snapshot(
+        client,
+        EventTime(0),
+        None,
+        &mut Clock::default(),
+        |_, _| None
+    ));
     assert!(host.runtime.server.disconnect(client));
     assert_eq!(
         host.runtime
@@ -589,7 +595,8 @@ fn repro_connections_use_negotiated_qport_and_frame_clock_with_native_feedback()
             client,
             EventTime(1_001_000_000),
             None,
-            &mut Clock::default()
+            &mut Clock::default(),
+            |_, _| None
         ));
         let channel = &host
             .runtime

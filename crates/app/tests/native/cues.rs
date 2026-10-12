@@ -123,10 +123,13 @@ fn accept_client_resources_and_pose(
         .current_snapshot()
         .map_or(0, |frame| frame.time().milliseconds());
     let time = EventTime::from_milliseconds(u64::try_from(previous).unwrap() + 100);
-    assert!(
-        host.runtime
-            .send_snapshot(client, time, None, &mut Source { time, polls: 0 })
-    );
+    assert!(host.runtime.send_snapshot(
+        client,
+        time,
+        None,
+        &mut Source { time, polls: 0 },
+        |_, _| None
+    ));
     host.queue
         .push(SysEvent {
             time,

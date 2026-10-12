@@ -169,6 +169,8 @@ pub struct WeaponId(pub u32);
 pub struct CvarHandle(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SoundId(pub u32);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModelId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PcmChannels {
@@ -565,20 +567,27 @@ pub enum ResourceNamespace {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ModelRef {
+pub struct ResourceRef<T> {
     pub namespace: ResourceNamespace,
     pub ordinal: u32,
+    marker: std::marker::PhantomData<T>,
 }
-impl ModelRef {
-    /// Native model ordinal zero means no model in module and wire ABIs.
+impl<T> ResourceRef<T> {
+    /// Native ordinal zero means no resource in module and wire ABIs.
     pub const fn native(namespace: ResourceNamespace, ordinal: u32) -> Option<Self> {
         if ordinal == 0 {
             None
         } else {
-            Some(Self { namespace, ordinal })
+            Some(Self {
+                namespace,
+                ordinal,
+                marker: std::marker::PhantomData,
+            })
         }
     }
 }
+pub type ModelRef = ResourceRef<ModelId>;
+pub type SoundRef = ResourceRef<SoundId>;
 
 /// Residual source-native appearance bits are interpreted using the enclosing
 /// EntityAppearance's source, independently of movement or trace rules.
@@ -588,7 +597,8 @@ pub struct NativeAppearanceTail {
     pub effects: u64,
     pub render_flags: u32,
     pub event: u32,
-    pub loop_sound: u32,
+    pub entity_type: u32,
+    pub other_entity: u32,
     pub solid: u32,
     pub instance_bits: u8,
     pub loop_volume: f32,
@@ -602,6 +612,7 @@ pub struct EntityAppearance {
     pub source: RuleSetId,
     pub snapshot_excluded: bool,
     pub models: [Option<ModelRef>; 4],
+    pub loop_sound: Option<SoundRef>,
     pub frame: i32,
     pub skin: i32,
     pub old_origin: Vec3,
@@ -615,6 +626,7 @@ impl Default for EntityAppearance {
             source: RuleSetId::default(),
             snapshot_excluded: false,
             models: [None; 4],
+            loop_sound: None,
             frame: 0,
             skin: 0,
             old_origin: Vec3::default(),
@@ -1031,6 +1043,38 @@ impl Default for SpatialPolicy {
     }
 }
 
+/// Native loop gain and global-volume arithmetic, selected at load.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoopGain {
+    Integer { master: u8, volume_scale: u16 },
+    Float(f32),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopPhase {
+    Cursor,
+    Painted,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopLifetime {
+    Temporary,
+    Persistent,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopOrigin {
+    Accepted,
+    Presented,
+}
+/// One admitted CLIENT loop. Static WAV-cue loops retain the ordinary path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopPlayback {
+    pub master: LoopGain,
+    pub phase: LoopPhase,
+    pub lifetime: LoopLifetime,
+    pub panning: bool,
+    pub clamp_pan: bool,
+    pub origin: LoopOrigin,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SoundEvent {
     pub sound: SoundId,
@@ -1040,6 +1084,7 @@ pub struct SoundEvent {
     pub native_fields: Option<NativeSoundFields>,
     /// Spatial behavior belongs to this emission, independently of shared PCM.
     pub spatial: SpatialPolicy,
+    pub looping: Option<LoopPlayback>,
     pub entity: Option<SoundEmitter>,
     pub channel: u16,
     pub position: Vec3,
@@ -1063,6 +1108,14 @@ impl SoundEvent {
             ..Self::default()
         }
     }
+    pub fn reset_client_loops(client: ClientId, lifetime: EntityId) -> Self {
+        Self {
+            client: Some(client),
+            client_lifetime: Some(lifetime),
+            action: SoundAction::ResetClientLoops,
+            ..Self::default()
+        }
+    }
     pub fn applies_to_client(self, client: ClientId) -> bool {
         self.client.is_none_or(|recipient| recipient == client)
     }
@@ -1082,6 +1135,10 @@ pub enum SoundAction {
     Play,
     StartLoop,
     Stop,
+    /// Remove admitted loops for one emitter, preserving channel-zero one-shots.
+    StopLoop,
+    /// Remove admitted loops for a CLIENT lifetime, preserving static cues.
+    ResetClientLoops,
     /// Remove only voices received during one canonical CLIENT connection.
     RetireClient,
 }

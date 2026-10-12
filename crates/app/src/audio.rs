@@ -55,12 +55,12 @@ pub fn respatialize(
     entities: &[Option<crate::client_scene::ClientEntities<'_>>;
          qa_core::sys_events::SeatId::COUNT],
 ) {
-    mixer.respatialize(|client, number| {
+    mixer.respatialize(|client, number, origin| {
         entities
             .iter()
             .flatten()
             .find(|entities| entities.client == client)?
-            .sound_origin(number)
+            .sound_origin(number, origin)
     });
 }
 

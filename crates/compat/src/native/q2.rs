@@ -127,6 +127,8 @@ const CLASSIC: Layout = Layout {
         clusters: Some((120, 124, 188)),
         network_solid: 72,
         appearance: AppearanceLayout {
+            entity_type: None,
+            other_entity: None,
             models: [Some(40), Some(44), Some(48), Some(52)],
             frame: 56,
             skin: Some(60),
@@ -183,6 +185,8 @@ const RERELEASE: Layout = Layout {
         clusters: None,
         network_solid: 76,
         appearance: AppearanceLayout {
+            entity_type: None,
+            other_entity: None,
             models: [Some(40), Some(44), Some(48), Some(52)],
             frame: 56,
             skin: Some(60),

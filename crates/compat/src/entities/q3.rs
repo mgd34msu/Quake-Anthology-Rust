@@ -71,6 +71,8 @@ const LAYOUT: EntityLayout = EntityLayout {
     clusters: None,
     network_solid: 176,
     appearance: AppearanceLayout {
+        entity_type: Some(4),
+        other_entity: Some(140),
         models: [Some(160), Some(164), None, None],
         frame: 172,
         skin: None,

@@ -431,7 +431,8 @@ fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
     let mut pcm = [0; 2];
     assert!(m.paint(&mut pcm));
     assert_eq!(pcm, [0, 692]);
-    m.respatialize(|client, number| {
+    m.respatialize(|client, number, origin| {
+        assert_eq!(origin, None);
         assert_eq!((client, number), (ClientId(7), 19));
         Some(Vec3([-400.0, 0.0, 0.0]))
     });
@@ -439,11 +440,11 @@ fn native_client_voice_tracks_without_restarting_and_retains_missing_pose() {
     assert_eq!(pcm, [692, 0]);
     assert_eq!(m.counts.started, 1);
     assert_eq!(m.counts.respatialized, 1);
-    m.respatialize(|_, _| None);
+    m.respatialize(|_, _, _| None);
     assert!(m.paint(&mut pcm));
     assert_eq!(pcm, [692, 0]);
     assert_eq!(m.counts.missing_origins, 1);
-    m.respatialize(|_, _| Some(Vec3([f32::NAN, 0.0, 0.0])));
+    m.respatialize(|_, _, _| Some(Vec3([f32::NAN, 0.0, 0.0])));
     assert!(m.paint(&mut pcm));
     assert_eq!(pcm, [692, 0]);
     assert_eq!(m.counts.missing_origins, 2);
@@ -484,7 +485,7 @@ fn fixed_and_non_client_emitters_never_resolve_client_poses() {
         e.positioned = positioned;
         e.attenuation = 1.0;
         assert!(m.sound(e));
-        m.respatialize(|_, _| panic!("fixed/non-client origin queried"));
+        m.respatialize(|_, _, _| panic!("fixed/non-client origin queried"));
         let mut pcm = [0; 2];
         assert!(m.paint(&mut pcm));
         assert_eq!(pcm, [0, 692]);
@@ -512,7 +513,8 @@ fn moving_voices_keep_native_connection_namespace() {
         assert!(m.sound(e));
     }
     let mut queried = [false; 2];
-    m.respatialize(|client, number| {
+    m.respatialize(|client, number, origin| {
+        assert_eq!(origin, None);
         assert_eq!(number, 19);
         let index = match client.0 {
             7 => 0,

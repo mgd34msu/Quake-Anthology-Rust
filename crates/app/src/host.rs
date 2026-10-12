@@ -158,6 +158,7 @@ pub struct FrameHost {
     volume: CvarHandle,
     mouse_enabled: CvarHandle,
     previous: Option<EventTime>,
+    loop_client_cursor: usize,
     timeline: Timeline,
     providers: Box<[Provider]>,
     module_outputs: Box<[Option<qa_core::events::OutputConsumerId>]>,
@@ -279,6 +280,7 @@ impl FrameHost {
             volume,
             mouse_enabled,
             previous: None,
+            loop_client_cursor: 0,
             command_tokens: Default::default(),
             timeline,
             providers: providers.into_boxed_slice(),
@@ -371,7 +373,9 @@ impl FrameHost {
             let id = ClientId(index as u32);
             let observation = self.snapshot_observation(id, server_time);
             self.runtime
-                .send_snapshot(id, server_time, observation, source);
+                .send_snapshot(id, server_time, observation, source, |module, ordinal| {
+                    self.modules.as_ref()?.bound_sound(module, ordinal)
+                });
         }
         // Immediate server->client packets take this path in the same frame.
         source.request_mouse_capture(self.mouse_capture_requested());
@@ -389,6 +393,7 @@ impl FrameHost {
         self.advance_client_presentation();
         result.commands = self.client_frame();
         self.client_modules();
+        self.publish_client_loops();
         result.client_ns = client.elapsed().as_nanos() as u64;
         self.dispatch_output(source, &mut result);
         result.input_ns = source.elapsed().as_nanos() as u64;
@@ -545,6 +550,51 @@ impl FrameHost {
                 .get(snapshot.client, qa_core::loopback::Endpoint::Client)
             {
                 snapshot.advance_presentation(&connection.channel, self.time);
+            }
+        }
+    }
+
+    /// Accepted CLIENT rows publish to Presentation once per connection, not
+    /// once per seat/view. No native guest or SERVER entity pose is observed.
+    pub fn publish_client_loops(&mut self) {
+        let alias_roll = self.alias_roll();
+        let runtime = &mut self.runtime;
+        let server = &mut runtime.server;
+        let mut budget = (server.events.capacity() / 4).max(1);
+        let count = runtime.snapshots.len();
+        for step in 0..count {
+            let index = (self.loop_client_cursor + step) % count;
+            let Some(snapshot) = runtime.snapshots[index].as_mut() else {
+                continue;
+            };
+            let Some(client) = server.clients.get(snapshot.client.0 as usize) else {
+                continue;
+            };
+            if client.connection.is_none() || server.entities.resolve(client.entity).is_none() {
+                continue;
+            }
+            let Some(resources) = runtime.client_resources[snapshot.client.0 as usize].as_ref()
+            else {
+                continue;
+            };
+            let Some(connection) = runtime
+                .network
+                .get(snapshot.client, qa_core::loopback::Endpoint::Client)
+            else {
+                continue;
+            };
+            snapshot.publish_loops(
+                client.entity,
+                server.presentation,
+                &mut server.events,
+                &connection.channel,
+                &resources.state,
+                alias_roll,
+                &mut budget,
+            );
+            if budget == 0 {
+                self.loop_client_cursor = (index + 1) % count;
+                break;
             }
         }
     }

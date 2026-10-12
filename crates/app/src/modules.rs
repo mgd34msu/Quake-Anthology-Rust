@@ -234,6 +234,15 @@ pub struct Modules {
     signon: Box<[SignonCursor]>,
 }
 impl Modules {
+    pub(crate) fn bound_sound(
+        &self,
+        module: ModuleId,
+        ordinal: u32,
+    ) -> Option<qa_core::primitives::SoundId> {
+        (self.row(module)?.state == State::Running)
+            .then(|| self.storage.bound_sound(module, ordinal))
+            .flatten()
+    }
     fn row(&self, id: ModuleId) -> Option<&Module> {
         self.rows.get(id.0 as usize)?.as_ref()
     }

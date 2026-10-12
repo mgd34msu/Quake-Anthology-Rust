@@ -1,6 +1,6 @@
 use qa_core::primitives::{
     ClientId, EntityAppearance, ModelRef, ModuleId, NativeAppearanceTail, ResourceNamespace,
-    RuleSetId, ThinkTime, Vec3,
+    RuleSetId, SoundRef, ThinkTime, Vec3,
 };
 use qa_world::entities::{AllocationPolicy, EntityTable};
 
@@ -14,6 +14,7 @@ fn appearance() -> EntityAppearance {
             ModelRef::native(ResourceNamespace::Client(ClientId(7)), 1),
             ModelRef::native(ResourceNamespace::Client(ClientId(8)), u32::MAX),
         ],
+        loop_sound: SoundRef::native(ResourceNamespace::Module(ModuleId(7)), u32::MAX),
         frame: i32::MIN,
         skin: i32::MAX,
         old_origin: Vec3([-1.25, 2.5, 3.75]),
@@ -24,7 +25,8 @@ fn appearance() -> EntityAppearance {
             effects: u64::MAX,
             render_flags: u32::MAX,
             event: u32::MAX,
-            loop_sound: u32::MAX,
+            entity_type: u32::MAX,
+            other_entity: u32::MAX,
             solid: u32::MAX,
             instance_bits: u8::MAX,
             loop_volume: 0.25,

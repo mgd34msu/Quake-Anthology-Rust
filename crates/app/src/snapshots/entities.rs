@@ -1,6 +1,6 @@
 //! Connection-owned wire scratch and explicit entity-number projection.
 use crate::output_namespace::NativeNumbers;
-use qa_core::primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, Vec3};
+use qa_core::primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, SoundRef, Vec3};
 use qa_network::{
     commands::packet::{Error, Protocol},
     projection::{EntityProjection, EntityRecord, PlayerProjection},
@@ -24,6 +24,7 @@ pub struct EntitySource<'a> {
     pub visibility: Option<(&'a VisibilityWorld, &'a mut LeafScratch, &'a mut [u8])>,
     pub portals: Option<&'a AreaPortals>,
     pub resolve_model: &'a mut dyn FnMut(ModelRef) -> Option<u32>,
+    pub resolve_sound: &'a mut dyn FnMut(SoundRef) -> Option<u32>,
 }
 
 struct Rows<const N: usize> {
@@ -108,17 +109,7 @@ impl<const N: usize> Rows<N> {
                 rejected += 1;
                 continue;
             }
-            let mut appearance = columns.appearance[slot];
-            // Residual sound ordinals name the publishing module's precache.
-            // A foreign namespace needs a resource mapping, not a copied
-            // integer that could play an unrelated connection sound.
-            if appearance.native.loop_sound != 0
-                && columns.native_entity[slot]
-                    .is_none_or(|native| Some(native.module) != source.native_module)
-            {
-                appearance.native.loop_sound = 0;
-                rejected += 1;
-            }
+            let appearance = columns.appearance[slot];
             if appearance.snapshot_excluded {
                 continue;
             }
@@ -129,11 +120,9 @@ impl<const N: usize> Rows<N> {
                 continue;
             }
             if id != source.self_entity {
-                let present = appearance.models.iter().any(Option::is_some)
-                    || appearance.native.effects != 0
-                    || appearance.native.event != 0
-                    || appearance.native.loop_sound != 0;
-                if !present {
+                if !qa_gameplay::rules::appearance::policy(appearance.source)
+                    .snapshot_present(&appearance)
+                {
                     continue;
                 }
                 let bounds = Bounds {
@@ -144,17 +133,7 @@ impl<const N: usize> Rows<N> {
                     continue;
                 }
             }
-            let Some(row) = self.rows.get_mut(self.count) else {
-                rejected += 1;
-                continue;
-            };
-            let record = EntityRecord {
-                position: columns.position[slot],
-                velocity: columns.velocity[slot],
-                angles: columns.angles[slot],
-                appearance,
-            };
-            if !projection.reduce(&record, &mut row.words, &mut *source.resolve_model) {
+            if self.count == self.rows.len() {
                 rejected += 1;
                 continue;
             }
@@ -162,20 +141,59 @@ impl<const N: usize> Rows<N> {
             self.native[self.count] = native;
             self.count += 1;
         }
-        let mut count = 0;
+        // Assign all visible lifetimes before reducing native references. A
+        // secondary module's event target may appear after its event in SoA order.
         for index in 0..self.count {
             let id = self.sources[index];
-            let number = if self.native[index].is_some() {
+            self.rows[index].number = if self.native[index].is_some() {
                 numbers.number(id)
             } else {
                 numbers.foreign(id)
-            };
-            let Some(number) = number else {
+            }
+            .unwrap_or(u32::MAX);
+        }
+        let mut count = 0;
+        for index in 0..self.count {
+            let mut row = self.rows[index];
+            if row.number == u32::MAX {
                 rejected += 1;
                 continue;
+            }
+            let slot = self.sources[index].slot as usize;
+            let columns = &source.entities.columns;
+            let mut appearance = columns.appearance[slot];
+            if protocol == Protocol::Quake3_68
+                && let Some(target) = qa_gameplay::rules::loop_rules(appearance.source)
+                    .and_then(|rules| rules.stop_target(&appearance.native))
+            {
+                let mapped = columns.native_entity[slot]
+                    .and_then(|owner| {
+                        numbers.native(source.entities, owner.module, i32::try_from(target).ok()?)
+                    })
+                    .filter(|&number| number < snapshot_limits(protocol).end_entity);
+                let Some(mapped) = mapped else {
+                    // This is a standalone stop record. Inventing target zero
+                    // would stop a legitimate Q3 client rather than drop it.
+                    rejected += 1;
+                    continue;
+                };
+                appearance.native.other_entity = mapped;
+            }
+            let record = EntityRecord {
+                position: columns.position[slot],
+                velocity: columns.velocity[slot],
+                angles: columns.angles[slot],
+                appearance,
             };
-            let mut row = self.rows[index];
-            row.number = number;
+            if !projection.reduce(
+                &record,
+                &mut row.words,
+                &mut *source.resolve_model,
+                &mut *source.resolve_sound,
+            ) {
+                rejected += 1;
+                continue;
+            }
             self.rows[count] = row;
             count += 1;
         }

@@ -62,7 +62,7 @@ impl FrameHost {
             alias_roll: self.alias_roll(),
             interpolation: crate::snapshots::Interpolation::default(),
         }
-        .sound_origin(u32::from(slot))
+        .sound_origin(u32::from(slot), None)
     }
 
     fn muzzle_flash(

@@ -1020,7 +1020,12 @@ fn read_qw_records(
                     };
                     record.appearance.native.colormap = u32::from(info.number) + 1;
                     let mut words = [0; states::QW_ENTITY_WORDS];
-                    entity_projection.reduce(&record, &mut words, |model| Some(model.ordinal));
+                    entity_projection.reduce(
+                        &record,
+                        &mut words,
+                        |model| Some(model.ordinal),
+                        |sound| Some(sound.ordinal),
+                    );
                     peer_mask |= 1 << info.number;
                     Entity {
                         number: u32::from(info.number) + 1,

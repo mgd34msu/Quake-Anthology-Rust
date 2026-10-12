@@ -8,7 +8,7 @@ use qa_core::{
     loopback::Endpoint,
     primitives::{
         Bounds, ClientId, EntityAppearance, EntityId, IndexSpan, ModelRef, ModuleId, NativeEntity,
-        Plane, ResourceNamespace, RuleSetId, ThinkTime, Vec3,
+        Plane, ResourceNamespace, RuleSetId, SoundRef, ThinkTime, Vec3,
     },
     sys_events::{EventKind, EventTime, SeatId, SysEvent, SysEventQueue},
 };
@@ -163,6 +163,10 @@ fn transmit(
         self_entity: player.entity,
         visibility,
         portals,
+        resolve_sound: &mut |sound| {
+            (sound == SoundRef::native(ResourceNamespace::Module(ModuleId(8)), 5).unwrap())
+                .then_some(6)
+        },
         resolve_model: &mut resolve,
     };
     let length = binding
@@ -293,6 +297,221 @@ fn netquake_and_quakeworld_project_entities_through_the_same_source_path() -> Re
         );
         assert_eq!(host.runtime.network.command_errors, 0);
     }
+    Ok(())
+}
+
+#[test]
+fn sound_only_entity_projects_its_explicit_foreign_resource_namespace() -> Result<(), String> {
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = host(protocol, 1)?;
+        let entity = add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 42,
+            }),
+            RuleSetId::Quake2,
+            Vec3([64., 0., 0.]),
+        );
+        let appearance = &mut host.runtime.server.entities.columns.appearance[entity.slot as usize];
+        appearance.models = [None; 4];
+        appearance.loop_sound = SoundRef::native(ResourceNamespace::Module(ModuleId(8)), 5);
+        transmit(
+            &mut host,
+            client,
+            EventTime::from_milliseconds(1000),
+            None,
+            None,
+            None,
+        )?;
+        dispatch(&mut host, EventTime::from_milliseconds(1000));
+        let rows = records(&host, client)?;
+        let record = rows
+            .iter()
+            .find(|(number, _)| *number == 42)
+            .ok_or("sound-only row")?
+            .1;
+        assert_eq!(
+            record.appearance.loop_sound,
+            SoundRef::native(ResourceNamespace::Client(client), 6)
+        );
+        assert_eq!(record.appearance.models, [None; 4]);
+        assert_eq!(record.position, Vec3([64., 0., 0.]));
+        assert_eq!(
+            host.runtime.server.entities.columns.appearance[entity.slot as usize].loop_sound,
+            SoundRef::native(ResourceNamespace::Module(ModuleId(8)), 5)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn q3_event_only_stop_survives_the_server_presence_filter_and_queued_snapshot() -> Result<(), String>
+{
+    for target in [0, 12] {
+        let (mut host, client) = host(Protocol::Quake3_68, 1)?;
+        if target != 0 {
+            add(
+                &mut host,
+                Some(NativeEntity {
+                    module: MODULE,
+                    slot: target,
+                }),
+                RuleSetId::Quake3,
+                Vec3([96., 0., 0.]),
+            );
+        }
+        let entity = add(
+            &mut host,
+            Some(NativeEntity {
+                module: MODULE,
+                slot: 42,
+            }),
+            RuleSetId::Quake3,
+            Vec3([64., 0., 0.]),
+        );
+        let appearance = &mut host.runtime.server.entities.columns.appearance[entity.slot as usize];
+        appearance.models = [None; 4];
+        appearance.native.entity_type = 13 + 75;
+        appearance.native.other_entity = target as u32;
+        appearance.native.render_flags = 0x10;
+        assert_eq!(appearance.native.event, 0);
+        assert_eq!(appearance.loop_sound, None);
+        transmit(
+            &mut host,
+            client,
+            EventTime::from_milliseconds(1000),
+            None,
+            None,
+            None,
+        )?;
+        dispatch(&mut host, EventTime::from_milliseconds(1000));
+        let rows = records(&host, client)?;
+        let appearance = rows
+            .iter()
+            .find(|(number, _)| *number == 42)
+            .ok_or("event-only row")?
+            .1
+            .appearance;
+        assert_eq!(appearance.native.entity_type, 88);
+        assert_eq!(appearance.native.other_entity, target as u32);
+        assert_eq!(appearance.native.render_flags, 0x10);
+        assert_eq!(appearance.native.event, 0);
+        assert_eq!(appearance.loop_sound, None);
+    }
+    Ok(())
+}
+
+#[test]
+fn q3_secondary_module_stop_target_uses_the_connection_entity_namespace() -> Result<(), String> {
+    let (mut host, client) = host(Protocol::Quake3_68, 1)?;
+    let secondary = ModuleId(8);
+    // Put the event before its target in common slot order. The two modules
+    // both own native entity twelve, but only the primary keeps wire twelve.
+    let event = add(
+        &mut host,
+        Some(NativeEntity {
+            module: secondary,
+            slot: 42,
+        }),
+        RuleSetId::Quake3,
+        Vec3([64., 0., 0.]),
+    );
+    let appearance = &mut host.runtime.server.entities.columns.appearance[event.slot as usize];
+    appearance.models = [None; 4];
+    appearance.native.entity_type = 13 + 75;
+    appearance.native.other_entity = 12;
+    appearance.native.render_flags = 0x10;
+    add(
+        &mut host,
+        Some(NativeEntity {
+            module: MODULE,
+            slot: 12,
+        }),
+        RuleSetId::Quake3,
+        Vec3([96., 0., 0.]),
+    );
+    add(
+        &mut host,
+        Some(NativeEntity {
+            module: secondary,
+            slot: 12,
+        }),
+        RuleSetId::Quake3,
+        Vec3([128., 0., 0.]),
+    );
+    transmit(
+        &mut host,
+        client,
+        EventTime::from_milliseconds(1000),
+        None,
+        None,
+        None,
+    )?;
+    dispatch(&mut host, EventTime::from_milliseconds(1000));
+    let rows = records(&host, client)?;
+    assert_eq!(
+        rows.iter()
+            .find(|(number, _)| *number == 12)
+            .ok_or("primary target")?
+            .1
+            .position,
+        Vec3([96., 0., 0.])
+    );
+    let target = rows
+        .iter()
+        .find(|(_, record)| record.position == Vec3([128., 0., 0.]))
+        .ok_or("secondary target")?
+        .0;
+    assert_ne!(target, 12);
+    let record = rows
+        .iter()
+        .find(|(_, record)| record.appearance.native.entity_type == 88)
+        .ok_or("secondary stop event")?
+        .1;
+    assert_eq!(record.appearance.native.other_entity, target);
+    assert_eq!(
+        host.runtime.server.entities.columns.appearance[event.slot as usize]
+            .native
+            .other_entity,
+        12
+    );
+    Ok(())
+}
+
+#[test]
+fn q3_stop_with_an_unresolved_native_target_does_not_invent_client_zero() -> Result<(), String> {
+    let (mut host, client) = host(Protocol::Quake3_68, 1)?;
+    let event = add(
+        &mut host,
+        Some(NativeEntity {
+            module: MODULE,
+            slot: 42,
+        }),
+        RuleSetId::Quake3,
+        Vec3([64., 0., 0.]),
+    );
+    let appearance = &mut host.runtime.server.entities.columns.appearance[event.slot as usize];
+    appearance.models = [None; 4];
+    appearance.native.entity_type = 13 + 75;
+    appearance.native.other_entity = 12;
+    appearance.native.render_flags = 0x10;
+    transmit(
+        &mut host,
+        client,
+        EventTime::from_milliseconds(1000),
+        None,
+        None,
+        None,
+    )?;
+    dispatch(&mut host, EventTime::from_milliseconds(1000));
+    let rows = records(&host, client)?;
+    assert!(rows.iter().any(|(number, _)| *number == 0));
+    assert!(rows.iter().all(|(number, _)| *number != 42));
     Ok(())
 }
 

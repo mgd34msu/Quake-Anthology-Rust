@@ -268,7 +268,8 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
                 stalled,
                 EventTime::from_milliseconds(500),
                 None,
-                &mut Source::default()
+                &mut Source::default(),
+                |_, _| None
             ),
             "{protocol:?}"
         );

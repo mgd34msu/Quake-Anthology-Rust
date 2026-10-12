@@ -1210,7 +1210,7 @@ fn snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let channel = runtime.network.get(id, Endpoint::Server).unwrap();
     assert!(channel.pending_output.is_some());
     let prepared = channel.channel.pending_packet().unwrap().bytes.to_vec();
-    assert!(!runtime.send_snapshot(id, EventTime(100_000_000), None, &mut source));
+    assert!(!runtime.send_snapshot(id, EventTime(100_000_000), None, &mut source, |_, _| None));
     assert_eq!(
         runtime
             .network

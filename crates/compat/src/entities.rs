@@ -6,7 +6,7 @@ use crate::{
 use qa_core::primitives::{
     Body, Bounds, CollisionOwner, CollisionShape, CollisionTags, EntityAppearance, EntityId,
     ModelRef, ModelRules, ModuleId, NativeAppearanceTail, NativeEntity, ResourceNamespace,
-    RuleSetId, ThinkTime, Vec3,
+    RuleSetId, SoundRef, ThinkTime, Vec3,
 };
 use qa_world::area::LinkFlags;
 use qa_world::collision::{
@@ -64,6 +64,8 @@ pub(crate) struct EntityLayout {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct AppearanceLayout {
+    pub entity_type: Option<usize>,
+    pub other_entity: Option<usize>,
     pub models: [Option<usize>; 4],
     pub frame: usize,
     pub skin: Option<usize>,
@@ -793,6 +795,16 @@ impl EntityProjection {
             );
         }
         let mut native = NativeAppearanceTail {
+            entity_type: layout
+                .entity_type
+                .map(|offset| memory.read_word(address + offset as u64))
+                .transpose()?
+                .unwrap_or(0) as u32,
+            other_entity: layout
+                .other_entity
+                .map(|offset| memory.read_word(address + offset as u64))
+                .transpose()?
+                .unwrap_or(0) as u32,
             effects: match layout.effects {
                 Some(offset) if layout.effects_wide => memory.read_u64(address + offset as u64)?,
                 Some(offset) => u64::from(memory.read_word(address + offset as u64)? as u32),
@@ -800,7 +812,6 @@ impl EntityProjection {
             },
             render_flags: memory.read_word(address + layout.render_flags as u64)? as u32,
             event: field(memory, address, layout.event)?,
-            loop_sound: memory.read_word(address + layout.loop_sound as u64)? as u32,
             solid: memory.read_word(address + self.native_layout()?.network_solid as u64)? as u32,
             ..NativeAppearanceTail::default()
         };
@@ -823,6 +834,10 @@ impl EntityProjection {
         Ok(EntityAppearance {
             source: self.native_layout()?.source,
             models,
+            loop_sound: SoundRef::native(
+                ResourceNamespace::Module(module),
+                memory.read_word(address + layout.loop_sound as u64)? as u32,
+            ),
             frame: memory.read_word(address + layout.frame as u64)?,
             skin: layout
                 .skin

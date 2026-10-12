@@ -1,7 +1,7 @@
 use qa_app::client_resources::{ConfigPublication, ResourceReadiness};
 use qa_core::{
     configstrings::ConfigLayout,
-    primitives::{ModuleId, RuleSetId, SoundId},
+    primitives::{ClientId, ModuleId, ResourceNamespace, RuleSetId, SoundId, SoundRef},
 };
 use std::num::NonZeroU32;
 
@@ -111,4 +111,67 @@ fn full_capacity_is_unsupported_and_connection_reset_rebinds_without_old_ack() {
     p.published(row, Some(100));
     p.acknowledged(row, 99);
     assert_eq!(p.sound(a), Some((ordinal, ResourceReadiness::Pending)));
+}
+
+#[test]
+fn snapshot_loop_resources_follow_their_owner_and_real_destination_ack() {
+    let bank = bank();
+    let (mut publication, layout) = publication(&bank);
+    let client = ClientId(4);
+    let primary = bank.find("sound/a.wav").unwrap();
+    let foreign = bank.find("sound/b.wav").unwrap();
+    publication.primary_sound(1, true, Some(primary));
+    let destination = publication.reserve_sound(foreign).unwrap();
+    let reference = SoundRef::native(ResourceNamespace::Module(ModuleId(3)), 1).unwrap();
+    let mut resolve = |module, ordinal| match (module, ordinal) {
+        (ModuleId(1), 1) => Some(primary),
+        (ModuleId(3), 1) => Some(foreign),
+        _ => None,
+    };
+    assert_eq!(
+        publication.project_sound_ref(reference, client, &mut resolve),
+        None
+    );
+    let row = layout.resources[1].first as usize + destination as usize;
+    publication.published(row, Some(20));
+    publication.acknowledged(row, 19);
+    assert_eq!(
+        publication.project_sound_ref(reference, client, &mut resolve),
+        None
+    );
+    publication.acknowledged(row, 20);
+    assert_eq!(
+        publication.project_sound_ref(reference, client, &mut resolve),
+        Some(destination)
+    );
+    let client_ref = SoundRef::native(ResourceNamespace::Client(client), destination).unwrap();
+    assert_eq!(
+        publication.project_sound_ref(client_ref, client, &mut resolve),
+        Some(destination)
+    );
+    let other = SoundRef::native(ResourceNamespace::Client(ClientId(5)), destination).unwrap();
+    assert_eq!(
+        publication.project_sound_ref(other, client, &mut resolve),
+        None
+    );
+    let missing = SoundRef::native(ResourceNamespace::Module(ModuleId(9)), 1).unwrap();
+    assert_eq!(
+        publication.project_sound_ref(missing, client, &mut resolve),
+        None
+    );
+    publication.published(row, Some(21));
+    assert_eq!(
+        publication.project_sound_ref(reference, client, &mut resolve),
+        None
+    );
+    publication.acknowledged(row, 20);
+    assert_eq!(
+        publication.project_sound_ref(reference, client, &mut resolve),
+        None
+    );
+    publication.acknowledged(row, 21);
+    assert_eq!(
+        publication.project_sound_ref(reference, client, &mut resolve),
+        Some(destination)
+    );
 }

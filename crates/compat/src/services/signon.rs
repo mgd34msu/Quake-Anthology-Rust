@@ -263,6 +263,7 @@ fn publish(
                 };
                 let position = Vec3(native.origin.map(qa_core::math::short_to_eighth));
                 let event = SoundEvent {
+                    looping: None,
                     sound,
                     source_ordinal: Some(native.source_ordinal),
                     native_fields: None,

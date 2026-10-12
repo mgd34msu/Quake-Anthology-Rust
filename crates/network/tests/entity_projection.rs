@@ -1,5 +1,6 @@
 use qa_core::primitives::{
-    ClientId, EntityAppearance, ModelRef, ModuleId, NativeAppearanceTail, ResourceNamespace, Vec3,
+    ClientId, EntityAppearance, ModelRef, ModuleId, NativeAppearanceTail, ResourceNamespace,
+    SoundRef, Vec3,
 };
 use qa_network::{
     commands::packet::Protocol,
@@ -24,6 +25,7 @@ fn source(protocol: Protocol) -> EntityRecord {
                 ModelRef::native(MODULE, 10),
                 ModelRef::native(MODULE, 11),
             ],
+            loop_sound: SoundRef::native(MODULE, 23),
             frame: 31,
             skin: 5,
             old_origin: Vec3([-3.375, 20.125, -9.625]),
@@ -38,7 +40,8 @@ fn source(protocol: Protocol) -> EntityRecord {
                     _ => 0x1234_5678,
                 },
                 event: 7,
-                loop_sound: 23,
+                entity_type: 7,
+                other_entity: 17,
                 solid: 1234,
                 colormap: 4,
                 loop_volume: 0.5,
@@ -145,10 +148,18 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
         let projection = EntityProjection::load(protocol);
         let src = source(protocol);
         let mut words = vec![0; projection.words()];
-        assert!(projection.reduce(&src, &mut words, |model| {
-            assert_eq!(model.namespace, MODULE);
-            Some(model.ordinal)
-        }));
+        assert!(projection.reduce(
+            &src,
+            &mut words,
+            |model| {
+                assert_eq!(model.namespace, MODULE);
+                Some(model.ordinal)
+            },
+            |sound| {
+                assert_eq!(sound.namespace, MODULE);
+                Some(sound.ordinal)
+            }
+        ));
         let decoded = wire(protocol, &words)?;
         let mut imported = EntityRecord::default();
         assert!(projection.apply(&decoded, &mut imported, CLIENT));
@@ -156,6 +167,21 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
         assert_eq!(imported.appearance.models[0], ModelRef::native(CLIENT, 8));
         assert_eq!(imported.appearance.frame, 31);
         assert_eq!(imported.position, src.position);
+        if protocol == Protocol::Quake3_68 {
+            assert_eq!(imported.appearance.native.entity_type, 7);
+            assert_eq!(imported.appearance.native.other_entity, 17);
+        }
+        assert_eq!(
+            imported.appearance.loop_sound,
+            if matches!(
+                protocol,
+                Protocol::Quake2_34 | Protocol::Quake2Repro1038 | Protocol::Quake3_68
+            ) {
+                SoundRef::native(CLIENT, 23)
+            } else {
+                None
+            }
+        );
         if matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
             assert_eq!(imported.appearance.old_origin, src.appearance.old_origin);
             assert_eq!(
@@ -172,10 +198,18 @@ fn all_native_entity_tables_retain_represented_fields_and_explicit_namespace() -
             assert_eq!(imported.appearance.scale, 2.);
             assert_eq!(imported.appearance.native.loop_attenuation, -1.);
         }
-        assert!(projection.reduce(&imported, &mut words, |model| {
-            assert_eq!(model.namespace, CLIENT);
-            Some(model.ordinal)
-        }));
+        assert!(projection.reduce(
+            &imported,
+            &mut words,
+            |model| {
+                assert_eq!(model.namespace, CLIENT);
+                Some(model.ordinal)
+            },
+            |sound| {
+                assert_eq!(sound.namespace, CLIENT);
+                Some(sound.ordinal)
+            }
+        ));
         assert_eq!(wire(protocol, &words)?, decoded, "{protocol:?}");
     }
     Ok(())
@@ -198,12 +232,17 @@ fn models_are_resolved_and_missing_or_unrepresentable_models_become_zero() -> Re
         } else {
             255
         };
-        projection.reduce(&src, &mut words, |_| Some(wide));
+        projection.reduce(
+            &src,
+            &mut words,
+            |_| Some(wide),
+            |sound| Some(sound.ordinal),
+        );
         let mut dst = EntityRecord::default();
         projection.apply(&wire(protocol, &words)?, &mut dst, CLIENT);
         assert_eq!(dst.appearance.models[0], ModelRef::native(CLIENT, wide));
         for ordinal in [None, Some(wide + 1)] {
-            projection.reduce(&src, &mut words, |_| ordinal);
+            projection.reduce(&src, &mut words, |_| ordinal, |sound| Some(sound.ordinal));
             projection.apply(&wire(protocol, &words)?, &mut dst, CLIENT);
             assert_eq!(dst.appearance.models[0], None);
         }
@@ -220,13 +259,27 @@ fn foreign_native_flags_are_not_reinterpreted_as_other_game_flags() {
     ] {
         let projection = EntityProjection::load(protocol);
         let mut words = vec![0; projection.words()];
-        projection.reduce(&src, &mut words, |model| Some(model.ordinal));
+        projection.reduce(
+            &src,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        );
         let mut imported = EntityRecord::default();
         projection.apply(&words, &mut imported, CLIENT);
         assert_eq!(imported.appearance.native.effects, 0);
         assert_eq!(imported.appearance.native.render_flags, 0);
         assert_eq!(imported.appearance.native.event, 0);
-        assert_eq!(imported.appearance.native.loop_sound, 0);
+        assert_eq!(imported.appearance.native.entity_type, 0);
+        assert_eq!(imported.appearance.native.other_entity, 0);
+        assert_eq!(
+            imported.appearance.loop_sound,
+            if protocol == Protocol::Quake3_68 {
+                SoundRef::native(CLIENT, 23)
+            } else {
+                None
+            }
+        );
     }
 }
 #[test]
@@ -235,7 +288,12 @@ fn short_records_do_not_change_output_or_imported_pose() {
     let mut src = source(Protocol::Quake2Repro1038);
     let saved = src;
     let mut short = [99; 3];
-    assert!(!projection.reduce(&src, &mut short, |_| panic!("no resolver on short buffer")));
+    assert!(!projection.reduce(
+        &src,
+        &mut short,
+        |_| panic!("no model resolver on short buffer"),
+        |_| panic!("no sound resolver on short buffer")
+    ));
     assert_eq!(short, [99; 3]);
     assert!(!projection.apply(&short, &mut src, CLIENT));
     assert_eq!(src, saved);
@@ -250,11 +308,21 @@ fn rerelease_zero_sentinels_and_explicit_alpha_follow_native_pack_rules() {
     record.appearance.scale = 1.;
     record.appearance.native.loop_volume = 1.;
     record.appearance.native.loop_attenuation = 3.;
-    projection.reduce(&record, &mut words, |model| Some(model.ordinal));
+    projection.reduce(
+        &record,
+        &mut words,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal),
+    );
     assert_eq!((words[21], words[22], words[23], words[24]), (1, 0, 0, 0));
     for alpha in [0.0, 1.0] {
         record.appearance.alpha = alpha;
-        projection.reduce(&record, &mut words, |model| Some(model.ordinal));
+        projection.reduce(
+            &record,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal),
+        );
         assert_eq!(words[21], (alpha * 255.) as u32);
     }
     let mut imported = EntityRecord::default();
@@ -273,10 +341,20 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
     let projection = EntityProjection::load(Protocol::QuakeWorld28);
     let mut record = source(Protocol::QuakeWorld28);
     let mut from = [0; states::QW_ENTITY_WORDS];
-    assert!(projection.reduce(&record, &mut from, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &record,
+        &mut from,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal)
+    ));
     record.velocity = Vec3([300., -400., 500.]);
     let mut to = from;
-    assert!(projection.reduce(&record, &mut to, |model| Some(model.ordinal)));
+    assert!(projection.reduce(
+        &record,
+        &mut to,
+        |model| Some(model.ordinal),
+        |sound| Some(sound.ordinal)
+    ));
     assert_eq!(
         &from[..states::QW_NATIVE_ENTITY_WORDS],
         &to[..states::QW_NATIVE_ENTITY_WORDS]
@@ -326,5 +404,177 @@ fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result
     let mut imported = EntityRecord::default();
     assert!(projection.apply(&to, &mut imported, CLIENT));
     assert_eq!(imported.velocity, record.velocity);
+    Ok(())
+}
+
+#[test]
+fn loop_sounds_use_the_resolved_namespace_independently_of_source_family() -> Result<(), Error> {
+    let publishing = ResourceNamespace::Module(ModuleId(19));
+    for native_source in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        for protocol in [
+            Protocol::Quake2_34,
+            Protocol::Quake2Repro1038,
+            Protocol::Quake3_68,
+        ] {
+            let projection = EntityProjection::load(protocol);
+            let mut record = source(native_source);
+            record.appearance.loop_sound = SoundRef::native(publishing, 900);
+            let mut words = vec![0; projection.words()];
+            let mut resolutions = 0;
+            assert!(projection.reduce(
+                &record,
+                &mut words,
+                |model| Some(model.ordinal),
+                |sound| {
+                    assert_eq!(sound, SoundRef::native(publishing, 900).unwrap());
+                    resolutions += 1;
+                    Some(37)
+                }
+            ));
+            assert_eq!(resolutions, 1);
+            let mut imported = EntityRecord::default();
+            assert!(projection.apply(&wire(protocol, &words)?, &mut imported, CLIENT));
+            assert_eq!(imported.appearance.loop_sound, SoundRef::native(CLIENT, 37));
+            assert_eq!(imported.appearance.models[0], ModelRef::native(CLIENT, 8));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn loop_sound_zero_missing_and_native_width_boundaries_do_not_alias_resources() -> Result<(), Error>
+{
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let projection = EntityProjection::load(protocol);
+        let record = source(Protocol::QuakeWorld28);
+        let maximum = if protocol == Protocol::Quake2Repro1038 {
+            0x3fff
+        } else {
+            255
+        };
+        for resolved in [Some(maximum), Some(maximum + 1), Some(0), None] {
+            let mut words = vec![0; projection.words()];
+            assert!(projection.reduce(
+                &record,
+                &mut words,
+                |model| Some(model.ordinal),
+                |_| resolved
+            ));
+            let mut imported = EntityRecord::default();
+            imported.appearance.loop_sound = SoundRef::native(MODULE, 77);
+            assert!(projection.apply(&wire(protocol, &words)?, &mut imported, CLIENT));
+            assert_eq!(
+                imported.appearance.loop_sound,
+                if resolved == Some(maximum) {
+                    SoundRef::native(CLIENT, maximum)
+                } else {
+                    None
+                }
+            );
+            assert_eq!(imported.appearance.models[0], ModelRef::native(CLIENT, 8));
+        }
+        let mut empty = record;
+        empty.appearance.loop_sound = None;
+        let mut words = vec![0; projection.words()];
+        assert!(projection.reduce(
+            &empty,
+            &mut words,
+            |model| Some(model.ordinal),
+            |_| panic!("absent sound has no ordinal to resolve")
+        ));
+        let mut imported = record;
+        assert!(projection.apply(&wire(protocol, &words)?, &mut imported, CLIENT));
+        assert_eq!(imported.appearance.loop_sound, None);
+    }
+    Ok(())
+}
+
+#[test]
+fn q3_speaker_entity_type_has_the_original_literal_delta_encoding() -> Result<(), Error> {
+    // Original MSG_WriteDeltaEntity fields: entity17, remove0, delta1, lc12,
+    // eleven unchanged fields, then nonzero eType7. ET_SPEAKER is7 in
+    // qsrc bg_public.h, eType is an8-bit field in original msg.c.
+    const SPEAKER: [u8; 5] = [0x85, 0x3a, 0x01, 0xc0, 0x3f];
+    assert_eq!(states::ENTITY_LAYOUT[11], ("eType", 8));
+    assert_eq!(states::ENTITY_LAYOUT[18], ("otherEntityNum", 10));
+    let projection = EntityProjection::load(Protocol::Quake3_68);
+    let mut record = EntityRecord::default();
+    record.appearance.source = Protocol::Quake3_68.rule_set();
+    record.appearance.native.entity_type = 7;
+    let mut words = [0; states::ENTITY_WORDS];
+    assert!(projection.reduce(
+        &record,
+        &mut words,
+        |_| panic!("no model reference"),
+        |_| panic!("no sound reference")
+    ));
+    let mut bytes = [0; 32];
+    let mut writer = Writer::new(&mut bytes, Encoding::Q3);
+    assert!(states::write_q3_entity(
+        &mut writer,
+        17,
+        &[0; states::ENTITY_WORDS],
+        Some(&words),
+        true
+    )?);
+    assert_eq!(writer.bit_position(), 38);
+    assert_eq!(writer.bytes(), SPEAKER);
+    let decoded = states::read_q3_entity(
+        &mut Reader::new(&SPEAKER, Encoding::Q3),
+        &[0; states::ENTITY_WORDS],
+    )?;
+    assert_eq!(decoded.number, 17);
+    assert_eq!(decoded.words.unwrap(), words);
+    let mut imported = EntityRecord::default();
+    assert!(projection.apply(&words, &mut imported, CLIENT));
+    assert_eq!(imported.appearance.native.entity_type, 7);
+    assert_eq!(imported.appearance.native.other_entity, 0);
+    assert_eq!(imported.appearance.loop_sound, None);
+    Ok(())
+}
+
+#[test]
+fn q3_event_target_is_retained_only_at_its_own_native_boundary() -> Result<(), Error> {
+    let mut record = source(Protocol::Quake3_68);
+    record.appearance.native.entity_type = 17;
+    record.appearance.native.other_entity = 999;
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let projection = EntityProjection::load(protocol);
+        let mut words = vec![0; projection.words()];
+        assert!(projection.reduce(
+            &record,
+            &mut words,
+            |model| Some(model.ordinal),
+            |sound| Some(sound.ordinal)
+        ));
+        let mut imported = EntityRecord::default();
+        assert!(projection.apply(&wire(protocol, &words)?, &mut imported, CLIENT));
+        assert_eq!(
+            (
+                imported.appearance.native.entity_type,
+                imported.appearance.native.other_entity
+            ),
+            if protocol == Protocol::Quake3_68 {
+                (17, 999)
+            } else {
+                (0, 0)
+            }
+        );
+        assert_eq!(imported.appearance.loop_sound, SoundRef::native(CLIENT, 23));
+    }
     Ok(())
 }

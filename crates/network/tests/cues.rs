@@ -469,3 +469,51 @@ fn connected_channel_delivers_cues_in_order_and_continues_to_the_next_service() 
         assert_eq!((connections.command_errors, connections.malformed), (0, 0));
     }
 }
+
+#[test]
+fn client_loop_controls_are_never_reinterpreted_as_native_static_sound() {
+    use qa_core::primitives::{
+        LoopGain, LoopLifetime, LoopOrigin, LoopPhase, LoopPlayback, SoundAction, SoundEvent,
+    };
+    let playback = LoopPlayback {
+        master: LoopGain::Integer {
+            master: 255,
+            volume_scale: 256,
+        },
+        phase: LoopPhase::Painted,
+        lifetime: LoopLifetime::Temporary,
+        panning: true,
+        clamp_pan: false,
+        origin: LoopOrigin::Accepted,
+    };
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        for event in [
+            SoundEvent {
+                action: SoundAction::StartLoop,
+                looping: Some(playback),
+                ..Default::default()
+            },
+            SoundEvent {
+                action: SoundAction::StopLoop,
+                ..Default::default()
+            },
+            SoundEvent {
+                action: SoundAction::ResetClientLoops,
+                ..Default::default()
+            },
+        ] {
+            let mut bytes = [0xcc; 128];
+            assert_eq!(
+                outputs::sound(protocol, event, 1, Some(1), true, &mut bytes),
+                Err(outputs::Error::Unsupported)
+            );
+            assert_eq!(bytes, [0xcc; 128]);
+        }
+    }
+}

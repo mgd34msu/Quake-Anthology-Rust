@@ -468,7 +468,10 @@ fn reliable_output_flushes_between_native_snapshot_boundaries() {
             time,
             ..Default::default()
         };
-        assert!(host.runtime.send_snapshot(remote, time, None, &mut source));
+        assert!(
+            host.runtime
+                .send_snapshot(remote, time, None, &mut source, |_, _| None)
+        );
         peer.receive(&source.packets, time);
         let sequence = peer.frame().unwrap().sequence();
         let mut bytes = [0; 64];
@@ -493,7 +496,7 @@ fn reliable_output_flushes_between_native_snapshot_boundaries() {
         assert!(
             !host
                 .runtime
-                .send_snapshot(remote, source.time, None, &mut source)
+                .send_snapshot(remote, source.time, None, &mut source, |_, _| None)
         );
         assert!(source.packets.len() > previous);
         peer.receive(&source.packets[previous..], source.time);
@@ -531,11 +534,13 @@ fn rejected_snapshot_fragment_keeps_provenance_pending_while_local_client_and_ti
             limit: Some(1),
             ..Default::default()
         };
-        assert!(
-            !host
-                .runtime
-                .send_snapshot(remote, time, Some(observation), &mut source)
-        );
+        assert!(!host.runtime.send_snapshot(
+            remote,
+            time,
+            Some(observation),
+            &mut source,
+            |_, _| None
+        ));
         let sequence = host.runtime.snapshots[remote.0 as usize]
             .as_ref()
             .unwrap()
@@ -551,7 +556,10 @@ fn rejected_snapshot_fragment_keeps_provenance_pending_while_local_client_and_ti
         assert!(channel.snapshot_observation(sequence).is_none());
         peer.receive(&source.packets, time);
         assert!(peer.frame().is_none());
-        assert!(host.runtime.send_snapshot(local, time, None, &mut source));
+        assert!(
+            host.runtime
+                .send_snapshot(local, time, None, &mut source, |_, _| None)
+        );
         host.frame(&mut source, true);
         assert!(
             host.runtime

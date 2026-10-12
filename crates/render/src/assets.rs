@@ -7,6 +7,7 @@ use crate::shader::{AlphaGen, Deform, FogParms, RgbGen, StageBlend, TexMod};
 use crate::surface_cache::{IndexedTexture, PaletteLighting};
 use crate::world::{SurfaceBinding, SurfaceMaterial, World, WorldId, geometry::WorldGeometry};
 use qa_core::names::{NameTable, NamesError};
+pub use qa_core::primitives::ModelId;
 use qa_core::primitives::{NameId, Vec3};
 use qa_world::visibility::VisibilityWorld;
 
@@ -14,8 +15,6 @@ use qa_world::visibility::VisibilityWorld;
 pub struct ImageId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaterialId(pub u32);
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ModelId(pub u32);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PaletteId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq)]

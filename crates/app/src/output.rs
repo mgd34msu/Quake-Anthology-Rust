@@ -44,6 +44,30 @@ impl OutputCounts {
     }
 }
 
+fn complete_sound(
+    clients: &mut [qa_session::clients::Client],
+    snapshots: &mut [Option<crate::snapshots::SnapshotBinding>],
+    owner: qa_core::events::OutputConsumerId,
+    sequence: u64,
+    event: qa_core::primitives::SoundEvent,
+    accepted: bool,
+) {
+    let (Some(id), Some(lifetime)) = (event.client, event.client_lifetime) else {
+        return;
+    };
+    if event.action == SoundAction::RetireClient {
+        if let Some(client) = clients.get_mut(id.0 as usize)
+            && client.audio_retirement.is_some_and(|pending| {
+                pending.lifetime == lifetime && pending.publication == Some((owner, sequence))
+            })
+        {
+            client.audio_retirement = None;
+        }
+    } else if let Some(snapshot) = snapshots.get_mut(id.0 as usize).and_then(Option::as_mut) {
+        snapshot.loop_completed(owner, sequence, event, accepted);
+    }
+}
+
 pub fn dispatch(
     runtime: &mut Runtime,
     source: &mut impl FrameSource,
@@ -77,6 +101,7 @@ pub fn dispatch(
         runtime.publish_audio_retirements();
     }
     let server = &mut runtime.server;
+    let snapshots = &mut runtime.snapshots;
     runtime
         .output_duplicates
         .sweep(&server.events, |client, owner, sequence, receipt| {
@@ -104,20 +129,17 @@ pub fn dispatch(
                         counts.sounds += 1;
                         let sent = source.sound(event);
                         counts.unhandled_sounds += u64::from(!sent);
-                        if event.action == SoundAction::RetireClient
-                            && let (Some(id), Some(lifetime)) =
-                                (event.client, event.client_lifetime)
-                            && let Some(client) = server.clients.get_mut(id.0 as usize)
-                            && client.audio_retirement.is_some_and(|pending| {
-                                pending.lifetime == lifetime
-                                    && pending.publication
-                                        == Some((server.presentation, record.sequence))
-                            })
-                        {
-                            client.audio_retirement = None;
-                        }
-                        // A missing or rejecting presentation backend is a
-                        // counted drop, with no retry contract.
+                        complete_sound(
+                            server.clients.as_mut(),
+                            snapshots,
+                            server.presentation,
+                            record.sequence,
+                            event,
+                            sent,
+                        );
+                        // Ordinary missing/rejecting backends remain counted
+                        // drops. Loop rejection invalidates only its producer's
+                        // settled settings through the same completion.
                         true
                     }
                     FrameEvent::Effect(event) => {

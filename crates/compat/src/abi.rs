@@ -1433,6 +1433,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
         c.services,
         delivery,
         SoundEvent {
+            looping: None,
             sound,
             source_ordinal: Some(c.arg(index)? as u32),
             native_fields: None,

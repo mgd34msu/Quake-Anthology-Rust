@@ -59,6 +59,7 @@ struct NativeRules {
     command_body_angles: bool,
     indexed_external_pcx: bool,
     software_alias: bool,
+    snapshot_event_base: Option<u32>,
 }
 const NEUTRAL: NativeRules = NativeRules {
     viewer: 0,
@@ -88,6 +89,7 @@ const NEUTRAL: NativeRules = NativeRules {
     command_body_angles: false,
     indexed_external_pcx: false,
     software_alias: false,
+    snapshot_event_base: None,
 };
 // Original quake-2/game/q_shared.h render/effects values. Rerelease game.h
 // retains these bits, renames bit6 NO_ORIGIN_LERP and adds OLD_FRAME_LERP.
@@ -138,7 +140,10 @@ const RULES: [NativeRules; 5] = [
     },
     // Q3 entity eFlags are not refEntity renderfx. An actual client-scene
     // boundary must supply a supported mapping before interpreting those bits.
-    NEUTRAL,
+    NativeRules {
+        snapshot_event_base: Some(13),
+        ..NEUTRAL
+    },
 ];
 
 /// Cached source semantics. These never choose a model's presentation.
@@ -152,6 +157,17 @@ pub fn policy(source: RuleSetId) -> AppearancePolicy {
     }
 }
 impl AppearancePolicy {
+    /// Standalone temporary events need no model, sound or ordinary event word.
+    /// Empty module anchors still do not become received entity poses.
+    pub fn snapshot_present(self, appearance: &EntityAppearance) -> bool {
+        self.rules
+            .snapshot_event_base
+            .is_some_and(|base| appearance.native.entity_type > base)
+            || appearance.models.iter().any(Option::is_some)
+            || appearance.native.effects != 0
+            || appearance.native.event != 0
+            || appearance.loop_sound.is_some()
+    }
     pub fn adjacent(self, current: u32, previous: u32) -> bool {
         self.rules
             .sequence_step

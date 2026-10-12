@@ -23,6 +23,7 @@ pub struct ResourceState {
     pub rejected: u64,
     sounds: qa_audio::SoundBindings,
     sound_policy: SpatialPolicy,
+    loop_spatial: SpatialPolicy,
     static_sounds: u32,
     static_entities: Box<[EntityRecord]>,
     static_entity_count: usize,
@@ -51,6 +52,7 @@ impl ClientResources {
                 rejected: 0,
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_policy: qa_gameplay::rules::sound_policy(sound_rules),
+                loop_spatial: qa_gameplay::rules::loop_spatial_policy(sound_rules),
                 static_sounds: 0,
                 static_entities: vec![
                     EntityRecord::default();
@@ -317,6 +319,10 @@ impl ResourceState {
     /// of the legacy protocol's resource and message layout.
     pub fn set_sound_policy(&mut self, policy: SpatialPolicy) {
         self.sound_policy = policy;
+        self.loop_spatial = policy;
+    }
+    pub fn loop_spatial_policy(&self) -> SpatialPolicy {
+        self.loop_spatial
     }
     pub fn sound(&self, ordinal: u32) -> Option<qa_core::primitives::SoundId> {
         self.sounds.sound(ordinal)
@@ -572,6 +578,35 @@ impl ConfigPublication {
             }
         }
         self.sound(sound)
+    }
+    /// Snapshot references use their declared resource owner, independently of
+    /// the entity namespace and this connection's gameplay module.
+    pub fn project_sound_ref(
+        &self,
+        reference: qa_core::primitives::SoundRef,
+        client: ClientId,
+        mut bound_sound: impl FnMut(ModuleId, u32) -> Option<qa_core::primitives::SoundId>,
+    ) -> Option<u32> {
+        let (ordinal, readiness) = match reference.namespace {
+            ResourceNamespace::Module(module) => self.project_sound(
+                module,
+                Some(reference.ordinal),
+                bound_sound(module, reference.ordinal)?,
+            )?,
+            ResourceNamespace::Client(owner) if owner == client => {
+                let layout = self.layout?;
+                if reference.ordinal >= layout.resources[1].count {
+                    return None;
+                }
+                self.sounds.sound(reference.ordinal)?;
+                (
+                    reference.ordinal,
+                    self.readiness(layout.resources[1].first as usize + reference.ordinal as usize),
+                )
+            }
+            ResourceNamespace::Client(_) => return None,
+        };
+        (readiness == ResourceReadiness::Ready).then_some(ordinal)
     }
     /// Called only while changed precaches are published, never at emission.
     /// Secondary slots grow downwards, leaving low native ordinals available.

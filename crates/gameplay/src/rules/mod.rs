@@ -5,7 +5,7 @@ pub mod q1;
 pub mod q2;
 pub mod q3;
 mod sound;
-pub use sound::sound_policy;
+pub use sound::{LoopRules, loop_rules, loop_spatial_policy, sound_policy};
 
 use qa_core::primitives::{LinkOrder, RuleSetId};
 use std::num::NonZeroU32;
