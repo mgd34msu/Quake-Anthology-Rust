@@ -1,7 +1,7 @@
 //! A native dupe key is scoped to one physical presentation, not an IP address.
 use qa_core::{
-    events::{EventRing, OutputConsumerId, OutputRecord, OutputSubmission},
-    primitives::ClientId,
+    events::{EventRing, NativeReceipt, OutputConsumerId, OutputRecord, OutputSubmission},
+    primitives::{ClientId, EntityId, ModuleId},
 };
 use std::ops::Range;
 
@@ -13,18 +13,26 @@ pub enum PhysicalGroup {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {
-    module: u16,
-    lifetime: (u32, u32),
+    module: ModuleId,
+    lifetime: EntityId,
     frame: u64,
     dupe: u32,
     group: PhysicalGroup,
 }
 struct Entry {
+    client: ClientId,
     owner: OutputConsumerId,
     sequence: u64,
-    sent: bool,
+    state: State,
     superseded: bool,
     retain_until: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    Claimed,
+    Packet,
+    Reliable(NativeReceipt),
+    Sent,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
@@ -58,8 +66,10 @@ impl Coordinator {
     /// A reusable ClientId is not the lifetime of its former remote peer.
     pub fn reset_client(&mut self, client: ClientId) {
         self.negotiate(client, None);
-        self.entries
-            .retain(|(key, _)| key.group != PhysicalGroup::Peer(client));
+        self.entries.retain(|(key, entry)| {
+            key.group != PhysicalGroup::Peer(client)
+                && (entry.client != client || entry.state == State::Sent)
+        });
     }
     pub fn group(&self, client: ClientId, local: bool) -> PhysicalGroup {
         if local {
@@ -72,19 +82,32 @@ impl Coordinator {
                 .map_or(PhysicalGroup::Peer(client), PhysicalGroup::Negotiated)
         }
     }
-    pub fn sweep(&mut self, events: &EventRing) {
+    /// A ring cancellation cannot cancel bytes already owned by a channel.
+    /// None names its exact pending output packet; Some names an admitted
+    /// reliable receipt, which lives until native ACK or channel teardown.
+    pub fn sweep(
+        &mut self,
+        events: &EventRing,
+        mut retained: impl FnMut(ClientId, OutputConsumerId, u64, Option<NativeReceipt>) -> bool,
+    ) {
         let head = events.sequence_range().start;
-        self.entries.retain(|(_, entry)| {
-            if entry.sent {
-                !entry.superseded || head < entry.retain_until
-            } else {
+        self.entries.retain(|(_, entry)| match entry.state {
+            State::Sent => !entry.superseded || head < entry.retain_until,
+            State::Claimed => events.retained_for(entry.owner, entry.sequence),
+            State::Packet | State::Reliable(_) => {
+                let receipt = match entry.state {
+                    State::Reliable(receipt) => Some(receipt),
+                    _ => None,
+                };
                 events.retained_for(entry.owner, entry.sequence)
+                    || retained(entry.client, entry.owner, entry.sequence, receipt)
             }
         });
     }
     pub fn admit(
         &mut self,
         record: OutputRecord,
+        client: ClientId,
         owner: OutputConsumerId,
         group: PhysicalGroup,
         retained: Range<u64>,
@@ -99,11 +122,8 @@ impl Coordinator {
             return Admission::Send;
         };
         let key = Key {
-            module: delivery.module.0,
-            lifetime: (
-                emission.module_lifetime.slot,
-                emission.module_lifetime.generation,
-            ),
+            module: delivery.module,
+            lifetime: emission.module_lifetime,
             frame: emission.provider_frame,
             dupe: delivery.dupe_key,
             group,
@@ -116,7 +136,9 @@ impl Coordinator {
             {
                 entry.superseded = true;
             }
-            let keep = !entry.sent || !entry.superseded || retained.start < entry.retain_until;
+            let keep = entry.state != State::Sent
+                || !entry.superseded
+                || retained.start < entry.retain_until;
             if keep {
                 if *previous == key {
                     found = Some(index);
@@ -128,7 +150,7 @@ impl Coordinator {
         if let Some(index) = found {
             let entry = &mut self.entries[index].1;
             entry.retain_until = entry.retain_until.max(retained.end);
-            return if entry.sent {
+            return if entry.state == State::Sent {
                 Admission::Suppressed
             } else if entry.owner == owner && entry.sequence == record.sequence {
                 Admission::Send
@@ -144,16 +166,17 @@ impl Coordinator {
         self.entries.push((
             key,
             Entry {
+                client,
                 owner,
                 sequence: record.sequence,
-                sent: false,
+                state: State::Claimed,
                 superseded: false,
                 retain_until: retained.end,
             },
         ));
         Admission::Send
     }
-    /// Reliable queue admission retains its claim until the ring observes ACK.
+    /// Reliable queue admission retains its claim until a validated native ACK.
     /// Best effort completes only when all native fragments were submitted.
     pub fn submitted(
         &mut self,
@@ -164,24 +187,32 @@ impl Coordinator {
         retained_packet: bool,
     ) {
         self.entries.retain_mut(|(_, entry)| {
-            if entry.owner != owner || entry.sequence != sequence || entry.sent {
+            if entry.owner != owner || entry.sequence != sequence || entry.state == State::Sent {
                 return true;
             }
             match submission {
-                OutputSubmission::Reliable(_) => true,
-                OutputSubmission::BestEffort if completed => {
-                    entry.sent = true;
+                OutputSubmission::Reliable(receipt) => {
+                    entry.state = State::Reliable(receipt);
                     true
                 }
-                OutputSubmission::Unsent if retained_packet => true,
+                OutputSubmission::BestEffort if completed => {
+                    entry.state = State::Sent;
+                    true
+                }
+                OutputSubmission::Unsent if retained_packet => {
+                    entry.state = State::Packet;
+                    true
+                }
                 _ => false,
             }
         });
     }
-    pub fn acknowledged(&mut self, owner: OutputConsumerId, sequence: u64) {
+    /// Called only for a validated native channel receipt, independently of
+    /// whether bounded ring resync already cancelled its publication slot.
+    pub fn acknowledged(&mut self, owner: OutputConsumerId, receipt: NativeReceipt) {
         for (_, entry) in &mut self.entries {
-            if entry.owner == owner && entry.sequence == sequence {
-                entry.sent = true;
+            if entry.owner == owner && entry.state == State::Reliable(receipt) {
+                entry.state = State::Sent;
             }
         }
     }

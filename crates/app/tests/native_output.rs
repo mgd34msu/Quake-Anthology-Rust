@@ -17,6 +17,7 @@ use std::time::Duration;
 #[derive(Default)]
 struct Source {
     reject: Option<u16>,
+    accepted_limit: Option<(u16, usize)>,
     packets: Vec<(u16, Vec<u8>)>,
     attempts: usize,
     now: EventTime,
@@ -42,6 +43,11 @@ impl FrameSource for Source {
     fn send_packet(&mut self, _: u16, to: std::net::SocketAddr, bytes: &[u8]) -> bool {
         self.attempts += 1;
         if self.reject == Some(to.port()) {
+            return false;
+        }
+        if self.accepted_limit.is_some_and(|(port, limit)| {
+            port == to.port() && self.packets.iter().filter(|(p, _)| *p == port).count() >= limit
+        }) {
             return false;
         }
         self.packets.push((to.port(), bytes.to_vec()));
@@ -1007,11 +1013,8 @@ fn reliable_dupe_waits_for_real_ack_without_stalling_an_independent_peer() {
                 output: Some(id),
             } = incoming
             {
-                let gate = &mut runtime.output_duplicates;
-                runtime
-                    .server
-                    .events
-                    .acknowledge_with(id, receipt, |record| gate.acknowledged(id, record.sequence));
+                runtime.output_duplicates.acknowledged(id, receipt);
+                runtime.server.events.acknowledge(id, receipt);
             }
             std::ops::ControlFlow::Continue(())
         },
@@ -1085,4 +1088,343 @@ fn same_frame_remote_slot_reconnect_forgets_sent_dupe_and_negotiation() {
         0
     );
     assert!(source.packets.iter().any(|(port, _)| *port == 2001));
+}
+
+fn resync_dupe_fixture(protocol: Protocol) -> (FrameHost, [ClientId; 2], ClientId) {
+    use qa_core::events::{EventRing, OutputTarget};
+    let mut runtime = Runtime::load(3, []).unwrap();
+    runtime.server.events = EventRing::load(8, 4, 40, OUTPUT_PAGE_BYTES).unwrap();
+    runtime.server.presentation = runtime
+        .server
+        .events
+        .bind(OutputTarget::Presentation)
+        .unwrap();
+    let policy = ClientPolicy::select(Some(protocol.rule_set()), None, None, None).unwrap();
+    let local = std::array::from_fn(|seat| {
+        let id = runtime
+            .connect_local(
+                SeatId::new(seat as u8).unwrap(),
+                SpawnAnchor {
+                    position: Default::default(),
+                    angles: Default::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                policy,
+                protocol,
+                seat as u32,
+            )
+            .unwrap();
+        runtime.server.clients[id.0 as usize].module = ModuleId(7);
+        assert!(runtime.server.bind_client_native(
+            id,
+            NativeEntity {
+                module: ModuleId(7),
+                slot: seat as i32 + 1,
+            },
+        ));
+        // The connection remains an actual Local physical presentation. The
+        // owned test transport exposes admission and reconstructed native bytes.
+        let connection = runtime.network.get_mut(id, Endpoint::Server).unwrap();
+        connection.route.socket = 0;
+        connection.route.peer = Peer::Socket(([127, 0, 0, 1], 2000 + seat as u16).into());
+        connection.channel.set_qport(2000 + seat as u16);
+        id
+    });
+    let healthy = remote(&mut runtime, protocol, 2002);
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(50).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    host.local_clients[..2].copy_from_slice(&local.map(Some));
+    (host, local, healthy)
+}
+
+fn publish_keyed(runtime: &mut Runtime, target: ClientId, reliable: bool, bytes: &[u8]) -> u64 {
+    runtime
+        .server
+        .events
+        .native_message(
+            NativeDelivery {
+                module: ModuleId(7),
+                source: RuleSetId::Quake2Rerelease,
+                target: NativeTarget::Client(target),
+                origin: Vec3::default(),
+                reliable,
+                dupe_key: 42,
+                emission: Some(NativeEmission {
+                    module_lifetime: EntityId {
+                        slot: 8,
+                        generation: 1,
+                    },
+                    provider_frame: 17,
+                }),
+                check_portals: true,
+            },
+            bytes,
+        )
+        .unwrap()
+}
+
+fn overflow_only(runtime: &mut Runtime, stalled: ClientId, healthy: ClientId) {
+    use qa_core::events::{FrameEvent, OutputTarget};
+    let old = runtime.server.clients[stalled.0 as usize].output.unwrap();
+    let other = runtime.server.clients[healthy.0 as usize].output.unwrap();
+    let capacity = runtime.server.events.capacity();
+    for value in 0..capacity {
+        runtime
+            .server
+            .events
+            .push_to(
+                OutputTarget::Client(stalled),
+                FrameEvent::Hud(HudEvent {
+                    client: stalled,
+                    change: HudChange::Collectibles(value as u64),
+                }),
+            )
+            .unwrap();
+        if runtime.server.events.needs_resync(old) {
+            break;
+        }
+    }
+    assert!(runtime.server.events.needs_resync(old));
+    assert!(!runtime.server.events.needs_resync(other));
+    assert_eq!(runtime.server.events.counters(old).unwrap().overflow, 1);
+}
+
+fn dispatch_local(host: &mut FrameHost, source: &mut Source) -> qa_app::output::OutputCounts {
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        source,
+        &mut host.console.scrollback,
+        &host.local_clients,
+        source.now,
+        3.0,
+        2.0,
+    )
+}
+
+#[test]
+fn local_fragment_resync_keeps_the_physical_claim_until_the_old_flight_completes() {
+    let (mut host, [a, b], healthy) = resync_dupe_fixture(Protocol::Quake2Repro1038);
+    let mut bytes = vec![b'x'; 3002];
+    bytes[0] = 15;
+    *bytes.last_mut().unwrap() = 0;
+    let sequence = publish_keyed(&mut host.runtime, a, false, &bytes);
+    publish_keyed(&mut host.runtime, b, false, &bytes);
+    publish(
+        &mut host.runtime,
+        false,
+        NativeTarget::Client(healthy),
+        b"\x0fhealthy\0",
+    );
+    let mut source = Source {
+        accepted_limit: Some((2000, 1)),
+        ..Default::default()
+    };
+    dispatch_local(&mut host, &mut source);
+    let connection = host.runtime.network.get(a, Endpoint::Server).unwrap();
+    assert_eq!(connection.pending_output, Some(sequence));
+    assert!(connection.channel.pending_fragments());
+    assert!(source.packets.iter().any(|(port, _)| *port == 2002));
+    assert!(!source.packets.iter().any(|(port, _)| *port == 2001));
+
+    let mut peer = Channel::load(
+        Protocol::Quake2Repro1038.channel(),
+        Endpoint::Client,
+        8192,
+        16,
+    )
+    .unwrap();
+    let initial = source
+        .packets
+        .iter()
+        .find(|(port, _)| *port == 2000)
+        .unwrap();
+    assert!(matches!(
+        peer.receive(&initial.1, EventTime(1)).unwrap().delivery,
+        Delivery::Pending
+    ));
+    source.now = EventTime::from_milliseconds(100);
+    host.frame(&mut source, true);
+    source.now = EventTime::from_milliseconds(150);
+    assert!(host.frame(&mut source, true).server_ticks > 0);
+    overflow_only(&mut host.runtime, a, b);
+    source.accepted_limit = None;
+    let before = source.packets.len();
+    let counts = dispatch_local(&mut host, &mut source);
+    let mut completed = 0;
+    for (port, packet) in &source.packets[before..] {
+        if *port == 2000
+            && let Delivery::Payload(payload) = peer.receive(packet, source.now).unwrap().delivery
+        {
+            if payload == bytes {
+                completed += 1;
+            }
+        }
+    }
+    assert_eq!(completed, 1, "the actual old native message completes");
+    let mut sibling = Channel::load(
+        Protocol::Quake2Repro1038.channel(),
+        Endpoint::Client,
+        8192,
+        16,
+    )
+    .unwrap();
+    let sibling_messages = source.packets.iter().filter(|(port, _)| *port == 2001)
+        .filter(|(_, packet)| matches!(sibling.receive(packet, source.now).unwrap().delivery, Delivery::Payload(payload) if payload == bytes))
+        .count();
+    assert_eq!(
+        sibling_messages, 0,
+        "one physical group cannot reconstruct the same message twice"
+    );
+    assert_eq!(counts.native_dupe_suppressed, 1);
+    assert!(
+        !source.packets.iter().any(|(port, _)| *port == 2001),
+        "the other Local seat must not send the same physical message"
+    );
+}
+
+#[test]
+fn local_reliable_resync_observes_the_real_ack_after_the_ring_claim_was_cancelled() {
+    let (mut host, [a, b], healthy) = resync_dupe_fixture(Protocol::Quake2Repro1038);
+    let bytes = b"\x0freliable once\0";
+    publish_keyed(&mut host.runtime, a, true, bytes);
+    publish_keyed(&mut host.runtime, b, true, bytes);
+    publish(
+        &mut host.runtime,
+        false,
+        NativeTarget::Client(healthy),
+        b"\x0fhealthy\0",
+    );
+    let mut source = Source::default();
+    dispatch_local(&mut host, &mut source);
+    assert!(source.packets.iter().any(|(port, _)| *port == 2002));
+    assert!(!source.packets.iter().any(|(port, _)| *port == 2001));
+    assert!(
+        host.runtime
+            .network
+            .get(a, Endpoint::Server)
+            .unwrap()
+            .pending_output
+            .is_none()
+    );
+    let mut peer = Channel::load(
+        Protocol::Quake2Repro1038.channel(),
+        Endpoint::Client,
+        8192,
+        16,
+    )
+    .unwrap();
+    peer.set_qport(2000);
+    let initial = source
+        .packets
+        .iter()
+        .find(|(port, _)| *port == 2000)
+        .unwrap();
+    assert_eq!(receive(&mut peer, &initial.1), bytes);
+    source.now = EventTime::from_milliseconds(100);
+    host.frame(&mut source, true);
+    source.now = EventTime::from_milliseconds(150);
+    assert!(host.frame(&mut source, true).server_ticks > 0);
+    overflow_only(&mut host.runtime, a, b);
+    dispatch_local(&mut host, &mut source);
+    assert!(
+        !source.packets.iter().any(|(port, _)| *port == 2001),
+        "withheld real ACK must keep the other Local seat pending"
+    );
+
+    let old = host.runtime.server.clients[a.0 as usize].output.unwrap();
+    assert!(host.runtime.server.events.needs_resync(old));
+    let ack = peer
+        .prepare(None, source.now)
+        .unwrap()
+        .unwrap()
+        .bytes
+        .to_vec();
+    peer.submitted(source.now).unwrap();
+    host.queue
+        .push(SysEvent {
+            time: source.now,
+            kind: EventKind::Packet {
+                socket: 0,
+                from: Peer::Socket(([127, 0, 0, 1], 2000).into()),
+                bytes: &ack,
+            },
+        })
+        .unwrap();
+    host.drain(&mut qa_app::host::FrameResult::default());
+    assert_eq!(
+        host.runtime.network.acknowledged, 1,
+        "an actual native ACK reaches the host"
+    );
+    assert_eq!(
+        dispatch_local(&mut host, &mut source).native_dupe_suppressed,
+        1
+    );
+    assert!(!source.packets.iter().any(|(port, _)| *port == 2001));
+}
+
+#[test]
+fn local_owner_disconnect_releases_dead_flights_but_preserves_completed_physical_delivery() {
+    for completed in [false, true] {
+        let (mut host, [a, b], _) = resync_dupe_fixture(Protocol::Quake2Repro1038);
+        let bytes = b"\x0fdisconnect once\0";
+        publish_keyed(&mut host.runtime, a, !completed, bytes);
+        let mut source = Source {
+            reject: (!completed).then_some(2000),
+            ..Default::default()
+        };
+        dispatch_local(&mut host, &mut source);
+        let mut peer = Channel::load(
+            Protocol::Quake2Repro1038.channel(),
+            Endpoint::Client,
+            8192,
+            16,
+        )
+        .unwrap();
+        if completed {
+            let packet = source
+                .packets
+                .iter()
+                .find(|(port, _)| *port == 2000)
+                .unwrap();
+            assert_eq!(receive(&mut peer, &packet.1), bytes);
+        } else {
+            assert!(!source.packets.iter().any(|(port, _)| *port == 2000));
+            assert!(
+                host.runtime
+                    .network
+                    .get(a, Endpoint::Server)
+                    .unwrap()
+                    .channel
+                    .has_output()
+            );
+        }
+        assert!(
+            host.client_string_command(a, RuleSetId::Quake2Rerelease, b"disconnect")
+                .unwrap()
+                .is_break()
+        );
+        assert!(host.runtime.network.get(a, Endpoint::Server).is_none());
+        publish_keyed(&mut host.runtime, b, !completed, bytes);
+        let counts = dispatch_local(&mut host, &mut source);
+        assert_eq!(counts.native_dupe_suppressed, u64::from(completed));
+        let packet = source.packets.iter().find(|(port, _)| *port == 2001);
+        if completed {
+            assert!(
+                packet.is_none(),
+                "a finished Engine delivery survives its owner disconnect"
+            );
+        } else {
+            assert_eq!(
+                receive(&mut peer, &packet.unwrap().1),
+                bytes,
+                "the dead channel no longer owns a pending physical claim"
+            );
+        }
+    }
 }

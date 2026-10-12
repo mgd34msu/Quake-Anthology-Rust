@@ -37,7 +37,7 @@ fn native_ack_fragment_failure_and_resync_have_distinct_duplicate_outcomes() {
     let first = record(&mut ring, a, 10, 42);
     let group = PhysicalGroup::Engine;
     assert_eq!(
-        gate.admit(first, a, group, ring.sequence_range()),
+        gate.admit(first, ClientId(0), a, group, ring.sequence_range()),
         Admission::Send
     );
     let receipt = NativeReceipt(17);
@@ -50,65 +50,66 @@ fn native_ack_fragment_failure_and_resync_have_distinct_duplicate_outcomes() {
         false,
     );
     assert_eq!(
-        gate.admit(first, b, group, ring.sequence_range()),
+        gate.admit(first, ClientId(1), b, group, ring.sequence_range()),
         Admission::Pending
     );
     assert_eq!(
-        ring.acknowledge_with(a, NativeReceipt(18), |r| gate.acknowledged(a, r.sequence)),
+        ring.acknowledge_with(a, NativeReceipt(18), |_| gate
+            .acknowledged(a, NativeReceipt(18))),
         0
     );
     assert_eq!(
-        gate.admit(first, b, group, ring.sequence_range()),
+        gate.admit(first, ClientId(1), b, group, ring.sequence_range()),
         Admission::Pending
     );
     assert_eq!(
-        ring.acknowledge_with(a, receipt, |r| gate.acknowledged(a, r.sequence)),
+        ring.acknowledge_with(a, receipt, |_| gate.acknowledged(a, receipt)),
         1
     );
     assert_eq!(
-        gate.admit(first, b, group, ring.sequence_range()),
+        gate.admit(first, ClientId(1), b, group, ring.sequence_range()),
         Admission::Suppressed
     );
     ring.submit(b, first.sequence, OutputSubmission::BestEffort);
 
     let next = record(&mut ring, a, 11, 43);
-    gate.sweep(&ring);
+    gate.sweep(&ring, |_, _, _, _| false);
     assert_eq!(
-        gate.admit(next, a, group, ring.sequence_range()),
+        gate.admit(next, ClientId(0), a, group, ring.sequence_range()),
         Admission::Send
     );
     gate.submitted(a, next.sequence, OutputSubmission::Unsent, false, true);
     assert_eq!(
-        gate.admit(next, b, group, ring.sequence_range()),
+        gate.admit(next, ClientId(1), b, group, ring.sequence_range()),
         Admission::Pending
     );
     // Empty/unsupported/dropped payload is not a successfully sent duplicate.
     gate.submitted(a, next.sequence, OutputSubmission::BestEffort, false, false);
     assert_eq!(
-        gate.admit(next, b, group, ring.sequence_range()),
+        gate.admit(next, ClientId(1), b, group, ring.sequence_range()),
         Admission::Send
     );
     gate.submitted(b, next.sequence, OutputSubmission::Unsent, false, true);
     assert_eq!(
-        gate.admit(next, a, group, ring.sequence_range()),
+        gate.admit(next, ClientId(0), a, group, ring.sequence_range()),
         Admission::Pending
     );
     gate.submitted(b, next.sequence, OutputSubmission::BestEffort, true, false);
     assert_eq!(
-        gate.admit(next, a, group, ring.sequence_range()),
+        gate.admit(next, ClientId(0), a, group, ring.sequence_range()),
         Admission::Suppressed
     );
 
     let stalled = record(&mut ring, a, 12, 44);
     assert_eq!(
-        gate.admit(stalled, a, group, ring.sequence_range()),
+        gate.admit(stalled, ClientId(0), a, group, ring.sequence_range()),
         Admission::Send
     );
     gate.submitted(a, stalled.sequence, OutputSubmission::Unsent, false, true);
     ring.unbind(a);
-    gate.sweep(&ring);
+    gate.sweep(&ring, |_, _, _, _| false);
     assert_eq!(
-        gate.admit(stalled, b, group, ring.sequence_range()),
+        gate.admit(stalled, ClientId(1), b, group, ring.sequence_range()),
         Admission::Send
     );
 }
@@ -122,6 +123,7 @@ fn frame_lifetime_physical_group_and_zero_key_are_independent() {
     assert_eq!(
         gate.admit(
             first,
+            ClientId(0),
             a,
             PhysicalGroup::Peer(ClientId(0)),
             ring.sequence_range()
@@ -132,6 +134,7 @@ fn frame_lifetime_physical_group_and_zero_key_are_independent() {
     assert_eq!(
         gate.admit(
             first,
+            ClientId(1),
             b,
             PhysicalGroup::Peer(ClientId(1)),
             ring.sequence_range()
@@ -151,12 +154,24 @@ fn frame_lifetime_physical_group_and_zero_key_are_independent() {
     );
     let zero = record(&mut ring, a, 10, 0);
     assert_eq!(
-        gate.admit(zero, a, PhysicalGroup::Engine, ring.sequence_range()),
+        gate.admit(
+            zero,
+            ClientId(0),
+            a,
+            PhysicalGroup::Engine,
+            ring.sequence_range()
+        ),
         Admission::Send
     );
     gate.submitted(a, zero.sequence, OutputSubmission::BestEffort, true, false);
     assert_eq!(
-        gate.admit(zero, b, PhysicalGroup::Engine, ring.sequence_range()),
+        gate.admit(
+            zero,
+            ClientId(1),
+            b,
+            PhysicalGroup::Engine,
+            ring.sequence_range()
+        ),
         Admission::Send
     );
     let mut new_lifetime = first;
@@ -172,6 +187,7 @@ fn frame_lifetime_physical_group_and_zero_key_are_independent() {
     assert_eq!(
         gate.admit(
             new_lifetime,
+            ClientId(0),
             a,
             PhysicalGroup::Peer(ClientId(0)),
             ring.sequence_range()
@@ -186,24 +202,48 @@ fn old_sent_frame_is_pruned_before_bounded_admission_after_retirement() {
     let mut gate = Coordinator::load(1, 1);
     let first = record(&mut ring, a, 10, 42);
     assert_eq!(
-        gate.admit(first, a, PhysicalGroup::Engine, ring.sequence_range()),
+        gate.admit(
+            first,
+            ClientId(0),
+            a,
+            PhysicalGroup::Engine,
+            ring.sequence_range()
+        ),
         Admission::Send
     );
     gate.submitted(a, first.sequence, OutputSubmission::BestEffort, true, false);
     ring.submit(a, first.sequence, OutputSubmission::BestEffort);
-    gate.sweep(&ring);
+    gate.sweep(&ring, |_, _, _, _| false);
     assert_eq!(
-        gate.admit(first, a, PhysicalGroup::Engine, ring.sequence_range()),
+        gate.admit(
+            first,
+            ClientId(0),
+            a,
+            PhysicalGroup::Engine,
+            ring.sequence_range()
+        ),
         Admission::Suppressed
     );
     let next = record(&mut ring, a, 11, 42);
     assert_eq!(
-        gate.admit(next, a, PhysicalGroup::Engine, ring.sequence_range()),
+        gate.admit(
+            next,
+            ClientId(0),
+            a,
+            PhysicalGroup::Engine,
+            ring.sequence_range()
+        ),
         Admission::Send
     );
     let extra = record(&mut ring, a, 11, 43);
     assert_eq!(
-        gate.admit(extra, a, PhysicalGroup::Engine, ring.sequence_range()),
+        gate.admit(
+            extra,
+            ClientId(0),
+            a,
+            PhysicalGroup::Engine,
+            ring.sequence_range()
+        ),
         Admission::Full
     );
 }
@@ -214,10 +254,11 @@ fn bounded_churn_and_reused_peer_do_not_preserve_old_delivery() {
     let mut gate = Coordinator::load(1, 1);
     for frame in 0..256 {
         let record = record(&mut ring, a, frame, 42);
-        gate.sweep(&ring);
+        gate.sweep(&ring, |_, _, _, _| false);
         assert_eq!(
             gate.admit(
                 record,
+                ClientId(0),
                 a,
                 PhysicalGroup::Peer(ClientId(0)),
                 ring.sequence_range()
@@ -237,6 +278,7 @@ fn bounded_churn_and_reused_peer_do_not_preserve_old_delivery() {
     assert_eq!(
         gate.admit(
             record,
+            ClientId(0),
             a,
             PhysicalGroup::Peer(ClientId(0)),
             ring.sequence_range()
@@ -252,6 +294,7 @@ fn bounded_churn_and_reused_peer_do_not_preserve_old_delivery() {
     assert_eq!(
         gate.admit(
             record,
+            ClientId(0),
             a,
             PhysicalGroup::Peer(ClientId(0)),
             ring.sequence_range()

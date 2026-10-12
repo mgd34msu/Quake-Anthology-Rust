@@ -54,7 +54,20 @@ pub fn dispatch(
     center_time: f64,
 ) -> OutputCounts {
     let server = &mut runtime.server;
-    runtime.output_duplicates.sweep(&server.events);
+    runtime
+        .output_duplicates
+        .sweep(&server.events, |client, owner, sequence, receipt| {
+            runtime
+                .network
+                .get(client, qa_core::loopback::Endpoint::Server)
+                .is_some_and(|connection| {
+                    connection.output == Some(owner)
+                        && (receipt.is_some()
+                            || connection.pending_output == Some(sequence)
+                                && (connection.channel.pending_packet().is_some()
+                                    || connection.channel.pending_fragments()))
+                })
+        });
     let output_range = server.events.sequence_range();
     let now = time.seconds();
     let mut counts = OutputCounts::default();
@@ -244,6 +257,7 @@ pub fn dispatch(
                             .group(client_id, client.connection == Some(Connection::Local));
                         match runtime.output_duplicates.admit(
                             record,
+                            client_id,
                             id,
                             group,
                             output_range.clone(),
