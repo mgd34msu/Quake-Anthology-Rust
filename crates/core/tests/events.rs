@@ -141,6 +141,7 @@ fn delivered_server_sound_uses_only_delivery_audience_and_never_direct_presentat
         origin: Vec3::default(),
         reliable: true,
         dupe_key: 42,
+        emission: None,
         check_portals: true,
     };
     let sequence = ring
@@ -477,6 +478,7 @@ fn native_delivery(target: NativeTarget) -> NativeDelivery {
         origin: Vec3([1.0, -2.0, 3.0]),
         reliable: true,
         dupe_key: u32::MAX,
+        emission: None,
         check_portals: true,
     }
 }

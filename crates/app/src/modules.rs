@@ -367,6 +367,9 @@ impl FrameHost {
                 &host.console.cvars,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
+            storage
+                .bind_lifetime(request.context.module, request.anchor)
+                .map_err(|error| format!("module lifetime: {error:?}"))?;
             if let Some((index, syntax)) = request.entity_source {
                 let source = host
                     .runtime

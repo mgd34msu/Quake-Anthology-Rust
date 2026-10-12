@@ -24,7 +24,8 @@ pub(super) fn transmit(
         return Ok((None, Submission::default()));
     }
     let mut rejected = None;
-    let submitted = transport::send(
+    let mut dropped = false;
+    let mut submitted = transport::send(
         &mut connection.channel,
         time,
         &mut connection.pending_output,
@@ -43,7 +44,7 @@ pub(super) fn transmit(
                 }
             };
             let disposition = packet.unreliable;
-            if disposition != Unreliable::Deferred || channel.pending_fragments() {
+            if disposition == Unreliable::Included {
                 *pending = Some(sequence);
             }
             true
@@ -52,15 +53,29 @@ pub(super) fn transmit(
         // Included describes the initial encoding, not completion of a
         // fragmented send. Continuations report Deferred, including the last
         // fragment; the channel owns the actual completion boundary.
-        |channel, pending, _| pending.is_some() && !channel.pending_fragments(),
+        |channel, pending, disposition| {
+            if disposition == Unreliable::Dropped {
+                dropped = true;
+                true
+            } else {
+                pending.is_some() && !channel.pending_fragments()
+            }
+        },
     );
-    if rejected.is_some() || submitted.complete {
+    let retired = submitted.complete;
+    // A reliable/control packet may have been submitted while its optional
+    // native payload was dropped. That retires this record but is not delivery.
+    if dropped {
+        submitted.complete = false;
+        submitted.dropped = true;
+    }
+    if rejected.is_some() || retired {
         connection.pending_output = None;
     }
     if let Some(error) = rejected {
         return Err(error);
     }
-    let disposition = submitted.complete.then_some(OutputSubmission::BestEffort);
+    let disposition = retired.then_some(OutputSubmission::BestEffort);
     Ok((disposition, submitted))
 }
 

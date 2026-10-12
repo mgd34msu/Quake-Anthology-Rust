@@ -615,6 +615,19 @@ impl EventRing {
     pub fn len(&self) -> usize {
         (self.tail - self.head) as usize
     }
+    pub fn capacity(&self) -> usize {
+        self.slots.len()
+    }
+    pub fn sequence_range(&self) -> std::ops::Range<u64> {
+        self.head..self.tail
+    }
+    /// True only while this consumer still owns the original record epoch.
+    pub fn retained_for(&self, consumer: OutputConsumerId, sequence: u64) -> bool {
+        self.valid(consumer)
+            && !self.consumers[consumer.slot].resync
+            && self.sequence_range().contains(&sequence)
+            && self.deliveries[self.offset(consumer.slot, sequence)] != Delivery::Done
+    }
     pub fn is_empty(&self) -> bool {
         self.head == self.tail
     }

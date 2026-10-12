@@ -720,10 +720,12 @@ impl FrameHost {
                     } => {
                         if self.runtime.server.clients[id.0 as usize].output == Some(output) {
                             let publication = &mut self.runtime.config_publications[id.0 as usize];
+                            let duplicates = &mut self.runtime.output_duplicates;
                             self.runtime.server.events.acknowledge_with(
                                 output,
                                 receipt,
                                 |record| {
+                                    duplicates.acknowledged(output, record.sequence);
                                     if let qa_core::events::FrameEvent::ConfigString {
                                         destination_index,
                                         ..

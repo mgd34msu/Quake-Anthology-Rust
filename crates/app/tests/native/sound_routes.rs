@@ -85,7 +85,29 @@ fn sound_module_actions(
     emitter: u32,
     actions: bool,
 ) -> (ModuleRequest, SoundActions) {
+    sound_module_options(
+        runtime,
+        module,
+        initial_name,
+        rules,
+        emitted_name,
+        emitter,
+        actions,
+        false,
+    )
+}
+fn sound_module_options(
+    runtime: &mut Runtime,
+    module: ModuleId,
+    initial_name: &[u8],
+    rules: RuleSetId,
+    emitted_name: &[u8],
+    emitter: u32,
+    actions: bool,
+    dupes: bool,
+) -> (ModuleRequest, SoundActions) {
     let rr = rules == RuleSetId::Quake2Rerelease;
+    assert!(!dupes || rr);
     let mut file = q2_table_file();
     pe_rva(&mut file, 0x1800, if rr { 2023 } else { 3 }, 4);
     // Capture gi at the genuine GetGameAPI boundary and return the API table.
@@ -121,8 +143,13 @@ fn sound_module_actions(
     );
     let header = if rr { 16 } else { 0 };
     let sound_index_offset: i32 = header + if rr { 11 * 8 } else { 9 * 8 };
-    for (entry, name, emit) in [(0x1400usize, 0x1bc0usize, false), (0x1500, 0x1d00, true)] {
-        let mut code = vec![0x53, 0x48, 0x83, 0xec, 0x40]; // rbx + shadow/stack args
+    let emit_entry = if dupes { 0x1d80 } else { 0x1500 };
+    for (entry, name, emit) in [
+        (0x1400usize, 0x1bc0usize, false),
+        (emit_entry, 0x1d00, true),
+    ] {
+        let stack = if dupes && emit { 0x60 } else { 0x40 };
+        let mut code = vec![0x53, 0x48, 0x83, 0xec, stack]; // rbx + shadow/stack args
         let at = entry + code.len();
         code.extend([0x48, 0x8b, 0x1d]);
         code.extend((0x1b20i32 - (at + 7) as i32).to_le_bytes());
@@ -132,7 +159,31 @@ fn sound_module_actions(
         code.extend([0x48, 0x8b, 0x83]);
         code.extend(sound_index_offset.to_le_bytes());
         code.extend([0xff, 0xd0]); // gi.soundindex
-        if emit {
+        if emit && dupes {
+            // Two real gi.local_sound calls target seats of one physical client.
+            for target in 1..=2u64 {
+                code.extend([0x48, 0xb9]);
+                code.extend((0x180003000u64 + target * 1472).to_le_bytes());
+                code.extend([0x48, 0xba]);
+                code.extend(0x180001c00u64.to_le_bytes());
+                code.extend([0x49, 0xb8]);
+                code.extend((0x180003000u64 + u64::from(emitter) * 1472).to_le_bytes());
+                code.extend([0x41, 0xb9, 18, 0, 0, 0]); // reliable + channel2
+                for (offset, value) in [
+                    (32u8, 1u32),
+                    (40, 1.0f32.to_bits()),
+                    (48, 1.0f32.to_bits()),
+                    (56, 0),
+                    (64, 42),
+                ] {
+                    code.extend([0xc7, 0x44, 0x24, offset]);
+                    code.extend(value.to_le_bytes());
+                }
+                code.extend([0x48, 0x8b, 0x83]);
+                code.extend((header + 6 * 8).to_le_bytes());
+                code.extend([0xff, 0xd0]);
+            }
+        } else if emit {
             if actions {
                 code.extend([0x41, 0xb9, 2, 0, 0, 0]); // requested duplicate ordinal2
             } else {
@@ -158,14 +209,15 @@ fn sound_module_actions(
             code.extend((header + 5 * 8).to_le_bytes());
             code.extend([0xff, 0xd0]); // gi.positioned_sound
         }
-        code.extend([0x48, 0x83, 0xc4, 0x40, 0x5b, 0xc3]);
+        code.extend([0x48, 0x83, 0xc4, stack, 0x5b, 0xc3]);
+        assert!(!dupes || entry + code.len() < 0x1e80 || !emit);
         pe_text(&mut file, entry, &code);
     }
     pe_rva(&mut file, 0x1800 + if rr { 16 } else { 8 }, 0x180001400, 8);
     pe_rva(
         &mut file,
         0x1800 + if rr { 152 } else { 120 },
-        0x180001500,
+        0x180000000 + emit_entry as u64,
         8,
     );
     pe_text(&mut file, 0x1bc0, &[initial_name, b"\0"].concat());
@@ -188,27 +240,39 @@ fn sound_module_actions(
             code.extend((header + ordinal * 8).to_le_bytes());
             code.extend([0xff, 0xd0]);
         };
-        let mut raw = begin(0x15b0);
-        for value in [9u32, 12, 1] {
+        let raw_entry = if dupes { 0x1e80 } else { 0x15b0 };
+        let mut raw = begin(raw_entry);
+        for target in 1..=if dupes { 2u64 } else { 1 } {
+            for value in [9u32, 12, 1] {
+                raw.push(0xb9);
+                raw.extend(value.to_le_bytes());
+                invoke(&mut raw, if rr { 27 } else { 25 });
+            }
             raw.push(0xb9);
-            raw.extend(value.to_le_bytes());
-            invoke(&mut raw, if rr { 27 } else { 25 });
+            raw.extend(((emitter << 3) | 2).to_le_bytes());
+            invoke(&mut raw, if rr { 28 } else { 26 });
+            raw.extend([0x48, 0xb9]);
+            raw.extend(0x180001c00u64.to_le_bytes());
+            invoke(&mut raw, if rr { 32 } else { 30 });
+            if dupes {
+                raw.extend([0x48, 0xb9]);
+                raw.extend((0x180003000u64 + target * 1472).to_le_bytes());
+                raw.extend([0x31, 0xd2, 0x41, 0xb8]); // best effort, key43
+                raw.extend(43u32.to_le_bytes());
+                invoke(&mut raw, 25); // gi.unicast
+            } else {
+                raw.extend([0x31, 0xc9, 0x31, 0xd2, 0x45, 0x31, 0xc0]);
+                invoke(&mut raw, if rr { 24 } else { 22 });
+            }
         }
-        raw.push(0xb9);
-        raw.extend(((emitter << 3) | 2).to_le_bytes());
-        invoke(&mut raw, if rr { 28 } else { 26 });
-        raw.extend([0x48, 0xb9]);
-        raw.extend(0x180001c00u64.to_le_bytes());
-        invoke(&mut raw, if rr { 32 } else { 30 });
-        raw.extend([0x31, 0xc9, 0x31, 0xd2, 0x45, 0x31, 0xc0]);
-        invoke(&mut raw, if rr { 24 } else { 22 });
         raw.extend([0x48, 0x83, 0xc4, 0x20, 0x5b, 0xc3]);
-        assert!(raw.len() <= 0x100);
-        pe_text(&mut file, 0x15b0, &raw);
+        assert!(raw.len() <= if dupes { 0x180 } else { 0x100 });
+        assert!(!dupes || raw_entry + raw.len() <= 0x2000);
+        pe_text(&mut file, raw_entry, &raw);
         pe_rva(
             &mut file,
             0x1800 + if rr { 120 } else { 96 },
-            0x1800015b0,
+            0x180000000 + raw_entry as u64,
             8,
         );
         let sound_first = qa_core::configstrings::ConfigLayout::for_rules(rules)
@@ -608,6 +672,7 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                     origin: Vec3::default(),
                     reliable: true,
                     dupe_key: 0,
+                    emission: None,
                     check_portals: true,
                 },
                 b"\x0a\x02older flight\0",
@@ -1095,6 +1160,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
             origin: Vec3::default(),
             reliable: false,
             dupe_key: 0,
+            emission: None,
             check_portals: false,
         };
         let foreign_emitter = host
@@ -1399,4 +1465,139 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
         assert_eq!(source.played.len(), 3);
         assert_eq!(source.played[2].1, b);
     }
+}
+
+/// Real rerelease local_sound and unicast imports share one physical output.
+pub(super) fn split_seat_native_dupes_wait_for_ack_and_play_once() {
+    let rules = RuleSetId::Quake2Rerelease;
+    let protocol = Protocol::Quake2Repro1038;
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let mut ids = [ClientId(0); 2];
+    for (seat, id) in ids.iter_mut().enumerate() {
+        *id = runtime
+            .connect_local(
+                SeatId::new(seat as u8).unwrap(),
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                protocol,
+                seat as u32,
+            )
+            .unwrap();
+        assert!(runtime.server.bind_client_native(
+            *id,
+            NativeEntity {
+                module: ModuleId(1),
+                slot: seat as i32 + 1
+            }
+        ));
+    }
+    let (request, actions) = sound_module_options(
+        &mut runtime,
+        ModuleId(1),
+        b"a.wav",
+        rules,
+        b"a.wav",
+        1,
+        true,
+        true,
+    );
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(ids[0]);
+    host.local_clients[1] = Some(ids[1]);
+    host.initialize_modules(Phase::Server);
+    assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
+    let rate = NonZeroU32::new(44100).unwrap();
+    let bank = Arc::new(
+        qa_audio::Bank::load(
+            rate,
+            vec![(
+                "sound/a.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![1000; 2],
+                    loop_start: None,
+                },
+            )],
+        )
+        .unwrap(),
+    );
+    host.runtime.sound_bank = Some(Arc::clone(&bank));
+    host.bind_sounds(&bank).unwrap();
+    let mut source = AudioSource::default();
+    // Actual resource publication and native packet ACKs, with no readiness override.
+    for tick in 0..=12 {
+        source.time = EventTime::from_milliseconds(tick * 25);
+        host.frame(&mut source, true);
+    }
+    for id in ids {
+        assert_eq!(
+            host.runtime.client_resources[id.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .sound(1),
+            bank.find("sound/a.wav")
+        );
+    }
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(actions.emit, &[]),
+        ThinkTime::module_clock(rules),
+    )
+    .unwrap();
+    for tick in 13..=24 {
+        source.time = EventTime::from_milliseconds(tick * 25);
+        host.frame(&mut source, true);
+    }
+    assert_eq!(
+        source.played.len(),
+        1,
+        "reliable gi.local_sound duplicate waits for native ACK then suppresses sibling"
+    );
+    assert_eq!(source.played[0].1, bank.find("sound/a.wav").unwrap());
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(actions.raw, &[0]),
+        ThinkTime::module_clock(rules),
+    )
+    .unwrap();
+    for tick in 25..=36 {
+        source.time = EventTime::from_milliseconds(tick * 25);
+        host.frame(&mut source, true);
+    }
+    assert_eq!(
+        source.played.len(),
+        2,
+        "raw best-effort gi.unicast uses the same coordinator"
+    );
+    let calls = host.module_counts(ModuleId(1)).unwrap().calls;
+    host.call_module_export(
+        ModuleId(1),
+        Export::words(actions.emit, &[]),
+        ThinkTime::module_clock(rules),
+    )
+    .unwrap();
+    for tick in 37..=48 {
+        source.time = EventTime::from_milliseconds(tick * 25);
+        host.frame(&mut source, true);
+    }
+    assert_eq!(
+        source.played.len(),
+        3,
+        "same key is eligible in a later native provider frame"
+    );
+    assert!(host.module_counts(ModuleId(1)).unwrap().calls > calls + 8);
+    assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
 }

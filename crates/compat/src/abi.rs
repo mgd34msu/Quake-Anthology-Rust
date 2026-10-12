@@ -904,6 +904,7 @@ fn qc_sound(
         origin: position,
         reliable,
         dupe_key: 0,
+        emission: None,
         check_portals: false,
     };
     let event = SoundEvent {
@@ -2129,6 +2130,7 @@ fn native_delivery<const WIDE: bool>(
         origin,
         reliable,
         dupe_key,
+        emission: c.services.storage.emission(c.context),
         check_portals: !c.services.ignore_areas(source, WIDE),
     }
 }

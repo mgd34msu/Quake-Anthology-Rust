@@ -47,6 +47,7 @@ pub struct Runtime {
     pub client_resources: Box<[Option<client_resources::ClientResources>]>,
     pub native_numbers: Box<[output_namespace::NativeNumbers]>,
     pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
+    pub output_duplicates: output::duplicates::Coordinator,
     pub models: Option<std::sync::Arc<model_assets::ModelCatalog>>,
     /// Cold owned assets and metadata become the same frozen catalog after precache.
     pub model_loader: Option<model_assets::ModelCatalogBuilder>,
@@ -170,6 +171,8 @@ impl Runtime {
         )
         .map_err(|e| format!("server: {e:?}"))?;
         let targets = qa_world::targets::TargetIndex::new(&server.entities);
+        let output_duplicates =
+            output::duplicates::Coordinator::load(server.events.capacity(), max_clients);
         // Boot capacity covers the largest planned native local message.
         // Native connection negotiation supplies narrower limits later.
         let loopback = Loopback::load(std::iter::repeat_n(
@@ -197,6 +200,7 @@ impl Runtime {
             config_publications: std::iter::repeat_with(client_resources::ConfigPublication::load)
                 .take(max_clients)
                 .collect(),
+            output_duplicates,
             catalog,
             vfs: Vfs::default(),
             localization: qa_content::localization::Catalog::default(),
@@ -246,6 +250,7 @@ impl Runtime {
             .server
             .connect(Connection::Local, ModuleId::default(), tail, None)
             .ok_or("no local client slot")?;
+        self.output_duplicates.reset_client(id);
         self.network.unbind(id);
         self.input.reset_usercmd_value(seat);
         self.loopback.clear_client(id);

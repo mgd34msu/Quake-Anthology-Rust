@@ -11,6 +11,7 @@ use qa_core::{
 use qa_session::clients::Connection;
 
 mod config;
+pub mod duplicates;
 mod native;
 
 #[derive(Default)]
@@ -27,14 +28,18 @@ pub struct OutputCounts {
     pub native_unsupported: u64,
     pub native_packets: u64,
     pub native_blocked: u64,
+    pub native_dropped: u64,
     pub native_disconnected: u64,
     pub native_overflow: u64,
     pub native_resync_retired: u64,
+    pub native_dupe_suppressed: u64,
+    pub native_dupe_overflow: u64,
 }
 
 impl OutputCounts {
     fn add_native(&mut self, submitted: &crate::transport::Submission) {
         self.native_blocked += u64::from(submitted.blocked);
+        self.native_dropped += u64::from(submitted.dropped);
         self.native_packets += submitted.packets;
     }
 }
@@ -49,6 +54,8 @@ pub fn dispatch(
     center_time: f64,
 ) -> OutputCounts {
     let server = &mut runtime.server;
+    runtime.output_duplicates.sweep(&server.events);
+    let output_range = server.events.sequence_range();
     let now = time.seconds();
     let mut counts = OutputCounts::default();
     // In-process presentation resynchronization needs no native channel reset.
@@ -122,6 +129,7 @@ pub fn dispatch(
             }
             runtime.network.unbind(client_id);
             runtime.loopback.clear_client(client_id);
+            runtime.output_duplicates.reset_client(client_id);
             server.disconnect(client_id);
             runtime.config_publications[slot].reset();
             runtime.native_numbers[slot].reset();
@@ -153,6 +161,13 @@ pub fn dispatch(
                 Ok(submitted) => submitted,
                 Err(_) => {
                     counts.native_unsupported += 1;
+                    runtime.output_duplicates.submitted(
+                        id,
+                        sequence,
+                        OutputSubmission::BestEffort,
+                        false,
+                        false,
+                    );
                     server
                         .events
                         .submit(id, sequence, OutputSubmission::BestEffort);
@@ -160,6 +175,13 @@ pub fn dispatch(
                 }
             };
             counts.add_native(&submitted);
+            runtime.output_duplicates.submitted(
+                id,
+                sequence,
+                disposition.unwrap_or(OutputSubmission::Unsent),
+                submitted.complete,
+                connection.pending_output == Some(sequence),
+            );
             let Some(disposition) = disposition else {
                 continue;
             };
@@ -217,7 +239,28 @@ pub fn dispatch(
                         .get_mut(client_id, qa_core::loopback::Endpoint::Server)
                     {
                         let route = connection.route;
-                        match record.event {
+                        let group = runtime
+                            .output_duplicates
+                            .group(client_id, client.connection == Some(Connection::Local));
+                        match runtime.output_duplicates.admit(
+                            record,
+                            id,
+                            group,
+                            output_range.clone(),
+                        ) {
+                            duplicates::Admission::Send => (),
+                            duplicates::Admission::Pending => return OutputSubmission::Unsent,
+                            duplicates::Admission::Suppressed => {
+                                counts.native_dupe_suppressed += 1;
+                                return OutputSubmission::BestEffort;
+                            }
+                            duplicates::Admission::Full => {
+                                counts.native_dupe_overflow += 1;
+                                return OutputSubmission::BestEffort;
+                            }
+                        }
+                        let mut completed = false;
+                        let submission = (|| match record.event {
                             FrameEvent::Native(payload) => {
                                 if let Some(bytes) =
                                     texts.copy_payload(payload, &mut runtime.output_bytes)
@@ -251,6 +294,7 @@ pub fn dispatch(
                                         },
                                     ) {
                                         Ok((submission, submitted, unsupported)) => {
+                                            completed = submitted.complete;
                                             counts.native_unsupported += unsupported;
                                             counts.add_native(&submitted);
                                             submission
@@ -322,6 +366,7 @@ pub fn dispatch(
                                                     },
                                                 ) {
                                                     Ok((submission, submitted)) => {
+                                                        completed = submitted.complete;
                                                         counts.add_native(&submitted);
                                                         submission
                                                     }
@@ -346,7 +391,15 @@ pub fn dispatch(
                                 counts.native_unsupported += 1;
                                 OutputSubmission::BestEffort
                             }
-                        }
+                        })();
+                        runtime.output_duplicates.submitted(
+                            id,
+                            record.sequence,
+                            submission,
+                            completed,
+                            connection.pending_output == Some(record.sequence),
+                        );
+                        submission
                     } else {
                         counts.native_unsupported += 1;
                         OutputSubmission::BestEffort

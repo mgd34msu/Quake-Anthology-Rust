@@ -5309,6 +5309,7 @@ pub fn run() {
         sound_routes::remote_native_emitters_keep_the_module_entity_channel();
         sound_routes::secondary_modules_share_the_connection_sound_namespace();
         sound_routes::native_sound_ordinals_and_retained_captures_survive_resource_rewrites();
+        sound_routes::split_seat_native_dupes_wait_for_ack_and_play_once();
         println!("native Q2 sound route checks passed");
         return;
     }
@@ -5372,6 +5373,7 @@ pub fn run() {
     sound_routes::remote_native_emitters_keep_the_module_entity_channel();
     sound_routes::secondary_modules_share_the_connection_sound_namespace();
     sound_routes::native_sound_ordinals_and_retained_captures_survive_resource_rewrites();
+    sound_routes::split_seat_native_dupes_wait_for_ack_and_play_once();
     q2_normal_loader_selects_native_roles_and_copies_spawn_strings();
     q2_clients_bind_after_initialization_and_disconnect_before_shutdown();
     println!("native session dispatch checks passed");

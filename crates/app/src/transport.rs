@@ -7,6 +7,7 @@ pub(crate) struct Submission {
     pub packets: u64,
     pub blocked: bool,
     pub complete: bool,
+    pub dropped: bool,
 }
 
 pub(crate) fn admit_output(

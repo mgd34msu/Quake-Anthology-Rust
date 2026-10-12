@@ -102,6 +102,7 @@ fn publish_from(
                 origin: Vec3([1.0, 0.0, 0.0]),
                 reliable,
                 dupe_key: 0,
+                emission: None,
                 check_portals: true,
             },
             bytes,
@@ -155,6 +156,7 @@ fn native_cue_entities_use_the_entity_namespace_independently_of_resources() {
                 origin: Vec3::default(),
                 reliable: false,
                 dupe_key: 0,
+                emission: None,
                 check_portals: false,
             },
             4,
@@ -625,6 +627,7 @@ fn fragmented_rerelease_output_retries_exact_bytes_and_oversized_payloads_retire
         origin: Default::default(),
         reliable: false,
         dupe_key: 0,
+        emission: None,
         check_portals: true,
     };
     let bytes: Vec<_> = (0..4000).map(|i| i as u8).collect();
@@ -872,4 +875,214 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
             .pending_output
             .is_none()
     );
+}
+
+#[test]
+fn dropped_native_payload_releases_dupe_claim_for_healthy_negotiated_peer() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let a = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let b = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    assert!(runtime.output_duplicates.negotiate(a, Some(1)));
+    assert!(runtime.output_duplicates.negotiate(b, Some(1)));
+    runtime
+        .network
+        .get_mut(a, Endpoint::Server)
+        .unwrap()
+        .channel
+        .queue_reliable(&[0u8; 1388])
+        .unwrap();
+    runtime
+        .server
+        .events
+        .native_message(
+            NativeDelivery {
+                module: ModuleId(7),
+                source: RuleSetId::Quake2,
+                target: NativeTarget::All,
+                origin: Vec3::default(),
+                reliable: false,
+                dupe_key: 42,
+                emission: Some(NativeEmission {
+                    module_lifetime: EntityId {
+                        slot: 8,
+                        generation: 1,
+                    },
+                    provider_frame: 17,
+                }),
+                check_portals: true,
+            },
+            b"\x0fhealthy\0",
+        )
+        .unwrap();
+    let mut source = Source::default();
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_dropped, 1);
+    assert_eq!(counts.native_dupe_suppressed, 0);
+    assert!(runtime.server.events.is_empty());
+    assert!(
+        runtime
+            .network
+            .get(a, Endpoint::Server)
+            .unwrap()
+            .pending_output
+            .is_none()
+    );
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    peer.set_qport(2001);
+    let bytes = &source
+        .packets
+        .iter()
+        .find(|(port, _)| *port == 2001)
+        .unwrap()
+        .1;
+    assert_eq!(receive(&mut peer, bytes), b"\x0fhealthy\0");
+}
+#[test]
+fn reliable_dupe_waits_for_real_ack_without_stalling_an_independent_peer() {
+    let mut runtime = Runtime::load(3, []).unwrap();
+    let a = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let b = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    let healthy = remote(&mut runtime, Protocol::Quake2_34, 2002);
+    runtime.output_duplicates.negotiate(a, Some(1));
+    runtime.output_duplicates.negotiate(b, Some(1));
+    runtime
+        .server
+        .events
+        .native_message(
+            NativeDelivery {
+                module: ModuleId(7),
+                source: RuleSetId::Quake2,
+                target: NativeTarget::All,
+                origin: Vec3::default(),
+                reliable: true,
+                dupe_key: 42,
+                emission: Some(NativeEmission {
+                    module_lifetime: EntityId {
+                        slot: 8,
+                        generation: 1,
+                    },
+                    provider_frame: 17,
+                }),
+                check_portals: true,
+            },
+            b"\x0fACK\0",
+        )
+        .unwrap();
+    let mut source = Source::default();
+    dispatch(&mut runtime, &mut source);
+    assert!(source.packets.iter().any(|(port, _)| *port == 2000));
+    assert!(!source.packets.iter().any(|(port, _)| *port == 2001));
+    assert!(
+        source.packets.iter().any(|(port, _)| *port == 2002),
+        "separate physical peer progresses"
+    );
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    peer.set_qport(2000);
+    receive(
+        &mut peer,
+        &source
+            .packets
+            .iter()
+            .find(|(port, _)| *port == 2000)
+            .unwrap()
+            .1,
+    );
+    let ack = peer
+        .prepare(None, EventTime(40))
+        .unwrap()
+        .unwrap()
+        .bytes
+        .to_vec();
+    peer.submitted(EventTime(40)).unwrap();
+    runtime.network.receive(
+        0,
+        Peer::Socket(([127, 0, 0, 1], 2000).into()),
+        &ack,
+        EventTime(50),
+        |_, _, incoming| {
+            if let Incoming::Acknowledged {
+                receipt,
+                output: Some(id),
+            } = incoming
+            {
+                let gate = &mut runtime.output_duplicates;
+                runtime
+                    .server
+                    .events
+                    .acknowledge_with(id, receipt, |record| gate.acknowledged(id, record.sequence));
+            }
+            std::ops::ControlFlow::Continue(())
+        },
+    );
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_dupe_suppressed, 1);
+    assert!(!source.packets.iter().any(|(port, _)| *port == 2001));
+    assert!(
+        runtime.server.events.len() > 0,
+        "independent healthy peer still needs its own native ACK"
+    );
+    assert_ne!(a, healthy);
+}
+
+#[test]
+fn same_frame_remote_slot_reconnect_forgets_sent_dupe_and_negotiation() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let old = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let delivery = NativeDelivery {
+        module: ModuleId(7),
+        source: RuleSetId::Quake2,
+        target: NativeTarget::All,
+        origin: Vec3::default(),
+        reliable: false,
+        dupe_key: 42,
+        emission: Some(NativeEmission {
+            module_lifetime: EntityId {
+                slot: 8,
+                generation: 1,
+            },
+            provider_frame: 17,
+        }),
+        check_portals: true,
+    };
+    runtime
+        .server
+        .events
+        .native_message(delivery, b"\x0fold\0")
+        .unwrap();
+    let mut source = Source::default();
+    assert_eq!(
+        dispatch(&mut runtime, &mut source).native_dupe_suppressed,
+        0
+    );
+    runtime.output_duplicates.negotiate(old, Some(7));
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        host.client_string_command(old, RuleSetId::Quake2, b"disconnect")
+            .unwrap()
+            .is_break()
+    );
+    let new = remote(&mut host.runtime, Protocol::Quake2_34, 2001);
+    assert_eq!(old, new, "common client slot is reused");
+    assert_eq!(
+        host.runtime.output_duplicates.group(new, false),
+        qa_app::output::duplicates::PhysicalGroup::Peer(new)
+    );
+    host.runtime
+        .server
+        .events
+        .native_message(delivery, b"\x0fnew\0")
+        .unwrap();
+    assert_eq!(
+        dispatch(&mut host.runtime, &mut source).native_dupe_suppressed,
+        0
+    );
+    assert!(source.packets.iter().any(|(port, _)| *port == 2001));
 }

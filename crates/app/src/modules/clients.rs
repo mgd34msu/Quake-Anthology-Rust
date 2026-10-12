@@ -249,6 +249,7 @@ impl FrameHost {
                 if accepted {
                     self.disconnect_client(id);
                 } else {
+                    self.runtime.output_duplicates.reset_client(id);
                     self.runtime.server.disconnect(id);
                 }
             }
@@ -481,6 +482,7 @@ impl FrameHost {
             let _ =
                 self.call_module_export(native.module, Export::words(callback, &[address]), time);
         }
+        self.runtime.output_duplicates.reset_client(id);
         self.runtime.server.disconnect(id);
         self.runtime.network.unbind(id);
         for local in &mut self.local_clients {

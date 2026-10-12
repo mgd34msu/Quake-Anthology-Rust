@@ -59,6 +59,7 @@ fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
                 origin: Default::default(),
                 reliable: true,
                 dupe_key: 0,
+                emission: None,
                 check_portals: true,
             },
         )

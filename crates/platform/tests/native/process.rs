@@ -1826,7 +1826,7 @@ fn nonexecutable_entry_and_callback_rejection_are_local() {
         NativeProcess::load(NativeImage {
             imports: &[],
             base: BASE,
-            pointer_bytes: 4,
+            pointer_bytes: 3,
             bytes: &[],
             regions: &[],
             timeout: Duration::from_secs(1),

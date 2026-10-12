@@ -132,7 +132,13 @@ fn native_children_die_when_the_engine_parent_is_killed() {
                 "{status:?}"
             );
         } else {
-            assert_eq!(status.signal(), Some(SIGKILL), "{mode}");
+            // Parent exit closes the listener before sending PDEATHSIG. A
+            // parked request can fail closed with ENOSYS and exit125 first.
+            assert!(
+                status.signal() == Some(SIGKILL)
+                    || (mode == "parked" && status.code() == Some(125)),
+                "{mode}: {status:?}"
+            );
         }
         assert_eq!(state(pid), None, "{mode}: descendant was not reaped");
     }

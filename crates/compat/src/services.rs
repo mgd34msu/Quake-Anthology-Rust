@@ -93,6 +93,7 @@ struct OpenFile {
 }
 struct ConfigRange {
     module: ModuleId,
+    lifetime: Option<EntityId>,
     native_rules: RuleSetId,
     span: IndexSpan,
     resources: Option<[IndexSpan; 3]>,
@@ -195,6 +196,7 @@ impl ServiceStorage {
             }
             ranges.push(ConfigRange {
                 module,
+                lifetime: None,
                 native_rules: native_rules.unwrap_or(RuleSetId::Quake2),
                 resources,
                 span: IndexSpan {
@@ -234,6 +236,18 @@ impl ServiceStorage {
     }
     fn range_mut(&mut self, module: ModuleId) -> Option<&mut ConfigRange> {
         self.ranges.iter_mut().find(|range| range.module == module)
+    }
+    pub fn bind_lifetime(&mut self, module: ModuleId, lifetime: EntityId) -> Result<(), CallError> {
+        self.range_mut(module)
+            .ok_or(CallError::ConfigString)?
+            .lifetime = Some(lifetime);
+        Ok(())
+    }
+    pub fn emission(&self, context: CallContext) -> Option<qa_core::primitives::NativeEmission> {
+        Some(qa_core::primitives::NativeEmission {
+            module_lifetime: self.range(context.module)?.lifetime?,
+            provider_frame: context.server_frame,
+        })
     }
     fn config(&self, module: ModuleId, ordinal: usize) -> Result<usize, CallError> {
         let range = self.range(module).ok_or(CallError::ConfigString)?;

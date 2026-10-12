@@ -1237,6 +1237,7 @@ fn native_staging_preserves_full_wire_capacity_with_one_or_dense_cues() {
                         origin: Vec3::default(),
                         reliable: true,
                         dupe_key: 0,
+                        emission: None,
                         check_portals: false,
                     },
                 )

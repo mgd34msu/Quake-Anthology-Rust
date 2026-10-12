@@ -1095,7 +1095,14 @@ pub struct NativeDelivery {
     pub origin: Vec3,
     pub reliable: bool,
     pub dupe_key: u32,
+    /// Captured at publication, never reconstructed from a later host frame.
+    pub emission: Option<NativeEmission>,
     pub check_portals: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeEmission {
+    pub module_lifetime: EntityId,
+    pub provider_frame: u64,
 }
 /// Immutable native-cue boundary identities, stored with the leased bytes.
 pub const NATIVE_WIRE_BYTES: usize = 32 * 1024;
