@@ -247,6 +247,13 @@ pub struct Modules {
     signon: Box<[SignonCursor]>,
 }
 impl Modules {
+    /// Cold precaching follows loaded producer roles, independently of the map.
+    pub(crate) fn has_sound_source(&self, rules: RuleSetId) -> bool {
+        self.rows
+            .iter()
+            .flatten()
+            .any(|row| row.state.can_invoke() && row.request.context.native_rules == rules)
+    }
     pub(crate) fn bound_sound(
         &self,
         module: ModuleId,

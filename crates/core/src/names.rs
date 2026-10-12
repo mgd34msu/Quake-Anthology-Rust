@@ -199,9 +199,11 @@ impl NameTable {
     }
     /// Allocation-free path lookup; registration interns canonical bytes once.
     pub fn find_path(&self, name: &str) -> Option<NameId> {
-        let group = self
-            .folded_bucket(name.as_bytes().iter().copied().map(path_byte))
-            .1?;
+        self.find_path_bytes(name.as_bytes())
+    }
+    /// Native filenames remain byte strings; only ASCII and separators fold.
+    pub fn find_path_bytes(&self, name: &[u8]) -> Option<NameId> {
+        let group = self.folded_bucket(name.iter().copied().map(path_byte)).1?;
         let id = self.path_ids[group.0 as usize];
         (id != u32::MAX).then_some(NameId(id))
     }
@@ -245,10 +247,13 @@ impl NameTable {
     }
     /// Cold registration is permitted to allocate; repeated lookup does not.
     pub fn intern_path(&mut self, name: &str) -> Result<NameId, NamesError> {
-        if let Some(id) = self.find_path(name) {
+        self.intern_path_bytes(name.as_bytes())
+    }
+    pub fn intern_path_bytes(&mut self, name: &[u8]) -> Result<NameId, NamesError> {
+        if let Some(id) = self.find_path_bytes(name) {
             return Ok(id);
         }
-        let canonical = canonical_path(name);
-        self.intern(canonical.as_bytes())
+        let canonical: Vec<_> = name.iter().copied().map(path_byte).collect();
+        self.intern(&canonical)
     }
 }

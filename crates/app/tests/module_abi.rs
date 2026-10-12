@@ -2037,40 +2037,40 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
         .storage
         .bind_sound_bank(other, range, Arc::clone(&bank))
         .unwrap();
-    let read = |services: &qa_compat::services::EngineServices<'_>, index| {
+    let read = |services: &mut qa_compat::services::EngineServices<'_>, index| {
         (ENGINE_CALLS.sound_id)(services, module, range, index)
     };
-    assert_eq!(read(&services, 1), Ok(Some(ambient)));
+    assert_eq!(read(&mut services, 1), Ok(Some(ambient)));
     let revision = services.storage.configstring(module, 3).unwrap().1;
     services.configstring(module, 3, b"world/amb.wav").unwrap();
-    assert_eq!(read(&services, 1), Ok(Some(ambient)));
+    assert_eq!(read(&mut services, 1), Ok(Some(ambient)));
     assert_eq!(
         services.storage.configstring(module, 3).unwrap().1,
         revision
     );
     services.configstring(module, 3, b"world/new.wav").unwrap();
-    assert_eq!(read(&services, 1), Ok(Some(new)));
+    assert_eq!(read(&mut services, 1), Ok(Some(new)));
     assert_eq!(
-        (ENGINE_CALLS.sound_id)(&services, other, range, 1),
+        (ENGINE_CALLS.sound_id)(&mut services, other, range, 1),
         Ok(Some(ambient))
     );
     services
         .configstring(module, 3, b"#sound/world/amb.wav")
         .unwrap();
-    assert_eq!(read(&services, 1), Ok(Some(ambient)));
+    assert_eq!(read(&mut services, 1), Ok(Some(ambient)));
     for text in [b"missing.wav".as_slice(), b"*death.wav", b""] {
         services.configstring(module, 3, text).unwrap();
-        assert_eq!(read(&services, 1), Ok(None));
+        assert_eq!(read(&mut services, 1), Ok(None));
     }
     let ordinal =
         (ENGINE_CALLS.resource_index)(&mut services, module, range, b"world/new.wav").unwrap();
     assert_eq!(ordinal, 1);
-    assert_eq!(read(&services, ordinal as i32), Ok(Some(new)));
+    assert_eq!(read(&mut services, ordinal as i32), Ok(Some(new)));
     assert_eq!(
         (ENGINE_CALLS.resource_index)(&mut services, module, range, b"world/amb.wav"),
         Ok(2)
     );
-    assert_eq!(read(&services, 2), Ok(Some(ambient)));
+    assert_eq!(read(&mut services, 2), Ok(Some(ambient)));
     // Ordinary configstrings must keep their raw bytes and never enter path lookup.
     services.configstring(module, 0, &[0xff, 0xfe]).unwrap();
     assert_eq!(
@@ -2078,8 +2078,8 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
         &[0xff, 0xfe]
     );
     services.configstring(module, 3, b"").unwrap();
-    assert_eq!(read(&services, 1), Ok(None));
-    assert_eq!(read(&services, 0), Ok(None));
-    assert!(read(&services, -1).is_err());
-    assert!(read(&services, 4).is_err());
+    assert_eq!(read(&mut services, 1), Ok(None));
+    assert_eq!(read(&mut services, 0), Ok(None));
+    assert!(read(&mut services, -1).is_err());
+    assert!(read(&mut services, 4).is_err());
 }

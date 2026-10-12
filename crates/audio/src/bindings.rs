@@ -1,6 +1,6 @@
 use crate::Bank;
 use qa_core::{
-    primitives::{RuleSetId, SoundId},
+    primitives::{NameId, RuleSetId, SoundId},
     text::FixedText,
 };
 
@@ -89,12 +89,24 @@ pub fn native_sound_name(rules: RuleSetId, bank: &Bank, sound: SoundId) -> Optio
 pub struct SoundBindings {
     forward: Box<[Option<SoundId>]>,
     inverse: Box<[Option<u32>]>,
+    registration_keys: Box<[Option<u32>]>,
+    valid_zero: bool,
 }
 impl SoundBindings {
     pub fn load(ordinals: usize) -> Self {
+        Self::load_reserved(ordinals, 0, false)
+    }
+    /// Engine sound handles have a real default sample at zero. Configstring
+    /// ordinals keep the default load() domain, where zero means no sound.
+    pub fn load_with_zero(ordinals: usize) -> Self {
+        Self::load_reserved(ordinals, 0, true)
+    }
+    pub(crate) fn load_reserved(ordinals: usize, sounds: usize, valid_zero: bool) -> Self {
         Self {
             forward: vec![None; ordinals].into_boxed_slice(),
-            inverse: Box::new([]),
+            inverse: vec![None; sounds].into_boxed_slice(),
+            registration_keys: vec![None; if valid_zero { sounds } else { 0 }].into_boxed_slice(),
+            valid_zero,
         }
     }
     /// Cold bank attachment reserves the inverse once and clears old handles.
@@ -103,10 +115,14 @@ impl SoundBindings {
         if self.inverse.len() != bank.len() {
             self.inverse = vec![None; bank.len()].into_boxed_slice();
         }
+        if self.valid_zero && self.registration_keys.len() != bank.capacity() {
+            self.registration_keys = vec![None; bank.capacity()].into_boxed_slice();
+        }
     }
     pub fn clear(&mut self) {
         self.forward.fill(None);
         self.inverse.fill(None);
+        self.registration_keys.fill(None);
     }
     pub fn sound(&self, ordinal: u32) -> Option<SoundId> {
         self.forward.get(ordinal as usize).copied().flatten()
@@ -114,12 +130,16 @@ impl SoundBindings {
     pub fn ordinal(&self, sound: SoundId) -> Option<u32> {
         self.inverse.get(sound.0 as usize).copied().flatten()
     }
-    /// Duplicate registrations retain the lowest nonzero native ordinal.
+    /// Duplicate registrations retain the lowest ordinal admitted by the domain.
     /// Replacing that row recomputes its fallback only during registration.
     pub fn set(&mut self, ordinal: u32, sound: Option<SoundId>) -> Result<(), SoundBindingError> {
         let index = ordinal as usize;
         let old = *self.forward.get(index).ok_or(SoundBindingError::Ordinal)?;
-        let sound = if ordinal == 0 { None } else { sound };
+        let sound = if ordinal == 0 && !self.valid_zero {
+            None
+        } else {
+            sound
+        };
         if !self.inverse.is_empty()
             && sound.is_some_and(|sound| sound.0 as usize >= self.inverse.len())
         {
@@ -127,6 +147,11 @@ impl SoundBindings {
         }
         if old == sound {
             return Ok(());
+        }
+        for key in self.registration_keys.iter_mut() {
+            if *key == Some(ordinal) {
+                *key = None;
+            }
         }
         self.forward[index] = sound;
         if let Some(old) = old
@@ -137,7 +162,7 @@ impl SoundBindings {
                 .forward
                 .iter()
                 .enumerate()
-                .skip(1)
+                .skip(usize::from(!self.valid_zero))
                 .find_map(|(index, &bound)| (bound == Some(old)).then_some(index as u32));
         }
         if let Some(sound) = sound
@@ -147,6 +172,65 @@ impl SoundBindings {
             *inverse = Some(ordinal);
         }
         Ok(())
+    }
+    /// Cold registration allocates the next native ordinal from the same
+    /// forward/inverse rows. A failed PCM attempt can retain its numeric row.
+    pub fn register(&mut self, sound: SoundId) -> Result<u32, SoundBindingError> {
+        self.register_key(None, sound)
+    }
+    /// Distinct native folded names can share one canonical prepared sample.
+    pub fn register_named(
+        &mut self,
+        name: NameId,
+        sound: SoundId,
+    ) -> Result<u32, SoundBindingError> {
+        self.register_key(Some(name), sound)
+    }
+    pub fn named(&self, name: NameId) -> Option<u32> {
+        self.registration_keys
+            .get(name.0 as usize)
+            .copied()
+            .flatten()
+    }
+    /// Change only an admitted native row, preserving its allocated ordinal.
+    pub fn replace_named(&mut self, name: NameId, sound: SoundId) -> Result<(), SoundBindingError> {
+        let ordinal = self.named(name).ok_or(SoundBindingError::Ordinal)?;
+        self.set(ordinal, Some(sound))?;
+        self.registration_keys[name.0 as usize] = Some(ordinal);
+        Ok(())
+    }
+    fn register_key(
+        &mut self,
+        name: Option<NameId>,
+        sound: SoundId,
+    ) -> Result<u32, SoundBindingError> {
+        let inverse = self
+            .inverse
+            .get(sound.0 as usize)
+            .ok_or(SoundBindingError::Sound)?;
+        let existing = match name {
+            Some(name) => *self
+                .registration_keys
+                .get(name.0 as usize)
+                .ok_or(SoundBindingError::Sound)?,
+            None => *inverse,
+        };
+        if let Some(ordinal) = existing {
+            return Ok(ordinal);
+        }
+        let ordinal = self
+            .forward
+            .iter()
+            .enumerate()
+            .skip(usize::from(!self.valid_zero))
+            .find_map(|(index, bound)| bound.is_none().then_some(index))
+            .and_then(|index| u32::try_from(index).ok())
+            .ok_or(SoundBindingError::Ordinal)?;
+        self.set(ordinal, Some(sound))?;
+        if let Some(name) = name {
+            self.registration_keys[name.0 as usize] = Some(ordinal);
+        }
+        Ok(ordinal)
     }
     /// A destination can preserve a load-bound primary native registration
     /// even when a secondary namespace already registered the same sample.
@@ -176,12 +260,7 @@ impl SoundBindings {
         ordinal: u32,
         path: &[u8],
     ) -> Result<(), SoundBindingError> {
-        let sound = match bank {
-            Some(bank) => {
-                bank.find(std::str::from_utf8(path).map_err(|_| SoundBindingError::Text)?)
-            }
-            None => None,
-        };
+        let sound = bank.and_then(|bank| bank.find_bytes(path));
         self.set(ordinal, sound)
     }
 }

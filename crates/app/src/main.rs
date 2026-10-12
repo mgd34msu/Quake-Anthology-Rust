@@ -628,7 +628,15 @@ fn run() -> Result<(), String> {
             .ok_or("missing model loader")?
             .bind_loaded_world(path, world, bounds)?;
     }
-    // Native resource registration finishes before client audio precaching.
+    let sound_rules = local_clients
+        .iter()
+        .flatten()
+        .next()
+        .map_or(client_module.unwrap_or(RuleSetId::Quake3), |id| {
+            host.runtime.server.clients[id.0 as usize].client_rules
+        });
+    qa_app::audio::begin_registration(&mut host, &precache_sounds, sound_rules)?;
+    // SERVER and CLIENT initialization register into the same load-owned bank.
     // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
     if !host.runtime.quit {
         host.initialize_modules(qa_app::modules::Phase::Server);
@@ -644,15 +652,6 @@ fn run() -> Result<(), String> {
             }
         }
     }
-    let sound_rules = local_clients
-        .iter()
-        .flatten()
-        .next()
-        .map_or(client_module.unwrap_or(RuleSetId::Quake3), |id| {
-            host.runtime.server.clients[id.0 as usize].client_rules
-        });
-    let bank = qa_app::audio::load_bank(&mut host, &precache_sounds, sound_rules)?;
-    host.runtime.sound_bank = Some(std::sync::Arc::clone(&bank));
     for (seat, id) in local_clients
         .iter()
         .enumerate()
@@ -752,6 +751,11 @@ fn run() -> Result<(), String> {
         );
     }
     host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
+    qa_app::audio::load_registered_sounds(&mut host, &precache_sounds, sound_rules)?;
+    if !host.runtime.quit {
+        host.initialize_modules(qa_app::modules::Phase::Client);
+    }
+    let bank = qa_app::audio::finish_registration(&mut host)?;
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
     if let Some(world) = &loaded_world {

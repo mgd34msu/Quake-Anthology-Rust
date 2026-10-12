@@ -239,3 +239,28 @@ fn rejected_cold_reservation_and_runtime_registration_leave_prior_names_intact()
     assert_eq!(names.get(live), Some(b"live\xff".as_slice()));
     assert_eq!(names.get(next), Some(b"new".as_slice()));
 }
+
+#[test]
+fn native_byte_path_lookup_preserves_non_ascii_bytes_and_stable_ids() {
+    let mut names = NameTable::load_reserved([], 3, 64).unwrap();
+    let raw = names.intern(b"SOUND\\RAW\xff.WAV").unwrap();
+    assert_eq!(names.find_path_bytes(b"sound/raw\xff.wav"), None);
+    let sound = names.intern_path_bytes(b"SOUND\\RAW\xff.WAV").unwrap();
+    assert_ne!(raw, sound);
+    assert_eq!(names.get(sound), Some(b"sound/raw\xff.wav".as_slice()));
+    assert_eq!(names.intern_path_bytes(b"Sound/Raw\xff.Wav"), Ok(sound));
+    assert_eq!(names.find_path_bytes(b"sound\\RAW\xff.wav"), Some(sound));
+    assert_eq!(names.find_path_bytes(b"sound/raw\xfe.wav"), None);
+    assert_eq!(names.get(raw), Some(b"SOUND\\RAW\xff.WAV".as_slice()));
+    names.reserve(1, 24).unwrap();
+    assert_eq!(names.find_path_bytes(b"SOUND/RAW\xff.WAV"), Some(sound));
+    let utf8 = names.intern_path("Textures\\Ä.TGA").unwrap();
+    assert_eq!(
+        names.find_path_bytes("TEXTURES/Ä.tga".as_bytes()),
+        Some(utf8)
+    );
+    assert_eq!(
+        names.intern_path_bytes("textures/Ä.TGA".as_bytes()),
+        Ok(utf8)
+    );
+}

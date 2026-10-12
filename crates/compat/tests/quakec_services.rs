@@ -244,6 +244,8 @@ fn with_collision_services(
             .as_deref_mut()
             .map(|loader| loader as &mut dyn ModelLoader),
         model_lookup: None,
+        sound_loader: None,
+        sound_bank: None,
         localization: &localization,
         registry: &registry,
         names: &mut names,

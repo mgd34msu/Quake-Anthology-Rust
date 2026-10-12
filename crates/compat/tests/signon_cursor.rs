@@ -78,6 +78,8 @@ fn with_services(run: impl FnOnce(&mut EngineServices<'_>, CallContext, u32)) {
         vfs: &vfs,
         model_loader: None,
         model_lookup: None,
+        sound_loader: None,
+        sound_bank: None,
         localization: &localization,
         registry: &registry,
         names: &mut names,

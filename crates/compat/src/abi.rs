@@ -107,6 +107,13 @@ fn text_at<'a>(memory: &'a ModuleMemory<'_>, address: u64) -> Result<&'a str, Ca
     std::str::from_utf8(memory.cstring(address)?).map_err(|_| CallError::Text)
 }
 
+fn register_sound(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let sample = c.memory.cstring(c.required_pointer(0)?)?;
+    // Native Q3 ignores the compressed argument, including its value/width.
+    (ENGINE_CALLS.register_sound)(c.services, sample, c.context.native_rules)
+        .map(|handle| handle as u32 as u64)
+}
+
 enum CallValue {
     Word(u64),
     TemporaryString(u32, u8),
@@ -400,6 +407,7 @@ const fn client() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
+    t.entries[34] = scalar!(register_sound);
     t.entries[53] = Some(CallEntry {
         handler: Handler::ClientCommands(|call, _| {
             client_server_command(call).map(CallValue::Word)
@@ -429,6 +437,7 @@ const fn ui() -> CallTable {
     t.entries[13] = scalar!(file_open);
     t.entries[14] = scalar!(file_read);
     t.entries[16] = scalar!(file_close);
+    t.entries[31] = scalar!(register_sound);
     t.entries[86] = scalar!(file_seek);
     t.entries[50] = scalar!(q3_cvar_register);
     t.entries[51] = scalar!(q3_cvar_update);

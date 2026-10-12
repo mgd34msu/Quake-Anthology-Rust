@@ -152,7 +152,7 @@ fn bank_reattachment_clears_old_handles_even_when_numeric_ids_are_reused() {
 }
 
 #[test]
-fn decoded_paths_use_shared_bindings_and_keep_zero_reserved_after_reattachment() {
+fn decoded_byte_paths_use_shared_bindings_and_keep_zero_reserved_after_reattachment() {
     let first = bank(&["sound/weapons/blastf1a.wav"]);
     let second = bank(&["sound/other.wav"]);
     let mut bindings = SoundBindings::load(2);
@@ -167,11 +167,10 @@ fn decoded_paths_use_shared_bindings_and_keep_zero_reserved_after_reattachment()
         .bind_path(Some(&first), 0, b"sound/weapons/blastf1a.wav")
         .unwrap();
     assert_eq!(bindings.sound(0), None);
-    assert_eq!(
-        bindings.bind_path(Some(&first), 1, b"sound/\xff.wav"),
-        Err(SoundBindingError::Text)
-    );
-    assert_eq!(bindings.sound(1), Some(blaster));
+    bindings
+        .bind_path(Some(&first), 1, b"sound/\xff.wav")
+        .unwrap();
+    assert_eq!(bindings.sound(1), None);
     bindings.attach(&second);
     bindings
         .bind_path(Some(&second), 1, b"sound/weapons/blastf1a.wav")
@@ -182,6 +181,56 @@ fn decoded_paths_use_shared_bindings_and_keep_zero_reserved_after_reattachment()
         .bind_path(Some(&second), 1, b"sound/other.wav")
         .unwrap();
     assert_eq!(bindings.sound(1), second.find("sound/other.wav"));
+}
+
+#[test]
+fn valid_zero_domain_uses_the_same_numeric_forward_and_inverse_rows() {
+    let bank = bank(&["sound/a.wav", "sound/b.wav"]);
+    let a = bank.find("sound/a.wav").unwrap();
+    let b = bank.find("sound/b.wav").unwrap();
+    let mut handles = SoundBindings::load_with_zero(4);
+    handles.attach(&bank);
+    assert_eq!(handles.register(a), Ok(0));
+    assert_eq!(handles.register(b), Ok(1));
+    assert_eq!(handles.register(a), Ok(0));
+    assert_eq!(handles.sound(0), Some(a));
+    assert_eq!(handles.ordinal(a), Some(0));
+    handles.set(2, Some(a)).unwrap();
+    handles.set(0, Some(b)).unwrap();
+    assert_eq!(handles.ordinal(a), Some(2));
+    assert_eq!(handles.ordinal(b), Some(0));
+    handles.set(0, None).unwrap();
+    assert_eq!(handles.ordinal(b), Some(1));
+    assert_eq!(handles.register(b), Ok(1));
+    assert_eq!(
+        handles.register(qa_core::primitives::SoundId(u32::MAX)),
+        Err(SoundBindingError::Sound)
+    );
+}
+
+#[test]
+fn byte_path_bindings_resolve_non_utf8_registered_sound_without_a_second_codec() {
+    let rate = NonZeroU32::new(44100).unwrap();
+    let mut bank = Bank::with_capacity(rate, 1, 32).unwrap();
+    let sound = bank.attempt(b"SOUND\\RAW\xff.WAV").unwrap();
+    bank.admit(
+        sound,
+        Pcm {
+            rate,
+            channels: PcmChannels::Mono,
+            samples: vec![7],
+            loop_start: None,
+        },
+    )
+    .unwrap();
+    let mut bindings = SoundBindings::load(2);
+    bindings.attach(&bank);
+    bindings
+        .bind_path(Some(&bank), 1, b"sound/raw\xff.wav")
+        .unwrap();
+    assert_eq!(bindings.sound(1), Some(sound));
+    assert_eq!(bindings.ordinal(sound), Some(1));
+    assert_eq!(bank.name(sound), Some(b"sound/raw\xff.wav".as_slice()));
 }
 
 #[test]

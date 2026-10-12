@@ -92,6 +92,36 @@ pub(super) fn publish(
     delivery: NativeDelivery,
     spatial: SpatialPolicy,
 ) -> Result<Option<u64>, CallError> {
+    // During native Init/ClientBegin the same bank is still cold. Resolve
+    // numeric sounds before the grouped publisher borrows staging bytes.
+    if s.sound_loader.is_some() {
+        let sounds = s.storage.resources(delivery.module).map(|ranges| ranges[1]);
+        let protocol = Protocol::native(delivery.source);
+        let mut position = 0;
+        loop {
+            let (ordinal, consumed) = {
+                let row = s.storage.entity_range(delivery.module)?;
+                if position >= row.written {
+                    break;
+                }
+                let mut parts = Parts::new(protocol, &row.message[position..row.written]);
+                let ordinal = match parts.next() {
+                    Some(Part::Sound { wire, .. }) => Some(wire.index),
+                    _ => None,
+                };
+                (ordinal, parts.next)
+            };
+            if consumed == 0 {
+                break;
+            }
+            position += consumed;
+            if let Some((sounds, ordinal)) = sounds.zip(ordinal)
+                && u32::from(ordinal) < sounds.count
+            {
+                s.sound_id(delivery.module, sounds, i32::from(ordinal))?;
+            }
+        }
+    }
     let row = s.storage.entity_range(delivery.module)?;
     if row.written == 0 {
         return Ok(None);

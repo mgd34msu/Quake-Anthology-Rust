@@ -27,6 +27,8 @@ use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
 
 pub struct Runtime {
+    /// Load-owned PCM registration becomes the same immutable bank before frames.
+    pub sound_loader: Option<Box<audio::SoundLoader>>,
     pub sound_bank: Option<std::sync::Arc<qa_audio::Bank>>,
     pub catalog: catalog::GameplayCatalog,
     pub vfs: Vfs,
@@ -180,6 +182,11 @@ impl Runtime {
                 .as_mut()
                 .map(|loader| loader as &mut dyn qa_compat::services::ModelLoader),
             model_lookup,
+            sound_loader: self
+                .sound_loader
+                .as_deref_mut()
+                .map(|loader| loader as &mut dyn qa_compat::services::SoundRegistrar),
+            sound_bank: self.sound_bank.as_deref(),
             storage,
             geometry: &self.geometry,
             world: identity,
@@ -226,6 +233,7 @@ impl Runtime {
         .map_err(|e| format!("loopback: {e:?}"))?;
         let value_slots = catalog.hud.values.capacity();
         Ok(Self {
+            sound_loader: None,
             sound_bank: None,
             models: None,
             model_loader: None,
