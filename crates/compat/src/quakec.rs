@@ -7,6 +7,9 @@ use crate::{
 use qa_core::{bits::BitSet, primitives::Vec3};
 use qa_formats::program::quakec::{Image, Opcode};
 
+mod map;
+pub use map::{MapAdmission, MapFields};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trap {
     Statement,
@@ -65,6 +68,12 @@ pub enum PhysicsPhase {
     Noclip,
     Unsupported,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallPhase {
+    Export,
+    Think,
+    Spawn,
+}
 struct TraceFields {
     scalars: [usize; 6],
     end: usize,
@@ -116,6 +125,7 @@ pub struct Vm {
     dirty_count: usize,
     state: Option<StateFields>,
     call_fields: CallFields,
+    map_globals: map::MapGlobals,
     trace_fields: Option<TraceFields>,
     vector_globals: Option<[usize; 3]>,
     state_step: f64,
@@ -172,6 +182,7 @@ impl Vm {
             time_global: definition(&image, false, b"time", 2),
             frame_time: definition(&image, false, b"frametime", 2),
         };
+        let map_globals = map::MapGlobals::load(&image);
         let hook_bytes = image
             .globals
             .len()
@@ -230,6 +241,7 @@ impl Vm {
             dirty_count: 0,
             state,
             call_fields,
+            map_globals,
             trace_fields,
             vector_globals,
             state_step: layout.state_step,
@@ -270,20 +282,21 @@ impl Vm {
         entity: Option<u32>,
         world: Option<u32>,
         time: qa_core::primitives::ThinkTime,
-        think: bool,
+        phase: CallPhase,
     ) -> Result<(), Trap> {
-        if think {
+        if phase == CallPhase::Think {
             self.projection
                 .quakec_clear_think(&mut self.entities, entity.ok_or(Trap::Memory)?)
                 .map_err(|_| Trap::Memory)?;
         }
-        for (global, value) in [
-            (self.call_fields.self_global, entity),
-            (self.call_fields.other_global, world),
-        ] {
-            if let Some(global) = global {
-                self.image.globals[global] = value.ok_or(Trap::Memory)?;
-            }
+        if let Some(global) = self.call_fields.self_global {
+            self.image.globals[global] = entity.ok_or(Trap::Memory)?;
+        }
+        if phase == CallPhase::Spawn {
+            return Ok(());
+        }
+        if let Some(global) = self.call_fields.other_global {
+            self.image.globals[global] = world.ok_or(Trap::Memory)?;
         }
         if let Some(global) = self.call_fields.time_global {
             self.image.globals[global] = (time.seconds() as f32).to_bits();
@@ -318,6 +331,42 @@ impl Vm {
             .projection
             .binding(entities, native)?
             .filter(|entity| entities.columns.owner[entity.slot as usize] == native.module))
+    }
+    /// Map admission and builtin spawn use the existing native ordinal
+    /// allocator. This does not change the VM's return globals.
+    pub fn spawn_entity(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+    ) -> Result<u32, crate::services::CallError> {
+        self.projection
+            .quakec_spawn(services, &mut self.entities, context)
+    }
+    pub fn remove_entity(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection
+            .quakec_remove(services, &mut self.entities, context, native)
+    }
+    pub fn resolve_entity(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        module: qa_core::primitives::ModuleId,
+        native: u32,
+    ) -> Result<Option<qa_core::primitives::EntityId>, crate::services::CallError> {
+        let slot = self
+            .entity_number(native)
+            .map_err(|_| crate::services::CallError::Memory)?;
+        self.bound_entity(
+            entities,
+            qa_core::primitives::NativeEntity {
+                module,
+                slot: slot as i32,
+            },
+        )
     }
     /// Native NOCLIP follows the owning module's think phase. Its pose writes
     /// use the same checked edict importer and explicit link service.

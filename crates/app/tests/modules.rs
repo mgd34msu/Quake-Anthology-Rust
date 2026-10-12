@@ -1,3 +1,5 @@
+#[path = "modules/quakec_map.rs"]
+mod quakec_map;
 #[path = "../../compat/tests/support/quakec_program.rs"]
 mod quakec_program;
 #[path = "modules/quakec_thinks.rs"]
@@ -648,7 +650,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
             api: None,
             rate: TickRate::fixed(100).unwrap(),
             anchor: ids[1],
-            program: Program::quakec(qc),
+            program: Program::quakec(qc, None),
             entries: vec![1, 5],
             frame: Export::clocked(CallbackId(0)),
             prepare: Vec::new(),
@@ -756,7 +758,7 @@ fn quakec_runtime_host(rules: RuleSetId, vm: Vm, mut runtime: Runtime) -> FrameH
             phase: Phase::Server,
             rate: TickRate::fixed(100).unwrap(),
             anchor,
-            program: Program::quakec(vm),
+            program: Program::quakec(vm, None),
             entries: vec![1],
             frame: Export::clocked(CallbackId(0)),
             prepare: vec![],

@@ -366,12 +366,21 @@ pub fn load_q3(
     Ok(())
 }
 
-/// StartFrame and the native MOVETYPE_NONE phase use the shared services and
-/// think dispatcher. Map/client spawn and other physics phases remain separate.
+/// Map spawn and native frame/think calls use the same session entries.
 pub fn load_quakec(
     runtime: &mut Runtime,
     specs: &[QuakeCSpec],
+    map: Option<(&str, usize)>,
 ) -> Result<Vec<ModuleRequest>, String> {
+    let map = map
+        .map(|(path, index)| {
+            runtime
+                .entity_sources
+                .get(index)
+                .map(|source| (path, index, source.syntax))
+                .ok_or_else(|| "missing QuakeC map entity source".to_owned())
+        })
+        .transpose()?;
     let mut reader = ArchiveReader::default();
     let mut requests = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -421,7 +430,13 @@ pub fn load_quakec(
             phase: Phase::Server,
             rate: TickRate::FrameDriven,
             anchor,
-            program: Program::quakec(vm),
+            program: Program::quakec(
+                vm,
+                map.map(|(path, source, _)| super::QuakeCMap {
+                    world_path: path.to_owned(),
+                    entity_source: source,
+                }),
+            ),
             entries,
             frame: Export::clocked(CallbackId(frame)),
             prepare: Vec::new(),
@@ -431,7 +446,7 @@ pub fn load_quakec(
             instruction_budget: 1_000_000,
             configstrings: qa_core::configstrings::ConfigLayout::for_rules(spec.rules).count,
             files: 32,
-            entity_source: None,
+            entity_source: map.map(|(_, index, syntax)| (index, syntax)),
         });
     }
     Ok(requests)

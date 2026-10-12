@@ -168,7 +168,7 @@ fn request(
             timing_rules: rules,
             rate: TickRate::fixed(rate).unwrap(),
             anchor,
-            program: Program::quakec(vm),
+            program: Program::quakec(vm, None),
             entries,
             frame: Export::clocked(CallbackId(callback)),
             prepare: vec![],
@@ -790,12 +790,16 @@ fn independent_provider_rates_supply_native_start_end_time_and_qw_frametime() {
     assert_eq!(host.module_counts(ModuleId(2)).unwrap().calls, 5);
     assert_eq!(
         host.module_counts(ModuleId(1)).unwrap().last_result,
-        Some(ModuleResult::QuakeC([1.1f32.to_bits(), 0, 0]))
+        Some(ModuleResult::QuakeC([
+            0.1f32.to_bits(),
+            0.1f32.to_bits(),
+            0
+        ]))
     );
     assert_eq!(
         host.module_counts(ModuleId(2)).unwrap().last_result,
         Some(ModuleResult::QuakeC([
-            1.25f32.to_bits(),
+            0.25f32.to_bits(),
             0.05f32.to_bits(),
             0
         ]))
@@ -986,7 +990,7 @@ fn future_callback_time_does_not_change_native_reuse_grace_or_strict_delay() {
             vm.image.globals[global] = value;
         }
         let mut runtime = Runtime::load(1, []).unwrap();
-        let (request, _) = request(
+        let (mut request, _) = request(
             &mut runtime,
             ModuleId(1),
             RuleSetId::Quake,
@@ -996,6 +1000,9 @@ fn future_callback_time_does_not_change_native_reuse_grace_or_strict_delay() {
             40,
             &[],
         );
+        // Seed the native SERVER clock explicitly. The physical clock epoch
+        // does not initialize sv.time or change the native reuse grace.
+        request.context.clock = ThinkTime::Seconds(provider_now);
         let mut host = load(runtime, vec![request]);
         let start_ms = (provider_now * 1000.0) as u64;
         tick(&mut host, start_ms);
@@ -1172,9 +1179,12 @@ fn noclip_reads_think_pose_changes_and_uses_native_float_arithmetic() {
         tick(&mut host, 333);
         let slot = ids[0].slot as usize;
         let vector_ma = |start: Vec3, speed: Vec3| {
-            std::array::from_fn::<_, 3, _>(|axis| {
-                (start.0[axis] + 0.333f32 * speed.0[axis]).to_bits()
-            })
+            let step = if rules == RuleSetId::Quake {
+                0.1f32
+            } else {
+                0.333f32
+            };
+            std::array::from_fn::<_, 3, _>(|axis| (start.0[axis] + step * speed.0[axis]).to_bits())
         };
         assert_eq!(
             host.runtime.server.entities.columns.position[slot]

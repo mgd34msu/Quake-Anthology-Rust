@@ -25,6 +25,7 @@ pub use load::{Q2Clients, Q2Spec, Q3Role, Q3Spec, QuakeCSpec, load_q2, load_q3, 
 mod clients;
 pub use clients::ClientCommandError;
 mod cues;
+mod map_start;
 mod resources;
 
 pub enum Program {
@@ -42,17 +43,26 @@ pub enum Program {
 pub struct QuakeCProgram {
     vm: Box<quakec::Vm>,
     physics: Option<QwPhysics>,
+    map: Option<QuakeCMap>,
+    duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
+}
+/// A loaded world and its retained native entity source are paired explicitly.
+pub struct QuakeCMap {
+    pub world_path: String,
+    pub entity_source: usize,
 }
 struct QwPhysics {
     minimum: qa_core::primitives::CvarHandle,
     maximum: qa_core::primitives::CvarHandle,
-    last: Option<qa_core::sys_events::EventTime>,
+    last: Option<ThinkTime>,
 }
 impl Program {
-    pub fn quakec(vm: quakec::Vm) -> Self {
+    pub fn quakec(vm: quakec::Vm, map: Option<QuakeCMap>) -> Self {
         Self::QuakeC(QuakeCProgram {
             vm: Box::new(vm),
             physics: None,
+            map,
+            duration: None,
         })
     }
     fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> bool {
@@ -164,6 +174,11 @@ pub enum State {
     Failed,
     Stopped,
 }
+impl State {
+    fn can_invoke(self) -> bool {
+        matches!(self, Self::Pending | Self::Running)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleResult {
     Qvm(i32),
@@ -204,6 +219,13 @@ struct Module {
     client_api: Option<Q2Clients>,
 }
 impl Module {
+    fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
+        if matches!(self.request.program, Program::QuakeC(_)) {
+            self.request.context.clock
+        } else {
+            self.request.context.clock.at(queued)
+        }
+    }
     fn sound_resources(&self) -> Option<qa_core::primitives::IndexSpan> {
         self.storage
             .resources(self.request.context.module)
@@ -344,6 +366,36 @@ impl FrameHost {
                         last: None,
                     });
                 }
+                if request.rate == TickRate::FrameDriven
+                    && let Some(policy) = qa_gameplay::rules::frame_duration(request.timing_rules)
+                {
+                    qc.duration = Some((
+                        policy,
+                        host.console
+                            .cvars
+                            .bind(
+                                policy.override_cvar,
+                                qa_console::views::Context {
+                                    source: request.timing_rules,
+                                    role: qa_console::views::Role::Engine,
+                                    side: qa_console::catalog::Scope::Server,
+                                    ..qa_console::views::Context::default()
+                                },
+                            )
+                            .ok_or("missing module frame duration cvar")?,
+                    ));
+                }
+                if let Some(map) = &qc.map {
+                    let source = host
+                        .runtime
+                        .entity_sources
+                        .get(map.entity_source)
+                        .ok_or("missing QuakeC map entity source")?;
+                    if request.entity_source != Some((map.entity_source, source.syntax)) {
+                        return Err("unpaired QuakeC map entity source".into());
+                    }
+                    request.context.clock = ThinkTime::Seconds(1.0);
+                }
             }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &request.program
@@ -408,6 +460,7 @@ impl FrameHost {
             let state = if !request.prepare.is_empty()
                 || !request.initialize.is_empty()
                 || request.api.is_some()
+                || matches!(&request.program, Program::QuakeC(qc) if qc.map.is_some())
             {
                 State::Pending
             } else {
@@ -571,7 +624,7 @@ impl FrameHost {
                 continue;
             }
             let api = (!shutdown).then_some(row.request.api).flatten();
-            let time = row.request.context.clock.at(self.time);
+            let time = row.time(self.time);
             let module = ModuleId(index as u16);
             let sequence = if shutdown {
                 LifecycleSequence::Shutdown
@@ -586,6 +639,7 @@ impl FrameHost {
                     .and_then(|()| {
                         self.module_sequence(module, LifecycleSequence::Initialize, time)
                     })
+                    .and_then(|()| self.initialize_quakec_map(module))
             });
             if let Some(row) = self.module_row_mut(ModuleId(index as u16)) {
                 if result.is_err() {
@@ -599,7 +653,7 @@ impl FrameHost {
                     State::Failed
                 };
                 if let Program::QuakeC(qc) = &mut row.request.program {
-                    qc.vm.active = true;
+                    qc.vm.active = row.state == State::Running;
                 }
             }
         }
@@ -666,7 +720,7 @@ impl FrameHost {
             if row.request.phase != Phase::Client {
                 continue;
             }
-            let time = row.request.context.clock.at(self.time);
+            let time = row.time(self.time);
             invoke_frame(self, ModuleId(index as u16), time);
         }
     }
@@ -702,24 +756,42 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let _ = row.storage.reset_message(module);
     row.request.context.server_frame = tick.index - 1;
     let quakec = matches!(row.request.program, Program::QuakeC(_));
-    // NQ advances sv.time after SV_Physics; QW advances it before physics in
-    // SV_Frame. Both retain the provider's independent native frame duration.
-    let start = if quakec && row.request.timing_rules == RuleSetId::Quake {
-        tick.start
-    } else {
-        tick.end
-    };
-    let time = row.request.context.clock.at(start);
-    if quakec {
-        row.request.context.clock = time;
-    }
     let mut step = qa_core::sys_events::EventTime(tick.end.since(tick.start)).seconds();
+    if let Program::QuakeC(qc) = &row.request.program
+        && let Some((policy, view)) = qc.duration
+    {
+        let forced = f64::from(cvars.numeric(view).unwrap_or(0.0));
+        step = if forced > 0.0 {
+            forced
+        } else {
+            step.clamp(policy.bounds[0], policy.bounds[1])
+        };
+    }
+    // Native sv.time is an accumulator, not the platform's absolute epoch.
+    // QW SV_Frame takes a float duration; NQ advances its double after physics.
+    let previous = row.request.context.clock;
+    let advance = if row.request.timing_rules == RuleSetId::QuakeWorld {
+        f64::from(step as f32)
+    } else {
+        step
+    };
+    let next = ThinkTime::Seconds(previous.seconds() + advance);
+    let time = if quakec {
+        if row.request.timing_rules == RuleSetId::QuakeWorld {
+            row.request.context.clock = next;
+            next
+        } else {
+            previous
+        }
+    } else {
+        row.request.context.clock.at(tick.end)
+    };
     let mut physics_due = true;
     if let Program::QuakeC(qc) = &mut row.request.program
         && let Some(physics) = &mut qc.physics
     {
-        let last = *physics.last.get_or_insert(tick.start);
-        step = qa_core::sys_events::EventTime(tick.end.since(last)).seconds();
+        let last = *physics.last.get_or_insert(previous);
+        step = time.seconds() - last.seconds();
         let minimum = cvars.value_in(physics.minimum, RuleSetId::QuakeWorld);
         let maximum = cvars.value_in(physics.maximum, RuleSetId::QuakeWorld);
         if step < f64::from(minimum) {
@@ -728,13 +800,10 @@ fn frame(host: &mut FrameHost, tick: Tick) {
             if step > f64::from(maximum) {
                 step = f64::from(maximum);
             }
-            physics.last = Some(tick.end);
+            physics.last = Some(time);
         }
     }
-    if physics_due
-        && let Program::QuakeC(qc) = &mut row.request.program
-        && row.request.timing_rules == RuleSetId::QuakeWorld
-    {
+    if physics_due && let Program::QuakeC(qc) = &mut row.request.program {
         qc.vm.frame_time(step);
     }
     if physics_due && invoke_frame(host, module, time) && quakec {
@@ -743,7 +812,7 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     if let Some(row) = host.module_row_mut(module) {
         row.request.context.server_frame = tick.index;
         if quakec {
-            row.request.context.clock = row.request.context.clock.at(tick.end);
+            row.request.context.clock = next;
         }
     }
 }
@@ -891,6 +960,9 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
     else {
         return false;
     };
+    if !row.state.can_invoke() {
+        return false;
+    }
     if matches!(row.request.program, Program::QuakeC(_)) {
         return false;
     }
@@ -974,8 +1046,15 @@ fn native_self(
     u32::try_from(offset).ok()
 }
 fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
-    let think = matches!(call, CallbackCall::Think { .. });
-    let (CallbackCall::Think { entity, time } | CallbackCall::Export { entity, time, .. }) = call
+    let phase = match call {
+        CallbackCall::Think { .. } => quakec::CallPhase::Think,
+        CallbackCall::Spawn { .. } => quakec::CallPhase::Spawn,
+        _ => quakec::CallPhase::Export,
+    };
+    let think = phase == quakec::CallPhase::Think;
+    let (CallbackCall::Think { entity, time }
+    | CallbackCall::Spawn { entity, time }
+    | CallbackCall::Export { entity, time, .. }) = call
     else {
         return false;
     };
@@ -986,12 +1065,15 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     else {
         return false;
     };
+    if !row.state.can_invoke() {
+        return false;
+    }
     let Program::QuakeC(qc) = &mut row.request.program else {
         return false;
     };
     let native = native_self(&host.runtime, entity, module, &qc.vm);
     let world = native_self(&host.runtime, row.request.anchor, module, &qc.vm);
-    if qc.vm.prepare_call(native, world, time, think).is_err() {
+    if qc.vm.prepare_call(native, world, time, phase).is_err() {
         return false;
     }
     let mut services =

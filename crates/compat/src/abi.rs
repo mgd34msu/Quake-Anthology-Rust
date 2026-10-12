@@ -774,23 +774,16 @@ fn qc_spawn(
     vm: &mut quakec::Vm,
     _: &[u64],
 ) -> Result<CallValue, CallError> {
-    Ok(CallValue::Word(u64::from(vm.projection.quakec_spawn(
-        c.services,
-        &mut vm.entities,
-        c.context,
-    )?)))
+    Ok(CallValue::Word(u64::from(
+        vm.spawn_entity(c.services, c.context)?,
+    )))
 }
 fn qc_remove(
     c: &mut QuakeCCalls<'_, '_>,
     vm: &mut quakec::Vm,
     arguments: &[u64],
 ) -> Result<CallValue, CallError> {
-    vm.projection.quakec_remove(
-        c.services,
-        &mut vm.entities,
-        c.context,
-        qc_word(arguments, 0)?,
-    )?;
+    vm.remove_entity(c.services, c.context, qc_word(arguments, 0)?)?;
     Ok(CallValue::Word(0))
 }
 fn qc_set_origin(

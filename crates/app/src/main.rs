@@ -502,7 +502,11 @@ fn run() -> Result<(), String> {
         loaded_world = Some(loaded.render);
     }
     let render_world = loaded_world.as_ref().map(|world| world.world);
-    let mut module_requests = qa_app::modules::load_quakec(&mut runtime, &quakec_modules)?;
+    let mut module_requests = qa_app::modules::load_quakec(
+        &mut runtime,
+        &quakec_modules,
+        map_path.as_deref().zip(native_entity_source),
+    )?;
     let q2_clients = if !q2_modules.is_empty() {
         qa_app::modules::load_q2(
             &mut runtime,
@@ -531,7 +535,7 @@ fn run() -> Result<(), String> {
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
     for (index, spec) in quakec_modules.iter().enumerate() {
         println!(
-            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"entry\":\"StartFrame\",\"scope\":\"frame_entries_only\",\"gameplay\":false}}",
+            "{{\"event\":\"module_loaded\",\"module\":{},\"file\":{},\"rules\":\"{}\",\"entry\":\"StartFrame\",\"scope\":\"map_spawn_and_frames\",\"gameplay\":false}}",
             index + 1,
             json(&spec.path)?,
             spec.rules.name()

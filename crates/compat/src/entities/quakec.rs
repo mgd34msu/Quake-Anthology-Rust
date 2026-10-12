@@ -351,6 +351,37 @@ impl EntityProjection {
             row.think_word = None;
         }
     }
+    pub(crate) fn quakec_callback(
+        &self,
+        function: u32,
+    ) -> Result<qa_core::primitives::CallbackId, CallError> {
+        let thinks = self.quakec_thinks.as_ref().ok_or(CallError::Entity)?;
+        let binding = thinks
+            .functions
+            .get(function as usize)
+            .ok_or(CallError::Entity)?;
+        if binding.path == thinks.module.think(None).path {
+            return Err(CallError::Entity);
+        }
+        binding.callback.ok_or(CallError::Entity)
+    }
+    pub(crate) fn quakec_world_fields(
+        &self,
+        memory: &ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<[u64; 4], CallError> {
+        if value != 0 || self.owner.is_none() {
+            return Err(CallError::Entity);
+        }
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        Ok([
+            address + layout.model.ok_or(CallError::Memory)? as u64,
+            address + layout.model_index.ok_or(CallError::Memory)? as u64,
+            address + layout.solid.ok_or(CallError::Memory)? as u64,
+            address + layout.move_type.ok_or(CallError::Memory)? as u64,
+        ])
+    }
     pub(crate) fn quakec_physics_entity(
         &self,
         entities: &EntityTable,

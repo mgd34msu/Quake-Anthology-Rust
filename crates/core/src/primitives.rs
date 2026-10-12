@@ -361,6 +361,12 @@ pub enum CallbackCall<'a> {
         entity: EntityId,
         time: ThinkTime,
     },
+    /// Ordered load-time entity initialization uses the same lifetime-checked
+    /// function table. The module ABI decides which call globals it changes.
+    Spawn {
+        entity: EntityId,
+        time: ThinkTime,
+    },
     Touch {
         entity: EntityId,
         other: EntityId,
@@ -389,6 +395,7 @@ impl CallbackCall<'_> {
         match self {
             Self::Export { entity, .. }
             | Self::Think { entity, .. }
+            | Self::Spawn { entity, .. }
             | Self::Touch { entity, .. }
             | Self::Use { entity, .. }
             | Self::Blocked { entity, .. } => entity,

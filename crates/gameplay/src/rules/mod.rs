@@ -19,6 +19,33 @@ pub fn tick_millis(rules: RuleSetId, sv_fps: NonZeroU32) -> Option<NonZeroU32> {
     }
 }
 
+/// Native frame-driven duration policy; explicit fixed-rate providers keep
+/// their caller-selected cadence.
+#[derive(Clone, Copy)]
+pub struct FrameDuration {
+    pub bounds: [f64; 2],
+    pub override_cvar: &'static str,
+}
+pub fn frame_duration(rules: RuleSetId) -> Option<FrameDuration> {
+    (rules == RuleSetId::Quake).then_some(FrameDuration {
+        bounds: [0.001, 0.1],
+        override_cvar: "host_framerate",
+    })
+}
+
+/// QC map inhibition is a module rule, independent of the map's file syntax.
+pub fn map_inhibit_flags(rules: RuleSetId, deathmatch: bool, skill: i32) -> i32 {
+    if rules == RuleSetId::QuakeWorld || deathmatch {
+        2048
+    } else {
+        match skill {
+            0 => 256,
+            1 => 512,
+            _ => 1024,
+        }
+    }
+}
+
 /// Q3 InsertLinkAfter puts the newest entity first; Q1/QW/Q2 append it.
 pub fn link_first(rules: RuleSetId) -> bool {
     rules == RuleSetId::Quake3
