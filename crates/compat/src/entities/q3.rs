@@ -87,6 +87,18 @@ const LAYOUT: EntityLayout = EntityLayout {
 };
 
 impl EntityProjection {
+    pub(crate) fn registered_players(&self) -> Option<Entities> {
+        let EntityMemory::Registered(Some(data)) = self.memory else {
+            return None;
+        };
+        Some(Entities {
+            address: data.players,
+            stride: data.player_stride,
+            count: data.player_count,
+            capacity: data.player_count,
+            server_flags: 0,
+        })
+    }
     pub fn load_q3() -> Self {
         let mut projection = Self::load(
             0,

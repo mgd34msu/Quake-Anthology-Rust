@@ -18,6 +18,10 @@ use qa_session::{
 };
 use std::time::Duration;
 
+#[path = "support/service_program.rs"]
+#[allow(dead_code)]
+mod service_program;
+
 #[derive(Default)]
 struct Source {
     time: u64,
@@ -268,6 +272,195 @@ fn native_player_values_reach_client_and_hud_through_the_queued_snapshot() {
                 > 0
         );
     }
+}
+
+#[test]
+fn registered_q3_player_values_reach_client_and_hud_through_session_packets() {
+    use qa_app::{
+        client_policy::ClientPolicy,
+        map::SpawnAnchor,
+        modules::{Export, ModuleRequest, Phase, Program},
+    };
+    use qa_compat::{abi::Q3_SERVER, services::CallContext};
+    use qa_core::primitives::{CallbackId, NativeEntity, NumericValue, ThinkTime};
+    use qa_formats::program::qvm::Opcode::*;
+    use qa_network::commands::packet::Protocol;
+    use qa_world::{area::LinkOrder, entities::AllocationPolicy};
+    let mut runtime = Runtime::load(2, []).unwrap();
+    runtime
+        .server
+        .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None)
+        .unwrap();
+    let id = runtime
+        .connect_local(
+            SeatId::FIRST,
+            SpawnAnchor {
+                position: Default::default(),
+                angles: Default::default(),
+                entity: 0,
+                fixture_fallback: false,
+            },
+            ClientPolicy::select(
+                Some(RuleSetId::Quake),
+                None,
+                Some(RuleSetId::QuakeWorld),
+                Some(RuleSetId::Quake2),
+            )
+            .unwrap(),
+            Protocol::Quake3_68,
+            0,
+        )
+        .unwrap();
+    assert_eq!(id.0, 1);
+    assert!(runtime.server.bind_client_native(
+        id,
+        NativeEntity {
+            module: ModuleId(1),
+            slot: 0
+        }
+    ));
+    let entity_base = 4096;
+    let player_base = 16384;
+    let mut data = vec![0; player_base + 512];
+    let stats = std::array::from_fn::<_, 16, _>(|i| match i {
+        0 => 71,
+        3 => 29,
+        14 => i32::MIN,
+        15 => i32::MAX,
+        _ => -123 - i as i32,
+    });
+    let persistent =
+        std::array::from_fn::<_, 16, _>(|i| if i == 0 { -5 } else { 90_000 + i as i32 });
+    for (offset, values) in [(184, stats), (248, persistent)] {
+        for (i, value) in values.into_iter().enumerate() {
+            let at = player_base + offset + i * 4;
+            data[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let mut vm = service_program::program(
+        &[
+            (Enter, 64),
+            (Const, entity_base as i32),
+            (Arg, 8),
+            (Const, 1),
+            (Arg, 12),
+            (Const, 608),
+            (Arg, 16),
+            (Const, player_base as i32),
+            (Arg, 20),
+            (Const, 512),
+            (Arg, 24),
+            (Const, -16),
+            (Call, 0),
+            (Pop, 0),
+            (Const, 0),
+            (Leave, 64),
+        ],
+        &data,
+    );
+    vm.configure_q3_game();
+    let module = ModuleId(1);
+    let allocation = AllocationPolicy::q3(0);
+    let anchor = runtime
+        .server
+        .entities
+        .allocate(ThinkTime::Milliseconds(0), module, allocation)
+        .unwrap()
+        .id;
+    let request = ModuleRequest {
+        context: CallContext {
+            module,
+            native_rules: RuleSetId::Quake3,
+            trace_rules: RuleSetId::Quake2,
+            sound_rules: RuleSetId::Quake,
+            server_frame: 0,
+            clock: ThinkTime::Milliseconds(0),
+            console: Context::default(),
+            allocation,
+            link_order: LinkOrder::Head,
+        },
+        phase: Phase::Server,
+        timing_rules: RuleSetId::Quake3,
+        rate: TickRate::fixed(50).unwrap(),
+        anchor,
+        program: Program::Qvm {
+            vm: Box::new(vm),
+            imports: &Q3_SERVER,
+        },
+        entries: vec![0],
+        frame: Export::clocked(CallbackId(0)),
+        prepare: vec![],
+        initialize: vec![Export::clocked(CallbackId(0))],
+        api: None,
+        shutdown: vec![],
+        instruction_budget: 100,
+        configstrings: 0,
+        files: 0,
+        entity_source: None,
+    };
+    let mut host = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(50).unwrap(),
+        vec![request],
+    )
+    .unwrap();
+    host.local_clients[0] = Some(id);
+    host.initialize_modules(Phase::Server);
+    let bindings = host.runtime.catalog.hud.values.native(RuleSetId::Quake3);
+    for (array, expected) in [(&bindings.stats, stats), (&bindings.persistent, persistent)] {
+        for (binding, value) in array.iter().zip(expected) {
+            assert_eq!(
+                host.runtime.server.clients[id.0 as usize]
+                    .player
+                    .values
+                    .get(binding.id),
+                Some(NumericValue::integer(value))
+            );
+        }
+    }
+    let mut source = Source::default();
+    for ms in [0, 100, 200] {
+        source.time = ms;
+        assert_eq!(host.frame(&mut source, true).drains, 2);
+    }
+    let client = &host.runtime.server.clients[id.0 as usize];
+    let prediction = &host.runtime.prediction[0].player;
+    let bindings = host.runtime.catalog.hud.values.native(RuleSetId::Quake3);
+    for (array, expected) in [(&bindings.stats, stats), (&bindings.persistent, persistent)] {
+        for (binding, value) in array.iter().zip(expected) {
+            // Original Q3 signed16 arrays narrow only at the native wire boundary.
+            let received = NumericValue::integer(value as i16 as i32);
+            assert_eq!(prediction.values.get(binding.id), Some(received));
+            assert_eq!(client.hud.values.get(binding.id), Some(received));
+            assert_eq!(
+                client.player.values.get(binding.id),
+                Some(NumericValue::integer(value))
+            );
+        }
+    }
+    assert_eq!(
+        (prediction.health, prediction.armor, prediction.score),
+        (71, 29, -5)
+    );
+    assert_eq!(
+        (client.hud.health, client.hud.armor, client.hud.score),
+        (71, 29, -5)
+    );
+    assert_eq!(
+        (prediction.movement_rules, prediction.trace_rules),
+        (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+    );
+    assert_eq!(client.client_rules, RuleSetId::Quake);
+    assert!(!client.module_movement);
+    assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    assert!(
+        host.runtime.local_snapshots[id.0 as usize]
+            .as_ref()
+            .unwrap()
+            .applied
+            > 0
+    );
 }
 
 #[test]

@@ -904,7 +904,7 @@ impl Game {
             configs.resources[0],
             qa_world::entities::MAX_ENTITIES,
         ));
-        vm.player_stats = Some(crate::players::PlayerStats::load(client));
+        vm.player_values = Some(crate::players::PlayerValues::load_q2(client));
         vm.pmove = Some(crate::pmove::Pmove::load(
             if layout.version == 2023 {
                 &crate::pmove::RERELEASE

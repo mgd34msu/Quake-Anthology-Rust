@@ -29,6 +29,7 @@ pub struct Vm {
     pub image: Image,
     pub hooks: Hooks,
     pub(crate) entities: Option<crate::entities::EntityProjection>,
+    player_values: Option<crate::players::PlayerValues>,
     program_stack: usize,
     stack_bottom: usize,
     mask: u32,
@@ -43,12 +44,24 @@ impl Vm {
             image,
             hooks: Hooks::load(program_stack),
             entities: None,
+            player_values: None,
             program_stack,
             stack_bottom: program_stack.saturating_sub(65536),
         })
     }
     pub fn configure_q3_game(&mut self) {
         self.entities = Some(crate::entities::EntityProjection::load_q3());
+        self.player_values = Some(crate::players::PlayerValues::load_q3());
+    }
+    pub fn bind_player_values(
+        &mut self,
+        stats: &[qa_core::primitives::ValueBinding],
+        persistent: &[qa_core::primitives::ValueBinding],
+    ) -> Result<(), crate::services::CallError> {
+        if let Some(values) = &mut self.player_values {
+            values.bind(stats, persistent)?;
+        }
+        Ok(())
     }
     pub fn publish_entities(
         &mut self,
@@ -58,7 +71,17 @@ impl Vm {
         if let Some(entities) = &mut self.entities
             && entities.ready()
         {
-            entities.project(services, &mut self.memory, context)?;
+            let table = entities.project(services, &mut self.memory, context)?;
+            if let Some(values) = &mut self.player_values {
+                values.project(
+                    &self.memory,
+                    table,
+                    entities,
+                    context.module,
+                    services.server,
+                    None,
+                )?;
+            }
         }
         Ok(())
     }

@@ -48,7 +48,10 @@ fn context() -> CallContext {
 }
 impl Fixture {
     fn new() -> Self {
-        let mut runtime = Runtime::load(1, []).unwrap();
+        Self::with_clients(1)
+    }
+    fn with_clients(clients: usize) -> Self {
+        let mut runtime = Runtime::load(clients, []).unwrap();
         runtime.collision = Some(visibility_world::collision(
             &runtime.geometry,
             [Some(0), Some(1)],
@@ -59,6 +62,9 @@ impl Fixture {
         let mut vm =
             service_program::program(&[(qa_formats::program::qvm::Opcode::Ignore, 0)], &[]);
         vm.configure_q3_game();
+        let values = runtime.catalog.hud.values.native(RuleSetId::Quake3);
+        vm.bind_player_values(&values.stats, &values.persistent)
+            .unwrap();
         Self {
             runtime,
             console,
@@ -153,6 +159,235 @@ impl Fixture {
             )
             .map(|body| body.id)
             .collect()
+    }
+}
+
+#[test]
+fn registered_player_values_use_native_identity_and_preserve_pose_roles() {
+    use qa_core::primitives::{ClientId, NumericValue, PlayerTail};
+    use qa_session::clients::Connection;
+    let mut f = Fixture::with_clients(2);
+    assert_eq!(
+        f.runtime
+            .server
+            .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None),
+        Some(ClientId(0))
+    );
+    let native = NativeEntity {
+        module: ModuleId(1),
+        slot: 0,
+    };
+    let id = f
+        .runtime
+        .server
+        .connect(
+            Connection::Local,
+            native.module,
+            PlayerTail::Q3 { weapon_time: 777 },
+            Some(native),
+        )
+        .unwrap();
+    assert_eq!(id, ClientId(1));
+    let player = &mut f.runtime.server.clients[id.0 as usize].player;
+    player.movement_rules = RuleSetId::QuakeWorld;
+    player.trace_rules = RuleSetId::Quake2;
+    player.body.position = Vec3([123.25, -99.5, 40.0]);
+    player.body.velocity = Vec3([-22.5, 66.25, 3.0]);
+    player.view_angles = Vec3([10.5, 270.25, -8.0]);
+    player.view_offset = Vec3([3.0, 4.0, 22.0]);
+    player.movement.command_time_ms = 333;
+    player.movement.delta_angles = Vec3([25.0, 5.0, -15.0]);
+    player.movement.remaining_ms = 99;
+    let before = (
+        [
+            player.body.position,
+            player.body.velocity,
+            player.body.mins,
+            player.body.maxs,
+        ],
+        player.view_angles,
+        player.view_offset,
+        player.movement.command_time_ms,
+        player.movement.delta_angles,
+        player.movement.remaining_ms,
+        player.movement.tuning,
+    );
+    f.row(ENTITIES, 0, 1);
+    // Native pose/timing and private client padding must never enter stats-only import.
+    f.vm.memory.read_mut(PLAYERS, 512).unwrap().fill(0x7f);
+    let stats = std::array::from_fn::<_, 16, _>(|i| match i {
+        0 => 71,
+        3 => 29,
+        14 => i32::MIN,
+        15 => i32::MAX,
+        _ => -123 - i as i32,
+    });
+    let persistent =
+        std::array::from_fn::<_, 16, _>(|i| if i == 0 { -5 } else { 90_000 + i as i32 });
+    for (offset, values) in [(184, stats), (248, persistent)] {
+        for (i, value) in values.into_iter().enumerate() {
+            f.vm.memory
+                .write_word(PLAYERS + offset + (i * 4) as u64, value)
+                .unwrap();
+        }
+    }
+    f.publish(); // LocateGameData has not happened: values remain untouched.
+    assert_eq!(f.runtime.server.clients[1].player.health, 0);
+    f.register(ENTITIES, 1).unwrap();
+    f.publish();
+    let entity = f.runtime.server.clients[1].entity;
+    assert_eq!(f.binding(0), entity);
+    let row = &f.runtime.server.clients[1];
+    let player = &row.player;
+    assert_eq!((player.health, player.armor, player.score), (71, 29, -5));
+    assert_eq!(
+        (player.movement_rules, player.trace_rules),
+        (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+    );
+    assert!(!row.module_movement);
+    assert_eq!(player.tail, PlayerTail::Q3 { weapon_time: 777 });
+    assert_eq!(
+        (
+            [
+                player.body.position,
+                player.body.velocity,
+                player.body.mins,
+                player.body.maxs
+            ],
+            player.view_angles,
+            player.view_offset,
+            player.movement.command_time_ms,
+            player.movement.delta_angles,
+            player.movement.remaining_ms,
+            player.movement.tuning
+        ),
+        before
+    );
+    let values = f.runtime.catalog.hud.values.native(RuleSetId::Quake3);
+    for (bindings, expected) in [(&values.stats, stats), (&values.persistent, persistent)] {
+        for (binding, value) in bindings.iter().zip(expected) {
+            assert_eq!(
+                player.values.get(binding.id),
+                Some(NumericValue::integer(value))
+            );
+        }
+    }
+    assert_eq!(f.runtime.server.clients[0].player.health, 0);
+
+    // Re-register a different base and stride; no mirrored pointer may survive.
+    let replacement = PLAYERS + 8192;
+    f.vm.memory.read_mut(replacement, 640).unwrap().fill(0);
+    f.vm.memory.write_word(replacement + 184, 81).unwrap();
+    f.vm.memory.write_word(replacement + 248, -9).unwrap();
+    f.call(
+        15,
+        &[
+            0,
+            ENTITIES as i32,
+            1,
+            STRIDE as i32,
+            replacement as i32,
+            640,
+        ],
+    )
+    .unwrap();
+    f.publish();
+    assert_eq!(
+        (
+            f.runtime.server.clients[1].player.health,
+            f.runtime.server.clients[1].player.score
+        ),
+        (81, -9)
+    );
+    // Client.module and NativeEntity.module are separate checks, not interchangeable.
+    f.runtime.server.entities.columns.native_entity[entity.slot as usize] = Some(NativeEntity {
+        module: ModuleId(2),
+        slot: 0,
+    });
+    f.vm.memory.write_word(replacement + 184, 82).unwrap();
+    f.publish();
+    assert_eq!(f.runtime.server.clients[1].player.health, 81);
+    f.runtime.server.entities.columns.native_entity[entity.slot as usize] = Some(native);
+    f.runtime.server.clients[1].module = ModuleId(2);
+    f.publish();
+    assert_eq!(f.runtime.server.clients[1].player.health, 81);
+    f.runtime.server.clients[1].module = ModuleId(1);
+    f.runtime.server.clients[1].connection = None;
+    f.publish();
+    assert_eq!(f.runtime.server.clients[1].player.health, 81);
+    f.runtime.server.clients[1].connection = Some(Connection::Local);
+    f.runtime.server.disconnect(id);
+    f.publish();
+    assert!(f.runtime.server.entities.resolve(entity).is_none());
+    assert_eq!(f.runtime.server.clients[1].player.health, 0);
+}
+
+#[test]
+fn registered_player_binding_requires_both_native_array_sizes() {
+    let mut f = Fixture::new();
+    let values = f.runtime.catalog.hud.values.native(RuleSetId::Quake3);
+    for (stats, persistent) in [
+        (&values.stats[..15], &values.persistent[..]),
+        (&values.stats[..], &values.persistent[..15]),
+    ] {
+        assert_eq!(
+            f.vm.bind_player_values(stats, persistent),
+            Err(qa_compat::services::CallError::Capacity)
+        );
+    }
+}
+
+#[test]
+fn registered_player_values_accept_wrapped_nonnull_qvm_zero_bases() {
+    use qa_core::primitives::PlayerTail;
+    use qa_session::clients::Connection;
+    for (entity_base, player_base) in [(0, PLAYERS), (ENTITIES, 0), (0, 0)] {
+        let mut f = Fixture::with_clients(2);
+        f.runtime
+            .server
+            .connect(Connection::Remote, ModuleId(2), PlayerTail::None, None)
+            .unwrap();
+        let id = f
+            .runtime
+            .server
+            .connect(
+                Connection::Local,
+                ModuleId(1),
+                PlayerTail::None,
+                Some(NativeEntity {
+                    module: ModuleId(1),
+                    slot: 0,
+                }),
+            )
+            .unwrap();
+        assert_eq!(id.0, 1);
+        f.row(entity_base, 0, 1);
+        f.vm.memory.write_word(player_base + 184, 777).unwrap();
+        f.vm.memory.write_word(player_base + 248, -901).unwrap();
+        f.call(
+            15,
+            &[
+                0,
+                if entity_base == 0 {
+                    65536
+                } else {
+                    entity_base as i32
+                },
+                1,
+                STRIDE as i32,
+                if player_base == 0 {
+                    65536
+                } else {
+                    player_base as i32
+                },
+                512,
+            ],
+        )
+        .unwrap();
+        f.publish();
+        let player = &f.runtime.server.clients[id.0 as usize].player;
+        assert_eq!((player.health, player.score), (777, -901));
+        assert_eq!(f.binding(0), f.runtime.server.clients[id.0 as usize].entity);
     }
 }
 

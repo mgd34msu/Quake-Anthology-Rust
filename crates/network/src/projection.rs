@@ -267,8 +267,12 @@ impl PlayerProjection {
     }
     /// Native module stats enter their ordinal bank rows without importing
     /// movement/view columns, whose capability roles remain independent.
-    pub fn load_stat_values(protocol: Protocol, stats: &[ValueBinding]) -> Self {
-        Self::load_value_fields(protocol, stats, &[], true)
+    pub fn load_stat_values(
+        protocol: Protocol,
+        stats: &[ValueBinding],
+        persistent: &[ValueBinding],
+    ) -> Self {
+        Self::load_value_fields(protocol, stats, persistent, true)
     }
     fn load_value_fields(
         protocol: Protocol,

@@ -102,7 +102,7 @@ pub struct Vm {
     native_configs: Option<crate::configstrings::NativeConfigs>,
     resources: Option<[qa_core::primitives::IndexSpan; 3]>,
     entities: Option<EntityProjection>,
-    player_stats: Option<crate::players::PlayerStats>,
+    player_values: Option<crate::players::PlayerValues>,
     pmove: Option<crate::pmove::Pmove>,
     client_think: Option<u32>,
     pmove_redirect: Option<(u32, usize)>,
@@ -122,6 +122,7 @@ pub struct NativeCalls<'a, 'engine> {
 impl Vm {
     pub fn configure_q3_game(&mut self) {
         self.entities = Some(EntityProjection::load_q3());
+        self.player_values = Some(crate::players::PlayerValues::load_q3());
     }
     pub fn resource_ranges(&self) -> Option<&[qa_core::primitives::IndexSpan; 3]> {
         self.resources.as_ref()
@@ -331,7 +332,7 @@ impl Vm {
             native_configs: None,
             resources: None,
             entities: None,
-            player_stats: None,
+            player_values: None,
             pmove: None,
             client_think: None,
             pmove_redirect: None,
@@ -368,12 +369,13 @@ impl Vm {
             configs.rebind();
         }
     }
-    pub fn bind_player_stats(
+    pub fn bind_player_values(
         &mut self,
-        bindings: &[qa_core::primitives::ValueBinding],
+        stats: &[qa_core::primitives::ValueBinding],
+        persistent: &[qa_core::primitives::ValueBinding],
     ) -> Result<(), Error> {
-        if let Some(stats) = &mut self.player_stats {
-            stats.bind(bindings).map_err(Error::Service)?;
+        if let Some(values) = &mut self.player_values {
+            values.bind(stats, persistent).map_err(Error::Service)?;
         }
         Ok(())
     }
@@ -531,8 +533,8 @@ impl Vm {
             let table = entities
                 .project(calls.services, &mut memory, calls.context)
                 .map_err(Error::Service)?;
-            if let Some(stats) = &mut self.player_stats {
-                stats
+            if let Some(values) = &mut self.player_values {
+                values
                     .project(
                         &memory,
                         table,

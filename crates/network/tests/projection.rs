@@ -19,7 +19,7 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
         let original = PlayerProjection::load(protocol, &[]);
         let mut words = vec![0; original.words()];
         original.reduce(&source, &context(), &mut words, |model| Some(model.ordinal));
-        let projection = PlayerProjection::load_stat_values(protocol, &[]);
+        let projection = PlayerProjection::load_stat_values(protocol, &[], &[]);
         let mut target = player();
         target.body.position = Vec3([500.0, 600.0, 700.0]);
         target.view_angles = Vec3([10.0, 20.0, 30.0]);

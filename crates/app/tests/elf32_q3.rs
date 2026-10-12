@@ -10,7 +10,10 @@ use qa_compat::{
     native::{Error, ReturnedTable, TableFunction},
 };
 use qa_console::{commands::Console, views::Context};
-use qa_core::primitives::{CallbackId, ModuleId, ThinkTime};
+use qa_core::primitives::{
+    CallbackId, ClientId, ModuleId, NativeEntity, NumericValue, PlayerTail, RuleSetId, ThinkTime,
+    Vec3,
+};
 use qa_formats::program::native::{Image, LoadRole};
 use qa_platform::native::{NativeAbi, NativeScalar};
 use qa_session::timing::TickRate;
@@ -59,7 +62,45 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
     std::fs::create_dir(&files.0).unwrap();
     std::fs::write(files.0.join("qagame32.so"), &bytes).unwrap();
     std::fs::write(files.0.join("fixture.dat"), b"0123456789").unwrap();
-    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut runtime = Runtime::load(2, std::iter::empty()).unwrap();
+    assert_eq!(
+        runtime.server.connect(
+            qa_session::clients::Connection::Remote,
+            ModuleId(2),
+            PlayerTail::None,
+            None
+        ),
+        Some(ClientId(0))
+    );
+    let id = runtime
+        .server
+        .connect(
+            qa_session::clients::Connection::Local,
+            ModuleId(1),
+            PlayerTail::Q3 { weapon_time: 777 },
+            Some(NativeEntity {
+                module: ModuleId(1),
+                slot: 0,
+            }),
+        )
+        .unwrap();
+    assert_eq!(id, ClientId(1));
+    let player = &mut runtime.server.clients[id.0 as usize].player;
+    player.movement_rules = RuleSetId::QuakeWorld;
+    player.trace_rules = RuleSetId::Quake2;
+    player.body.position = Vec3([123.25, -99.5, 40.0]);
+    player.body.velocity = Vec3([-22.5, 66.25, 3.0]);
+    player.view_angles = Vec3([10.5, 270.25, -8.0]);
+    let pose = (
+        [
+            player.body.position,
+            player.body.velocity,
+            player.body.mins,
+            player.body.maxs,
+        ],
+        player.view_angles,
+        player.movement.tuning,
+    );
     runtime.vfs.mount_directory(&files.0, 0).unwrap();
     runtime.collision = Some(visibility_world::collision(
         &runtime.geometry,
@@ -123,6 +164,9 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
                 value
             );
         }
+        for (index, value) in [(36, 184), (37, 248), (38, 4), (39, 16), (40, 16)] {
+            assert_eq!(memory.read_word(layout + index * 4).unwrap(), value);
+        }
     }
     if bits == 32 {
         let memory = ModuleMemory::borrow(base, vm.process.memory_mut().unwrap()).unwrap();
@@ -174,6 +218,60 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
     host.initialize_modules(Phase::Server);
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    let check_values = |host: &FrameHost, revision: i32| {
+        let values = host.runtime.catalog.hud.values.native(RuleSetId::Quake3);
+        let client = &host.runtime.server.clients[id.0 as usize];
+        let player = &client.player;
+        for (ordinal, binding) in values.stats.iter().enumerate() {
+            let value = match ordinal {
+                0 => 71 + revision,
+                3 => 29 + revision,
+                14 => i32::MIN,
+                15 => i32::MAX,
+                _ => -123 - ordinal as i32 - revision,
+            };
+            assert_eq!(
+                player.values.get(binding.id),
+                Some(NumericValue::integer(value))
+            );
+        }
+        for (ordinal, binding) in values.persistent.iter().enumerate() {
+            let value = if ordinal == 0 {
+                -5 + revision
+            } else {
+                90000 + ordinal as i32 + revision
+            };
+            assert_eq!(
+                player.values.get(binding.id),
+                Some(NumericValue::integer(value))
+            );
+        }
+        assert_eq!(
+            (player.health, player.armor, player.score),
+            (71 + revision, 29 + revision, -5 + revision)
+        );
+        assert_eq!(
+            (
+                [
+                    player.body.position,
+                    player.body.velocity,
+                    player.body.mins,
+                    player.body.maxs
+                ],
+                player.view_angles,
+                player.movement.tuning
+            ),
+            pose
+        );
+        assert_eq!(
+            (player.movement_rules, player.trace_rules),
+            (RuleSetId::QuakeWorld, RuleSetId::Quake2)
+        );
+        assert_eq!(player.tail, PlayerTail::Q3 { weapon_time: 777 });
+        assert!(!client.module_movement);
+        assert_eq!(host.runtime.server.clients[0].player.health, 0);
+    };
+    check_values(&host, 0);
     let entity = |host: &FrameHost, number| {
         host.runtime
             .server
@@ -219,6 +317,7 @@ pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
         );
         assert_eq!(counts.traps, 0);
         assert_eq!(counts.rejected, 0);
+        check_values(&host, index as i32 + 1);
         match index {
             0 => {
                 assert!(host.runtime.server.entities.resolve(zero).is_some());

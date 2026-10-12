@@ -28,6 +28,27 @@ struct qa_q3_fixture_state qa_q3_fixture_state;
 static gentity_t qa_entities[65];
 static gclient_t qa_clients[MAX_CLIENTS];
 
+static void player_values(unsigned int revision) {
+    playerState_t *ps = &qa_clients[0].ps;
+    unsigned int index;
+    for (index = 0; index < MAX_STATS; ++index)
+        ps->stats[index] = -123 - (int)index - (int)revision;
+    for (index = 0; index < MAX_PERSISTANT; ++index)
+        ps->persistant[index] = 90000 + (int)index + (int)revision;
+    ps->stats[STAT_HEALTH] = 71 + (int)revision;
+    ps->stats[STAT_ARMOR] = 29 + (int)revision;
+    ps->stats[14] = (int)0x80000000u;
+    ps->stats[15] = 0x7fffffff;
+    ps->persistant[PERS_SCORE] = -5 + (int)revision;
+    /* The stats-only importer must leave native movement/view fields unused. */
+    ps->commandTime = -901;
+    ps->origin[0] = 999.75f;
+    ps->velocity[1] = -777.25f;
+    ps->viewangles[0] = 123.5f;
+    ps->weaponTime = -99;
+    ps->clientNum = 63; /* Followed viewpoint is not the registered row index. */
+}
+
 static void entity_row(int number) {
     gentity_t *entity = &qa_entities[number];
     volatile unsigned char *bytes = (volatile unsigned char *)entity;
@@ -123,7 +144,9 @@ const unsigned int qa_q3_layout[] __attribute__((section(".qa_layout"), used)) =
     G_PRINT, G_CVAR_REGISTER, G_CVAR_UPDATE,
     G_CVAR_VARIABLE_INTEGER_VALUE, G_CVAR_VARIABLE_STRING_BUFFER,
     G_FS_FOPEN_FILE, G_FS_READ, G_FS_FCLOSE_FILE, G_FS_SEEK,
-    BOTLIB_START_FRAME
+    BOTLIB_START_FRAME,
+    offsetof(playerState_t, stats), offsetof(playerState_t, persistant),
+    sizeof(((playerState_t *)0)->stats[0]), MAX_STATS, MAX_PERSISTANT
 };
 
 int vmMain(int command, int arg0, int arg1, int arg2,
@@ -154,6 +177,7 @@ int vmMain(int command, int arg0, int arg1, int arg2,
             trap_FS_Read(qa_q3_fixture_state.file_tail, 3, file);
             trap_FS_FCloseFile(file);
         }
+        player_values(0);
         trap_LocateGameData(qa_entities, 64, sizeof(gentity_t),
                            &qa_clients[0].ps, sizeof(gclient_t));
         entity_row(0);
@@ -193,6 +217,7 @@ int vmMain(int command, int arg0, int arg1, int arg2,
         }
         record(4);
         qa_q3_fixture_state.frame_count++;
+        player_values(qa_q3_fixture_state.frame_count);
         qa_q3_fixture_state.last_frame = arg0;
         return 0x13570000 | qa_q3_fixture_state.frame_count;
     }

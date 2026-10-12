@@ -1,10 +1,10 @@
-//! Native numeric stats enter the same player/value projection as snapshots.
+//! Native numeric arrays enter the same player/value projection as snapshots.
 use crate::{
     entities::{Entities, EntityProjection, native_address},
     memory::{ModuleMemory, Width},
     services::CallError,
 };
-use qa_core::primitives::{ClientId, IndexSpan, ModuleId, ValueBinding};
+use qa_core::primitives::{ClientId, ModuleId, ValueBinding};
 use qa_network::{
     commands::packet::Protocol,
     projection::{PlayerContext, PlayerProjection},
@@ -17,31 +17,105 @@ pub(crate) struct StatsLayout {
     pub offset: usize,
     pub protocol: Protocol,
 }
-pub(crate) struct PlayerStats {
-    client: &'static crate::q2_abi::ClientLayout,
+#[derive(Clone, Copy)]
+enum PlayerAddress {
+    EntityClient(&'static crate::q2_abi::ClientLayout),
+    Registered,
+}
+#[derive(Clone, Copy)]
+struct ArrayLayout {
+    offset: usize,
+    width: Width,
+}
+struct MemoryField {
+    offset: u64,
+    word: usize,
+    width: Width,
+}
+pub(crate) struct PlayerValues {
+    address: PlayerAddress,
+    protocol: Protocol,
+    arrays: [ArrayLayout; 2],
+    fields: Box<[MemoryField]>,
     projection: Option<PlayerProjection>,
     words: Box<[u32]>,
-    stats: IndexSpan,
 }
-impl PlayerStats {
-    pub fn load(client: &'static crate::q2_abi::ClientLayout) -> Self {
+impl PlayerValues {
+    pub fn load_q2(client: &'static crate::q2_abi::ClientLayout) -> Self {
+        Self::load(
+            PlayerAddress::EntityClient(client),
+            client.stats.protocol,
+            [
+                ArrayLayout {
+                    offset: client.stats.offset,
+                    width: Width::Short,
+                },
+                ArrayLayout {
+                    offset: 0,
+                    width: Width::Short,
+                },
+            ],
+        )
+    }
+    pub fn load_q3() -> Self {
+        // Original q_shared.h playerState_t: pointer-free signed32 arrays.
+        Self::load(
+            PlayerAddress::Registered,
+            Protocol::Quake3_68,
+            [
+                ArrayLayout {
+                    offset: 184,
+                    width: Width::Word,
+                },
+                ArrayLayout {
+                    offset: 248,
+                    width: Width::Word,
+                },
+            ],
+        )
+    }
+    fn load(address: PlayerAddress, protocol: Protocol, arrays: [ArrayLayout; 2]) -> Self {
         Self {
-            client,
+            address,
+            protocol,
+            arrays,
+            fields: Box::default(),
             projection: None,
             words: Box::default(),
-            stats: qa_network::states::player_value_layout(client.stats.protocol).1[0],
         }
     }
-    pub fn bind(&mut self, bindings: &[ValueBinding]) -> Result<(), CallError> {
-        if bindings.len() != self.stats.count as usize {
+    pub fn bind(
+        &mut self,
+        stats: &[ValueBinding],
+        persistent: &[ValueBinding],
+    ) -> Result<(), CallError> {
+        let spans = qa_network::states::player_value_layout(self.protocol).1;
+        if spans
+            .into_iter()
+            .zip([stats, persistent])
+            .any(|(span, bindings)| bindings.len() != span.count as usize)
+        {
             return Err(CallError::Capacity);
         }
-        let projection = PlayerProjection::load_stat_values(self.client.stats.protocol, bindings);
+        let projection = PlayerProjection::load_stat_values(self.protocol, stats, persistent);
+        self.fields = spans
+            .into_iter()
+            .zip(self.arrays)
+            .flat_map(|(span, array)| {
+                span.range()
+                    .enumerate()
+                    .map(move |(ordinal, word)| MemoryField {
+                        offset: (array.offset + ordinal * array.width.len()) as u64,
+                        word,
+                        width: array.width,
+                    })
+            })
+            .collect();
         self.words = vec![0; projection.words()].into_boxed_slice();
         self.projection = Some(projection);
         Ok(())
     }
-    /// The returned native call has stopped its child before this borrow.
+    /// Native callers lend bytes only after their child is parked; QVM owns them.
     pub fn project(
         &mut self,
         memory: &ModuleMemory<'_>,
@@ -51,7 +125,7 @@ impl PlayerStats {
         server: &mut Server,
         mut pmove: Option<&mut crate::pmove::Pmove>,
     ) -> Result<(), CallError> {
-        if table.address == 0 {
+        if matches!(self.address, PlayerAddress::EntityClient(_)) && table.address == 0 {
             return Ok(());
         }
         for index in 0..server.clients.len() {
@@ -60,24 +134,40 @@ impl PlayerStats {
             if client.connection.is_none() || client.module != module {
                 continue;
             }
-            let Some(edict) = native_address(table, module, &server.entities, client.entity) else {
-                continue;
+            let (pointer, edict) = match self.address {
+                PlayerAddress::EntityClient(layout) => {
+                    let Some(edict) =
+                        native_address(table, module, &server.entities, client.entity)
+                    else {
+                        continue;
+                    };
+                    let pointer = memory.read_u64(edict + layout.stats.client as u64)?;
+                    if pointer == 0 {
+                        continue;
+                    }
+                    (pointer, Some(edict))
+                }
+                PlayerAddress::Registered => {
+                    let Some(players) = entities.registered_players() else {
+                        continue;
+                    };
+                    let Some(pointer) =
+                        native_address(players, module, &server.entities, client.entity)
+                    else {
+                        continue;
+                    };
+                    (pointer, None)
+                }
             };
-            let slot = client.entity.slot as usize;
-            let pointer = memory.read_u64(edict + self.client.stats.client as u64)?;
-            if pointer == 0 {
-                continue;
-            }
-            let address = pointer
-                .checked_add(self.client.stats.offset as u64)
-                .ok_or(CallError::Memory)?;
             if let Some(projection) = &self.projection {
-                let words = &mut self.words[self.stats.range()];
-                memory.read(address, words.len() * Width::Short.len())?;
-                for (index, word) in words.iter_mut().enumerate() {
-                    *word = memory
-                        .read_field(address + (index * Width::Short.len()) as u64, Width::Short)?
-                        as i16 as i32 as u32;
+                for field in &self.fields {
+                    let address = pointer.checked_add(field.offset).ok_or(CallError::Memory)?;
+                    let value = memory.read_field(address, field.width)?;
+                    self.words[field.word] = if matches!(field.width, Width::Short) {
+                        value as i16 as i32 as u32
+                    } else {
+                        value
+                    };
                 }
                 projection.apply(
                     &self.words,
@@ -87,6 +177,11 @@ impl PlayerStats {
                     |_| None,
                 );
             }
+            let PlayerAddress::EntityClient(layout) = self.address else {
+                continue;
+            };
+            let edict = edict.ok_or(CallError::Entity)?;
+            let slot = client.entity.slot as usize;
             if module_moves && let Some(pmove) = pmove.as_deref_mut() {
                 let (body, _) = entities.body(memory, edict)?;
                 pmove.import_client(memory, pointer, module, &mut client.player)?;
@@ -95,8 +190,7 @@ impl PlayerStats {
                 client.player.body.maxs = body.maxs;
                 server.entities.columns.set_body(slot, client.player.body);
             } else {
-                self.client
-                    .import_presentation(memory, pointer, module, &mut client.player)?;
+                layout.import_presentation(memory, pointer, module, &mut client.player)?;
             }
         }
         Ok(())

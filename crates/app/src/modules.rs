@@ -380,19 +380,23 @@ impl FrameHost {
                     .bind_entity_text(request.context.module, source.bytes.clone(), syntax)
                     .map_err(|e| format!("module entity source: {e:?}"))?;
             }
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            if let Program::Native { vm, .. } = &mut request.program {
-                vm.rebind_configstrings();
-                vm.bind_player_stats(
-                    &host
-                        .runtime
-                        .catalog
-                        .hud
-                        .values
-                        .native(request.context.native_rules)
-                        .stats,
-                )
-                .map_err(|e| format!("native player stats: {e:?}"))?;
+            let values = host
+                .runtime
+                .catalog
+                .hud
+                .values
+                .native(request.context.native_rules);
+            match &mut request.program {
+                Program::Qvm { vm, .. } => vm
+                    .bind_player_values(&values.stats, &values.persistent)
+                    .map_err(|e| format!("module player values: {e:?}"))?,
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                Program::Native { vm, .. } => {
+                    vm.rebind_configstrings();
+                    vm.bind_player_values(&values.stats, &values.persistent)
+                        .map_err(|e| format!("module player values: {e:?}"))?;
+                }
+                Program::QuakeC(_) => {}
             }
             let state = if !request.prepare.is_empty()
                 || !request.initialize.is_empty()
