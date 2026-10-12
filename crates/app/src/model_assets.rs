@@ -184,7 +184,20 @@ impl FileError {
 enum ModelFile {
     Empty,
     Ready(ModelMetadata),
+    LoadedWorld {
+        binding: InlineBinding,
+        bounds: Bounds,
+    },
     Failed(FileError),
+}
+impl ModelFile {
+    fn bounds(&self) -> Option<Bounds> {
+        match self {
+            Self::Ready(metadata) => Some(metadata.bounds),
+            Self::LoadedWorld { bounds, .. } => Some(*bounds),
+            Self::Empty | Self::Failed(_) => None,
+        }
+    }
 }
 struct ProfileImages {
     profile: ModelProfile,
@@ -273,6 +286,45 @@ impl ModelCatalogBuilder {
         })
     }
 
+    /// Admit the already-loaded world as native model metadata. Its surface
+    /// binding and collision bounds do not create a mesh or decode another file.
+    pub fn bind_loaded_world(
+        &mut self,
+        path: &str,
+        world: WorldId,
+        native_bounds: Bounds,
+    ) -> Result<(), String> {
+        if path.is_empty() || path.starts_with('*') {
+            return Err("loaded world filename".to_owned());
+        }
+        if !native_bounds.is_valid() {
+            return Err("loaded world bounds".to_owned());
+        }
+        let binding =
+            inline_binding(&self.worlds, &self.inline, world, 0).ok_or("loaded world model0")?;
+        let path = canonical_path(path);
+        if let Some(name) = self.names.find(path.as_bytes()) {
+            return match self.files.get(name.0 as usize) {
+                Some(ModelFile::LoadedWorld {
+                    binding: existing,
+                    bounds,
+                }) if *existing == binding && *bounds == native_bounds => Ok(()),
+                _ => Err("loaded world filename conflict".to_owned()),
+            };
+        }
+        self.names
+            .intern(path.as_bytes())
+            .map_err(|_| "model name capacity".to_owned())?;
+        self.files.push(ModelFile::LoadedWorld {
+            binding,
+            bounds: native_bounds,
+        });
+        self.models.push(IndexSpan::default());
+        self.capacity.names = self.names.len();
+        self.capacity.name_bytes += path.len();
+        Ok(())
+    }
+
     /// Static optional requests and native synchronous requests share exactly
     /// one file admission, decode and registration path.
     pub fn register_request(&mut self, vfs: &Vfs, request: ModelRequest<'_>) -> Result<(), String> {
@@ -286,6 +338,9 @@ impl ModelCatalogBuilder {
                 .err()
                 .map_or_else(|| "missing registered model name".to_owned(), |e| e.message));
         };
+        if matches!(self.files[name.0 as usize], ModelFile::LoadedWorld { .. }) {
+            return Ok(());
+        }
         let profile = request.profile();
         let registration = self.models[name.0 as usize]
             .range()
@@ -304,16 +359,16 @@ impl ModelCatalogBuilder {
         Ok(())
     }
 
-    fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<ModelMetadata, FileError> {
+    fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<Bounds, FileError> {
         if let Some(name) = self.names.find(path.as_bytes()) {
-            return match &self.files[name.0 as usize] {
-                ModelFile::Ready(metadata) => Ok(*metadata),
-                ModelFile::Failed(error) => Err(error.clone()),
-                ModelFile::Empty => Err(FileError {
+            let file = &self.files[name.0 as usize];
+            return file.bounds().ok_or_else(|| match file {
+                ModelFile::Failed(error) => error.clone(),
+                _ => FileError {
                     kind: CallError::File,
                     message: "empty model filename".to_owned(),
-                }),
-            };
+                },
+            });
         }
         let next = self
             .registrations
@@ -417,7 +472,7 @@ impl ModelCatalogBuilder {
         }
         self.capacity.registrations = self.registrations.len();
         self.capacity.bindings = self.bindings.len() * ModelMaterialPolicy::ALL.len();
-        metadata
+        metadata.map(|metadata| metadata.bounds)
     }
 
     pub fn finish(self) -> (Assets, ModelCatalog) {
@@ -436,16 +491,17 @@ impl ModelCatalogBuilder {
     }
 }
 
-fn metadata_lookup(names: &NameTable, files: &[ModelFile], path: &[u8]) -> Option<ModelMetadata> {
+fn file_lookup<'a>(
+    names: &NameTable,
+    files: &'a [ModelFile],
+    path: &[u8],
+) -> Option<&'a ModelFile> {
     let name = names.find_path(std::str::from_utf8(path).ok()?)?;
-    match files.get(name.0 as usize)? {
-        ModelFile::Ready(metadata) => Some(*metadata),
-        ModelFile::Empty | ModelFile::Failed(_) => None,
-    }
+    files.get(name.0 as usize)
 }
 impl ModelLookup for ModelCatalogBuilder {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
-        metadata_lookup(&self.names, &self.files, path).map(|metadata| metadata.bounds)
+        file_lookup(&self.names, &self.files, path)?.bounds()
     }
 }
 impl ModelLoader for ModelCatalogBuilder {
@@ -460,13 +516,12 @@ impl ModelLoader for ModelCatalogBuilder {
             return Err(CallError::File);
         }
         self.ensure_file(vfs, &canonical_path(path))
-            .map(|metadata| metadata.bounds)
             .map_err(|error| error.kind)
     }
 }
 impl ModelLookup for ModelCatalog {
     fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
-        self.metadata(path).map(|metadata| metadata.bounds)
+        file_lookup(&self.names, &self.files, path)?.bounds()
     }
 }
 impl ModelCatalog {
@@ -516,7 +571,10 @@ impl ModelCatalog {
         Ok(builder.finish())
     }
     pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
-        metadata_lookup(&self.names, &self.files, path)
+        match file_lookup(&self.names, &self.files, path)? {
+            ModelFile::Ready(metadata) => Some(*metadata),
+            ModelFile::Empty | ModelFile::LoadedWorld { .. } | ModelFile::Failed(_) => None,
+        }
     }
     /// Resolve both filename and profile only at registration/configuration
     /// boundaries. A profile mismatch never selects the first same-name entry.
@@ -545,15 +603,24 @@ impl ModelCatalog {
         Some(self.bindings.get((span.first + skin) as usize)?.variants[policy.index()])
     }
     pub fn resolve_inline(&self, world: WorldId, index: u32) -> Option<InlineBinding> {
-        let span = *self.worlds.get(world.0 as usize)?;
-        if index >= span.count {
-            return None;
-        }
-        self.inline.get((span.first + index) as usize).copied()
+        inline_binding(&self.worlds, &self.inline, world, index)
     }
     pub fn capacity(&self) -> ModelCapacity {
         self.capacity
     }
+}
+
+fn inline_binding(
+    worlds: &[IndexSpan],
+    inline: &[InlineBinding],
+    world: WorldId,
+    index: u32,
+) -> Option<InlineBinding> {
+    let span = *worlds.get(world.0 as usize)?;
+    if index >= span.count {
+        return None;
+    }
+    inline.get((span.first + index) as usize).copied()
 }
 
 fn inline_bindings(

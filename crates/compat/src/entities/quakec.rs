@@ -23,8 +23,7 @@ fn client_edicts(
     rules: qa_core::primitives::RuleSetId,
     max_clients: i32,
 ) -> Result<usize, CallError> {
-    // QW reserves fixed protocol client ordinals, independently of the live
-    // maxclients cvar. NQ reserves the server's actual client count.
+    // Native startup fixes these ordinals before any module callback.
     if rules == qa_core::primitives::RuleSetId::QuakeWorld {
         Ok(32)
     } else {
@@ -37,6 +36,7 @@ pub(crate) struct QuakeCLayout {
     stride: usize,
     header: usize,
     fields: usize,
+    client_edicts: Option<usize>,
     origin: Option<usize>,
     velocity: Option<usize>,
     angles: Option<usize>,
@@ -69,6 +69,7 @@ impl QuakeCLayout {
             stride,
             header,
             fields: image.entityfields * 4,
+            client_edicts: None,
             origin: field(b"origin", 3),
             velocity: field(b"velocity", 3),
             angles: field(b"angles", 3),
@@ -309,6 +310,28 @@ impl EntityProjection {
             EntitySchema::Native(_) => Err(CallError::Entity),
         }
     }
+    pub(crate) fn quakec_seed(
+        &mut self,
+        entities: &EntityTable,
+        module: ModuleId,
+        rules: RuleSetId,
+        max_clients: i32,
+    ) -> Result<(), CallError> {
+        let mut layout = self.quakec_layout()?;
+        let clients = client_edicts(rules, max_clients)?;
+        let first = clients.checked_add(1).ok_or(CallError::Capacity)?;
+        if first > self.bindings.len() {
+            return Err(CallError::Capacity);
+        }
+        if layout.client_edicts.is_some_and(|bound| bound != clients) {
+            return Err(CallError::Entity);
+        }
+        self.seed(entities, module)?;
+        layout.client_edicts = Some(clients);
+        self.schema = EntitySchema::QuakeC(layout);
+        self.observed_count = self.observed_count.max(first);
+        Ok(())
+    }
     pub(crate) fn quakec_bind_thinks(
         &mut self,
         module: qa_session::dispatch::ModuleBinding,
@@ -334,9 +357,9 @@ impl EntityProjection {
         memory: &ModuleMemory<'_>,
         cursor: &mut usize,
         rules: qa_core::primitives::RuleSetId,
-        max_clients: i32,
     ) -> Result<Option<crate::quakec::PhysicsEntity>, CallError> {
         let layout = self.quakec_layout()?;
+        let clients = layout.client_edicts.ok_or(CallError::Entity)?;
         let module = self.owner.ok_or(CallError::Entity)?;
         while *cursor < self.observed_count {
             let native_slot = *cursor;
@@ -350,7 +373,7 @@ impl EntityProjection {
             let Some(entity) = self.binding(entities, native)? else {
                 continue;
             };
-            let client = native_slot > 0 && native_slot <= client_edicts(rules, max_clients)?;
+            let client = native_slot > 0 && native_slot <= clients;
             let phase = if !client && layout.move_type.is_some() {
                 let move_type = layout.number(
                     memory,
@@ -412,17 +435,11 @@ impl EntityProjection {
         if self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
-        let clients = client_edicts(
-            context.native_rules,
-            services
-                .storage
-                .max_clients(services.cvars, context.native_rules),
-        )?;
+        let clients = layout.client_edicts.ok_or(CallError::Entity)?;
         let first = clients.checked_add(1).ok_or(CallError::Capacity)?;
         if first >= self.bindings.len() {
             return Err(CallError::Capacity);
         }
-        self.observed_count = self.observed_count.max(first);
         let eligible = (first..self.observed_count).find(|&slot| {
             let row = self.bindings[slot];
             let free = row

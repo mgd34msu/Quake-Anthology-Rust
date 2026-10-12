@@ -577,7 +577,7 @@ pub fn host(qvm_budget: u64, developer: bool) -> (FrameHost, [EntityId; 2]) {
     let mut qc = Vm::load(
         Image::parse(&bytes, Some(5927)).unwrap(),
         Layout {
-            entities: 4,
+            entities: 64,
             header_bytes: 16,
             extra_string_bytes: 128,
             state_step: 0.1,
@@ -697,7 +697,7 @@ fn quakec_output_host(rules: RuleSetId, level: f32, texts: [&[u8]; 2]) -> FrameH
     let mut vm = Vm::load(
         Image::parse(&bytes, Some(5927)).unwrap(),
         Layout {
-            entities: 4,
+            entities: 64,
             header_bytes: 16,
             extra_string_bytes: 4096,
             state_step: 0.1,
@@ -798,7 +798,7 @@ fn quakec_math_program_with_vectors(builtin: i32, vectors: &[(u16, &[u8])]) -> V
     let mut vm = Vm::load(
         Image::parse(&bytes, Some(5927)).unwrap(),
         Layout {
-            entities: 4,
+            entities: 64,
             header_bytes: 16,
             extra_string_bytes: 64,
             state_step: 0.1,
@@ -1019,7 +1019,7 @@ fn quakec_numeric_strings_reach_print_consumers_through_session_dispatch() {
             let mut vm = Vm::load(
                 Image::parse(&bytes, Some(5927)).unwrap(),
                 Layout {
-                    entities: 4,
+                    entities: 64,
                     header_bytes: 16,
                     extra_string_bytes: 0,
                     state_step: 0.1,
@@ -1188,7 +1188,7 @@ fn quakec_client_prints_resolve_native_namespaces_and_keep_native_payloads() {
                     )
                     .unwrap(),
                     Layout {
-                        entities: 4,
+                        entities: 64,
                         header_bytes: 16,
                         extra_string_bytes: 2048,
                         state_step: 0.1,

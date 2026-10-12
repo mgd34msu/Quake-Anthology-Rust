@@ -344,9 +344,6 @@ impl FrameHost {
                         last: None,
                     });
                 }
-                qc.vm
-                    .seed_entities(&host.runtime.server.entities, request.context.module)
-                    .map_err(|error| format!("QuakeC entity bindings: {error:?}"))?;
             }
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Program::Native { vm, .. } = &request.program
@@ -367,6 +364,16 @@ impl FrameHost {
                 &host.console.cvars,
             )
             .map_err(|e| format!("module services: {e:?}"))?;
+            if let Program::QuakeC(qc) = &mut request.program {
+                qc.vm
+                    .seed_entities(
+                        &host.runtime.server.entities,
+                        request.context.module,
+                        request.context.native_rules,
+                        storage.max_clients(&host.console.cvars, request.context.native_rules),
+                    )
+                    .map_err(|error| format!("QuakeC entity bindings: {error:?}"))?;
+            }
             storage
                 .bind_lifetime(request.context.module, request.anchor)
                 .map_err(|error| format!("module lifetime: {error:?}"))?;
@@ -777,14 +784,10 @@ fn quakec_entity_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, 
         let Program::QuakeC(qc) = &row.request.program else {
             return;
         };
-        let max_clients = row
-            .storage
-            .max_clients(&host.console.cvars, row.request.context.native_rules);
         let next = qc.vm.physics_entity(
             &host.runtime.server.entities,
             &mut cursor,
             row.request.context.native_rules,
-            max_clients,
         );
         match next {
             Ok(Some(entity)) if entity.phase != quakec::PhysicsPhase::Unsupported => {

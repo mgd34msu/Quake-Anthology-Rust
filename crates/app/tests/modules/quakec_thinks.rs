@@ -183,10 +183,20 @@ fn request(
         ids,
     )
 }
-fn load(mut runtime: Runtime, requests: Vec<ModuleRequest>) -> FrameHost {
+fn load(runtime: Runtime, requests: Vec<ModuleRequest>) -> FrameHost {
+    load_clients(runtime, requests, 1)
+}
+fn load_clients(
+    mut runtime: Runtime,
+    requests: Vec<ModuleRequest>,
+    max_clients: usize,
+) -> FrameHost {
     let mut console = Console::new(Context::default()).unwrap();
     console
-        .append("sv_maxclients 1\nsv_maxtic 1\n", Context::default())
+        .append(
+            &format!("sv_maxclients {max_clients}\nsv_maxtic 1\n"),
+            Context::default(),
+        )
         .unwrap();
     console.execute_frame(&mut runtime);
     FrameHost::load_modules(console, runtime, TickRate::FrameDriven, requests).unwrap()
@@ -1273,6 +1283,70 @@ fn noclip_classification_uses_native_rules_and_excludes_native_client_ordinals()
         assert_eq!(
             host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
             if rules == RuleSetId::QuakeWorld { 1 } else { 3 }
+        );
+    }
+}
+
+#[test]
+fn native_client_physics_reservations_survive_maxclients_changes() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut code = Code::new();
+        let frame = code.function(&[(Return, 70, 0, 0)]);
+        let think = code.function(&[(AddF, 70, 48, 70), (Return, 70, 0, 0)]);
+        let last_client = if rules == RuleSetId::Quake { 2 } else { 32 };
+        let mover = last_client + 1;
+        let thinker = mover + 1;
+        let mut vm = code.vm();
+        for native in [1, last_client, mover] {
+            write_vector(&mut vm, native, b"velocity", Vec3([8.0, 0.0, 0.0]));
+        }
+        let mut runtime = Runtime::load(1, []).unwrap();
+        let (request, ids) = request(
+            &mut runtime,
+            ModuleId(1),
+            rules,
+            vm,
+            vec![frame, think, 0],
+            frame,
+            125,
+            &[
+                (1, 8.0, 0.0, 0),
+                (last_client, 8.0, 0.0, 0),
+                (mover, 8.0, 0.0, 0),
+                (thinker, 0.0, 0.05, think),
+            ],
+        );
+        let mut host = load_clients(runtime, vec![request], 2);
+        for (milliseconds, max_clients) in [(125, 0), (250, 63)] {
+            host.console
+                .append(
+                    &format!("sv_maxclients {max_clients}\n"),
+                    Context::default(),
+                )
+                .unwrap();
+            host.console.execute_frame(&mut host.runtime);
+            if milliseconds == 125 {
+                tick(&mut host, 0);
+            }
+            tick(&mut host, milliseconds);
+            let columns = &host.runtime.server.entities.columns;
+            for &client in &ids[..2] {
+                assert_eq!(columns.position[client.slot as usize], Vec3::default());
+            }
+            assert_eq!(
+                columns.position[ids[2].slot as usize],
+                Vec3([milliseconds as f32 / 125.0, 0.0, 0.0])
+            );
+            assert_eq!(host.module_counts(ModuleId(1)).unwrap().rejected, 0);
+        }
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 3);
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().last_result,
+            Some(ModuleResult::QuakeC([1.0f32.to_bits(), 0, 0]))
+        );
+        assert_eq!(
+            host.module_counts(ModuleId(1)).unwrap().unsupported_physics,
+            4
         );
     }
 }

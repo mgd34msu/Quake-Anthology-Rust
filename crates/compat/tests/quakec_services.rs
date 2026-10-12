@@ -608,8 +608,16 @@ fn seeded_vm(calls: &mut QuakeCCalls<'_, '_>, capacity: usize) -> Vm {
             module: calls.context.module,
             slot: 0,
         });
-    vm.seed_entities(&calls.services.server.entities, calls.context.module)
-        .unwrap();
+    vm.seed_entities(
+        &calls.services.server.entities,
+        calls.context.module,
+        calls.context.native_rules,
+        calls
+            .services
+            .storage
+            .max_clients(calls.services.cvars, calls.context.native_rules),
+    )
+    .unwrap();
     vm
 }
 
@@ -698,6 +706,100 @@ fn quakeworld_reserves_all_32_native_clients_despite_maxclients_one() {
                 .unwrap(),
             before
         );
+    });
+}
+
+#[test]
+fn native_client_reservations_are_frozen_before_spawn_and_reuse() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let max_clients = calls
+                .services
+                .cvars
+                .bind("sv_maxclients", calls.context.console)
+                .unwrap();
+            calls.services.cvars.force_write(max_clients, "3").unwrap();
+            let reserved = if rules == RuleSetId::Quake { 3 } else { 32 };
+            let client = calls
+                .services
+                .server
+                .entities
+                .allocate(
+                    calls.context.clock,
+                    calls.context.module,
+                    AllocationPolicy::EDICT,
+                )
+                .unwrap()
+                .id;
+            calls.services.server.entities.columns.native_entity[client.slot as usize] =
+                Some(NativeEntity {
+                    module: calls.context.module,
+                    slot: reserved,
+                });
+            let mut vm = seeded_vm(calls, 8);
+            let client_value = reserved as u32 * vm.stride as u32;
+            write(&mut vm, client_value, b"skin", &[19.0f32.to_bits()]);
+            let client_bytes = vm
+                .entities
+                .read(u64::from(client_value), vm.stride)
+                .unwrap()
+                .to_vec();
+            for (value, ordinal) in [("0", reserved + 1), ("7", reserved + 2)] {
+                calls
+                    .services
+                    .cvars
+                    .force_write(max_clients, value)
+                    .unwrap();
+                calls.call(&mut vm, 14, 0).unwrap();
+                assert_eq!(vm.entity_number(vm.image.globals[1]), Ok(ordinal as u32));
+            }
+            let freed_value = vm.image.globals[1];
+            let old = entity(calls, &vm, freed_value);
+            parameters(&mut vm, &[&[freed_value]]);
+            calls.call(&mut vm, 15, 1).unwrap();
+            assert!(calls.services.server.entities.resolve(old).is_none());
+            calls.services.cvars.force_write(max_clients, "0").unwrap();
+            calls.context.clock = ThinkTime::Seconds(3.500_001);
+            calls.call(&mut vm, 14, 0).unwrap();
+            assert_eq!(vm.image.globals[1], freed_value);
+            let current = entity(calls, &vm, freed_value);
+            assert_ne!(current, old);
+            assert_eq!(
+                calls.services.server.entities.columns.native_entity[current.slot as usize],
+                Some(NativeEntity {
+                    module: calls.context.module,
+                    slot: reserved + 2,
+                })
+            );
+            assert!(calls.services.server.entities.resolve(client).is_some());
+            assert_eq!(
+                vm.entities
+                    .read(u64::from(client_value), vm.stride)
+                    .unwrap(),
+                client_bytes
+            );
+            parameters(&mut vm, &[&[client_value]]);
+            assert_eq!(calls.call(&mut vm, 15, 1), Err(Trap::Builtin));
+            assert!(calls.services.server.entities.resolve(client).is_some());
+        });
+    }
+}
+
+#[test]
+fn changed_client_reservation_reseed_is_rejected_without_reconfiguration() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        assert_eq!(
+            vm.seed_entities(
+                &calls.services.server.entities,
+                calls.context.module,
+                RuleSetId::Quake,
+                4,
+            ),
+            Err(CallError::Entity)
+        );
+        calls.call(&mut vm, 14, 0).unwrap();
+        assert_eq!(vm.entity_number(vm.image.globals[1]), Ok(2));
     });
 }
 

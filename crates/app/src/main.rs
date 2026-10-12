@@ -599,6 +599,27 @@ fn run() -> Result<(), String> {
         render_world,
         Default::default(),
     )?);
+    if let Some(path) = map_path.as_deref() {
+        let world = render_world.ok_or("loaded map needs a render world")?;
+        let collision = host
+            .runtime
+            .collision
+            .as_ref()
+            .ok_or("loaded map needs collision")?;
+        if collision.index != 0 {
+            return Err("loaded map needs collision model0".to_owned());
+        }
+        let bounds = host
+            .runtime
+            .geometry
+            .model_bounds(collision.geometry, collision.index)
+            .ok_or("loaded map collision model0 bounds")?;
+        host.runtime
+            .model_loader
+            .as_mut()
+            .ok_or("missing model loader")?
+            .bind_loaded_world(path, world, bounds)?;
+    }
     // Native resource registration finishes before client audio precaching.
     // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
     if !host.runtime.quit {

@@ -1056,3 +1056,297 @@ fn inline_model_ordinals_stay_in_their_world_namespace_without_copying_geometry(
         .is_err()
     );
 }
+
+#[test]
+fn loaded_world_alias_uses_native_bounds_without_reading_a_model_file() {
+    let fixture = support::Fixture::new(&[
+        ("maps/start.bsp", b"not a mesh or BSP".to_vec()),
+        ("maps/unbound.bsp", b"not a mesh or BSP".to_vec()),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let first = world(&mut assets, 0.0);
+    let second = world(&mut assets, 100.0);
+    let meshes = assets.models().len();
+    let vertices = assets
+        .models()
+        .iter()
+        .map(|model| model.vertices.len())
+        .sum::<usize>();
+    let indices = assets
+        .models()
+        .iter()
+        .map(|model| model.indices.len())
+        .sum::<usize>();
+    let materials = assets.materials().len();
+    let images = assets.images().len();
+    let expected = Bounds {
+        mins: Vec3([-1.0; 3]),
+        maxs: Vec3([2.0; 3]),
+    };
+    let mut collision = qa_world::collision::CollisionStore::new();
+    let geometry = collision
+        .load_hulls(
+            vec![],
+            vec![],
+            vec![],
+            vec![qa_world::collision::hulls::HullModel { roots: [-1; 3] }],
+            vec![expected],
+        )
+        .unwrap();
+    let native_bounds = collision.model_bounds(geometry, 0).unwrap();
+    assert_ne!(
+        native_bounds,
+        assets.world(first).unwrap().geometry().models[0].bounds
+    );
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [], [first, second], ModelLimits::default()).unwrap();
+    builder
+        .bind_loaded_world("MAPS\\START.BSP", first, native_bounds)
+        .unwrap();
+    builder
+        .bind_loaded_world("maps/absent.bsp", second, native_bounds)
+        .unwrap();
+    for path in [b"maps/start.bsp".as_slice(), b"MAPS\\ABSENT.BSP"] {
+        assert_eq!(
+            builder
+                .precache(&fixture.vfs, path, RuleSetId::Quake)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(builder.bounds(path, RuleSetId::Quake3), Some(expected));
+    }
+    fixture.remove("maps/start.bsp");
+    // This is the same post-initialization request that the native precache
+    // collection makes; a world alias needs no configured mesh profile.
+    for required in [false, true] {
+        builder
+            .register_request(
+                &fixture.vfs,
+                ModelRequest {
+                    required,
+                    ..ModelRequest::native("maps/start.bsp", RuleSetId::Quake, None)
+                },
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        builder.precache(&fixture.vfs, b"maps/unbound.bsp", RuleSetId::Quake),
+        Err(qa_compat::services::CallError::File)
+    ));
+    let (assets, catalog) = builder.finish();
+    assert_eq!(
+        catalog.bounds(b"MAPS\\START.BSP", RuleSetId::QuakeWorld),
+        Some(expected)
+    );
+    assert_eq!(
+        catalog.bounds(b"maps/absent.bsp", RuleSetId::Quake2),
+        Some(expected)
+    );
+    assert_eq!(catalog.metadata(b"maps/start.bsp"), None);
+    assert_eq!(
+        catalog.registration(
+            "maps/start.bsp",
+            ModelRequest::native("", RuleSetId::Quake, None).profile()
+        ),
+        None
+    );
+    assert_eq!(catalog.resolve_inline(first, 0).unwrap().world, first);
+    assert_eq!(catalog.resolve_inline(second, 0).unwrap().world, second);
+    assert_eq!(catalog.capacity().registrations, 0);
+    assert_eq!(catalog.capacity().bindings, 0);
+    assert_eq!(catalog.capacity().inline_bindings, 4);
+    assert_eq!(assets.models().len(), meshes);
+    assert_eq!(
+        assets
+            .models()
+            .iter()
+            .map(|model| model.vertices.len())
+            .sum::<usize>(),
+        vertices
+    );
+    assert_eq!(
+        assets
+            .models()
+            .iter()
+            .map(|model| model.indices.len())
+            .sum::<usize>(),
+        indices
+    );
+    assert_eq!(assets.materials().len(), materials);
+    assert_eq!(assets.images().len(), images);
+}
+
+#[test]
+fn loaded_world_alias_repeats_are_idempotent_and_conflicts_do_not_replace_rows() {
+    let mut assets = Assets::load().unwrap();
+    let first = world(&mut assets, 0.0);
+    let second = world(&mut assets, 100.0);
+    let bounds = Bounds {
+        mins: Vec3([-1.0; 3]),
+        maxs: Vec3([2.0; 3]),
+    };
+    let mut builder = ModelCatalogBuilder::new(
+        assets,
+        [],
+        [first, second],
+        ModelLimits {
+            models: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(builder.bind_loaded_world("", first, bounds).is_err());
+    assert!(builder.bind_loaded_world("*1", first, bounds).is_err());
+    assert!(
+        builder
+            .bind_loaded_world("maps/start.bsp", WorldId(u32::MAX), bounds)
+            .is_err()
+    );
+    assert!(
+        builder
+            .bind_loaded_world(
+                "maps/start.bsp",
+                first,
+                Bounds {
+                    mins: Vec3([f32::NAN; 3]),
+                    ..bounds
+                }
+            )
+            .is_err()
+    );
+    builder
+        .bind_loaded_world("maps/start.bsp", first, bounds)
+        .unwrap();
+    builder
+        .bind_loaded_world("MAPS\\START.BSP", first, bounds)
+        .unwrap();
+    assert!(
+        builder
+            .bind_loaded_world("maps/start.bsp", second, bounds)
+            .is_err()
+    );
+    assert!(
+        builder
+            .bind_loaded_world(
+                "maps/start.bsp",
+                first,
+                Bounds {
+                    maxs: Vec3([3.0; 3]),
+                    ..bounds
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        builder
+            .bind_loaded_world("maps/overflow.bsp", first, bounds)
+            .is_err()
+    );
+    assert_eq!(
+        builder.bounds(b"maps/start.bsp", RuleSetId::Quake),
+        Some(bounds)
+    );
+    assert_eq!(builder.bounds(b"maps/overflow.bsp", RuleSetId::Quake), None);
+    let (_, catalog) = builder.finish();
+    assert_eq!(catalog.capacity().names, 2);
+    assert_eq!(catalog.capacity().name_bytes, "maps/start.bsp".len());
+    assert_eq!(
+        catalog.bounds(b"maps/start.bsp", RuleSetId::Quake),
+        Some(bounds)
+    );
+    assert_eq!(catalog.resolve_inline(first, 0).unwrap().world, first);
+}
+
+#[test]
+fn loaded_world_alias_capacity_and_missing_model0_fail_without_admission() {
+    let bounds = Bounds {
+        mins: Vec3([-1.0; 3]),
+        maxs: Vec3([2.0; 3]),
+    };
+    for limits in [
+        ModelLimits {
+            models: 0,
+            ..Default::default()
+        },
+        ModelLimits {
+            name_bytes: "maps/start.bsp".len() - 1,
+            ..Default::default()
+        },
+    ] {
+        let mut assets = Assets::load().unwrap();
+        let id = world(&mut assets, 0.0);
+        let mut builder = ModelCatalogBuilder::new(assets, [], [id], limits).unwrap();
+        assert!(
+            builder
+                .bind_loaded_world("maps/start.bsp", id, bounds)
+                .is_err()
+        );
+        assert_eq!(builder.bounds(b"maps/start.bsp", RuleSetId::Quake), None);
+        let (_, catalog) = builder.finish();
+        assert_eq!(catalog.capacity().names, 1);
+        assert_eq!(catalog.capacity().name_bytes, 0);
+    }
+    let mut assets = Assets::load().unwrap();
+    let id = world(&mut assets, 0.0);
+    let mut builder = ModelCatalogBuilder::new(assets, [], [], ModelLimits::default()).unwrap();
+    assert!(
+        builder
+            .bind_loaded_world("maps/start.bsp", id, bounds)
+            .is_err()
+    );
+    assert_eq!(builder.bounds(b"maps/start.bsp", RuleSetId::Quake), None);
+    let (_, catalog) = builder.finish();
+    assert_eq!(catalog.capacity().names, 1);
+}
+
+#[test]
+fn loaded_world_alias_does_not_replace_or_shift_mesh_profiles() {
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake2, palette);
+    let id = world(&mut assets, 0.0);
+    let meshes = assets.models().len();
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [profile], [id], ModelLimits::default()).unwrap();
+    let mesh_bounds = builder
+        .precache(&fixture.vfs, b"models/test/tris.md2", RuleSetId::Quake2)
+        .unwrap();
+    let native_bounds = Bounds {
+        mins: Vec3([-1.0; 3]),
+        maxs: Vec3([2.0; 3]),
+    };
+    assert!(
+        builder
+            .bind_loaded_world("MODELS\\TEST\\TRIS.MD2", id, native_bounds)
+            .is_err()
+    );
+    builder
+        .bind_loaded_world("maps/start.bsp", id, native_bounds)
+        .unwrap();
+    fixture.remove("models/test/tris.md2");
+    builder
+        .register_request(
+            &fixture.vfs,
+            ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(palette)),
+        )
+        .unwrap();
+    assert_eq!(
+        builder.bounds(b"models/test/tris.md2", RuleSetId::Quake2),
+        Some(mesh_bounds)
+    );
+    let (assets, catalog) = builder.finish();
+    assert_eq!(
+        catalog.metadata(b"models/test/tris.md2").unwrap().format,
+        qa_formats::model::ModelFormat::Md2
+    );
+    assert_eq!(catalog.capacity().registrations, 1);
+    assert_eq!(catalog.capacity().names, 3);
+    assert_eq!(assets.models().len(), meshes + 1);
+    assert!(binding(&catalog, "models/test/tris.md2", profile, 0).is_some());
+    assert_eq!(catalog.registration("maps/start.bsp", profile), None);
+    assert_eq!(
+        catalog.bounds(b"maps/start.bsp", RuleSetId::Quake),
+        Some(native_bounds)
+    );
+}

@@ -246,8 +246,11 @@ impl Vm {
         &mut self,
         entities: &qa_world::entities::EntityTable,
         module: qa_core::primitives::ModuleId,
+        rules: qa_core::primitives::RuleSetId,
+        max_clients: i32,
     ) -> Result<(), crate::services::CallError> {
-        self.projection.seed(entities, module)
+        self.projection
+            .quakec_seed(entities, module, rules, max_clients)
     }
     /// Cache the native function-to-session callback conversion once at load.
     pub fn bind_thinks(&mut self, binding: qa_session::dispatch::ModuleBinding, entries: &[u32]) {
@@ -300,10 +303,9 @@ impl Vm {
         entities: &qa_world::entities::EntityTable,
         cursor: &mut usize,
         rules: qa_core::primitives::RuleSetId,
-        max_clients: i32,
     ) -> Result<Option<PhysicsEntity>, crate::services::CallError> {
         self.projection
-            .quakec_physics_entity(entities, &self.entities, cursor, rules, max_clients)
+            .quakec_physics_entity(entities, &self.entities, cursor, rules)
     }
     /// Resolve the currently live module-owned lifetime of a captured native
     /// row. Native reuse changes its common handle, never revives the old one.
