@@ -115,6 +115,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
             let trace = trace_world(
                 &world,
                 TraceQuery {
+                    scope: qa_world::collision::TraceScope::Scene,
                     start: Vec3([100.0, 0.0, 0.0]),
                     end: Vec3::default(),
                     mins: Vec3([-half_width, -half_width, -24.0]),
@@ -146,6 +147,7 @@ fn caller_rules_choose_contact_on_the_same_brush_geometry() {
             trace_world(
                 &world,
                 TraceQuery {
+                    scope: qa_world::collision::TraceScope::Scene,
                     start: Vec3([100.0, 0.0, 0.0]),
                     end: Vec3::default(),
                     mins: Vec3::default(),
@@ -172,6 +174,7 @@ fn embedded_motion_keeps_original_brush_trace_semantics() {
         (TraceRules::ARENA, 0.0, Contents::SOLID),
     ] {
         let query = TraceQuery {
+            scope: qa_world::collision::TraceScope::Scene,
             start: Vec3::default(),
             end: Vec3([1.0, 0.0, 0.0]),
             mins: Vec3::default(),
@@ -505,6 +508,7 @@ fn q3_centered_box_math_preserves_native_rounding_at_large_origins() {
     )
     .unwrap();
     let query = TraceQuery {
+        scope: qa_world::collision::TraceScope::Scene,
         start: Vec3([origin + 6.0, 0.0, 0.0]),
         end: Vec3([origin + 4.0, 0.0, 0.0]),
         mins: Vec3([-2.0, 0.0, 0.0]),

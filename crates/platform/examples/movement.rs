@@ -195,6 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ClientId(slot as u32),
                     command,
                     qa_core::primitives::CommandExecution::PerCommand,
+                    None,
                 );
             }
         }

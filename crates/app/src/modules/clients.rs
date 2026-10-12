@@ -1,6 +1,8 @@
 //! Client lifecycle exports use the same session table as provider callbacks.
 use super::{Export, FrameHost, ModuleResult, Program, Q2Clients, State};
-use qa_core::primitives::{ClientId, ModuleId, NativeEntity, ThinkTime, UserCmd, Vec3};
+use qa_core::primitives::{
+    ClientId, ModuleId, NativeEntity, SnapshotObservation, ThinkTime, UserCmd, Vec3,
+};
 use std::fmt;
 
 #[derive(Debug)]
@@ -52,6 +54,7 @@ impl FrameHost {
         id: ClientId,
         command: UserCmd,
         execution: qa_network::commands::packet::CommandExecution,
+        observation: Option<SnapshotObservation>,
     ) {
         let rules = self.runtime.server.clients[id.0 as usize]
             .player
@@ -61,7 +64,9 @@ impl FrameHost {
         } else {
             command
         };
-        self.runtime.server.submit_command(id, command, execution);
+        self.runtime
+            .server
+            .submit_command(id, command, execution, observation);
         if execution == qa_network::commands::packet::CommandExecution::PerCommand {
             self.consume_pending_command(id);
             self.runtime.server.commit_attachments();
@@ -83,13 +88,25 @@ impl FrameHost {
 
     fn consume_pending_command(&mut self, id: ClientId) {
         if let Some(native) = self.runtime.server.module_moves(id) {
-            let Some(command) = self.runtime.server.take_pending_command(id) else {
+            let Some((command, observation)) = self.runtime.server.take_pending_command(id) else {
                 return;
             };
-            if let Some(api) = self
-                .module_row(native.module)
-                .and_then(|row| row.client_api)
-                && let Err(error) = self.think_q2_client(&api, id, &command, 0)
+            let bound = self.module_row(native.module).and_then(|row| {
+                let api = row.client_api?;
+                let frame = observation
+                    .filter(|_| {
+                        self.runtime
+                            .server
+                            .entities
+                            .resolve(row.request.anchor)
+                            .is_some()
+                    })
+                    .and_then(|source| source.frame_for(native.module, row.request.anchor))
+                    .unwrap_or(0);
+                Some((api, frame))
+            });
+            if let Some((api, frame)) = bound
+                && let Err(error) = self.think_q2_client(&api, id, &command, frame)
             {
                 let _ = self
                     .runtime
@@ -98,6 +115,11 @@ impl FrameHost {
                     .console_formatted(format_args!("ClientThink: {error}\n"));
             }
         } else if let Some(world) = &mut self.runtime.collision {
+            let player = &mut self.runtime.server.clients[id.0 as usize].player;
+            let base = player.movement.tuning;
+            player.movement.tuning =
+                self.movement_handles
+                    .resolve(&self.console.cvars, player.movement_rules, base);
             self.runtime.server.move_pending_client(
                 id,
                 &self.runtime.geometry,
@@ -105,7 +127,38 @@ impl FrameHost {
                 world.index,
                 &mut world.scratch,
             );
+            self.runtime.server.clients[id.0 as usize]
+                .player
+                .movement
+                .tuning = base;
         }
+    }
+    /// Capture the owning native provider's completed frame at publication,
+    /// independently of the negotiated snapshot sequence/time scale.
+    pub(crate) fn snapshot_observation(
+        &self,
+        id: ClientId,
+        time: qa_core::sys_events::EventTime,
+    ) -> Option<SnapshotObservation> {
+        let native = self.runtime.server.module_moves(id)?;
+        let row = self.module_row(native.module)?;
+        row.client_api?;
+        if row.state != State::Running
+            || self
+                .runtime
+                .server
+                .entities
+                .resolve(row.request.anchor)
+                .is_none()
+        {
+            return None;
+        }
+        Some(SnapshotObservation {
+            module: native.module,
+            module_lifetime: row.request.anchor,
+            native_frame: row.request.context.server_frame as u32,
+            time,
+        })
     }
     /// Native client numbers are supplied by the connection boundary. They are
     /// unrelated to the common entity slot or the player's movement rules.
@@ -207,7 +260,8 @@ impl FrameHost {
         }
     }
     /// Encode a received common command into the load-reserved game.h buffer.
-    /// `server_frame` is the client's reported snapshot, not the provider clock.
+    /// `server_frame` is the owning native frame retained with the client's
+    /// acknowledged submitted snapshot, never its raw protocol frame number.
     /// Dispatch does not also run the host's authoritative movement entry.
     pub fn think_q2_client(
         &mut self,

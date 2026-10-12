@@ -131,7 +131,7 @@ fn main() -> Result<(), String> {
             let decoded = packet::read(movement.protocol(), &mut scratch[..n], sequence, key)?;
             if let Move::QuakeWorld { delta_request, .. } = decoded {
                 let length = qw_connection.stage(&packet[..n])?;
-                qw_connection.decode(length, sequence, 0, &mut qw_channel, |_| {})?;
+                qw_connection.decode(length, sequence, 0, &mut qw_channel, |_, _| {})?;
                 if qw_connection.delta_request() != delta_request.map(u32::from) {
                     return Err(packet::Error::Context);
                 }

@@ -48,7 +48,7 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
     let mut decoded = None;
     assert_eq!(
         codec
-            .decode(n, sequence, time, server, |cmd| decoded = Some(cmd))
+            .decode(n, sequence, time, server, |cmd, _| decoded = Some(cmd))
             .unwrap(),
         1
     );

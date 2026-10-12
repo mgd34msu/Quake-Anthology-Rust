@@ -1,7 +1,7 @@
 use super::EntityTraceFlags;
 use super::{
-    CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceQuery, TraceScratch,
-    WorldEntityRule,
+    CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceQuery, TraceScope,
+    TraceScratch, WorldEntityRule,
 };
 use crate::{area::AreaGrid, entities::EntityTable};
 use qa_core::primitives::{
@@ -81,7 +81,9 @@ impl<'a> WorldTrace<'a> {
         if world_entity {
             result.entity = self.entities.id_at(0);
         }
-        if result.fraction == 0.0 && query.entity_rules.stop_at_zero() {
+        if query.scope == TraceScope::World
+            || result.fraction == 0.0 && query.entity_rules.stop_at_zero()
+        {
             return result;
         }
         let missile = query.entity_rules.quake_kind() == Some(QuakeTraceKind::Missile);

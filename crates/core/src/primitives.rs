@@ -635,6 +635,7 @@ pub struct MovementState {
     pub ground: Option<EntityId>,
     pub ground_normal: Vec3,
     pub ground_surface: SurfaceFlags,
+    pub ground_contents: u64,
     pub water_level: u8,
     pub water_contents: u64,
     pub ladder: bool,
@@ -645,7 +646,6 @@ pub struct MovementState {
     pub command_time_ms: i32,
     pub delta_angles: Vec3,
     pub previous_position: Vec3,
-    pub water_jump_until: f64,
     pub water_jump_seconds: f32,
     pub teleport_hold_until: f64,
     pub tuning: MovementTuning,
@@ -655,6 +655,7 @@ pub struct MovementState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementTuning {
     pub max_speed: Option<f32>,
+    pub spectator_max_speed: Option<f32>,
     pub gravity: Option<f32>,
     pub friction: Option<f32>,
     pub accelerate: Option<f32>,
@@ -671,6 +672,7 @@ impl Default for MovementTuning {
     fn default() -> Self {
         Self {
             max_speed: None,
+            spectator_max_speed: None,
             gravity: None,
             friction: None,
             accelerate: None,
@@ -801,6 +803,21 @@ pub enum CommandExecution {
     /// Consume each admitted command before admitting the next one.
     #[default]
     PerCommand,
+}
+
+/// SERVER provenance of a submitted snapshot, observed through a packet's
+/// native last-frame field. It is not a sampling time for each backup command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotObservation {
+    pub module: ModuleId,
+    pub module_lifetime: EntityId,
+    pub native_frame: u32,
+    pub time: crate::sys_events::EventTime,
+}
+impl SnapshotObservation {
+    pub fn frame_for(self, module: ModuleId, lifetime: EntityId) -> Option<u32> {
+        (self.module == module && self.module_lifetime == lifetime).then_some(self.native_frame)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]

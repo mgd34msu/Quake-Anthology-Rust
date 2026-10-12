@@ -246,11 +246,13 @@ fn untrusted_command_client_ids_are_scoped_and_disconnected_slots_stay_idle() {
         ClientId(u32::MAX),
         command,
         qa_core::primitives::CommandExecution::PerCommand,
+        None,
     );
     server.submit_command(
         ClientId(0),
         command,
         qa_core::primitives::CommandExecution::PerCommand,
+        None,
     );
     assert_eq!(server.clients[0].command.duration_ms, 0);
     let id = server
@@ -260,6 +262,7 @@ fn untrusted_command_client_ids_are_scoped_and_disconnected_slots_stay_idle() {
         id,
         command,
         qa_core::primitives::CommandExecution::PerCommand,
+        None,
     );
     assert_eq!(server.clients[0].command.duration_ms, 123);
 }
@@ -297,4 +300,51 @@ fn module_movement_requires_admission_owner_and_current_entity_lifetime() {
         assert_eq!(server.module_moves(id), None);
     }
     assert_eq!(server.module_moves(ClientId(u32::MAX)), None);
+}
+
+#[test]
+fn pending_command_keeps_its_snapshot_observation_once_and_disconnect_clears_it() {
+    use qa_core::{
+        primitives::{CommandExecution, SnapshotObservation, UserCmd},
+        sys_events::EventTime,
+    };
+    let mut server = Server::load(1, 8, 1, 0, 0, 0).unwrap();
+    let id = server
+        .connect(Connection::Remote, ModuleId(7), PlayerTail::None, None)
+        .unwrap();
+    let observation = SnapshotObservation {
+        module: ModuleId(7),
+        module_lifetime: server.clients[id.0 as usize].entity,
+        native_frame: 4,
+        time: EventTime::from_milliseconds(2300),
+    };
+    server.submit_command(
+        id,
+        UserCmd::default(),
+        CommandExecution::FrameLatest,
+        Some(observation),
+    );
+    server.resolve_frame_command(
+        id,
+        EventTime::from_milliseconds(20),
+        EventTime::from_milliseconds(2400),
+    );
+    let (command, source) = server.take_pending_command(id).unwrap();
+    assert_eq!(source, Some(observation));
+    assert_eq!(command.duration_ms, 20);
+    assert!(server.take_pending_command(id).is_none());
+    assert_eq!(server.clients[id.0 as usize].command_observation, None);
+    server.submit_command(
+        id,
+        UserCmd::default(),
+        CommandExecution::PerCommand,
+        Some(observation),
+    );
+    server.disconnect(id);
+    assert_eq!(server.clients[id.0 as usize].command_observation, None);
+    assert_eq!(
+        server.connect(Connection::Remote, ModuleId(7), PlayerTail::None, None),
+        Some(id)
+    );
+    assert!(server.take_pending_command(id).is_none());
 }

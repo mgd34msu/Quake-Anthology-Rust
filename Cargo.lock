@@ -254,6 +254,7 @@ name = "qa-movement"
 version = "0.1.0"
 dependencies = [
  "qa-core",
+ "qa-gameplay",
  "qa-world",
 ]
 

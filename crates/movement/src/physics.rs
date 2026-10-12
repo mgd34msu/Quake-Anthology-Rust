@@ -5,8 +5,13 @@ use qa_core::{
     },
     sys_events::EventTime,
 };
+use qa_gameplay::rules::movement::{
+    FreeAcceleration, FreeFinish, FreeFriction, FreeModes, FreeMotion, FreeMovePolicy, FreeWish,
+    ProbePhase, SpecialMovement, capabilities,
+};
 use qa_world::collision::{
-    Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, WorldTrace, trace_policy,
+    Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, TraceScope, WorldTrace,
+    trace_policy,
 };
 
 pub trait TraceServices {
@@ -55,156 +60,6 @@ pub fn set_bounds(player: &mut PlayerState) {
     player.view_offset = Vec3([0.0, 0.0, parameters.view_height]);
 }
 #[derive(Clone, Copy)]
-enum FreeWish {
-    Existing,
-    Full,
-    Normalized,
-    ScaledBasis,
-}
-#[derive(Clone, Copy)]
-enum FreeFriction {
-    Native,
-    StopControlled,
-    Linear(f32),
-    Flight(f32),
-}
-#[derive(Clone, Copy)]
-enum FreeMotion {
-    Direct,
-    StepSlide,
-}
-#[derive(Clone, Copy)]
-enum FreeAcceleration {
-    Immediate,
-    Normal,
-    Flight,
-}
-#[derive(Clone, Copy)]
-enum FreeFinish {
-    Snap(bool),
-    Timers,
-    Environment,
-}
-#[derive(Clone, Copy)]
-struct FreeMovePolicy {
-    wish: FreeWish,
-    friction: FreeFriction,
-    motion: FreeMotion,
-    acceleration: FreeAcceleration,
-    finish: FreeFinish,
-    abort_without_acceleration: bool,
-    stance: bool,
-}
-#[derive(Clone, Copy)]
-struct FreeModes {
-    flight: FreeMovePolicy,
-    noclip: FreeMovePolicy,
-    spectator: FreeMovePolicy,
-}
-impl FreeModes {
-    fn get(self, mode: MovementMode) -> Option<FreeMovePolicy> {
-        match mode {
-            MovementMode::Fly => Some(self.flight),
-            MovementMode::Noclip => Some(self.noclip),
-            MovementMode::Spectator => Some(self.spectator),
-            _ => None,
-        }
-    }
-}
-const QUAKE_FREE: FreeMovePolicy = FreeMovePolicy {
-    wish: FreeWish::Existing,
-    friction: FreeFriction::Native,
-    motion: FreeMotion::Direct,
-    acceleration: FreeAcceleration::Immediate,
-    finish: FreeFinish::Snap(true),
-    abort_without_acceleration: false,
-    stance: false,
-};
-const CLASSIC_FREE: FreeMovePolicy = FreeMovePolicy {
-    wish: FreeWish::Normalized,
-    friction: FreeFriction::StopControlled,
-    motion: FreeMotion::Direct,
-    acceleration: FreeAcceleration::Normal,
-    finish: FreeFinish::Snap(true),
-    abort_without_acceleration: true,
-    stance: false,
-};
-const ARENA_NOCLIP: FreeMovePolicy = FreeMovePolicy {
-    wish: FreeWish::Full,
-    friction: FreeFriction::StopControlled,
-    motion: FreeMotion::Direct,
-    acceleration: FreeAcceleration::Normal,
-    finish: FreeFinish::Timers,
-    abort_without_acceleration: false,
-    stance: false,
-};
-const ARENA_SPECTATOR: FreeMovePolicy = FreeMovePolicy {
-    wish: FreeWish::ScaledBasis,
-    friction: FreeFriction::Linear(5.0),
-    motion: FreeMotion::StepSlide,
-    acceleration: FreeAcceleration::Flight,
-    finish: FreeFinish::Timers,
-    abort_without_acceleration: false,
-    stance: true,
-};
-const FREE_MODES: [FreeModes; 5] = [
-    FreeModes {
-        flight: FreeMovePolicy {
-            motion: FreeMotion::StepSlide,
-            ..QUAKE_FREE
-        },
-        noclip: QUAKE_FREE,
-        spectator: QUAKE_FREE,
-    },
-    FreeModes {
-        flight: FreeMovePolicy {
-            motion: FreeMotion::StepSlide,
-            ..CLASSIC_FREE
-        },
-        noclip: CLASSIC_FREE,
-        spectator: FreeMovePolicy {
-            finish: FreeFinish::Snap(false),
-            ..CLASSIC_FREE
-        },
-    },
-    FreeModes {
-        flight: FreeMovePolicy {
-            motion: FreeMotion::StepSlide,
-            ..CLASSIC_FREE
-        },
-        noclip: CLASSIC_FREE,
-        spectator: FreeMovePolicy {
-            finish: FreeFinish::Snap(false),
-            ..CLASSIC_FREE
-        },
-    },
-    FreeModes {
-        flight: FreeMovePolicy {
-            motion: FreeMotion::StepSlide,
-            abort_without_acceleration: false,
-            ..CLASSIC_FREE
-        },
-        noclip: FreeMovePolicy {
-            abort_without_acceleration: false,
-            ..CLASSIC_FREE
-        },
-        spectator: FreeMovePolicy {
-            motion: FreeMotion::StepSlide,
-            abort_without_acceleration: false,
-            ..CLASSIC_FREE
-        },
-    },
-    FreeModes {
-        flight: FreeMovePolicy {
-            friction: FreeFriction::Flight(3.0),
-            finish: FreeFinish::Environment,
-            ..ARENA_SPECTATOR
-        },
-        noclip: ARENA_NOCLIP,
-        spectator: ARENA_SPECTATOR,
-    },
-];
-#[derive(Clone, Copy)]
 enum FrictionContext {
     Native,
     Free(FreeFriction),
@@ -218,6 +73,7 @@ pub(crate) struct Parameters {
     pub view_height: f32,
     pub gravity: f32,
     pub speed: f32,
+    pub spectator_speed: f32,
     pub friction: f32,
     pub stop: f32,
     pub accel: f32,
@@ -226,6 +82,7 @@ pub(crate) struct Parameters {
     pub water_friction: f32,
     pub no_step: bool,
     free: FreeModes,
+    pub special: SpecialMovement,
     fly_accel: f32,
     exclusive_button: Option<u32>,
 }
@@ -234,6 +91,7 @@ impl Parameters {
         let t = player.movement.tuning;
         let legacy = matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld);
         let arena = rules == RuleSetId::Quake3;
+        let capabilities = capabilities(rules);
         let (trace_rules, entity_rules) = trace_policy(player.trace_rules);
         Self {
             rules,
@@ -246,18 +104,28 @@ impl Parameters {
                 .max_speed
                 .unwrap_or(if legacy || arena { 320.0 } else { 300.0 })
                 * t.speed_multiplier,
+            spectator_speed: t
+                .spectator_max_speed
+                .unwrap_or(if rules == RuleSetId::QuakeWorld {
+                    500.0
+                } else {
+                    t.max_speed
+                        .unwrap_or(if legacy || arena { 320.0 } else { 300.0 })
+                })
+                * t.speed_multiplier,
             friction: t.friction.unwrap_or(if legacy { 4.0 } else { 6.0 }),
             stop: t.stop_speed.unwrap_or(100.0),
             accel: t.accelerate.unwrap_or(10.0),
             air: t.air_accelerate.unwrap_or(if arena { 1.0 } else { 0.0 }),
             water_accel: t.water_accelerate.unwrap_or(if arena { 4.0 } else { 10.0 }),
             water_friction: t.water_friction.unwrap_or(if arena || legacy {
-                if rules == RuleSetId::Quake { 4.0 } else { 1.0 }
+                if legacy { 4.0 } else { 1.0 }
             } else {
                 1.0
             }),
             no_step: t.no_step,
-            free: FREE_MODES[rules as usize],
+            free: capabilities.free,
+            special: capabilities.special,
             fly_accel: 8.0,
             exclusive_button: if arena { Some(buttons::TALK) } else { None },
         }
@@ -274,6 +142,7 @@ pub(crate) struct Step<'a> {
     pub ground_plane: bool,
     pub ground_normal: Vec3,
     pub mask: Contents,
+    pub scope: TraceScope,
     pub previous_velocity: Vec3,
 }
 impl Step<'_> {
@@ -281,13 +150,24 @@ impl Step<'_> {
         self.trace_bounds(start, end, self.player.body.mins, self.player.body.maxs)
     }
     fn trace_bounds(&mut self, start: Vec3, end: Vec3, mins: Vec3, maxs: Vec3) -> Trace {
+        self.trace_mask(start, end, mins, maxs, self.mask)
+    }
+    pub(crate) fn trace_mask(
+        &mut self,
+        start: Vec3,
+        end: Vec3,
+        mins: Vec3,
+        maxs: Vec3,
+        mask: Contents,
+    ) -> Trace {
         self.result.traces += 1;
         self.world.trace(TraceQuery {
             start,
             end,
             mins,
             maxs,
-            mask: self.mask,
+            mask,
+            scope: self.scope,
             rules: self.parameters.trace_rules,
             entity_rules: self.parameters.entity_rules,
             pass: qa_core::primitives::CollisionOwner::None,
@@ -297,7 +177,7 @@ impl Step<'_> {
     pub fn contact(&mut self, trace: &Trace) {
         if let Some(id) = trace.entity
             && self.result.contact_count < 32
-            && (!self.arena()
+            && (!(self.arena() || self.rr())
                 || !self.result.contacts[..self.result.contact_count]
                     .iter()
                     .flatten()
@@ -323,6 +203,15 @@ impl Step<'_> {
         self.parameters.rules == RuleSetId::Quake2Rerelease
     }
     pub fn accelerate(&mut self, direction: Vec3, speed: f32, accel: f32, air_cap: bool) -> bool {
+        if self.player.movement.water_jump_seconds != 0.0
+            && self
+                .parameters
+                .free
+                .get(self.player.movement.mode)
+                .is_none()
+        {
+            return false;
+        }
         let target = if air_cap { speed.min(30.0) } else { speed };
         let add = target - self.player.body.velocity.dot(direction);
         if add <= 0.0 {
@@ -342,40 +231,51 @@ impl Step<'_> {
         self.player.body.velocity = self.player.body.velocity + direction * amount.min(add);
         true
     }
-    fn water_level(&mut self) {
+    pub(crate) fn water_at(&self, position: Vec3, upper_origin: Vec3) -> (u8, u64) {
         let body = self.player.body;
-        let mut point = body.position;
+        let mut point = position;
         point.0[2] += body.mins.0[2] + 1.0;
-        self.player.movement.water_level = 0;
-        self.player.movement.water_contents = 0;
         let contents = self
             .world
             .point_contents(point, self.parameters.entity_rules);
         if !contents.intersects(Contents::FLUID) {
-            return;
+            return (0, 0);
         }
-        self.player.movement.water_level = 1;
-        self.player.movement.water_contents = contents.0;
+        let mut level = 1;
         let middle = if self.nq() || self.qw() {
             qa_core::math::midpoint(body.mins, body.maxs).0[2]
         } else {
             body.mins.0[2] + ((self.player.view_offset.0[2] - body.mins.0[2]) as i32 / 2) as f32
         };
-        point.0[2] = body.position.0[2] + middle;
+        point.0[2] = upper_origin.0[2] + middle;
         if self
             .world
             .point_contents(point, self.parameters.entity_rules)
             .intersects(Contents::FLUID)
         {
-            self.player.movement.water_level = 2;
-            point.0[2] = body.position.0[2] + self.player.view_offset.0[2];
+            level = 2;
+            point.0[2] = upper_origin.0[2] + self.player.view_offset.0[2];
             if self
                 .world
                 .point_contents(point, self.parameters.entity_rules)
                 .intersects(Contents::FLUID)
             {
-                self.player.movement.water_level = 3;
+                level = 3;
             }
+        }
+        (level, contents.0)
+    }
+    fn water_level(&mut self) {
+        let position = self.player.body.position;
+        let (level, contents) = self.water_at(position, position);
+        self.player.movement.water_level = level;
+        self.player.movement.water_contents = contents;
+    }
+    pub(crate) fn view_basis(&self, angles: Vec3) -> math::AngleBasis {
+        if self.arena() {
+            math::angle_vectors_radians(math::radians_from_degrees_f32(angles))
+        } else {
+            math::angle_vectors(angles)
         }
     }
     fn categorize(&mut self) {
@@ -384,6 +284,7 @@ impl Step<'_> {
         self.player.movement.ground = None;
         self.ground_plane = false;
         self.ground_normal = Vec3::default();
+        self.player.movement.ground_contents = 0;
         if self.player.body.velocity.0[2] <= 180.0 || self.arena() {
             let start = self.player.body.position;
             let drop = if self.qw() { 1.0 } else { 0.25 };
@@ -405,6 +306,20 @@ impl Step<'_> {
                 self.player.movement.ground = tr.entity;
                 self.player.movement.ground_normal = tr.plane.normal;
                 self.player.movement.ground_surface = tr.surface;
+                self.player.movement.ground_contents = tr.contents.0;
+                if self
+                    .player
+                    .movement
+                    .timer
+                    .contains(MovementTimer::WATER_JUMP)
+                {
+                    let mask = self
+                        .parameters
+                        .special
+                        .water_jump
+                        .map_or(MovementTimer(u8::MAX), |policy| policy.ground_clear);
+                    self.clear_timer_flags(mask);
+                }
                 if self.classic() && !was_grounded && self.player.body.velocity.0[2] < -200.0 {
                     self.player.movement.timer.insert(MovementTimer::LAND);
                     self.player.movement.remaining_ms = if self.player.body.velocity.0[2] < -400.0 {
@@ -420,15 +335,6 @@ impl Step<'_> {
                 if self.qw() && !tr.start_solid && !tr.all_solid {
                     self.player.body.position = tr.end;
                 }
-                if self
-                    .player
-                    .movement
-                    .timer
-                    .contains(MovementTimer::WATER_JUMP)
-                {
-                    self.player.movement.timer = MovementTimer::NONE;
-                    self.player.movement.remaining_ms = 0;
-                }
                 if self.qw() {
                     self.player.movement.water_jump_seconds = 0.0;
                 }
@@ -439,6 +345,10 @@ impl Step<'_> {
     fn stance(&mut self) {
         if self.nq() || self.qw() {
             return;
+        }
+        for axis in 0..2 {
+            self.player.body.mins.0[axis] = -self.parameters.radius;
+            self.player.body.maxs.0[axis] = self.parameters.radius;
         }
         if self.classic() && self.player.movement.mode == MovementMode::Gib {
             self.player.body.mins.0[2] = 0.0;
@@ -570,7 +480,7 @@ impl Step<'_> {
             return;
         } else if environment && self.qw() && water >= 2 {
             drop = speed * self.parameters.water_friction * f32::from(water) * self.dt;
-        } else if environment && !self.qw() && water > 0 {
+        } else if environment && !self.qw() && water > 0 && !self.player.movement.ladder {
             drop += speed * self.parameters.water_friction * f32::from(water) * self.dt;
         }
         if let Some(FreeFriction::Linear(rate) | FreeFriction::Flight(rate)) = free {
@@ -590,6 +500,11 @@ impl Step<'_> {
             self.player.movement.jump_held = false;
             return false;
         }
+        if self.player.movement.water_jump_seconds != 0.0 {
+            self.player.movement.water_jump_seconds =
+                (self.player.movement.water_jump_seconds - self.dt).max(0.0);
+            return false;
+        }
         if !self.arena() && self.player.movement.timer.contains(MovementTimer::LAND) {
             return false;
         }
@@ -604,6 +519,9 @@ impl Step<'_> {
         }
         if !self.arena() && self.player.movement.water_level >= 2 {
             self.player.movement.grounded = false;
+            if !self.parameters.special.swim_jump_impulse {
+                return false;
+            }
             if self.player.body.velocity.0[2] <= -300.0 {
                 return false;
             }
@@ -633,7 +551,7 @@ impl Step<'_> {
         };
         true
     }
-    fn wish(&self, water: bool, free: Option<FreeMovePolicy>) -> (Vec3, f32) {
+    fn wish(&mut self, water: bool, free: Option<FreeMovePolicy>) -> (Vec3, f32, f32) {
         let full_basis = free.is_some_and(|policy| !matches!(policy.wish, FreeWish::Existing));
         let mut angles = self.player.view_angles;
         if !full_basis && self.nq() && !water {
@@ -643,11 +561,7 @@ impl Step<'_> {
             angles.0[0] = math::wrap_above_180(angles.0[0]);
             angles.0[0] /= 3.0;
         }
-        let mut basis = if self.arena() {
-            math::angle_vectors_radians(math::radians_from_degrees_f32(angles))
-        } else {
-            math::angle_vectors(angles)
-        };
+        let mut basis = self.view_basis(angles);
         if !full_basis && (self.qw() || self.arena()) && !water {
             basis.forward.0[2] = 0.0;
             basis.right.0[2] = 0.0;
@@ -672,10 +586,15 @@ impl Step<'_> {
         {
             move_axes[0] = 0.0;
         }
-        if self.command.buttons & buttons::JUMP != 0 {
+        let button_vertical = free.is_some_and(|policy| policy.button_vertical);
+        let swim_buttons = water && self.parameters.special.swim_buttons;
+        if button_vertical || swim_buttons {
+            move_axes[2] = 0.0;
+        }
+        if !button_vertical && !swim_buttons && self.command.buttons & buttons::JUMP != 0 {
             move_axes[2] = move_axes[2].max(if self.arena() { 127.0 } else { 200.0 });
         }
-        if self.command.buttons & buttons::CROUCH != 0 {
+        if !button_vertical && !swim_buttons && self.command.buttons & buttons::CROUCH != 0 {
             move_axes[2] = move_axes[2].min(if self.arena() { -127.0 } else { -200.0 });
         }
         let total = math::length(Vec3(move_axes));
@@ -703,20 +622,52 @@ impl Step<'_> {
                 MovementMode::Noclip | MovementMode::Fly | MovementMode::Spectator
             )
         {
-            wish.0[2] += move_axes[2];
-            if water && move_axes == [0.0; 3] {
+            if !button_vertical && !swim_buttons {
+                wish.0[2] += move_axes[2];
+            }
+            if button_vertical {
+                if self.command.buttons & buttons::JUMP != 0 {
+                    wish.0[2] += 200.0;
+                }
+                if self.command.buttons & buttons::CROUCH != 0 {
+                    wish.0[2] -= 200.0;
+                }
+            }
+            if swim_buttons {
+                if move_axes[0] == 0.0
+                    && move_axes[1] == 0.0
+                    && self.command.buttons & (buttons::JUMP | buttons::CROUCH) == 0
+                {
+                    if self.parameters.special.sink_on_ground || !self.player.movement.grounded {
+                        wish.0[2] -= 60.0;
+                    }
+                } else if self.command.buttons & buttons::CROUCH != 0 {
+                    wish.0[2] -= 200.0;
+                } else if self.command.buttons & buttons::JUMP != 0 {
+                    wish.0[2] += 200.0;
+                }
+            } else if water && move_axes == [0.0; 3] {
                 wish.0[2] -= 60.0;
             }
         } else {
             wish.0[2] = 0.0;
         }
+        if free.is_none() {
+            self.adjust_wish(&mut wish);
+        }
+        let vertical = wish.0[2];
         let length = math::normalize(&mut wish);
-        let max = if self.player.movement.ducked && !full_basis {
+        let max = if self.player.movement.ducked
+            && !full_basis
+            && !(water && self.parameters.special.water_standing_cap)
+        {
             if self.arena() {
                 self.parameters.speed * 0.25
             } else {
                 100.0
             }
+        } else if free.is_some_and(|policy| policy.spectator_speed) {
+            self.parameters.spectator_speed
         } else {
             self.parameters.speed
         };
@@ -735,7 +686,16 @@ impl Step<'_> {
         if water && !self.arena() {
             speed *= if self.nq() || self.qw() { 0.7 } else { 0.5 };
         }
-        (wish, speed)
+        if water
+            && self.player.movement.ducked
+            && let Some(cap) = self.parameters.special.water_duck_cap_after
+        {
+            speed = speed.min(cap);
+        }
+        if let Some(policy) = free {
+            speed *= policy.speed_multiplier;
+        }
+        (wish, speed, vertical)
     }
     fn walk(&mut self) {
         let water = self.player.movement.water_level >= 2;
@@ -744,8 +704,39 @@ impl Step<'_> {
             super::slide::step_slide(self, false);
             return;
         }
+        if water
+            && self
+                .parameters
+                .special
+                .water_jump
+                .is_some_and(|policy| matches!(policy.phase, ProbePhase::InWaterMovement))
+        {
+            self.check_water_jump();
+            if self.water_jump_move() {
+                return;
+            }
+        }
         self.friction(FrictionContext::Native);
-        let (direction, speed) = self.wish(water, None);
+        let (direction, speed, vertical) = self.wish(water, None);
+        if !water && self.player.movement.ladder {
+            self.accelerate(direction, speed, self.parameters.accel, false);
+            if vertical == 0.0 {
+                let z = &mut self.player.body.velocity.0[2];
+                if *z > 0.0 {
+                    *z -= self.parameters.gravity * self.dt;
+                    if *z < 0.0 {
+                        *z = 0.0;
+                    }
+                } else {
+                    *z += self.parameters.gravity * self.dt;
+                    if *z > 0.0 {
+                        *z = 0.0;
+                    }
+                }
+            }
+            super::slide::step_slide(self, false);
+            return;
+        }
         let ground = self.player.movement.grounded;
         let accel = if water {
             self.parameters.water_accel
@@ -842,7 +833,7 @@ impl Step<'_> {
         }
     }
     fn quake_water(&mut self) {
-        let (direction, wish_speed) = self.wish(true, None);
+        let (direction, wish_speed, _) = self.wish(true, None);
         let speed = math::length(self.player.body.velocity);
         let new_speed = if speed == 0.0 {
             0.0
@@ -895,7 +886,14 @@ impl Step<'_> {
         }
         self.player.body.position = previous;
     }
+    pub(crate) fn clear_timer_flags(&mut self, mask: MovementTimer) {
+        self.player.movement.timer.0 &= !mask.0;
+        self.player.movement.remaining_ms = 0;
+    }
     fn drop_timers(&mut self) {
+        if self.player.movement.remaining_ms == 0 {
+            return;
+        }
         let elapsed = if self.classic() {
             u32::from((self.command.duration_ms >> 3).max(1)) * 8
         } else {
@@ -908,10 +906,37 @@ impl Step<'_> {
         }
     }
     fn run_free(&mut self, policy: FreeMovePolicy, previous: Vec3) {
+        if policy.reset_flags {
+            self.player.movement.timer = MovementTimer::NONE;
+            self.player.movement.ducked = false;
+            self.player.movement.jump_held = false;
+            self.player.movement.grounded = false;
+            self.player.movement.ground = None;
+            self.player.movement.ladder = false;
+        }
+        if policy.clear_ground_reference {
+            self.player.movement.ground = None;
+        }
+        if policy.exclude_body_contents {
+            self.mask.0 &= !(Contents::BODY | Contents::PLAYER).0;
+        }
+        if policy.clear_water_outputs {
+            self.player.movement.water_level = 0;
+            self.player.movement.water_contents = 0;
+        }
+        if let Some(bounds) = policy.bounds {
+            self.player.body.mins = bounds.mins;
+            self.player.body.maxs = bounds.maxs;
+        }
+        if policy.world_only {
+            self.scope = TraceScope::World;
+            self.mask = Contents::SOLID | Contents::WINDOW;
+        }
         if policy.stance {
             self.stance();
         } else {
-            self.player.view_offset.0[2] = self.parameters.view_height;
+            self.player.view_offset.0[2] =
+                policy.view_height.unwrap_or(self.parameters.view_height);
         }
         if matches!(policy.finish, FreeFinish::Environment) {
             self.categorize();
@@ -920,7 +945,7 @@ impl Step<'_> {
         if !matches!(policy.acceleration, FreeAcceleration::Immediate) {
             self.friction(FrictionContext::Free(policy.friction));
         }
-        let (direction, speed) = self.wish(false, Some(policy));
+        let (direction, speed, _) = self.wish(false, Some(policy));
         let accelerated = match policy.acceleration {
             FreeAcceleration::Immediate => {
                 self.player.body.velocity = direction * speed;
@@ -1006,6 +1031,18 @@ impl Step<'_> {
                 }
             }
         }
+        if self.parameters.special.ladder.is_none() {
+            self.player.movement.ladder = false;
+        }
+        if self.command.buttons & buttons::JUMP == 0
+            && self
+                .parameters
+                .special
+                .release_jump_below
+                .is_some_and(|threshold| self.command.movement[2] < threshold)
+        {
+            self.player.movement.jump_held = false;
+        }
         if self.player.movement.mode == MovementMode::Frozen {
             return;
         }
@@ -1026,8 +1063,10 @@ impl Step<'_> {
         } else {
             self.categorize();
         }
+        self.check_special();
         self.drop_timers();
-        if !self.player.movement.timer.contains(MovementTimer::TELEPORT) {
+        if !self.player.movement.timer.contains(MovementTimer::TELEPORT) && !self.water_jump_move()
+        {
             self.jump();
             self.walk();
         }
@@ -1075,6 +1114,7 @@ fn run_step(
         ground_plane: false,
         ground_normal: Vec3::default(),
         mask,
+        scope: TraceScope::Scene,
         previous_velocity,
     }
     .run();

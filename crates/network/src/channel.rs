@@ -181,6 +181,15 @@ impl Channel {
     pub fn snapshot(&self, sequence: u32) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.frame(sequence)
     }
+    /// Only a fully submitted SERVER snapshot can explain a native lastframe
+    /// acknowledgement; publication and transmit watermarks are insufficient.
+    pub fn snapshot_observation(
+        &self,
+        sequence: u32,
+    ) -> Option<qa_core::primitives::SnapshotObservation> {
+        (self.endpoint() == Endpoint::Server).then_some(())?;
+        self.snapshots.as_ref()?.observation(sequence)
+    }
     pub fn current_snapshot(&self) -> Option<crate::snapshots::ReceivedFrame<'_>> {
         self.snapshots.as_ref()?.current()
     }

@@ -322,6 +322,7 @@ impl Runtime {
         &mut self,
         id: ClientId,
         time: qa_core::sys_events::EventTime,
+        observation: Option<qa_core::primitives::SnapshotObservation>,
     ) -> bool {
         use qa_core::loopback::Endpoint;
         use qa_network::channel::Unreliable;
@@ -362,7 +363,8 @@ impl Runtime {
                     else {
                         return false;
                     };
-                    let Ok(Some(packet)) = channel.prepare_move(&bytes[..length], time, None)
+                    let Ok(Some(packet)) =
+                        channel.prepare_snapshot(sequence, observation, &bytes[..length], time)
                     else {
                         return false;
                     };

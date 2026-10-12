@@ -26,6 +26,7 @@ pub struct Entity<const N: usize> {
 #[derive(Clone, Copy)]
 struct Slot<const P: usize> {
     sequence: Option<u32>,
+    observation: Option<qa_core::primitives::SnapshotObservation>,
     request_sequence: Option<u32>,
     requested_base: Option<u32>,
     valid: bool,
@@ -40,6 +41,7 @@ struct Slot<const P: usize> {
 impl<const P: usize> Slot<P> {
     const ZERO: Self = Self {
         sequence: None,
+        observation: None,
         request_sequence: None,
         requested_base: None,
         valid: false,
@@ -136,6 +138,28 @@ impl<const P: usize, const E: usize> Ring<P, E> {
     pub(crate) fn requested_base(&self, sequence: u32) -> Option<Option<u32>> {
         let slot = &self.slots[slot(sequence)];
         (slot.request_sequence == Some(sequence)).then_some(slot.requested_base)
+    }
+    fn observe_submission(
+        &mut self,
+        sequence: u32,
+        observation: Option<qa_core::primitives::SnapshotObservation>,
+    ) {
+        let index = slot(sequence);
+        let slot = &self.slots[index];
+        if slot.valid && slot.sequence == Some(sequence) && !self.expired(slot) {
+            self.slots[index].observation = observation;
+        }
+    }
+    fn observation(
+        &self,
+        sequence: u32,
+        mask: u32,
+    ) -> Option<qa_core::primitives::SnapshotObservation> {
+        let slot = &self.slots[slot(sequence)];
+        if !slot.valid || (slot.sequence? & mask) != sequence || self.expired(slot) {
+            return None;
+        }
+        slot.observation
     }
     pub fn allocated_bytes(&self) -> usize {
         std::mem::size_of_val(&self.slots)
@@ -467,6 +491,33 @@ pub(crate) enum Storage {
     Quake3(Box<Q3Ring>),
 }
 impl Storage {
+    pub(crate) fn observe_submission(
+        &mut self,
+        sequence: u32,
+        observation: Option<qa_core::primitives::SnapshotObservation>,
+    ) {
+        match self {
+            Self::NetQuake(storage) => storage.ring.observe_submission(sequence, observation),
+            Self::QuakeWorld { ring, .. } => ring.observe_submission(sequence, observation),
+            Self::Quake2(ring) => ring.observe_submission(sequence, observation),
+            Self::Quake2Repro { ring, .. } => ring.observe_submission(sequence, observation),
+            Self::Quake3(ring) => ring.observe_submission(sequence, observation),
+        }
+    }
+    pub(crate) fn observation(
+        &self,
+        sequence: u32,
+    ) -> Option<qa_core::primitives::SnapshotObservation> {
+        match self {
+            Self::NetQuake(storage) => storage.ring.observation(sequence, u32::MAX),
+            Self::QuakeWorld { ring, .. } => ring.observation(sequence, u8::MAX.into()),
+            Self::Quake2(ring) => ring.observation(sequence, u32::MAX),
+            Self::Quake2Repro { ring, .. } => {
+                ring.observation(sequence, Q2Header::REPRO_FRAME_MASK)
+            }
+            Self::Quake3(ring) => ring.observation(sequence, u32::MAX),
+        }
+    }
     pub(crate) fn load(
         protocol: packet::Protocol,
         endpoint: qa_core::loopback::Endpoint,

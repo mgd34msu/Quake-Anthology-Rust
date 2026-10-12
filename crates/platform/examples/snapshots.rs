@@ -539,7 +539,7 @@ fn connected_heap() -> Result<(), String> {
                 client.channel.send_state().sequence,
                 0,
                 &mut server,
-                |_| {},
+                |_, _| {},
             )?;
             if server_commands.delta_request() != Some(frame) {
                 return Err(qa_network::commands::packet::Error::Context);
@@ -676,7 +676,7 @@ fn connected_qw_heap() -> Result<(), String> {
             };
             let length = server_commands.stage(bytes)?;
             let mut received = None;
-            server_commands.decode(length, sequence, 0, &mut server, |command| {
+            server_commands.decode(length, sequence, 0, &mut server, |command, _| {
                 received = Some(command);
             })?;
             let received = received.ok_or(Error::Context)?;

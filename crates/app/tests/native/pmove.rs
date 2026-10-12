@@ -74,6 +74,14 @@ pub(super) fn commands_move_a_native_client_once() {
         bytes[0x7000..0x7004].copy_from_slice(&mode.to_le_bytes());
         let gravity = if rr { 32 } else { 18 };
         bytes[0x7000 + gravity..0x7002 + gravity].copy_from_slice(&800i16.to_le_bytes());
+        if rr {
+            bytes[0x701c..0x701e].copy_from_slice(&0x4000u16.to_le_bytes());
+            bytes[0x701e..0x7020].copy_from_slice(&500u16.to_le_bytes());
+        } else {
+            // Classic spectator retains ON_GROUND in pm_flags but publishes
+            // a null groundentity. The boundary must preserve both facts.
+            bytes[0x7010] = 4;
+        }
         let delta_yaw = if rr { 40 } else { 22 };
         let delta = if rr {
             90.0f32.to_bits().to_le_bytes().to_vec()
@@ -209,6 +217,16 @@ pub(super) fn commands_move_a_native_client_once() {
         );
         code.extend([0xff, 0xd0, 0x49, 0xbb]);
         code.extend(pm.to_le_bytes());
+        if rr {
+            // Flags clear, while native pm_time survives the early return.
+            code.extend([0x66, 0x41, 0x83, 0x7b, 28, 0, 0x74, 2, 0x0f, 0x0b]);
+            code.extend([0x66, 0x41, 0x81, 0x7b, 30, 0xf4, 1, 0x74, 2, 0x0f, 0x0b]);
+        } else {
+            code.extend([0x41, 0x80, 0x7b, 16, 4, 0x74, 2, 0x0f, 0x0b]);
+            code.extend([0x49, 0x83, 0xbb]);
+            code.extend(352u32.to_le_bytes());
+            code.extend([0, 0x74, 2, 0x0f, 0x0b]);
+        }
         code.extend([0x48, 0xb9]);
         code.extend(ps.to_le_bytes());
         for offset in (0..state_bytes).step_by(4) {
@@ -367,6 +385,8 @@ pub(super) fn commands_move_a_native_client_once() {
             MovementMode::Spectator
         };
         expected.movement.tuning.gravity = Some(800.0);
+        expected.movement.grounded = !rr;
+        expected.movement.remaining_ms = if rr { 500 } else { 0 };
         expected.movement.delta_angles = Vec3([0.0, 90.0, 0.0]);
         let command = UserCmd {
             duration_ms: 16,

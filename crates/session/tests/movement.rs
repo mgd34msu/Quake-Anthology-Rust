@@ -98,6 +98,7 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
             ..Default::default()
         },
         qa_core::primitives::CommandExecution::PerCommand,
+        None,
     );
     assert_eq!(
         server.move_pending_clients(&store, geometry, 0, &mut scratch),
@@ -176,6 +177,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
                     ..Default::default()
                 },
                 qa_core::primitives::CommandExecution::PerCommand,
+                None,
             );
         }
     }
@@ -298,6 +300,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
             ..Default::default()
         },
         qa_core::primitives::CommandExecution::PerCommand,
+        None,
     );
     assert!(server.move_pending_clients(&store, geometry, 0, &mut scratch) > 0);
     let moved = server.clients[moving.0 as usize].player.body.position;
@@ -448,6 +451,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         id,
         command,
         qa_core::primitives::CommandExecution::PerCommand,
+        None,
     );
     assert_eq!(
         server.move_pending_clients(&store, geometry, 1, &mut scratch),
@@ -527,6 +531,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
             id,
             command,
             qa_core::primitives::CommandExecution::PerCommand,
+            None,
         );
         assert_eq!(
             server.move_pending_clients(&store, geometry, 0, &mut scratch),

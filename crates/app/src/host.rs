@@ -128,6 +128,7 @@ pub struct FrameHost {
     maxfps: CvarHandle,
     fov: CvarHandle,
     input_handles: crate::profile::InputHandles,
+    pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
     center_time: CvarHandle,
     volume: CvarHandle,
@@ -194,6 +195,7 @@ impl FrameHost {
             .ok_or("missing com_maxfps")?;
         let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
         let input_handles = crate::profile::InputHandles::load(&console.cvars)?;
+        let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
         let notify_time = console
             .cvars
             .find("con_notifytime")
@@ -235,6 +237,7 @@ impl FrameHost {
             maxfps,
             fov,
             input_handles,
+            movement_handles,
             notify_time,
             center_time,
             volume,
@@ -322,8 +325,10 @@ impl FrameHost {
         }
         self.run_pending_commands(frame_span);
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
-        for id in self.local_clients.iter().flatten() {
-            self.runtime.send_local_snapshot(*id, server_time);
+        for id in self.local_clients.into_iter().flatten() {
+            let observation = self.snapshot_observation(id, server_time);
+            self.runtime
+                .send_local_snapshot(id, server_time, observation);
         }
         // Immediate server->client packets take this path in the same frame.
         source.request_mouse_capture(self.mouse_capture_requested());
@@ -475,13 +480,14 @@ impl FrameHost {
                 qa_core::loopback::Endpoint::Server => match incoming {
                     Incoming::Command {
                         command,
+                        observation,
                         execution,
                         output,
                     } => {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
                         {
-                            self.received_command(id, command, execution);
+                            self.received_command(id, command, execution, observation);
                         }
                     }
                     Incoming::Acknowledged {
@@ -606,7 +612,14 @@ impl FrameHost {
                         &mut world.scratch,
                         CollisionOwner::Lifetime(client.entity),
                     );
+                    let base = prediction.player.movement.tuning;
+                    prediction.player.movement.tuning = self.movement_handles.resolve(
+                        &self.console.cvars,
+                        prediction.player.movement_rules,
+                        base,
+                    );
                     prediction.advance(commands[seat], &mut trace);
+                    prediction.player.movement.tuning = base;
                     if let Some(policies) = &policies
                         && let Some(seat_id) = SeatId::new(seat as u8)
                         && let Some(angles) = self.runtime.input.drift_view(

@@ -1415,6 +1415,7 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     let surfaces = c.native_surfaces.ok_or(CallError::Geometry)?;
     let (rules, entity_rules) = trace_policy(c.context.console.source);
     let query = TraceQuery {
+        scope: qa_world::collision::TraceScope::Scene,
         start,
         end,
         mins,
@@ -1496,7 +1497,10 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     }
     c.memory.write_u64(
         address + layout.ground as u64,
-        if player.movement.grounded {
+        if player.movement.grounded
+            && !(!layout.wide
+                && player.movement.mode == qa_core::primitives::MovementMode::Spectator)
+        {
             player
                 .movement
                 .ground

@@ -5161,10 +5161,17 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
     }
 }
 
+#[path = "observations.rs"]
+mod observations;
 #[path = "pmove.rs"]
 mod pmove;
 
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--snapshot-observations") {
+        observations::snapshot_frames_follow_native_provider_lifetimes();
+        println!("native snapshot observation checks passed");
+        return;
+    }
     if std::env::args().any(|arg| arg == "--q2-client-commands") {
         q2_clients_bind_after_initialization_and_disconnect_before_shutdown();
         pmove::commands_move_a_native_client_once();
@@ -5172,6 +5179,7 @@ pub fn run() {
         return;
     }
     pmove::commands_move_a_native_client_once();
+    observations::snapshot_frames_follow_native_provider_lifetimes();
     native_area_connection_uses_shared_topology_through_session_dispatch();
     native_visibility_uses_compiled_pvs_through_session_dispatch();
     native_usercmd_uses_session_dispatch_and_native_client_identity();

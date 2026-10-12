@@ -1,8 +1,8 @@
 use qa_core::events::{EventRing, OutputConsumerId, OutputTarget};
 use qa_core::primitives::{
     Bounds, ClientId, CollisionOwner, CollisionShape, CommandExecution, CommandIntent, EntityId,
-    GeometryId, HudState, ModuleId, NativeEntity, PlayerState, PlayerTail, RuleSetId, UserCmd,
-    Vec3,
+    GeometryId, HudState, ModuleId, NativeEntity, PlayerState, PlayerTail, RuleSetId,
+    SnapshotObservation, UserCmd, Vec3,
 };
 use qa_core::sys_events::EventTime;
 use qa_world::{
@@ -34,6 +34,7 @@ pub struct Client {
     pub hud_publication: HudPublication,
     pub command: UserCmd,
     pub command_execution: CommandExecution,
+    pub command_observation: Option<SnapshotObservation>,
     pub intent: CommandIntent,
     pub output: Option<OutputConsumerId>,
     /// An admitted native Q2 client advances inside ClientThink through Pmove.
@@ -48,6 +49,7 @@ impl Client {
         self.hud_publication.reset();
         self.command = UserCmd::default();
         self.command_execution = CommandExecution::default();
+        self.command_observation = None;
         self.command_pending = false;
         self.module_movement = false;
         self.intent = CommandIntent::default();
@@ -124,6 +126,7 @@ impl Server {
                 player: PlayerState::with_capacity(items, powerups, values),
                 command: UserCmd::default(),
                 command_execution: CommandExecution::default(),
+                command_observation: None,
                 intent: CommandIntent::default(),
                 command_pending: false,
                 module_movement: false,
@@ -276,13 +279,20 @@ impl Server {
                 client.command =
                     qa_movement::prepare_command(client.player.movement_rules, command);
                 client.command_execution = CommandExecution::PerCommand;
+                client.command_observation = None;
                 client.command_pending = true;
             }
         }
     }
 
     /// Ingress submits a command once. There is no recorded input history.
-    pub fn submit_command(&mut self, id: ClientId, command: UserCmd, execution: CommandExecution) {
+    pub fn submit_command(
+        &mut self,
+        id: ClientId,
+        command: UserCmd,
+        execution: CommandExecution,
+        observation: Option<SnapshotObservation>,
+    ) {
         let Some(client) = self
             .clients
             .get_mut(id.0 as usize)
@@ -292,6 +302,7 @@ impl Server {
         };
         client.command = command;
         client.command_execution = execution;
+        client.command_observation = observation;
         client.command_pending = true;
     }
 
@@ -314,13 +325,16 @@ impl Server {
 
     /// Consume the one admitted command. Native module hosts use this same
     /// pending bit before ClientThink; taking it never runs engine movement.
-    pub fn take_pending_command(&mut self, id: ClientId) -> Option<UserCmd> {
+    pub fn take_pending_command(
+        &mut self,
+        id: ClientId,
+    ) -> Option<(UserCmd, Option<SnapshotObservation>)> {
         let client = self.clients.get_mut(id.0 as usize)?;
         if client.connection.is_none() || !client.command_pending {
             return None;
         }
         client.command_pending = false;
-        Some(client.command)
+        Some((client.command, client.command_observation.take()))
     }
 
     /// The single authoritative engine movement/body/link operation. Packet
@@ -336,7 +350,7 @@ impl Server {
         scratch: &mut TraceScratch,
     ) -> u32 {
         let module_moves = self.module_moves(id).is_some();
-        let Some(command) = self.take_pending_command(id) else {
+        let Some((command, _)) = self.take_pending_command(id) else {
             return 0;
         };
         if module_moves {

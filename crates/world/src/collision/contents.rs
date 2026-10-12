@@ -17,13 +17,25 @@ impl Contents {
     pub const WINDOW: Self = Self(1 << 32);
     pub const SKY: Self = Self(1 << 33);
     pub const LADDER: Self = Self(1 << 34);
+    pub const NO_WATERJUMP: Self = Self((1 << 13) << 36);
     pub const PLAYER: Self = Self(1 << 41);
     pub const PROJECTILE: Self = Self(1 << 42);
+    pub const CURRENT: Self = Self(0x3f << 35);
     pub const FLUID: Self = Self(8 | 16 | 32);
     const Q2_SHARED: u32 = 0x0f03807d;
 
     pub fn intersects(self, mask: Self) -> bool {
         self.0 & mask.0 != 0
+    }
+
+    /// The six native current bits are stored once in the shared contents word.
+    pub fn current(self) -> qa_core::primitives::Vec3 {
+        let bits = (self.0 >> 35) & 0x3f;
+        qa_core::primitives::Vec3([
+            f32::from((bits & 1 != 0) as u8) - f32::from((bits & 4 != 0) as u8),
+            f32::from((bits & 2 != 0) as u8) - f32::from((bits & 8 != 0) as u8),
+            f32::from((bits & 16 != 0) as u8) - f32::from((bits & 32 != 0) as u8),
+        ])
     }
 
     pub fn from_q1(raw: i32) -> Self {

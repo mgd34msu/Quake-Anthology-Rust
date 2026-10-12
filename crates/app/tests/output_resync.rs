@@ -254,7 +254,7 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
             .health = 137;
         assert!(
             host.runtime
-                .send_local_snapshot(stalled, EventTime::from_milliseconds(500))
+                .send_local_snapshot(stalled, EventTime::from_milliseconds(500), None)
         );
         host.drain(&mut FrameResult::default());
         assert!(

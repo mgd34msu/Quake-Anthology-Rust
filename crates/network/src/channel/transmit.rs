@@ -14,6 +14,7 @@ pub enum TransmitError {
     PayloadReliability,
     PendingPacket,
     NoPacket,
+    SnapshotContext,
     Header(headers::Error),
 }
 impl std::fmt::Display for TransmitError {
@@ -74,6 +75,12 @@ struct Pending {
     commit: Commit,
     commands: Option<u32>,
     snapshot_request: Option<Option<u32>>,
+    snapshot: Option<SnapshotSubmission>,
+}
+#[derive(Clone, Copy)]
+struct SnapshotSubmission {
+    sequence: u32,
+    observation: Option<qa_core::primitives::SnapshotObservation>,
 }
 pub(super) struct Transmit {
     direction: Direction,
@@ -93,6 +100,7 @@ pub(super) struct Transmit {
     command_output: Box<[u8]>,
     fragment_pending: bool,
     command_flight: Option<u32>,
+    snapshot_flight: Option<SnapshotSubmission>,
     packet: [u8; PACKET_BYTES],
     pending: Option<Pending>,
     reply_allowed: bool,
@@ -141,6 +149,7 @@ impl Transmit {
             .into_boxed_slice(),
             fragment_pending: false,
             command_flight: None,
+            snapshot_flight: None,
             packet: [0; PACKET_BYTES],
             pending: None,
             reply_allowed: true,
@@ -318,7 +327,7 @@ impl Channel {
         unreliable: Option<&[u8]>,
         time: EventTime,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
-        self.prepare_inner(unreliable, time, None, None)
+        self.prepare_inner(unreliable, time, None, None, None)
     }
     fn prepare_inner(
         &mut self,
@@ -326,6 +335,7 @@ impl Channel {
         time: EventTime,
         commands: Option<u32>,
         snapshot_request: Option<Option<u32>>,
+        snapshot: Option<SnapshotSubmission>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         if self.transmit.pending.is_some() {
             return Err(TransmitError::PendingPacket);
@@ -490,6 +500,9 @@ impl Channel {
             commit,
             commands,
             snapshot_request,
+            snapshot: (disposition == Unreliable::Included)
+                .then_some(snapshot)
+                .flatten(),
         });
         Ok(self.pending_packet())
     }
@@ -549,6 +562,13 @@ impl Channel {
         tx.state.last_sent = time;
         tx.state.packets = tx.state.packets.saturating_add(1);
         tx.command_flight = pending.commands.or(tx.command_flight);
+        tx.snapshot_flight = pending.snapshot.or(tx.snapshot_flight);
+        if !tx.fragment_pending
+            && let Some(snapshot) = tx.snapshot_flight.take()
+            && let Some(storage) = &mut self.snapshots
+        {
+            storage.observe_submission(snapshot.sequence, snapshot.observation);
+        }
         if !tx.fragment_pending
             && let Some(sequence) = tx.command_flight.take()
             && let Some(commands) = &mut self.commands
@@ -574,7 +594,7 @@ impl Channel {
                 .encode_server_output(&mut bytes, |_, _| Ok(()))
                 .map_err(|_| TransmitError::MessageTooLarge)?;
             let queued = self.command_state().map(|state| state.queued);
-            self.prepare_inner(Some(&bytes[..length]), time, queued, None)
+            self.prepare_inner(Some(&bytes[..length]), time, queued, None, None)
                 .map(|_| ())
         })();
         self.transmit.command_output = bytes;
@@ -601,6 +621,30 @@ impl Channel {
         snapshot_request: Option<u32>,
     ) -> Result<Option<Prepared<'_>>, TransmitError> {
         let queued = self.command_state().map(|state| state.queued);
-        self.prepare_inner(Some(bytes), time, queued, Some(snapshot_request))
+        self.prepare_inner(Some(bytes), time, queued, Some(snapshot_request), None)
+    }
+    /// Retain snapshot provenance with the same prepared bytes and native
+    /// fragments; it becomes observable only when all those bytes are admitted.
+    pub fn prepare_snapshot(
+        &mut self,
+        sequence: u32,
+        observation: Option<qa_core::primitives::SnapshotObservation>,
+        bytes: &[u8],
+        time: EventTime,
+    ) -> Result<Option<Prepared<'_>>, TransmitError> {
+        if self.endpoint() != Endpoint::Server || self.snapshot(sequence).is_none() {
+            return Err(TransmitError::SnapshotContext);
+        }
+        let queued = self.command_state().map(|state| state.queued);
+        self.prepare_inner(
+            Some(bytes),
+            time,
+            queued,
+            None,
+            Some(SnapshotSubmission {
+                sequence,
+                observation,
+            }),
+        )
     }
 }

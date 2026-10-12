@@ -108,6 +108,7 @@ pub struct ServiceStorage {
     reader: qa_formats::archive::ArchiveReader,
     no_areas: CvarHandle,
     max_clients: CvarHandle,
+    movement: qa_console::movement::MovementHandles,
 }
 
 impl ServiceStorage {
@@ -159,6 +160,8 @@ impl ServiceStorage {
             reader: qa_formats::archive::ArchiveReader::default(),
             no_areas: cvars.find("cm_noAreas").ok_or(CallError::Cvar)?,
             max_clients: cvars.find("sv_maxclients").ok_or(CallError::Cvar)?,
+            movement: qa_console::movement::MovementHandles::bind(cvars)
+                .map_err(|_| CallError::Cvar)?,
         })
     }
     fn range(&self, module: ModuleId) -> Option<&ConfigRange> {
@@ -676,17 +679,26 @@ impl EngineServices<'_> {
         id: ClientId,
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<qa_movement::MovementResult, CallError> {
-        let (trace, clients) = self.world_trace(CollisionOwner::None, native)?;
-        let client = clients
-            .get_mut(id.0 as usize)
+        let player = &self
+            .server
+            .clients
+            .get(id.0 as usize)
             .filter(|client| client.connection.is_some())
-            .ok_or(CallError::Entity)?;
+            .ok_or(CallError::Entity)?
+            .player;
+        let tuning = self.storage.movement.resolve(
+            self.cvars,
+            player.movement_rules,
+            player.movement.tuning,
+        );
+        let (trace, clients) = self.world_trace(CollisionOwner::None, native)?;
+        // Admission was checked before the disjoint world/client borrow.
+        let client = &mut clients[id.0 as usize];
         let mut trace = trace.with_pass(CollisionOwner::Lifetime(client.entity));
-        Ok(qa_movement::pmove(
-            client.command,
-            &mut client.player,
-            &mut trace,
-        ))
+        let base = std::mem::replace(&mut client.player.movement.tuning, tuning);
+        let result = qa_movement::pmove(client.command, &mut client.player, &mut trace);
+        client.player.movement.tuning = base;
+        Ok(result)
     }
     pub fn ignore_areas(&self, source: qa_core::primitives::RuleSetId, integer: bool) -> bool {
         if integer {

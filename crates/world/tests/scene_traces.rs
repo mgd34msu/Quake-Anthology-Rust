@@ -134,6 +134,38 @@ fn trace(world: &FixtureWorld, table: &EntityTable, area: &AreaGrid, query: Trac
 }
 
 #[test]
+fn world_scope_keeps_world_clipping_and_skips_linked_bodies_for_each_trace_policy() {
+    let world = brush_world(
+        vec![Plane::oriented(Vec3([-1.0, 0.0, 0.0]), -24.0)],
+        vec![Brush {
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
+            contents: Contents::SOLID,
+        }],
+    );
+    let (mut table, mut area) = table();
+    let target = body(
+        &mut table,
+        &mut area,
+        Vec3::default(),
+        Vec3([-5.0; 3]),
+        Vec3([5.0; 3]),
+    );
+    for rules in qa_core::primitives::RuleSetId::ALL {
+        let (trace_rules, entity_rules) = qa_world::collision::trace_policy(rules);
+        let mut input = query(entity_rules);
+        input.rules = trace_rules;
+        let scene = trace(&world, &table, &area, input);
+        input.scope = qa_world::collision::TraceScope::World;
+        let world_only = trace(&world, &table, &area, input);
+        assert_eq!(scene.entity, Some(target));
+        assert!(world_only.fraction < 1.0);
+        assert!(world_only.end.0[0] > 20.0);
+        assert!(scene.fraction < world_only.fraction);
+        assert_eq!(world_only.entity, table.id_at(0));
+    }
+}
+
+#[test]
 fn pass_exclusions_and_native_weak_owner_rules_cross_module_slots() {
     let world = empty();
     let (mut table, mut area) = table();

@@ -41,6 +41,7 @@ fn main() -> Result<(), &'static str> {
             let start = Vec3([body.position.0[0] + 100.0, 0.0, 0.0]);
             let trace = trace_box(
                 TraceQuery {
+                    scope: qa_world::collision::TraceScope::Scene,
                     start: black_box(start),
                     end: body.position,
                     mins: Vec3([-16.0, -16.0, -24.0]),

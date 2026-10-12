@@ -152,7 +152,15 @@ impl Pmove {
             ..Default::default()
         };
         self.projection.reduce(player, &context, &mut self.words);
-        self.words[PM_FLAGS_WORD] |= flags & !63;
+        let clear_flags = self.layout.wide
+            && matches!(
+                player.movement.mode,
+                qa_core::primitives::MovementMode::Spectator
+                    | qa_core::primitives::MovementMode::Noclip
+            );
+        if !clear_flags {
+            self.words[PM_FLAGS_WORD] |= flags & !63;
+        }
         if self.layout.wide {
             self.words[PM_FLAGS_WORD] =
                 (self.words[PM_FLAGS_WORD] & !128) | (u32::from(player.movement.ladder) << 7);

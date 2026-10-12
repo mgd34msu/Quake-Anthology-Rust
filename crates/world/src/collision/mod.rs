@@ -340,10 +340,18 @@ pub const fn trace_policy(rules: RuleSetId) -> (TraceRules, EntityTracePolicy) {
 
 /// A point or axis-aligned box sweep over the scene. Exclusions are borrowed;
 /// caller rules are independent of geometry, module format and wire protocol.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TraceScope {
+    #[default]
+    Scene,
+    World,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct TraceQuery<'a> {
     pub rules: TraceRules,
+    pub scope: TraceScope,
     pub excluded: &'a [EntityId],
     pub mask: Contents,
     pub pass: CollisionOwner,
@@ -381,6 +389,7 @@ impl TraceQuery<'_> {
             maxs: Vec3::default(),
             mask: Contents::SOLID,
             rules,
+            scope: TraceScope::Scene,
             entity_rules,
             pass: CollisionOwner::None,
             excluded: &[],

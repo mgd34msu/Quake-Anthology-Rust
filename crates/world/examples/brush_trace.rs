@@ -136,6 +136,7 @@ fn load(
         queries.push(Query {
             map,
             trace: TraceQuery {
+                scope: qa_world::collision::TraceScope::Scene,
                 start,
                 end,
                 mins,

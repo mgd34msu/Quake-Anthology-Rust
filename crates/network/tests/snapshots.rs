@@ -389,8 +389,13 @@ fn deliver_client_move(
     let qa_network::commands::packet::Move::Quake3 { delta, .. } = movement else {
         return Err(Error::Context);
     };
-    let accepted =
-        server_commands.decode(staged, client.send_state().sequence, time, server, |_| {})? > 0;
+    let accepted = server_commands.decode(
+        staged,
+        client.send_state().sequence,
+        time,
+        server,
+        |_, _| {},
+    )? > 0;
     Ok((delta, accepted))
 }
 
@@ -685,7 +690,7 @@ fn q2_request(
         client.channel.send_state().sequence,
         0,
         server,
-        |_| {},
+        |_, _| {},
     )?;
     let expected = (last_frame >= 0).then_some(last_frame as u32);
     assert_eq!(receiver.delta_request(), expected);
@@ -1020,7 +1025,7 @@ fn qw_move(
         };
         let length = commands.stage(payload)?;
         let mut command = None;
-        commands.decode(length, sequence, 0, server, |current| {
+        commands.decode(length, sequence, 0, server, |current, _| {
             command = Some(current)
         })?;
         let command = command.ok_or(Error::Context)?;
@@ -1977,7 +1982,7 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
         let length = server_commands.stage(&bytes[..length])?;
         let mut decoded = None;
         assert_eq!(
-            server_commands.decode(length, 0, 4321, &mut server_channel, |command| decoded =
+            server_commands.decode(length, 0, 4321, &mut server_channel, |command, _| decoded =
                 Some(command),)?,
             1
         );

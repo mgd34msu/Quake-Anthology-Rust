@@ -5,5 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+qa-gameplay = { path = "../gameplay" }
 qa-core = { path = "../core" }
 qa-world = { path = "../world" }

@@ -1,0 +1,392 @@
+//! Movement capability data; the one movement executor consumes this table.
+use qa_core::primitives::{Bounds, MovementMode, MovementTimer, RuleSetId, Vec3};
+
+#[derive(Clone, Copy)]
+pub enum FreeWish {
+    Existing,
+    Full,
+    Normalized,
+    ScaledBasis,
+}
+#[derive(Clone, Copy)]
+pub enum FreeFriction {
+    Native,
+    StopControlled,
+    Linear(f32),
+    Flight(f32),
+}
+#[derive(Clone, Copy)]
+pub enum FreeMotion {
+    Direct,
+    StepSlide,
+}
+#[derive(Clone, Copy)]
+pub enum FreeAcceleration {
+    Immediate,
+    Normal,
+    Flight,
+}
+#[derive(Clone, Copy)]
+pub enum FreeFinish {
+    Snap(bool),
+    Timers,
+    Environment,
+}
+#[derive(Clone, Copy)]
+pub struct FreeMovePolicy {
+    pub wish: FreeWish,
+    pub friction: FreeFriction,
+    pub motion: FreeMotion,
+    pub acceleration: FreeAcceleration,
+    pub finish: FreeFinish,
+    pub abort_without_acceleration: bool,
+    pub stance: bool,
+    pub spectator_speed: bool,
+    pub speed_multiplier: f32,
+    pub button_vertical: bool,
+    pub world_only: bool,
+    pub bounds: Option<Bounds>,
+    pub view_height: Option<f32>,
+    pub reset_flags: bool,
+    pub clear_water_outputs: bool,
+    pub clear_ground_reference: bool,
+    pub exclude_body_contents: bool,
+}
+#[derive(Clone, Copy)]
+pub struct FreeModes {
+    pub flight: FreeMovePolicy,
+    pub noclip: FreeMovePolicy,
+    pub spectator: FreeMovePolicy,
+}
+impl FreeModes {
+    pub fn get(self, mode: MovementMode) -> Option<FreeMovePolicy> {
+        match mode {
+            MovementMode::Fly => Some(self.flight),
+            MovementMode::Noclip => Some(self.noclip),
+            MovementMode::Spectator => Some(self.spectator),
+            _ => None,
+        }
+    }
+}
+const QUAKE_FREE: FreeMovePolicy = FreeMovePolicy {
+    wish: FreeWish::Existing,
+    friction: FreeFriction::Native,
+    motion: FreeMotion::Direct,
+    acceleration: FreeAcceleration::Immediate,
+    finish: FreeFinish::Snap(true),
+    abort_without_acceleration: false,
+    stance: false,
+    spectator_speed: false,
+    speed_multiplier: 1.0,
+    button_vertical: false,
+    world_only: false,
+    bounds: None,
+    view_height: None,
+    reset_flags: false,
+    clear_water_outputs: false,
+    clear_ground_reference: false,
+    exclude_body_contents: false,
+};
+const CLASSIC_FREE: FreeMovePolicy = FreeMovePolicy {
+    wish: FreeWish::Normalized,
+    friction: FreeFriction::StopControlled,
+    motion: FreeMotion::Direct,
+    acceleration: FreeAcceleration::Normal,
+    finish: FreeFinish::Snap(true),
+    abort_without_acceleration: true,
+    stance: false,
+    spectator_speed: false,
+    speed_multiplier: 1.0,
+    button_vertical: false,
+    world_only: false,
+    bounds: None,
+    view_height: None,
+    reset_flags: false,
+    clear_water_outputs: false,
+    clear_ground_reference: false,
+    exclude_body_contents: false,
+};
+const ARENA_NOCLIP: FreeMovePolicy = FreeMovePolicy {
+    wish: FreeWish::Full,
+    friction: FreeFriction::StopControlled,
+    motion: FreeMotion::Direct,
+    acceleration: FreeAcceleration::Normal,
+    finish: FreeFinish::Timers,
+    abort_without_acceleration: false,
+    stance: false,
+    spectator_speed: false,
+    speed_multiplier: 1.0,
+    button_vertical: false,
+    world_only: false,
+    bounds: None,
+    view_height: None,
+    reset_flags: false,
+    clear_water_outputs: true,
+    clear_ground_reference: false,
+    exclude_body_contents: false,
+};
+const ARENA_SPECTATOR: FreeMovePolicy = FreeMovePolicy {
+    wish: FreeWish::ScaledBasis,
+    friction: FreeFriction::Linear(5.0),
+    motion: FreeMotion::StepSlide,
+    acceleration: FreeAcceleration::Flight,
+    finish: FreeFinish::Timers,
+    abort_without_acceleration: false,
+    stance: true,
+    spectator_speed: false,
+    speed_multiplier: 1.0,
+    button_vertical: false,
+    world_only: false,
+    bounds: None,
+    view_height: None,
+    reset_flags: false,
+    clear_water_outputs: true,
+    clear_ground_reference: false,
+    exclude_body_contents: true,
+};
+const FREE_MODES: [FreeModes; 5] = [
+    FreeModes {
+        flight: FreeMovePolicy {
+            motion: FreeMotion::StepSlide,
+            ..QUAKE_FREE
+        },
+        noclip: QUAKE_FREE,
+        spectator: QUAKE_FREE,
+    },
+    FreeModes {
+        flight: FreeMovePolicy {
+            motion: FreeMotion::StepSlide,
+            ..CLASSIC_FREE
+        },
+        noclip: CLASSIC_FREE,
+        spectator: FreeMovePolicy {
+            finish: FreeFinish::Snap(false),
+            spectator_speed: true,
+            ..CLASSIC_FREE
+        },
+    },
+    FreeModes {
+        flight: FreeMovePolicy {
+            motion: FreeMotion::StepSlide,
+            ..CLASSIC_FREE
+        },
+        noclip: CLASSIC_FREE,
+        spectator: FreeMovePolicy {
+            finish: FreeFinish::Snap(false),
+            clear_water_outputs: true,
+            clear_ground_reference: true,
+            ..CLASSIC_FREE
+        },
+    },
+    FreeModes {
+        flight: FreeMovePolicy {
+            motion: FreeMotion::StepSlide,
+            abort_without_acceleration: false,
+            ..CLASSIC_FREE
+        },
+        noclip: FreeMovePolicy {
+            abort_without_acceleration: false,
+            speed_multiplier: 2.0,
+            button_vertical: true,
+            reset_flags: true,
+            clear_water_outputs: true,
+            view_height: Some(22.0),
+            ..CLASSIC_FREE
+        },
+        spectator: FreeMovePolicy {
+            motion: FreeMotion::StepSlide,
+            abort_without_acceleration: false,
+            speed_multiplier: 2.0,
+            button_vertical: true,
+            reset_flags: true,
+            clear_water_outputs: true,
+            world_only: true,
+            bounds: Some(Bounds {
+                mins: Vec3([-8.0; 3]),
+                maxs: Vec3([8.0; 3]),
+            }),
+            view_height: Some(0.0),
+            ..CLASSIC_FREE
+        },
+    },
+    FreeModes {
+        flight: FreeMovePolicy {
+            friction: FreeFriction::Flight(3.0),
+            finish: FreeFinish::Environment,
+            clear_water_outputs: false,
+            exclude_body_contents: false,
+            ..ARENA_SPECTATOR
+        },
+        noclip: ARENA_NOCLIP,
+        spectator: ARENA_SPECTATOR,
+    },
+];
+#[derive(Clone, Copy)]
+pub enum LadderControl {
+    PitchVertical,
+    ProjectedStrafe,
+}
+#[derive(Clone, Copy)]
+pub struct LadderPolicy {
+    pub transient: bool,
+    pub ladder_only_mask: bool,
+    pub max_water_level: u8,
+    pub control: LadderControl,
+}
+#[derive(Clone, Copy)]
+pub enum ProbePhase {
+    BeforeTimers,
+    InWaterMovement,
+}
+#[derive(Clone, Copy)]
+pub enum WaterJumpProbe {
+    Points {
+        ahead: f32,
+        lower: f32,
+        upper: f32,
+        down_limit: Option<f32>,
+    },
+    Ballistic,
+}
+#[derive(Clone, Copy)]
+pub enum JumpTime {
+    Milliseconds(u32),
+    Seconds(f32),
+}
+#[derive(Clone, Copy)]
+pub enum WaterJumpMotion {
+    Existing,
+    PreGravity,
+    StepGravityThenGravity,
+}
+#[derive(Clone, Copy)]
+pub struct WaterJumpPolicy {
+    pub phase: ProbePhase,
+    pub probe: WaterJumpProbe,
+    pub horizontal: f32,
+    pub vertical: f32,
+    pub full_forward: bool,
+    pub duration: JumpTime,
+    pub motion: WaterJumpMotion,
+    pub mark_jump_held: bool,
+    pub ground_clear: MovementTimer,
+}
+#[derive(Clone, Copy)]
+pub struct SpecialMovement {
+    pub ladder: Option<LadderPolicy>,
+    pub water_jump: Option<WaterJumpPolicy>,
+    pub current_speed: Option<f32>,
+    pub swim_jump_impulse: bool,
+    pub swim_buttons: bool,
+    pub sink_on_ground: bool,
+    pub water_standing_cap: bool,
+    pub water_duck_cap_after: Option<f32>,
+    pub release_jump_below: Option<f32>,
+}
+const POINT_JUMP: WaterJumpPolicy = WaterJumpPolicy {
+    phase: ProbePhase::BeforeTimers,
+    probe: WaterJumpProbe::Points {
+        ahead: 30.0,
+        lower: 4.0,
+        upper: 16.0,
+        down_limit: None,
+    },
+    horizontal: 50.0,
+    vertical: 350.0,
+    full_forward: false,
+    duration: JumpTime::Milliseconds(2040),
+    motion: WaterJumpMotion::PreGravity,
+    mark_jump_held: false,
+    ground_clear: MovementTimer(
+        MovementTimer::WATER_JUMP.0
+            | MovementTimer::LAND.0
+            | MovementTimer::TELEPORT.0
+            | MovementTimer::KNOCKBACK.0,
+    ),
+};
+const NO_SPECIAL: SpecialMovement = SpecialMovement {
+    ladder: None,
+    water_jump: None,
+    current_speed: None,
+    swim_jump_impulse: true,
+    swim_buttons: false,
+    sink_on_ground: true,
+    water_standing_cap: false,
+    water_duck_cap_after: None,
+    release_jump_below: None,
+};
+const SPECIAL: [SpecialMovement; 5] = [
+    NO_SPECIAL,
+    SpecialMovement {
+        water_jump: Some(WaterJumpPolicy {
+            probe: WaterJumpProbe::Points {
+                ahead: 24.0,
+                lower: 8.0,
+                upper: 24.0,
+                down_limit: Some(-180.0),
+            },
+            vertical: 310.0,
+            duration: JumpTime::Seconds(2.0),
+            motion: WaterJumpMotion::Existing,
+            mark_jump_held: true,
+            ..POINT_JUMP
+        }),
+        ..NO_SPECIAL
+    },
+    SpecialMovement {
+        ladder: Some(LadderPolicy {
+            transient: true,
+            ladder_only_mask: false,
+            max_water_level: 3,
+            control: LadderControl::PitchVertical,
+        }),
+        water_jump: Some(POINT_JUMP),
+        current_speed: Some(400.0),
+        water_standing_cap: true,
+        ..NO_SPECIAL
+    },
+    SpecialMovement {
+        ladder: Some(LadderPolicy {
+            transient: false,
+            ladder_only_mask: true,
+            max_water_level: 1,
+            control: LadderControl::ProjectedStrafe,
+        }),
+        water_jump: Some(WaterJumpPolicy {
+            probe: WaterJumpProbe::Ballistic,
+            duration: JumpTime::Milliseconds(2048),
+            ..POINT_JUMP
+        }),
+        current_speed: Some(400.0),
+        swim_jump_impulse: false,
+        swim_buttons: true,
+        sink_on_ground: false,
+        water_standing_cap: true,
+        water_duck_cap_after: Some(100.0),
+        release_jump_below: None,
+    },
+    SpecialMovement {
+        release_jump_below: Some(10.0),
+        water_jump: Some(WaterJumpPolicy {
+            phase: ProbePhase::InWaterMovement,
+            horizontal: 200.0,
+            full_forward: true,
+            duration: JumpTime::Milliseconds(2000),
+            motion: WaterJumpMotion::StepGravityThenGravity,
+            ground_clear: MovementTimer(MovementTimer::WATER_JUMP.0 | MovementTimer::LAND.0),
+            ..POINT_JUMP
+        }),
+        ..NO_SPECIAL
+    },
+];
+#[derive(Clone, Copy)]
+pub struct Capabilities {
+    pub free: FreeModes,
+    pub special: SpecialMovement,
+}
+pub fn capabilities(rules: RuleSetId) -> Capabilities {
+    Capabilities {
+        free: FREE_MODES[rules as usize],
+        special: SPECIAL[rules as usize],
+    }
+}

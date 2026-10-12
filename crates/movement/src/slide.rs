@@ -40,14 +40,31 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
         }
         let start = step.player.body.position;
         let end = start + step.player.body.velocity * remaining;
-        let tr = step.trace(start, end);
+        let mut tr = step.trace(start, end);
         if tr.all_solid || step.qw() && tr.start_solid {
             if step.classic() || step.rr() {
                 step.player.body.velocity.0[2] = 0.0;
             } else {
                 step.player.body.velocity = Vec3::default();
             }
+            if step.rr() {
+                step.contact(&tr);
+            }
             return 3;
+        }
+        if step.rr()
+            && let Some(secondary) = tr.secondary_plane
+        {
+            let a = clip(step.player.body.velocity, tr.plane.normal, rules);
+            let b = clip(step.player.body.velocity, secondary.normal, rules);
+            // KEX selects the secondary plane if any primary-clipped
+            // component is strictly smaller; this is not a length comparison.
+            if (0..3).any(|axis| a.0[axis].abs() < b.0[axis].abs()) {
+                tr.plane = secondary;
+                tr.surface_id = tr.secondary_surface_id;
+                // The shared collision result retains the native primary
+                // side's surface flags in both KEX contact slots.
+            }
         }
         if tr.fraction > 0.0 {
             step.player.body.position = tr.end;

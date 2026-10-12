@@ -447,6 +447,7 @@ pub(super) fn read_records<const PACKED: bool, const P: usize, const E: usize>(
 }
 
 impl Q2Header {
+    pub const REPRO_FRAME_MASK: u32 = 0x07ff_ffff;
     /// Body after svc_frame. Areas are borrowed connection-owned scratch;
     /// the supplied limit is the negotiated protocol's native area capacity.
     pub fn read<const PACKED: bool>(
@@ -457,7 +458,7 @@ impl Q2Header {
         let encoded = reader.read_bits(32)?;
         let (sequence, delta) = if PACKED {
             let offset = encoded >> 27;
-            let sequence = encoded & 0x07ff_ffff;
+            let sequence = encoded & Self::REPRO_FRAME_MASK;
             (
                 sequence,
                 if offset == 31 {
@@ -505,7 +506,10 @@ impl Q2Header {
             } else {
                 self.sequence.wrapping_sub(self.delta as u32)
             };
-            writer.write_bits((self.sequence & 0x07ff_ffff) | (offset << 27), 32)?;
+            writer.write_bits(
+                (self.sequence & Self::REPRO_FRAME_MASK) | (offset << 27),
+                32,
+            )?;
         } else {
             writer.write_bits(self.sequence, 32)?;
             writer.write_bits(self.delta as u32, 32)?;
