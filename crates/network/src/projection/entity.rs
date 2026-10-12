@@ -68,6 +68,9 @@ const QW: &[Field<Source>] = &[
     f(9, Position(2), Bits),
     f(10, Angle(2), Bits),
     f(11, RenderFlags, Bits),
+    f(12, Velocity(0), Bits),
+    f(13, Velocity(1), Bits),
+    f(14, Velocity(2), Bits),
 ];
 const Q2: &[Field<Source>] = &[
     f(0, Model(0), Bits),

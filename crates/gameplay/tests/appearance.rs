@@ -2,7 +2,139 @@ use qa_core::{
     math,
     primitives::{ClientId, EntityAppearance, ModelRef, ResourceNamespace, RuleSetId, Vec3},
 };
-use qa_gameplay::rules::appearance::{alias_light_direction, can_interpolate, project};
+use qa_gameplay::rules::appearance::{
+    AliasRoll, alias_light_direction, alias_pose_angles, can_interpolate, project,
+};
+
+#[test]
+fn native_alias_axes_preserve_each_renderers_pitch_and_roll_conventions() {
+    let angles = Vec3([30.0, 20.0, 40.0]);
+    for source in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for software in [false, true] {
+            assert_eq!(
+                alias_pose_angles(
+                    source,
+                    angles,
+                    Vec3::default(),
+                    false,
+                    software,
+                    AliasRoll::default()
+                ),
+                Vec3([-30.0, 20.0, 40.0])
+            );
+        }
+    }
+    for source in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        assert_eq!(
+            alias_pose_angles(
+                source,
+                angles,
+                Vec3::default(),
+                false,
+                true,
+                AliasRoll::default()
+            ),
+            angles
+        );
+        assert_eq!(
+            alias_pose_angles(
+                source,
+                angles,
+                Vec3::default(),
+                false,
+                false,
+                AliasRoll::default()
+            ),
+            Vec3([30.0, 20.0, -40.0])
+        );
+    }
+    let q1 = alias_pose_angles(
+        RuleSetId::Quake,
+        Vec3([30.0, 0.0, 0.0]),
+        Vec3::default(),
+        false,
+        true,
+        AliasRoll::default(),
+    );
+    assert_eq!(
+        math::angle_vectors(q1).axes()[0].0[2].to_bits(),
+        0.5f32.to_bits()
+    );
+    let q2_gl = alias_pose_angles(
+        RuleSetId::Quake2,
+        Vec3([0.0, 0.0, 30.0]),
+        Vec3::default(),
+        false,
+        false,
+        AliasRoll::default(),
+    );
+    assert_eq!(
+        math::angle_vectors(q2_gl).axes()[1].0[2].to_bits(),
+        (-0.5f32).to_bits()
+    );
+}
+
+#[test]
+fn qw_playerinfo_converts_command_pitch_and_velocity_roll_without_changing_packet_entities() {
+    let roll = AliasRoll {
+        angle: 2.0,
+        speed: 200.0,
+    };
+    let angles = Vec3([30.0, 0.0, 37.0]);
+    for (velocity, expected_roll) in [(100.0, -4.0), (200.0, -8.0), (-100.0, 4.0)] {
+        assert_eq!(
+            alias_pose_angles(
+                RuleSetId::QuakeWorld,
+                angles,
+                Vec3([0.0, velocity, 0.0]),
+                true,
+                true,
+                roll
+            ),
+            Vec3([10.0, 0.0, expected_roll])
+        );
+    }
+    assert_eq!(
+        alias_pose_angles(
+            RuleSetId::QuakeWorld,
+            angles,
+            Vec3([0.0, 100.0, 0.0]),
+            false,
+            true,
+            roll
+        ),
+        Vec3([-30.0, 0.0, 37.0])
+    );
+    assert_eq!(
+        alias_pose_angles(
+            RuleSetId::Quake2,
+            angles,
+            Vec3([0.0, 25.0, 0.0]),
+            true,
+            true,
+            AliasRoll {
+                angle: 2.5,
+                speed: 50.0
+            }
+        ),
+        Vec3([-10.0, 0.0, -5.0])
+    );
+    // Native V_CalcRoll takes its capped branch when speed is zero.
+    assert_eq!(
+        alias_pose_angles(
+            RuleSetId::QuakeWorld,
+            angles,
+            Vec3::default(),
+            true,
+            true,
+            AliasRoll {
+                angle: 2.0,
+                speed: 0.0
+            }
+        ),
+        Vec3([10.0, 0.0, 8.0])
+    );
+}
 
 #[test]
 fn source_flags_do_not_inherit_another_games_render_flag_semantics() {

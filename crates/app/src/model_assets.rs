@@ -63,6 +63,8 @@ impl Default for ModelLimits {
 pub struct ModelBinding {
     pub model: ModelId,
     pub material: MaterialId,
+    /// Native model presentation chosen at registration, independent of wire.
+    pub rules: RuleSetId,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelMaterialPolicy {
@@ -471,6 +473,7 @@ fn register(
             variants: materials.map(|material| ModelBinding {
                 model: id,
                 material,
+                rules: options.rules,
             }),
         })
         .collect())

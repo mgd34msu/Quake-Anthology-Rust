@@ -47,6 +47,7 @@ fn store(ring: &mut Q3Ring, sequence: u32, entities: &[Entity<ENTITY_WORDS>]) ->
         time: ThinkTime::Milliseconds(i64::from(sequence as i32 * 50)),
         command: sequence,
         flags: 4,
+        qw_peers: 0,
         areas: &[0xaa, 0x55],
         player: &player,
         entities,
@@ -166,6 +167,7 @@ fn generic_ring_wrap_gaps_row_retention_and_connection_isolation() -> Result<(),
             time: ThinkTime::Milliseconds(i64::from(0)),
             command: 0,
             flags: 0,
+            qw_peers: 0,
             areas: &[0],
             player: &[1, 2],
             entities: &entities,
@@ -182,6 +184,7 @@ fn generic_ring_wrap_gaps_row_retention_and_connection_isolation() -> Result<(),
             time: ThinkTime::Milliseconds(i64::from(0)),
             command: 0,
             flags: 0,
+            qw_peers: 0,
             areas: &[],
             player: &[0; 2],
             entities: &entities,
@@ -216,6 +219,7 @@ fn native_snapshot_boundary_omits_reserved_numbers_and_extra_area_bits() -> Resu
         time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
+        qw_peers: 0,
         areas: &[0x55; 64],
         player: &[0; PLAYER_WORDS],
         entities: &rows,
@@ -524,6 +528,7 @@ fn q2_store(
         time: ThinkTime::Milliseconds(i64::from(sequence as i32 * 100)),
         command: 0,
         flags: 7,
+        qw_peers: 0,
         player: &player,
         areas: &[0x81, 0x42],
         entities,
@@ -936,6 +941,7 @@ fn qw_store(
         time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
+        qw_peers: 0,
         areas: &[],
         player: &[],
         entities,
@@ -1608,12 +1614,22 @@ fn qw_accepted_playerinfo_shares_the_snapshot_ring_and_expires_without_a_new_rec
             words[1] = 12.0f32.to_bits();
             words[2] = 24.0f32.to_bits();
             words[3] = 17.0f32.to_bits();
+            words[5] = 25.0f32.to_bits();
+            words[6] = 100.0f32.to_bits();
+            words[7] = (-50.0f32).to_bits();
             words[8] = 5.0f32.to_bits();
             words[9] = 7.0f32.to_bits();
             words[10] = 2.0f32.to_bits();
-            words[12] = (1 << 0) | (1 << 5) | (1 << 6) | (1 << 7);
+            words[12] = (1 << 0)
+                | (1 << 1)
+                | (1 << 2)
+                | (1 << 3)
+                | (1 << 4)
+                | (1 << 5)
+                | (1 << 6)
+                | (1 << 7);
             let command = qa_network::commands::QwCmd {
-                view_angles: Vec3([0., 45., 0.]),
+                view_angles: Vec3([90., 45., 0.]),
                 ..ZERO_QW
             };
             assert!(states::write_qw_player(&mut writer, 1, &words, command)?);
@@ -1633,6 +1649,11 @@ fn qw_accepted_playerinfo_shares_the_snapshot_ring_and_expires_without_a_new_rec
             return Err(Error::Context);
         };
         assert_eq!(frame.sequence, sequence);
+        assert_eq!(frame.qw_peers, if sequence == 1 { 1 << 1 } else { 0 });
+        assert_eq!(frame.qw_player(2), sequence == 1);
+        assert!(!frame.qw_player(0));
+        assert!(!frame.qw_player(1));
+        assert!(!frame.qw_player(40));
         assert_eq!(
             frame
                 .entities
@@ -1653,6 +1674,8 @@ fn qw_accepted_playerinfo_shares_the_snapshot_ring_and_expires_without_a_new_rec
                 ResourceNamespace::Client(ClientId(0))
             ));
             assert_eq!(record.position, Vec3([48., 12., 24.]));
+            assert_eq!(record.velocity, Vec3([25., 100., -50.]));
+            assert_eq!(record.angles, Vec3([90., 45., 0.]));
             assert_eq!(
                 (
                     record.appearance.frame,
@@ -1673,6 +1696,8 @@ fn qw_accepted_playerinfo_shares_the_snapshot_ring_and_expires_without_a_new_rec
             };
             assert_eq!(previous.sequence, 1);
             assert_eq!(previous.entities[0].number, 2);
+            assert_eq!(previous.qw_peers, 1 << 1);
+            assert!(previous.qw_player(2));
         }
     }
     assert_eq!(connections.command_errors, 0);
@@ -1808,6 +1833,7 @@ fn channel_qw_server_selects_native_slots_and_preserves_the_request_byte() -> Re
             time: ThinkTime::Milliseconds(i64::from(0)),
             command: 0,
             flags: 0,
+            qw_peers: 0,
             areas: &[],
             player: &[],
             entities: &[qw_entity(3, sequence as f32)],
@@ -1836,6 +1862,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
         time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
+        qw_peers: 0,
         areas: &[],
         player: &[],
         entities: &entities,
@@ -1877,6 +1904,7 @@ fn channel_snapshot_publication_retains_pending_frames_and_rejects_wrong_protoco
         time: ThinkTime::Milliseconds(i64::from(0)),
         command: 0,
         flags: 0,
+        qw_peers: 0,
         areas: &[],
         player: &[0; states::Q2_PLAYER_WORDS],
         entities: &[],
@@ -1909,6 +1937,7 @@ fn publication_retains_snapshot_between_native_q3_fragments() -> Result<(), Erro
         time: ThinkTime::Milliseconds(1001),
         command: 0,
         flags: 0,
+        qw_peers: 0,
         areas: &[],
         player: &player,
         entities: &[],
@@ -1980,6 +2009,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                         time: ThinkTime::Milliseconds(i64::from(123)),
                         command: 0,
                         flags: 1,
+                        qw_peers: 0,
                         areas: &[0x81],
                         player: &q2_player,
                         entities: &[],
@@ -1993,6 +2023,7 @@ fn channel_server_publication_uses_the_existing_q2_and_q3_writers() -> Result<()
                         time: ThinkTime::Milliseconds(i64::from(123)),
                         command: 0,
                         flags: 1,
+                        qw_peers: 0,
                         areas: &[0x81],
                         player: &q3_player,
                         entities: &[],
@@ -2080,6 +2111,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
         time: ThinkTime::Seconds(f64::from(seconds)),
         command: 0,
         flags: 0,
+        qw_peers: 0,
         areas: &[],
         player: &player,
         entities: &entities,

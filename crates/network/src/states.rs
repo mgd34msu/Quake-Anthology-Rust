@@ -766,7 +766,10 @@ pub const QW_ENTITY_LAYOUT: [(&str, i8); 12] = [
     ("angles[2]", -8),
     ("flags", 16),
 ];
-pub const QW_ENTITY_WORDS: usize = QW_ENTITY_LAYOUT.len();
+pub const QW_NATIVE_ENTITY_WORDS: usize = QW_ENTITY_LAYOUT.len();
+/// Accepted playerinfo shares this row with packet entities. Its three velocity
+/// columns are CLIENT metadata; the native packetentity table stays twelve words.
+pub const QW_ENTITY_WORDS: usize = QW_NATIVE_ENTITY_WORDS + 3;
 pub type QwEntityDelta = EntityDelta<QW_ENTITY_WORDS>;
 static QW_ENTITY_FIELDS: [Field; 11] = [
     Field::new(0, 8, 1 << 2, Value::Unsigned),

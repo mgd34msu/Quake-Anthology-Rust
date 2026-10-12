@@ -4,7 +4,7 @@ use qa_network::{
     message::{Encoding, Reader, Writer},
     states::{
         self, ENTITY_WORDS, NQ_ENTITY_WORDS, NQ_PLAYER_WORDS, PLAYER_WORDS, Q2_ENTITY_WORDS,
-        Q2_PLAYER_WORDS, QW_ENTITY_WORDS, QW_PLAYER_WORDS,
+        Q2_PLAYER_WORDS, QW_ENTITY_WORDS, QW_NATIVE_ENTITY_WORDS, QW_PLAYER_WORDS,
     },
 };
 use qa_platform::{Stopwatch, allocations};
@@ -141,10 +141,12 @@ fn encode(case: &Case, bytes: &mut [u8; 1400]) -> Result<Encoded, String> {
                 result.number = u32::from(decoded.number);
                 result.removed = decoded.words.is_none();
                 if let Some(words) = decoded.words {
-                    result.decoded[..QW_ENTITY_WORDS].copy_from_slice(&words);
+                    result.decoded[..QW_NATIVE_ENTITY_WORDS]
+                        .copy_from_slice(&words[..QW_NATIVE_ENTITY_WORDS]);
                 }
             } else {
-                result.decoded[..QW_ENTITY_WORDS].copy_from_slice(from);
+                result.decoded[..QW_NATIVE_ENTITY_WORDS]
+                    .copy_from_slice(&from[..QW_NATIVE_ENTITY_WORDS]);
             }
         }
         4 => {

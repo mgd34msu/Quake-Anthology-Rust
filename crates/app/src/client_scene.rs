@@ -8,6 +8,7 @@ use qa_core::{
         ThinkTime, Vec3,
     },
 };
+use qa_gameplay::rules::appearance::{AliasRoll, alias_pose_angles};
 use qa_network::{
     projection::{EntityProjection, EntityRecord},
     snapshots::{Entity, Frame as SnapshotFrame, ReceivedFrame},
@@ -101,6 +102,7 @@ pub struct ClientSceneInput<'a> {
     pub bindings: &'a ClientModelBindings,
     pub models: &'a ModelCatalog,
     pub player: &'a PlayerState,
+    pub alias_roll: AliasRoll,
     /// Negotiated native view entity; common client/entity slots cannot supply it.
     pub view_entity: Option<u32>,
 }
@@ -146,7 +148,13 @@ impl ClientSceneInput<'_> {
         (&output[..count], count != areas.len())
     }
 
-    pub fn append(&self, frame: &mut Frame, assets: &Assets, refdef: &Refdef) -> SceneCounts {
+    pub fn append(
+        &self,
+        frame: &mut Frame,
+        assets: &Assets,
+        refdef: &Refdef,
+        software: bool,
+    ) -> SceneCounts {
         let mut counts = SceneCounts::default();
         if let Some(current) = self.current {
             macro_rules! append {
@@ -155,7 +163,15 @@ impl ClientSceneInput<'_> {
                         Some(ReceivedFrame::$variant(previous)) => Some(previous),
                         _ => None,
                     };
-                    self.append_entities($current, previous, frame, assets, refdef, &mut counts);
+                    self.append_entities(
+                        $current,
+                        previous,
+                        frame,
+                        assets,
+                        refdef,
+                        software,
+                        &mut counts,
+                    );
                 }};
             }
             match current {
@@ -166,10 +182,14 @@ impl ClientSceneInput<'_> {
                 ReceivedFrame::Quake3(current) => append!(Quake3, current),
             }
         }
-        self.append_weapon(frame, assets, refdef, &mut counts);
+        self.append_weapon(frame, assets, refdef, software, &mut counts);
         counts
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Native frame widths share one CLIENT scene projection without copying snapshot storage"
+    )]
     fn append_entities<const P: usize, const E: usize>(
         &self,
         current: SnapshotFrame<'_, P, E>,
@@ -177,6 +197,7 @@ impl ClientSceneInput<'_> {
         frame: &mut Frame,
         assets: &Assets,
         refdef: &Refdef,
+        software: bool,
         counts: &mut SceneCounts,
     ) {
         let fraction = previous.map_or(1.0, |previous| {
@@ -225,9 +246,6 @@ impl ClientSceneInput<'_> {
                     old.position.lerp(record.position, fraction)
                 })
             };
-            let axes = angle_vectors(record.angles)
-                .axes()
-                .map(|axis| axis * capabilities.scale);
             for (slot, reference) in record.appearance.models.iter().enumerate() {
                 let Some(reference) = *reference else {
                     continue;
@@ -258,6 +276,17 @@ impl ClientSceneInput<'_> {
                             native_frame(old.appearance.frame, model.frame_count())
                         })
                 };
+                let angles = alias_pose_angles(
+                    binding.rules,
+                    record.angles,
+                    record.velocity,
+                    current.qw_player(entity.number),
+                    software,
+                    self.alias_roll,
+                );
+                let axes = angle_vectors(angles)
+                    .axes()
+                    .map(|axis| axis * capabilities.scale);
                 let entity = SceneEntity {
                     model: binding.model,
                     material: Some(binding.material),
@@ -269,7 +298,7 @@ impl ClientSceneInput<'_> {
                     old_frame,
                     back_lerp: 1.0 - fraction,
                     depth_hack: capabilities.depth_hack,
-                    lighting: Some(native_lighting(record.appearance.source, record.angles)),
+                    lighting: Some(native_lighting(binding.rules, angles)),
                     ..SceneEntity::default()
                 };
                 let added = frame.add_entity(entity);
@@ -295,16 +324,19 @@ impl ClientSceneInput<'_> {
         frame: &mut Frame,
         assets: &Assets,
         refdef: &Refdef,
+        software: bool,
         counts: &mut SceneCounts,
     ) {
         let weapon = self.player.view_weapon;
         let Some(reference) = weapon.model else {
             return;
         };
-        let Some(binding) =
-            self.bindings
-                .resolve(reference, 0, self.models, ModelMaterialPolicy::default())
-        else {
+        let Some(binding) = self.bindings.resolve(
+            reference,
+            weapon.skin,
+            self.models,
+            ModelMaterialPolicy::default(),
+        ) else {
             counts.missing_models += 1;
             return;
         };
@@ -312,18 +344,23 @@ impl ClientSceneInput<'_> {
             counts.missing_models += 1;
             return;
         };
+        let angles = alias_pose_angles(
+            binding.rules,
+            self.player.view_angles + weapon.angles,
+            Vec3::default(),
+            false,
+            software,
+            self.alias_roll,
+        );
         let entity = SceneEntity {
             model: binding.model,
             material: Some(binding.material),
             origin: refdef.origin + weapon.offset,
-            axes: angle_vectors(self.player.view_angles + weapon.angles).axes(),
+            axes: angle_vectors(angles).axes(),
             frame: native_frame(weapon.frame, model.frame_count()),
             old_frame: native_frame(weapon.frame, model.frame_count()),
             depth_hack: true,
-            lighting: Some(native_lighting(
-                self.projection.rule_set(),
-                self.player.view_angles + weapon.angles,
-            )),
+            lighting: Some(native_lighting(binding.rules, angles)),
             ..SceneEntity::default()
         };
         let added = frame.add_entity(entity);

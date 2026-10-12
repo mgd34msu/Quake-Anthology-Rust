@@ -136,6 +136,8 @@ pub struct FrameHost {
     pub local_worlds: [Option<qa_render::world::WorldId>; SeatId::COUNT],
     maxfps: CvarHandle,
     fov: CvarHandle,
+    roll_angle: CvarHandle,
+    roll_speed: CvarHandle,
     input_handles: crate::profile::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
@@ -204,6 +206,14 @@ impl FrameHost {
             .find("com_maxfps")
             .ok_or("missing com_maxfps")?;
         let fov = console.cvars.find("cg_fov").ok_or("missing cg_fov")?;
+        let roll_angle = console
+            .cvars
+            .find("cl_rollangle")
+            .ok_or("missing cl_rollangle")?;
+        let roll_speed = console
+            .cvars
+            .find("cl_rollspeed")
+            .ok_or("missing cl_rollspeed")?;
         let input_handles = crate::profile::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
         let notify_time = console
@@ -246,6 +256,8 @@ impl FrameHost {
             local_worlds: [None; SeatId::COUNT],
             maxfps,
             fov,
+            roll_angle,
+            roll_speed,
             input_handles,
             movement_handles,
             notify_time,
@@ -387,6 +399,16 @@ impl FrameHost {
     pub fn client_scene_inputs(
         &self,
     ) -> [Option<crate::client_scene::ClientSceneInput<'_>>; SeatId::COUNT] {
+        let alias_roll = qa_gameplay::rules::appearance::AliasRoll {
+            angle: self
+                .console
+                .cvars
+                .value_in(self.roll_angle, qa_core::primitives::RuleSetId::QuakeWorld),
+            speed: self
+                .console
+                .cvars
+                .value_in(self.roll_speed, qa_core::primitives::RuleSetId::QuakeWorld),
+        };
         std::array::from_fn(|seat| {
             let (client, _, player) = self.local_seat(seat)?;
             let snapshot = self
@@ -412,6 +434,7 @@ impl FrameHost {
                 bindings: &resources.state.models,
                 models: self.runtime.models.as_deref()?,
                 player,
+                alias_roll,
                 view_entity: snapshot.view_entity(),
             })
         })

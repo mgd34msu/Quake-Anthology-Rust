@@ -392,7 +392,12 @@ impl Renderer {
             frame.clear_scene();
             let world_added = frame.add_world(client.world, surfaces);
             if let Some(client_scene) = &scenes[seat] {
-                self.sample.client_scene += client_scene.append(&mut frame, &self.assets, &refdef);
+                self.sample.client_scene += client_scene.append(
+                    &mut frame,
+                    &self.assets,
+                    &refdef,
+                    matches!(self.kind, Kind::Cpu),
+                );
             }
             if !world_added || !frame.render_scene(refdef, hidden_areas, &self.assets) {
                 rejected += 1;

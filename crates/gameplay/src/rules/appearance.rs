@@ -40,6 +40,8 @@ struct NativeRules {
     explicit_alpha: bool,
     zero_scale: bool,
     alias_light: Option<Vec3>,
+    alias_pitch_reversed: bool,
+    gl_alias_roll_reversed: bool,
     interpolation_events: [u32; 2],
     interpolation_distance: Option<i32>,
 }
@@ -60,6 +62,8 @@ const NEUTRAL: NativeRules = NativeRules {
     explicit_alpha: false,
     zero_scale: false,
     alias_light: None,
+    alias_pitch_reversed: false,
+    gl_alias_roll_reversed: false,
     interpolation_events: [0; 2],
     interpolation_distance: None,
 };
@@ -79,13 +83,20 @@ const Q2: NativeRules = NativeRules {
     tracker: 1 << 31,
     native_alpha: true,
     alias_light: Some(Vec3([-1.0, 0.0, 0.0])),
+    gl_alias_roll_reversed: true,
     interpolation_events: [6, 7],
     interpolation_distance: Some(512),
     ..NEUTRAL
 };
 const RULES: [NativeRules; 5] = [
-    NEUTRAL,
-    NEUTRAL,
+    NativeRules {
+        alias_pitch_reversed: true,
+        ..NEUTRAL
+    },
+    NativeRules {
+        alias_pitch_reversed: true,
+        ..NEUTRAL
+    },
     Q2,
     NativeRules {
         old_frame: 1 << 22,
@@ -97,6 +108,48 @@ const RULES: [NativeRules; 5] = [
     // boundary must supply a supported mapping before interpreting those bits.
     NEUTRAL,
 ];
+
+/// Values from the common cvar table, bound before entering the scene path.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AliasRoll {
+    pub angle: f32,
+    pub speed: f32,
+}
+/// Convert native alias angles to the core [forward, -right, up] convention.
+/// QW playerinfo contains command angles; packetentities contain body angles.
+pub fn alias_pose_angles(
+    source: RuleSetId,
+    mut angles: Vec3,
+    velocity: Vec3,
+    qw_player: bool,
+    software: bool,
+    roll: AliasRoll,
+) -> Vec3 {
+    if qw_player {
+        // QW CL_LinkPlayers and V_CalcRoll retain their native operation order.
+        angles.0[0] = -angles.0[0] / 3.0;
+        angles.0[2] = 0.0;
+        let side = velocity.dot(math::angle_vectors(angles).right);
+        let sign = if side < 0.0 { -1.0 } else { 1.0 };
+        let magnitude = side.abs();
+        let side = if magnitude < roll.speed {
+            magnitude * roll.angle / roll.speed
+        } else {
+            roll.angle
+        };
+        angles.0[2] = (side * sign) * 4.0;
+    }
+    let rules = RULES[source as usize];
+    if rules.alias_pitch_reversed {
+        angles.0[0] = -angles.0[0];
+    }
+    // Q2 ref_soft uses AngleVectors directly. ref_gl reverses alias pitch
+    // before R_RotateForEntity, whose remaining roll rotation is negative.
+    if !software && rules.gl_alias_roll_reversed {
+        angles.0[2] = -angles.0[2];
+    }
+    angles
+}
 
 /// Native Q2 software alias light, rotated with the original dot/negate order.
 pub fn alias_light_direction(source: RuleSetId, angles: Vec3) -> Option<Vec3> {

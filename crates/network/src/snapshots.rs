@@ -93,9 +93,19 @@ pub struct Frame<'a, const P: usize, const E: usize> {
     pub time: qa_core::primitives::ThinkTime,
     pub command: u32,
     pub flags: u8,
+    /// Accepted QW playerinfo rows, carried by the existing native ring slot.
+    pub qw_peers: u32,
     pub areas: &'a [u8],
     pub player: &'a [u32; P],
     pub entities: &'a [Entity<E>],
+}
+impl<const P: usize, const E: usize> Frame<'_, P, E> {
+    pub fn qw_player(&self, number: u32) -> bool {
+        number
+            .checked_sub(1)
+            .filter(|&peer| peer < states::QW_PLAYER_SLOTS as u32)
+            .is_some_and(|peer| self.qw_peers & (1 << peer) != 0)
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +239,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             time: slot.time,
             command: slot.command,
             flags: slot.flags,
+            qw_peers: slot.qw_peers,
             player: &slot.player,
             areas: rows(&self.areas, self.area_capacity, index, slot.area_bytes),
             entities: rows(&self.entities, self.capacity, index, slot.count),
@@ -268,6 +279,7 @@ impl<const P: usize, const E: usize> Ring<P, E> {
             time: frame.time,
             command: frame.command,
             flags: frame.flags,
+            qw_peers: frame.qw_peers,
             area_bytes: frame.areas.len(),
             count: frame.entities.len(),
             first_entity,

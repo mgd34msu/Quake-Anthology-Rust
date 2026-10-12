@@ -42,6 +42,7 @@ type ReadFrame<const P: usize, const E: usize> =
     ) -> Result<bool, qa_network::commands::packet::Error>;
 struct Codec<const P: usize, const E: usize> {
     encoding: Encoding,
+    native_entity_words: usize,
     opcodes: [u32; 2],
     end: u32,
     write: WriteFrame<P, E>,
@@ -49,6 +50,7 @@ struct Codec<const P: usize, const E: usize> {
 }
 const Q3: Codec<PLAYER_WORDS, ENTITY_WORDS> = Codec {
     encoding: Encoding::Q3,
+    native_entity_words: ENTITY_WORDS,
     opcodes: [7, 7],
     end: 8,
     write: snapshots::write_q3,
@@ -57,6 +59,7 @@ const Q3: Codec<PLAYER_WORDS, ENTITY_WORDS> = Codec {
 const Q2: Codec<{ qa_network::states::Q2_PLAYER_WORDS }, { qa_network::states::Q2_ENTITY_WORDS }> =
     Codec {
         encoding: Encoding::Bytes,
+        native_entity_words: qa_network::states::Q2_ENTITY_WORDS,
         opcodes: [20, 20],
         end: 6,
         write: |w, r, n, d| snapshots::write_q2(w, r, n, d, 16),
@@ -64,6 +67,7 @@ const Q2: Codec<{ qa_network::states::Q2_PLAYER_WORDS }, { qa_network::states::Q
     };
 const QW: Codec<0, { qa_network::states::QW_ENTITY_WORDS }> = Codec {
     encoding: Encoding::Bytes,
+    native_entity_words: qa_network::states::QW_NATIVE_ENTITY_WORDS,
     opcodes: [47, 48],
     end: 6,
     write: |w, r, n, d| snapshots::write_qw(w, r, n, d.map(|base| (base, base as u8))),
@@ -79,19 +83,26 @@ fn words<const N: usize>(reader: &mut Reader<'_>) -> Result<[u32; N], String> {
 fn entities<const E: usize>(
     reader: &mut Reader<'_>,
     count: usize,
+    native_words: usize,
 ) -> Result<Vec<Entity<E>>, String> {
     (0..count)
         .map(|_| {
-            Ok(Entity {
-                number: reader.read_bits(16).map_err(|e| e.to_string())?,
-                words: words(reader)?,
-            })
+            let number = reader.read_bits(16).map_err(|e| e.to_string())?;
+            let mut words = [0; E];
+            for word in words
+                .get_mut(..native_words)
+                .ok_or("native entity columns")?
+            {
+                *word = reader.read_bits(32).map_err(|e| e.to_string())?;
+            }
+            Ok(Entity { number, words })
         })
         .collect()
 }
 fn load<const P: usize, const E: usize>(
     input: &[u8],
     retained: Option<u64>,
+    native_entity_words: usize,
 ) -> Result<Vec<Case<P, E>>, String> {
     let mut reader = Reader::new(input, Encoding::Bytes);
     let count = reader.read_bits(32).map_err(|e| e.to_string())?;
@@ -107,9 +118,9 @@ fn load<const P: usize, const E: usize>(
         let old_player = words(&mut reader)?;
         let player = words(&mut reader)?;
         reader.read_data(&mut areas).map_err(|e| e.to_string())?;
-        let baselines = entities(&mut reader, baseline_count)?;
-        let old = entities(&mut reader, a)?;
-        let entities = entities(&mut reader, b)?;
+        let baselines = entities(&mut reader, baseline_count, native_entity_words)?;
+        let old = entities(&mut reader, a, native_entity_words)?;
+        let entities = entities(&mut reader, b, native_entity_words)?;
         let mut server = Ring::load(64, 1024, 32, None).map_err(|e| format!("{e:?}"))?;
         let mut client = Ring::load(64, 1024, 32, retained).map_err(|e| format!("{e:?}"))?;
         for baseline in baselines {
@@ -152,6 +163,7 @@ fn run<const P: usize, const E: usize>(
             time: ThinkTime::Milliseconds(100),
             command: 12,
             flags: case.flags,
+            qw_peers: 0,
             areas: &case.areas,
             player: &case.old_player,
             entities: &case.old,
@@ -179,6 +191,7 @@ fn run<const P: usize, const E: usize>(
             time: ThinkTime::Milliseconds(300),
             command: 12,
             flags: case.flags,
+            qw_peers: 0,
             areas: &case.areas,
             player: &case.player,
             entities: &case.entities,
@@ -246,7 +259,7 @@ fn run<const P: usize, const E: usize>(
             output
                 .write_bits(entity.number, 32)
                 .map_err(|e| e.to_string())?;
-            for word in entity.words {
+            for &word in &entity.words[..codec.native_entity_words] {
                 output.write_bits(word, 32).map_err(|e| e.to_string())?;
             }
         }
@@ -257,7 +270,7 @@ fn run<const P: usize, const E: usize>(
 fn timing(fixture: &str, oracle: &str) -> Result<(), String> {
     let input = std::fs::read(fixture).map_err(|e| e.to_string())?;
     let oracle = std::fs::read(oracle).map_err(|e| e.to_string())?;
-    let mut cases = load(&input, Some(1920))?;
+    let mut cases = load(&input, Some(1920), Q3.native_entity_words)?;
     let mut output = [0; 32768];
     let mut offset = 0;
     for case in &mut cases {
@@ -353,7 +366,7 @@ fn compare<const P: usize, const E: usize>(
     codec: &Codec<P, E>,
     retained: Option<u64>,
 ) -> Result<(), String> {
-    let mut cases = load(input, retained)?;
+    let mut cases = load(input, retained, codec.native_entity_words)?;
     check_heap_counter()?;
     let mut stdout = std::io::stdout().lock();
     let mut output = [0; 32768];
@@ -466,6 +479,7 @@ fn connected_heap() -> Result<(), String> {
                 time: ThinkTime::Milliseconds(0),
                 command: 0,
                 flags: 0,
+                qw_peers: 0,
                 areas: &[0x81],
                 player: &player,
                 entities: &[entity],
@@ -714,6 +728,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 time: ThinkTime::Milliseconds(0),
                 command: 0,
                 flags: 0,
+                qw_peers: 0,
                 areas: &[],
                 player: &[],
                 entities: &[Entity { number: 3, words }],
@@ -901,6 +916,7 @@ fn connected_nq_heap() -> Result<(), String> {
                 time: ThinkTime::Seconds(f64::from(seconds)),
                 command: 0,
                 flags: 0,
+                qw_peers: 0,
                 areas: &[],
                 player: &player,
                 entities: &[entity],

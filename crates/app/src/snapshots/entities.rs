@@ -706,6 +706,7 @@ impl EntityScratch {
                     time,
                     command: 0,
                     flags: 0,
+                    qw_peers: 0,
                     areas: &self.visibility.areas[..self.visibility.area_count],
                     player: words[..$n].try_into().map_err(|_| Error::Count)?,
                     entities: &$rows.rows[..count.min($rows.count)],

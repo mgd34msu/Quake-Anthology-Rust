@@ -642,6 +642,8 @@ fn run() -> Result<(), String> {
         }
         let mut request =
             qa_app::model_assets::ModelRequest::native(path, rules, palettes[rules as usize]);
+        request.image_settings =
+            qa_app::render_settings::image_settings(&host.console.cvars, rules)?;
         request.required = false;
         requests.push(request);
     }

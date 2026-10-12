@@ -264,3 +264,72 @@ fn rerelease_zero_sentinels_and_explicit_alpha_follow_native_pack_rules() {
     assert_eq!(imported.appearance.native.loop_volume, 0.);
     assert_eq!(imported.appearance.native.loop_attenuation, 0.);
 }
+
+#[test]
+fn qw_internal_peer_velocity_never_changes_native_packetentity_bytes() -> Result<(), Error> {
+    assert_eq!(states::QW_NATIVE_ENTITY_WORDS, 12);
+    assert_eq!(states::QW_ENTITY_WORDS, 15);
+    let projection = EntityProjection::load(Protocol::QuakeWorld28);
+    let mut record = source(Protocol::QuakeWorld28);
+    let mut from = [0; states::QW_ENTITY_WORDS];
+    assert!(projection.reduce(&record, &mut from, |model| Some(model.ordinal)));
+    record.velocity = Vec3([300., -400., 500.]);
+    let mut to = from;
+    assert!(projection.reduce(&record, &mut to, |model| Some(model.ordinal)));
+    assert_eq!(
+        &from[..states::QW_NATIVE_ENTITY_WORDS],
+        &to[..states::QW_NATIVE_ENTITY_WORDS]
+    );
+    assert_ne!(
+        &from[states::QW_NATIVE_ENTITY_WORDS..],
+        &to[states::QW_NATIVE_ENTITY_WORDS..]
+    );
+    let mut first = [0; 1400];
+    let mut second = [0; 1400];
+    let baseline = [0; states::QW_ENTITY_WORDS];
+    let mut a = Writer::new(&mut first, Encoding::Bytes);
+    let mut b = Writer::new(&mut second, Encoding::Bytes);
+    assert!(states::write_qw_entity(
+        &mut a,
+        17,
+        &baseline,
+        Some(&from),
+        true
+    )?);
+    assert!(states::write_qw_entity(
+        &mut b,
+        17,
+        &baseline,
+        Some(&to),
+        true
+    )?);
+    assert_eq!(a.bit_position(), b.bit_position());
+    assert_eq!(a.bytes(), b.bytes());
+    let mut unchanged = [0; 1400];
+    let mut expected = Writer::new(&mut unchanged, Encoding::Bytes);
+    let mut delta = Writer::new(&mut second, Encoding::Bytes);
+    let emitted = states::write_qw_entity(
+        &mut delta,
+        17,
+        &from,
+        Some(&to),
+        false
+    )?;
+    assert_eq!(
+        emitted,
+        states::write_qw_entity(&mut expected, 17, &from, Some(&from), false)?
+    );
+    // SOLID can itself force the native header even without changed fields.
+    assert_eq!(delta.bit_position(), expected.bit_position());
+    assert_eq!(delta.bytes(), expected.bytes());
+    // Playerinfo velocities are retained only in accepted CLIENT rows, never
+    // manufactured from a packetentity payload that has no such fields.
+    let decoded = states::read_qw_entity(&mut Reader::new(a.bytes(), Encoding::Bytes), &baseline)?
+        .words
+        .unwrap();
+    assert_eq!(&decoded[states::QW_NATIVE_ENTITY_WORDS..], &[0; 3]);
+    let mut imported = EntityRecord::default();
+    assert!(projection.apply(&to, &mut imported, CLIENT));
+    assert_eq!(imported.velocity, record.velocity);
+    Ok(())
+}

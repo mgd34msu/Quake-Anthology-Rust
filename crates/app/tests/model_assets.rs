@@ -59,6 +59,8 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     let second = catalog.resolve_path("models/test/tris.md2", 1).unwrap();
     assert_eq!(first.model, second.model);
     assert_ne!(first.material, second.material);
+    assert_eq!(first.rules, RuleSetId::Quake2);
+    assert_eq!(second.rules, RuleSetId::Quake2);
     assert_eq!(assets.models().len(), models_before + 1);
     let model = assets.model(first.model).unwrap();
     assert_eq!(model.frame_count(), 2);
@@ -125,6 +127,7 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
     )
     .unwrap();
     let binding = catalog.resolve_path("progs/test.mdl", 0).unwrap();
+    assert_eq!(binding.rules, RuleSetId::Quake2);
     let model = assets.model(binding.model).unwrap();
     assert_eq!(model.frame_count(), 2);
     assert_eq!(model.vertices_per_frame, 3);
