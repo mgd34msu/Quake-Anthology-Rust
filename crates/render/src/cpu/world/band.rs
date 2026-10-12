@@ -251,6 +251,7 @@ impl WorldBand {
                         &catalog.rgba,
                         &prepared.rgba_prepared,
                         &catalog.factors,
+                        &catalog.tiled_table,
                         assets,
                         camera,
                         buffers,

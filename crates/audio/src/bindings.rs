@@ -1,5 +1,8 @@
 use crate::Bank;
-use qa_core::{primitives::SoundId, text::FixedText};
+use qa_core::{
+    primitives::{RuleSetId, SoundId},
+    text::FixedText,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundBindingError {
@@ -9,12 +12,26 @@ pub enum SoundBindingError {
 }
 
 /// Native resource names select player-relative or explicit file paths.
-pub fn sound_path(name: &[u8]) -> Result<Option<FixedText<8198>>, SoundBindingError> {
-    if name.is_empty() || name.starts_with(b"*") {
+pub fn sound_path(
+    name: &[u8],
+    rules: RuleSetId,
+) -> Result<Option<FixedText<8198>>, SoundBindingError> {
+    if name.is_empty() {
         return Ok(None);
     }
     let mut path = FixedText::default();
-    if let Some(explicit) = name.strip_prefix(b"#") {
+    if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+        // Quake's loader treats both prefix bytes as literal filenames.
+        path.append_bytes(b"sound/")
+            .map_err(|_| SoundBindingError::Text)?;
+        path.append_bytes(name)
+            .map_err(|_| SoundBindingError::Text)?;
+    } else if name.starts_with(b"*") {
+        return Ok(None);
+    } else if rules == RuleSetId::Quake3 {
+        path.append_bytes(name)
+            .map_err(|_| SoundBindingError::Text)?;
+    } else if let Some(explicit) = name.strip_prefix(b"#") {
         path.append_bytes(explicit)
             .map_err(|_| SoundBindingError::Text)?;
     } else {
@@ -41,12 +58,14 @@ impl SoundBindings {
     }
     /// Cold bank attachment reserves the inverse once and clears old handles.
     pub fn attach(&mut self, bank: &Bank) {
-        self.forward.fill(None);
+        self.clear();
         if self.inverse.len() != bank.len() {
             self.inverse = vec![None; bank.len()].into_boxed_slice();
-        } else {
-            self.inverse.fill(None);
         }
+    }
+    pub fn clear(&mut self) {
+        self.forward.fill(None);
+        self.inverse.fill(None);
     }
     pub fn sound(&self, ordinal: u32) -> Option<SoundId> {
         self.forward.get(ordinal as usize).copied().flatten()
@@ -88,13 +107,23 @@ impl SoundBindings {
         }
         Ok(())
     }
+    /// A destination can preserve a load-bound primary native registration
+    /// even when a secondary namespace already registered the same sample.
+    pub fn prefer(&mut self, ordinal: u32) {
+        if let Some(sound) = self.sound(ordinal)
+            && let Some(inverse) = self.inverse.get_mut(sound.0 as usize)
+        {
+            *inverse = Some(ordinal);
+        }
+    }
     pub fn bind_name(
         &mut self,
         bank: Option<&Bank>,
         ordinal: u32,
         name: &[u8],
+        rules: RuleSetId,
     ) -> Result<(), SoundBindingError> {
-        let sound = match bank.zip(sound_path(name)?) {
+        let sound = match bank.zip(sound_path(name, rules)?) {
             Some((bank, path)) => bank
                 .find(std::str::from_utf8(path.as_bytes()).map_err(|_| SoundBindingError::Text)?),
             None => None,

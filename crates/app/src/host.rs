@@ -565,10 +565,8 @@ impl FrameHost {
             })
         });
         source.listeners(&listeners, self.console.cvars.value(self.volume));
-        let modules = &self.modules;
         result.output = crate::output::dispatch(
             &mut self.runtime,
-            &mut |module, sound| modules.as_ref()?.sound_ordinal(module, sound),
             source,
             &mut self.console.scrollback,
             &self.local_clients,
@@ -646,6 +644,7 @@ impl FrameHost {
                                     binding.apply(
                                         incoming,
                                         &mut self.runtime.prediction[seat.index()].player,
+                                        &self.runtime.native_numbers[id.0 as usize],
                                     );
                                 }
                             }
@@ -726,14 +725,12 @@ impl FrameHost {
                                 receipt,
                                 |record| {
                                     if let qa_core::events::FrameEvent::ConfigString {
-                                        module,
-                                        index,
+                                        destination_index,
                                         ..
                                     } = record.event
                                     {
                                         publication.acknowledged(
-                                            module,
-                                            index as usize,
+                                            destination_index as usize,
                                             record.sequence,
                                         );
                                     }

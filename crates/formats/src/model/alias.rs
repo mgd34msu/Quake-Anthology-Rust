@@ -208,9 +208,14 @@ pub(super) fn mdl<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, Fo
         if g.intervals.is_empty() {
             g.bounds = m.frames[g.members.start].bounds;
         }
-        m.bounds.add_bounds(g.bounds);
         m.frame_groups.push(g);
     }
+    // Mod_LoadAliasModel publishes this native entity box. Decoded frame
+    // bounds and mesh vertices retain the model's actual geometry.
+    m.bounds = Bounds {
+        mins: Vec3([-16.0; 3]),
+        maxs: Vec3([16.0; 3]),
+    };
     m.meshes.push(mesh);
     Ok(m)
 }
@@ -409,8 +414,13 @@ pub(super) fn sprite<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>,
         m.frame_groups.push(g);
     }
     if !external {
-        let maxs = Vec3([width as f32 * 0.5, width as f32 * 0.5, height as f32 * 0.5]);
-        m.bounds = Bounds { mins: -maxs, maxs };
+        // Mod_LoadSpriteModel divides the integer header dimensions before
+        // converting to float, including positive zero for one-pixel extents.
+        let halves = [(width / 2) as i32, (width / 2) as i32, (height / 2) as i32];
+        m.bounds = Bounds {
+            mins: Vec3(halves.map(|value| (-value) as f32)),
+            maxs: Vec3(halves.map(|value| value as f32)),
+        };
     }
     for g in &mut m.frame_groups {
         g.bounds = m.bounds;

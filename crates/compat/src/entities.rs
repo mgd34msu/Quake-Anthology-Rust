@@ -936,7 +936,7 @@ impl EntityProjection {
             rules: self.native_layout()?.model_rules,
         })
     }
-    fn inline_model(
+    pub(crate) fn inline_model(
         services: &EngineServices<'_>,
         geometry: qa_core::primitives::GeometryId,
         name: &[u8],

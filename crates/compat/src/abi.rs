@@ -498,13 +498,43 @@ const fn quakec() -> CallTable {
     );
     t.entries[1] = value!(angle_basis, vector.void());
     t.entries[2] = qc!(qc_set_origin, 2, 2, false);
+    t.entries[3] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_set_model),
+        quakec: Some(QcSignature::new(
+            QcArgc::Fixed(2),
+            QcArgs::Mixed {
+                vectors: 0,
+                strings: 2,
+            },
+            false,
+        )),
+    });
     t.entries[4] = qc!(qc_set_size, 3, 6, false);
+    t.entries[8] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_sound),
+        quakec: Some(QcSignature::new(
+            QcArgc::Fixed(5),
+            QcArgs::Mixed {
+                vectors: 0,
+                strings: 4,
+            },
+            false,
+        )),
+    });
     t.entries[9] = value!(vector_normalize, vector);
     t.entries[12] = scalar!(vector_length, Some(vector));
     t.entries[13] = scalar!(vector_yaw, Some(vector));
     t.entries[14] = qc!(qc_spawn, 0, 0, true);
     t.entries[15] = qc!(qc_remove, 1, 0, false);
     t.entries[16] = qc!(qc_trace_line, 4, 3, false);
+    t.entries[19] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_precache::<false>),
+        quakec: Some(strings),
+    });
+    t.entries[20] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_precache::<true>),
+        quakec: Some(strings),
+    });
     t.entries[23] = Some(CallEntry {
         handler: Handler::Shared(qc_print::<true>),
         quakec: Some(QcSignature::new(
@@ -552,6 +582,13 @@ const fn quakec() -> CallTable {
     t.entries[45] = scalar!(cvar_number::<false>, Some(strings));
     t.entries[46] = scalar!(command_append, Some(strings.void()));
     t.entries[51] = value!(vector_angles, vector);
+    t.entries[68] = Some(CallEntry {
+        handler: Handler::QuakeC(qc_precache_file),
+        quakec: Some(strings),
+    });
+    t.entries[75] = t.entries[20];
+    t.entries[76] = t.entries[19];
+    t.entries[77] = t.entries[68];
     t.entries[72] = scalar!(
         cvar_set::<false, false>,
         Some(QcSignature {
@@ -736,6 +773,155 @@ fn qc_set_size(
         bounds,
     )?;
     Ok(CallValue::Word(0))
+}
+fn qc_set_model(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    vm.projection.quakec_set_model(
+        c.services,
+        &mut vm.entities,
+        &vm.strings,
+        c.context,
+        qc_word(arguments, 0)?,
+        qc_word(arguments, 1)?,
+    )?;
+    Ok(CallValue::Word(0))
+}
+fn qc_precache<const MODEL: bool>(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    if vm.active {
+        return Err(CallError::Aborted);
+    }
+    let word = qc_word(arguments, 0)?;
+    let name = vm.strings.cstring(u64::from(word))?;
+    if name.first().is_none_or(|&first| first <= b' ') {
+        return Err(CallError::Text);
+    }
+    let resources = c
+        .services
+        .storage
+        .resources(c.context.module)
+        .ok_or(CallError::ConfigString)?;
+    let (_, inserted) = (ENGINE_CALLS.resource_register)(
+        c.services,
+        c.context.module,
+        resources[usize::from(!MODEL)],
+        name,
+    )?;
+    // QW registers the name only. NQ Mod_ForName runs after the new native
+    // precache row has been written, so a failed load retains that row.
+    if MODEL && inserted && c.context.native_rules != qa_core::primitives::RuleSetId::QuakeWorld {
+        if name.starts_with(b"*") {
+            crate::entities::EntityProjection::inline_model(
+                c.services,
+                c.services.world.ok_or(CallError::Geometry)?.0,
+                name,
+            )?;
+        } else {
+            (ENGINE_CALLS.model_precache)(c.services, name, c.context.native_rules)?;
+        }
+    }
+    Ok(CallValue::Word(u64::from(word)))
+}
+fn qc_precache_file(
+    _: &mut QuakeCCalls<'_, '_>,
+    _: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    Ok(CallValue::Word(u64::from(qc_word(arguments, 0)?)))
+}
+fn qc_sound(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    use qa_core::primitives::{NativeDelivery, NativeTarget, RuleSetId, SoundEmitter, SoundEvent};
+    let rules = c.context.native_rules;
+    let channel = crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 1)?)));
+    let volume =
+        crate::numbers::native_integer(f64::from(f32::from_bits(qc_word(arguments, 3)?) * 255.0));
+    let attenuation = f32::from_bits(qc_word(arguments, 4)?);
+    let maximum_channel = if rules == RuleSetId::QuakeWorld {
+        15
+    } else {
+        7
+    };
+    if !(0..=maximum_channel).contains(&channel)
+        || !(0..=255).contains(&volume)
+        || !(0.0..=4.0).contains(&attenuation)
+    {
+        return Err(CallError::Text);
+    }
+    let name = vm.strings.cstring(u64::from(qc_word(arguments, 2)?))?;
+    let sounds = c
+        .services
+        .storage
+        .resources(c.context.module)
+        .ok_or(CallError::ConfigString)?[1];
+    let Some(ordinal) = (ENGINE_CALLS.resource_find)(c.services, c.context.module, sounds, name)?
+    else {
+        let mut text = qa_core::text::FixedText::<8240>::default();
+        text.append_bytes(b"SV_StartSound: ")
+            .map_err(|_| CallError::Capacity)?;
+        text.append_bytes(name).map_err(|_| CallError::Capacity)?;
+        text.append_bytes(b" not precached\n")
+            .map_err(|_| CallError::Capacity)?;
+        match (ENGINE_CALLS.console)(c.services, text.as_bytes()) {
+            Ok(_) | Err(CallError::Capacity) => (),
+            Err(error) => return Err(error),
+        }
+        return Ok(CallValue::Word(0));
+    };
+    let Some(sound) =
+        (ENGINE_CALLS.sound_id)(c.services, c.context.module, sounds, ordinal as i32)?
+    else {
+        return Ok(CallValue::Word(0));
+    };
+    let (entity, position, positioned) = vm.projection.quakec_sound_source(
+        c.services,
+        &vm.entities,
+        &vm.strings,
+        c.context,
+        qc_word(arguments, 0)?,
+    )?;
+    let hearing = rules == RuleSetId::QuakeWorld
+        && channel & 8 == 0
+        && c.services.storage.uses_sound_phs(c.services.cvars);
+    let reliable = rules == RuleSetId::QuakeWorld && channel & 8 != 0;
+    let delivery = NativeDelivery {
+        module: c.context.module,
+        source: rules,
+        target: if hearing {
+            NativeTarget::Hearing
+        } else {
+            NativeTarget::All
+        },
+        origin: position,
+        reliable,
+        dupe_key: 0,
+        check_portals: false,
+    };
+    let event = SoundEvent {
+        sound,
+        source_ordinal: Some(ordinal),
+        spatial_rules: c.context.sound_rules,
+        entity: Some(SoundEmitter::Entity(entity)),
+        position,
+        channel: (channel & 7) as u16,
+        volume: volume as f32 / 255.0,
+        attenuation,
+        positioned,
+        ..SoundEvent::default()
+    };
+    match (ENGINE_CALLS.sound)(c.services, delivery, event) {
+        Ok(_) | Err(CallError::Capacity) => Ok(CallValue::Word(0)),
+        Err(error) => Err(error),
+    }
 }
 fn qc_trace_line(
     c: &mut QuakeCCalls<'_, '_>,
@@ -1176,6 +1362,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
         delivery,
         SoundEvent {
             sound,
+            source_ordinal: Some(c.arg(index)? as u32),
             spatial_rules: c.context.sound_rules,
             entity,
             position,

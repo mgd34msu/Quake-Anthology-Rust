@@ -167,7 +167,10 @@ fn native_q2_streams_keep_their_abi_coordinate_width_and_reject_foreign_wire_for
         ),
     ] {
         let mut encoded = [0; 64];
-        let result = outputs::native(protocol, source, bytes, &mut encoded).unwrap();
+        let result = outputs::native(protocol, source, bytes, &mut encoded, true, |cue, _| {
+            Ok(cue)
+        })
+        .unwrap();
         assert_eq!(result.unsupported, 0);
         assert_eq!(&encoded[..result.length], bytes);
         for foreign in [
@@ -176,7 +179,7 @@ fn native_q2_streams_keep_their_abi_coordinate_width_and_reject_foreign_wire_for
             Protocol::Quake3_68,
         ] {
             assert_eq!(
-                outputs::native(foreign, source, bytes, &mut encoded),
+                outputs::native(foreign, source, bytes, &mut encoded, true, |cue, _| Ok(cue)),
                 Err(Error::Unsupported)
             );
         }
@@ -186,7 +189,9 @@ fn native_q2_streams_keep_their_abi_coordinate_width_and_reject_foreign_wire_for
             Protocol::Quake2_34,
             RuleSetId::Quake2Rerelease,
             &float,
-            &mut [0; 64]
+            &mut [0; 64],
+            true,
+            |cue, _| Ok(cue)
         ),
         Err(Error::Unsupported)
     );
@@ -195,7 +200,9 @@ fn native_q2_streams_keep_their_abi_coordinate_width_and_reject_foreign_wire_for
             Protocol::Quake2Repro1038,
             RuleSetId::Quake2,
             &short,
-            &mut [0; 64]
+            &mut [0; 64],
+            true,
+            |cue, _| Ok(cue)
         ),
         Err(Error::Unsupported)
     );
@@ -217,6 +224,8 @@ fn q2_native_streams_transcode_known_services_in_order_without_changing_raw_text
         RuleSetId::Quake2,
         &source,
         &mut output,
+        true,
+        |cue, _| Ok(cue),
     )?;
     assert_eq!(encoded.unsupported, 0);
     assert_eq!(output[encoded.length], 0xcc);
@@ -264,6 +273,8 @@ fn q2_native_streams_transcode_known_services_in_order_without_changing_raw_text
         RuleSetId::Quake2Rerelease,
         &output[..encoded.length],
         &mut roundtrip,
+        true,
+        |cue, _| Ok(cue),
     )?;
     assert_eq!(&roundtrip[..result.length], &source);
     assert_eq!(result.unsupported, 0);
@@ -288,6 +299,8 @@ fn unrepresentable_rerelease_services_drop_individually_and_later_records_contin
         RuleSetId::Quake2Rerelease,
         &source,
         &mut output,
+        true,
+        |cue, _| Ok(cue),
     )?;
     assert_eq!(result.unsupported, 3);
     assert_eq!(
@@ -300,7 +313,9 @@ fn unrepresentable_rerelease_services_drop_individually_and_later_records_contin
             Protocol::Quake2_34,
             RuleSetId::Quake2Rerelease,
             &[3, 0],
-            &mut output
+            &mut output,
+            true,
+            |cue, _| Ok(cue)
         ),
         Err(Error::Unsupported)
     );
@@ -310,7 +325,9 @@ fn unrepresentable_rerelease_services_drop_individually_and_later_records_contin
                 Protocol::Quake2_34,
                 RuleSetId::Quake2Rerelease,
                 &source[..cut],
-                &mut output
+                &mut output,
+                true,
+                |cue, _| Ok(cue)
             )
             .is_err()
         );
@@ -320,7 +337,9 @@ fn unrepresentable_rerelease_services_drop_individually_and_later_records_contin
             Protocol::Quake2_34,
             RuleSetId::Quake2Rerelease,
             &source,
-            &mut [0; 1]
+            &mut [0; 1],
+            true,
+            |cue, _| Ok(cue)
         ),
         Err(Error::Message(_))
     ));
@@ -336,6 +355,8 @@ fn classic_print_priority_does_not_turn_into_a_rerelease_center_display() {
             qa_core::primitives::RuleSetId::Quake2,
             &[10, level, b'p', 0],
             &mut bytes,
+            true,
+            |cue, _| Ok(cue),
         )
         .unwrap();
         let print = Prints::new(Protocol::Quake2Repro1038, &bytes[..result.length])
@@ -345,4 +366,118 @@ fn classic_print_priority_does_not_turn_into_a_rerelease_center_display() {
         assert_eq!(print.kind, PrintKind::Console);
         assert_eq!(print.level, Some(2));
     }
+}
+
+#[test]
+fn same_protocol_secondary_sound_uses_the_supplied_namespace_projection() {
+    use outputs::{Cue, Sound};
+    use qa_core::primitives::{RuleSetId, Vec3};
+    for (protocol, rules, ordinal) in [
+        (Protocol::Quake2_34, RuleSetId::Quake2, 255u32),
+        (Protocol::Quake2Repro1038, RuleSetId::Quake2Rerelease, 2047),
+    ] {
+        let sound = Sound {
+            flags: 12,
+            index: 1,
+            volume: 255,
+            attenuation: 64,
+            time_offset: 0,
+            entity: 1,
+            channel: 2,
+            position: Vec3([1.0, 2.0, 3.0]),
+        };
+        let mut source = [0; 64];
+        let n = outputs::write_cue(protocol, Cue::Sound(sound), &mut source).unwrap();
+        let mut result = [0; 64];
+        let mut visited = 0;
+        let encoded = outputs::native(
+            protocol,
+            rules,
+            &source[..n],
+            &mut result,
+            false,
+            |cue, _| {
+                let Cue::Sound(mut cue) = cue else {
+                    panic!("unexpected cue")
+                };
+                visited += 1;
+                cue = cue.with_index(ordinal)?;
+                cue.entity = 47;
+                Ok(Cue::Sound(cue))
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, 1, "same-wire services must not bypass projection");
+        let (Cue::Sound(projected), consumed) =
+            outputs::read_cue(protocol, &result[..encoded.length]).unwrap()
+        else {
+            panic!("wrong service")
+        };
+        assert_eq!(consumed, encoded.length);
+        assert_eq!(
+            (projected.index, projected.entity(), projected.channel),
+            (ordinal as u16, Some(47), 2)
+        );
+        assert_eq!(projected.position, sound.position);
+        assert_eq!(encoded.unsupported, 0);
+    }
+}
+
+#[test]
+fn pending_resource_stops_submission_and_foreign_opaque_suffix_is_explicit() {
+    use qa_core::primitives::{RuleSetId, Vec3};
+    let protocol = Protocol::Quake2_34;
+    let mut bytes = [0; 128];
+    let prefix = outputs::print(protocol, PrintKind::Console, 2, b"prefix", &mut bytes).unwrap();
+    let n = outputs::write_cue(
+        protocol,
+        outputs::Cue::Sound(outputs::Sound {
+            flags: 4,
+            index: 1,
+            volume: 255,
+            attenuation: 64,
+            time_offset: 0,
+            entity: 0,
+            channel: 0,
+            position: Vec3::default(),
+        }),
+        &mut bytes[prefix..],
+    )
+    .unwrap();
+    let mut encoded = [0; 128];
+    assert_eq!(
+        outputs::native(
+            protocol,
+            RuleSetId::Quake2,
+            &bytes[..prefix + n],
+            &mut encoded,
+            false,
+            |_, _| Err(Error::Pending)
+        ),
+        Err(Error::Pending)
+    );
+    // Unknown payload lengths cannot be safely remapped. Only an original
+    // primary namespace may keep its original same-protocol suffix.
+    let source = b"\x0a\x02before\0\x03opaque";
+    assert_eq!(
+        outputs::native(
+            protocol,
+            RuleSetId::Quake2,
+            source,
+            &mut encoded,
+            false,
+            |cue, _| Ok(cue)
+        ),
+        Err(Error::Unsupported)
+    );
+    let result = outputs::native(
+        protocol,
+        RuleSetId::Quake2,
+        source,
+        &mut encoded,
+        true,
+        |cue, _| Ok(cue),
+    )
+    .unwrap();
+    assert_eq!(&encoded[..result.length], source);
 }

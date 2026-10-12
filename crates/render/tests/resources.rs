@@ -10,6 +10,56 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn detached_image_state_keeps_recipe_ids_native_flags_and_conflict_history() {
+    let root = Fixture::new();
+    root.tga("env/detached.tga", 3, 3, [17, 23, 31]);
+    let mut vfs = Vfs::default();
+    vfs.mount_directory(&root.0, 0).unwrap();
+    let mut assets = Assets::load().unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake3,
+        ImageSettings::native(RuleSetId::Quake3),
+        None,
+    )
+    .unwrap();
+    let usage = ImageUse::pic();
+    let first = images.raster("env/detached.tga", usage, None).unwrap();
+    images
+        .raster("env/detached.tga", ImageUse::default(), None)
+        .unwrap();
+    assert_eq!(images.conflicts().len(), 1);
+    let image_count = images.assets.images().len();
+    let state = images.into_state();
+    std::fs::remove_file(root.0.join("env/detached.tga")).unwrap();
+    let mut images = Images::from_state(&vfs, &mut assets, state);
+    let second = images.raster("ENV\\DETACHED.TGA", usage, None).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(images.assets.images().len(), image_count);
+    assert_eq!(images.conflicts().len(), 1);
+    images
+        .raster("env/detached.tga", ImageUse::default(), None)
+        .unwrap();
+    assert_eq!(images.conflicts().len(), 1);
+    assert_eq!(images.conflicts()[0].first, usage);
+}
+
+#[test]
+fn image_policy_identity_keeps_invalid_payloads_and_signed_zero_exact() {
+    let mut settings = ImageSettings::native(RuleSetId::Quake2);
+    settings.intensity = f32::from_bits(0x7fc0_0012);
+    assert_eq!(settings, settings);
+    let mut different = settings;
+    different.intensity = f32::from_bits(0x7fc0_0013);
+    assert_ne!(settings, different);
+    settings.intensity = 0.0;
+    different.intensity = -0.0;
+    assert_ne!(settings, different);
+}
+
+#[test]
 fn shared_rule_selection_preserves_native_uploads_for_all_five_sources() {
     let root = Fixture::new();
     root.tga("odd.tga", 3, 3, [17, 23, 31]);
@@ -498,13 +548,13 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
             .len(),
         1
     );
-    assert_eq!(images.conflicts.len(), 1);
-    assert_eq!(images.conflicts[0].first, usage);
-    assert_eq!(images.conflicts[0].requested, ImageUse::default());
+    assert_eq!(images.conflicts().len(), 1);
+    assert_eq!(images.conflicts()[0].first, usage);
+    assert_eq!(images.conflicts()[0].requested, ImageUse::default());
     images
         .raster("env/first.tga", ImageUse::default(), None)
         .unwrap();
-    assert_eq!(images.conflicts.len(), 1);
+    assert_eq!(images.conflicts().len(), 1);
 }
 
 #[test]

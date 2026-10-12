@@ -11,7 +11,8 @@ use crate::{
     PerspectiveStep, Refdef,
     assets::{
         CubeSkyParams, DepthFunc, Filter, Flow, ImageId, MaterialId, MaterialSettings, Sampler,
-        Sky, SkyDistance, Stage, StageTexture, TcMod, TextureIntensity, UvWarp, Wrap, upload,
+        Sky, SkyDistance, SoftwareTiled, Stage, StageTexture, TcMod, TextureIntensity, UvWarp,
+        Wrap, upload,
     },
     lightmap::{
         AtlasBuilder, AtlasRegion, LightmapError, Q1GlScale, build_quake_rgb, build_quake2_rgb,
@@ -502,7 +503,7 @@ pub fn load_world(
         .assets
         .register_world_with_bindings(geometry, visibility, &bindings)
         .map_err(WorldMaterialError::Boundary)?;
-    for conflict in &images.conflicts {
+    for conflict in images.conflicts() {
         diagnostics.push(format!(
             "native first-image flags retained: {} ({:?} requested {:?})",
             images
@@ -1009,6 +1010,13 @@ fn legacy_material(
         base.blend = Some(StageBlend::ALPHA);
         base.depth_write = false;
         settings.sort = 9.0;
+    } else if warp || matches!(rules, RuleSetId::Quake2) && flags & 64 != 0 {
+        settings.software_tiled = Some(SoftwareTiled {
+            turbulent: warp,
+            flow_speed: (matches!(rules, RuleSetId::Quake2) && flags & 64 != 0)
+                .then_some(if warp { 0.25 } else { 0.77 }),
+            time_f32: matches!(rules, RuleSetId::Quake2),
+        });
     }
     let mut stages = vec![base];
     if !warp && alpha.is_none() && light == LightSource::Samples {

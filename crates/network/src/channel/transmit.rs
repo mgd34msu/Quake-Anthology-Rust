@@ -1,7 +1,8 @@
 use super::{Channel, Error, Policy};
 use crate::headers::{self, Direction, Fragment, Header, datagram};
 use qa_core::{
-    events::NativeReceipt, loopback::Endpoint, payloads::PayloadQueue, sys_events::EventTime,
+    events::NativeReceipt, loopback::Endpoint, payloads::PayloadQueue,
+    primitives::NATIVE_WIRE_BYTES, sys_events::EventTime,
 };
 
 const PACKET_BYTES: usize = 1400;
@@ -141,7 +142,7 @@ impl Transmit {
             command_output: vec![
                 0;
                 if policy.command_ack && endpoint == Endpoint::Server {
-                    32768
+                    NATIVE_WIRE_BYTES
                 } else {
                     0
                 }
@@ -282,7 +283,7 @@ impl Channel {
             self.transmit.flight.len().min(if self.policy.datagram {
                 usize::MAX
             } else {
-                32768
+                NATIVE_WIRE_BYTES
             })
         };
         if bytes.is_empty() || bytes.len() > maximum || bytes.len() > self.transmit.flight.len() {
@@ -345,7 +346,7 @@ impl Channel {
         } else if self.policy.fragment_payload == 0 {
             PACKET_BYTES - header_size
         } else {
-            32768
+            NATIVE_WIRE_BYTES
         })
     }
     fn prepare_inner(

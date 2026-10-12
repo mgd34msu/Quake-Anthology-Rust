@@ -204,12 +204,10 @@ struct Module {
     client_api: Option<Q2Clients>,
 }
 impl Module {
-    fn native_sounds(&self) -> Option<qa_core::primitives::IndexSpan> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        if let Program::Native { vm, .. } = &self.request.program {
-            return vm.resource_ranges().map(|ranges| ranges[1]);
-        }
-        None
+    fn sound_resources(&self) -> Option<qa_core::primitives::IndexSpan> {
+        self.storage
+            .resources(self.request.context.module)
+            .map(|ranges| ranges[1])
     }
 }
 pub struct Modules {
@@ -401,6 +399,9 @@ impl FrameHost {
             } else {
                 State::Running
             };
+            if let Program::QuakeC(qc) = &mut request.program {
+                qc.vm.active = state == State::Running;
+            }
             rows[index] = Some(Module {
                 request,
                 storage,
@@ -415,6 +416,7 @@ impl FrameHost {
             functions: Arc::new(functions),
             rows,
         });
+        host.configure_output_resources();
         Ok(host)
     }
     pub fn module_counts(&self, module: ModuleId) -> Option<&Counts> {
@@ -428,10 +430,9 @@ impl FrameHost {
         &self,
         mut visit: impl FnMut(&[u8], RuleSetId) -> Result<(), String>,
     ) -> Result<(), String> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         if let Some(modules) = &self.modules {
             for row in modules.rows.iter().flatten() {
-                if let Some(sounds) = row.native_sounds() {
+                if let Some(sounds) = row.sound_resources() {
                     for ordinal in sounds.range().skip(1) {
                         let (name, _) = row
                             .storage
@@ -444,8 +445,6 @@ impl FrameHost {
                 }
             }
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let _ = &mut visit;
         Ok(())
     }
     /// Resolve native ordinals and client cue resources after PCM loading.
@@ -458,13 +457,14 @@ impl FrameHost {
         }
         if let Some(modules) = &mut self.modules {
             for row in modules.rows.iter_mut().flatten() {
-                if let Some(sounds) = row.native_sounds() {
+                if let Some(sounds) = row.sound_resources() {
                     row.storage
                         .bind_sound_bank(row.request.context.module, sounds, Arc::clone(bank))
                         .map_err(|e| format!("native sound binding: {e:?}"))?;
                 }
             }
         }
+        self.bind_output_sounds(bank);
         Ok(())
     }
     /// Read the existing native entity view only at its stopped-child boundary.
@@ -584,6 +584,9 @@ impl FrameHost {
                 } else {
                     State::Failed
                 };
+                if let Program::QuakeC(qc) = &mut row.request.program {
+                    qc.vm.active = true;
+                }
             }
         }
     }

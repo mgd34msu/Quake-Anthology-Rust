@@ -1,7 +1,7 @@
 //! Native stage math shared by both consumers. Tables and noise are load-owned;
 //! a prepared draw and its evaluated vertices are fixed-size values.
 //! References: Q3 tr_shade.c:217,653,853; tr_shade_calc.c:27,118,677,888.
-use crate::assets::{ImageId, MaterialSettings, Stage, StageTexture, TcMod, Vertex};
+use crate::assets::{ImageId, MaterialSettings, SoftwareTiled, Stage, StageTexture, TcMod, Vertex};
 use crate::shader::{
     AlphaFunc, AlphaGen, BlendFactor, Deform, RgbGen, StageBlend, TexCoordGen, TexMod,
     WaveFunction, Waveform,
@@ -9,6 +9,7 @@ use crate::shader::{
 use qa_core::{
     math::{inverse_transform_point, length, normalized_fast},
     primitives::Vec3,
+    sys_events::EventTime,
 };
 
 /// Native R_RotateForEntity uses a single axis-length compensation selected by
@@ -370,6 +371,51 @@ pub struct PreparedStage {
     pub uniform_color: [u8; 4],
     pub uniform_alpha: u8,
     pub tcmods: [TexCoordOp; 4],
+    pub tiled: Option<PreparedTiled>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedTiled {
+    pub(crate) phase: usize,
+    pub(crate) flow_adjust: f64,
+    pub(crate) turbulent: bool,
+}
+impl PreparedTiled {
+    fn prepare(tile: SoftwareTiled, inputs: DrawInputs) -> Self {
+        let time = if tile.time_f32 {
+            // Native Q2 converts the integer client clock in double before
+            // storing r_newrefdef.time as float. GL/Q3 stage time differs.
+            f64::from((inputs.time_ms as f64 * 0.001) as f32)
+        } else {
+            EventTime::from_milliseconds(inputs.time_ms).seconds()
+        };
+        let phase = if tile.time_f32 {
+            ((time as f32 * 20.0) as i32 & 127) as usize
+        } else {
+            ((time * 20.0) as i32 & 127) as usize
+        };
+        let flow_adjust = tile.flow_speed.map_or(0.0, |speed| {
+            let cycle = time * speed;
+            65536.0 * (-128.0 * (cycle - f64::from(cycle as i32)))
+        });
+        Self {
+            phase,
+            flow_adjust,
+            turbulent: tile.turbulent,
+        }
+    }
+    pub(crate) fn texel(self, coordinate: [i64; 2], table: &[i32; 256]) -> usize {
+        let displacement = if self.turbulent {
+            [
+                i64::from(table[self.phase + ((coordinate[1] >> 16) & 127) as usize]),
+                i64::from(table[self.phase + ((coordinate[0] >> 16) & 127) as usize]),
+            ]
+        } else {
+            [0; 2]
+        };
+        let x = ((coordinate[0] + displacement[0]) >> 16) & 63;
+        let y = ((coordinate[1] + displacement[1]) >> 16) & 63;
+        (y * i64::from(SoftwareTiled::SIZE) + x) as usize
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum TexCoordOp {
@@ -431,7 +477,20 @@ pub enum StageError {
 
 pub struct StageEvaluator {
     tables: Box<[f32]>,
+    tiled_table: std::sync::Arc<[i32; 256]>,
 }
+#[expect(
+    clippy::approx_constant,
+    reason = "WinQuake/ref_soft R_InitTurb uses the literal 3.14159; replacing it changes native integer table entries."
+)]
+fn native_tiled_wave(index: usize) -> i32 {
+    const AMPLITUDE: f64 = 8.0 * 65536.0;
+    (AMPLITUDE + (index as f64 * 3.14159 * 2.0 / 128.0).sin() * AMPLITUDE) as i32
+}
+
+#[cfg(test)]
+#[path = "../tests/stage/tiled.rs"]
+mod tiled_tests;
 impl Default for StageEvaluator {
     fn default() -> Self {
         Self::load()
@@ -475,7 +534,13 @@ impl StageEvaluator {
         for i in 0..256 {
             tables[NOISE_PERM + i] = perm[i] as f32;
         }
-        Self { tables }
+        Self {
+            tables,
+            tiled_table: std::sync::Arc::new(std::array::from_fn(native_tiled_wave)),
+        }
+    }
+    pub(crate) fn tiled_table(&self) -> &std::sync::Arc<[i32; 256]> {
+        &self.tiled_table
     }
     /// GL uploads this load-owned table once as a texture buffer.
     pub fn gpu_tables(&self) -> &[f32] {
@@ -568,6 +633,9 @@ impl StageEvaluator {
             uniform_color,
             uniform_alpha,
             tcmods,
+            tiled: settings
+                .software_tiled
+                .map(|tile| PreparedTiled::prepare(tile, inputs)),
         })
     }
     pub fn evaluate(&self, prepared: &PreparedStage, vertex: &Vertex) -> EvaluatedVertex {

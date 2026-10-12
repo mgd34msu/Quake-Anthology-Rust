@@ -32,6 +32,7 @@ fn configstring_text_stays_exact_and_leased_until_the_native_ack() {
             ModuleId(2),
             RuleSetId::Quake2Rerelease,
             62,
+            62,
             b"m\x80\xff",
         )
         .unwrap();
@@ -41,14 +42,15 @@ fn configstring_text_stays_exact_and_leased_until_the_native_ack() {
         module,
         source,
         index,
+        destination_index,
         text,
     } = event.event
     else {
         panic!("wrong event")
     };
     assert_eq!(
-        (module, source, index),
-        (ModuleId(2), RuleSetId::Quake2Rerelease, 62)
+        (module, source, index, destination_index),
+        (ModuleId(2), RuleSetId::Quake2Rerelease, 62, 62)
     );
     assert_eq!(ring.texts.get(text), Some(&b"m\x80\xff"[..]));
     assert!(consume(&mut ring, other, OutputSubmission::BestEffort).is_empty());
@@ -66,6 +68,7 @@ fn configstring_text_stays_exact_and_leased_until_the_native_ack() {
             Some(OutputTarget::Client(ClientId(0))),
             ModuleId(2),
             RuleSetId::Quake2,
+            32,
             32,
             b"123456789"
         ),
@@ -178,6 +181,7 @@ fn native_ack_observer_sees_the_owned_record_once_before_text_retirement() {
             Some(OutputTarget::Client(ClientId(0))),
             ModuleId(7),
             RuleSetId::Quake2,
+            33,
             33,
             b"a.wav",
         )
@@ -541,6 +545,77 @@ fn native_failed_page_admission_releases_partial_pages_and_unicast_excludes_othe
     ring.native_message(delivery, &[4; 96]).unwrap();
     consume(&mut ring, second, OutputSubmission::BestEffort);
     assert!(ring.is_empty());
+}
+
+#[test]
+fn full_native_wire_and_dense_capture_pages_wait_for_every_real_ack() {
+    let mut ring = EventRing::load(4, 2, NATIVE_PAYLOAD_PAGES, OUTPUT_PAGE_BYTES).unwrap();
+    let first = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let mut stored = vec![6; NATIVE_PAYLOAD_BYTES];
+    let binding = NativeCueBinding {
+        sound: Some(SoundId(77)),
+        entity: Some(EntityId {
+            slot: 2,
+            generation: 19,
+        }),
+    };
+    for index in 0..NATIVE_CUE_CAPACITY {
+        let offset = index * NATIVE_CUE_MIN_WIRE_BYTES;
+        stored[offset..offset + 3].copy_from_slice(&[9, 0, 1]);
+        binding
+            .write_capture(
+                offset as u32,
+                &mut stored[NATIVE_WIRE_BYTES + index * NATIVE_CUE_CAPTURE_BYTES..],
+            )
+            .unwrap();
+    }
+    let sequence = ring
+        .native_message_bound(
+            native_delivery(NativeTarget::All),
+            NATIVE_WIRE_BYTES,
+            &stored,
+        )
+        .unwrap();
+    let mut batch = ring.batch(first).unwrap();
+    let FrameEvent::Native(payload) = ring.next(&mut batch).unwrap().event else {
+        panic!("native payload")
+    };
+    let mut copied = vec![0; NATIVE_PAYLOAD_BYTES];
+    assert_eq!(
+        ring.texts.copy_payload(payload, &mut copied).unwrap(),
+        stored
+    );
+    for offset in [0, (NATIVE_CUE_CAPACITY - 1) * NATIVE_CUE_MIN_WIRE_BYTES] {
+        let captured = payload.cue(&copied, offset).unwrap();
+        assert_eq!(captured.sound, binding.sound);
+        assert_eq!(captured.entity, binding.entity);
+    }
+    assert_eq!(payload.len(), NATIVE_WIRE_BYTES);
+    assert_eq!(ring.rejected_publications(), 0);
+    assert!(ring.submit(
+        first,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(7))
+    ));
+    assert!(ring.submit(
+        second,
+        sequence,
+        OutputSubmission::Reliable(NativeReceipt(8))
+    ));
+    assert_eq!(ring.acknowledge(first, NativeReceipt(6)), 0);
+    assert_eq!(ring.acknowledge(first, NativeReceipt(7)), 1);
+    assert!(ring.texts.copy_payload(payload, &mut copied).is_some());
+    assert_eq!(ring.acknowledge(second, NativeReceipt(8)), 1);
+    assert!(ring.texts.copy_payload(payload, &mut copied).is_none());
+    assert!(ring.is_empty());
+    // All leased pages are reusable after the last real receipt, not before.
+    ring.native_message_bound(
+        native_delivery(NativeTarget::All),
+        NATIVE_WIRE_BYTES,
+        &stored,
+    )
+    .unwrap();
 }
 
 #[test]

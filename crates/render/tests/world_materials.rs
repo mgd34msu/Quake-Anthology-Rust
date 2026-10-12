@@ -284,6 +284,71 @@ fn authored_stages_replace_only_matching_legacy_faces_and_keep_their_lightmaps()
     Ok(())
 }
 
+#[test]
+fn opaque_native_water_and_flow_register_software_sampling_without_changing_gl_stages()
+-> Result<(), String> {
+    let root = resources("software-tiled")?;
+    for (family, flags, warp, speed, opaque) in [
+        (1, 0, true, None, true),
+        (2, 8, true, None, true),
+        (2, 64, false, Some(0.77), true),
+        (2, 72, true, Some(0.25), true),
+        (2, 8 | 16, true, None, false),
+        (2, 64 | 32, false, Some(0.77), false),
+    ] {
+        let bytes = map_bytes(family);
+        let mut map = legacy_map(&bytes, family)?;
+        map.texture_info[0].flags = flags;
+        if family == 1 {
+            map.textures[0].as_mut().ok_or("embedded water")?.name = b"*water";
+        }
+        let vfs = mount(&root)?;
+        let mut assets = Assets::load().map_err(|e| e.to_string())?;
+        let loaded = load_world(
+            &vfs,
+            &map,
+            &mut assets,
+            map.bsp.format.rule_set(),
+            WorldLoadOptions::default(),
+        )
+        .map_err(|e| format!("water material: {e:?}"))?;
+        let binding = assets.world(loaded.world).ok_or("world")?.bindings()[0];
+        let material = assets.material(binding.material).ok_or("material")?;
+        let base = &material.stages[0];
+        if opaque {
+            let tiled = material
+                .settings
+                .software_tiled
+                .ok_or("software tiled sampling")?;
+            assert_eq!(tiled.turbulent, warp);
+            assert_eq!(tiled.flow_speed, speed);
+            assert_eq!(tiled.time_f32, family == 2);
+            assert!(base.blend.is_none());
+            assert!(base.depth_write);
+        } else {
+            assert!(material.settings.software_tiled.is_none());
+            assert!(base.blend.is_some());
+            assert!(!base.depth_write);
+        }
+        assert_eq!(matches!(base.tcmods[0], Some(TcMod::Warp(_))), warp);
+        if flags & 64 != 0 {
+            let Some(TcMod::Flow(flow)) = base.tcmods[usize::from(warp)] else {
+                return Err("GL flow stage missing".into());
+            };
+            assert_eq!(
+                flow.speed.to_bits(),
+                (if warp { 0.5_f32 } else { 1.0 / 40.0 }).to_bits()
+            );
+            assert_eq!(
+                flow.amplitude,
+                if warp { [-1.0, 0.0] } else { [-64.0, 0.0] }
+            );
+            assert_eq!(flow.cycle_start, if warp { [0.0; 2] } else { [-64.0, 0.0] });
+        }
+    }
+    std::fs::remove_dir_all(root).map_err(|e| e.to_string())
+}
+
 fn surface_image(assets: &Assets, world: qa_render::world::WorldId) -> ImageId {
     let material = assets
         .material(assets.world(world).unwrap().bindings()[0].material)

@@ -9,6 +9,7 @@ pub mod model_assets;
 pub mod modules;
 pub mod options;
 pub mod output;
+pub mod output_namespace;
 pub mod profile;
 pub mod render_settings;
 pub mod renderer;
@@ -19,7 +20,9 @@ mod transport;
 use qa_console::commands::{Host, ScriptError};
 use qa_content::vfs::Vfs;
 use qa_core::loopback::Loopback;
-use qa_core::primitives::{ClientId, GeometryId, ModuleId, PlayerTail, PrintKind};
+use qa_core::primitives::{
+    ClientId, GeometryId, ModuleId, NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, PlayerTail, PrintKind,
+};
 use qa_network::ingress::Connections;
 use qa_session::clients::{Connection, Server};
 
@@ -42,8 +45,11 @@ pub struct Runtime {
     pub prediction: [qa_session::prediction::Prediction; qa_core::sys_events::SeatId::COUNT],
     pub local_snapshots: Box<[Option<snapshots::LocalSnapshot>]>,
     pub client_resources: Box<[Option<client_resources::ClientResources>]>,
+    pub native_numbers: Box<[output_namespace::NativeNumbers]>,
     pub(crate) config_publications: Box<[client_resources::ConfigPublication]>,
     pub models: Option<std::sync::Arc<model_assets::ModelCatalog>>,
+    /// Cold owned assets and metadata become the same frozen catalog after precache.
+    pub model_loader: Option<model_assets::ModelCatalogBuilder>,
     pub loopback: Loopback,
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
@@ -114,6 +120,13 @@ impl Runtime {
             ),
             None => (None, None, None),
         };
+        let model_lookup = if self.model_loader.is_none() {
+            self.models
+                .as_deref()
+                .map(|models| models as &dyn qa_compat::services::ModelLookup)
+        } else {
+            None
+        };
         qa_compat::services::EngineServices {
             server: &mut self.server,
             input: &mut self.input,
@@ -122,6 +135,11 @@ impl Runtime {
             vfs: &self.vfs,
             localization: &self.localization,
             registry: &self.catalog.registry,
+            model_loader: self
+                .model_loader
+                .as_mut()
+                .map(|loader| loader as &mut dyn qa_compat::services::ModelLoader),
+            model_lookup,
             storage,
             geometry: &self.geometry,
             world: identity,
@@ -167,7 +185,15 @@ impl Runtime {
         Ok(Self {
             sound_bank: None,
             models: None,
+            model_loader: None,
             client_resources: std::iter::repeat_with(|| None).take(max_clients).collect(),
+            native_numbers: std::iter::repeat_with(|| {
+                output_namespace::NativeNumbers::load(
+                    qa_network::commands::packet::Protocol::Quake2Repro1038,
+                )
+            })
+            .take(max_clients)
+            .collect(),
             config_publications: std::iter::repeat_with(client_resources::ConfigPublication::load)
                 .take(max_clients)
                 .collect(),
@@ -192,8 +218,8 @@ impl Runtime {
             loopback,
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
-            output_bytes: vec![0; 32768].into_boxed_slice(),
-            output_native_bytes: vec![0; 32768].into_boxed_slice(),
+            output_bytes: vec![0; NATIVE_PAYLOAD_BYTES].into_boxed_slice(),
+            output_native_bytes: vec![0; NATIVE_WIRE_BYTES].into_boxed_slice(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
         })
     }
@@ -288,9 +314,7 @@ impl Runtime {
             native_client,
             &self.catalog.hud.values,
         ));
-        if let Some(snapshot) = self.local_snapshots[id.0 as usize].as_mut() {
-            snapshot.set_native_clients(self.server.clients.len() as u32);
-        }
+        let self_entity = client.entity;
         if let Some(visibility) = self
             .collision
             .as_ref()
@@ -303,6 +327,10 @@ impl Runtime {
         self.client_resources[id.0 as usize] =
             client_resources::ClientResources::load(id, protocol, policy.client)?;
         self.config_publications[id.0 as usize].reset();
+        self.native_numbers[id.0 as usize].configure(protocol);
+        self.native_numbers[id.0 as usize].reset();
+        self.native_numbers[id.0 as usize].set_native_clients(self.server.clients.len() as u32);
+        self.native_numbers[id.0 as usize].set_self(self_entity, native_client, protocol);
         self.input.set_view_angles(seat, spawn.angles);
         Ok(id)
     }
@@ -416,11 +444,11 @@ impl Runtime {
                             players: &self.server.clients,
                             native_module,
                             self_entity: client.entity,
-                            native_clients: binding.native_clients(),
                             visibility,
                             portals,
                             resolve_model: &mut resolve_model,
                         },
+                        &mut self.native_numbers[id.0 as usize],
                         sequence,
                         time,
                         delta,

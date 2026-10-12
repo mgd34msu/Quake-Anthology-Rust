@@ -39,7 +39,7 @@ impl From<upload::UploadError> for ResourceError {
 /// Raw load settings selected from the presentation's cvar source, independently of
 /// the client's movement/modules. Gamma is already an exponent: legacy
 /// vid_gamma, or the reciprocal of canonical r_gamma.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct ImageSettings {
     pub gamma_exponent: f32,
     /// GLQuake's startup palette correction; its gamma cvar is separate.
@@ -52,6 +52,20 @@ pub struct ImageSettings {
     pub max_dimension: u32,
     /// Native Q2 gl_skymip affects sky UV bounds, not its upload mip chain.
     pub sky_mip: bool,
+}
+impl PartialEq for ImageSettings {
+    fn eq(&self, other: &Self) -> bool {
+        // These are exact registration policies. Invalid float payloads must
+        // still resolve to their own constructor diagnostic, never a fallback.
+        self.gamma_exponent.to_bits() == other.gamma_exponent.to_bits()
+            && self.palette_exponent.to_bits() == other.palette_exponent.to_bits()
+            && self.intensity.to_bits() == other.intensity.to_bits()
+            && self.picmip == other.picmip
+            && self.round_images_down == other.round_images_down
+            && self.simple_mipmaps == other.simple_mipmaps
+            && self.max_dimension == other.max_dimension
+            && self.sky_mip == other.sky_mip
+    }
 }
 impl ImageSettings {
     pub fn native(source: RuleSetId) -> Self {
@@ -431,31 +445,23 @@ pub fn load_palette(
 
 /// Canonical file names form a sorted load index. No content fingerprints or
 /// strings participate in a frame lookup. Different palettes stay distinct.
-pub struct Images<'a> {
-    pub assets: &'a mut Assets,
-    vfs: &'a Vfs,
+/// The existing recipe cache can outlive a temporary borrow of cold Assets.
+pub struct ImagesState {
     reader: ArchiveReader,
     recipes: ImageRecipes,
     source_rules: RuleSetId,
     indexed_remap: Option<IndexedRemap>,
     resolved: Vec<(ImageKey, ResolvedImage, ImageUse)>,
-    pub conflicts: Vec<ImageConflict>,
+    conflicts: Vec<ImageConflict>,
 }
-impl<'a> Images<'a> {
-    /// Decode using source provenance, then upload with the presentation role.
-    /// An optional source/target palette pair remaps software indices at load;
-    /// native equal pairs retain exact original bytes and source RGBA.
+impl ImagesState {
     pub fn new(
-        vfs: &'a Vfs,
-        assets: &'a mut Assets,
         source_rules: RuleSetId,
         presentation_rules: RuleSetId,
         settings: ImageSettings,
         indexed_palettes: Option<(PaletteId, PaletteId)>,
     ) -> Result<Self, ResourceError> {
         Ok(Self {
-            assets,
-            vfs,
             reader: ArchiveReader::default(),
             recipes: ImageRecipes::new(presentation_rules, settings)?,
             source_rules,
@@ -470,12 +476,45 @@ impl<'a> Images<'a> {
             conflicts: Vec::new(),
         })
     }
+}
+pub struct Images<'a> {
+    pub assets: &'a mut Assets,
+    vfs: &'a Vfs,
+    state: ImagesState,
+}
+impl<'a> Images<'a> {
+    /// Decode using source provenance, then upload with the presentation role.
+    /// An optional source/target palette pair remaps software indices at load;
+    /// native equal pairs retain exact original bytes and source RGBA.
+    pub fn new(
+        vfs: &'a Vfs,
+        assets: &'a mut Assets,
+        source_rules: RuleSetId,
+        presentation_rules: RuleSetId,
+        settings: ImageSettings,
+        indexed_palettes: Option<(PaletteId, PaletteId)>,
+    ) -> Result<Self, ResourceError> {
+        Ok(Self::from_state(
+            vfs,
+            assets,
+            ImagesState::new(source_rules, presentation_rules, settings, indexed_palettes)?,
+        ))
+    }
+    pub fn from_state(vfs: &'a Vfs, assets: &'a mut Assets, state: ImagesState) -> Self {
+        Self { assets, vfs, state }
+    }
+    pub fn into_state(self) -> ImagesState {
+        self.state
+    }
+    pub fn conflicts(&self) -> &[ImageConflict] {
+        &self.state.conflicts
+    }
     fn remap_texture(
         &mut self,
         texture: IndexedTexture,
         palette: PaletteId,
     ) -> Result<IndexedTexture, ResourceError> {
-        let Some(remap) = &mut self.indexed_remap else {
+        let Some(remap) = &mut self.state.indexed_remap else {
             return Ok(texture);
         };
         if palette != remap.source {
@@ -537,6 +576,7 @@ impl<'a> Images<'a> {
         palette: PaletteId,
     ) -> Result<ImageId, ResourceError> {
         if self
+            .state
             .indexed_remap
             .as_ref()
             .is_none_or(|remap| remap.source != palette)
@@ -583,7 +623,7 @@ impl<'a> Images<'a> {
             .map_err(ResourceError::Asset)
     }
     pub fn upload_params(&self, usage: ImageUse) -> Result<upload::UploadParams, ResourceError> {
-        self.recipes.params(usage)
+        self.state.recipes.params(usage)
     }
     /// Correct palette RGB before sky splitting/averaging, as R_InitSky reads
     /// the already-corrected d_8to24table rather than correcting its average.
@@ -595,7 +635,7 @@ impl<'a> Images<'a> {
         let mut table = colors.rgba_table();
         for (index, color) in table.iter_mut().enumerate() {
             for channel in &mut color[..3] {
-                *channel = self.recipes.light.rgb_lut.0[*channel as usize];
+                *channel = self.state.recipes.light.rgb_lut.0[*channel as usize];
             }
             // GLQuake's d_8to24table clears alpha for palette index 255.
             if index == 255 {
@@ -614,7 +654,7 @@ impl<'a> Images<'a> {
         let texture = IndexedTexture::load(mip.width, mip.height, mip.levels, cutout)
             .map_err(ResourceError::Asset)?;
         let gl_pixels = if matches!(
-            self.recipes.rules,
+            self.state.recipes.rules,
             RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
         ) {
             let colors = self
@@ -658,9 +698,9 @@ impl<'a> Images<'a> {
             recipe: ImageRecipe::Wal { palette, cutout },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.resolved[index].1.id);
+            return Ok(self.state.resolved[index].1.id);
         }
-        let bytes = read_file(self.vfs, name.as_bytes(), &mut self.reader)?;
+        let bytes = read_file(self.vfs, name.as_bytes(), &mut self.state.reader)?;
         let mip = MipTexture::parse(&bytes, qa_formats::image::MipFormat::Wal)?;
         let id = self.embedded(&mip, palette, cutout)?;
         self.remember(key, id, ImageUse::default());
@@ -695,12 +735,12 @@ impl<'a> Images<'a> {
             },
         };
         if let Some(index) = self.find(key) {
-            return Ok(self.resolved[index].1.id);
+            return Ok(self.state.resolved[index].1.id);
         }
         let bytes = self
             .vfs
             .open(name.as_bytes())
-            .map(|_| read_file(self.vfs, name.as_bytes(), &mut self.reader))
+            .map(|_| read_file(self.vfs, name.as_bytes(), &mut self.state.reader))
             .transpose()?;
         let decoded = if let Some(bytes) = &bytes {
             let DecodedImage::Indexed(decoded) =
@@ -717,7 +757,7 @@ impl<'a> Images<'a> {
         {
             let format = ImageFormat::from_path(path.as_bytes())
                 .ok_or(ResourceError::Asset("unknown RGBA override format"))?;
-            let bytes = read_file(self.vfs, path.as_bytes(), &mut self.reader)?;
+            let bytes = read_file(self.vfs, path.as_bytes(), &mut self.state.reader)?;
             let DecodedImage::Rgba(rgba) = decode(&bytes, format, RuleSetId::Quake2.lineage())?
             else {
                 return Err(ResourceError::Asset(
@@ -729,7 +769,8 @@ impl<'a> Images<'a> {
             None
         };
         let texture_palette = if decoded.is_none() {
-            self.indexed_remap
+            self.state
+                .indexed_remap
                 .as_ref()
                 .map_or(palette, |remap| remap.target)
         } else {
@@ -787,7 +828,7 @@ impl<'a> Images<'a> {
         usage: ImageUse,
         indexed: Option<IndexedTarget>,
     ) -> Result<ResolvedImage, ResourceError> {
-        let rules = self.source_rules;
+        let rules = self.state.source_rules;
         let key = ImageKey {
             name: self
                 .assets
@@ -796,23 +837,24 @@ impl<'a> Images<'a> {
             recipe: ImageRecipe::Raster { rules, indexed },
         };
         if let Some(index) = self.find(key) {
-            let first = self.resolved[index].2;
-            let requested = self.recipes.effective_use(usage);
-            if self.recipes.rules == RuleSetId::Quake3
+            let first = self.state.resolved[index].2;
+            let requested = self.state.recipes.effective_use(usage);
+            if self.state.recipes.rules == RuleSetId::Quake3
                 && (first.sampler != requested.sampler
                     || first.allow_picmip != requested.allow_picmip)
                 && !self
+                    .state
                     .conflicts
                     .iter()
                     .any(|entry| entry.name == key.name && entry.requested == requested)
             {
-                self.conflicts.push(ImageConflict {
+                self.state.conflicts.push(ImageConflict {
                     name: key.name,
                     first,
                     requested,
                 });
             }
-            return Ok(self.resolved[index].1);
+            return Ok(self.state.resolved[index].1);
         }
         let canonical = self
             .assets
@@ -839,7 +881,7 @@ impl<'a> Images<'a> {
             }
         }
         let path = selected.ok_or(ResourceError::Missing(canonical))?;
-        let bytes = read_file(self.vfs, path.as_bytes(), &mut self.reader)?;
+        let bytes = read_file(self.vfs, path.as_bytes(), &mut self.state.reader)?;
         let format = ImageFormat::from_path(path.as_bytes())
             .ok_or(ResourceError::Asset("unknown image format"))?;
         // Native Q2 pics/skins ignore their embedded PCX palette and retain
@@ -885,39 +927,41 @@ impl<'a> Images<'a> {
         usage: ImageUse,
         rgba: Option<&[u8]>,
     ) -> Result<(), ResourceError> {
-        let params = self.recipes.params(usage)?;
+        let params = self.state.recipes.params(usage)?;
         match rgba {
             Some(rgba) => self.assets.prepare_image_with_rgba(id, rgba, params),
             None => self.assets.prepare_image(id, params),
         }
         .map_err(ResourceError::Asset)?;
-        if self.recipes.rules == RuleSetId::Quake3 {
+        if self.state.recipes.rules == RuleSetId::Quake3 {
             self.assets
-                .set_image_native_sampler(id, self.recipes.effective_use(usage).sampler)
+                .set_image_native_sampler(id, self.state.recipes.effective_use(usage).sampler)
                 .map_err(ResourceError::Asset)?;
         }
         Ok(())
     }
     fn find(&self, key: ImageKey) -> Option<usize> {
         let at = self
+            .state
             .resolved
             .partition_point(|entry| entry.0.name.0 < key.name.0);
-        self.resolved[at..]
+        self.state.resolved[at..]
             .iter()
             .take_while(|entry| entry.0.name == key.name)
             .position(|entry| entry.0 == key)
             .map(|index| at + index)
     }
     fn remember(&mut self, key: ImageKey, id: ImageId, usage: ImageUse) -> ResolvedImage {
-        let usage = self.recipes.effective_use(usage);
+        let usage = self.state.recipes.effective_use(usage);
         let resolved = ResolvedImage {
             id,
             sampler: usage.sampler,
         };
         let at = self
+            .state
             .resolved
             .partition_point(|entry| entry.0.name.0 <= key.name.0);
-        self.resolved.insert(at, (key, resolved, usage));
+        self.state.resolved.insert(at, (key, resolved, usage));
         resolved
     }
 }

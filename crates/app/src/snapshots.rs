@@ -67,7 +67,6 @@ pub struct LocalSnapshot {
     pub applied: u64,
     pub rejected: u64,
     native_client: u32,
-    native_clients: u32,
     projection: PlayerProjection,
     presentation: PresentationClock,
     presentation_sequence: Option<u32>,
@@ -82,17 +81,8 @@ impl LocalSnapshot {
     pub fn native_client(&self) -> u32 {
         self.native_client
     }
-    pub fn native_clients(&self) -> u32 {
-        self.native_clients
-    }
-    pub fn set_native_clients(&mut self, count: u32) {
-        self.native_clients = count;
-    }
     pub fn view_entity(&self) -> Option<u32> {
         self.entities.view_entity()
-    }
-    pub fn native_number(&self, entity: qa_core::primitives::EntityId) -> Option<u32> {
-        self.entities.native_number(entity)
     }
     pub fn entity_projection(&self) -> &qa_network::projection::EntityProjection {
         self.entities.projection()
@@ -156,7 +146,6 @@ impl LocalSnapshot {
             applied: 0,
             rejected: 0,
             native_client,
-            native_clients: 1,
             projection: PlayerProjection::load_values(protocol, &native.stats, &native.persistent),
             presentation: PresentationClock::default(),
             presentation_sequence: None,
@@ -189,6 +178,7 @@ impl LocalSnapshot {
         channel: &mut Channel,
         player: &PlayerState,
         mut source: EntitySource<'_>,
+        numbers: &mut crate::output_namespace::NativeNumbers,
         sequence: u32,
         time: qa_core::sys_events::EventTime,
         delta: Option<u32>,
@@ -200,8 +190,7 @@ impl LocalSnapshot {
             ThinkTime::Milliseconds(0).at(time)
         };
         let mut words = [0; states::PLAYER_WORDS];
-        self.entities
-            .prepare(&mut source, player, self.native_client)?;
+        self.entities.prepare(&mut source, player, numbers)?;
         // Native resources and entity numbers come from the connection's
         // projection, never common handle casts or the executing module.
         let mut context = player_context(
@@ -214,7 +203,7 @@ impl LocalSnapshot {
         context.ground_number = player
             .movement
             .ground
-            .and_then(|entity| self.entities.native_number(entity));
+            .and_then(|entity| numbers.number(entity));
         if !self
             .projection
             .reduce(player, &context, &mut words, &mut *source.resolve_model)
@@ -222,7 +211,7 @@ impl LocalSnapshot {
             return Err(Error::Context);
         }
         self.entities
-            .prepare_qw_players(&mut source, &self.projection)?;
+            .prepare_qw_players(&mut source, &self.projection, numbers)?;
         let capacity = channel
             .snapshot_payload_capacity()
             .map_err(|_| Error::Context)?;
@@ -241,7 +230,7 @@ impl LocalSnapshot {
                 frame,
                 selection,
                 request,
-                source.native_clients,
+                numbers.native_clients(),
                 bytes,
             ) {
                 Ok(mut length) => {
@@ -265,7 +254,7 @@ impl LocalSnapshot {
                                 frame,
                                 trial,
                                 None,
-                                source.native_clients,
+                                numbers.native_clients(),
                                 bytes,
                             ) {
                                 Ok(n) => {
@@ -290,7 +279,7 @@ impl LocalSnapshot {
                                 frame,
                                 selection,
                                 None,
-                                source.native_clients,
+                                numbers.native_clients(),
                                 bytes,
                             )?;
                         }
@@ -366,7 +355,12 @@ impl LocalSnapshot {
         self.last_sent = Some(sequence);
     }
 
-    pub fn apply(&mut self, incoming: Incoming<'_>, player: &mut PlayerState) {
+    pub fn apply(
+        &mut self,
+        incoming: Incoming<'_>,
+        player: &mut PlayerState,
+        numbers: &crate::output_namespace::NativeNumbers,
+    ) {
         let (words, snapshot): (Option<&[u32]>, Option<ReceivedFrame<'_>>) = match incoming {
             Incoming::Snapshot(frame) => match (self.protocol, frame) {
                 (Protocol::NetQuake15, ReceivedFrame::NetQuake(_))
@@ -412,7 +406,7 @@ impl LocalSnapshot {
                 player,
                 &mut self.context,
                 ResourceNamespace::Client(self.client),
-                |number| self.entities.entity(number),
+                |number| numbers.entity(number),
             ) {
                 self.applied += 1;
             } else {

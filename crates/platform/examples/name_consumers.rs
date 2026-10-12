@@ -143,10 +143,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if host.failed
             || host.output.as_str()
                 != "before \nafter \nstable \nfov = \"117\"\nUnknown command \"NoSuchName\"\n"
-            || images.conflicts.len() != 1
-            || images.conflicts[0].name != material_name
+            || images.conflicts().len() != 1
+            || images.conflicts()[0].name != material_name
         {
-            return Err(format!("consumer fidelity frame {frame}: failed={}, output={:?}, conflicts={:?}, material_name={material_name:?}", host.failed, host.output.as_str(), images.conflicts).into());
+            return Err(format!("consumer fidelity frame {frame}: failed={}, output={:?}, conflicts={:?}, material_name={material_name:?}", host.failed, host.output.as_str(), images.conflicts()).into());
         }
         if frame >= 60 {
             samples[frame - 60] = elapsed;

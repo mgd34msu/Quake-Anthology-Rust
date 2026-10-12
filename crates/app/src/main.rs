@@ -524,6 +524,10 @@ fn run() -> Result<(), String> {
             native_entity_source,
         )?;
     }
+    let model_sources: Vec<_> = module_requests
+        .iter()
+        .map(|request| request.context.native_rules)
+        .collect();
     let mut host = FrameHost::load_modules(console, runtime, world_rate, module_requests)?;
     for (index, spec) in quakec_modules.iter().enumerate() {
         println!(
@@ -549,9 +553,54 @@ fn run() -> Result<(), String> {
             spec.rules.name(),
         );
     }
+    host.console.execute_frame(&mut host.runtime);
+    // Synchronous native precache owns the same assets and metadata that CLIENT
+    // will read after startup. Configure every module's independent profile first.
+    let mut palettes = [None; 5];
+    let view_palette = loaded_world.as_ref().and_then(|world| {
+        let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu else {
+            return None;
+        };
+        palettes[world.presentation_rules as usize] = Some(palette);
+        Some(palette)
+    });
+    let mut profiles = [None; 5];
+    for source_rules in RuleSetId::ALL {
+        if !model_sources.contains(&source_rules) {
+            continue;
+        }
+        let rules = presentation_rules.unwrap_or(source_rules);
+        for palette_rules in [source_rules, rules] {
+            if palettes[palette_rules as usize].is_none()
+                && let Some(source) =
+                    qa_render::material::resources::PaletteSource::native(palette_rules)
+            {
+                palettes[palette_rules as usize] = Some(
+                    qa_render::material::resources::load_palette(
+                        &host.runtime.vfs,
+                        &mut assets,
+                        source,
+                    )
+                    .map_err(|error| format!("model palette: {error:?}"))?,
+                );
+            }
+        }
+        profiles[source_rules as usize] = Some(qa_app::model_assets::ModelProfile {
+            source_rules,
+            rules,
+            source_palette: palettes[source_rules as usize],
+            palette: view_palette.or(palettes[rules as usize]),
+            image_settings: qa_app::render_settings::image_settings(&host.console.cvars, rules)?,
+        });
+    }
+    host.runtime.model_loader = Some(qa_app::model_assets::ModelCatalogBuilder::new(
+        assets,
+        profiles.iter().flatten().copied(),
+        render_world,
+        Default::default(),
+    )?);
     // Native resource registration finishes before client audio precaching.
     // Com_Frame reuses these once-only lifecycle entries on subsequent frames.
-    host.console.execute_frame(&mut host.runtime);
     if !host.runtime.quit {
         host.initialize_modules(qa_app::modules::Phase::Server);
     }
@@ -609,66 +658,43 @@ fn run() -> Result<(), String> {
     // Model filenames are resolved and assets registered once, after native
     // ClientBegin has finished its startup precache. CLIENT uses received
     // configstrings to bind those immutable assets at numeric native indices.
-    let mut model_reader = qa_formats::archive::ArchiveReader::default();
-    let precaches = host.model_precaches();
-    let mut palettes = [None; 5];
-    let view_palette = loaded_world.as_ref().and_then(|world| {
-        let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu else {
-            return None;
-        };
-        palettes[world.presentation_rules as usize] = Some(palette);
-        Some(palette)
-    });
-    let mut requests = Vec::with_capacity(precaches.len());
-    let mut profiles = [None; 5];
+    let precaches: Vec<_> = host
+        .model_precaches()
+        .into_iter()
+        .map(|(source, name)| (source, name.to_vec()))
+        .collect();
     for (source_rules, name) in precaches {
-        let path = std::str::from_utf8(name).map_err(|error| format!("model precache: {error}"))?;
-        // Explicit --presentation selects upload; absent it, this native model
-        // registration boundary chooses its publishing module's presentation.
-        let rules = presentation_rules.unwrap_or(source_rules);
-        for palette_rules in [source_rules, rules] {
-            if palettes[palette_rules as usize].is_none()
-                && let Some(source) =
-                    qa_render::material::resources::PaletteSource::native(palette_rules)
-            {
-                palettes[palette_rules as usize] = Some(
-                    qa_render::material::resources::load_palette(
-                        &host.runtime.vfs,
-                        &mut assets,
-                        source,
-                    )
-                    .map_err(|error| format!("model palette: {error:?}"))?,
-                );
-            }
-        }
-        // Indexed aliases consume the view's palette. Its choice does not
-        // select file decoding or the independently chosen GL upload policy.
-        let mut request = qa_app::model_assets::ModelRequest::native(
-            path,
-            rules,
-            view_palette.or(palettes[rules as usize]),
-        );
-        request.source_rules = source_rules;
-        request.source_palette = palettes[source_rules as usize];
-        request.image_settings =
-            qa_app::render_settings::image_settings(&host.console.cvars, rules)?;
-        request.required = false;
-        profiles[source_rules as usize] = Some(request.profile());
-        requests.push(request);
+        let path =
+            std::str::from_utf8(&name).map_err(|error| format!("model precache: {error}"))?;
+        let profile = profiles[source_rules as usize].ok_or("missing model profile")?;
+        host.runtime
+            .model_loader
+            .as_mut()
+            .ok_or("missing model loader")?
+            .register_request(
+                &host.runtime.vfs,
+                qa_app::model_assets::ModelRequest {
+                    path,
+                    source_rules: profile.source_rules,
+                    rules: profile.rules,
+                    source_palette: profile.source_palette,
+                    palette: profile.palette,
+                    image_settings: profile.image_settings,
+                    required: false,
+                },
+            )?;
     }
     let client_profiles: Vec<_> = host
         .client_model_sources()
         .into_iter()
         .filter_map(|(client, source)| profiles[source as usize].map(|profile| (client, profile)))
         .collect();
-    let models = qa_app::model_assets::ModelCatalog::load(
-        &host.runtime.vfs,
-        &mut model_reader,
-        &mut assets,
-        requests,
-        render_world,
-        Default::default(),
-    )?;
+    let (mut assets, models) = host
+        .runtime
+        .model_loader
+        .take()
+        .ok_or("missing model loader")?
+        .finish();
     for diagnostic in &models.diagnostics {
         host.runtime.print_event(
             None,

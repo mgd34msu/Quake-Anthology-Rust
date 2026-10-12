@@ -187,9 +187,7 @@ impl FrameHost {
             if native_client >= maxclients.max(0) as u32 {
                 return Err("native client outside module maxclients".into());
             }
-            if let Some(snapshot) = self.runtime.local_snapshots[id.0 as usize].as_mut() {
-                snapshot.set_native_clients(maxclients.max(0) as u32);
-            }
+            self.runtime.native_numbers[id.0 as usize].set_native_clients(maxclients.max(0) as u32);
             let native = NativeEntity {
                 module: api.module,
                 slot: (native_client + 1) as i32,
@@ -493,5 +491,6 @@ impl FrameHost {
         self.runtime.local_snapshots[id.0 as usize] = None;
         self.runtime.client_resources[id.0 as usize] = None;
         self.runtime.config_publications[id.0 as usize].reset();
+        self.runtime.native_numbers[id.0 as usize].reset();
     }
 }

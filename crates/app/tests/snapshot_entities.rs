@@ -135,7 +135,6 @@ fn transmit(
         players: &runtime.server.clients,
         native_module: Some(MODULE),
         self_entity: player.entity,
-        native_clients: binding.native_clients(),
         visibility,
         portals,
         resolve_model: &mut resolve,
@@ -145,6 +144,7 @@ fn transmit(
             channel,
             &player.player,
             source,
+            &mut runtime.native_numbers[client.0 as usize],
             sequence,
             time,
             delta,
@@ -389,10 +389,7 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
             }),
         )
         .ok_or("peer")?;
-    host.runtime.local_snapshots[0]
-        .as_mut()
-        .unwrap()
-        .set_native_clients(2);
+    host.runtime.native_numbers[0].set_native_clients(2);
     let remote = &mut host.runtime.server.clients[peer.0 as usize];
     remote.player.body.position = Vec3([48., 12., 24.]);
     remote.player.body.velocity = Vec3([16., 0., 0.]);

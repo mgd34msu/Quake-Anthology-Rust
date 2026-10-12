@@ -12,6 +12,7 @@ struct RemotePeer {
     connections: qa_network::ingress::Connections,
     replies: Vec<Vec<u8>>,
     sounds: Vec<qa_network::outputs::Sound>,
+    configs: Vec<(u32, Vec<u8>)>,
 }
 impl RemotePeer {
     fn load(client: ClientId, protocol: Protocol, clients: usize) -> Self {
@@ -45,16 +46,45 @@ impl RemotePeer {
             connections,
             replies: Vec::new(),
             sounds: Vec::new(),
+            configs: Vec::new(),
         }
     }
 }
 
 fn sound_module(
     runtime: &mut Runtime,
+    module: ModuleId,
+    initial_name: &[u8],
     rules: RuleSetId,
     emitted_name: &[u8],
     emitter: u32,
 ) -> (ModuleRequest, CallbackId) {
+    let (request, actions) = sound_module_actions(
+        runtime,
+        module,
+        initial_name,
+        rules,
+        emitted_name,
+        emitter,
+        false,
+    );
+    (request, actions.emit)
+}
+struct SoundActions {
+    emit: CallbackId,
+    raw: CallbackId,
+    rewrite: CallbackId,
+    duplicate: CallbackId,
+}
+fn sound_module_actions(
+    runtime: &mut Runtime,
+    module: ModuleId,
+    initial_name: &[u8],
+    rules: RuleSetId,
+    emitted_name: &[u8],
+    emitter: u32,
+    actions: bool,
+) -> (ModuleRequest, SoundActions) {
     let rr = rules == RuleSetId::Quake2Rerelease;
     let mut file = q2_table_file();
     pe_rva(&mut file, 0x1800, if rr { 2023 } else { 3 }, 4);
@@ -103,7 +133,11 @@ fn sound_module(
         code.extend(sound_index_offset.to_le_bytes());
         code.extend([0xff, 0xd0]); // gi.soundindex
         if emit {
-            code.extend([0x41, 0x89, 0xc1]); // sound ordinal -> r9d
+            if actions {
+                code.extend([0x41, 0xb9, 2, 0, 0, 0]); // requested duplicate ordinal2
+            } else {
+                code.extend([0x41, 0x89, 0xc1]); // sound ordinal -> r9d
+            }
             code.extend([0x48, 0xb9]);
             code.extend(0x180001c00u64.to_le_bytes()); // supplied position
             code.extend([0x48, 0xba]);
@@ -134,7 +168,7 @@ fn sound_module(
         0x180001500,
         8,
     );
-    pe_text(&mut file, 0x1bc0, b"a.wav\0");
+    pe_text(&mut file, 0x1bc0, &[initial_name, b"\0"].concat());
     assert!(emitted_name.len() <= 95);
     pe_text(&mut file, 0x1d00, &[emitted_name, b"\0"].concat());
     let stride = if rr { 1472u64 } else { 280 };
@@ -143,6 +177,69 @@ fn sound_module(
     pe_rva(&mut file, metadata + 8, stride, if rr { 8 } else { 4 });
     pe_rva(&mut file, metadata + if rr { 16 } else { 12 }, 3, 4);
     pe_rva(&mut file, metadata + if rr { 20 } else { 16 }, 3, 4);
+    if actions {
+        let begin = |entry: usize| {
+            let mut code = vec![0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x1d];
+            code.extend((0x1b20i32 - (entry + 12) as i32).to_le_bytes());
+            code
+        };
+        let invoke = |code: &mut Vec<u8>, ordinal: i32| {
+            code.extend([0x48, 0x8b, 0x83]);
+            code.extend((header + ordinal * 8).to_le_bytes());
+            code.extend([0xff, 0xd0]);
+        };
+        let mut raw = begin(0x15b0);
+        for value in [9u32, 12, 1] {
+            raw.push(0xb9);
+            raw.extend(value.to_le_bytes());
+            invoke(&mut raw, if rr { 27 } else { 25 });
+        }
+        raw.push(0xb9);
+        raw.extend(((emitter << 3) | 2).to_le_bytes());
+        invoke(&mut raw, if rr { 28 } else { 26 });
+        raw.extend([0x48, 0xb9]);
+        raw.extend(0x180001c00u64.to_le_bytes());
+        invoke(&mut raw, if rr { 32 } else { 30 });
+        raw.extend([0x31, 0xc9, 0x31, 0xd2, 0x45, 0x31, 0xc0]);
+        invoke(&mut raw, if rr { 24 } else { 22 });
+        raw.extend([0x48, 0x83, 0xc4, 0x20, 0x5b, 0xc3]);
+        assert!(raw.len() <= 0x100);
+        pe_text(&mut file, 0x15b0, &raw);
+        pe_rva(
+            &mut file,
+            0x1800 + if rr { 120 } else { 96 },
+            0x1800015b0,
+            8,
+        );
+        let sound_first = qa_core::configstrings::ConfigLayout::for_rules(rules)
+            .unwrap()
+            .resources[1]
+            .first;
+        for (entry, row, name, export) in [
+            (
+                0x16b0usize,
+                sound_first + 1,
+                0x180001d00u64,
+                if rr { 104 } else { 80 },
+            ),
+            (
+                0x1740usize,
+                sound_first + 2,
+                0x180001bc0u64,
+                if rr { 112 } else { 88 },
+            ),
+        ] {
+            let mut code = begin(entry);
+            code.push(0xb9);
+            code.extend(row.to_le_bytes());
+            code.extend([0x48, 0xba]);
+            code.extend(name.to_le_bytes());
+            invoke(&mut code, if rr { 7 } else { 6 });
+            code.extend([0x48, 0x83, 0xc4, 0x20, 0x5b, 0xc3]);
+            pe_text(&mut file, entry, &code);
+            pe_rva(&mut file, 0x1800 + export, 0x180000000 + entry as u64, 8);
+        }
+    }
     let mut image = Image::parse(&file, None, LoadRole::Library).unwrap();
     let mut bytes = std::mem::take(&mut image.bytes).into_vec();
     bytes.resize(0x5000, 0);
@@ -162,14 +259,19 @@ fn sound_module(
     image.regions = regions.into_boxed_slice();
     let game = Game::map(image, rules, 25, &runtime.geometry, Duration::from_secs(3)).unwrap();
     let initialize = Export::words(CallbackId(game.entry(b"Init").unwrap()), &[]);
-    let command = CallbackId(game.entry(b"ServerCommand").unwrap());
+    let command = SoundActions {
+        emit: CallbackId(game.entry(b"ServerCommand").unwrap()),
+        raw: CallbackId(game.entry(b"ClientCommand").unwrap()),
+        rewrite: CallbackId(game.entry(b"ClientUserinfoChanged").unwrap()),
+        duplicate: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
+    };
     let frame = Export::words(CallbackId(game.entry(b"RunFrame").unwrap()), &[1]);
     let imports = game.imports;
     let imports_address = game.imports_address;
     let count = game.vm.export_count();
     let mut request = request(
         runtime,
-        ModuleId(1),
+        module,
         rules,
         TickRate::fixed(25).unwrap(),
         game.vm,
@@ -177,6 +279,8 @@ fn sound_module(
     if let Program::Native { imports: table, .. } = &mut request.program {
         *table = imports;
     }
+    runtime.server.entities.columns.native_entity[request.anchor.slot as usize] =
+        Some(NativeEntity { module, slot: 0 });
     request.entries = (0..count as u32).collect();
     request.api = Some(ApiCheck::NativeTable {
         export: Export::words(CallbackId(0), &[imports_address]),
@@ -196,6 +300,7 @@ struct AudioSource {
     mixer: Option<qa_audio::Mixer>,
     entity: Option<SoundEmitter>,
     sound_rules: [Option<RuleSetId>; 2],
+    played: Vec<(ClientId, SoundId, Option<SoundEmitter>)>,
     remote: Option<RemotePeer>,
 }
 impl FrameSource for AudioSource {
@@ -235,6 +340,7 @@ impl FrameSource for AudioSource {
         let remote = self.remote.as_mut().expect("remote transport configured");
         assert_eq!((socket, to), (0, remote.address));
         let sounds = &mut remote.sounds;
+        let configs = &mut remote.configs;
         remote.connections.receive(
             0,
             qa_core::sys_events::Peer::Socket(remote.server_address),
@@ -242,12 +348,15 @@ impl FrameSource for AudioSource {
             self.time,
             |client, endpoint, incoming| {
                 assert_eq!((client, endpoint), (remote.client, Endpoint::Client));
-                if let qa_network::ingress::Incoming::Cue {
-                    cue: qa_network::outputs::Cue::Sound(sound),
-                    ..
-                } = incoming
-                {
-                    sounds.push(sound);
+                match incoming {
+                    qa_network::ingress::Incoming::Cue {
+                        cue: qa_network::outputs::Cue::Sound(sound),
+                        ..
+                    } => sounds.push(sound),
+                    qa_network::ingress::Incoming::ConfigString(config) => {
+                        configs.push((config.index, config.text.to_vec()));
+                    }
+                    _ => (),
                 }
                 std::ops::ControlFlow::Continue(())
             },
@@ -273,6 +382,7 @@ impl FrameSource for AudioSource {
         if let Some(rules) = self.sound_rules[client.0 as usize] {
             assert_eq!(sound.spatial_rules, rules);
         }
+        self.played.push((client, sound.sound, sound.entity));
         self.sounds[client.0 as usize] += 1;
         self.mixer.as_mut().is_none_or(|mixer| mixer.sound(sound))
     }
@@ -340,7 +450,8 @@ pub(super) fn remote_native_emitters_keep_the_module_entity_channel() {
                 },
             )
             .unwrap();
-        let (request, command) = sound_module(&mut runtime, rules, b"b.wav", 1);
+        let (request, command) =
+            sound_module(&mut runtime, ModuleId(1), b"a.wav", rules, b"b.wav", 1);
         let mut host = FrameHost::load_modules(
             Console::new(Context::default()).unwrap(),
             runtime,
@@ -448,7 +559,8 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
             ));
             ids.push(id);
         }
-        let (request, command) = sound_module(&mut runtime, rules, b"b.wav", 1);
+        let (request, command) =
+            sound_module(&mut runtime, ModuleId(1), b"a.wav", rules, b"b.wav", 1);
         let mut host = FrameHost::load_modules(
             Console::new(Context::default()).unwrap(),
             runtime,
@@ -628,7 +740,14 @@ pub(super) fn unsupported_resource_names_drop_only_the_unrepresentable_client_de
         ));
         clients.push(client);
     }
-    let (request, command) = sound_module(&mut runtime, RuleSetId::Quake2Rerelease, &name, 1);
+    let (request, command) = sound_module(
+        &mut runtime,
+        ModuleId(1),
+        b"a.wav",
+        RuleSetId::Quake2Rerelease,
+        &name,
+        1,
+    );
     let mut host = FrameHost::load_modules(
         Console::new(Context::default()).unwrap(),
         runtime,
@@ -711,7 +830,8 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
                 slot: 1
             }
         ));
-        let (request, command) = sound_module(&mut runtime, rules, b"b.wav", 0);
+        let (request, command) =
+            sound_module(&mut runtime, ModuleId(1), b"a.wav", rules, b"b.wav", 0);
         let mut host = FrameHost::load_modules(
             Console::new(Context::default()).unwrap(),
             runtime,
@@ -779,5 +899,504 @@ pub(super) fn world_edict_sounds_keep_the_native_channel_replacement_key() {
         let mixer = source.mixer.as_ref().unwrap();
         assert_eq!((mixer.counts.started, mixer.counts.replaced), (2, 1));
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    }
+}
+
+pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
+    for (rules, protocol) in [
+        (RuleSetId::Quake2, Protocol::Quake2_34),
+        (RuleSetId::Quake2Rerelease, Protocol::Quake2Repro1038),
+    ] {
+        let mut runtime = Runtime::load(2, []).unwrap();
+        let local = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                protocol,
+                0,
+            )
+            .unwrap();
+        assert!(runtime.server.bind_client_native(
+            local,
+            NativeEntity {
+                module: ModuleId(1),
+                slot: 1
+            }
+        ));
+        let remote = runtime
+            .server
+            .connect(
+                qa_session::clients::Connection::Remote,
+                ModuleId(1),
+                PlayerTail::Q2,
+                Some(NativeEntity {
+                    module: ModuleId(1),
+                    slot: 2,
+                }),
+            )
+            .unwrap();
+        assert!(runtime.server.bind_client_native(
+            remote,
+            NativeEntity {
+                module: ModuleId(1),
+                slot: 2
+            }
+        ));
+        let peer = RemotePeer::load(remote, protocol, 2);
+        let mut channel =
+            qa_network::channel::Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
+                .unwrap();
+        channel.set_qport(4000);
+        runtime
+            .network
+            .bind(
+                remote,
+                Endpoint::Server,
+                qa_network::ingress::Connection {
+                    route: qa_network::ingress::Route {
+                        socket: 0,
+                        peer: qa_core::sys_events::Peer::Socket(peer.address),
+                    },
+                    channel,
+                    output: runtime.server.clients[remote.0 as usize].output,
+                    pending_output: None,
+                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                },
+            )
+            .unwrap();
+        let (first, primary_emit) =
+            sound_module(&mut runtime, ModuleId(1), b"a.wav", rules, b"a.wav", 1);
+        let (second, secondary_emit) =
+            sound_module(&mut runtime, ModuleId(2), b"b.wav", rules, b"b.wav", 1);
+        let world = second.anchor;
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![first, second],
+        )
+        .unwrap();
+        host.local_clients[0] = Some(local);
+        host.initialize_modules(Phase::Server);
+        let rate = NonZeroU32::new(44100).unwrap();
+        let bank = Arc::new(
+            qa_audio::Bank::load(
+                rate,
+                ["sound/a.wav", "sound/b.wav", "sound/c.wav"]
+                    .map(|path| {
+                        (
+                            path.into(),
+                            Pcm {
+                                rate,
+                                channels: PcmChannels::Mono,
+                                samples: vec![1024; 2],
+                                loop_start: None,
+                            },
+                        )
+                    })
+                    .into(),
+            )
+            .unwrap(),
+        );
+        host.runtime.sound_bank = Some(Arc::clone(&bank));
+        host.bind_sounds(&bank).unwrap();
+        let a = bank.find("sound/a.wav").unwrap();
+        let b = bank.find("sound/b.wav").unwrap();
+        let mut source = AudioSource {
+            remote: Some(peer),
+            ..Default::default()
+        };
+        for tick in 0..=12 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(primary_emit, &[]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        host.call_module_export(
+            ModuleId(2),
+            Export::words(secondary_emit, &[]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        for tick in 13..=18 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(
+            source.played.len(),
+            2,
+            "{protocol:?} typed cross-module sounds"
+        );
+        assert_eq!((source.played[0].1, source.played[1].1), (a, b));
+        let remote_sounds = &source.remote.as_ref().unwrap().sounds;
+        assert_eq!(remote_sounds.len(), 2);
+        assert_eq!(
+            remote_sounds[0].index, 1,
+            "primary source ordinal unchanged"
+        );
+        assert_ne!(
+            remote_sounds[1].index, 1,
+            "secondary ordinal1 cannot alias primary"
+        );
+        assert_eq!(remote_sounds[0].entity(), Some(1));
+        assert_ne!(remote_sounds[1].entity(), Some(1));
+        let secondary_ordinal = remote_sounds[1].index;
+        let secondary_entity = remote_sounds[1].entity().unwrap();
+        assert_eq!(
+            source.played[1].2,
+            Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(local),
+                slot: i32::from(secondary_entity)
+            })
+        );
+        let layout = qa_core::configstrings::ConfigLayout::for_rules(rules).unwrap();
+        assert!(
+            source
+                .remote
+                .as_ref()
+                .unwrap()
+                .configs
+                .iter()
+                .any(|(index, name)| *index
+                    == layout.resources[1].first + u32::from(secondary_ordinal)
+                    && name == b"b.wav")
+        );
+        // The staged native path uses the very same ordinal and emitter mapper.
+        let mut bytes = [0; 64];
+        let length = qa_network::outputs::write_cue(
+            protocol,
+            qa_network::outputs::Cue::Sound(qa_network::outputs::Sound {
+                flags: 12,
+                index: 1,
+                volume: 255,
+                attenuation: 64,
+                time_offset: 0,
+                entity: 1,
+                channel: 2,
+                position: Vec3::default(),
+            }),
+            &mut bytes,
+        )
+        .unwrap();
+        let delivery = NativeDelivery {
+            module: ModuleId(2),
+            source: rules,
+            target: NativeTarget::All,
+            origin: Vec3::default(),
+            reliable: false,
+            dupe_key: 0,
+            check_portals: false,
+        };
+        let foreign_emitter = host
+            .runtime
+            .server
+            .entities
+            .find_native(
+                NativeEntity {
+                    module: ModuleId(2),
+                    slot: 1,
+                },
+                None,
+            )
+            .unwrap();
+        NativeCueBinding {
+            sound: Some(b),
+            entity: Some(foreign_emitter),
+        }
+        .write_capture(0, &mut bytes[length..length + NATIVE_CUE_CAPTURE_BYTES])
+        .unwrap();
+        host.runtime
+            .server
+            .events
+            .native_message_bound(
+                delivery,
+                length,
+                &bytes[..length + NATIVE_CUE_CAPTURE_BYTES],
+            )
+            .unwrap();
+        for tick in 19..=23 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        let native = source.remote.as_ref().unwrap().sounds.last().unwrap();
+        assert_eq!(
+            (native.index, native.entity(), native.channel),
+            (secondary_ordinal, Some(secondary_entity), 2)
+        );
+        assert_eq!(source.played.last().unwrap().1, b);
+        // World0 in the foreign module has its own lifetime and mapped key.
+        assert_eq!(
+            host.runtime.server.entities.columns.native_entity[world.slot as usize],
+            Some(NativeEntity {
+                module: ModuleId(2),
+                slot: 0
+            })
+        );
+        let world_number = host.runtime.native_numbers[local.0 as usize]
+            .project(&host.runtime.server.entities, world)
+            .unwrap();
+        assert_ne!(world_number, 0);
+        host.runtime
+            .server
+            .events
+            .push_delivered(
+                delivery,
+                FrameEvent::Sound(SoundEvent {
+                    sound: b,
+                    entity: Some(SoundEmitter::Native {
+                        namespace: ResourceNamespace::Module(ModuleId(2)),
+                        slot: 0,
+                    }),
+                    channel: 2,
+                    position: Vec3::default(),
+                    positioned: true,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        for tick in 24..=28 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(
+            source.played.last().unwrap().2,
+            Some(SoundEmitter::Native {
+                namespace: ResourceNamespace::Client(local),
+                slot: world_number as i32
+            })
+        );
+        assert_ne!(
+            source
+                .remote
+                .as_ref()
+                .unwrap()
+                .sounds
+                .last()
+                .unwrap()
+                .entity(),
+            Some(0)
+        );
+        for module in [ModuleId(1), ModuleId(2)] {
+            assert_eq!(host.module_counts(module).unwrap().traps, 0);
+            assert!(host.module_counts(module).unwrap().calls > 20);
+        }
+    }
+}
+
+pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewrites() {
+    for (rules, protocol) in [
+        (RuleSetId::Quake2, Protocol::Quake2_34),
+        (RuleSetId::Quake2Rerelease, Protocol::Quake2Repro1038),
+    ] {
+        let mut runtime = Runtime::load(2, []).unwrap();
+        let client = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy::select(Some(rules), None, None, None).unwrap(),
+                protocol,
+                0,
+            )
+            .unwrap();
+        runtime.server.bind_client_native(
+            client,
+            NativeEntity {
+                module: ModuleId(1),
+                slot: 1,
+            },
+        );
+        let remote = runtime
+            .server
+            .connect(
+                qa_session::clients::Connection::Remote,
+                ModuleId(1),
+                PlayerTail::Q2,
+                Some(NativeEntity {
+                    module: ModuleId(1),
+                    slot: 2,
+                }),
+            )
+            .unwrap();
+        let peer = RemotePeer::load(remote, protocol, 2);
+        let mut channel =
+            qa_network::channel::Channel::load(protocol.channel(), Endpoint::Server, 8192, 16)
+                .unwrap();
+        channel.set_qport(4000);
+        runtime
+            .network
+            .bind(
+                remote,
+                Endpoint::Server,
+                qa_network::ingress::Connection {
+                    route: qa_network::ingress::Route {
+                        socket: 0,
+                        peer: qa_core::sys_events::Peer::Socket(peer.address),
+                    },
+                    channel,
+                    output: runtime.server.clients[remote.0 as usize].output,
+                    pending_output: None,
+                    commands: Some(qa_network::commands::connection::Commands::load(protocol)),
+                },
+            )
+            .unwrap();
+        let (request, actions) = sound_module_actions(
+            &mut runtime,
+            ModuleId(1),
+            b"a.wav",
+            rules,
+            b"b.wav",
+            1,
+            true,
+        );
+        let mut host = FrameHost::load_modules(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::FrameDriven,
+            vec![request],
+        )
+        .unwrap();
+        host.local_clients[0] = Some(client);
+        host.initialize_modules(Phase::Server);
+        let rate = NonZeroU32::new(44100).unwrap();
+        let bank = Arc::new(
+            qa_audio::Bank::load(
+                rate,
+                ["sound/a.wav", "sound/b.wav"]
+                    .map(|path| {
+                        (
+                            path.into(),
+                            Pcm {
+                                rate,
+                                channels: PcmChannels::Mono,
+                                samples: vec![1024; 2],
+                                loop_start: None,
+                            },
+                        )
+                    })
+                    .into(),
+            )
+            .unwrap(),
+        );
+        host.runtime.sound_bank = Some(Arc::clone(&bank));
+        host.bind_sounds(&bank).unwrap();
+        let a = bank.find("sound/a.wav").unwrap();
+        let b = bank.find("sound/b.wav").unwrap();
+        let mut source = AudioSource {
+            remote: Some(peer),
+            ..Default::default()
+        };
+        for tick in 0..=10 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(actions.duplicate, &[0]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        for tick in 11..=20 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(actions.emit, &[]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        for tick in 21..=30 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(
+            source.played.last().unwrap().1,
+            a,
+            "requested primary ordinal2 must still name A"
+        );
+        assert_eq!(
+            source.remote.as_ref().unwrap().sounds[0].index,
+            2,
+            "typed emission keeps the exact requested duplicate ordinal"
+        );
+        let layout = qa_core::configstrings::ConfigLayout::for_rules(rules).unwrap();
+        assert_eq!(
+            host.runtime.client_resources[0]
+                .as_ref()
+                .unwrap()
+                .state
+                .sound(2),
+            Some(a)
+        );
+        // Capture raw ordinal1 while it is A, then rewrite it before dispatch.
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(actions.raw, &[0]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(actions.rewrite, &[0, 0]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        for tick in 31..=42 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(source.played.len(), 2);
+        assert_eq!(
+            source.played[1].1, a,
+            "retained raw cue keeps captured A, not rewritten B"
+        );
+        assert_eq!(
+            host.runtime.client_resources[0]
+                .as_ref()
+                .unwrap()
+                .state
+                .sound(1),
+            Some(b)
+        );
+        assert_eq!(
+            host.runtime.client_resources[0]
+                .as_ref()
+                .unwrap()
+                .state
+                .configs
+                .config(layout.resources[1].first as usize + 1)
+                .unwrap()
+                .text,
+            b"b.wav"
+        );
+        // Stopping the publishing module cannot erase an already owned record.
+        host.call_module_export(
+            ModuleId(1),
+            Export::words(actions.raw, &[0]),
+            ThinkTime::module_clock(rules),
+        )
+        .unwrap();
+        host.shutdown_modules();
+        for tick in 43..=48 {
+            source.time = EventTime::from_milliseconds(tick * 25);
+            host.frame(&mut source, true);
+        }
+        assert_eq!(source.played.len(), 3);
+        assert_eq!(source.played[2].1, b);
     }
 }

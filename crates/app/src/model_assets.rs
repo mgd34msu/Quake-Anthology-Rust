@@ -1,12 +1,13 @@
 //! Cold model registration. Native config ordinals resolve through filenames;
 //! inline ordinals retain their explicit world and existing surface ranges.
+use qa_compat::services::{CallError, ModelLoader, ModelLookup};
 use qa_content::vfs::Vfs;
 use qa_core::names::{NameTable, canonical_path};
-use qa_core::primitives::{IndexSpan, NameId, RuleSetId};
+use qa_core::primitives::{Bounds, IndexSpan, NameId, RuleSetId};
 use qa_formats::archive::ArchiveReader;
 use qa_formats::model::{Image, Mesh, Model, ModelFormat};
 use qa_render::assets::{MaterialSettings, SoftwareAlias, Stage, StageTexture};
-use qa_render::material::resources::{ImageSettings, ImageUse, Images, IndexedTarget};
+use qa_render::material::resources::{ImageSettings, ImageUse, Images, ImagesState, IndexedTarget};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
 use qa_render::surface_cache::IndexedTexture;
 use qa_render::world::WorldId;
@@ -154,24 +155,46 @@ struct Registration {
     profile: ModelProfile,
     required: bool,
 }
-impl Registration {
-    fn diagnostic(&self, names: &NameTable, error: String) -> Result<ModelDiagnostic, String> {
-        Ok(ModelDiagnostic {
-            name: names
-                .find(self.path.as_bytes())
-                .ok_or("missing registered model name")?,
-            profile: self.profile,
-            error,
-        })
-    }
-}
 struct RegisteredProfile {
     profile: ModelProfile,
     skins: Option<IndexSpan>,
+    error: Option<String>,
+}
+
+/// File-native metadata survives unsupported renderer features. It is not the
+/// bounds of an interpolated mesh or a selected presentation profile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelMetadata {
+    pub format: ModelFormat,
+    pub bounds: Bounds,
+}
+#[derive(Clone)]
+struct FileError {
+    kind: CallError,
+    message: String,
+}
+impl FileError {
+    fn capacity(message: &str) -> Self {
+        Self {
+            kind: CallError::Capacity,
+            message: message.to_owned(),
+        }
+    }
+}
+enum ModelFile {
+    Empty,
+    Ready(ModelMetadata),
+    Failed(FileError),
+}
+struct ProfileImages {
+    profile: ModelProfile,
+    // Temporarily taken only while Images borrows the separately owned Assets.
+    state: Option<Result<ImagesState, String>>,
 }
 
 pub struct ModelCatalog {
     names: NameTable,
+    files: Box<[ModelFile]>,
     models: Box<[IndexSpan]>,
     registrations: Box<[RegisteredProfile]>,
     bindings: Box<[ModelMaterials]>,
@@ -180,17 +203,281 @@ pub struct ModelCatalog {
     capacity: ModelCapacity,
     pub diagnostics: Box<[ModelDiagnostic]>,
 }
-impl ModelCatalog {
-    /// All I/O, names and mesh/image/material registration finish before the
-    /// renderer freezes Assets. The returned catalog never grows at runtime.
-    pub fn load<'a>(
-        vfs: &Vfs,
-        reader: &mut ArchiveReader,
-        assets: &mut Assets,
-        requests: impl IntoIterator<Item = ModelRequest<'a>>,
+
+/// Owns cold Assets until every native precache and configured presentation
+/// finishes. Parsed model bytes live only within one file's registration.
+pub struct ModelCatalogBuilder {
+    assets: Assets,
+    reader: ArchiveReader,
+    names: NameTable,
+    files: Vec<ModelFile>,
+    models: Vec<IndexSpan>,
+    profiles: Vec<ProfileImages>,
+    registrations: Vec<RegisteredProfile>,
+    bindings: Vec<ModelMaterials>,
+    worlds: Box<[IndexSpan]>,
+    inline: Box<[InlineBinding]>,
+    capacity: ModelCapacity,
+    limits: ModelLimits,
+    diagnostics: Vec<ModelDiagnostic>,
+}
+impl ModelCatalogBuilder {
+    pub fn new(
+        assets: Assets,
+        profiles: impl IntoIterator<Item = ModelProfile>,
         worlds: impl IntoIterator<Item = WorldId>,
         limits: ModelLimits,
     ) -> Result<Self, String> {
+        let names = NameTable::load_reserved([], limits.models, limits.name_bytes)
+            .map_err(|error| format!("model names: {error}"))?;
+        let mut unique = Vec::<ProfileImages>::new();
+        for profile in profiles {
+            if unique.iter().any(|entry| entry.profile == profile) {
+                continue;
+            }
+            if unique.len() == limits.models {
+                return Err("model registration capacity".to_owned());
+            }
+            let state = ImagesState::new(
+                profile.source_rules,
+                profile.rules,
+                profile.image_settings,
+                profile.source_palette.zip(profile.palette),
+            )
+            .map_err(|error| format!("model images: {error:?}"));
+            unique.push(ProfileImages {
+                profile,
+                state: Some(state),
+            });
+        }
+        let (worlds, inline) = inline_bindings(&assets, worlds, limits)?;
+        let capacity = ModelCapacity {
+            names: 1,
+            inline_bindings: inline.len(),
+            ..ModelCapacity::default()
+        };
+        Ok(Self {
+            assets,
+            reader: ArchiveReader::default(),
+            names,
+            files: vec![ModelFile::Empty],
+            models: vec![IndexSpan::default()],
+            profiles: unique,
+            registrations: Vec::new(),
+            bindings: Vec::new(),
+            worlds,
+            inline,
+            capacity,
+            limits,
+            diagnostics: Vec::new(),
+        })
+    }
+
+    /// Static optional requests and native synchronous requests share exactly
+    /// one file admission, decode and registration path.
+    pub fn register_request(&mut self, vfs: &Vfs, request: ModelRequest<'_>) -> Result<(), String> {
+        if request.path.is_empty() || request.path.starts_with('*') {
+            return Ok(());
+        }
+        let path = canonical_path(request.path);
+        let admission = self.ensure_file(vfs, &path);
+        let Some(name) = self.names.find(path.as_bytes()) else {
+            return Err(admission
+                .err()
+                .map_or_else(|| "missing registered model name".to_owned(), |e| e.message));
+        };
+        let profile = request.profile();
+        let registration = self.models[name.0 as usize]
+            .range()
+            .map(|index| &self.registrations[index])
+            .find(|entry| entry.profile == profile)
+            .ok_or("unconfigured model profile")?;
+        if request.required
+            && let Some(error) = &registration.error
+        {
+            return Err(if error.starts_with("model images: ") {
+                error.clone()
+            } else {
+                format!("model {path}: {error}")
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_file(&mut self, vfs: &Vfs, path: &str) -> Result<ModelMetadata, FileError> {
+        if let Some(name) = self.names.find(path.as_bytes()) {
+            return match &self.files[name.0 as usize] {
+                ModelFile::Ready(metadata) => Ok(*metadata),
+                ModelFile::Failed(error) => Err(error.clone()),
+                ModelFile::Empty => Err(FileError {
+                    kind: CallError::File,
+                    message: "empty model filename".to_owned(),
+                }),
+            };
+        }
+        let next = self
+            .registrations
+            .len()
+            .checked_add(self.profiles.len())
+            .filter(|&count| count <= self.limits.models && count <= u32::MAX as usize)
+            .ok_or_else(|| FileError::capacity("model registration capacity"))?;
+        let name = self
+            .names
+            .intern(path.as_bytes())
+            .map_err(|_| FileError::capacity("model name capacity"))?;
+        let span = IndexSpan {
+            first: self.registrations.len() as u32,
+            count: (next - self.registrations.len()) as u32,
+        };
+        self.models.push(span);
+        self.capacity.names = self.names.len();
+        self.capacity.name_bytes += path.len();
+        let bytes = vfs
+            .read_file(path.as_bytes(), self.limits.file_bytes, &mut self.reader)
+            .map_err(|error| FileError {
+                kind: CallError::File,
+                message: error.to_string(),
+            });
+        let parsed = bytes.as_ref().map_err(Clone::clone).and_then(|bytes| {
+            Model::parse(bytes).map_err(|error| FileError {
+                kind: CallError::File,
+                message: format!("decode: {error:?}"),
+            })
+        });
+        let metadata = parsed
+            .as_ref()
+            .map_err(Clone::clone)
+            .map(|model| ModelMetadata {
+                format: model.format,
+                bounds: model.bounds,
+            });
+        self.files.push(match &metadata {
+            Ok(metadata) => ModelFile::Ready(*metadata),
+            Err(error) => ModelFile::Failed(error.clone()),
+        });
+        let mut mesh = None;
+        for images in &mut self.profiles {
+            let registration = Registration {
+                path: path.to_owned(),
+                profile: images.profile,
+                required: false,
+            };
+            let result = match images.state.take() {
+                Some(Ok(state)) => {
+                    let mut temporary = Images::from_state(vfs, &mut self.assets, state);
+                    let result = parsed
+                        .as_ref()
+                        .map_err(|error| error.message.clone())
+                        .and_then(|model| {
+                            validate_model(model)?;
+                            register(
+                                model,
+                                &mut temporary,
+                                &registration,
+                                &mut mesh,
+                                &mut self.capacity,
+                                self.limits,
+                            )
+                        });
+                    images.state = Some(Ok(temporary.into_state()));
+                    result
+                }
+                Some(Err(error)) => {
+                    images.state = Some(Err(error.clone()));
+                    Err(error)
+                }
+                None => {
+                    return Err(FileError {
+                        kind: CallError::Aborted,
+                        message: "model image state already borrowed".to_owned(),
+                    });
+                }
+            };
+            let (skins, error) = match result {
+                Ok(skins) => {
+                    let first = self.bindings.len() as u32;
+                    let count = skins.len() as u32;
+                    self.bindings.extend(skins);
+                    (Some(IndexSpan { first, count }), None)
+                }
+                Err(error) => {
+                    self.diagnostics.push(ModelDiagnostic {
+                        name,
+                        profile: images.profile,
+                        error: error.clone(),
+                    });
+                    (None, Some(error))
+                }
+            };
+            self.registrations.push(RegisteredProfile {
+                profile: images.profile,
+                skins,
+                error,
+            });
+        }
+        self.capacity.registrations = self.registrations.len();
+        self.capacity.bindings = self.bindings.len() * ModelMaterialPolicy::ALL.len();
+        metadata
+    }
+
+    pub fn finish(self) -> (Assets, ModelCatalog) {
+        let catalog = ModelCatalog {
+            names: self.names,
+            files: self.files.into_boxed_slice(),
+            models: self.models.into_boxed_slice(),
+            registrations: self.registrations.into_boxed_slice(),
+            bindings: self.bindings.into_boxed_slice(),
+            worlds: self.worlds,
+            inline: self.inline,
+            capacity: self.capacity,
+            diagnostics: self.diagnostics.into_boxed_slice(),
+        };
+        (self.assets, catalog)
+    }
+}
+
+fn metadata_lookup(names: &NameTable, files: &[ModelFile], path: &[u8]) -> Option<ModelMetadata> {
+    let name = names.find_path(std::str::from_utf8(path).ok()?)?;
+    match files.get(name.0 as usize)? {
+        ModelFile::Ready(metadata) => Some(*metadata),
+        ModelFile::Empty | ModelFile::Failed(_) => None,
+    }
+}
+impl ModelLookup for ModelCatalogBuilder {
+    fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
+        metadata_lookup(&self.names, &self.files, path).map(|metadata| metadata.bounds)
+    }
+}
+impl ModelLoader for ModelCatalogBuilder {
+    fn precache(
+        &mut self,
+        vfs: &Vfs,
+        path: &[u8],
+        _source: RuleSetId,
+    ) -> Result<Bounds, CallError> {
+        let path = std::str::from_utf8(path).map_err(|_| CallError::Text)?;
+        if path.is_empty() || path.starts_with('*') {
+            return Err(CallError::File);
+        }
+        self.ensure_file(vfs, &canonical_path(path))
+            .map(|metadata| metadata.bounds)
+            .map_err(|error| error.kind)
+    }
+}
+impl ModelLookup for ModelCatalog {
+    fn bounds(&self, path: &[u8], _source: RuleSetId) -> Option<Bounds> {
+        self.metadata(path).map(|metadata| metadata.bounds)
+    }
+}
+impl ModelCatalog {
+    /// All requests delegate to the same staged native precache implementation.
+    pub fn load<'a>(
+        vfs: &Vfs,
+        assets: Assets,
+        requests: impl IntoIterator<Item = ModelRequest<'a>>,
+        worlds: impl IntoIterator<Item = WorldId>,
+        limits: ModelLimits,
+    ) -> Result<(Assets, Self), String> {
         let mut pending = Vec::<Registration>::new();
         for request in requests {
             if request.path.is_empty() || request.path.starts_with('*') {
@@ -206,195 +493,31 @@ impl ModelCatalog {
             });
         }
         pending.sort_by(|left, right| left.path.cmp(&right.path));
-        let mut unique = Vec::<Registration>::new();
-        for registration in pending {
-            let first = unique.partition_point(|entry| entry.path < registration.path);
-            if let Some(previous) = unique[first..]
-                .iter_mut()
-                .take_while(|entry| entry.path == registration.path)
-                .find(|entry| entry.profile == registration.profile)
-            {
-                previous.required |= registration.required;
-            } else {
-                unique.push(registration);
-            }
-        }
-        let names = NameTable::load(unique.iter().map(|entry| entry.path.as_bytes()))
-            .map_err(|error| format!("model names: {error}"))?;
-        let name_bytes = (0..names.len())
-            .try_fold(0usize, |bytes, index| {
-                bytes.checked_add(names.get(NameId(index as u32)).map_or(0, <[u8]>::len))
-            })
-            .filter(|&bytes| bytes <= limits.name_bytes)
-            .ok_or("model name capacity")?;
-        let mut models = vec![IndexSpan::default(); names.len()].into_boxed_slice();
-        let mut registrations: Vec<_> = unique
-            .iter()
-            .map(|entry| RegisteredProfile {
-                profile: entry.profile,
-                skins: None,
-            })
-            .collect();
-        let mut paths = Vec::<&str>::new();
-        let mut files = Vec::with_capacity(unique.len());
-        for (index, entry) in unique.iter().enumerate() {
-            let name = names
-                .find(entry.path.as_bytes())
-                .ok_or("missing registered model name")?;
-            let span = &mut models[name.0 as usize];
-            if span.count == 0 {
-                *span = IndexSpan {
-                    first: index as u32,
-                    count: 1,
-                };
-                paths.push(&entry.path);
-            } else {
-                span.count += 1;
-            }
-            files.push(paths.len() - 1);
-        }
-        // One read and one format decode per filename. These cold inputs are
-        // dropped before the catalog is returned and frame consumers begin.
-        let bytes: Vec<_> = paths
-            .iter()
-            .map(|path| {
-                vfs.read_file(path.as_bytes(), limits.file_bytes, reader)
-                    .map_err(|error| error.to_string())
-            })
-            .collect();
-        let parsed: Vec<_> = bytes
-            .iter()
-            .map(|bytes| {
-                bytes.as_ref().map_err(Clone::clone).and_then(|bytes| {
-                    let model =
-                        Model::parse(bytes).map_err(|error| format!("decode: {error:?}"))?;
-                    validate_model(&model)?;
-                    Ok(model)
-                })
-            })
-            .collect();
-        let mut meshes = vec![None; paths.len()];
-        let mut bindings = Vec::new();
-        let mut diagnostics = Vec::new();
-        let mut capacity = ModelCapacity {
-            names: names.len(),
-            name_bytes,
-            registrations: registrations.len(),
-            ..ModelCapacity::default()
-        };
-        // Reuse the existing image recipe cache within each explicit profile,
-        // including its source/target translation pair.
-        let mut groups: Vec<Vec<usize>> = Vec::new();
-        for (index, entry) in unique.iter().enumerate() {
-            if let Some(group) = groups
-                .iter_mut()
-                .find(|group| unique[group[0]].profile == entry.profile)
-            {
-                group.push(index);
-            } else {
-                groups.push(vec![index]);
-            }
-        }
-        for group in groups {
-            let profile = unique[group[0]].profile;
-            let mut images = match Images::new(
+        let mut builder = ModelCatalogBuilder::new(
+            assets,
+            pending.iter().map(|entry| entry.profile),
+            worlds,
+            limits,
+        )?;
+        for entry in &pending {
+            builder.register_request(
                 vfs,
-                assets,
-                profile.source_rules,
-                profile.rules,
-                profile.image_settings,
-                profile.source_palette.zip(profile.palette),
-            ) {
-                Ok(images) => images,
-                Err(error) => {
-                    let error = format!("model images: {error:?}");
-                    if group.iter().any(|&index| unique[index].required) {
-                        return Err(error);
-                    }
-                    for index in group {
-                        diagnostics.push(unique[index].diagnostic(&names, error.clone())?);
-                    }
-                    continue;
-                }
-            };
-            for index in group {
-                let entry = &unique[index];
-                let file = files[index];
-                let result = parsed[file]
-                    .as_ref()
-                    .map_err(Clone::clone)
-                    .and_then(|model| {
-                        register(
-                            model,
-                            &mut images,
-                            entry,
-                            &mut meshes[file],
-                            &mut capacity,
-                            limits,
-                        )
-                    });
-                match result {
-                    Ok(skins) => {
-                        let first =
-                            u32::try_from(bindings.len()).map_err(|_| "model binding table")?;
-                        let count =
-                            u32::try_from(skins.len()).map_err(|_| "model binding table")?;
-                        bindings.extend(skins);
-                        registrations[index].skins = Some(IndexSpan { first, count });
-                    }
-                    Err(error) if entry.required => {
-                        return Err(format!("model {}: {error}", entry.path));
-                    }
-                    Err(error) => diagnostics.push(entry.diagnostic(&names, error)?),
-                }
-            }
+                ModelRequest {
+                    path: &entry.path,
+                    source_rules: entry.profile.source_rules,
+                    rules: entry.profile.rules,
+                    source_palette: entry.profile.source_palette,
+                    palette: entry.profile.palette,
+                    image_settings: entry.profile.image_settings,
+                    required: entry.required,
+                },
+            )?;
         }
-        let mut world_ranges = vec![IndexSpan::default(); assets.worlds().len()].into_boxed_slice();
-        let mut inline = Vec::new();
-        for id in worlds {
-            let range = world_ranges
-                .get_mut(id.0 as usize)
-                .ok_or("inline model world handle")?;
-            if range.count != 0 {
-                continue;
-            }
-            let geometry = assets
-                .world(id)
-                .ok_or("inline model world handle")?
-                .geometry();
-            let next = inline
-                .len()
-                .checked_add(geometry.models.len())
-                .filter(|&count| count <= limits.inline_models && count <= u32::MAX as usize)
-                .ok_or("inline model capacity")?;
-            let first = inline.len() as u32;
-            for (index, model) in geometry.models.iter().enumerate() {
-                inline.push(InlineBinding {
-                    world: id,
-                    index: index as u32,
-                    surfaces: model.surfaces,
-                });
-            }
-            *range = IndexSpan {
-                first,
-                count: (next - first as usize) as u32,
-            };
-        }
-        capacity.skins = bindings.len();
-        capacity.bindings = bindings.len() * ModelMaterialPolicy::ALL.len();
-        capacity.inline_bindings = inline.len();
-        Ok(Self {
-            names,
-            models,
-            registrations: registrations.into_boxed_slice(),
-            bindings: bindings.into_boxed_slice(),
-            worlds: world_ranges,
-            inline: inline.into_boxed_slice(),
-            capacity,
-            diagnostics: diagnostics.into_boxed_slice(),
-        })
+        Ok(builder.finish())
     }
-
+    pub fn metadata(&self, path: &[u8]) -> Option<ModelMetadata> {
+        metadata_lookup(&self.names, &self.files, path)
+    }
     /// Resolve both filename and profile only at registration/configuration
     /// boundaries. A profile mismatch never selects the first same-name entry.
     pub fn registration(&self, path: &str, profile: ModelProfile) -> Option<ModelRegistrationId> {
@@ -418,7 +541,6 @@ impl ModelCatalog {
         policy: ModelMaterialPolicy,
     ) -> Option<ModelBinding> {
         let span = self.registrations.get(registration.0 as usize)?.skins?;
-        // Native R_DrawAliasModel uses skin zero for an out-of-range skinnum.
         let skin = if skin < span.count { skin } else { 0 };
         Some(self.bindings.get((span.first + skin) as usize)?.variants[policy.index()])
     }
@@ -432,6 +554,45 @@ impl ModelCatalog {
     pub fn capacity(&self) -> ModelCapacity {
         self.capacity
     }
+}
+
+fn inline_bindings(
+    assets: &Assets,
+    worlds: impl IntoIterator<Item = WorldId>,
+    limits: ModelLimits,
+) -> Result<(Box<[IndexSpan]>, Box<[InlineBinding]>), String> {
+    let mut ranges = vec![IndexSpan::default(); assets.worlds().len()].into_boxed_slice();
+    let mut inline = Vec::new();
+    for id in worlds {
+        let range = ranges
+            .get_mut(id.0 as usize)
+            .ok_or("inline model world handle")?;
+        if range.count != 0 {
+            continue;
+        }
+        let geometry = assets
+            .world(id)
+            .ok_or("inline model world handle")?
+            .geometry();
+        let next = inline
+            .len()
+            .checked_add(geometry.models.len())
+            .filter(|&count| count <= limits.inline_models && count <= u32::MAX as usize)
+            .ok_or("inline model capacity")?;
+        let first = inline.len() as u32;
+        for (index, model) in geometry.models.iter().enumerate() {
+            inline.push(InlineBinding {
+                world: id,
+                index: index as u32,
+                surfaces: model.surfaces,
+            });
+        }
+        *range = IndexSpan {
+            first,
+            count: (next - first as usize) as u32,
+        };
+    }
+    Ok((ranges, inline.into_boxed_slice()))
 }
 
 fn validate_model(model: &Model<'_>) -> Result<(), String> {

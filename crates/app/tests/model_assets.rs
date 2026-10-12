@@ -2,10 +2,10 @@
 mod support;
 
 use qa_app::model_assets::{
-    ModelCatalog, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest,
+    ModelCatalog, ModelCatalogBuilder, ModelLimits, ModelMaterialPolicy, ModelProfile, ModelRequest,
 };
+use qa_compat::services::{ModelLoader, ModelLookup};
 use qa_core::primitives::{Bounds, IndexSpan, RuleSetId, Vec3};
-use qa_formats::archive::ArchiveReader;
 use qa_render::assets::{SoftwareAlias, StageTexture};
 use qa_render::shader::{AlphaGen, RgbGen, StageBlend};
 use qa_render::world::{
@@ -17,18 +17,11 @@ use qa_world::visibility::{PvsRows, VisLeaf, VisibilityWorld};
 
 fn load(
     fixture: &support::Fixture,
-    assets: &mut Assets,
+    assets: Assets,
     requests: &[ModelRequest<'_>],
     limits: ModelLimits,
-) -> Result<ModelCatalog, String> {
-    ModelCatalog::load(
-        &fixture.vfs,
-        &mut ArchiveReader::default(),
-        assets,
-        requests.iter().copied(),
-        [],
-        limits,
-    )
+) -> Result<(Assets, ModelCatalog), String> {
+    ModelCatalog::load(&fixture.vfs, assets, requests.iter().copied(), [], limits)
 }
 
 fn native_profile(rules: RuleSetId, palette: PaletteId) -> ModelProfile {
@@ -110,9 +103,9 @@ fn native_md2_registration_keeps_frame_major_seams_skins_and_global_palette() {
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake2, palette);
     let models_before = assets.models().len();
-    let catalog = load(
+    let (assets, catalog) = load(
         &fixture,
-        &mut assets,
+        assets,
         &[ModelRequest::native(
             "models/test/tris.md2",
             RuleSetId::Quake2,
@@ -187,9 +180,9 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake2, palette);
     // An MDL can use Q2 presentation independently of its file provenance.
-    let catalog = load(
+    let (assets, catalog) = load(
         &fixture,
-        &mut assets,
+        assets,
         &[ModelRequest::native(
             "progs/test.mdl",
             RuleSetId::Quake2,
@@ -231,10 +224,10 @@ fn external_skin_decoding_does_not_inherit_upload_presentation() {
         ("models/test/tris.md2", model),
         ("models/test/skin.tga", tga),
     ]);
-    let mut assets = Assets::load().unwrap();
+    let assets = Assets::load().unwrap();
     let mut request = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake3, None);
     request.source_rules = RuleSetId::Quake2;
-    let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
+    let (assets, catalog) = load(&fixture, assets, &[request], ModelLimits::default()).unwrap();
     let binding = binding(&catalog, request.path, request.profile(), 0).unwrap();
     assert_eq!(binding.rules, RuleSetId::Quake3);
     let skin = assets
@@ -252,9 +245,9 @@ fn q3_pcx_source_uses_embedded_palette_and_source_extent_without_global_palette(
         ("models/test/skin0.pcx", support::pcx_dimensions(641, 4, 11)),
         ("models/test/skin1.pcx", support::pcx_dimensions(641, 4, 22)),
     ]);
-    let mut assets = Assets::load().unwrap();
+    let assets = Assets::load().unwrap();
     let request = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake3, None);
-    let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
+    let (assets, catalog) = load(&fixture, assets, &[request], ModelLimits::default()).unwrap();
     let first = binding(&catalog, request.path, request.profile(), 0).unwrap();
     let second = binding(&catalog, request.path, request.profile(), 1).unwrap();
     assert_eq!(first.model, second.model);
@@ -313,7 +306,7 @@ fn rgb_pcx_and_tga_skins_keep_gl_pixels_and_draw_on_explicit_indexed_cpu_targets
                 ..original
             },
         ];
-        let catalog = load(&fixture, &mut assets, &requests, ModelLimits::default()).unwrap();
+        let (assets, catalog) = load(&fixture, assets, &requests, ModelLimits::default()).unwrap();
         let baseline = binding(&catalog, original.path, original.profile(), 0).unwrap();
         let source = assets
             .image(image(
@@ -404,7 +397,7 @@ fn source_rgba_cutout_skins_keep_alpha_and_skip_the_reserved_index_in_cpu_scene(
         source_palette: None,
         ..ModelRequest::native(path, RuleSetId::Quake2, Some(palette))
     });
-    let catalog = load(&fixture, &mut assets, &requests, ModelLimits::default()).unwrap();
+    let (assets, catalog) = load(&fixture, assets, &requests, ModelLimits::default()).unwrap();
     let selected =
         requests.map(|request| binding(&catalog, request.path, request.profile(), 0).unwrap());
     let image = assets
@@ -443,9 +436,9 @@ fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_z
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake2, palette);
     let models_before = assets.models().len();
-    let catalog = load(
+    let (assets, catalog) = load(
         &fixture,
-        &mut assets,
+        assets,
         &[
             ModelRequest::native("MODELS\\TEST\\TRIS.MD2", RuleSetId::Quake2, Some(palette)),
             ModelRequest::native("models/test/tris.md2", RuleSetId::Quake2, Some(palette)),
@@ -482,9 +475,9 @@ fn distinct_model_filenames_share_the_existing_skin_image_recipe_cache() {
     let palette = support::palette(&mut assets);
     let profile = native_profile(RuleSetId::Quake2, palette);
     let before = assets.images().len();
-    let catalog = load(
+    let (assets, catalog) = load(
         &fixture,
-        &mut assets,
+        assets,
         &["models/a.md2", "models/b.md2"]
             .map(|path| ModelRequest::native(path, RuleSetId::Quake2, Some(palette))),
         ModelLimits::default(),
@@ -515,9 +508,9 @@ fn one_registered_mesh_and_image_supply_all_four_material_variants() {
         let mut assets = Assets::load().unwrap();
         let palette = support::palette(&mut assets);
         let profile = native_profile(rules, palette);
-        let catalog = load(
+        let (assets, catalog) = load(
             &fixture,
-            &mut assets,
+            assets,
             &[ModelRequest::native(
                 "models/test/tris.md2",
                 rules,
@@ -587,7 +580,7 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
             required: false,
             ..ModelRequest::native(path, RuleSetId::Quake, Some(palette))
         });
-    let catalog = load(&fixture, &mut assets, &requests, ModelLimits::default()).unwrap();
+    let (assets, catalog) = load(&fixture, assets, &requests, ModelLimits::default()).unwrap();
     assert_eq!(catalog.diagnostics.len(), 3);
     assert_eq!(assets.models().len(), count);
     for diagnostic in &catalog.diagnostics {
@@ -606,7 +599,7 @@ fn optional_unsupported_assets_report_diagnostics_without_mesh_placeholders() {
     assert!(catalog.diagnostics.iter().any(|d| d.error.contains("Spr")));
     let error = load(
         &fixture,
-        &mut assets,
+        assets,
         &[ModelRequest::native(
             "progs/missing.mdl",
             RuleSetId::Quake,
@@ -653,7 +646,7 @@ fn load_limits_reject_at_registration() {
         assert!(
             load(
                 &fixture,
-                &mut assets,
+                assets,
                 &[ModelRequest::native(
                     "models/test/tris.md2",
                     RuleSetId::Quake2,
@@ -664,6 +657,133 @@ fn load_limits_reject_at_registration() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn synchronous_precaches_share_one_file_mesh_and_profile_image_cache_across_calls() {
+    let path = "models/test/shared.pcx";
+    let fixture = support::Fixture::new(&[
+        ("models/first.md2", support::md2_skin(path.as_bytes())),
+        ("models/second.md2", support::md2_skin(path.as_bytes())),
+        (path, support::pcx(11)),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let native = native_profile(RuleSetId::Quake2, palette);
+    let foreign = ModelProfile {
+        rules: RuleSetId::Quake,
+        image_settings: qa_render::material::resources::ImageSettings::native(RuleSetId::Quake),
+        ..native
+    };
+    let initial_meshes = assets.models().len();
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [native, foreign], [], ModelLimits::default()).unwrap();
+    let bounds = builder
+        .precache(&fixture.vfs, b"models/first.md2", RuleSetId::Quake2)
+        .unwrap();
+    assert_eq!(
+        builder.bounds(b"MODELS\\FIRST.MD2", RuleSetId::Quake),
+        Some(bounds)
+    );
+    fixture.remove("models/first.md2");
+    fixture.remove(path);
+    assert_eq!(
+        builder
+            .precache(&fixture.vfs, b"MODELS\\FIRST.MD2", RuleSetId::Quake)
+            .unwrap(),
+        bounds
+    );
+    // The second file needs the existing detached recipe cache: its skin is
+    // already gone from the VFS and must not be loaded through a second cache.
+    assert_eq!(
+        builder
+            .precache(&fixture.vfs, b"models/second.md2", RuleSetId::Quake2)
+            .unwrap(),
+        bounds
+    );
+    let (assets, catalog) = builder.finish();
+    assert_eq!(assets.models().len(), initial_meshes + 2);
+    assert_eq!(catalog.capacity().registrations, 4);
+    assert_eq!(catalog.capacity().frame_vertices, 20);
+    assert!(catalog.diagnostics.is_empty());
+    for profile in [native, foreign] {
+        let first = binding(&catalog, "models/first.md2", profile, 0).unwrap();
+        let second = binding(&catalog, "models/second.md2", profile, 0).unwrap();
+        assert_ne!(first.model, second.model);
+        assert_eq!(
+            image(&assets, &catalog, "models/first.md2", profile, 0),
+            image(&assets, &catalog, "models/second.md2", profile, 0)
+        );
+    }
+    assert_eq!(
+        binding(&catalog, "models/first.md2", native, 0)
+            .unwrap()
+            .model,
+        binding(&catalog, "models/first.md2", foreign, 0)
+            .unwrap()
+            .model
+    );
+    assert_eq!(
+        catalog.bounds(b"MODELS\\FIRST.MD2", RuleSetId::Quake),
+        Some(bounds)
+    );
+}
+
+#[test]
+fn native_metadata_survives_unsupported_render_formats_and_builder_freeze() {
+    let mut sprite = include_bytes!("../../formats/tests/fixtures/models/group.spr").to_vec();
+    sprite[16..20].copy_from_slice(&5i32.to_le_bytes());
+    sprite[20..24].copy_from_slice(&3i32.to_le_bytes());
+    let fixture = support::Fixture::new(&[
+        (
+            "progs/group.mdl",
+            include_bytes!("../../formats/tests/fixtures/models/group.mdl").to_vec(),
+        ),
+        ("progs/group.spr", sprite),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let profile = native_profile(RuleSetId::Quake, palette);
+    let initial_meshes = assets.models().len();
+    let mut builder =
+        ModelCatalogBuilder::new(assets, [profile], [], ModelLimits::default()).unwrap();
+    let alias = builder
+        .precache(&fixture.vfs, b"progs/group.mdl", RuleSetId::Quake)
+        .unwrap();
+    assert_eq!(alias.mins, Vec3([-16.0; 3]));
+    assert_eq!(alias.maxs, Vec3([16.0; 3]));
+    let sprite = builder
+        .precache(&fixture.vfs, b"progs/group.spr", RuleSetId::Quake)
+        .unwrap();
+    assert_eq!(sprite.mins, Vec3([-2.0, -2.0, -1.0]));
+    assert_eq!(sprite.maxs, Vec3([2.0, 2.0, 1.0]));
+    fixture.remove("progs/group.mdl");
+    fixture.remove("progs/group.spr");
+    let (assets, catalog) = builder.finish();
+    assert_eq!(assets.models().len(), initial_meshes);
+    assert_eq!(catalog.diagnostics.len(), 2);
+    for (path, bounds, format) in [
+        (
+            "progs/group.mdl",
+            alias,
+            qa_formats::model::ModelFormat::Mdl,
+        ),
+        (
+            "progs/group.spr",
+            sprite,
+            qa_formats::model::ModelFormat::Spr,
+        ),
+    ] {
+        assert_eq!(
+            catalog.bounds(path.as_bytes(), RuleSetId::Quake),
+            Some(bounds)
+        );
+        let metadata = catalog.metadata(path.as_bytes()).unwrap();
+        assert_eq!(metadata.bounds, bounds);
+        assert_eq!(metadata.format, format);
+        assert_eq!(catalog.registration(path, profile), None);
+    }
+    assert_eq!(catalog.bounds(b"progs/absent.mdl", RuleSetId::Quake), None);
 }
 
 #[test]
@@ -683,9 +803,9 @@ fn one_filename_has_explicit_profile_variants_on_one_mesh_without_first_profile_
     let mut different_source = native;
     different_source.source_rules = RuleSetId::Quake3;
     let before = assets.models().len();
-    let catalog = load(
+    let (assets, catalog) = load(
         &fixture,
-        &mut assets,
+        assets,
         &[
             native,
             translated,
@@ -765,7 +885,7 @@ fn embedded_mdl_registration_uses_the_existing_source_to_target_index_translatio
     let mut request = ModelRequest::native("progs/test.mdl", RuleSetId::Quake2, Some(target));
     request.source_rules = RuleSetId::Quake;
     request.source_palette = Some(source);
-    let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
+    let (assets, catalog) = load(&fixture, assets, &[request], ModelLimits::default()).unwrap();
     let skin = assets
         .image(image(&assets, &catalog, request.path, request.profile(), 0))
         .unwrap();
@@ -787,13 +907,8 @@ fn failed_optional_profile_does_not_hide_another_registration_of_the_same_filena
         required: false,
         ..native
     };
-    let catalog = load(
-        &fixture,
-        &mut assets,
-        &[absent, native],
-        ModelLimits::default(),
-    )
-    .unwrap();
+    let (_assets, catalog) =
+        load(&fixture, assets, &[absent, native], ModelLimits::default()).unwrap();
     assert!(
         catalog
             .registration(native.path, native.profile())
@@ -820,9 +935,9 @@ fn optional_image_constructor_failure_isolated_from_healthy_same_filename_profil
             _ => optional.image_settings.intensity = f32::NAN,
         }
         let before = assets.models().len();
-        let catalog = load(
+        let (assets, catalog) = load(
             &fixture,
-            &mut assets,
+            assets,
             &[optional, native],
             ModelLimits::default(),
         )
@@ -846,7 +961,7 @@ fn optional_image_constructor_failure_isolated_from_healthy_same_filename_profil
         }
         // Required construction keeps its previous image-error category.
         optional.required = true;
-        let error = load(&fixture, &mut assets, &[optional], ModelLimits::default())
+        let error = load(&fixture, assets, &[optional], ModelLimits::default())
             .err()
             .unwrap();
         assert!(error.starts_with("model images: "));
@@ -906,10 +1021,9 @@ fn inline_model_ordinals_stay_in_their_world_namespace_without_copying_geometry(
     let first = world(&mut assets, 0.0);
     let second = world(&mut assets, 100.0);
     let meshes = assets.models().len();
-    let catalog = ModelCatalog::load(
+    let (assets, catalog) = ModelCatalog::load(
         &fixture.vfs,
-        &mut ArchiveReader::default(),
-        &mut assets,
+        assets,
         [],
         [first, second, first],
         ModelLimits::default(),
@@ -931,8 +1045,7 @@ fn inline_model_ordinals_stay_in_their_world_namespace_without_copying_geometry(
     assert!(
         ModelCatalog::load(
             &fixture.vfs,
-            &mut ArchiveReader::default(),
-            &mut assets,
+            assets,
             [],
             [first, second],
             ModelLimits {

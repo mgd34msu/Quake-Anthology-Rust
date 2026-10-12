@@ -4,7 +4,7 @@ use qa_core::{
     events::{FrameEvent, OutputSubmission},
     primitives::{
         ClientId, ModuleId, NativeDelivery, NativeTarget, PrintKind, ResourceNamespace,
-        SoundEmitter, SoundId, Vec3,
+        SoundEmitter, Vec3,
     },
     sys_events::{EventTime, SeatId},
 };
@@ -41,7 +41,6 @@ impl OutputCounts {
 
 pub fn dispatch(
     runtime: &mut Runtime,
-    resolve_sound: &mut impl FnMut(ModuleId, SoundId) -> Option<u32>,
     source: &mut impl FrameSource,
     scrollback: &mut qa_console::presentation::Scrollback,
     local: &[Option<ClientId>; SeatId::COUNT],
@@ -106,7 +105,8 @@ pub fn dispatch(
             },
         );
     }
-    for slot in 0..server.clients.len() {
+    let client_count = server.clients.len();
+    for slot in 0..client_count {
         let client = &mut server.clients[slot];
         let Some(id) = client.output else {
             continue;
@@ -123,8 +123,20 @@ pub fn dispatch(
             runtime.network.unbind(client_id);
             runtime.loopback.clear_client(client_id);
             server.disconnect(client_id);
+            runtime.config_publications[slot].reset();
+            runtime.native_numbers[slot].reset();
             counts.native_disconnected += 1;
             continue;
+        }
+        if let Some(protocol) = runtime
+            .network
+            .get(client_id, qa_core::loopback::Endpoint::Server)
+            .and_then(|connection| connection.commands.as_ref())
+            .map(|commands| commands.protocol)
+        {
+            let native_module = server.entities.columns.native_entity[client.entity.slot as usize]
+                .map(|native| native.module);
+            runtime.native_numbers[slot].refresh(&server.entities, native_module, protocol);
         }
         // A local client still has a native channel. During bounded resync,
         // finish its retained datagram/reliable flight under the old binding.
@@ -159,8 +171,7 @@ pub fn dispatch(
             id,
             &mut |record: qa_core::events::OutputRecord, texts: &mut qa_core::events::TextStore| {
                 let submission = if let FrameEvent::ConfigString {
-                    source,
-                    index,
+                    destination_index,
                     text,
                     ..
                 } = record.event
@@ -176,8 +187,7 @@ pub fn dispatch(
                                 &mut connection.channel,
                                 commands.protocol,
                                 record.sequence,
-                                source,
-                                index,
+                                destination_index,
                                 text,
                                 &mut runtime.config_publications[slot].pending,
                             ) {
@@ -217,9 +227,20 @@ pub fn dispatch(
                                         connection,
                                         record.sequence,
                                         delivery,
-                                        bytes,
+                                        &bytes[..payload.len()],
                                         &mut runtime.output_native_bytes,
                                         time,
+                                        client.module == delivery.module,
+                                        |cue, offset| {
+                                            project_cue(
+                                                cue,
+                                                delivery.module,
+                                                &server.entities,
+                                                &mut runtime.native_numbers[slot],
+                                                &runtime.config_publications[slot],
+                                                payload.cue(bytes, offset),
+                                            )
+                                        },
                                         |bytes| {
                                             crate::transport::admit_output(
                                                 &mut runtime.loopback,
@@ -245,34 +266,13 @@ pub fn dispatch(
                                 }
                             }
                             FrameEvent::Sound(event) => {
-                                let projected = connection
-                                    .commands
-                                    .as_ref()
-                                    .and_then(|commands| {
-                                        qa_core::configstrings::ConfigLayout::for_rules(
-                                            commands.protocol.rule_set(),
-                                        )
-                                        .zip(
-                                            qa_core::configstrings::ConfigLayout::for_rules(
-                                                delivery.source,
-                                            ),
-                                        )
-                                    })
-                                    .filter(|_| client.module == delivery.module)
-                                    .and_then(|(target, source)| {
-                                        let ordinal = resolve_sound(delivery.module, event.sound)?;
-                                        let index = source.resources[1].get(ordinal as usize)?;
-                                        let target_index = target.project_index(source, index)?;
-                                        Some((
-                                            index,
-                                            (target_index - target.resources[1].first as usize)
-                                                as u32,
-                                        ))
-                                    });
-                                if let Some((index, ordinal)) = projected {
-                                    match runtime.config_publications[slot]
-                                        .readiness(delivery.module, index)
-                                    {
+                                let projected = runtime.config_publications[slot].project_sound(
+                                    delivery.module,
+                                    event.source_ordinal,
+                                    event.sound,
+                                );
+                                if let Some((ordinal, readiness)) = projected {
+                                    match readiness {
                                         crate::client_resources::ResourceReadiness::Pending => {
                                             OutputSubmission::Unsent
                                         }
@@ -283,12 +283,13 @@ pub fn dispatch(
                                         crate::client_resources::ResourceReadiness::Ready => {
                                             let entity = sound_entity(
                                                 &server.entities,
-                                                runtime.local_snapshots[slot].as_ref(),
+                                                &mut runtime.native_numbers[slot],
                                                 event.entity,
                                                 delivery.module,
                                             );
                                             if event.entity.is_some() && entity.is_none() {
                                                 counts.native_unsupported += 1;
+                                                return OutputSubmission::BestEffort;
                                             }
                                             let positioned = delivery.reliable
                                             && connection.commands.as_ref().is_some_and(|commands| commands.protocol == qa_network::commands::packet::Protocol::Quake2Repro1038);
@@ -388,7 +389,7 @@ pub fn dispatch(
                             .get_mut(client_id, qa_core::loopback::Endpoint::Server)
                         && let Some(commands) = &connection.commands
                     {
-                        let mut bytes = [0; 8192];
+                        let mut bytes = [0; qa_core::primitives::OUTPUT_PAGE_BYTES];
                         match qa_network::outputs::print(
                             commands.protocol,
                             print.kind,
@@ -484,6 +485,7 @@ pub fn dispatch(
             client.hud.reset_inventory();
             client.hud_publication.reset();
             runtime.config_publications[slot].reset();
+            runtime.native_numbers[slot].reset();
         }
     }
     counts
@@ -527,30 +529,77 @@ fn delivery_visible(
 
 fn sound_entity(
     entities: &qa_world::entities::EntityTable,
-    snapshot: Option<&crate::snapshots::LocalSnapshot>,
+    numbers: &mut crate::output_namespace::NativeNumbers,
     emitter: Option<SoundEmitter>,
     module: ModuleId,
 ) -> Option<u32> {
-    let id = match emitter? {
-        SoundEmitter::Entity(id) => id,
+    match emitter? {
+        SoundEmitter::Entity(id) => numbers.project(entities, id),
         SoundEmitter::Native {
             namespace: ResourceNamespace::Module(owner),
             slot,
-        } => {
-            return (owner == module)
-                .then(|| u32::try_from(slot).ok())
-                .flatten();
-        }
-        SoundEmitter::Native {
-            namespace: ResourceNamespace::Client(_),
-            ..
-        } => return None,
-    };
-    let slot = entities.resolve(id)?;
-    if let Some(native) =
-        entities.columns.native_entity[slot].filter(|native| native.module == module)
-    {
-        return u32::try_from(native.slot).ok();
+        } if owner == module => numbers.native(entities, owner, slot),
+        _ => None,
     }
-    snapshot?.native_number(id)
+}
+fn project_cue(
+    cue: qa_network::outputs::Cue,
+    module: ModuleId,
+    entities: &qa_world::entities::EntityTable,
+    numbers: &mut crate::output_namespace::NativeNumbers,
+    publication: &crate::client_resources::ConfigPublication,
+    captured: Option<qa_core::primitives::NativeCueBinding>,
+) -> Result<qa_network::outputs::Cue, qa_network::outputs::Error> {
+    use qa_network::outputs::{Cue, Error};
+    let native_entity_namespace = numbers.is_native_module(module);
+    Ok(match cue {
+        Cue::Sound(mut sound) => {
+            let id = captured
+                .and_then(|binding| binding.sound)
+                .ok_or(Error::Unsupported)?;
+            let (ordinal, readiness) = publication
+                .project_sound(module, Some(u32::from(sound.index)), id)
+                .ok_or(Error::Unsupported)?;
+            match readiness {
+                crate::client_resources::ResourceReadiness::Pending => return Err(Error::Pending),
+                crate::client_resources::ResourceReadiness::Unsupported => {
+                    return Err(Error::Unsupported);
+                }
+                crate::client_resources::ResourceReadiness::Ready => {}
+            }
+            sound = sound.with_index(ordinal)?;
+            if let Some(entity) = sound.entity() {
+                sound.entity = u16::try_from(if native_entity_namespace {
+                    u32::from(entity)
+                } else {
+                    numbers
+                        .project(
+                            entities,
+                            captured
+                                .and_then(|binding| binding.entity)
+                                .ok_or(Error::Unsupported)?,
+                        )
+                        .ok_or(Error::Unsupported)?
+                })
+                .map_err(|_| Error::Unsupported)?;
+            }
+            Cue::Sound(sound)
+        }
+        Cue::MuzzleFlash(mut flash) => {
+            flash.entity = u16::try_from(if native_entity_namespace {
+                u32::from(flash.entity)
+            } else {
+                numbers
+                    .project(
+                        entities,
+                        captured
+                            .and_then(|binding| binding.entity)
+                            .ok_or(Error::Unsupported)?,
+                    )
+                    .ok_or(Error::Unsupported)?
+            })
+            .map_err(|_| Error::Unsupported)?;
+            Cue::MuzzleFlash(flash)
+        }
+    })
 }

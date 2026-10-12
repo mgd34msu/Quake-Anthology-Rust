@@ -1,6 +1,7 @@
 use crate::primitives::{
-    ClientId, EffectEvent, HudEvent, ModuleId, NativeDelivery, NativePayload, NativeTarget,
-    PrintEvent, PrintKind, RuleSetId, SoundEvent, TextId, TextLease,
+    ClientId, EffectEvent, HudEvent, ModuleId, NATIVE_CUE_CAPTURE_BYTES, NATIVE_PAYLOAD_BYTES,
+    NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES, NativeDelivery, NativePayload,
+    NativeTarget, PrintEvent, PrintKind, RuleSetId, SoundEvent, TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -18,6 +19,7 @@ pub enum FrameEvent {
         module: ModuleId,
         source: RuleSetId,
         index: u32,
+        destination_index: u32,
         text: TextId,
     },
 }
@@ -80,7 +82,7 @@ enum Delivery {
 struct OutputSlot {
     record: OutputRecord,
     remaining: usize,
-    texts: [Option<TextLease>; 4],
+    texts: [Option<TextLease>; NATIVE_PAYLOAD_PAGES],
 }
 #[derive(Default)]
 struct OutputCursor {
@@ -281,13 +283,14 @@ impl EventRing {
         event: FrameEvent,
     ) -> Result<u64, EventStorageError> {
         self.make_room();
-        let mut texts = [const { None }; 4];
-        let pages = match event {
-            FrameEvent::Print(p) => [Some(p.text), None, None, None],
-            FrameEvent::ConfigString { text, .. } => [Some(text), None, None, None],
-            FrameEvent::Native(payload) => payload.pages,
-            _ => [None; 4],
-        };
+        let mut texts = [const { None }; NATIVE_PAYLOAD_PAGES];
+        let mut pages = [None; NATIVE_PAYLOAD_PAGES];
+        match event {
+            FrameEvent::Print(p) => pages[0] = Some(p.text),
+            FrameEvent::ConfigString { text, .. } => pages[0] = Some(text),
+            FrameEvent::Native(payload) => pages = payload.pages,
+            _ => {}
+        }
         for (index, page) in pages.into_iter().enumerate() {
             if let Some(page) = page {
                 let Some(lease) = self.texts.lease(page) else {
@@ -351,18 +354,36 @@ impl EventRing {
         self.retire();
         Ok(sequence)
     }
+    /// A bounded producer staging failure is a rejected ring publication.
+    pub fn reject_publication(&mut self) {
+        self.rejected_publications += 1;
+    }
     pub fn native_message(
         &mut self,
         delivery: NativeDelivery,
         bytes: &[u8],
     ) -> Result<u64, EventStorageError> {
+        self.native_message_bound(delivery, bytes.len(), bytes)
+    }
+    /// Captured cue bindings are appended by the native boundary to these
+    /// same owned pages. The wire length excludes their immutable metadata.
+    pub fn native_message_bound(
+        &mut self,
+        delivery: NativeDelivery,
+        wire_length: usize,
+        bytes: &[u8],
+    ) -> Result<u64, EventStorageError> {
         self.make_room();
-        if bytes.len() > self.texts.width * 4 {
+        if wire_length > NATIVE_WIRE_BYTES.min(self.texts.width * NATIVE_WIRE_PAGES)
+            || bytes.len() > NATIVE_PAYLOAD_BYTES.min(self.texts.width * NATIVE_PAYLOAD_PAGES)
+            || wire_length > bytes.len()
+            || (bytes.len() - wire_length) % NATIVE_CUE_CAPTURE_BYTES != 0
+        {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
         }
-        let mut leases = [const { None }; 4];
-        let mut pages = [None; 4];
+        let mut leases = [const { None }; NATIVE_PAYLOAD_PAGES];
+        let mut pages = [None; NATIVE_PAYLOAD_PAGES];
         for (index, chunk) in bytes.chunks(self.texts.width).enumerate() {
             let Some(lease) = self.texts.insert(chunk) else {
                 self.texts.release_all(leases);
@@ -376,7 +397,8 @@ impl EventRing {
             delivery,
             FrameEvent::Native(NativePayload {
                 pages,
-                length: bytes.len(),
+                length: wire_length,
+                stored_length: bytes.len(),
             }),
         );
         self.texts.release_all(leases);
@@ -399,6 +421,7 @@ impl EventRing {
         module: ModuleId,
         source: RuleSetId,
         index: u32,
+        destination_index: u32,
         text: &[u8],
     ) -> Result<u64, EventStorageError> {
         if text.len() > self.texts.width || text.contains(&0) {
@@ -412,6 +435,7 @@ impl EventRing {
                 module,
                 source,
                 index,
+                destination_index,
                 text,
             },
         )
@@ -679,7 +703,7 @@ impl TextStore {
             self.refs[lease.id.slot as usize] -= 1;
         }
     }
-    pub fn release_all(&mut self, leases: [Option<TextLease>; 4]) {
+    pub fn release_all<const N: usize>(&mut self, leases: [Option<TextLease>; N]) {
         for lease in leases.into_iter().flatten() {
             self.release(lease);
         }
@@ -699,7 +723,7 @@ impl TextStore {
         payload: NativePayload,
         output: &'a mut [u8],
     ) -> Option<&'a [u8]> {
-        let output = output.get_mut(..payload.length)?;
+        let output = output.get_mut(..payload.stored_length)?;
         let mut written = 0;
         for page in payload.pages.into_iter().flatten() {
             let bytes = self.get(page)?;

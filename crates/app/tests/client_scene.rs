@@ -15,7 +15,6 @@ use qa_core::{
     },
     sys_events::SeatId,
 };
-use qa_formats::archive::ArchiveReader;
 use qa_gameplay::rules::appearance::AliasRoll;
 use qa_network::{
     commands::packet::Protocol,
@@ -31,10 +30,9 @@ fn catalog(rules: RuleSetId) -> (support::Fixture, Assets, ModelCatalog, ModelPr
     let mut assets = Assets::load().unwrap();
     let palette = support::palette(&mut assets);
     let profile = ModelRequest::native("", rules, Some(palette)).profile();
-    let catalog = ModelCatalog::load(
+    let (assets, catalog) = ModelCatalog::load(
         &fixture.vfs,
-        &mut ArchiveReader::default(),
-        &mut assets,
+        assets,
         [ModelRequest::native(
             "models/test/tris.md2",
             rules,
@@ -116,10 +114,9 @@ fn configuration_cache_selects_an_explicit_profile_and_never_a_same_name_fallbac
     foreign.palette = Some(target);
     foreign.image_settings =
         qa_render::material::resources::ImageSettings::native(RuleSetId::Quake);
-    let catalog = ModelCatalog::load(
+    let (assets, catalog) = ModelCatalog::load(
         &fixture.vfs,
-        &mut ArchiveReader::default(),
-        &mut assets,
+        assets,
         [native, foreign],
         [],
         ModelLimits::default(),
@@ -622,6 +619,7 @@ fn every_accepted_gun_change_is_captured_before_one_client_phase() {
         snapshot.apply(
             Incoming::Snapshot(ReceivedFrame::Quake2Repro(ring.frame(sequence).unwrap())),
             &mut player,
+            &qa_app::output_namespace::NativeNumbers::load(Protocol::Quake2Repro1038),
         );
         assert_eq!(player.view_weapon.frame, gunframe);
         // No CLIENT phase has advanced yet, even after two changes in a drain.

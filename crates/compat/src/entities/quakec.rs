@@ -479,6 +479,74 @@ impl EntityProjection {
         layout.write_vector(memory, value as u64, layout.size, bounds.maxs - bounds.mins)?;
         self.quakec_link(services, memory, strings, context, value)
     }
+    pub(crate) fn quakec_set_model(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        name: u32,
+    ) -> Result<(), CallError> {
+        self.quakec_identity(memory, context, value)?;
+        let models = services
+            .storage
+            .resources(context.module)
+            .ok_or(CallError::ConfigString)?[0];
+        let text = strings.cstring(u64::from(name))?;
+        let ordinal = (ENGINE_CALLS.resource_find)(services, context.module, models, text)?
+            .ok_or(CallError::Geometry)?;
+        let layout = self.quakec_layout()?;
+        memory.write_word(
+            u64::from(value) + layout.model.ok_or(CallError::Memory)? as u64,
+            name as i32,
+        )?;
+        layout.write_number(memory, u64::from(value), layout.model_index, ordinal as f32)?;
+        let bounds = if text.starts_with(b"*") {
+            Some(
+                Self::inline_model(services, services.world.ok_or(CallError::Geometry)?.0, text)?.1,
+            )
+        } else if context.native_rules == qa_core::primitives::RuleSetId::QuakeWorld {
+            None
+        } else if ordinal == 0 {
+            Some(Bounds::default())
+        } else {
+            Some((ENGINE_CALLS.model_bounds)(
+                services,
+                text,
+                context.native_rules,
+            )?)
+        };
+        if let Some(bounds) = bounds {
+            self.quakec_set_size(services, memory, strings, context, value, bounds)
+        } else {
+            self.quakec_publish(services, memory, strings, context, value)?;
+            Ok(())
+        }
+    }
+    pub(crate) fn quakec_sound_source(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(EntityId, Vec3, bool), CallError> {
+        let (entity, _) = self
+            .quakec_publish(services, memory, strings, context, value)?
+            .ok_or(CallError::Entity)?;
+        let slot = entity.slot as usize;
+        let body = services.server.entities.columns.body(slot);
+        let layout = self.quakec_layout()?;
+        let centered = context.native_rules != qa_core::primitives::RuleSetId::QuakeWorld
+            || layout.number(memory, u64::from(value), layout.solid)? == 4.0;
+        let position = if centered {
+            body.center()
+        } else {
+            body.position
+        };
+        Ok((entity, position, centered))
+    }
     pub(crate) fn quakec_noclip(
         &mut self,
         services: &mut EngineServices<'_>,

@@ -422,7 +422,7 @@ pub fn load_quakec(
             api: None,
             shutdown: Vec::new(),
             instruction_budget: 1_000_000,
-            configstrings: 64,
+            configstrings: 512,
             files: 32,
             entity_source: None,
         });

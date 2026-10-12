@@ -147,8 +147,13 @@ impl Server {
                     .ok_or(ServerError::OutputCapacity)?,
             )
             .ok_or(ServerError::OutputCapacity)?;
-        let mut events = EventRing::load(4096, max_clients + 33, rows, 8192)
-            .map_err(|_| ServerError::OutputCapacity)?;
+        let mut events = EventRing::load(
+            4096,
+            max_clients + 33,
+            rows,
+            qa_core::primitives::OUTPUT_PAGE_BYTES,
+        )
+        .map_err(|_| ServerError::OutputCapacity)?;
         let presentation = events
             .bind(OutputTarget::Presentation)
             .ok_or(ServerError::OutputCapacity)?;
@@ -228,10 +233,11 @@ impl Server {
         if client.connection.is_none() || self.entities.resolve(client.entity).is_none() {
             return false;
         }
-        if self.entities.active().any(|entity| {
-            entity != client.entity
-                && self.entities.columns.native_entity[entity.slot as usize] == Some(native)
-        }) {
+        if self
+            .entities
+            .find_native(native, Some(client.entity))
+            .is_some()
+        {
             return false;
         }
         let client = &mut self.clients[id.0 as usize];

@@ -6,17 +6,6 @@ use qa_core::{
     primitives::{ClientId, RuleSetId},
 };
 
-impl super::Modules {
-    pub(crate) fn sound_ordinal(
-        &self,
-        module: qa_core::primitives::ModuleId,
-        sound: qa_core::primitives::SoundId,
-    ) -> Option<u32> {
-        let row = self.row(module).filter(|row| row.state == State::Running)?;
-        row.storage.sound_ordinal(module, sound)
-    }
-}
-
 impl FrameHost {
     /// Cold registration only. CLIENT rendering never calls module storage.
     pub fn model_precaches(&self) -> Vec<(RuleSetId, &[u8])> {
@@ -29,10 +18,14 @@ impl FrameHost {
                 continue;
             }
             let rules = row.request.context.native_rules;
-            let Some(layout) = ConfigLayout::for_rules(rules) else {
+            let Some(models) = row
+                .storage
+                .resources(row.request.context.module)
+                .map(|resources| resources[0])
+            else {
                 continue;
             };
-            for index in layout.resources[0].range().skip(1) {
+            for index in models.range().skip(1) {
                 if let Ok((text, _)) = row.storage.configstring(row.request.context.module, index)
                     && !text.is_empty()
                     && !text.starts_with(b"*")
@@ -92,6 +85,20 @@ impl FrameHost {
 
     /// A row is recorded as published only after its text lease reaches the
     /// ring. Rejected rows are retried; successful rows are not duplicated.
+    pub(crate) fn configure_output_resources(&mut self) {
+        let capacity = self
+            .modules
+            .as_ref()
+            .map_or(0, |modules| modules.rows.len());
+        for publication in &mut self.runtime.config_publications {
+            publication.configure_sources(capacity);
+        }
+    }
+    pub(crate) fn bind_output_sounds(&mut self, bank: &qa_audio::Bank) {
+        for publication in &mut self.runtime.config_publications {
+            publication.bind_sounds(bank);
+        }
+    }
     pub(crate) fn publish_module_configs(&mut self) {
         let Some(modules) = &self.modules else { return };
         let runtime = &mut self.runtime;
@@ -102,76 +109,274 @@ impl FrameHost {
             if client.connection.is_none() || runtime.server.events.needs_resync(output) {
                 continue;
             }
-            let Some(row) = modules
-                .row(client.module)
-                .filter(|row| row.state == State::Running)
-            else {
-                continue;
-            };
-            // SERVER selects delivery from its channel, never CLIENT caches.
-            // Remote clients do not own an in-process resource projection.
-            let Some(target_layout) = runtime
+            let Some(protocol) = runtime
                 .network
-                .get(
-                    qa_core::primitives::ClientId(index as u32),
-                    qa_core::loopback::Endpoint::Server,
-                )
+                .get(ClientId(index as u32), qa_core::loopback::Endpoint::Server)
                 .and_then(|connection| connection.commands.as_ref())
-                .and_then(|commands| ConfigLayout::for_rules(commands.protocol.rule_set()))
+                .map(|commands| commands.protocol)
             else {
                 continue;
             };
-            let source = row.request.context.native_rules;
-            let Some(source_layout) = ConfigLayout::for_rules(source) else {
-                continue;
-            };
-            let Ok(revision) = row.storage.config_revision(client.module) else {
+            let Some(target) = ConfigLayout::for_rules(protocol.rule_set()) else {
                 continue;
             };
             let publication = &mut runtime.config_publications[index];
-            if !publication.begin(client.module, revision) {
+            publication.connection(client.module, target);
+            runtime.native_numbers[index].refresh(
+                &runtime.server.entities,
+                runtime.server.entities.columns.native_entity[client.entity.slot as usize]
+                    .map(|native| native.module),
+                protocol,
+            );
+            let changed = modules
+                .rows
+                .iter()
+                .flatten()
+                .filter(|row| row.state == State::Running)
+                .any(|row| {
+                    row.storage
+                        .config_revision(row.request.context.module)
+                        .is_ok_and(|revision| {
+                            publication.begin(row.request.context.module, revision)
+                        })
+                });
+            if !changed {
                 continue;
             }
             let mut complete = true;
-            for native_index in 0..row.request.configstrings.min(source_layout.count) {
-                let Ok((text, row_revision)) =
-                    row.storage.configstring(client.module, native_index)
-                else {
-                    continue;
-                };
-                if !publication.needs(native_index, row_revision) {
-                    continue;
+            // General config rows and native sound claims belong to the primary
+            // namespace. Secondary models/HUD/general config mapping is separate.
+            if let Some(row) = modules
+                .row(client.module)
+                .filter(|row| row.state == State::Running)
+                && let Some(source) = ConfigLayout::for_rules(row.request.context.native_rules)
+            {
+                for native_index in 0..row.request.configstrings.min(source.count) {
+                    let Ok((text, revision)) =
+                        row.storage.configstring(client.module, native_index)
+                    else {
+                        continue;
+                    };
+                    if !publication.needs(native_index, revision) {
+                        continue;
+                    }
+                    let target_index = target.project_index(source, native_index);
+                    let is_sound = source.resources[1].contains(native_index);
+                    let mut sample = None;
+                    if is_sound {
+                        let ordinal = native_index - source.resources[1].first as usize;
+                        sample = row
+                            .storage
+                            .sound_id(client.module, source.resources[1], ordinal as i32)
+                            .ok()
+                            .flatten();
+                        publication.primary_sound(ordinal as u32, !text.is_empty(), sample);
+                    }
+                    let Some(destination) = target_index else {
+                        publication.unsupported += 1;
+                        publication.seen(native_index, revision);
+                        continue;
+                    };
+                    // Q2/RR bare filenames and Q3 full paths have distinct
+                    // native resource codecs. Preserve exact same-codec text.
+                    let converted;
+                    let text = if is_sound
+                        && !text.is_empty()
+                        && (source.rules == RuleSetId::Quake3)
+                            != (target.rules == RuleSetId::Quake3)
+                    {
+                        let Some(name) = runtime
+                            .sound_bank
+                            .as_deref()
+                            .zip(sample)
+                            .and_then(|(bank, sample)| native_sound_name(target, bank, sample))
+                        else {
+                            publication.unsupported += 1;
+                            publication.published(destination, None);
+                            publication.seen(native_index, revision);
+                            continue;
+                        };
+                        converted = name;
+                        converted.as_bytes()
+                    } else {
+                        text
+                    };
+                    if text.len() > target.capacity(destination).unwrap_or(0) {
+                        publication.unsupported += 1;
+                        publication.published(destination, None);
+                        publication.seen(native_index, revision);
+                        continue;
+                    }
+                    if runtime.server.events.needs_resync(output) {
+                        complete = false;
+                        break;
+                    }
+                    match runtime.server.events.publish_configstring(
+                        Some(OutputTarget::Client(ClientId(index as u32))),
+                        client.module,
+                        source.rules,
+                        native_index as u32,
+                        destination as u32,
+                        text,
+                    ) {
+                        Ok(sequence) => {
+                            publication.published(destination, Some(sequence));
+                            publication.seen(native_index, revision);
+                        }
+                        Err(_) => {
+                            complete = false;
+                            break;
+                        }
+                    }
                 }
-                let Some(target_index) = target_layout.project_index(source_layout, native_index)
-                else {
-                    publication.unsupported += 1;
-                    publication.published(native_index, row_revision, None);
-                    continue;
-                };
-                if text.len() > target_layout.capacity(target_index).unwrap_or(0) {
-                    publication.unsupported += 1;
-                    publication.published(native_index, row_revision, None);
-                    continue;
+            }
+            publication.release_aliases();
+            if let Some(bank) = runtime.sound_bank.as_deref() {
+                // Running secondary module resources get first claim on free
+                // slots; resolving a PCM handle never rebuilds or hashes a path.
+                for row in modules.rows.iter().flatten().filter(|row| {
+                    row.state == State::Running && row.request.context.module != client.module
+                }) {
+                    let module = row.request.context.module;
+                    let Some(sounds) = row.storage.resources(module).map(|resources| resources[1])
+                    else {
+                        continue;
+                    };
+                    for ordinal in 1..sounds.count {
+                        let Some(sound) = row
+                            .storage
+                            .sound_id(module, sounds, ordinal as i32)
+                            .ok()
+                            .flatten()
+                        else {
+                            continue;
+                        };
+                        if !publish_sound(
+                            publication,
+                            &mut runtime.server.events,
+                            output,
+                            ClientId(index as u32),
+                            module,
+                            row.request.context.native_rules,
+                            sounds.first + ordinal,
+                            target,
+                            bank,
+                            sound,
+                        ) {
+                            complete = false;
+                            break;
+                        }
+                    }
                 }
-                if runtime.server.events.needs_resync(output) {
-                    complete = false;
-                    break;
+                // Registered PCM names are immutable. Preserve old numeric
+                // events after a primary row rewrite by relocating their sample,
+                // including when its module no longer declares the old ordinal.
+                for sound in 1..bank.len() {
+                    if !publish_sound(
+                        publication,
+                        &mut runtime.server.events,
+                        output,
+                        ClientId(index as u32),
+                        client.module,
+                        target.rules,
+                        target.resources[1].first,
+                        target,
+                        bank,
+                        qa_core::primitives::SoundId(sound as u32),
+                    ) {
+                        complete = false;
+                        break;
+                    }
                 }
-                let Ok(sequence) = runtime.server.events.publish_configstring(
-                    Some(OutputTarget::Client(ClientId(index as u32))),
-                    client.module,
-                    source,
-                    native_index as u32,
-                    text,
-                ) else {
-                    complete = false;
-                    break;
-                };
-                publication.published(native_index, row_revision, Some(sequence));
             }
             if complete {
-                publication.finish(revision);
+                for row in modules
+                    .rows
+                    .iter()
+                    .flatten()
+                    .filter(|row| row.state == State::Running)
+                {
+                    if let Ok(revision) = row.storage.config_revision(row.request.context.module) {
+                        publication.finish(row.request.context.module, revision);
+                    }
+                }
             }
         }
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Source provenance and destination namespace stay independent at publication"
+)]
+fn publish_sound(
+    publication: &mut crate::client_resources::ConfigPublication,
+    events: &mut qa_core::events::EventRing,
+    output: qa_core::events::OutputConsumerId,
+    client: ClientId,
+    module: qa_core::primitives::ModuleId,
+    source: RuleSetId,
+    source_index: u32,
+    target: ConfigLayout,
+    bank: &qa_audio::Bank,
+    sound: qa_core::primitives::SoundId,
+) -> bool {
+    let Some(ordinal) = publication.reserve_sound(sound) else {
+        return true;
+    };
+    let index = target.resources[1].first as usize + ordinal as usize;
+    // Ready and already-staged rows need no second config record. Pending with
+    // no sequence is a new reservation or a row whose publication was rejected.
+    if !publication.unpublished(index) {
+        return true;
+    }
+    let Some(name) = native_sound_name(target, bank, sound) else {
+        publication.unsupported += 1;
+        publication.published(index, None);
+        return true;
+    };
+    if name.as_bytes().len() > target.capacity(index).unwrap_or(0) {
+        publication.unsupported += 1;
+        publication.published(index, None);
+        return true;
+    }
+    if events.needs_resync(output) {
+        return false;
+    }
+    match events.publish_configstring(
+        Some(OutputTarget::Client(client)),
+        module,
+        source,
+        source_index,
+        index as u32,
+        name.as_bytes(),
+    ) {
+        Ok(sequence) => {
+            publication.published(index, Some(sequence));
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The sole outbound filename codec is the inverse of audio::sound_path.
+fn native_sound_name(
+    target: ConfigLayout,
+    bank: &qa_audio::Bank,
+    sound: qa_core::primitives::SoundId,
+) -> Option<qa_core::text::FixedText<8198>> {
+    let path = bank.name(sound)?;
+    let mut name = qa_core::text::FixedText::default();
+    if target.rules == RuleSetId::Quake3 {
+        name.append_bytes(path).ok()?;
+    } else if let Some(relative) = path.strip_prefix(b"sound/")
+        && !relative.starts_with(b"#")
+        && !relative.starts_with(b"*")
+    {
+        name.append_bytes(relative).ok()?;
+    } else {
+        name.append_bytes(b"#").ok()?;
+        name.append_bytes(path).ok()?;
+    }
+    Some(name)
 }

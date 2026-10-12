@@ -135,7 +135,6 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         ));
         qa_app::output::dispatch(
             &mut host.runtime,
-            &mut |_, _| None,
             &mut source,
             &mut host.console.scrollback,
             &host.local_clients,
@@ -168,7 +167,6 @@ fn local_resync_drains_native_flight_then_preserves_commands_snapshots_and_hud_l
         assert!(host.runtime.server.events.needs_resync(old));
         qa_app::output::dispatch(
             &mut host.runtime,
-            &mut |_, _| None,
             &mut source,
             &mut host.console.scrollback,
             &host.local_clients,

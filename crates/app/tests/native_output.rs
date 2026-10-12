@@ -51,8 +51,15 @@ impl FrameSource for Source {
 fn remote(runtime: &mut Runtime, protocol: Protocol, port: u16) -> ClientId {
     let id = runtime
         .server
-        .connect(Connection::Remote, ModuleId(0), PlayerTail::None, None)
+        .connect(Connection::Remote, ModuleId(7), PlayerTail::None, None)
         .unwrap();
+    assert!(runtime.server.bind_client_native(
+        id,
+        NativeEntity {
+            module: ModuleId(7),
+            slot: id.0 as i32 + 1,
+        },
+    ));
     let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
     channel.set_qport(port);
     runtime
@@ -103,6 +110,80 @@ fn publish_from(
 }
 
 #[test]
+fn native_cue_entities_use_the_entity_namespace_independently_of_resources() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    assert!(runtime.server.bind_client_native(
+        client,
+        NativeEntity {
+            module: ModuleId(8),
+            slot: 1,
+        },
+    ));
+    // The resource owner and native entity namespace are separate roles.
+    runtime.server.clients[client.0 as usize].module = ModuleId(7);
+    let emitter = runtime
+        .server
+        .entities
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(7),
+            qa_world::entities::AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    runtime.server.entities.columns.native_entity[emitter.slot as usize] = Some(NativeEntity {
+        module: ModuleId(7),
+        slot: 5,
+    });
+    let mut stored = [0u8; 4 + NATIVE_CUE_CAPTURE_BYTES];
+    stored[..4].copy_from_slice(&[1, 5, 0, 0]);
+    NativeCueBinding {
+        sound: None,
+        entity: Some(emitter),
+    }
+    .write_capture(0, &mut stored[4..])
+    .unwrap();
+    runtime
+        .server
+        .events
+        .native_message_bound(
+            NativeDelivery {
+                module: ModuleId(7),
+                source: RuleSetId::Quake2,
+                target: NativeTarget::Client(client),
+                origin: Vec3::default(),
+                reliable: false,
+                dupe_key: 0,
+                check_portals: false,
+            },
+            4,
+            &stored,
+        )
+        .unwrap();
+    let mut source = Source {
+        now: EventTime(10),
+        ..Default::default()
+    };
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_unsupported, 0);
+    assert_eq!(source.packets.len(), 1);
+    let projected = runtime.native_numbers[client.0 as usize]
+        .number(emitter)
+        .unwrap();
+    assert_ne!(projected, 5);
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let payload = receive(&mut peer, &source.packets[0].1);
+    let (record, length) =
+        qa_network::outputs::read_native_service(Protocol::Quake2_34, &payload).unwrap();
+    assert_eq!(length, payload.len());
+    assert!(
+        matches!(record, qa_network::outputs::NativeService::Cue(qa_network::outputs::Cue::MuzzleFlash(flash)) if u32::from(flash.entity) == projected)
+    );
+}
+
+#[test]
 fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack() {
     let mut runtime = Runtime::load(2, []).unwrap();
     let classic = remote(&mut runtime, Protocol::Quake2_34, 2000);
@@ -120,10 +201,7 @@ fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack(
     for (peer, port) in peers.iter_mut().zip([2000, 2001]) {
         peer.set_qport(port);
     }
-    let source_bytes = [
-        10, 2, b'p', 0x80, 0xff, 0, 9, 31, 49, 204, 128, 125, 41, 0, 247, 255, 162, 0, 1, 4, 1, 5,
-        0, 128, 4, b'l', 0xff, 0,
-    ];
+    let source_bytes = [10, 2, b'p', 0x80, 0xff, 0, 1, 5, 0, 128, 4, b'l', 0xff, 0];
     publish(&mut runtime, true, NativeTarget::All, &source_bytes);
     let mut source = Source {
         now: EventTime(10),
@@ -150,17 +228,10 @@ fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack(
             let (cue, n) =
                 qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
                     .unwrap();
-            let qa_network::outputs::NativeService::Cue(qa_network::outputs::Cue::Sound(sound)) =
-                cue
-            else {
-                panic!("sound");
-            };
-            assert_eq!(sound.position, Vec3([-1.125, 20.25, 128.125]));
-            assert_eq!((sound.entity, sound.channel, sound.index), (5, 1, 49));
-            remaining = &remaining[n..];
-            let (_, n) =
-                qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
-                    .unwrap();
+            assert!(
+                matches!(cue, qa_network::outputs::NativeService::Cue(qa_network::outputs::Cue::MuzzleFlash(flash))
+                if flash.entity == 5 && flash.flash == 0 && flash.silenced)
+            );
             remaining = &remaining[n..];
             let (layout, n) =
                 qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
@@ -247,7 +318,7 @@ fn converted_unreliable_bytes_survive_a_blocked_peer_and_reused_output_scratch()
         .unwrap(),
         Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap(),
     ];
-    let cue = [9, 4, 49, 247, 255, 162, 0, 1, 4];
+    let cue = [1, 5, 0, 128];
     let sequence = publish(&mut runtime, false, NativeTarget::All, &cue);
     let mut source = Source {
         reject: Some(2000),
@@ -292,7 +363,6 @@ fn dispatch(runtime: &mut Runtime, source: &mut Source) -> qa_app::output::Outpu
     let mut scrollback = qa_console::presentation::Scrollback::default();
     let counts = qa_app::output::dispatch(
         runtime,
-        &mut |_, _| None,
         source,
         &mut scrollback,
         &[None; SeatId::COUNT],
@@ -673,7 +743,6 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     };
     qa_app::output::dispatch(
         &mut host.runtime,
-        &mut |_, _| None,
         &mut source,
         &mut host.console.scrollback,
         &host.local_clients,
@@ -718,7 +787,6 @@ fn stalled_local_output_does_not_republish_unchanged_hud_records() {
     let now = source.now;
     qa_app::output::dispatch(
         &mut host.runtime,
-        &mut |_, _| None,
         &mut source,
         &mut host.console.scrollback,
         &host.local_clients,
@@ -763,7 +831,6 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     let mut scrollback = qa_console::presentation::Scrollback::default();
     qa_app::output::dispatch(
         &mut runtime,
-        &mut |_, _| None,
         &mut source,
         &mut scrollback,
         &[Some(id), None, None, None],
@@ -789,7 +856,6 @@ fn local_snapshots_leave_a_rejected_native_datagram_for_its_ring_consumer() {
     runtime.loopback.clear_client(id);
     qa_app::output::dispatch(
         &mut runtime,
-        &mut |_, _| None,
         &mut source,
         &mut scrollback,
         &[Some(id), None, None, None],

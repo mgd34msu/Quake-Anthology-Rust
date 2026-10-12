@@ -1,8 +1,6 @@
 //! Connection-owned wire scratch and explicit entity-number projection.
-use qa_core::{
-    primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, RuleSetId, Vec3},
-    stamps::StampSet,
-};
+use crate::output_namespace::NativeNumbers;
+use qa_core::primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, RuleSetId, Vec3};
 use qa_network::{
     commands::packet::{Error, Protocol},
     projection::{EntityProjection, EntityRecord, PlayerProjection},
@@ -23,140 +21,9 @@ pub struct EntitySource<'a> {
     pub players: &'a [qa_session::clients::Client],
     pub native_module: Option<ModuleId>,
     pub self_entity: EntityId,
-    pub native_clients: u32,
     pub visibility: Option<(&'a VisibilityWorld, &'a mut LeafScratch, &'a mut [u8])>,
     pub portals: Option<&'a AreaPortals>,
     pub resolve_model: &'a mut dyn FnMut(ModelRef) -> Option<u32>,
-}
-
-#[derive(Clone, Copy, Default)]
-struct Mapping {
-    id: Option<EntityId>,
-    number: Option<u32>,
-}
-
-/// Native ordinals and common lifetimes have separate namespaces. Foreign
-/// lifetimes retain their number until release or a native ordinal claims it.
-struct NativeNumbers {
-    slots: Box<[Mapping]>,
-    owners: Box<[Option<EntityId>]>,
-    reserved: StampSet,
-    module: Option<ModuleId>,
-    first: usize,
-    next_foreign: usize,
-}
-
-impl NativeNumbers {
-    fn load(protocol: Protocol) -> Self {
-        let limits = snapshot_limits(protocol);
-        let limit = limits.end_entity as usize;
-        Self {
-            slots: vec![Mapping::default(); MAX_ENTITIES].into_boxed_slice(),
-            owners: vec![None; limit].into_boxed_slice(),
-            reserved: StampSet::new(limit),
-            module: None,
-            first: limits.first_entity as usize,
-            next_foreign: limits.first_entity as usize,
-        }
-    }
-
-    fn release(&mut self, slot: usize) {
-        let previous = self.slots[slot];
-        if let Some(number) = previous.number
-            && self.owners[number as usize] == previous.id
-        {
-            self.owners[number as usize] = None;
-        }
-        self.slots[slot] = Mapping::default();
-    }
-
-    fn begin(&mut self, source: &EntitySource<'_>, protocol: Protocol) {
-        if self.module != source.native_module {
-            self.slots.fill(Mapping::default());
-            self.owners.fill(None);
-            self.module = source.native_module;
-        } else {
-            for slot in 0..self.slots.len() {
-                if self.slots[slot]
-                    .id
-                    .is_some_and(|id| source.entities.resolve(id).is_none())
-                {
-                    self.release(slot);
-                }
-            }
-        }
-        self.reserved.begin();
-        self.next_foreign = self.first;
-        // Vacant player ordinals remain reserved; a later connection must not
-        // inherit a foreign entity's number. QW reserves all 32 player slots.
-        let clients = if protocol == Protocol::QuakeWorld28 {
-            states::QW_PLAYER_SLOTS
-        } else {
-            source.native_clients as usize
-        };
-        let end = (self.first + clients).min(self.owners.len());
-        for number in self.first..end {
-            self.reserved.mark(number);
-        }
-    }
-
-    fn bind(&mut self, id: EntityId, number: u32) -> bool {
-        let number_index = number as usize;
-        if id.slot as usize >= self.slots.len()
-            || number_index < self.first
-            || number_index >= self.owners.len()
-        {
-            return false;
-        }
-        if let Some(previous) = self.owners[number_index]
-            && previous != id
-        {
-            self.release(previous.slot as usize);
-        }
-        self.release(id.slot as usize);
-        self.owners[number_index] = Some(id);
-        self.slots[id.slot as usize] = Mapping {
-            id: Some(id),
-            number: Some(number),
-        };
-        self.reserved.mark(number_index);
-        true
-    }
-
-    fn number(&self, id: EntityId) -> Option<u32> {
-        let row = self.slots.get(id.slot as usize)?;
-        (row.id == Some(id)).then_some(row.number).flatten()
-    }
-
-    fn foreign(&mut self, id: EntityId) -> Option<u32> {
-        if let Some(number) = self.number(id)
-            && !self.reserved.contains(number as usize)
-        {
-            return Some(number);
-        }
-        while self.next_foreign < self.owners.len()
-            && (self.owners[self.next_foreign].is_some()
-                || self.reserved.contains(self.next_foreign))
-        {
-            self.next_foreign += 1;
-        }
-        if self.next_foreign == self.owners.len() {
-            return None;
-        }
-        let number = self.next_foreign;
-        self.next_foreign += 1;
-        if self.bind(id, number as u32) {
-            // The binding is occupied, but foreign numbers are not native
-            // reservations and may be retained on the following frame.
-            Some(number as u32)
-        } else {
-            None
-        }
-    }
-
-    fn entity(&self, number: u32) -> Option<EntityId> {
-        self.owners.get(number as usize).copied().flatten()
-    }
 }
 
 struct Rows<const N: usize> {
@@ -207,7 +74,6 @@ impl<const N: usize> Rows<N> {
         visibility: &mut VisibilityScratch,
     ) -> Result<u64, Error> {
         self.count = 0;
-        numbers.begin(source, protocol);
         let mut rejected = 0;
         let origin = player.body.position + player.view_offset;
         visibility.begin(source, protocol, origin)?;
@@ -237,7 +103,7 @@ impl<const N: usize> Rows<N> {
             // Reserve native ordinals before foreign rows receive numbers,
             // even when this entity is hidden or outside the current PVS.
             if let Some(number) = native
-                && !numbers.bind(id, number)
+                && numbers.number(id) != Some(number)
             {
                 rejected += 1;
                 continue;
@@ -469,7 +335,6 @@ impl VisibilityScratch {
 pub(super) struct EntityScratch {
     protocol: Protocol,
     projection: EntityProjection,
-    numbers: NativeNumbers,
     rows: NativeRows,
     visibility: VisibilityScratch,
     qw_players: Box<[QwPlayer]>,
@@ -498,7 +363,6 @@ impl EntityScratch {
         Self {
             protocol,
             projection: EntityProjection::load(protocol),
-            numbers: NativeNumbers::load(protocol),
             rows: match protocol {
                 Protocol::NetQuake15 => NativeRows::NetQuake(Rows::load(capacity)),
                 Protocol::QuakeWorld28 => NativeRows::QuakeWorld(Rows::load(capacity)),
@@ -529,12 +393,6 @@ impl EntityScratch {
     pub fn view_entity(&self) -> Option<u32> {
         self.view_entity
     }
-    pub fn entity(&self, number: u32) -> Option<EntityId> {
-        self.numbers.entity(number)
-    }
-    pub fn native_number(&self, entity: EntityId) -> Option<u32> {
-        self.numbers.number(entity)
-    }
     pub fn projection(&self) -> &EntityProjection {
         &self.projection
     }
@@ -546,13 +404,10 @@ impl EntityScratch {
         &mut self,
         source: &mut EntitySource<'_>,
         player: &PlayerState,
-        native_client: u32,
+        numbers: &mut NativeNumbers,
     ) -> Result<(), Error> {
-        let number = if self.protocol == Protocol::Quake3_68 {
-            native_client
-        } else {
-            native_client.checked_add(1).ok_or(Error::Count)?
-        };
+        numbers.refresh(source.entities, source.native_module, self.protocol);
+        let number = numbers.number(source.self_entity).ok_or(Error::Context)?;
         macro_rules! prepare {
             ($rows:expr) => {
                 $rows.prepare(
@@ -561,7 +416,7 @@ impl EntityScratch {
                     source,
                     player,
                     number,
-                    &mut self.numbers,
+                    numbers,
                     &mut self.visibility,
                 )
             };
@@ -573,7 +428,7 @@ impl EntityScratch {
             NativeRows::Quake2Repro(rows) => prepare!(rows)?,
             NativeRows::Quake3(rows) => prepare!(rows)?,
         };
-        self.view_entity = self.numbers.number(source.self_entity);
+        self.view_entity = numbers.number(source.self_entity);
         Ok(())
     }
 
@@ -581,6 +436,7 @@ impl EntityScratch {
         &mut self,
         source: &mut EntitySource<'_>,
         projection: &PlayerProjection,
+        numbers: &NativeNumbers,
     ) -> Result<(), Error> {
         self.qw_player_count = 0;
         if self.protocol != Protocol::QuakeWorld28 {
@@ -593,7 +449,7 @@ impl EntityScratch {
             let Some(slot) = source.entities.resolve(client.entity) else {
                 continue;
             };
-            let Some(number) = self.numbers.number(client.entity) else {
+            let Some(number) = numbers.number(client.entity) else {
                 continue;
             };
             if number == 0 || number > self.qw_players.len() as u32 {

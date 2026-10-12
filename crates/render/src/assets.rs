@@ -246,6 +246,20 @@ pub struct SoftwareAlias {
     /// depth-write behavior, independently of the GL stage's continuous blend.
     pub alpha_cutoffs: Option<[f32; 2]>,
 }
+/// Raw indexed tile sampling is independent of the material's GL texmods.
+/// Native adapters choose timing precision and flow coefficients at load.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoftwareTiled {
+    pub turbulent: bool,
+    pub flow_speed: Option<f64>,
+    pub time_f32: bool,
+}
+impl SoftwareTiled {
+    pub(crate) const SIZE: u32 = 64;
+    pub(crate) const MINIMA: [i32; 2] = [-8192; 2];
+    pub(crate) const EXTENTS: [u32; 2] = [16384; 2];
+    pub(crate) const COORDINATE_MASK: i64 = (128 << 16) - 1;
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialSettings {
     pub cull: Cull,
@@ -260,6 +274,7 @@ pub struct MaterialSettings {
     pub content_flags: u32,
     pub portal: bool,
     pub software_alias: Option<SoftwareAlias>,
+    pub software_tiled: Option<SoftwareTiled>,
 }
 impl Default for MaterialSettings {
     fn default() -> Self {
@@ -276,6 +291,7 @@ impl Default for MaterialSettings {
             content_flags: 0,
             portal: false,
             software_alias: None,
+            software_tiled: None,
         }
     }
 }
@@ -848,6 +864,10 @@ fn stage_valid(stage: Stage, assets: &Assets) -> bool {
 fn settings_valid(settings: MaterialSettings, assets: &Assets) -> bool {
     finite(&[settings.sort, settings.time_offset])
         && settings.clamp_time.is_none_or(f32::is_finite)
+        && settings.software_tiled.is_none_or(|tile| {
+            (tile.turbulent || tile.flow_speed.is_some())
+                && tile.flow_speed.is_none_or(f64::is_finite)
+        })
         && settings.software_alias.is_none_or(|alias| {
             alias
                 .fullbright_light

@@ -329,7 +329,6 @@ pub(super) fn received_sounds_use_precache_and_the_presentation_ring(
         );
         let counts = qa_app::output::dispatch(
             &mut host.runtime,
-            &mut |_, _| None,
             &mut audio,
             &mut host.console.scrollback,
             &[Some(client), None, None, None],
@@ -529,7 +528,6 @@ pub(super) fn muzzle_packets_publish_product_sounds(
         );
         let counts = qa_app::output::dispatch(
             &mut host.runtime,
-            &mut |_, _| None,
             &mut audio,
             &mut host.console.scrollback,
             &[Some(client), None, None, None],

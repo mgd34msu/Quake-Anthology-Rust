@@ -73,6 +73,10 @@ impl Bank {
     pub fn find(&self, path: &str) -> Option<SoundId> {
         self.names.find_path(path).map(|id| SoundId(id.0))
     }
+    /// Numeric registered-name access; no path reconstruction or hashing.
+    pub fn name(&self, sound: SoundId) -> Option<&[u8]> {
+        self.names.get(qa_core::primitives::NameId(sound.0))
+    }
     pub fn len(&self) -> usize {
         self.samples.len()
     }

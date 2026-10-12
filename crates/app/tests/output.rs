@@ -210,7 +210,6 @@ fn high_client_ids_route_to_local_huds_once_even_with_duplicate_seat_bindings() 
     let mut scrollback = qa_console::presentation::Scrollback::default();
     let result = qa_app::output::dispatch(
         &mut runtime,
-        &mut |_, _| None,
         &mut source,
         &mut scrollback,
         &local,
@@ -588,6 +587,7 @@ fn configuration_reaches_client_only_through_reliable_packets_and_retires_on_ack
                 Some(OutputTarget::Client(id)),
                 ModuleId(7),
                 layout.rules,
+                index as u32,
                 index as u32,
                 &text,
             )

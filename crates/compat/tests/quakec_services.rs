@@ -4,7 +4,10 @@ mod quakec_program;
 use qa_compat::{
     abi::{QUAKEC, QuakeCCalls, UnknownCalls},
     quakec::{Builtins, Layout, Trap, Vm},
-    services::{CallContext, CallError, EngineServices, ServiceStorage},
+    services::{
+        CallContext, CallError, ENGINE_CALLS, EngineServices, ModelLoader, ModelLookup,
+        ServiceStorage,
+    },
 };
 use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{names::NameTable, primitives::*, sys_events::EventTime};
@@ -138,6 +141,13 @@ fn entity(calls: &QuakeCCalls<'_, '_>, vm: &Vm, value: u32) -> EntityId {
         .unwrap()
 }
 fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
+    with_model_services(rules, None, run);
+}
+fn with_model_services(
+    rules: RuleSetId,
+    mut model_loader: Option<&mut Models>,
+    run: impl FnOnce(&mut QuakeCCalls<'_, '_>),
+) {
     let names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
     let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
     let mut server = qa_session::clients::Server::load(1, 32, 1, 1, 1, 1).unwrap();
@@ -152,18 +162,30 @@ fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
     let mut commands = CommandBuffer::new();
     let vfs = qa_content::vfs::Vfs::default();
     let localization = qa_content::localization::Catalog::default();
-    let mut storage = ServiceStorage::load(&[(ModuleId(1), 64)], 0, &cvars).unwrap();
+    let config_count =
+        qa_core::configstrings::ConfigLayout::for_rules(rules).map_or(512, |layout| layout.count);
+    let mut storage =
+        ServiceStorage::load_native(&[(ModuleId(1), config_count, rules)], 0, &cvars).unwrap();
     let mut geometry = CollisionStore::new();
+    let mut tree = BrushTree::direct(0).unwrap();
+    tree.models
+        .push(qa_world::collision::brushes::ModelRoot::Leaf(0));
     let world = geometry
         .load_brushes(
             vec![],
             vec![],
             SurfaceTable::flags(vec![]),
-            BrushTree::direct(0).unwrap(),
-            vec![Bounds {
-                mins: Vec3([-100.0; 3]),
-                maxs: Vec3([100.0; 3]),
-            }],
+            tree,
+            vec![
+                Bounds {
+                    mins: Vec3([-100.0; 3]),
+                    maxs: Vec3([100.0; 3]),
+                },
+                Bounds {
+                    mins: Vec3([-4.0, -8.0, -12.0]),
+                    maxs: Vec3([8.0, 16.0, 24.0]),
+                },
+            ],
         )
         .unwrap();
     let mut scratch = geometry.scratch();
@@ -175,6 +197,10 @@ fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
         cvars: &mut cvars,
         commands: &mut commands,
         vfs: &vfs,
+        model_loader: model_loader
+            .as_deref_mut()
+            .map(|loader| loader as &mut dyn ModelLoader),
+        model_lookup: None,
         localization: &localization,
         registry: &registry,
         storage: &mut storage,
@@ -203,6 +229,359 @@ fn with_services(rules: RuleSetId, run: impl FnOnce(&mut QuakeCCalls<'_, '_>)) {
         unknown: &mut unknown,
     };
     run(&mut calls);
+}
+
+#[derive(Default)]
+struct Models {
+    loaded: Vec<(Vec<u8>, RuleSetId)>,
+    fail: bool,
+}
+impl ModelLookup for Models {
+    fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds> {
+        (!self.fail
+            && self
+                .loaded
+                .iter()
+                .any(|(name, rules)| name == path && *rules == source))
+        .then_some(Bounds {
+            mins: Vec3([-16.0; 3]),
+            maxs: Vec3([16.0; 3]),
+        })
+    }
+}
+impl ModelLoader for Models {
+    fn precache(
+        &mut self,
+        _: &qa_content::vfs::Vfs,
+        path: &[u8],
+        source: RuleSetId,
+    ) -> Result<Bounds, CallError> {
+        self.loaded.push((path.to_vec(), source));
+        if self.fail {
+            Err(CallError::File)
+        } else {
+            self.bounds(path, source).ok_or(CallError::Geometry)
+        }
+    }
+}
+
+#[test]
+fn precaches_preserve_words_exact_names_and_native_loading_rules() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut models = Models::default();
+        with_model_services(rules, Some(&mut models), |calls| {
+            let mut vm = vm(4);
+            let first = vm.insert_string(b"progs/test.mdl").unwrap() as u32;
+            let second = vm.insert_string(b"progs/test.mdl").unwrap() as u32;
+            let capital = vm.insert_string(b"progs/Test.mdl").unwrap() as u32;
+            assert_ne!(first, second);
+            for (builtin, word) in [(20, first), (75, second), (20, capital)] {
+                parameters(&mut vm, &[&[word]]);
+                calls.call(&mut vm, builtin, 1).unwrap();
+                assert_eq!(vm.image.globals[1], word);
+            }
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .configstring(calls.context.module, 1)
+                    .unwrap()
+                    .0,
+                b"progs/test.mdl"
+            );
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .configstring(calls.context.module, 2)
+                    .unwrap()
+                    .0,
+                b"progs/Test.mdl"
+            );
+            let sound = vm.insert_string(b"misc/ready.wav").unwrap() as u32;
+            parameters(&mut vm, &[&[sound]]);
+            calls.call(&mut vm, 19, 1).unwrap();
+            calls.call(&mut vm, 76, 1).unwrap();
+            assert_eq!(vm.image.globals[1], sound);
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .configstring(calls.context.module, 257)
+                    .unwrap()
+                    .0,
+                b"misc/ready.wav"
+            );
+            vm.active = true;
+            for builtin in [19, 20, 75, 76] {
+                assert_eq!(calls.call(&mut vm, builtin, 1), Err(Trap::Builtin));
+            }
+            for builtin in [68, 77] {
+                calls.call(&mut vm, builtin, 1).unwrap();
+                assert_eq!(vm.image.globals[1], sound);
+            }
+        });
+        assert_eq!(
+            models.loaded.len(),
+            if rules == RuleSetId::Quake { 2 } else { 0 }
+        );
+        assert!(models.loaded.iter().all(|(_, source)| *source == rules));
+    }
+}
+
+#[test]
+fn precache_empty_overflow_and_failed_native_load_have_original_side_effects() {
+    let mut models = Models {
+        fail: true,
+        ..Models::default()
+    };
+    with_model_services(RuleSetId::Quake, Some(&mut models), |calls| {
+        let mut vm = vm(4);
+        let name = vm.insert_string(b"progs/missing.mdl").unwrap() as u32;
+        parameters(&mut vm, &[&[name]]);
+        assert_eq!(calls.call(&mut vm, 20, 1), Err(Trap::Builtin));
+        assert_eq!(
+            calls
+                .services
+                .storage
+                .configstring(calls.context.module, 1)
+                .unwrap()
+                .0,
+            b"progs/missing.mdl"
+        );
+        // Native registration already happened; repeat registration does not
+        // retry Mod_ForName or replace the failed module's ordinal.
+        calls.call(&mut vm, 20, 1).unwrap();
+        for name in [b"".as_slice(), b" space", b"\tpath"] {
+            let word = vm.insert_string(name).unwrap() as u32;
+            parameters(&mut vm, &[&[word]]);
+            assert_eq!(calls.call(&mut vm, 19, 1), Err(Trap::Builtin));
+        }
+        let sounds = calls
+            .services
+            .storage
+            .resources(calls.context.module)
+            .unwrap()[1];
+        for ordinal in 1..256 {
+            let path = format!("s{ordinal}.wav");
+            assert_eq!(
+                (ENGINE_CALLS.resource_index)(
+                    calls.services,
+                    calls.context.module,
+                    sounds,
+                    path.as_bytes()
+                )
+                .unwrap(),
+                ordinal
+            );
+        }
+        let overflow = vm.insert_string(b"extra.wav").unwrap() as u32;
+        parameters(&mut vm, &[&[overflow]]);
+        assert_eq!(calls.call(&mut vm, 19, 1), Err(Trap::Builtin));
+    });
+    assert_eq!(models.loaded.len(), 1);
+}
+
+#[test]
+fn setmodel_only_uses_precached_ordinals_and_native_bounds_policy() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut models = Models::default();
+        with_model_services(rules, Some(&mut models), |calls| {
+            let mut vm = seeded_vm(calls, 4);
+            calls.call(&mut vm, 14, 0).unwrap();
+            let value = vm.image.globals[1];
+            let id = entity(calls, &vm, value);
+            let initial = Bounds {
+                mins: Vec3([-2.0; 3]),
+                maxs: Vec3([3.0; 3]),
+            };
+            write(&mut vm, value, b"mins", &initial.mins.0.map(f32::to_bits));
+            write(&mut vm, value, b"maxs", &initial.maxs.0.map(f32::to_bits));
+            let name = vm.insert_string(b"progs/test.mdl").unwrap() as u32;
+            parameters(&mut vm, &[&[value], &[name]]);
+            assert_eq!(calls.call(&mut vm, 3, 2), Err(Trap::Builtin));
+            assert_eq!(read(&vm, value, b"modelindex", 1), [0]);
+            parameters(&mut vm, &[&[name]]);
+            calls.call(&mut vm, 20, 1).unwrap();
+            parameters(&mut vm, &[&[value], &[name]]);
+            calls.call(&mut vm, 3, 2).unwrap();
+            assert_eq!(read(&vm, value, b"model", 1), [name]);
+            assert_eq!(read(&vm, value, b"modelindex", 1), [1.0f32.to_bits()]);
+            let expected = if rules == RuleSetId::Quake {
+                Vec3([-16.0; 3])
+            } else {
+                initial.mins
+            };
+            assert_eq!(read(&vm, value, b"mins", 3), expected.0.map(f32::to_bits));
+            assert_eq!(
+                calls.services.server.entities.columns.appearance[id.slot as usize].models[0],
+                ModelRef::native(ResourceNamespace::Module(calls.context.module), 1)
+            );
+            assert_eq!(
+                calls.services.server.area.bounds(id).is_some(),
+                rules == RuleSetId::Quake
+            );
+            parameters(&mut vm, &[&[value], &[0]]);
+            calls.call(&mut vm, 3, 2).unwrap();
+            assert_eq!(
+                read(&vm, value, b"mins", 3),
+                if rules == RuleSetId::Quake {
+                    [0; 3]
+                } else {
+                    initial.mins.0.map(f32::to_bits)
+                }
+            );
+            let inline = vm.insert_string(b"*1").unwrap() as u32;
+            parameters(&mut vm, &[&[inline]]);
+            calls.call(&mut vm, 20, 1).unwrap();
+            parameters(&mut vm, &[&[value], &[inline]]);
+            calls.call(&mut vm, 3, 2).unwrap();
+            assert_eq!(
+                read(&vm, value, b"mins", 3),
+                [-4.0f32, -8.0, -12.0].map(f32::to_bits)
+            );
+            assert_eq!(
+                read(&vm, value, b"size", 3),
+                [12.0f32, 24.0, 36.0].map(f32::to_bits)
+            );
+            assert!(calls.services.server.area.bounds(id).is_some());
+        });
+    }
+}
+
+#[test]
+fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 4);
+            calls.call(&mut vm, 14, 0).unwrap();
+            let value = vm.image.globals[1];
+            let id = entity(calls, &vm, value);
+            write(
+                &mut vm,
+                value,
+                b"origin",
+                &[11.0f32, 22.0, 33.0].map(f32::to_bits),
+            );
+            write(
+                &mut vm,
+                value,
+                b"mins",
+                &[-2.0f32, -4.0, -6.0].map(f32::to_bits),
+            );
+            write(
+                &mut vm,
+                value,
+                b"maxs",
+                &[6.0f32, 12.0, 18.0].map(f32::to_bits),
+            );
+            write(&mut vm, value, b"solid", &[2.0f32.to_bits()]);
+            let name = vm.insert_string(b"misc/test.wav").unwrap() as u32;
+            parameters(&mut vm, &[&[name]]);
+            calls.call(&mut vm, 19, 1).unwrap();
+            let rate = std::num::NonZeroU32::new(44100).unwrap();
+            let bank = std::sync::Arc::new(
+                qa_audio::Bank::load(
+                    rate,
+                    vec![(
+                        "sound/misc/test.wav".into(),
+                        Pcm {
+                            rate,
+                            channels: PcmChannels::Mono,
+                            samples: vec![1000; 4],
+                            loop_start: None,
+                        },
+                    )],
+                )
+                .unwrap(),
+            );
+            let sound = bank.find("sound/misc/test.wav").unwrap();
+            let sounds = calls
+                .services
+                .storage
+                .resources(calls.context.module)
+                .unwrap()[1];
+            calls
+                .services
+                .storage
+                .bind_sound_bank(calls.context.module, sounds, bank)
+                .unwrap();
+            calls.context.sound_rules = RuleSetId::Quake3;
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(qa_core::events::OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            let channel = if rules == RuleSetId::QuakeWorld {
+                9.0f32
+            } else {
+                1.0f32
+            };
+            parameters(
+                &mut vm,
+                &[
+                    &[value],
+                    &[channel.to_bits()],
+                    &[name],
+                    &[0.501f32.to_bits()],
+                    &[1.0f32.to_bits()],
+                ],
+            );
+            calls.call(&mut vm, 8, 5).unwrap();
+            let mut batch = calls.services.server.events.batch(consumer).unwrap();
+            let record = calls.services.server.events.next(&mut batch).unwrap();
+            let qa_core::events::FrameEvent::Sound(event) = record.event else {
+                panic!("sound record")
+            };
+            assert_eq!(event.sound, sound);
+            assert_eq!(event.entity, Some(SoundEmitter::Entity(id)));
+            assert_eq!(event.spatial_rules, RuleSetId::Quake3);
+            assert_eq!(
+                event.position,
+                if rules == RuleSetId::Quake {
+                    Vec3([13.0, 26.0, 39.0])
+                } else {
+                    Vec3([11.0, 22.0, 33.0])
+                }
+            );
+            assert_eq!(event.volume.to_bits(), (127.0f32 / 255.0).to_bits());
+            assert_eq!(event.channel, 1);
+            let delivery = record.delivery.unwrap();
+            assert_eq!(delivery.source, rules);
+            assert_eq!(delivery.target, NativeTarget::All);
+            assert_eq!(delivery.reliable, rules == RuleSetId::QuakeWorld);
+            assert!(calls.services.server.area.bounds(id).is_none());
+            if rules == RuleSetId::QuakeWorld {
+                let phs = calls
+                    .services
+                    .cvars
+                    .bind("sv_phs", calls.context.console)
+                    .unwrap();
+                for (enabled, target) in [("1", NativeTarget::Hearing), ("0", NativeTarget::All)] {
+                    calls.services.cvars.force_write(phs, enabled).unwrap();
+                    parameters(
+                        &mut vm,
+                        &[
+                            &[value],
+                            &[1.0f32.to_bits()],
+                            &[name],
+                            &[1.0f32.to_bits()],
+                            &[1.0f32.to_bits()],
+                        ],
+                    );
+                    calls.call(&mut vm, 8, 5).unwrap();
+                    let mut batch = calls.services.server.events.batch(consumer).unwrap();
+                    let records =
+                        std::iter::from_fn(|| calls.services.server.events.next(&mut batch))
+                            .collect::<Vec<_>>();
+                    let delivery = records.last().unwrap().delivery.unwrap();
+                    assert_eq!(delivery.target, target);
+                    assert!(!delivery.reliable);
+                }
+            }
+        });
+    }
 }
 fn seeded_vm(calls: &mut QuakeCCalls<'_, '_>, capacity: usize) -> Vm {
     let mut vm = vm(if calls.context.native_rules == RuleSetId::QuakeWorld {
@@ -823,4 +1202,72 @@ fn vm_rejects_zero_stride_before_entity_number_or_builtin_resolution() {
         ),
         Err(Trap::Memory)
     ));
+}
+
+#[test]
+fn native_staging_preserves_full_wire_capacity_with_one_or_dense_cues() {
+    use qa_core::events::{FrameEvent, NativeReceipt, OutputSubmission, OutputTarget};
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        for cue_count in [1, NATIVE_CUE_CAPACITY] {
+            with_services(rules, |calls| {
+                let consumer = calls
+                    .services
+                    .server
+                    .events
+                    .bind(OutputTarget::Client(ClientId(0)))
+                    .unwrap();
+                let mut wire = vec![6; NATIVE_WIRE_BYTES]; // native svc_nop after the recognized prefix
+                for cue in wire[..cue_count * NATIVE_CUE_MIN_WIRE_BYTES].chunks_exact_mut(3) {
+                    cue.copy_from_slice(&[9, 0, 1]);
+                }
+                for &byte in &wire {
+                    (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), u32::from(byte), 8)
+                        .unwrap();
+                }
+                assert_eq!(
+                    (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), 6, 8),
+                    Err(CallError::Capacity)
+                );
+                let sequence = (ENGINE_CALLS.native_message)(
+                    calls.services,
+                    NativeDelivery {
+                        module: ModuleId(1),
+                        source: rules,
+                        target: NativeTarget::Client(ClientId(0)),
+                        origin: Vec3::default(),
+                        reliable: true,
+                        dupe_key: 0,
+                        check_portals: false,
+                    },
+                )
+                .unwrap()
+                .unwrap();
+                let ring = &mut calls.services.server.events;
+                let mut batch = ring.batch(consumer).unwrap();
+                let FrameEvent::Native(payload) = ring.next(&mut batch).unwrap().event else {
+                    panic!("native payload")
+                };
+                let mut copied = vec![0; NATIVE_PAYLOAD_BYTES];
+                let bytes = ring.texts.copy_payload(payload, &mut copied).unwrap();
+                assert_eq!(&bytes[..NATIVE_WIRE_BYTES], wire);
+                assert_eq!(
+                    bytes.len(),
+                    NATIVE_WIRE_BYTES + cue_count * NATIVE_CUE_CAPTURE_BYTES
+                );
+                for offset in [0, (cue_count - 1) * NATIVE_CUE_MIN_WIRE_BYTES] {
+                    assert!(payload.cue(bytes, offset).is_some());
+                }
+                assert_eq!(ring.rejected_publications(), 0);
+                assert!(ring.submit(
+                    consumer,
+                    sequence,
+                    OutputSubmission::Reliable(NativeReceipt(71))
+                ));
+                assert_eq!(ring.acknowledge(consumer, NativeReceipt(70)), 0);
+                assert!(ring.texts.copy_payload(payload, &mut copied).is_some());
+                assert_eq!(ring.acknowledge(consumer, NativeReceipt(71)), 1);
+                assert!(ring.texts.copy_payload(payload, &mut copied).is_none());
+            });
+        }
+    }
 }

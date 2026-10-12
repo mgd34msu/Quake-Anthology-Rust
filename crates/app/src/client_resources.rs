@@ -91,7 +91,7 @@ impl ResourceState {
             };
             if self
                 .sounds
-                .bind_name(Some(bank), ordinal as u32, config.text)
+                .bind_name(Some(bank), ordinal as u32, config.text, self.layout.rules)
                 .is_err()
             {
                 return false;
@@ -114,8 +114,11 @@ impl ResourceState {
                 }
                 if changed && self.layout.resources[1].contains(index) {
                     let ordinal = index - self.layout.resources[1].first as usize;
-                    self.rejected +=
-                        u64::from(self.sounds.bind_name(bank, ordinal as u32, text).is_err());
+                    self.rejected += u64::from(
+                        self.sounds
+                            .bind_name(bank, ordinal as u32, text, self.layout.rules)
+                            .is_err(),
+                    );
                 }
                 true
             }
@@ -127,20 +130,25 @@ impl ResourceState {
     }
 }
 
-/// Publication metadata belongs to the producer. CLIENT reads only received
-/// configuration; a stalled channel never makes it observe server storage.
+/// Producer-owned configuration readiness and the destination sound namespace.
+/// CLIENT state above contains only received rows; it is never read to project
+/// a SERVER sound. All names still belong to source storage or the PCM bank.
 pub struct ConfigPublication {
     module: Option<ModuleId>,
-    revision: Option<u64>,
+    layout: Option<ConfigLayout>,
+    revisions: Box<[Option<u64>]>,
+    seen: Box<[u64]>,
     rows: Box<[PublishedConfig]>,
+    sounds: qa_audio::SoundBindings,
+    primary_claims: Box<[bool]>,
     pub unsupported: u64,
     pub pending: Option<(u64, usize)>,
 }
 #[derive(Clone, Copy, Default)]
 struct PublishedConfig {
-    revision: u64,
     sequence: Option<u64>,
     acknowledged: bool,
+    unsupported: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceReadiness {
@@ -150,68 +158,196 @@ pub enum ResourceReadiness {
 }
 impl ConfigPublication {
     pub fn load() -> Self {
+        let layout = ConfigLayout::for_rules(RuleSetId::Quake2Rerelease);
+        let count = layout.map_or(0, |layout| layout.count);
+        let sounds = layout.map_or(0, |layout| layout.resources[1].count as usize);
         Self {
             module: None,
-            revision: None,
-            rows: vec![
-                PublishedConfig::default();
-                ConfigLayout::for_rules(qa_core::primitives::RuleSetId::Quake2Rerelease)
-                    .map_or(0, |layout| layout.count)
-            ]
-            .into_boxed_slice(),
+            layout: None,
+            revisions: Box::new([]),
+            seen: vec![0; count].into_boxed_slice(),
+            rows: vec![PublishedConfig::default(); count].into_boxed_slice(),
+            sounds: qa_audio::SoundBindings::load(sounds),
+            primary_claims: vec![false; sounds].into_boxed_slice(),
             unsupported: 0,
             pending: None,
         }
     }
+    /// Source capacities are fixed when the module set is loaded.
+    pub fn configure_sources(&mut self, capacity: usize) {
+        self.revisions = vec![None; capacity].into_boxed_slice();
+        self.reset();
+    }
+    pub fn bind_sounds(&mut self, bank: &qa_audio::Bank) {
+        self.sounds.attach(bank);
+        self.revisions.fill(None);
+        self.seen.fill(0);
+        self.rows.fill(PublishedConfig::default());
+        self.primary_claims.fill(false);
+    }
     pub fn reset(&mut self) {
         self.module = None;
-        self.revision = None;
+        self.layout = None;
+        self.revisions.fill(None);
+        self.seen.fill(0);
         self.rows.fill(PublishedConfig::default());
+        self.sounds.clear();
+        self.primary_claims.fill(false);
         self.pending = None;
     }
-    pub fn begin(&mut self, module: ModuleId, revision: u64) -> bool {
-        if self.module != Some(module) {
+    pub fn connection(&mut self, module: ModuleId, layout: ConfigLayout) {
+        if self.module != Some(module) || self.layout.map(|old| old.rules) != Some(layout.rules) {
             self.reset();
             self.module = Some(module);
+            self.layout = Some(layout);
         }
-        self.revision != Some(revision)
+    }
+    pub fn begin(&self, module: ModuleId, revision: u64) -> bool {
+        self.revisions
+            .get(module.0 as usize)
+            .is_some_and(|seen| *seen != Some(revision))
     }
     pub fn needs(&self, index: usize, revision: u64) -> bool {
-        self.rows
-            .get(index)
-            .is_some_and(|seen| seen.revision != revision)
+        self.seen.get(index).is_some_and(|seen| *seen != revision)
     }
-    pub fn published(&mut self, index: usize, revision: u64, sequence: Option<u64>) {
-        if let Some(seen) = self.rows.get_mut(index) {
+    pub fn seen(&mut self, index: usize, revision: u64) {
+        if let Some(seen) = self.seen.get_mut(index) {
+            *seen = revision;
+        }
+    }
+    pub fn published(&mut self, destination: usize, sequence: Option<u64>) {
+        if let Some(seen) = self.rows.get_mut(destination) {
             *seen = PublishedConfig {
-                revision,
                 sequence,
                 acknowledged: false,
+                unsupported: sequence.is_none(),
             };
         }
     }
-    pub fn acknowledged(&mut self, module: ModuleId, index: usize, sequence: u64) {
-        if self.module == Some(module)
-            && let Some(row) = self.rows.get_mut(index)
+    /// The ring supplies the proved ACK and the immutable destination row.
+    /// An old row's receipt cannot ready its later rewrite or relocation.
+    pub fn unpublished(&self, destination: usize) -> bool {
+        self.rows
+            .get(destination)
+            .is_some_and(|row| row.sequence.is_none() && !row.unsupported)
+    }
+    pub fn acknowledged(&mut self, destination: usize, sequence: u64) {
+        if let Some(row) = self.rows.get_mut(destination)
             && row.sequence == Some(sequence)
         {
             row.acknowledged = true;
         }
     }
-    pub fn readiness(&self, module: ModuleId, index: usize) -> ResourceReadiness {
-        let Some(row) = self.rows.get(index).filter(|_| self.module == Some(module)) else {
+    pub fn readiness(&self, destination: usize) -> ResourceReadiness {
+        let Some(row) = self.rows.get(destination) else {
             return ResourceReadiness::Unsupported;
         };
         if row.acknowledged {
             ResourceReadiness::Ready
-        } else if row.sequence.is_some() || row.revision == 0 {
-            ResourceReadiness::Pending
-        } else {
+        } else if row.unsupported {
             ResourceReadiness::Unsupported
+        } else {
+            ResourceReadiness::Pending
         }
     }
-    pub fn finish(&mut self, revision: u64) {
-        self.revision = Some(revision);
+    pub fn finish(&mut self, module: ModuleId, revision: u64) {
+        if let Some(seen) = self.revisions.get_mut(module.0 as usize) {
+            *seen = Some(revision);
+        }
+    }
+    /// Actual nonempty primary registrations own their native ordinals. A new
+    /// primary claim may displace a secondary sample; its numeric SoundId can
+    /// be registered again in a free slot without aliasing the new primary.
+    pub fn primary_sound(
+        &mut self,
+        ordinal: u32,
+        claimed: bool,
+        sound: Option<qa_core::primitives::SoundId>,
+    ) {
+        let Some(layout) = self.layout else {
+            return;
+        };
+        if ordinal >= layout.resources[1].count {
+            return;
+        }
+        let previous = self.primary_claims[ordinal as usize];
+        self.primary_claims[ordinal as usize] = claimed;
+        if claimed || previous {
+            if self.sounds.sound(ordinal) != sound {
+                self.rows[layout.resources[1].first as usize + ordinal as usize] =
+                    PublishedConfig::default();
+            }
+            let _ = self.sounds.set(ordinal, sound);
+        }
+    }
+    /// Free duplicate secondary rows after a native primary claim, so growing
+    /// primary precaches do not consume two slots for the same loaded sample.
+    pub fn release_aliases(&mut self) {
+        let Some(layout) = self.layout else {
+            return;
+        };
+        // Lowest actual primary registration wins, independently of a lower
+        // secondary slot that happened to be occupied before primary growth.
+        for ordinal in (1..layout.resources[1].count).rev() {
+            if self.primary_claims[ordinal as usize] {
+                self.sounds.prefer(ordinal);
+            }
+        }
+        for ordinal in 1..layout.resources[1].count {
+            if !self.primary_claims[ordinal as usize]
+                && let Some(sound) = self.sounds.sound(ordinal)
+                && self.sounds.ordinal(sound) != Some(ordinal)
+            {
+                let _ = self.sounds.set(ordinal, None);
+                self.rows[layout.resources[1].first as usize + ordinal as usize] =
+                    PublishedConfig::default();
+            }
+        }
+    }
+    pub fn sound(&self, sound: qa_core::primitives::SoundId) -> Option<(u32, ResourceReadiness)> {
+        let layout = self.layout?;
+        let ordinal = self
+            .sounds
+            .ordinal(sound)
+            .filter(|&ordinal| ordinal < layout.resources[1].count)?;
+        Some((
+            ordinal,
+            self.readiness(layout.resources[1].first as usize + ordinal as usize),
+        ))
+    }
+    pub fn project_sound(
+        &self,
+        module: ModuleId,
+        native: Option<u32>,
+        sound: qa_core::primitives::SoundId,
+    ) -> Option<(u32, ResourceReadiness)> {
+        if Some(module) == self.module
+            && let Some(ordinal) = native
+        {
+            let layout = self.layout?;
+            if ordinal < layout.resources[1].count && self.sounds.sound(ordinal) == Some(sound) {
+                return Some((
+                    ordinal,
+                    self.readiness(layout.resources[1].first as usize + ordinal as usize),
+                ));
+            }
+        }
+        self.sound(sound)
+    }
+    /// Called only while changed precaches are published, never at emission.
+    /// Secondary slots grow downwards, leaving low native ordinals available.
+    pub fn reserve_sound(&mut self, sound: qa_core::primitives::SoundId) -> Option<u32> {
+        let layout = self.layout?;
+        if let Some((ordinal, _)) = self.sound(sound) {
+            return Some(ordinal);
+        }
+        let ordinal = (1..layout.resources[1].count).rev().find(|&ordinal| {
+            !self.primary_claims[ordinal as usize] && self.sounds.sound(ordinal).is_none()
+        })?;
+        self.sounds.set(ordinal, Some(sound)).ok()?;
+        self.rows[layout.resources[1].first as usize + ordinal as usize] =
+            PublishedConfig::default();
+        Some(ordinal)
     }
 }
 

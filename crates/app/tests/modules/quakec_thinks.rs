@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "../model_assets/support.rs"]
+mod model_support;
+
 const FIELDS: &[(u16, u16, &[u8])] = &[
     (3, 0, b"origin"),
     (3, 3, b"velocity"),
@@ -210,6 +213,145 @@ fn native_entity(host: &FrameHost, module: ModuleId, native: i32) -> EntityId {
                 })
         })
         .unwrap()
+}
+
+#[test]
+fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog() {
+    use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
+    use qa_compat::services::ModelLookup;
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut files = model_support::Fixture::models();
+        let mut assets = qa_render::Assets::load().unwrap();
+        let palette = model_support::palette(&mut assets);
+        let profile = ModelRequest::native("", rules, Some(palette)).profile();
+        let mut code = Code::new();
+        let precache = code.builtin(20);
+        let setmodel = code.builtin(3);
+        let initialize = code.function(&[
+            (StoreS, 80, 4, 0),
+            (Call1, 82, 0, 0),
+            (StoreEnt, 81, 4, 0),
+            (StoreS, 80, 7, 0),
+            (Call2, 83, 0, 0),
+            (Return, 1, 0, 0),
+        ]);
+        let frame = code.function(&[
+            (StoreEnt, 81, 4, 0),
+            (StoreS, 80, 7, 0),
+            (Call2, 83, 0, 0),
+            (Return, 1, 0, 0),
+        ]);
+        let late = code.function(&[(StoreS, 80, 4, 0), (Call1, 82, 0, 0), (Return, 1, 0, 0)]);
+        let mut vm = code.vm();
+        let name = vm.insert_string(b"progs/test.mdl").unwrap() as u32;
+        vm.image.globals[80] = name;
+        vm.image.globals[81] = 2 * vm.stride as u32;
+        vm.image.globals[82] = precache;
+        vm.image.globals[83] = setmodel;
+        write_vector(&mut vm, 2, b"mins", Vec3([-2.0; 3]));
+        write_vector(&mut vm, 2, b"maxs", Vec3([3.0; 3]));
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.vfs = std::mem::take(&mut files.vfs);
+        runtime.model_loader =
+            Some(ModelCatalogBuilder::new(assets, [profile], [], Default::default()).unwrap());
+        let module = ModuleId(1);
+        let (mut request, entities) = request(
+            &mut runtime,
+            module,
+            rules,
+            vm,
+            vec![initialize, frame, late],
+            frame,
+            10,
+            &[(2, 0.0, 0.0, 0)],
+        );
+        request.configstrings = 512;
+        request.initialize = vec![Export::clocked(CallbackId(0))];
+        let mut host = load(runtime, vec![request]);
+        assert_eq!(
+            host.module_state(module),
+            Some(qa_app::modules::State::Pending)
+        );
+        host.initialize_modules(Phase::Server);
+        assert_eq!(
+            host.module_state(module),
+            Some(qa_app::modules::State::Running)
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        let slot = entities[0].slot as usize;
+        let columns = &host.runtime.server.entities.columns;
+        assert_eq!(
+            columns.appearance[slot].models[0],
+            ModelRef::native(ResourceNamespace::Module(module), 1)
+        );
+        let expected_mins = if rules == RuleSetId::Quake {
+            Vec3([-16.0; 3])
+        } else {
+            Vec3([-2.0; 3])
+        };
+        assert_eq!(columns.mins[slot], expected_mins);
+        let loaded = host
+            .runtime
+            .model_loader
+            .as_ref()
+            .unwrap()
+            .bounds(b"progs/test.mdl", rules);
+        assert_eq!(loaded.is_some(), rules == RuleSetId::Quake);
+        let precaches = host.model_precaches();
+        assert_eq!(precaches, [(rules, b"progs/test.mdl".as_slice())]);
+        // The normal startup bridge registers every module's precaches into
+        // this same builder, including QW's name-only registration.
+        // Own the cold names only across the split Runtime borrow.
+        let requests = precaches
+            .into_iter()
+            .map(|(source_rules, path)| {
+                (std::str::from_utf8(path).unwrap().to_owned(), source_rules)
+            })
+            .collect::<Vec<_>>();
+        for (path, source_rules) in &requests {
+            host.runtime
+                .model_loader
+                .as_mut()
+                .unwrap()
+                .register_request(
+                    &host.runtime.vfs,
+                    ModelRequest::native(path, *source_rules, Some(palette)),
+                )
+                .unwrap();
+        }
+        let (_assets, models) = host.runtime.model_loader.take().unwrap().finish();
+        assert_eq!(
+            models.metadata(b"progs/test.mdl").unwrap().bounds,
+            Bounds {
+                mins: Vec3([-16.0; 3]),
+                maxs: Vec3([16.0; 3]),
+            }
+        );
+        host.set_model_catalog(std::sync::Arc::new(models), []);
+        files.remove("progs/test.mdl");
+        host.call_module_export(
+            module,
+            Export::clocked(CallbackId(1)),
+            ThinkTime::Seconds(1.0),
+        )
+        .unwrap();
+        assert_eq!(
+            host.runtime.server.entities.columns.mins[slot],
+            expected_mins
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        assert!(
+            host.call_module_export(
+                module,
+                Export::clocked(CallbackId(2)),
+                ThinkTime::Seconds(1.0)
+            )
+            .is_err()
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 1);
+        assert!(host.runtime.model_loader.is_none());
+    }
 }
 
 #[test]

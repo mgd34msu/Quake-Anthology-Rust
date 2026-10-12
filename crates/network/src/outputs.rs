@@ -19,6 +19,8 @@ pub enum Error {
     Unsupported,
     Truncated,
     Opcode,
+    /// A producer resource has not reached its current native ACK yet.
+    Pending,
 }
 impl From<MessageError> for Error {
     fn from(error: MessageError) -> Self {
@@ -73,6 +75,8 @@ pub fn native(
     source: RuleSetId,
     bytes: &[u8],
     output: &mut [u8],
+    primary: bool,
+    mut project: impl FnMut(Cue, usize) -> Result<Cue, Error>,
 ) -> Result<NativeEncoding, Error> {
     let source = match source {
         RuleSetId::Quake2 => Protocol::Quake2_34,
@@ -82,30 +86,32 @@ pub fn native(
     if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
         return Err(Error::Unsupported);
     }
-    if source == protocol {
-        let capacity = output.len();
-        let target = output
-            .get_mut(..bytes.len())
-            .ok_or(Error::Message(MessageError {
-                byte: capacity,
-                kind: crate::message::ErrorKind::Capacity,
-            }))?;
-        target.copy_from_slice(bytes);
-        return Ok(NativeEncoding {
-            length: bytes.len(),
-            unsupported: 0,
-        });
-    }
     let mut encoded = NativeEncoding::default();
     let mut remaining = bytes;
     while !remaining.is_empty() {
-        let (service, consumed) = read_native_service(source, remaining)?;
+        let offset = bytes.len() - remaining.len();
+        let (service, consumed) = match read_native_service(source, remaining) {
+            Ok(value) => value,
+            Err(Error::Unsupported) if primary && source == protocol => {
+                let capacity = output.len();
+                let target = output
+                    .get_mut(encoded.length..encoded.length + remaining.len())
+                    .ok_or(Error::Message(MessageError {
+                        byte: capacity,
+                        kind: crate::message::ErrorKind::Capacity,
+                    }))?;
+                target.copy_from_slice(remaining);
+                encoded.length += remaining.len();
+                return Ok(encoded);
+            }
+            Err(error) => return Err(error),
+        };
         remaining = &remaining[consumed..];
         let target = &mut output[encoded.length..];
         let result = match service {
-            NativeService::Cue(cue) => {
-                project_cue(protocol, cue).and_then(|cue| write_cue(protocol, cue, target))
-            }
+            NativeService::Cue(cue) => project(cue, offset)
+                .and_then(|cue| project_cue(protocol, cue))
+                .and_then(|cue| write_cue(protocol, cue, target)),
             NativeService::Print(value) => {
                 let mut level = value.level.unwrap_or(value.kind.default_level());
                 // Rerelease levels 4/5 request localized center display; classic

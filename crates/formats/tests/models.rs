@@ -16,6 +16,8 @@ const SP2: &[u8] = include_bytes!("fixtures/models/sprite.sp2");
 fn alias_groups_and_texture_indices_keep_native_animation_data() {
     let m = Model::parse(MDL).unwrap();
     assert_eq!(m.format, ModelFormat::Mdl);
+    assert_eq!(m.bounds.mins, Vec3([-16.0; 3]));
+    assert_eq!(m.bounds.maxs, Vec3([16.0; 3]));
     assert_eq!(m.frames.len(), 2);
     assert_eq!(m.skin_groups[0].members, 0..2);
     assert_eq!(
@@ -148,6 +150,44 @@ fn sprites_share_group_ranges_and_borrow_pixels_or_image_names() {
     assert_eq!(name, b"sprites/test.pcx");
     assert_eq!((m.sprites[0].width, m.sprites[0].height), (4, 2));
     assert_eq!(m.sprites[0].origin, [1, 1]);
+}
+
+#[test]
+fn sprite_native_bounds_use_integer_header_halves_without_changing_frames() {
+    let original = Model::parse(SPR).unwrap();
+    for [width, height] in [[5i32, 3i32], [1, 1]] {
+        let mut bytes = SPR.to_vec();
+        bytes[16..20].copy_from_slice(&width.to_le_bytes());
+        bytes[20..24].copy_from_slice(&height.to_le_bytes());
+        let model = Model::parse(&bytes).unwrap();
+        let half = [width / 2, width / 2, height / 2];
+        assert_eq!(
+            model.bounds.mins.0.map(f32::to_bits),
+            half.map(|v| ((-v) as f32).to_bits())
+        );
+        assert_eq!(
+            model.bounds.maxs.0.map(f32::to_bits),
+            half.map(|v| (v as f32).to_bits())
+        );
+        for (native, unchanged) in model.sprites.iter().zip(&original.sprites) {
+            assert_eq!(native.width, unchanged.width);
+            assert_eq!(native.height, unchanged.height);
+            assert_eq!(native.origin, unchanged.origin);
+            let Image::Indexed { pixels, .. } = native.image else {
+                panic!()
+            };
+            let Image::Indexed { pixels: old, .. } = unchanged.image else {
+                panic!()
+            };
+            assert_eq!(pixels, old);
+        }
+        assert!(
+            model
+                .frame_groups
+                .iter()
+                .all(|group| group.bounds == model.bounds)
+        );
+    }
 }
 
 #[test]

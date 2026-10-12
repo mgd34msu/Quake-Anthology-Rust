@@ -2,12 +2,15 @@
 //! triangles; polygon and tessellated-patch boundaries enter the same scanner.
 use super::{Camera, ClipVertex, GradientForm, ScreenVertex};
 use crate::assets::{
-    Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Sky, StageTexture, Vertex,
+    Assets, DepthFunc, ImageId, Material, MaterialId, MaterialSettings, Sky, SoftwareTiled,
+    StageTexture, Vertex,
 };
 use crate::edges::{DepthPolicy, Edges, ProjectedVertex, Span};
 use crate::scene::{CommandList, CpuPresentation, DrawItem, DrawKind, SceneRanges, SurfaceRef};
 use crate::shader::{AlphaFunc, AlphaGen, BlendFactor, Cull, RgbGen, TexCoordGen};
-use crate::stage::{DeformOp, DrawInputs, PreparedStage, StageEvaluator, alpha_pass};
+use crate::stage::{
+    DeformOp, DrawInputs, PreparedStage, PreparedTiled, StageEvaluator, alpha_pass,
+};
 use crate::surface_cache::{BuildState, CacheStats, LightGrid, SurfaceCache, SurfaceSource};
 use crate::world::WorldId;
 use crate::world::geometry::{GeometryPartition, TextureCoordinates};
@@ -299,7 +302,7 @@ struct Primitive {
     depth_key: u32,
     draw_rank: u32,
     cache: u32,
-    cache_image: Option<ImageId>,
+    indexed: Option<IndexedSource>,
     sky: Option<super::sky::Source>,
     mip: u8,
     fixed_adjust: [i64; 2],
@@ -315,6 +318,20 @@ struct Primitive {
     depth_override: Option<f32>,
     patch: bool,
     rgba: Option<usize>,
+}
+#[derive(Clone, Copy)]
+struct IndexedSource {
+    image: ImageId,
+    tiled: Option<PreparedTiled>,
+}
+impl IndexedSource {
+    fn minima(self, surface: &crate::world::geometry::WorldSurface) -> [i32; 2] {
+        if self.tiled.is_some() {
+            SoftwareTiled::MINIMA
+        } else {
+            surface.texture_minima
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -335,6 +352,7 @@ struct WorldCatalog {
     factors: Box<[super::rgba::Factor]>,
     skies: Box<[super::sky::SkyDefinition]>,
     surfaces_cache: Arc<crate::surface_cache::SurfaceCatalog>,
+    tiled_table: Arc<[i32; 256]>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -592,7 +610,15 @@ impl WorldRaster {
             boundary_offsets.push(boundary_offset);
             rgba.resize(boundary_offset + geometry.boundaries.len(), None);
             for (surface_index, surface) in geometry.surfaces.iter().enumerate() {
-                let cache_supported = surface.texture_coordinates == TextureCoordinates::Texels
+                let binding = world
+                    .bindings()
+                    .get(surface_index)
+                    .ok_or("invalid world surface binding")?;
+                let material = assets
+                    .material(binding.material)
+                    .ok_or("invalid world material")?;
+                let cache_supported = material.settings.software_tiled.is_none()
+                    && surface.texture_coordinates == TextureCoordinates::Texels
                     && surface
                         .texture_extents
                         .iter()
@@ -635,13 +661,6 @@ impl WorldRaster {
                     .boundaries
                     .get(surface.boundaries.range())
                     .ok_or("invalid world polygon boundary range")?;
-                let binding = world
-                    .bindings()
-                    .get(surface_index)
-                    .ok_or("invalid world surface binding")?;
-                let material = assets
-                    .material(binding.material)
-                    .ok_or("invalid world material")?;
                 if let Some(info) = surfaces.last_mut() {
                     info.sky = super::sky::Source::load(material, assets);
                 }
@@ -800,6 +819,7 @@ impl WorldRaster {
             factors: factors.into_boxed_slice(),
             skies: skies.into_boxed_slice(),
             surfaces_cache,
+            tiled_table: Arc::clone(evaluator.tiled_table()),
         });
         let bins = CoverageBins::load(
             height,
@@ -1383,17 +1403,30 @@ impl SurfacePrepare {
             let native = match camera.refdef.cpu_presentation {
                 CpuPresentation::Rgb => None,
                 CpuPresentation::Indexed { palette, .. } => {
-                    if assets.palette(palette).is_none()
-                        || !info.cache_supported
-                        || !cached_material(material)
-                        || assets
-                            .image(base.image)
-                            .is_none_or(|image| image.indexed.is_none())
-                    {
+                    let Some(source) = indexed_material(material, base) else {
+                        self.reject(stats);
+                        continue;
+                    };
+                    let Some(texture) = assets.image(source.image).and_then(|i| i.indexed.as_ref())
+                    else {
+                        self.reject(stats);
+                        continue;
+                    };
+                    let supported = if source.tiled.is_some() {
+                        surface.texture_coordinates == TextureCoordinates::Texels
+                            && texture.mip(0).is_some_and(|mip| {
+                                mip.width == SoftwareTiled::SIZE
+                                    && mip.height == SoftwareTiled::SIZE
+                            })
+                            && texture.transparent_index().is_none()
+                    } else {
+                        info.cache_supported
+                    };
+                    if assets.palette(palette).is_none() || !supported {
                         self.reject(stats);
                         continue;
                     }
-                    Some(base.image)
+                    Some(source)
                 }
             };
             // An eye-plane wall has no coverage. Projected f32 rounding can
@@ -1412,9 +1445,9 @@ impl SurfacePrepare {
                 || material.stages[0].alpha_test != AlphaFunc::None
                 || !material.stages[0].depth_write
                 || material.stages[0].depth_func != DepthFunc::Lequal
-                || native.is_some_and(|image| {
+                || native.is_some_and(|source| {
                     assets
-                        .image(image)
+                        .image(source.image)
                         .and_then(|i| i.indexed.as_ref())
                         .is_some_and(|t| t.cutout())
                 });
@@ -1442,7 +1475,7 @@ impl SurfacePrepare {
                     depth_key: reference.depth_key,
                     draw_rank: reference.draw_rank,
                     cache: info.cache,
-                    cache_image: native,
+                    indexed: native,
                     sky: None,
                     mip: 0,
                     fixed_adjust: [0; 2],
@@ -1491,31 +1524,38 @@ impl SurfacePrepare {
                 if super::culled(material.settings.cull, area) {
                     continue;
                 }
-                if native.is_some() {
-                    let nearzi = self.screen[..count]
-                        .iter()
-                        .map(|v| v.inverse_depth)
-                        .fold(0.0, f32::max);
-                    let scale = camera.screen_scale();
-                    let scale = scale[0].max(scale[1]);
-                    let distance = nearzi * scale * info.mip_adjust;
-                    primitive.mip = if distance >= 1.0 {
-                        0
-                    } else if distance >= 0.4 {
-                        1
-                    } else if distance >= 0.2 {
-                        2
-                    } else {
-                        3
-                    };
-                    let Some((planes, adjust)) =
-                        eye.and_then(|eye| native_planes(camera, surface, primitive.mip, eye))
-                    else {
+                if let Some(source) = native {
+                    if source.tiled.is_none() {
+                        let nearzi = self.screen[..count]
+                            .iter()
+                            .map(|v| v.inverse_depth)
+                            .fold(0.0, f32::max);
+                        let scale = camera.screen_scale();
+                        let scale = scale[0].max(scale[1]);
+                        let distance = nearzi * scale * info.mip_adjust;
+                        primitive.mip = if distance >= 1.0 {
+                            0
+                        } else if distance >= 0.4 {
+                            1
+                        } else if distance >= 0.2 {
+                            2
+                        } else {
+                            3
+                        };
+                    }
+                    let Some((planes, adjust)) = eye.and_then(|eye| {
+                        native_planes(camera, surface, source.minima(surface), primitive.mip, eye)
+                    }) else {
                         self.reject(stats);
                         continue;
                     };
                     primitive.planes = planes;
                     primitive.fixed_adjust = adjust;
+                    if let Some(tiled) = source.tiled {
+                        // The native compound assignment adds the double flow
+                        // term before narrowing the complete fixed adjustment.
+                        primitive.fixed_adjust[0] = (adjust[0] as f64 + tiled.flow_adjust) as i64;
+                    }
                 } else if product {
                     let Some((planes, depth_fit)) = Planes::load(&self.screen[..count]) else {
                         self.reject(stats);
@@ -1807,11 +1847,12 @@ impl SurfacePrepare {
                 normal: loaded.normal,
                 ..loaded.vertex
             };
-            if primitive.cache_image.is_some() {
+            if let Some(source) = primitive.indexed {
+                let minima = source.minima(surface);
                 vertex.texcoord = std::array::from_fn(|axis| {
                     let projection = surface.texture_projection[axis];
                     (crate::world::geometry::project_texture(projection, vertex.position)
-                        - surface.texture_minima[axis] as f32)
+                        - minima[axis] as f32)
                         / (1u32 << primitive.mip) as f32
                 });
             } else if let Some(recipe) = recipe
@@ -1938,6 +1979,7 @@ fn exact_difference(point: [f32; 3], origin: [f32; 3]) -> Option<[f64; 3]> {
 fn native_planes(
     camera: &Camera,
     surface: &crate::world::geometry::WorldSurface,
+    minima: [i32; 2],
     mip: u8,
     eye: f32,
 ) -> Option<(Planes, [i64; 2])> {
@@ -1962,7 +2004,7 @@ fn native_planes(
     let adjust = std::array::from_fn(|i| {
         let projection = surface.texture_projection[i];
         let camera_fixed = (scaled_origin.dot(axes[i]) * 65536.0 + 0.5) as i64;
-        let minimum = (i64::from(surface.texture_minima[i]) << 16) >> mip;
+        let minimum = (i64::from(minima[i]) << 16) >> mip;
         ((camera_fixed - minimum) as f32 + projection[3] * (65536.0 * mip_scale)) as i64
     });
     let planes = Planes {
@@ -1973,9 +2015,9 @@ fn native_planes(
     planes.finite().then_some((planes, adjust))
 }
 
-fn cached_material(material: &Material) -> bool {
+fn indexed_material(material: &Material, prepared: PreparedStage) -> Option<IndexedSource> {
     if material.settings.deforms.iter().any(Option::is_some) {
-        return false;
+        return None;
     }
     let base = &material.stages[0];
     let simple = base.blend.is_none()
@@ -1984,7 +2026,8 @@ fn cached_material(material: &Material) -> bool {
         && base.rgb_gen == RgbGen::Identity
         && base.alpha_gen == AlphaGen::Identity
         && base.texgen == TexCoordGen::Texture
-        && base.tcmods.iter().all(Option::is_none)
+        && (prepared.tiled.is_some() || base.tcmods.iter().all(Option::is_none))
+        && (prepared.tiled.is_none() || base.alpha_test == AlphaFunc::None)
         && base.sampler.wrap == crate::assets::Wrap::Repeat
         && !matches!(base.texture, StageTexture::Lightmap)
         && matches!(
@@ -1992,9 +2035,9 @@ fn cached_material(material: &Material) -> bool {
             AlphaFunc::None | AlphaFunc::GreaterZero | AlphaFunc::AtLeastHalf
         );
     if !simple {
-        return false;
+        return None;
     }
-    match &*material.stages {
+    let supported = match &*material.stages {
         [_] => true,
         [_, light] => {
             matches!(light.texture, StageTexture::Lightmap)
@@ -2011,7 +2054,11 @@ fn cached_material(material: &Material) -> bool {
                 })
         }
         _ => false,
-    }
+    };
+    supported.then_some(IndexedSource {
+        image: prepared.image,
+        tiled: prepared.tiled,
+    })
 }
 
 fn merge_stats(a: WorldStats, b: WorldStats) -> WorldStats {
@@ -2075,6 +2122,7 @@ fn consume_spans(
     rgba: &[Option<super::rgba::Recipe>],
     rgba_prepared: &[Option<super::rgba::Prepared>],
     factors: &[super::rgba::Factor],
+    tiled_table: &[i32; 256],
     assets: &Assets,
     camera: &Camera,
     buffers: &mut Buffers<'_>,
@@ -2105,7 +2153,8 @@ fn consume_spans(
         }
         return;
     }
-    if let Some(image) = primitive.cache_image {
+    if let Some(source) = primitive.indexed {
+        let image = source.image;
         let count = spans.count() as u64;
         let CpuPresentation::Indexed {
             palette,
@@ -2125,11 +2174,34 @@ fn consume_spans(
             stats.rejected += count;
             return;
         };
-        let Some(source) = cache.surface(primitive.cache) else {
+        if source.tiled.is_some() {
+            let Some(mip) = texture.mip(0) else {
+                stats.rejected += count;
+                return;
+            };
+            indexed_spans(
+                width,
+                spans,
+                primitive,
+                IndexedPixels {
+                    size: [mip.width, mip.height],
+                    transparent_index: None,
+                    texels: mip.indices(),
+                },
+                palette_resource,
+                palette.0,
+                16,
+                tiled_table,
+                buffers,
+                stats,
+            );
+            return;
+        }
+        let Some(surface) = cache.surface(primitive.cache) else {
             stats.rejected += count;
             return;
         };
-        let styles = source.lightmap().map_or([255; 4], |grid| grid.styles());
+        let styles = surface.lightmap().map_or([255; 4], |grid| grid.styles());
         let state = BuildState {
             texture_id: image.0,
             style_scales: styles.map(|style| {
@@ -2157,29 +2229,22 @@ fn consume_spans(
         );
         if let Some(cached) = cached {
             if let Some(texels) = cache.pixels(cached) {
-                for (_, span) in spans {
-                    let before = stats.pixels;
-                    stats.indexed_spans = stats.indexed_spans.saturating_add(1);
-                    native_span(
-                        width,
-                        span,
-                        primitive.planes,
-                        primitive.fixed_adjust,
-                        primitive.draw_rank,
-                        cached.width,
-                        cached.height,
-                        cached.transparent_index,
+                indexed_spans(
+                    width,
+                    spans,
+                    primitive,
+                    IndexedPixels {
+                        size: [cached.width, cached.height],
+                        transparent_index: cached.transparent_index,
                         texels,
-                        palette_resource,
-                        palette.0,
-                        refdef.perspective_step.pixels(),
-                        buffers,
-                        stats,
-                    );
-                    stats.indexed_pixels = stats
-                        .indexed_pixels
-                        .saturating_add(stats.pixels.saturating_sub(before));
-                }
+                    },
+                    palette_resource,
+                    palette.0,
+                    refdef.perspective_step.pixels(),
+                    tiled_table,
+                    buffers,
+                    stats,
+                );
             } else {
                 stats.rejected += count;
             }
@@ -2553,27 +2618,73 @@ fn rgba_spans(
     clippy::too_many_arguments,
     reason = "Keep independent validated draw and span inputs explicit at the raster dispatch boundary"
 )]
-fn native_span(
+fn indexed_spans(
     width: u32,
-    span: Span,
-    planes: Planes,
-    fixed_adjust: [i64; 2],
-    draw_rank: u32,
-    texture_width: u32,
-    texture_height: u32,
-    transparent_index: Option<u8>,
-    texels: &[u8],
+    spans: span_groups::SpanChain<'_>,
+    primitive: Primitive,
+    pixels: IndexedPixels<'_>,
     palette: &crate::surface_cache::PaletteLighting,
     palette_id: u32,
     chunk: u32,
+    tiled_table: &[i32; 256],
     buffers: &mut Buffers<'_>,
     stats: &mut WorldStats,
 ) {
+    for (_, span) in spans {
+        let before = stats.pixels;
+        stats.indexed_spans = stats.indexed_spans.saturating_add(1);
+        native_span(
+            width,
+            span,
+            primitive,
+            pixels,
+            palette,
+            palette_id,
+            chunk,
+            tiled_table,
+            buffers,
+            stats,
+        );
+        stats.indexed_pixels = stats
+            .indexed_pixels
+            .saturating_add(stats.pixels.saturating_sub(before));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct IndexedPixels<'a> {
+    size: [u32; 2],
+    transparent_index: Option<u8>,
+    texels: &'a [u8],
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The common native span consumes frozen indexed source and owned framebuffer loans."
+)]
+fn native_span(
+    width: u32,
+    span: Span,
+    primitive: Primitive,
+    pixels: IndexedPixels<'_>,
+    palette: &crate::surface_cache::PaletteLighting,
+    palette_id: u32,
+    chunk: u32,
+    tiled_table: &[i32; 256],
+    buffers: &mut Buffers<'_>,
+    stats: &mut WorldStats,
+) {
+    let planes = primitive.planes;
+    let tiled = primitive.indexed.and_then(|source| source.tiled);
     let mut perspective = super::span::Perspective::new(
         planes.inverse_depth,
         planes.texture,
-        fixed_adjust,
-        [texture_width, texture_height],
+        primitive.fixed_adjust,
+        if tiled.is_some() {
+            SoftwareTiled::EXTENTS
+        } else {
+            pixels.size
+        },
         span.x,
         span.y,
     );
@@ -2581,15 +2692,26 @@ fn native_span(
         span.x,
         span.count,
         chunk,
+        tiled.map(|_| SoftwareTiled::COORDINATE_MASK),
         |_, distance, minimum| perspective.endpoint(distance, minimum),
         |px, current| {
             let zi = planes.inverse_depth.at(px as f32, span.y as f32);
             let index = buffers.offset(width, px, span.y);
-            let color = texels[super::span::texel(current, texture_width, texture_height)];
-            if buffers.depth_test(index, zi, zi, draw_rank, DepthFunc::Lequal)
-                && Some(color) != transparent_index
+            let texel = tiled.map_or_else(
+                || super::span::texel(current, pixels.size[0], pixels.size[1]),
+                |sampling| sampling.texel(current, tiled_table),
+            );
+            let color = pixels.texels[texel];
+            if buffers.depth_test(index, zi, zi, primitive.draw_rank, DepthFunc::Lequal)
+                && Some(color) != pixels.transparent_index
             {
-                buffers.write_indexed(index, color, palette, palette_id, Some((zi, draw_rank)));
+                buffers.write_indexed(
+                    index,
+                    color,
+                    palette,
+                    palette_id,
+                    Some((zi, primitive.draw_rank)),
+                );
                 stats.pixels = stats.pixels.saturating_add(1);
             }
         },

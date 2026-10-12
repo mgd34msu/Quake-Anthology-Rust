@@ -71,11 +71,28 @@ pub(super) fn submit(
     bytes: &[u8],
     output: &mut [u8],
     time: EventTime,
+    primary: bool,
+    project: impl FnMut(
+        qa_network::outputs::Cue,
+        usize,
+    ) -> Result<qa_network::outputs::Cue, qa_network::outputs::Error>,
     admit: impl FnMut(&[u8]) -> bool,
 ) -> Result<(OutputSubmission, Submission, u64), ()> {
     let protocol = connection.commands.as_ref().ok_or(())?.protocol;
-    let encoded =
-        qa_network::outputs::native(protocol, delivery.source, bytes, output).map_err(|_| ())?;
+    let encoded = match qa_network::outputs::native(
+        protocol,
+        delivery.source,
+        bytes,
+        output,
+        primary,
+        project,
+    ) {
+        Ok(encoded) => encoded,
+        Err(qa_network::outputs::Error::Pending) => {
+            return Ok((OutputSubmission::Unsent, Submission::default(), 0));
+        }
+        Err(_) => return Err(()),
+    };
     let bytes = &output[..encoded.length];
     let (disposition, submitted) =
         submit_encoded(connection, sequence, delivery, bytes, time, admit)?;

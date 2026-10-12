@@ -31,6 +31,20 @@ impl Sound {
     pub fn entity(self) -> Option<u16> {
         (self.flags & ENTITY != 0).then_some(self.entity)
     }
+    /// Source flags stay byte-exact when its ordinal is unchanged. Remapping
+    /// changes only the native index-width presence bit.
+    pub fn with_index(mut self, index: u32) -> Result<Self, Error> {
+        let index = u16::try_from(index).map_err(|_| Error::Unsupported)?;
+        if self.index != index {
+            self.index = index;
+            if index > u16::from(u8::MAX) {
+                self.flags |= INDEX16;
+            } else {
+                self.flags &= !INDEX16;
+            }
+        }
+        Ok(self)
+    }
     pub fn position(self) -> Option<Vec3> {
         (self.flags & POSITION != 0).then_some(self.position)
     }

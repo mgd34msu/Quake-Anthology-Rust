@@ -1,6 +1,53 @@
 use qa_core::primitives::ThinkTime;
-use qa_core::primitives::{EntityId, ModuleId};
+use qa_core::primitives::{EntityId, ModuleId, NativeEntity};
 use qa_world::entities::{AllocationPolicy, EntityTable};
+
+#[test]
+fn native_lookup_keeps_module_identity_exclusion_and_live_generation() -> Result<(), &'static str> {
+    let mut table = EntityTable::new(4, 1).map_err(|_| "table")?;
+    let native = NativeEntity {
+        module: ModuleId(1),
+        slot: 2,
+    };
+    let other = NativeEntity {
+        module: ModuleId(2),
+        ..native
+    };
+    let now = ThinkTime::Seconds(3.0);
+    let first = table
+        .allocate(now, native.module, AllocationPolicy::EDICT)
+        .ok_or("first")?
+        .id;
+    let second = table
+        .allocate(now, other.module, AllocationPolicy::EDICT)
+        .ok_or("second")?
+        .id;
+    table.columns.native_entity[first.slot as usize] = Some(native);
+    table.columns.native_entity[second.slot as usize] = Some(other);
+    assert_eq!(table.find_native(native, None), Some(first));
+    assert_eq!(table.find_native(other, None), Some(second));
+    assert_eq!(table.find_native(native, Some(first)), None);
+    // Conflict detection must find a later duplicate even when self is first.
+    table.columns.native_entity[second.slot as usize] = Some(native);
+    assert_eq!(table.find_native(native, Some(first)), Some(second));
+    table.columns.native_entity[second.slot as usize] = Some(other);
+    assert!(table.release(first, now));
+    assert_eq!(table.find_native(native, None), None);
+    let replacement = table
+        .allocate(
+            ThinkTime::Seconds(4.0),
+            native.module,
+            AllocationPolicy::EDICT,
+        )
+        .ok_or("replacement")?
+        .id;
+    assert_eq!(replacement.slot, first.slot);
+    assert_ne!(replacement.generation, first.generation);
+    table.columns.native_entity[replacement.slot as usize] = Some(native);
+    assert_eq!(table.find_native(native, None), Some(replacement));
+    assert!(table.resolve(first).is_none());
+    Ok(())
+}
 
 #[test]
 fn ascending_lifetimes_cross_word_and_capacity_boundaries() -> Result<(), &'static str> {

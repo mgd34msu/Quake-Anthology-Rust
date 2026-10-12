@@ -128,7 +128,9 @@ pub fn load_bank(
         .map(|path| (qa_core::names::canonical_path(path), rules, true))
         .collect::<Vec<_>>();
     host.for_each_native_sound(|name, rules| {
-        if let Some(path) = qa_audio::sound_path(name).map_err(|e| format!("sound path: {e:?}"))? {
+        if let Some(path) =
+            qa_audio::sound_path(name, rules).map_err(|e| format!("sound path: {e:?}"))?
+        {
             let path = std::str::from_utf8(path.as_bytes()).map_err(|e| e.to_string())?;
             registered.push((qa_core::names::canonical_path(path), rules, false));
         }

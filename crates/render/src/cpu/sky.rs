@@ -244,6 +244,7 @@ pub(super) fn layered_span(
         span.x,
         span.count,
         32,
+        None,
         |x, _, _| draw.endpoint(x, span.y),
         |px, current| {
             let sx = (current[0] >> 16) & 127;
@@ -414,6 +415,7 @@ pub(super) fn background(
                 start,
                 x - start,
                 chunk,
+                None,
                 |_, distance, minimum| perspective.endpoint(distance, minimum),
                 |px, current| {
                     let color = mip.indices()[super::span::texel(current, mip.width, mip.height)];

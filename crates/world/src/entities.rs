@@ -438,6 +438,13 @@ impl EntityTable {
         })
     }
 
+    /// Native ordinals resolve only through live common lifetimes, in slot order.
+    pub fn find_native(&self, native: NativeEntity, exclude: Option<EntityId>) -> Option<EntityId> {
+        self.active().find(|id| {
+            Some(*id) != exclude && self.columns.native_entity[id.slot as usize] == Some(native)
+        })
+    }
+
     /// A disconnected client's slot stays reserved, but its lifetime ends.
     pub fn reset_client(&mut self, id: EntityId) -> Option<EntityId> {
         let slot = self

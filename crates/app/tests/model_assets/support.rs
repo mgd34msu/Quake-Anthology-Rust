@@ -34,6 +34,9 @@ impl Fixture {
             ("progs/test.mdl", mdl()),
         ])
     }
+    pub fn remove(&self, path: &str) {
+        qa_platform::files::remove_file(self.root.join(path)).unwrap();
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {

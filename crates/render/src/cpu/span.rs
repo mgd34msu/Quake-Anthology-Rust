@@ -46,6 +46,7 @@ pub(super) fn walk(
     start: u32,
     count: u32,
     chunk: u32,
+    coordinate_mask: Option<i64>,
     mut endpoint: impl FnMut(u32, f32, i64) -> [i64; 2],
     mut write: impl FnMut(u32, [i64; 2]),
 ) {
@@ -64,6 +65,9 @@ pub(super) fn walk(
         } else {
             [0; 2]
         };
+        if let Some(mask) = coordinate_mask {
+            current = current.map(|coordinate| coordinate & mask);
+        }
         for offset in 0..count {
             write(x + offset, current);
             current[0] += step[0];

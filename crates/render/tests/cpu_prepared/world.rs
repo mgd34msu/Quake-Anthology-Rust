@@ -9,6 +9,9 @@ use crate::world::{SurfaceMaterial, VisibleSurface};
 use qa_core::primitives::{Bounds, Plane, Vec3};
 use qa_world::visibility::{PvsRows, SurfaceSpan, VisLeaf, VisibilityWorld};
 
+#[path = "tiled.rs"]
+mod tiled;
+
 fn fixture_world(
     assets: &mut Assets,
     depth: f32,
@@ -2716,7 +2719,7 @@ fn native_inverse_depth_uses_winquake_reciprocal_multiply_order() {
         let origin = normal.0[2] * inverse_distance - center[0] * x - center[1] * y;
         let plane = surface.plane.unwrap();
         let eye = plane.distance - plane.normal.dot(camera.refdef.origin);
-        let (actual, _) = native_planes(&camera, &surface, 0, eye).unwrap();
+        let (actual, _) = native_planes(&camera, &surface, surface.texture_minima, 0, eye).unwrap();
         assert_eq!(
             [
                 actual.inverse_depth.x,

@@ -12,8 +12,9 @@ use qa_core::{
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
-        GeometryId, IndexSpan, ModelRules, ModuleId, NameId, NativeDelivery, NativeEntity,
-        PrintKind, RuleSetId, SoundEvent, UserCmd, Vec3,
+        GeometryId, IndexSpan, ModelRules, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
+        NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, NameId, NativeCueBinding, NativeDelivery,
+        NativeEntity, PrintKind, RuleSetId, SoundEvent, UserCmd, Vec3,
     },
 };
 use qa_session::clients::Server;
@@ -44,6 +45,29 @@ impl From<crate::memory::MemoryError> for CallError {
     }
 }
 
+/// The cold and frozen model catalog share the same native metadata owner.
+pub trait ModelLookup {
+    fn bounds(&self, path: &[u8], source: RuleSetId) -> Option<Bounds>;
+}
+pub trait ModelLoader: ModelLookup {
+    fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
+}
+
+const QUAKE_RESOURCES: [IndexSpan; 3] = [
+    IndexSpan {
+        first: 0,
+        count: 256,
+    },
+    IndexSpan {
+        first: 256,
+        count: 256,
+    },
+    IndexSpan {
+        first: 512,
+        count: 0,
+    },
+];
+
 /// Supplied by the module host. No capability inherits another role's rules.
 #[derive(Clone, Copy)]
 pub struct CallContext {
@@ -69,7 +93,9 @@ struct OpenFile {
 }
 struct ConfigRange {
     module: ModuleId,
+    native_rules: RuleSetId,
     span: IndexSpan,
+    resources: Option<[IndexSpan; 3]>,
     message: Box<[u8]>,
     written: usize,
     revision: u64,
@@ -97,6 +123,7 @@ pub struct ServiceStorage {
     no_areas: CvarHandle,
     max_clients: CvarHandle,
     movement: qa_console::movement::MovementHandles,
+    qw_phs: CvarHandle,
 }
 
 impl ServiceStorage {
@@ -122,20 +149,32 @@ impl ServiceStorage {
         Self::load_with(
             configs
                 .iter()
-                .map(|&(module, count, rules)| (module, count, ConfigLayout::for_rules(rules))),
+                .map(|&(module, count, rules)| (module, count, Some(rules))),
             files,
             cvars,
         )
     }
     fn load_with(
-        configs: impl Iterator<Item = (ModuleId, usize, Option<ConfigLayout>)>,
+        configs: impl Iterator<Item = (ModuleId, usize, Option<RuleSetId>)>,
         files: usize,
         cvars: &Cvars,
     ) -> Result<Self, CallError> {
         let mut total = 0usize;
         let mut ranges = Vec::new();
         let mut capacities = Vec::new();
-        for (module, count, layout) in configs {
+        for (module, count, native_rules) in configs {
+            let layout = native_rules.and_then(ConfigLayout::for_rules);
+            let resources = if count == 0 {
+                None
+            } else {
+                native_rules.map(|rules| {
+                    ConfigLayout::for_rules(rules)
+                        .map_or(QUAKE_RESOURCES, |layout| layout.resources)
+                })
+            };
+            if resources.is_some_and(|ranges| ranges.iter().any(|range| !range.fits(count))) {
+                return Err(CallError::ConfigString);
+            }
             if ranges.iter().any(|r: &ConfigRange| r.module == module) {
                 return Err(CallError::ConfigString);
             }
@@ -156,11 +195,13 @@ impl ServiceStorage {
             }
             ranges.push(ConfigRange {
                 module,
+                native_rules: native_rules.unwrap_or(RuleSetId::Quake2),
+                resources,
                 span: IndexSpan {
                     first: u32::try_from(total).map_err(|_| CallError::Capacity)?,
                     count: u32::try_from(count).map_err(|_| CallError::Capacity)?,
                 },
-                message: vec![0; 0x8000].into_boxed_slice(),
+                message: vec![0; NATIVE_PAYLOAD_BYTES].into_boxed_slice(),
                 written: 0,
                 revision: 0,
                 entity_text: None,
@@ -185,6 +226,7 @@ impl ServiceStorage {
             max_clients: cvars.find("sv_maxclients").ok_or(CallError::Cvar)?,
             movement: qa_console::movement::MovementHandles::bind(cvars)
                 .map_err(|_| CallError::Cvar)?,
+            qw_phs: cvars.find("sv_phs").ok_or(CallError::Cvar)?,
         })
     }
     fn range(&self, module: ModuleId) -> Option<&ConfigRange> {
@@ -250,8 +292,11 @@ impl ServiceStorage {
         ) -> Result<(), qa_network::message::Error>,
     ) -> Result<(), CallError> {
         let row = self.range_mut(module).ok_or(CallError::Memory)?;
-        let mut writer = qa_network::message::Writer::append_bytes(&mut row.message, row.written)
-            .map_err(|_| CallError::Capacity)?;
+        let mut writer = qa_network::message::Writer::append_bytes(
+            &mut row.message[..NATIVE_WIRE_BYTES],
+            row.written,
+        )
+        .map_err(|_| CallError::Capacity)?;
         write(&mut writer).map_err(|_| CallError::Capacity)?;
         row.written = writer.size();
         Ok(())
@@ -265,6 +310,12 @@ impl ServiceStorage {
         self.range(module)
             .map(|range| range.span.count as usize)
             .ok_or(CallError::ConfigString)
+    }
+    pub fn resources(&self, module: ModuleId) -> Option<[IndexSpan; 3]> {
+        self.range(module)?.resources
+    }
+    pub fn uses_sound_phs(&self, cvars: &Cvars) -> bool {
+        cvars.value_in(self.qw_phs, RuleSetId::QuakeWorld) != 0.0
     }
     pub fn config_row(&self, module: ModuleId, ordinal: usize) -> Result<ConfigRef<'_>, CallError> {
         self.configs
@@ -303,13 +354,6 @@ impl ServiceStorage {
             .sound_bindings
             .as_ref()
             .and_then(|bindings| bindings.sound(index as u32)))
-    }
-    pub fn sound_ordinal(
-        &self,
-        module: ModuleId,
-        sound: qa_core::primitives::SoundId,
-    ) -> Option<u32> {
-        self.range(module)?.sound_bindings.as_ref()?.ordinal(sound)
     }
     /// Cold attachment binds all registered module ranges to this one PCM bank.
     pub fn bind_sound_bank(
@@ -368,6 +412,7 @@ impl ServiceStorage {
                     .config(index)
                     .ok_or(CallError::ConfigString)?
                     .text,
+                row.native_rules,
             )
             .map_err(|_| CallError::Text)
     }
@@ -397,7 +442,12 @@ impl ServiceStorage {
         }
         let row = self.configs.config(index).ok_or(CallError::ConfigString)?;
         if row.text != text {
-            let name = if self.resource_keys[index].is_some() && !text.is_empty() {
+            let range = self.range(module).ok_or(CallError::ConfigString)?;
+            let ordinal = index - range.span.first as usize;
+            let resource = range
+                .resources
+                .is_some_and(|ranges| ranges.iter().any(|range| range.contains(ordinal)));
+            let name = if (resource || self.resource_keys[index].is_some()) && !text.is_empty() {
                 Some(
                     self.resource_names
                         .intern(text)
@@ -423,17 +473,33 @@ impl ServiceStorage {
         range: IndexSpan,
         name: &[u8],
     ) -> Result<u32, CallError> {
+        self.resource_lookup(module, range, name, true)?
+            .map(|(ordinal, _)| ordinal)
+            .ok_or(CallError::Capacity)
+    }
+    fn resource_lookup(
+        &mut self,
+        module: ModuleId,
+        range: IndexSpan,
+        name: &[u8],
+        create: bool,
+    ) -> Result<Option<(u32, bool)>, CallError> {
         if name.is_empty() {
-            return Ok(0);
+            return Ok(Some((0, false)));
         }
         if range.count < 2 || name.len() > 8192 {
             return Err(CallError::ConfigString);
         }
         let first = self.check_range(module, range)?;
-        let name_id = self
-            .resource_names
-            .intern(name)
-            .map_err(|_| CallError::Capacity)?;
+        let name_id = if create {
+            self.resource_names
+                .intern(name)
+                .map_err(|_| CallError::Capacity)?
+        } else if let Some(name) = self.resource_names.find(name) {
+            name
+        } else {
+            return Ok(None);
+        };
         // SV_FindIndex stops at the first empty slot. Keep that native order,
         // including a gap made by a module's direct configstring update.
         for ordinal in 1..range.count as usize {
@@ -442,9 +508,15 @@ impl ServiceStorage {
                 .config(first + ordinal)
                 .ok_or(CallError::ConfigString)?;
             if row.text.is_empty() {
+                if !create {
+                    return Ok(None);
+                }
                 self.set_configstring_at(module, first + ordinal, name)?;
                 self.resource_keys[first + ordinal] = Some(name_id);
-                return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
+                return Ok(Some((
+                    u32::try_from(ordinal).map_err(|_| CallError::Capacity)?,
+                    true,
+                )));
             }
             let stored = if let Some(id) = self.resource_keys[first + ordinal] {
                 id
@@ -457,10 +529,17 @@ impl ServiceStorage {
                 id
             };
             if stored == name_id {
-                return u32::try_from(ordinal).map_err(|_| CallError::Capacity);
+                return Ok(Some((
+                    u32::try_from(ordinal).map_err(|_| CallError::Capacity)?,
+                    false,
+                )));
             }
         }
-        Err(CallError::Capacity)
+        if create {
+            Err(CallError::Capacity)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -472,6 +551,8 @@ pub struct EngineServices<'a> {
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub vfs: &'a Vfs,
+    pub model_loader: Option<&'a mut dyn ModelLoader>,
+    pub model_lookup: Option<&'a dyn ModelLookup>,
     pub localization: &'a qa_content::localization::Catalog,
     pub registry: &'a qa_gameplay::registry::Registry,
     pub storage: &'a mut ServiceStorage,
@@ -605,6 +686,12 @@ pub struct EngineCallTable {
     pub command_insert: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub resource_index: ResourceIndexCall,
+    pub resource_register:
+        fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<(u32, bool), CallError>,
+    pub resource_find:
+        fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<Option<u32>, CallError>,
+    pub model_precache: fn(&mut EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
+    pub model_bounds: fn(&EngineServices<'_>, &[u8], RuleSetId) -> Result<Bounds, CallError>,
     pub file_open: FileOpenCall,
     pub entity_token: EntityTokenCall,
     pub file_length: fn(&mut EngineServices<'_>, &[u8]) -> Result<u64, CallError>,
@@ -634,10 +721,65 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         if row.written == 0 {
             return Ok(None);
         }
-        let result = s
-            .server
-            .events
-            .native_message(delivery, &row.message[..row.written]);
+        let wire_length = row.written;
+        let (wire, metadata) = row.message.split_at_mut(wire_length);
+        let mut captured = 0;
+        let protocol = match delivery.source {
+            RuleSetId::Quake2 => Some(qa_network::commands::packet::Protocol::Quake2_34),
+            RuleSetId::Quake2Rerelease => {
+                Some(qa_network::commands::packet::Protocol::Quake2Repro1038)
+            }
+            _ => None,
+        };
+        if let Some(protocol) = protocol {
+            let mut offset = 0;
+            while offset < wire.len() {
+                let Ok((service, consumed)) =
+                    qa_network::outputs::read_native_service(protocol, &wire[offset..])
+                else {
+                    break; // Unknown payload lengths remain opaque, never guessed.
+                };
+                if let qa_network::outputs::NativeService::Cue(cue) = service {
+                    let Some(target) =
+                        metadata.get_mut(captured..captured + NATIVE_CUE_CAPTURE_BYTES)
+                    else {
+                        row.written = 0;
+                        s.server.events.reject_publication();
+                        return Err(CallError::Capacity);
+                    };
+                    let (sound, entity) = match cue {
+                        qa_network::outputs::Cue::Sound(sound) => (
+                            row.sound_bindings
+                                .as_ref()
+                                .and_then(|bindings| bindings.sound(u32::from(sound.index))),
+                            sound.entity(),
+                        ),
+                        qa_network::outputs::Cue::MuzzleFlash(flash) => (None, Some(flash.entity)),
+                    };
+                    let lifetime = entity.and_then(|slot| {
+                        s.server.entities.find_native(
+                            qa_core::primitives::NativeEntity {
+                                module: delivery.module,
+                                slot: i32::from(slot),
+                            },
+                            None,
+                        )
+                    });
+                    let _ = NativeCueBinding {
+                        sound,
+                        entity: lifetime,
+                    }
+                    .write_capture(offset as u32, target);
+                    captured += NATIVE_CUE_CAPTURE_BYTES;
+                }
+                offset += consumed;
+            }
+        }
+        let result = s.server.events.native_message_bound(
+            delivery,
+            wire_length,
+            &row.message[..wire_length + captured],
+        );
         // Native multicast/unicast consumes staging even on bounded admission failure.
         row.written = 0;
         result.map(Some).map_err(|_| CallError::Capacity)
@@ -721,6 +863,29 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     command_insert: |s, c, t| s.commands.insert(t, c).map_err(|_| CallError::Text),
     configstring: |s, m, i, t| s.configstring(m, i, t),
     resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
+    resource_register: |s, m, r, n| {
+        s.storage
+            .resource_lookup(m, r, n, true)?
+            .ok_or(CallError::Capacity)
+    },
+    resource_find: |s, m, r, n| {
+        Ok(s.storage
+            .resource_lookup(m, r, n, false)?
+            .map(|(ordinal, _)| ordinal))
+    },
+    model_precache: |s, path, rules| {
+        s.model_loader
+            .as_mut()
+            .ok_or(CallError::File)?
+            .precache(s.vfs, path, rules)
+    },
+    model_bounds: |s, path, rules| {
+        s.model_loader
+            .as_deref()
+            .and_then(|loader| loader.bounds(path, rules))
+            .or_else(|| s.model_lookup.and_then(|models| models.bounds(path, rules)))
+            .ok_or(CallError::Geometry)
+    },
     file_open: |s, m, p| s.file_open(m, p),
     entity_token: |s, m| s.storage.entity_token(m),
     file_length: |s, p| s.file_length(p),
