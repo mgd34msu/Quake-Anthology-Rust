@@ -47,6 +47,7 @@ const LAYOUT: EntityLayout = EntityLayout {
     linked: Some((416, false)),
     link_count: 420,
     flags: 424,
+    snapshot_exclusion_mask: 1,
     player_flag: 0,
     projectile_flag: 0,
     // The common collision store has no capsule target representation yet.

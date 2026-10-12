@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from check_cvars import compare_cells
-from cvar_catalog import Catalog, COLUMNS
+from cvar_catalog import Catalog, COLUMNS, CONDITIONS
 from gen_cvars import load_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +61,26 @@ class CvarCatalog(unittest.TestCase):
             clauses = self.catalog.flags[source[4]:source[4]+source[6]]
             self.assertEqual(len(clauses), 1)
             self.assertEqual(clauses[0][2:5], (1 | 32, 0, 0))
+
+    def test_input_platform_annotations_are_explicit_clauses_with_raw_provenance(self):
+        for name, source, expected in [
+            ('m_side', 2, [('1', 'NOT_LINUX'), ('0.8', 'LINUX')]),
+            ('m_filter', 1, [('0', 'ALWAYS')]),
+            ('m_filter', 4, [('0', 'NOT_MAC'), ('1', 'MAC')]),
+        ]:
+            with self.subTest(name=name, source=source):
+                index = next(i for i, row in enumerate(self.owner) if row['canonical'] == name)
+                definition = self.catalog.rows[index][2][source]
+                clauses = self.catalog.defaults[definition[3]:definition[3]+definition[5]]
+                self.assertEqual([(self.catalog.pool_text(c[1]), CONDITIONS[c[6]])
+                                  for c in clauses], expected)
+                self.assertTrue(all(c[4] == 0 for c in clauses))
+                raw = self.owner[index][COLUMNS[4+source]]
+                self.assertTrue(all(self.catalog.pool_text(c[3]) == raw for c in clauses))
+
+    def test_unknown_default_annotations_remain_unresolved(self):
+        self.assertEqual(Catalog.default_alternatives('0 (1 on an unknown platform)', 'bool', 0),
+                         [('0', '(1 on an unknown platform)', 'UNRESOLVED')])
 
     def test_engine_canonical_collision_is_case_insensitive(self):
         engine = copy.deepcopy(self.engine)

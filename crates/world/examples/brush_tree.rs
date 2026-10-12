@@ -44,18 +44,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     allocation_counter::start();
     for (query, output) in queries.iter().zip(&mut results) {
-        let trace = store.trace_model(
-            geometries[query.map],
-            query.model as u32,
-            black_box(query.trace),
-            &mut scratch,
-        );
-        let point = store.point_contents_model(
-            geometries[query.map],
-            query.model as u32,
-            black_box(query.point),
-            entity_rules,
-        );
+        let trace = store
+            .trace_model(
+                geometries[query.map],
+                query.model as u32,
+                black_box(query.trace),
+                &mut scratch,
+            )
+            .map_err(|_| "collision query failed")?;
+        let point = store
+            .point_contents_model(
+                geometries[query.map],
+                query.model as u32,
+                black_box(query.point),
+                entity_rules,
+            )
+            .map_err(|_| "collision query failed")?;
         *output = result(black_box(trace), black_box(point));
     }
     let allocations = allocation_counter::stop();

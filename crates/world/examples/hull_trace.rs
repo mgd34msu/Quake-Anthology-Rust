@@ -120,22 +120,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
     {
         let (mins, maxs) = bounds[hull as usize];
-        let trace = hulls.trace_model(
-            geometry,
-            0,
-            TraceQuery {
-                mins,
-                maxs,
-                mask: Contents::SOLID,
-                ..TraceQuery::point(
-                    start,
-                    end,
-                    TraceRules::LEGACY,
-                    qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
-                )
-            },
-            &mut scratch,
-        );
+        let trace = hulls
+            .trace_model(
+                geometry,
+                0,
+                TraceQuery {
+                    mins,
+                    maxs,
+                    mask: Contents::SOLID,
+                    ..TraceQuery::point(
+                        start,
+                        end,
+                        TraceRules::LEGACY,
+                        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+                    )
+                },
+                &mut scratch,
+            )
+            .map_err(|_| "collision query failed")?;
         let flags = u32::from(trace.start_solid)
             | u32::from(trace.all_solid) << 1
             | u32::from(trace.in_open) << 2
@@ -177,42 +179,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let (mins, maxs) = bounds[index];
         for &(_, start, end) in group.iter().take(600) {
-            black_box(hulls.trace_model(
-                geometry,
-                0,
-                TraceQuery {
-                    mins,
-                    maxs,
-                    mask: Contents::SOLID,
-                    ..TraceQuery::point(
-                        start,
-                        end,
-                        TraceRules::LEGACY,
-                        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+            black_box(
+                hulls
+                    .trace_model(
+                        geometry,
+                        0,
+                        TraceQuery {
+                            mins,
+                            maxs,
+                            mask: Contents::SOLID,
+                            ..TraceQuery::point(
+                                start,
+                                end,
+                                TraceRules::LEGACY,
+                                qa_world::collision::trace_policy(
+                                    qa_core::primitives::RuleSetId::Quake,
+                                )
+                                .1,
+                            )
+                        },
+                        &mut scratch,
                     )
-                },
-                &mut scratch,
-            ));
+                    .map_err(|_| "collision query failed")?,
+            );
         }
         MEASURING.store(true, Ordering::Relaxed);
         for (sample, &(_, start, end)) in samples.iter_mut().zip(group.iter().cycle()) {
             let started = Stopwatch::start();
-            black_box(hulls.trace_model(
-                geometry,
-                0,
-                TraceQuery {
-                    mins,
-                    maxs,
-                    mask: Contents::SOLID,
-                    ..TraceQuery::point(
-                        black_box(start),
-                        black_box(end),
-                        TraceRules::LEGACY,
-                        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+            black_box(
+                hulls
+                    .trace_model(
+                        geometry,
+                        0,
+                        TraceQuery {
+                            mins,
+                            maxs,
+                            mask: Contents::SOLID,
+                            ..TraceQuery::point(
+                                black_box(start),
+                                black_box(end),
+                                TraceRules::LEGACY,
+                                qa_world::collision::trace_policy(
+                                    qa_core::primitives::RuleSetId::Quake,
+                                )
+                                .1,
+                            )
+                        },
+                        &mut scratch,
                     )
-                },
-                &mut scratch,
-            ));
+                    .map_err(|_| "collision query failed")?,
+            );
             *sample = started.elapsed().as_nanos();
         }
         MEASURING.store(false, Ordering::Relaxed);

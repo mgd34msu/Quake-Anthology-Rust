@@ -1,5 +1,5 @@
 use super::brushes::{Brush, BrushMap, BrushWork, GeometryError, clip_brush, position_brush};
-use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceQuery};
+use super::{Contents, LeafGate, NonAxialOffset, Trace, TraceError, TraceQuery};
 use qa_core::primitives::{Bounds, ClipNode, Plane, Vec3, child_from_leaf, leaf_from_child};
 use qa_core::stamps::StampSet;
 
@@ -216,10 +216,10 @@ impl Topology {
         root: ModelRoot,
         query: TraceQuery,
         scratch: &mut BrushScratch,
-    ) -> Trace {
+    ) -> Result<Trace, TraceError> {
         let mut trace = Trace::clear(query.end);
         if scratch.frames.len() < self.max_depth || scratch.stamps.len() < map.brushes.len() {
-            return trace;
+            return Err(TraceError::Scratch);
         }
         let work = BrushWork::new(query);
         scratch.stamps.begin();
@@ -231,10 +231,10 @@ impl Topology {
                 ModelRoot::Tree(child) => {
                     let limit = query.rules.position_leaf_limit as usize;
                     if limit > scratch.position_leaves.len() {
-                        return trace;
+                        return Err(TraceError::Scratch);
                     }
                     let bounds = Bounds::swept(work.start, work.start, work.mins, work.maxs, 1.0);
-                    let count = self.position_leaves(child, bounds, limit, scratch);
+                    let count = self.position_leaves(child, bounds, limit, scratch)?;
                     for index in 0..count {
                         self.visit_leaf(
                             map,
@@ -254,7 +254,7 @@ impl Topology {
             self.sweep(map, root_child(root), &work, &mut trace, scratch);
         }
         trace.end = work.end_position(trace.fraction);
-        trace
+        Ok(trace)
     }
 
     fn visit_leaf(
@@ -297,7 +297,7 @@ impl Topology {
         bounds: Bounds,
         limit: usize,
         scratch: &mut BrushScratch,
-    ) -> usize {
+    ) -> Result<usize, TraceError> {
         scratch
             .leaf_walk
             .query(
@@ -306,7 +306,8 @@ impl Topology {
                 &mut scratch.position_leaves[..limit],
                 crate::bsp::node_view(&self.planes, &self.nodes),
             )
-            .map_or(0, |result| result.count)
+            .map(|result| result.count)
+            .ok_or(TraceError::Scratch)
     }
 
     fn sweep(
@@ -433,30 +434,32 @@ impl Topology {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collision::{CollisionStore, StoreError, TraceRules};
+    use crate::collision::{CollisionStore, TraceRules};
     use qa_core::primitives::SurfaceFlags;
 
     #[test]
-    fn successive_queries_keep_the_original_brush_contact() -> Result<(), StoreError> {
+    fn successive_queries_keep_the_original_brush_contact() -> Result<(), &'static str> {
         let mut map = CollisionStore::new();
-        let geometry = map.load_brushes(
-            vec![Plane {
-                encoding: None,
-                normal: Vec3([1.0, 0.0, 0.0]),
-                distance: 0.0,
-                axis: None,
-            }],
-            vec![Brush {
-                sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
-                contents: Contents::SOLID,
-            }],
-            crate::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
-            BrushTree::direct(1).map_err(StoreError::Brush)?,
-            vec![Bounds {
-                mins: Vec3([-2.0; 3]),
-                maxs: Vec3([2.0; 3]),
-            }],
-        )?;
+        let geometry = map
+            .load_brushes(
+                vec![Plane {
+                    encoding: None,
+                    normal: Vec3([1.0, 0.0, 0.0]),
+                    distance: 0.0,
+                    axis: None,
+                }],
+                vec![Brush {
+                    sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
+                    contents: Contents::SOLID,
+                }],
+                crate::collision::surfaces::SurfaceTable::flags(vec![SurfaceFlags::default()]),
+                BrushTree::direct(1).map_err(|_| "brush tree")?,
+                vec![Bounds {
+                    mins: Vec3([-2.0; 3]),
+                    maxs: Vec3([2.0; 3]),
+                }],
+            )
+            .map_err(|_| "brush load")?;
         let mut scratch = map.scratch();
         let query = TraceQuery::point(
             Vec3([1.0, 0.0, 0.0]),
@@ -465,7 +468,9 @@ mod tests {
             crate::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         );
         for _ in 0..3 {
-            let trace = map.trace_model(geometry, 0, query, &mut scratch);
+            let trace = map
+                .trace_model(geometry, 0, query, &mut scratch)
+                .map_err(|_| "trace query")?;
             assert_eq!(trace.fraction, (1.0 - 0.125) / 2.0);
             assert_eq!(trace.contents, Contents::SOLID);
             assert_eq!(trace.surface, SurfaceFlags::default());

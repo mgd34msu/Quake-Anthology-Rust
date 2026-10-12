@@ -35,17 +35,27 @@ impl World {
     }
 }
 impl TraceServices for World {
-    fn trace(&mut self, query: TraceQuery) -> Trace {
-        assert_eq!(query.rules, self.rules);
-        assert_eq!(query.entity_rules, self.entities);
-        self.traces += 1;
-        self.moving_traces += u32::from(query.start != query.end);
-        self.fixture.trace(query)
+    fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+        Ok((|| {
+            assert_eq!(query.rules, self.rules);
+            assert_eq!(query.entity_rules, self.entities);
+            self.traces += 1;
+            self.moving_traces += u32::from(query.start != query.end);
+            self.fixture.trace(query).expect("valid movement query")
+        })())
     }
-    fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
-        assert_eq!(rules, self.entities);
-        self.contents.set(self.contents.get() + 1);
-        self.fixture.point_contents(point, rules)
+    fn point_contents(
+        &self,
+        point: Vec3,
+        rules: EntityTracePolicy,
+    ) -> Result<Contents, qa_world::collision::TraceError> {
+        Ok((|| {
+            assert_eq!(rules, self.entities);
+            self.contents.set(self.contents.get() + 1);
+            self.fixture
+                .point_contents(point, rules)
+                .expect("valid movement query")
+        })())
     }
 }
 fn player(rules: RuleSetId, mode: MovementMode) -> PlayerState {
@@ -86,7 +96,8 @@ fn q3_spectator_clips_while_noclip_uses_direct_motion_and_foreign_trace_rules() 
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         if mode == MovementMode::Spectator {
             assert!(state.body.position.0[0] <= 225.0001);
             assert!(world.moving_traces > 0);
@@ -106,20 +117,30 @@ fn q3_spectator_clips_while_noclip_uses_direct_motion_and_foreign_trace_rules() 
 fn q3_spectator_ignores_body_contents_and_resets_foreign_stance_bounds() {
     struct SpectatorWorld(World);
     impl TraceServices for SpectatorWorld {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            assert_eq!(query.scope, qa_world::collision::TraceScope::Scene);
-            assert!(!query.mask.intersects(Contents::BODY | Contents::PLAYER));
-            assert!(
-                query
-                    .mask
-                    .intersects(Contents::SOLID | Contents::PLAYER_CLIP)
-            );
-            assert_eq!(query.mins, Vec3([-15.0, -15.0, -24.0]));
-            assert_eq!(query.maxs, Vec3([15.0, 15.0, 32.0]));
-            self.0.trace(query)
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                assert_eq!(query.scope, qa_world::collision::TraceScope::Scene);
+                assert!(!query.mask.intersects(Contents::BODY | Contents::PLAYER));
+                assert!(
+                    query
+                        .mask
+                        .intersects(Contents::SOLID | Contents::PLAYER_CLIP)
+                );
+                assert_eq!(query.mins, Vec3([-15.0, -15.0, -24.0]));
+                assert_eq!(query.maxs, Vec3([15.0, 15.0, 32.0]));
+                self.0.trace(query).expect("valid movement query")
+            })())
         }
-        fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
-            self.0.point_contents(point, rules)
+        fn point_contents(
+            &self,
+            point: Vec3,
+            rules: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| {
+                self.0
+                    .point_contents(point, rules)
+                    .expect("valid movement query")
+            })())
         }
     }
     let mut state = player(RuleSetId::Quake3, MovementMode::Spectator);
@@ -133,7 +154,8 @@ fn q3_spectator_ignores_body_contents_and_resets_foreign_stance_bounds() {
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(state.body.position.0[0] <= 225.0001);
 }
 
@@ -161,7 +183,8 @@ fn native_early_free_returns_clear_water_outputs_and_keep_native_ground_flags() 
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.movement.water_level, 0, "{rules:?} {mode:?}");
         assert_eq!(state.movement.water_contents, 0);
         if rules == RuleSetId::Quake2Rerelease {
@@ -194,8 +217,10 @@ fn released_q3_free_jump_does_not_inject_upmove_into_later_substeps() {
         let mut expected = player(RuleSetId::Quake3, mode);
         let mut world = World::new(actual.trace_rules);
         let cmd = command(150, [0.0; 3], Vec3::default());
-        let actual_result = pmove(cmd, &mut actual, &mut world, Default::default());
-        let expected_result = pmove(cmd, &mut expected, &mut world, Default::default());
+        let actual_result =
+            pmove(cmd, &mut actual, &mut world, Default::default()).expect("valid movement query");
+        let expected_result = pmove(cmd, &mut expected, &mut world, Default::default())
+            .expect("valid movement query");
         assert_eq!(actual_result.steps, 3);
         assert_eq!(actual_result.steps, expected_result.steps);
         assert_eq!(actual.body.position, expected.body.position, "{mode:?}");
@@ -221,8 +246,9 @@ fn switching_to_a_role_without_ladders_clears_stale_state_in_walk_and_free_modes
             expected.movement_rules = rules;
             let mut world = World::new(actual.trace_rules);
             let cmd = command(16, [127.0, 0.0, 0.0], Vec3::default());
-            pmove(cmd, &mut actual, &mut world, Default::default());
-            pmove(cmd, &mut expected, &mut world, Default::default());
+            pmove(cmd, &mut actual, &mut world, Default::default()).expect("valid movement query");
+            pmove(cmd, &mut expected, &mut world, Default::default())
+                .expect("valid movement query");
             assert!(!actual.movement.ladder, "{rules:?} {mode:?}");
             assert_eq!(
                 actual.body.position, expected.body.position,
@@ -247,7 +273,8 @@ fn classic_spectator_snaps_without_rejecting_a_position_beyond_a_wall() {
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.body.position.0[0], 250.0);
     assert_eq!(state.body.velocity.0[0], 300.0);
     assert_eq!(world.traces, 0);
@@ -265,7 +292,8 @@ fn qw_spectator_has_an_independent_native_and_overridden_speed_cap() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity.0[0], expected);
         assert_eq!(world.traces, 0);
     }
@@ -287,7 +315,8 @@ fn rerelease_free_modes_double_the_capped_speed_and_reset_native_flags() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity.0[0], 600.0);
         assert_eq!(state.body.position.0[0], 60.0);
         assert_eq!(state.movement.timer, MovementTimer::NONE);
@@ -321,7 +350,7 @@ fn rerelease_free_vertical_buttons_are_independent_and_ignore_raw_upmove() {
         let mut world = World::new(state.trace_rules);
         let mut cmd = command(100, [0.0, 0.0, 99.0], Vec3::default());
         cmd.buttons = buttons;
-        pmove(cmd, &mut state, &mut world, Default::default());
+        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
         assert_eq!(state.body.velocity.0[2], expected);
     }
 }
@@ -330,15 +359,25 @@ fn rerelease_free_vertical_buttons_are_independent_and_ignore_raw_upmove() {
 fn rerelease_spectator_sends_world_only_queries_with_the_small_box() {
     struct ScopeWorld(World);
     impl TraceServices for ScopeWorld {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            assert_eq!(query.scope, qa_world::collision::TraceScope::World);
-            assert_eq!(query.mask, Contents::SOLID | Contents::WINDOW);
-            assert_eq!(query.mins, Vec3([-8.0; 3]));
-            assert_eq!(query.maxs, Vec3([8.0; 3]));
-            self.0.trace(query)
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                assert_eq!(query.scope, qa_world::collision::TraceScope::World);
+                assert_eq!(query.mask, Contents::SOLID | Contents::WINDOW);
+                assert_eq!(query.mins, Vec3([-8.0; 3]));
+                assert_eq!(query.maxs, Vec3([8.0; 3]));
+                self.0.trace(query).expect("valid movement query")
+            })())
         }
-        fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
-            self.0.point_contents(point, rules)
+        fn point_contents(
+            &self,
+            point: Vec3,
+            rules: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| {
+                self.0
+                    .point_contents(point, rules)
+                    .expect("valid movement query")
+            })())
         }
     }
     let mut state = player(RuleSetId::Quake2Rerelease, MovementMode::Spectator);
@@ -349,7 +388,8 @@ fn rerelease_spectator_sends_world_only_queries_with_the_small_box() {
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(state.body.position.0[0] <= 232.0);
     assert!(world.0.traces > 0);
 }
@@ -370,7 +410,8 @@ fn pitched_forward_free_movement_uses_the_full_view_basis() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert!(state.body.velocity.0[0] > 0.0, "{rules:?} {mode:?}");
         assert!(state.body.velocity.0[2] < 0.0, "{rules:?} {mode:?}");
         assert!(
@@ -391,7 +432,8 @@ fn rolled_free_strafe_keeps_the_right_vectors_vertical_component() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert!(state.body.velocity.0[1] < 0.0);
         assert!(state.body.velocity.0[2] < 0.0);
         assert!((state.body.velocity.0[1] - state.body.velocity.0[2]).abs() < 0.0001);
@@ -439,7 +481,8 @@ fn q3_free_wish_scaling_keeps_each_native_operation_order() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity, expected, "{mode:?}");
     }
 }
@@ -467,7 +510,8 @@ fn q3_free_friction_ignores_stale_ground_and_water_without_snapping_velocity() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity.0[2], expected, "{mode:?}");
         assert_ne!(expected, expected.round());
         assert_eq!(state.body.position.0[2], 64.0 + expected * dt);
@@ -501,7 +545,8 @@ fn low_speed_native_free_modes_clear_the_correct_velocity_components() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity, expected, "{rules:?} {mode:?}");
     }
 }
@@ -522,7 +567,8 @@ fn classic_spectator_applies_stop_friction_then_returns_without_integrating() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity.0[0], expected);
         assert_eq!(state.body.position, Vec3([0.0, 0.0, 64.0]));
         assert_eq!(world.traces, 0);
@@ -544,7 +590,8 @@ fn q3_flight_adds_native_flight_friction_and_keeps_ordinary_final_snapping() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity.0[0], velocity.round_ties_even());
         assert_eq!(state.body.position.0[0], velocity * dt);
         assert!(world.contents.get() > 0);
@@ -567,7 +614,8 @@ fn talk_is_exclusive_in_every_q3_substep_and_preserves_view_angles() {
             buttons: buttons::TALK | buttons::ATTACK | buttons::JUMP | buttons::CROUCH,
             ..command(200, [127.0, 63.0, 127.0], Vec3([30.0, 60.0, 0.0]))
         };
-        let actual_result = pmove(command, &mut actual, &mut world, Default::default());
+        let actual_result = pmove(command, &mut actual, &mut world, Default::default())
+            .expect("valid movement query");
         let expected_result = pmove(
             UserCmd {
                 buttons: buttons::TALK,
@@ -577,7 +625,8 @@ fn talk_is_exclusive_in_every_q3_substep_and_preserves_view_angles() {
             &mut expected,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(actual.body.position, expected.body.position, "{mode:?}");
         assert_eq!(actual.body.velocity, expected.body.velocity, "{mode:?}");
         assert_eq!(actual.body.mins, expected.body.mins, "{mode:?}");
@@ -610,8 +659,10 @@ fn other_movement_roles_do_not_inherit_q3_talk_exclusivity() {
             &mut actual,
             &mut world,
             Default::default(),
-        );
-        pmove(command, &mut expected, &mut world, Default::default());
+        )
+        .expect("valid movement query");
+        pmove(command, &mut expected, &mut world, Default::default())
+            .expect("valid movement query");
         assert_eq!(actual.body.position, expected.body.position, "{rules:?}");
         assert_eq!(actual.body.velocity, expected.body.velocity, "{rules:?}");
         assert_eq!(actual.movement, expected.movement, "{rules:?}");
@@ -627,23 +678,29 @@ fn rerelease_slide_selects_a_secondary_plane_by_native_component_comparison() {
         secondary: Vec3,
     }
     impl TraceServices for TwoPlaneWorld {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let mut trace = Trace::clear(query.end);
-            if self.first {
-                self.first = false;
-                trace.fraction = 0.5;
-                trace.end = query.start.lerp(query.end, 0.5);
-                trace.plane = Plane::oriented(self.primary, 0.0);
-                trace.secondary_plane = Some(Plane::oriented(self.secondary, 0.0));
-                trace.entity = Some(EntityId {
-                    slot: 9,
-                    generation: 1,
-                });
-            }
-            trace
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let mut trace = Trace::clear(query.end);
+                if self.first {
+                    self.first = false;
+                    trace.fraction = 0.5;
+                    trace.end = query.start.lerp(query.end, 0.5);
+                    trace.plane = Plane::oriented(self.primary, 0.0);
+                    trace.secondary_plane = Some(Plane::oriented(self.secondary, 0.0));
+                    trace.entity = Some(EntityId {
+                        slot: 9,
+                        generation: 1,
+                    });
+                }
+                trace
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let initial = Vec3([-200.0, -100.0, 0.0]);
@@ -681,7 +738,8 @@ fn rerelease_slide_selects_a_secondary_plane_by_native_component_comparison() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.velocity, expected);
         assert_eq!(result.contact_count, 1);
         assert_eq!(result.contacts[0].unwrap().plane.normal, chosen);
@@ -692,19 +750,25 @@ fn rerelease_slide_selects_a_secondary_plane_by_native_component_comparison() {
 fn rerelease_allsolid_slide_records_the_native_contact_before_returning() {
     struct SolidWorld;
     impl TraceServices for SolidWorld {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let mut trace = Trace::clear(query.start);
-            trace.all_solid = true;
-            trace.start_solid = true;
-            trace.fraction = 0.0;
-            trace.entity = Some(EntityId {
-                slot: 9,
-                generation: 1,
-            });
-            trace
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let mut trace = Trace::clear(query.start);
+                trace.all_solid = true;
+                trace.start_solid = true;
+                trace.fraction = 0.0;
+                trace.entity = Some(EntityId {
+                    slot: 9,
+                    generation: 1,
+                });
+                trace
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let mut state = player(RuleSetId::Quake2Rerelease, MovementMode::Spectator);
@@ -715,7 +779,8 @@ fn rerelease_allsolid_slide_records_the_native_contact_before_returning() {
         &mut state,
         &mut SolidWorld,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.body.velocity.0[2], 0.0);
     assert_eq!(result.contact_count, 1);
     assert!(result.contacts[0].unwrap().all_solid);

@@ -316,6 +316,7 @@ dependencies = [
 name = "qa-session"
 version = "0.1.0"
 dependencies = [
+ "qa-console",
  "qa-core",
  "qa-input",
  "qa-movement",

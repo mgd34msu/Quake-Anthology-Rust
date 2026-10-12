@@ -7,7 +7,7 @@ use qa_core::{
 use qa_gameplay::rules::movement::{
     JumpTime, LadderControl, ProbePhase, WaterJumpMotion, WaterJumpPolicy, WaterJumpProbe,
 };
-use qa_world::collision::Contents;
+use qa_world::collision::{Contents, TraceError};
 
 impl Step<'_> {
     fn flat_forward(&self) -> Vec3 {
@@ -17,7 +17,7 @@ impl Step<'_> {
         forward
     }
 
-    fn ladder_trace(&mut self, mask: Contents) -> qa_world::collision::Trace {
+    fn ladder_trace(&mut self, mask: Contents) -> Result<qa_world::collision::Trace, TraceError> {
         let start = self.player.body.position;
         let end = start + self.flat_forward();
         self.trace_mask(
@@ -29,7 +29,7 @@ impl Step<'_> {
         )
     }
 
-    pub(crate) fn check_special(&mut self) {
+    pub(crate) fn check_special(&mut self) -> Result<(), TraceError> {
         if let Some(policy) = self.parameters.special.ladder {
             // Classic pml.ladder is cleared at every Pmove; the rerelease flag
             // remains published when an active native timer skips this check.
@@ -43,7 +43,7 @@ impl Step<'_> {
                 } else {
                     self.mask
                 };
-                let trace = self.ladder_trace(mask);
+                let trace = self.ladder_trace(mask)?;
                 self.player.movement.ladder = trace.fraction < 1.0
                     && trace.contents.intersects(Contents::LADDER)
                     && self.player.movement.water_level <= policy.max_water_level;
@@ -55,14 +55,15 @@ impl Step<'_> {
             .water_jump
             .is_some_and(|policy| matches!(policy.phase, ProbePhase::BeforeTimers))
         {
-            self.check_water_jump();
+            self.check_water_jump()?;
         }
         if self.player.body.velocity.0[2] < 0.0 {
             self.player.movement.water_jump_seconds = 0.0;
         }
+        Ok(())
     }
 
-    pub(crate) fn adjust_wish(&mut self, wish: &mut Vec3) {
+    pub(crate) fn adjust_wish(&mut self, wish: &mut Vec3) -> Result<(), TraceError> {
         if self.player.movement.ladder
             && let Some(policy) = self.parameters.special.ladder
         {
@@ -122,7 +123,7 @@ impl Step<'_> {
                             if self.player.movement.water_level < 2 {
                                 speed *= 0.5;
                             }
-                            let trace = self.ladder_trace(Contents::LADDER);
+                            let trace = self.ladder_trace(Contents::LADDER)?;
                             if trace.fraction != 1.0 && trace.contents.intersects(Contents::LADDER)
                             {
                                 let right = math::cross(trace.plane.normal, Vec3([0.0, 0.0, 1.0]));
@@ -153,17 +154,18 @@ impl Step<'_> {
                 *wish = *wish + Contents(self.player.movement.ground_contents).current() * 100.0;
             }
         }
+        Ok(())
     }
 
-    pub(crate) fn check_water_jump(&mut self) {
+    pub(crate) fn check_water_jump(&mut self) -> Result<(), TraceError> {
         let Some(policy) = self.parameters.special.water_jump else {
-            return;
+            return Ok(());
         };
         if self.player.movement.remaining_ms != 0
             || self.player.movement.water_jump_seconds != 0.0
             || self.player.movement.water_level != 2
         {
-            return;
+            return Ok(());
         }
         let forward = self.flat_forward();
         let can_jump = match policy.probe {
@@ -174,25 +176,25 @@ impl Step<'_> {
                 down_limit,
             } => {
                 if down_limit.is_some_and(|limit| self.player.body.velocity.0[2] < limit) {
-                    return;
+                    return Ok(());
                 }
                 let mut point = self.player.body.position + forward * ahead;
                 point.0[2] += lower;
                 let low = self
                     .world
-                    .point_contents(point, self.parameters.entity_rules);
+                    .point_contents(point, self.parameters.entity_rules)?;
                 if !low.intersects(Contents::SOLID) {
-                    return;
+                    return Ok(());
                 }
                 point.0[2] += upper;
                 self.world
-                    .point_contents(point, self.parameters.entity_rules)
+                    .point_contents(point, self.parameters.entity_rules)?
                     == Contents::EMPTY
             }
-            WaterJumpProbe::Ballistic => self.ballistic_water_jump(forward, policy),
+            WaterJumpProbe::Ballistic => self.ballistic_water_jump(forward, policy)?,
         };
         if !can_jump {
-            return;
+            return Ok(());
         }
         self.player.body.velocity = if policy.full_forward {
             self.view_basis(self.player.view_angles).forward * policy.horizontal
@@ -209,16 +211,21 @@ impl Step<'_> {
         if policy.mark_jump_held {
             self.player.movement.jump_held = true;
         }
+        Ok(())
     }
 
-    fn ballistic_water_jump(&mut self, forward: Vec3, policy: WaterJumpPolicy) -> bool {
+    fn ballistic_water_jump(
+        &mut self,
+        forward: Vec3,
+        policy: WaterJumpPolicy,
+    ) -> Result<bool, TraceError> {
         // An inverted-gravity ballistic preview has no finite native loop bound.
         // Zero/negative gravity does not initiate this ordinary upward escape.
         if self.parameters.gravity <= 0.0
             || self.command.buttons & buttons::JUMP == 0 && self.command.movement[0] <= 0.0
             || Contents(self.player.movement.water_contents).intersects(Contents::NO_WATERJUMP)
         {
-            return false;
+            return Ok(false);
         }
         let start = self.player.body.position;
         let solid = Contents::SOLID | Contents::WINDOW;
@@ -228,9 +235,9 @@ impl Step<'_> {
             self.player.body.mins,
             self.player.body.maxs,
             solid,
-        );
+        )?;
         if trace.fraction == 1.0 || trace.plane.normal.0[2] >= 0.7 {
-            return false;
+            return Ok(false);
         }
 
         // Reuse the one slide executor with copied hot state; contacts from this
@@ -250,7 +257,7 @@ impl Step<'_> {
                 has_time = false;
             }
             self.player.movement.remaining_ms = u32::from(has_time);
-            slide::slide(self, false);
+            slide::slide(self, false)?;
         }
         let destination = self.player.body.position;
         self.player.body = body;
@@ -266,21 +273,21 @@ impl Step<'_> {
             body.mins,
             body.maxs,
             solid,
-        );
+        )?;
         if trace.fraction == 1.0
             || trace.plane.normal.0[2] < 0.7
             || trace.end.0[2] < start.0[2]
             || movement.grounded && (start.0[2] - trace.end.0[2]).abs() <= 18.0
         {
-            return false;
+            return Ok(false);
         }
         // Keep the original rerelease helper's upper-sample origin/order.
-        self.water_at(trace.end, start).0 < 2
+        Ok(self.water_at(trace.end, start)?.0 < 2)
     }
 
-    pub(crate) fn water_jump_move(&mut self) -> bool {
+    pub(crate) fn water_jump_move(&mut self) -> Result<bool, TraceError> {
         let Some(policy) = self.parameters.special.water_jump else {
-            return false;
+            return Ok(false);
         };
         if !self
             .player
@@ -288,22 +295,22 @@ impl Step<'_> {
             .timer
             .contains(MovementTimer::WATER_JUMP)
         {
-            return false;
+            return Ok(false);
         }
         match policy.motion {
-            WaterJumpMotion::Existing => return false,
+            WaterJumpMotion::Existing => return Ok(false),
             WaterJumpMotion::PreGravity => {
                 self.player.body.velocity.0[2] -= self.parameters.gravity * self.dt;
                 self.clear_falling_water_jump();
-                slide::step_slide(self, false);
+                slide::step_slide(self, false)?;
             }
             WaterJumpMotion::StepGravityThenGravity => {
-                slide::step_slide(self, true);
+                slide::step_slide(self, true)?;
                 self.player.body.velocity.0[2] -= self.parameters.gravity * self.dt;
                 self.clear_falling_water_jump();
             }
         }
-        true
+        Ok(true)
     }
 
     fn clear_falling_water_jump(&mut self) {

@@ -1002,6 +1002,7 @@ impl EntityProjection {
         };
         let mut appearance = EntityAppearance {
             source: context.native_rules,
+            snapshot_excluded: false,
             ..EntityAppearance::default()
         };
         if layout.model_index.is_some() {

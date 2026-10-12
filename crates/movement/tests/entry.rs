@@ -34,7 +34,7 @@ fn q3_view_angles_use_native_signed_shorts_and_pitch_delta_clamp() {
             view_angles: Vec3([pitch, yaw, roll]),
             ..Default::default()
         };
-        pmove(command, &mut state, &mut world, Default::default());
+        pmove(command, &mut state, &mut world, Default::default()).expect("valid movement query");
         assert_eq!(state.view_angles, Vec3(expected));
         assert_eq!(state.movement.delta_angles.0[0], delta * (360. / 65536.));
         // Native clamping adjusts delta_angles; the same command remains stable.
@@ -46,7 +46,8 @@ fn q3_view_angles_use_native_signed_shorts_and_pitch_delta_clamp() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.view_angles, Vec3(expected));
     }
 }
@@ -63,7 +64,8 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
         &mut qw,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     let mut expected = player(RuleSetId::QuakeWorld);
     for _ in 0..2 {
         pmove(
@@ -75,7 +77,8 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
             &mut expected,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
     }
     assert_eq!(result.steps, 2);
     assert_eq!(qw.body.position, expected.body.position);
@@ -91,6 +94,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
             &mut world,
             Default::default()
         )
+        .expect("valid movement query")
         .steps,
         4
     );
@@ -105,6 +109,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
             &mut world,
             Default::default()
         )
+        .expect("valid movement query")
         .steps,
         0
     );
@@ -118,6 +123,7 @@ fn native_command_scheduling_preserves_qw_odd_halves_and_q3_absolute_time() {
             &mut world,
             Default::default()
         )
+        .expect("valid movement query")
         .steps,
         16
     );
@@ -132,7 +138,7 @@ fn netquake_uses_precise_duration_and_module_owns_jump() {
         movement: [320.0, 0.0, 200.0],
         ..Default::default()
     };
-    pmove(command, &mut state, &mut world, Default::default());
+    pmove(command, &mut state, &mut world, Default::default()).expect("valid movement query");
     let speed = (10.0f64 * 0.011764705 * 320.0) as f32;
     assert_eq!(state.body.velocity.0[0], speed);
     assert_eq!(state.body.position.0[0], speed * 0.011764705f32);
@@ -152,8 +158,8 @@ fn classic_quantizes_while_rerelease_keeps_floating_state() {
         movement: [300.0, 0.0, 0.0],
         ..Default::default()
     };
-    pmove(command, &mut classic, &mut world, Default::default());
-    pmove(command, &mut rr, &mut world, Default::default());
+    pmove(command, &mut classic, &mut world, Default::default()).expect("valid movement query");
+    pmove(command, &mut rr, &mut world, Default::default()).expect("valid movement query");
     assert_eq!(classic.body.position.0[0], 0.75);
     assert!((rr.body.position.0[0] - 0.828).abs() < 0.000001);
     assert_eq!(classic.body.mins.0[2], rr.body.mins.0[2]);

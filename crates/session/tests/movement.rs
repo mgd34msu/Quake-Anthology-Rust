@@ -101,7 +101,7 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
         None,
     );
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
         1
     );
     let origin = server.clients[0].player.body.position;
@@ -124,6 +124,8 @@ fn shared_server_movement_transports_attached_clients_before_snapshot_copy() {
 }
 #[test]
 fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
+    let cvars = qa_console::cvars::Cvars::new().unwrap();
+    let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
     let mut server = Server::load(15, 64, 1, 0, 0, 0).unwrap();
     let (store, geometry) = floor();
     let mut scratch = store.scratch();
@@ -181,13 +183,11 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
             );
         }
     }
-    server.build_bot_commands(
-        EventTime(0),
-        EventTime(16_000_000),
-        qa_input::InputPolicy::native,
-    );
+    server.build_bot_commands(EventTime(0), EventTime(16_000_000), |rules| {
+        handles.policy(&cvars, rules)
+    });
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
         15
     );
     for (client, prediction) in server.clients[..15].iter().zip(&mut predictions) {
@@ -200,7 +200,9 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
             &mut scratch,
             CollisionOwner::Lifetime(client.entity),
         );
-        prediction.advance(client.command, &mut trace);
+        prediction
+            .advance(client.command, &mut trace)
+            .expect("valid movement query");
         assert_eq!(client.player.body.position, prediction.player.body.position);
         assert_eq!(client.player.body.velocity, prediction.player.body.velocity);
         assert_eq!(client.player.movement, prediction.player.movement);
@@ -217,7 +219,7 @@ fn all_clients_and_prediction_use_identical_movement_on_foreign_geometry() {
         );
     }
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 0, &mut scratch),
+        server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
         0
     );
 }
@@ -281,13 +283,15 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
             &mut scratch,
             CollisionOwner::Lifetime(mover_entity),
         );
-        let own_position = trace.trace(TraceQuery {
-            end: query.start,
-            ..query
-        });
+        let own_position = trace
+            .trace(TraceQuery {
+                end: query.start,
+                ..query
+            })
+            .expect("valid movement query");
         assert!(!own_position.start_solid && !own_position.all_solid);
         assert_eq!(own_position.fraction, 1.0);
-        let other = trace.trace(query);
+        let other = trace.trace(query).expect("valid movement query");
         assert_eq!(other.entity, Some(obstacle_entity));
         assert!(other.fraction > 0.0 && other.fraction < 1.0);
     }
@@ -302,7 +306,7 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         qa_core::primitives::CommandExecution::PerCommand,
         None,
     );
-    assert!(server.move_pending_clients(&store, geometry, 0, &mut scratch) > 0);
+    assert!(server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move) > 0);
     let moved = server.clients[moving.0 as usize].player.body.position;
     assert!(moved.0[0] > 0.0 && moved.0[0] < 18.0);
     assert_eq!(
@@ -327,10 +331,12 @@ fn authoritative_movement_skips_self_hits_another_client_and_unlinks_disconnects
         &mut scratch,
         CollisionOwner::Lifetime(mover_entity),
     );
-    let after_disconnect = trace.trace(TraceQuery {
-        start: moved,
-        ..query
-    });
+    let after_disconnect = trace
+        .trace(TraceQuery {
+            start: moved,
+            ..query
+        })
+        .expect("valid movement query");
     assert_eq!(after_disconnect.fraction, 1.0);
     assert!(!after_disconnect.start_solid && !after_disconnect.all_solid);
 }
@@ -426,7 +432,8 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         &mut scratch,
         CollisionOwner::Lifetime(entity),
     )
-    .trace(query);
+    .trace(query)
+    .expect("valid movement query");
     assert!(!selected.start_solid && selected.fraction > 0.0 && selected.fraction < 1.0);
     assert!(
         WorldTrace::new(
@@ -439,6 +446,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
             CollisionOwner::Lifetime(entity),
         )
         .trace(query)
+        .expect("valid movement query")
         .all_solid
     );
     let command = UserCmd {
@@ -454,7 +462,7 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         None,
     );
     assert_eq!(
-        server.move_pending_clients(&store, geometry, 1, &mut scratch),
+        server.move_pending_clients(&store, geometry, 1, &mut scratch, reject_move),
         1
     );
     let mut trace = WorldTrace::new(
@@ -466,7 +474,9 @@ fn authoritative_and_prediction_callers_select_a_nonzero_model_in_a_second_geome
         &mut scratch,
         CollisionOwner::Lifetime(entity),
     );
-    prediction.advance(command, &mut trace);
+    prediction
+        .advance(command, &mut trace)
+        .expect("valid movement query");
     let player = &server.clients[id.0 as usize].player;
     assert!(player.body.position.0[0] > 0.0 && player.movement.grounded);
     assert_eq!(player.body.position, prediction.player.body.position);
@@ -530,7 +540,7 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
             None,
         );
         assert_eq!(
-            server.move_pending_clients(&store, geometry, 0, &mut scratch),
+            server.move_pending_clients(&store, geometry, 0, &mut scratch, reject_move),
             1
         );
         let mut trace = WorldTrace::new(
@@ -542,7 +552,13 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
             &mut scratch,
             CollisionOwner::Lifetime(entity),
         );
-        assert!(prediction.advance(command, &mut trace).traces > 0);
+        assert!(
+            prediction
+                .advance(command, &mut trace)
+                .expect("valid movement query")
+                .traces
+                > 0
+        );
         let player = &server.clients[id.0 as usize].player;
         // Native Q2 DIST_EPSILON is 1/32; Q3 SURFACE_CLIP_EPSILON is 1/8.
         // Standing mins.z=-24 makes the distinct caller bias observable here.
@@ -557,4 +573,8 @@ fn prediction_copies_independent_trace_rules_and_matches_authoritative_contact()
         assert_eq!(prediction.player.tail, PlayerTail::None);
     }
     Ok(())
+}
+
+fn reject_move(client: qa_core::primitives::ClientId, error: qa_world::collision::TraceError) {
+    panic!("unexpected movement rejection for {client:?}: {error:?}");
 }

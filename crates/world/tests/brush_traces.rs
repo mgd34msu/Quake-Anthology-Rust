@@ -58,6 +58,7 @@ fn trace_world(geometry: &Case, query: TraceQuery<'_>) -> Trace {
         CollisionOwner::None,
     )
     .trace(query)
+    .expect("valid collision query")
 }
 
 fn point_contents(geometry: &Case, point: Vec3, rules: EntityTracePolicy) -> Contents {
@@ -81,6 +82,7 @@ fn point_contents(geometry: &Case, point: Vec3, rules: EntityTracePolicy) -> Con
         CollisionOwner::None,
     )
     .point_contents(point, rules, &[])
+    .expect("valid collision query")
 }
 
 fn box_map() -> Case {

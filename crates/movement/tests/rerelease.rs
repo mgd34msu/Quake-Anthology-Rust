@@ -82,7 +82,8 @@ fn dead_move_removes_native_speed_once_before_the_teleport_pause() {
                 &mut state,
                 &mut support::FixtureWorld::default(),
                 Default::default(),
-            );
+            )
+            .expect("valid movement query");
             assert_eq!(
                 state.body.velocity.0.map(f32::to_bits),
                 expected.0.map(f32::to_bits),
@@ -101,7 +102,8 @@ fn dead_move_removes_native_speed_once_before_the_teleport_pause() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.body.velocity.0.map(f32::to_bits), [0; 3]);
 }
 
@@ -115,23 +117,29 @@ fn rerelease_steep_ground_uses_the_wall_probe_without_replacing_its_contact() {
         probes: usize,
     }
     impl TraceServices for Slope {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let delta = query.end - query.start;
-            if delta == Vec3([0.0, 0.0, -0.25]) {
-                let mut trace = contact(query, Vec3([0.8, 0.0, 0.6]), self.fraction);
-                trace.start_solid = self.start_solid;
-                return trace;
-            }
-            if query.end == query.start + Vec3([0.8, 0.0, 0.6]) {
-                self.probes += 1;
-                let mut trace = contact(query, Vec3([-1.0, 0.0, 0.0]), self.wall_fraction);
-                trace.start_solid = self.wall_start_solid;
-                return trace;
-            }
-            Trace::clear(query.end)
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let delta = query.end - query.start;
+                if delta == Vec3([0.0, 0.0, -0.25]) {
+                    let mut trace = contact(query, Vec3([0.8, 0.0, 0.6]), self.fraction);
+                    trace.start_solid = self.start_solid;
+                    return trace;
+                }
+                if query.end == query.start + Vec3([0.8, 0.0, 0.6]) {
+                    self.probes += 1;
+                    let mut trace = contact(query, Vec3([-1.0, 0.0, 0.0]), self.wall_fraction);
+                    trace.start_solid = self.wall_start_solid;
+                    return trace;
+                }
+                Trace::clear(query.end)
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     for (rules, fraction, start_solid, wall_fraction, wall_start_solid, grounded, probes) in [
@@ -153,7 +161,8 @@ fn rerelease_steep_ground_uses_the_wall_probe_without_replacing_its_contact() {
             wall_start_solid,
             probes: 0,
         };
-        let result = pmove(command(0), &mut state, &mut world, Default::default());
+        let result = pmove(command(0), &mut state, &mut world, Default::default())
+            .expect("valid movement query");
         assert_eq!(
             state.movement.grounded, grounded,
             "{rules:?} fraction={fraction} start_solid={start_solid} wall_fraction={wall_fraction} wall_start_solid={wall_start_solid}"
@@ -189,7 +198,8 @@ fn native_land_and_trick_timers_use_fresh_landing_rules_and_publish_impact() {
             &mut state,
             &mut support::FixtureWorld::default(),
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.movement.timer, timer);
         assert_eq!(state.movement.remaining_ms, time);
         let clipped = z - z * 1.01;
@@ -208,7 +218,8 @@ fn crouching_on_the_landing_frame_does_not_create_an_old_stance_land_timer() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(state.movement.ducked);
     assert_eq!(state.body.maxs.0[2], 4.0);
     assert_eq!(state.movement.timer, MovementTimer::NONE);
@@ -226,7 +237,8 @@ fn n64_crouch_is_disabled_while_its_native_landing_pause_is_retained() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(!state.movement.ducked);
     assert_eq!(state.body.maxs.0[2], 32.0);
     assert_eq!(state.movement.timer, MovementTimer::LAND);
@@ -265,7 +277,8 @@ fn native_circular_pitch_clamp_keeps_rerelease_float_ties_and_classic_short_sema
                 &mut state,
                 &mut support::FixtureWorld::default(),
                 Default::default(),
-            );
+            )
+            .expect("valid movement query");
             assert_eq!(
                 state.view_angles.0.map(f32::to_bits),
                 expected.0.map(f32::to_bits),
@@ -300,7 +313,8 @@ fn native_teleport_angle_pause_zeroes_pitch_and_roll_without_narrowing_rerelease
             &mut state,
             &mut support::FixtureWorld::default(),
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(
             state.view_angles.0.map(f32::to_bits),
             Vec3([0.0, yaw, 0.0]).0.map(f32::to_bits)
@@ -316,19 +330,25 @@ fn rerelease_air_ducking_uses_solid_then_water_probes_and_refuses_the_water_surf
         masks: Vec<Contents>,
     }
     impl TraceServices for Below {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            if query.end - query.start == Vec3([0.0, 0.0, -8.0]) {
-                self.masks.push(query.mask);
-                if query.mask == (Contents::SOLID | Contents::WINDOW) && self.solid
-                    || query.mask == Contents::FLUID && self.water
-                {
-                    return contact(query, Vec3([0.0, 0.0, 1.0]), 0.5);
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                if query.end - query.start == Vec3([0.0, 0.0, -8.0]) {
+                    self.masks.push(query.mask);
+                    if query.mask == (Contents::SOLID | Contents::WINDOW) && self.solid
+                        || query.mask == Contents::FLUID && self.water
+                    {
+                        return contact(query, Vec3([0.0, 0.0, 1.0]), 0.5);
+                    }
                 }
-            }
-            Trace::clear(query.end)
+                Trace::clear(query.end)
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     for (solid, water, ducked) in [
@@ -348,7 +368,8 @@ fn rerelease_air_ducking_uses_solid_then_water_probes_and_refuses_the_water_surf
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.movement.ducked, ducked);
         assert_eq!(world.masks[0], Contents::SOLID | Contents::WINDOW);
         assert_eq!(world.masks.len(), if solid { 1 } else { 2 });
@@ -369,7 +390,8 @@ fn rerelease_dead_and_gib_dimensions_are_native_even_with_n64_enabled() {
             &mut state,
             &mut support::FixtureWorld::default(),
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         if mode == MovementMode::Dead {
             assert!(state.movement.ducked);
             assert_eq!(
@@ -400,22 +422,28 @@ fn initial_snap_uses_native_candidate_order_between_old_stance_and_ducking() {
         initial: usize,
     }
     impl TraceServices for Initial {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            self.calls.push((query.start, query.end, query.maxs));
-            if query.start == query.end && query.maxs.0[2] == 32.0 && self.initial < 3 {
-                self.initial += 1;
-                let mut trace = Trace::clear(query.end);
-                trace.all_solid = self.initial < 3;
-                trace.start_solid = trace.all_solid;
-                return trace;
-            }
-            if query.end.0[2] - query.start.0[2] == -0.25 {
-                return contact(query, Vec3([0.0, 0.0, 1.0]), 0.0);
-            }
-            Trace::clear(query.end)
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                self.calls.push((query.start, query.end, query.maxs));
+                if query.start == query.end && query.maxs.0[2] == 32.0 && self.initial < 3 {
+                    self.initial += 1;
+                    let mut trace = Trace::clear(query.end);
+                    trace.all_solid = self.initial < 3;
+                    trace.start_solid = trace.all_solid;
+                    return trace;
+                }
+                if query.end.0[2] - query.start.0[2] == -0.25 {
+                    return contact(query, Vec3([0.0, 0.0, 1.0]), 0.0);
+                }
+                Trace::clear(query.end)
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let mut state = player();
@@ -430,7 +458,8 @@ fn initial_snap_uses_native_candidate_order_between_old_stance_and_ducking() {
         &mut state,
         &mut world,
         qa_movement::MoveOptions { initial_snap: true },
-    );
+    )
+    .expect("valid movement query");
     let origin = Vec3([0.0, 0.0, 64.0]);
     assert_eq!(
         world.calls[0],
@@ -463,17 +492,23 @@ fn initial_snap_updates_the_native_recovery_fallback_origin() {
         accepts: usize,
     }
     impl TraceServices for Initial {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let mut trace = Trace::clear(query.end);
-            if query.start == query.end {
-                self.stationary += 1;
-                trace.start_solid = self.stationary != self.accepts;
-                trace.all_solid = trace.start_solid;
-            }
-            trace
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let mut trace = Trace::clear(query.end);
+                if query.start == query.end {
+                    self.stationary += 1;
+                    trace.start_solid = self.stationary != self.accepts;
+                    trace.all_solid = trace.start_solid;
+                }
+                trace
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     for (accepts, expected_x) in [(2, -1.0), (usize::MAX, 0.0)] {
@@ -489,7 +524,8 @@ fn initial_snap_updates_the_native_recovery_fallback_origin() {
             &mut state,
             &mut world,
             qa_movement::MoveOptions { initial_snap: true },
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.body.position, Vec3([expected_x, 0.0, 64.0]));
     }
 }
@@ -500,15 +536,21 @@ fn classic_initial_snap_uses_eighth_units_before_ground_categorization() {
         calls: Vec<(Vec3, Vec3)>,
     }
     impl TraceServices for Initial {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            self.calls.push((query.start, query.end));
-            let mut trace = Trace::clear(query.end);
-            trace.all_solid = self.calls.len() == 1;
-            trace.start_solid = trace.all_solid;
-            trace
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                self.calls.push((query.start, query.end));
+                let mut trace = Trace::clear(query.end);
+                trace.all_solid = self.calls.len() == 1;
+                trace.start_solid = trace.all_solid;
+                trace
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let mut state = player();
@@ -521,7 +563,8 @@ fn classic_initial_snap_uses_eighth_units_before_ground_categorization() {
         &mut state,
         &mut world,
         qa_movement::MoveOptions { initial_snap: true },
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(
         world.calls[0],
         (Vec3([0.0, 0.0, 64.0]), Vec3([0.0, 0.0, 64.0]))
@@ -552,7 +595,8 @@ fn water_jump_cancellation_precedes_rerelease_landing_and_timer_expiry() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.movement.timer, MovementTimer::LAND);
     assert_eq!(state.movement.remaining_ms, 120);
     state.movement.timer = MovementTimer::TRICK;
@@ -562,7 +606,8 @@ fn water_jump_cancellation_precedes_rerelease_landing_and_timer_expiry() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.movement.timer, MovementTimer::NONE);
     assert_eq!(state.movement.remaining_ms, 0);
 }
@@ -578,10 +623,12 @@ fn native_landing_gate_preserves_jump_held_until_the_timer_allows_release() {
         state.movement.timer = MovementTimer::LAND;
         state.movement.remaining_ms = 16;
         let mut world = support::FixtureWorld::default();
-        pmove(command(0), &mut state, &mut world, Default::default());
+        pmove(command(0), &mut state, &mut world, Default::default())
+            .expect("valid movement query");
         assert!(state.movement.jump_held, "{rules:?}");
         assert_eq!(state.movement.remaining_ms, 8);
-        pmove(command(0), &mut state, &mut world, Default::default());
+        pmove(command(0), &mut state, &mut world, Default::default())
+            .expect("valid movement query");
         assert!(!state.movement.jump_held, "{rules:?}");
         assert_eq!(state.movement.remaining_ms, 0);
     }
@@ -593,17 +640,23 @@ fn a_trick_landing_rechecks_the_same_jump_after_final_categorization() {
         quarter_traces: usize,
     }
     impl TraceServices for Landing {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            if query.end.0[2] - query.start.0[2] == -0.25 {
-                self.quarter_traces += 1;
-                if self.quarter_traces == 2 {
-                    return contact(query, Vec3([0.0, 0.0, 1.0]), 0.0);
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                if query.end.0[2] - query.start.0[2] == -0.25 {
+                    self.quarter_traces += 1;
+                    if self.quarter_traces == 2 {
+                        return contact(query, Vec3([0.0, 0.0, 1.0]), 0.0);
+                    }
                 }
-            }
-            Trace::clear(query.end)
+                Trace::clear(query.end)
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let mut state = player();
@@ -614,7 +667,8 @@ fn a_trick_landing_rechecks_the_same_jump_after_final_categorization() {
         &mut state,
         &mut Landing { quarter_traces: 0 },
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(
         state.body.velocity.0[2],
         (150.0 - 800.0 * (8.0f32 * 0.001)) + 270.0
@@ -632,21 +686,27 @@ fn raised_stair_path_checks_the_lower_endpoint_then_uses_the_real_descent() {
         drops: Vec<(Vec3, Vec3)>,
     }
     impl TraceServices for Stair {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            if query.end.0[2] - query.start.0[2] < -1.0 {
-                self.drops.push((query.start, query.end));
-                let mut trace = contact(query, Vec3([0.0, 0.0, 1.0]), 0.5);
-                if self.drops.len() == 1 {
-                    trace.all_solid = self.blocked;
-                } else {
-                    trace.end = query.end;
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                if query.end.0[2] - query.start.0[2] < -1.0 {
+                    self.drops.push((query.start, query.end));
+                    let mut trace = contact(query, Vec3([0.0, 0.0, 1.0]), 0.5);
+                    if self.drops.len() == 1 {
+                        trace.all_solid = self.blocked;
+                    } else {
+                        trace.end = query.end;
+                    }
+                    return trace;
                 }
-                return trace;
-            }
-            Trace::clear(query.end)
+                Trace::clear(query.end)
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     for blocked in [false, true] {
@@ -657,7 +717,8 @@ fn raised_stair_path_checks_the_lower_endpoint_then_uses_the_real_descent() {
             blocked,
             drops: Vec::new(),
         };
-        let result = pmove(command(0), &mut state, &mut world, Default::default());
+        let result = pmove(command(0), &mut state, &mut world, Default::default())
+            .expect("valid movement query");
         assert_eq!(world.drops[0].1.0[2], 63.0);
         assert_eq!(world.drops.len(), if blocked { 1 } else { 2 });
         assert_eq!(result.step_clip, !blocked);
@@ -676,29 +737,35 @@ fn grounded_stair_descent_follows_the_floor_but_ladder_motion_does_not() {
         drops: usize,
     }
     impl TraceServices for Down {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let delta = query.end - query.start;
-            if delta.0[2] == -0.25 {
-                return contact(query, Vec3([0.0, 0.0, 1.0]), 0.0);
-            }
-            if self.ladder && delta == Vec3([1.0, 0.0, 0.0]) {
-                let mut trace = contact(query, Vec3([-1.0, 0.0, 0.0]), 0.5);
-                trace.contents = Contents::LADDER;
-                return trace;
-            }
-            if delta.0[2] == -18.0 {
-                self.drops += 1;
-                if self.drops == 3 {
-                    return contact(query, Vec3([0.0, 0.0, 1.0]), 8.0 / 18.0);
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let delta = query.end - query.start;
+                if delta.0[2] == -0.25 {
+                    return contact(query, Vec3([0.0, 0.0, 1.0]), 0.0);
                 }
-                let mut trace = Trace::clear(query.end);
-                trace.plane = Plane::oriented(Vec3([0.0, 0.0, 1.0]), 0.0);
-                return trace;
-            }
-            Trace::clear(query.end)
+                if self.ladder && delta == Vec3([1.0, 0.0, 0.0]) {
+                    let mut trace = contact(query, Vec3([-1.0, 0.0, 0.0]), 0.5);
+                    trace.contents = Contents::LADDER;
+                    return trace;
+                }
+                if delta.0[2] == -18.0 {
+                    self.drops += 1;
+                    if self.drops == 3 {
+                        return contact(query, Vec3([0.0, 0.0, 1.0]), 8.0 / 18.0);
+                    }
+                    let mut trace = Trace::clear(query.end);
+                    trace.plane = Plane::oriented(Vec3([0.0, 0.0, 1.0]), 0.0);
+                    return trace;
+                }
+                Trace::clear(query.end)
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     for ladder in [false, true] {
@@ -707,7 +774,7 @@ fn grounded_stair_descent_follows_the_floor_but_ladder_motion_does_not() {
         let mut world = Down { ladder, drops: 0 };
         let mut cmd = command(0);
         cmd.movement[0] = if ladder { 0.0 } else { 100.0 };
-        pmove(cmd, &mut state, &mut world, Default::default());
+        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
         assert_eq!(world.drops, if ladder { 2 } else { 3 });
         assert_eq!(state.body.position.0[2], if ladder { 64.0 } else { 56.0 });
         assert!(state.movement.grounded);
@@ -724,7 +791,8 @@ fn native_recovery_uses_the_clear_face_and_one_eighth_unit_separation() {
         &mut state,
         &mut support::FixtureWorld::default(),
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.body.position.0[2], 24.125);
     assert_eq!(state.body.velocity, Vec3::default());
     assert!(result.traces > 10);
@@ -736,19 +804,25 @@ fn failed_native_recovery_restores_the_previous_position_without_growing_state()
         stationary: usize,
     }
     impl TraceServices for Sealed {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let mut trace = Trace::clear(query.end);
-            if query.start == query.end {
-                self.stationary += 1;
-                trace.start_solid = true;
-                trace.all_solid = true;
-                trace.fraction = 0.0;
-                trace.end = query.start;
-            }
-            trace
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let mut trace = Trace::clear(query.end);
+                if query.start == query.end {
+                    self.stationary += 1;
+                    trace.start_solid = true;
+                    trace.all_solid = true;
+                    trace.fraction = 0.0;
+                    trace.end = query.start;
+                }
+                trace
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let mut state = player();
@@ -756,7 +830,7 @@ fn failed_native_recovery_restores_the_previous_position_without_growing_state()
     state.body.velocity.0[0] = 100.0;
     state.movement.tuning.no_step = true;
     let mut world = Sealed { stationary: 0 };
-    pmove(command(0), &mut state, &mut world, Default::default());
+    pmove(command(0), &mut state, &mut world, Default::default()).expect("valid movement query");
     assert_eq!(state.body.position, previous);
     assert_eq!(world.stationary, 32);
 }
@@ -768,31 +842,37 @@ fn repeated_native_planes_use_the_same_position_recovery() {
         recovered: bool,
     }
     impl TraceServices for Wall {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            let delta = query.end - query.start;
-            if (delta.0[0] != 0.0 || delta.0[1] != 0.0)
-                && query.mins == Vec3([-16.0, -16.0, -24.0])
-                && self.hits < 2
-            {
-                self.hits += 1;
-                return contact(query, Vec3([1.0, 0.0, 0.0]), 0.0);
-            }
-            let a = query.start.0[0] + query.mins.0[0];
-            let b = query.end.0[0] + query.mins.0[0];
-            let mut trace = Trace::clear(query.end);
-            if a < 0.0 {
-                trace.start_solid = true;
-                trace.all_solid = b < 0.0;
-            } else if b < 0.0 {
-                trace = contact(query, Vec3([1.0, 0.0, 0.0]), a / (a - b));
-            }
-            if self.hits == 2 && query.start == query.end && query.start.0[0] == 16.125 {
-                self.recovered = true;
-            }
-            trace
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                let delta = query.end - query.start;
+                if (delta.0[0] != 0.0 || delta.0[1] != 0.0)
+                    && query.mins == Vec3([-16.0, -16.0, -24.0])
+                    && self.hits < 2
+                {
+                    self.hits += 1;
+                    return contact(query, Vec3([1.0, 0.0, 0.0]), 0.0);
+                }
+                let a = query.start.0[0] + query.mins.0[0];
+                let b = query.end.0[0] + query.mins.0[0];
+                let mut trace = Trace::clear(query.end);
+                if a < 0.0 {
+                    trace.start_solid = true;
+                    trace.all_solid = b < 0.0;
+                } else if b < 0.0 {
+                    trace = contact(query, Vec3([1.0, 0.0, 0.0]), a / (a - b));
+                }
+                if self.hits == 2 && query.start == query.end && query.start.0[0] == 16.125 {
+                    self.recovered = true;
+                }
+                trace
+            })())
         }
-        fn point_contents(&self, _: Vec3, _: EntityTracePolicy) -> Contents {
-            Contents::EMPTY
+        fn point_contents(
+            &self,
+            _: Vec3,
+            _: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| Contents::EMPTY)())
         }
     }
     let mut state = player();
@@ -802,7 +882,7 @@ fn repeated_native_planes_use_the_same_position_recovery() {
         hits: 0,
         recovered: false,
     };
-    pmove(command(0), &mut state, &mut world, Default::default());
+    pmove(command(0), &mut state, &mut world, Default::default()).expect("valid movement query");
     assert_eq!(world.hits, 2);
     assert!(world.recovered);
     assert!(state.body.position.0[0] >= 16.125);

@@ -18,28 +18,38 @@ struct CheckedQueries {
 }
 
 impl TraceServices for CheckedQueries {
-    fn trace(&mut self, query: TraceQuery) -> Trace {
-        assert_eq!(query.rules, self.expected);
-        assert_eq!(query.entity_rules, self.expected_entities);
-        assert_eq!(query.pass, qa_core::primitives::CollisionOwner::None);
-        assert!(query.excluded.is_empty());
-        self.calls += 1;
-        self.position_tests += u32::from(query.start == query.end);
-        self.ground_tests += u32::from(
-            query.start.0[0] == query.end.0[0]
-                && query.start.0[1] == query.end.0[1]
-                && query.end.0[2] < query.start.0[2],
-        );
-        self.point_tests +=
-            u32::from(query.mins == Vec3::default() && query.maxs == Vec3::default());
-        self.ledge_tests += u32::from(query.start.0[2] - query.end.0[2] == 34.0);
-        self.world.trace(query)
+    fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+        Ok((|| {
+            assert_eq!(query.rules, self.expected);
+            assert_eq!(query.entity_rules, self.expected_entities);
+            assert_eq!(query.pass, qa_core::primitives::CollisionOwner::None);
+            assert!(query.excluded.is_empty());
+            self.calls += 1;
+            self.position_tests += u32::from(query.start == query.end);
+            self.ground_tests += u32::from(
+                query.start.0[0] == query.end.0[0]
+                    && query.start.0[1] == query.end.0[1]
+                    && query.end.0[2] < query.start.0[2],
+            );
+            self.point_tests +=
+                u32::from(query.mins == Vec3::default() && query.maxs == Vec3::default());
+            self.ledge_tests += u32::from(query.start.0[2] - query.end.0[2] == 34.0);
+            self.world.trace(query).expect("valid movement query")
+        })())
     }
 
-    fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
-        assert_eq!(rules, self.expected_entities);
-        self.contents_calls.set(self.contents_calls.get() + 1);
-        self.world.point_contents(point, rules)
+    fn point_contents(
+        &self,
+        point: Vec3,
+        rules: EntityTracePolicy,
+    ) -> Result<Contents, qa_world::collision::TraceError> {
+        Ok((|| {
+            assert_eq!(rules, self.expected_entities);
+            self.contents_calls.set(self.contents_calls.get() + 1);
+            self.world
+                .point_contents(point, rules)
+                .expect("valid movement query")
+        })())
     }
 }
 
@@ -122,7 +132,8 @@ fn every_movement_probe_gets_independent_trace_rules_and_module_tail() {
                 &mut player,
                 &mut queries,
                 Default::default(),
-            );
+            )
+            .expect("valid movement query");
             assert!(queries.calls > 0);
             assert!(queries.contents_calls.get() > 0);
             assert_eq!(result.traces, queries.calls);

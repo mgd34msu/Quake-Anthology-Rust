@@ -7,7 +7,7 @@ use qa_core::primitives::{
 use qa_core::sys_events::EventTime;
 use qa_world::{
     area::{AreaGrid, AttachmentTransport, LinkFlags, LinkIntent, LinkOrder},
-    collision::{CollisionStore, Contents, TraceScratch, WorldTrace},
+    collision::{CollisionStore, Contents, TraceError, TraceScratch, WorldTrace},
     entities::EntityTable,
 };
 
@@ -275,11 +275,11 @@ impl Server {
         end: EventTime,
         mut policy: impl FnMut(RuleSetId) -> qa_input::InputPolicy,
     ) {
-        let duration_ns = end.since(start);
+        let duration = EventTime(end.since(start));
         for client in self.clients.iter_mut() {
             if client.connection == Some(Connection::Bot) {
                 let command = qa_input::UserCmdBuilder::build(
-                    duration_ns,
+                    duration,
                     end,
                     client.intent,
                     policy(client.player.movement_rules),
@@ -356,13 +356,13 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
-    ) -> u32 {
+    ) -> Result<u32, TraceError> {
         let module_moves = self.module_moves(id).is_some();
         let Some((command, _)) = self.take_pending_command(id) else {
-            return 0;
+            return Ok(0);
         };
         if module_moves {
-            return 0;
+            return Ok(0);
         }
         let client = &mut self.clients[id.0 as usize];
         let result = {
@@ -376,7 +376,7 @@ impl Server {
                 CollisionOwner::Lifetime(client.entity),
             );
             qa_movement::pmove(command, &mut client.player, &mut trace, Default::default())
-        };
+        }?;
         self.entities
             .columns
             .set_body(client.entity.slot as usize, client.player.body);
@@ -387,7 +387,7 @@ impl Server {
             client.link_order,
             LinkIntent::Commit,
         );
-        result.steps
+        Ok(result.steps)
     }
 
     /// Local, network and bot clients share the same authoritative entry.
@@ -399,16 +399,15 @@ impl Server {
         geometry: GeometryId,
         index: u32,
         scratch: &mut TraceScratch,
+        mut rejected: impl FnMut(ClientId, TraceError),
     ) -> u32 {
         let mut steps = 0;
         for client_index in 0..self.clients.len() {
-            steps += self.move_pending_client(
-                ClientId(client_index as u32),
-                store,
-                geometry,
-                index,
-                scratch,
-            );
+            let id = ClientId(client_index as u32);
+            match self.move_pending_client(id, store, geometry, index, scratch) {
+                Ok(count) => steps += count,
+                Err(error) => rejected(id, error),
+            }
         }
         self.commit_attachments();
         steps

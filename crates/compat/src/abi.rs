@@ -1064,6 +1064,7 @@ fn qc_sound(
         origin: position,
         reliable,
         dupe_key: 0,
+        component: 0,
         emission: None,
         check_portals: false,
     };
@@ -1532,6 +1533,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
         SoundEvent {
             sound,
             source_ordinal: Some(c.arg(index)? as u32),
+            native_fields: None,
             spatial: c.context.sound_policy,
             entity,
             position,
@@ -2421,6 +2423,7 @@ fn native_delivery<const WIDE: bool>(
         origin,
         reliable,
         dupe_key,
+        component: 0,
         emission: c.services.storage.emission(c.context),
         check_portals: !c.services.ignore_areas(source, WIDE),
     }
@@ -2449,7 +2452,7 @@ fn native_multicast<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<
         c.memory.read_vec3(c.pointer(0)?)?
     };
     let delivery = native_delivery::<WIDE>(c, target, origin, reliable, 0);
-    (ENGINE_CALLS.native_message)(c.services, delivery)?;
+    (ENGINE_CALLS.native_message)(c.services, delivery, c.context.sound_policy)?;
     Ok(0)
 }
 fn native_unicast<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
@@ -2478,7 +2481,7 @@ fn native_unicast<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result<u6
         reliable,
         dupe_key,
     );
-    (ENGINE_CALLS.native_message)(c.services, delivery)?;
+    (ENGINE_CALLS.native_message)(c.services, delivery, c.context.sound_policy)?;
     Ok(0)
 }
 

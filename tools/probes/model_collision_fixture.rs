@@ -228,7 +228,11 @@ pub fn load(rule: RuleSetId, data: &[u8], mut pose_data: &[u8]) -> Result<Fixtur
 }
 
 impl Fixture {
-    pub fn sample(&self, index: usize, scratch: &mut TraceScratch) -> (Trace, [u32; WORDS]) {
+    pub fn sample(
+        &self,
+        index: usize,
+        scratch: &mut TraceScratch,
+    ) -> Result<(Trace, [u32; WORDS]), qa_world::collision::TraceError> {
         let query = self.queries[index];
         let pose = self.poses[index];
         let geometry = self.geometries[query.map];
@@ -240,7 +244,7 @@ impl Fixture {
             pose.angles,
             self.model_rules,
             scratch,
-        );
+        )?;
         let point = if self.rule == RuleSetId::Quake {
             Contents::EMPTY
         } else {
@@ -252,7 +256,7 @@ impl Fixture {
                 pose.angles,
                 self.model_rules,
                 self.entity_rules,
-            )
+            )?
         };
         let mut row = brush::result(trace, point);
         if self.rule == RuleSetId::Quake {
@@ -263,6 +267,6 @@ impl Fixture {
                 | u32::from(trace.in_open) << 2
                 | u32::from(trace.in_water) << 3;
         }
-        (trace, row)
+        Ok((trace, row))
     }
 }

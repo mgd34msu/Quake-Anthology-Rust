@@ -12,9 +12,9 @@ use qa_core::{
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
-        EntityRecord, GeometryId, IndexSpan, ModelRules, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
-        NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, NameId, NativeCueBinding, NativeDelivery,
-        NativeEntity, PrintKind, RuleSetId, SoundEvent, UserCmd, Vec3,
+        EntityRecord, GeometryId, IndexSpan, ModelRules, ModuleId, NATIVE_PAYLOAD_BYTES,
+        NATIVE_WIRE_BYTES, NameId, NativeDelivery, NativeEntity, PrintKind, RuleSetId, SoundEvent,
+        UserCmd, Vec3,
     },
 };
 use qa_session::clients::Server;
@@ -27,6 +27,7 @@ use qa_world::{
     entities::AllocationPolicy,
 };
 
+mod native_message;
 mod signon;
 pub use signon::{AmbientSound, SIGNON_BYTES, SignonCursor};
 
@@ -688,8 +689,11 @@ pub struct EngineCallTable {
         qa_world::visibility::PointVisibility,
         bool,
     ) -> Result<bool, CallError>,
-    pub native_message:
-        fn(&mut EngineServices<'_>, NativeDelivery) -> Result<Option<u64>, CallError>,
+    pub native_message: fn(
+        &mut EngineServices<'_>,
+        NativeDelivery,
+        qa_core::primitives::SpatialPolicy,
+    ) -> Result<Option<u64>, CallError>,
     pub message_bits: fn(&mut EngineServices<'_>, ModuleId, u32, u8) -> Result<(), CallError>,
     pub message_string: fn(&mut EngineServices<'_>, ModuleId, &[u8]) -> Result<(), CallError>,
     pub area_query: AreaQueryCall,
@@ -788,73 +792,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
             )
             .map_err(|_| CallError::Geometry)
     },
-    native_message: |s, delivery| {
-        let row = s.storage.entity_range(delivery.module)?;
-        if row.written == 0 {
-            return Ok(None);
-        }
-        let wire_length = row.written;
-        let (wire, metadata) = row.message.split_at_mut(wire_length);
-        let mut captured = 0;
-        let protocol = matches!(
-            delivery.source,
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-        )
-        .then(|| qa_network::commands::packet::Protocol::native(delivery.source));
-        if let Some(protocol) = protocol {
-            let mut offset = 0;
-            while offset < wire.len() {
-                let Ok((service, consumed)) =
-                    qa_network::outputs::read_native_service(protocol, &wire[offset..])
-                else {
-                    break; // Unknown payload lengths remain opaque, never guessed.
-                };
-                if let qa_network::outputs::NativeService::Cue(cue) = service {
-                    let Some(target) =
-                        metadata.get_mut(captured..captured + NATIVE_CUE_CAPTURE_BYTES)
-                    else {
-                        row.written = 0;
-                        s.server.events.reject_publication();
-                        return Err(CallError::Capacity);
-                    };
-                    let (sound, entity) = match cue {
-                        qa_network::outputs::Cue::Sound(sound)
-                        | qa_network::outputs::Cue::StaticSound(sound) => (
-                            row.sound_bindings
-                                .as_ref()
-                                .and_then(|bindings| bindings.sound(u32::from(sound.index))),
-                            sound.entity(),
-                        ),
-                        qa_network::outputs::Cue::MuzzleFlash(flash) => (None, Some(flash.entity)),
-                    };
-                    let lifetime = entity.and_then(|slot| {
-                        s.server.entities.find_native(
-                            qa_core::primitives::NativeEntity {
-                                module: delivery.module,
-                                slot: i32::from(slot),
-                            },
-                            None,
-                        )
-                    });
-                    let _ = NativeCueBinding {
-                        sound,
-                        entity: lifetime,
-                    }
-                    .write_capture(offset as u32, target);
-                    captured += NATIVE_CUE_CAPTURE_BYTES;
-                }
-                offset += consumed;
-            }
-        }
-        let result = s.server.events.native_message_bound(
-            delivery,
-            wire_length,
-            &row.message[..wire_length + captured],
-        );
-        // Native multicast/unicast consumes staging even on bounded admission failure.
-        row.written = 0;
-        result.map(Some).map_err(|_| CallError::Capacity)
-    },
+    native_message: native_message::publish,
     message_bits: |s, module, value, width| {
         s.storage
             .write_message(module, |w| w.write_bits(value, width))
@@ -1029,7 +967,7 @@ impl EngineServices<'_> {
         let base = std::mem::replace(&mut client.player.movement.tuning, tuning);
         let result = qa_movement::pmove(client.command, &mut client.player, &mut trace, options);
         client.player.movement.tuning = base;
-        Ok(result)
+        result.map_err(|_| CallError::Geometry)
     }
     pub fn ignore_areas(&self, source: qa_core::primitives::RuleSetId, integer: bool) -> bool {
         if integer {
@@ -1087,10 +1025,10 @@ impl EngineServices<'_> {
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<Trace, CallError> {
         let (mut trace, _) = self.world_trace(CollisionOwner::None, native)?;
-        Ok(trace.trace(query))
+        trace.trace(query).map_err(|_| CallError::Geometry)
     }
     pub fn clip(&mut self, query: TraceQuery<'_>, target: ClipTarget) -> Result<Trace, CallError> {
-        Ok(match target {
+        match target {
             ClipTarget::World => {
                 let (geometry, index) = self.world.ok_or(CallError::Geometry)?;
                 self.geometry
@@ -1104,7 +1042,8 @@ impl EngineServices<'_> {
             } => self
                 .geometry
                 .trace_body(query, shape, &body, angles, rules, None, self.scratch),
-        })
+        }
+        .map_err(|_| CallError::Geometry)
     }
     pub fn point_contents(
         &mut self,
@@ -1114,7 +1053,9 @@ impl EngineServices<'_> {
         native: Option<&dyn NativeTraceEntities>,
     ) -> Result<Contents, CallError> {
         let (trace, _) = self.world_trace(pass, native)?;
-        Ok(trace.point_contents(point, rules, &[]))
+        trace
+            .point_contents(point, rules, &[])
+            .map_err(|_| CallError::Geometry)
     }
     pub fn link(
         &mut self,

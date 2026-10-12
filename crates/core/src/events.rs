@@ -87,8 +87,58 @@ enum Delivery {
 }
 struct OutputSlot {
     record: OutputRecord,
+    target: Option<OutputTarget>,
     remaining: usize,
     texts: [Option<TextLease>; NATIVE_PAYLOAD_PAGES],
+    fresh_pages: u32,
+}
+/// A group stages into the ring's own unused slots, invisible until commit.
+pub struct OutputGroup<'a> {
+    ring: &'a mut EventRing,
+    next: u64,
+    end: u64,
+}
+impl OutputGroup<'_> {
+    pub fn push_delivered(
+        &mut self,
+        delivery: NativeDelivery,
+        event: FrameEvent,
+    ) -> Result<u64, EventStorageError> {
+        self.room()?;
+        let texts = self.ring.lease_event(event)?;
+        Ok(self.stage(delivery, event, texts, 0))
+    }
+    pub fn native_message_parts(
+        &mut self,
+        delivery: NativeDelivery,
+        wire: &[u8],
+        captures: &[u8],
+    ) -> Result<u64, EventStorageError> {
+        self.room()?;
+        let (payload, texts) = self.ring.native_payload(wire, captures)?;
+        let fresh = (1u32 << texts.iter().flatten().count()) - 1;
+        Ok(self.stage(delivery, FrameEvent::Native(payload), texts, fresh))
+    }
+    fn room(&self) -> Result<(), EventStorageError> {
+        if self.next == self.end {
+            Err(EventStorageError::RingCapacity)
+        } else {
+            Ok(())
+        }
+    }
+    fn stage(
+        &mut self,
+        delivery: NativeDelivery,
+        event: FrameEvent,
+        texts: [Option<TextLease>; NATIVE_PAYLOAD_PAGES],
+        fresh_pages: u32,
+    ) -> u64 {
+        let sequence = self.next;
+        self.ring
+            .store_slot(sequence, None, Some(delivery), event, texts, fresh_pages);
+        self.next += 1;
+        sequence
+    }
 }
 #[derive(Default)]
 struct OutputCursor {
@@ -246,23 +296,22 @@ impl EventRing {
             self.head += 1;
         }
     }
-    fn make_room(&mut self) {
+    fn make_room(&mut self, count: usize) {
         self.retire();
-        if self.len() != self.slots.len() {
-            return;
-        }
-        for index in 0..self.active_len {
-            let consumer = self.active[index];
-            if self.deliveries[self.offset(consumer, self.head)] != Delivery::Done {
-                let c = &mut self.consumers[consumer];
-                c.counters.overflow += 1;
-                c.counters.resyncs += 1;
-                c.resync = true;
-                let retired = self.cancel_pending(consumer);
-                self.consumers[consumer].counters.retired_on_resync += retired as u64;
+        while self.slots.len() - self.len() < count {
+            for index in 0..self.active_len {
+                let consumer = self.active[index];
+                if self.deliveries[self.offset(consumer, self.head)] != Delivery::Done {
+                    let c = &mut self.consumers[consumer];
+                    c.counters.overflow += 1;
+                    c.counters.resyncs += 1;
+                    c.resync = true;
+                    let retired = self.cancel_pending(consumer);
+                    self.consumers[consumer].counters.retired_on_resync += retired as u64;
+                }
             }
+            self.retire();
         }
-        self.retire();
     }
     pub fn push(&mut self, event: FrameEvent) -> Result<u64, EventStorageError> {
         self.publish(None, None, event)
@@ -288,7 +337,21 @@ impl EventRing {
         delivery: Option<NativeDelivery>,
         event: FrameEvent,
     ) -> Result<u64, EventStorageError> {
-        self.make_room();
+        self.make_room(1);
+        let texts = self.lease_event(event).inspect_err(|_| {
+            self.rejected_publications += 1;
+        })?;
+        let sequence = self.tail;
+        self.store_slot(sequence, target, delivery, event, texts, 0);
+        self.commit_slot(sequence);
+        self.tail += 1;
+        self.retire();
+        Ok(sequence)
+    }
+    fn lease_event(
+        &mut self,
+        event: FrameEvent,
+    ) -> Result<[Option<TextLease>; NATIVE_PAYLOAD_PAGES], EventStorageError> {
         let mut texts = [const { None }; NATIVE_PAYLOAD_PAGES];
         let mut pages = [None; NATIVE_PAYLOAD_PAGES];
         match event {
@@ -301,13 +364,41 @@ impl EventRing {
             if let Some(page) = page {
                 let Some(lease) = self.texts.lease(page) else {
                     self.texts.release_all(texts);
-                    self.rejected_publications += 1;
                     return Err(EventStorageError::StaleText);
                 };
                 texts[index] = Some(lease);
             }
         }
-        let sequence = self.tail;
+        Ok(texts)
+    }
+    fn store_slot(
+        &mut self,
+        sequence: u64,
+        target: Option<OutputTarget>,
+        delivery: Option<NativeDelivery>,
+        event: FrameEvent,
+        texts: [Option<TextLease>; NATIVE_PAYLOAD_PAGES],
+        fresh_pages: u32,
+    ) {
+        self.slots[sequence as usize & self.mask] = Some(OutputSlot {
+            record: OutputRecord {
+                sequence,
+                event,
+                delivery,
+            },
+            target,
+            remaining: 0,
+            texts,
+            fresh_pages,
+        });
+    }
+    fn commit_slot(&mut self, sequence: u64) {
+        let Some(slot) = self.slots[sequence as usize & self.mask].as_ref() else {
+            return;
+        };
+        let target = slot.target;
+        let delivery = slot.record.delivery;
+        let event = slot.record.event;
         let mut remaining = 0;
         for index in 0..self.active_len {
             let consumer = self.active[index];
@@ -347,18 +438,61 @@ impl EventRing {
                 Delivery::Done
             };
         }
-        self.slots[sequence as usize & self.mask] = Some(OutputSlot {
-            record: OutputRecord {
-                sequence,
-                event,
-                delivery,
-            },
-            remaining,
-            texts,
+        if let Some(slot) = self.slots[sequence as usize & self.mask].as_mut() {
+            slot.remaining = remaining;
+            slot.fresh_pages = 0;
+        }
+    }
+    /// Reserve room using the same bounded slow-consumer resync as a single
+    /// publication. Staging failure leaves no visible prefix or text lease.
+    pub fn publish_group(
+        &mut self,
+        count: usize,
+        fill: impl FnOnce(&mut OutputGroup<'_>) -> Result<(), EventStorageError>,
+    ) -> Result<std::ops::Range<u64>, EventStorageError> {
+        if count > self.slots.len() || count == 0 {
+            self.rejected_publications += 1;
+            return Err(EventStorageError::RingCapacity);
+        }
+        self.make_room(count);
+        let start = self.tail;
+        let end = start + count as u64;
+        let checkpoint = self.texts.checkpoint();
+        let mut group = OutputGroup {
+            ring: self,
+            next: start,
+            end,
+        };
+        let result = fill(&mut group).and_then(|()| {
+            (group.next == end)
+                .then_some(())
+                .ok_or(EventStorageError::RingCapacity)
         });
-        self.tail += 1;
+        let staged_end = group.next;
+        if let Err(error) = result {
+            for sequence in start..staged_end {
+                if let Some(slot) = self.slots[sequence as usize & self.mask].take() {
+                    for (index, lease) in slot.texts.into_iter().enumerate() {
+                        if let Some(lease) = lease {
+                            if slot.fresh_pages & (1 << index) != 0 {
+                                self.texts.rollback_new(lease);
+                            } else {
+                                self.texts.release(lease);
+                            }
+                        }
+                    }
+                }
+            }
+            self.texts.restore_checkpoint(checkpoint);
+            self.rejected_publications += 1;
+            return Err(error);
+        }
+        for sequence in start..end {
+            self.commit_slot(sequence);
+        }
+        self.tail = end;
         self.retire();
-        Ok(sequence)
+        Ok(start..end)
     }
     /// A bounded producer staging failure is a rejected ring publication.
     pub fn reject_publication(&mut self) {
@@ -379,36 +513,70 @@ impl EventRing {
         wire_length: usize,
         bytes: &[u8],
     ) -> Result<u64, EventStorageError> {
-        self.make_room();
-        if wire_length > NATIVE_WIRE_BYTES.min(self.texts.width * NATIVE_WIRE_PAGES)
-            || bytes.len() > NATIVE_PAYLOAD_BYTES.min(self.texts.width * NATIVE_PAYLOAD_PAGES)
-            || wire_length > bytes.len()
-            || !(bytes.len() - wire_length).is_multiple_of(NATIVE_CUE_CAPTURE_BYTES)
-        {
+        self.make_room(1);
+        let Some((wire, captures)) = bytes.split_at_checked(wire_length) else {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
+        };
+        let (payload, texts) = self.native_payload(wire, captures).inspect_err(|_| {
+            self.rejected_publications += 1;
+        })?;
+        let sequence = self.tail;
+        self.store_slot(
+            sequence,
+            None,
+            Some(delivery),
+            FrameEvent::Native(payload),
+            texts,
+            0,
+        );
+        self.commit_slot(sequence);
+        self.tail += 1;
+        self.retire();
+        Ok(sequence)
+    }
+    fn native_payload(
+        &mut self,
+        wire: &[u8],
+        captures: &[u8],
+    ) -> Result<(NativePayload, [Option<TextLease>; NATIVE_PAYLOAD_PAGES]), EventStorageError> {
+        let stored_length = wire
+            .len()
+            .checked_add(captures.len())
+            .ok_or(EventStorageError::TextCapacity)?;
+        if wire.len() > NATIVE_WIRE_BYTES.min(self.texts.width * NATIVE_WIRE_PAGES)
+            || stored_length > NATIVE_PAYLOAD_BYTES.min(self.texts.width * NATIVE_PAYLOAD_PAGES)
+            || !captures.len().is_multiple_of(NATIVE_CUE_CAPTURE_BYTES)
+        {
+            return Err(EventStorageError::TextCapacity);
         }
+        let checkpoint = self.texts.checkpoint();
         let mut leases = [const { None }; NATIVE_PAYLOAD_PAGES];
         let mut pages = [None; NATIVE_PAYLOAD_PAGES];
-        for (index, chunk) in bytes.chunks(self.texts.width).enumerate() {
-            let Some(lease) = self.texts.insert(chunk) else {
-                self.texts.release_all(leases);
-                self.rejected_publications += 1;
+        for index in 0..stored_length.div_ceil(self.texts.width) {
+            let start = index * self.texts.width;
+            let end = (start + self.texts.width).min(stored_length);
+            let first = wire.get(start..end.min(wire.len())).unwrap_or(&[]);
+            let second =
+                &captures[start.saturating_sub(wire.len())..end.saturating_sub(wire.len())];
+            let Some(lease) = self.texts.insert_parts(first, second) else {
+                for lease in leases.into_iter().flatten() {
+                    self.texts.rollback_new(lease);
+                }
+                self.texts.restore_checkpoint(checkpoint);
                 return Err(EventStorageError::TextCapacity);
             };
             pages[index] = Some(lease.id());
             leases[index] = Some(lease);
         }
-        let result = self.push_delivered(
-            delivery,
-            FrameEvent::Native(NativePayload {
+        Ok((
+            NativePayload {
                 pages,
-                length: wire_length,
-                stored_length: bytes.len(),
-            }),
-        );
-        self.texts.release_all(leases);
-        result
+                length: wire.len(),
+                stored_length,
+            },
+            leases,
+        ))
     }
     pub fn print(
         &mut self,
@@ -509,7 +677,7 @@ impl EventRing {
         write: impl FnOnce(&mut TextStore) -> Option<TextLease>,
         event: impl FnOnce(TextId) -> FrameEvent,
     ) -> Result<u64, EventStorageError> {
-        self.make_room();
+        self.make_room(1);
         let Some(lease) = write(&mut self.texts) else {
             self.rejected_publications += 1;
             return Err(EventStorageError::TextCapacity);
@@ -650,7 +818,30 @@ pub struct TextStore {
     reused: u64,
     truncated: u64,
 }
+#[derive(Clone, Copy)]
+struct TextCheckpoint {
+    next: usize,
+    reused: u64,
+    truncated: u64,
+}
 impl TextStore {
+    fn checkpoint(&self) -> TextCheckpoint {
+        TextCheckpoint {
+            next: self.next,
+            reused: self.reused,
+            truncated: self.truncated,
+        }
+    }
+    fn restore_checkpoint(&mut self, checkpoint: TextCheckpoint) {
+        self.next = checkpoint.next;
+        self.reused = checkpoint.reused;
+        self.truncated = checkpoint.truncated;
+    }
+    fn rollback_new(&mut self, lease: TextLease) {
+        let slot = lease.id.slot as usize;
+        self.release(lease);
+        self.generations[slot] -= 1;
+    }
     pub fn load(rows: usize, width: usize) -> Result<Self, EventStorageError> {
         if rows == 0
             || rows > u16::MAX as usize
@@ -693,10 +884,17 @@ impl TextStore {
         ))
     }
     pub fn insert(&mut self, text: &[u8]) -> Option<TextLease> {
+        self.insert_parts(text, &[])
+    }
+    fn insert_parts(&mut self, first: &[u8], second: &[u8]) -> Option<TextLease> {
         let (slot, lease) = self.reserve()?;
-        let len = text.len().min(self.width);
-        self.truncated += u64::from(len != text.len());
-        self.bytes[slot * self.width..slot * self.width + len].copy_from_slice(&text[..len]);
+        let wanted = first.len().saturating_add(second.len());
+        let len = wanted.min(self.width);
+        self.truncated += u64::from(len != wanted);
+        let prefix = first.len().min(len);
+        let output = &mut self.bytes[slot * self.width..slot * self.width + len];
+        output[..prefix].copy_from_slice(&first[..prefix]);
+        output[prefix..].copy_from_slice(&second[..len - prefix]);
         self.lengths[slot] = len as u16;
         Some(lease)
     }

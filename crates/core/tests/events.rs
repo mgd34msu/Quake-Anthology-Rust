@@ -22,6 +22,153 @@ fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmiss
     sequences
 }
 #[test]
+fn oversized_group_rejection_does_not_cancel_a_stalled_peer() {
+    let mut ring = EventRing::load(2, 2, 2, 32).unwrap();
+    let stalled = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let healthy = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    ring.push_delivered(native_delivery(NativeTarget::All), sound(1))
+        .unwrap();
+    let before = ring.sequence_range();
+    let counters = ring.counters(stalled).unwrap();
+    assert_eq!(
+        ring.publish_group(3, |_| panic!("capacity failure must not stage")),
+        Err(EventStorageError::RingCapacity)
+    );
+    assert_eq!(ring.sequence_range(), before);
+    assert_eq!(ring.counters(stalled), Some(counters));
+    assert!(!ring.needs_resync(stalled));
+    assert_eq!(ring.rejected_publications(), 1);
+    assert_eq!(
+        consume(&mut ring, healthy, OutputSubmission::BestEffort),
+        [0]
+    );
+    assert_eq!(ring.len(), 1);
+}
+#[test]
+fn grouped_publication_resyncs_only_the_stalled_peer_and_keeps_healthy_delivery() {
+    let mut ring = EventRing::load(4, 2, 4, 32).unwrap();
+    let stalled = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let healthy = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let delivery = native_delivery(NativeTarget::All);
+    for i in 0..3 {
+        ring.publish_group(1, |group| {
+            group.push_delivered(delivery, sound(i))?;
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert_eq!(
+        consume(&mut ring, healthy, OutputSubmission::BestEffort),
+        [0, 1, 2]
+    );
+    assert_eq!(
+        consume(
+            &mut ring,
+            stalled,
+            OutputSubmission::Reliable(NativeReceipt(7))
+        ),
+        [0, 1, 2]
+    );
+    // One unused slot cannot fit the next group. The stalled receipts alone
+    // are retired so that this whole publication reaches the healthy peer.
+    assert_eq!(
+        ring.publish_group(2, |group| {
+            group.push_delivered(delivery, sound(3))?;
+            group.push_delivered(delivery, sound(4))?;
+            Ok(())
+        })
+        .unwrap(),
+        3..5
+    );
+    assert!(ring.needs_resync(stalled));
+    assert!(!ring.needs_resync(healthy));
+    assert_eq!(ring.counters(stalled).unwrap().retired_on_resync, 3);
+    assert_eq!(ring.acknowledge(stalled, NativeReceipt(7)), 0);
+    assert_eq!(
+        consume(&mut ring, healthy, OutputSubmission::BestEffort),
+        [3, 4]
+    );
+    assert!(ring.is_empty());
+    assert_eq!(ring.rejected_publications(), 0);
+}
+#[test]
+fn grouped_page_failure_rolls_back_text_and_resync_skip_counters() {
+    let mut ring = EventRing::load(4, 2, 1, 32).unwrap();
+    let stalled = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let healthy = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    for i in 0..5 {
+        ring.push(sound(i)).unwrap();
+    }
+    assert!(ring.needs_resync(stalled));
+    let before = ring.sequence_range();
+    let counters = ring.counters(stalled).unwrap();
+    let reused = ring.texts.reused();
+    let delivery = native_delivery(NativeTarget::All);
+    assert_eq!(
+        ring.publish_group(3, |group| {
+            group.push_delivered(delivery, sound(9))?;
+            group.native_message_parts(delivery, b"\x0aprint\0", &[])?;
+            group.native_message_parts(delivery, b"\x0alater\0", &[])?;
+            Ok(())
+        }),
+        Err(EventStorageError::TextCapacity)
+    );
+    assert_eq!(ring.sequence_range(), before);
+    assert_eq!(ring.counters(stalled), Some(counters));
+    assert_eq!(ring.texts.reused(), reused);
+    assert_eq!(ring.rejected_publications(), 1);
+    let lease = ring.texts.insert(b"reusable").unwrap();
+    assert_eq!(lease.id().generation, 1);
+    ring.texts.release(lease);
+    assert!(ring.batch(healthy).is_none());
+}
+#[test]
+fn grouped_siblings_keep_order_and_wait_for_each_native_receipt() {
+    let mut ring = EventRing::load(4, 2, 2, 32).unwrap();
+    let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let delivery = native_delivery(NativeTarget::All);
+    let range = ring
+        .publish_group(3, |group| {
+            group.native_message_parts(delivery, b"\x0a\x02print\0", &[])?;
+            group.push_delivered(
+                NativeDelivery {
+                    component: 8,
+                    ..delivery
+                },
+                sound(11),
+            )?;
+            group.push_delivered(
+                NativeDelivery {
+                    component: 11,
+                    ..delivery
+                },
+                sound(12),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(range, 0..3);
+    assert!(ring.next(&mut ring.batch(presentation).unwrap()).is_none());
+    let mut batch = ring.batch(client).unwrap();
+    let first = ring.next(&mut batch).unwrap();
+    let FrameEvent::Native(payload) = first.event else {
+        panic!("print")
+    };
+    for (i, expected) in [(1, 11), (2, 12)] {
+        let record = ring.next(&mut batch).unwrap();
+        assert_eq!(record.sequence, i);
+        assert!(matches!(record.event, FrameEvent::Sound(e) if e.sound == SoundId(expected)));
+        assert!(ring.submit(client, i, OutputSubmission::Reliable(NativeReceipt(i + 10))));
+    }
+    assert!(ring.submit(client, 0, OutputSubmission::Reliable(NativeReceipt(10))));
+    assert_eq!(ring.acknowledge(client, NativeReceipt(11)), 1);
+    assert_eq!(ring.acknowledge(client, NativeReceipt(12)), 1);
+    assert!(ring.texts.copy_payload(payload, &mut [0; 32]).is_some());
+    assert_eq!(ring.acknowledge(client, NativeReceipt(10)), 1);
+    assert!(ring.is_empty());
+}
+#[test]
 fn configstring_text_stays_exact_and_leased_until_the_native_ack() {
     let mut ring = EventRing::load(4, 2, 4, 8).unwrap();
     let client = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
@@ -141,6 +288,7 @@ fn delivered_server_sound_uses_only_delivery_audience_and_never_direct_presentat
         origin: Vec3::default(),
         reliable: true,
         dupe_key: 42,
+        component: 0,
         emission: None,
         check_portals: true,
     };
@@ -478,6 +626,7 @@ fn native_delivery(target: NativeTarget) -> NativeDelivery {
         origin: Vec3([1.0, -2.0, 3.0]),
         reliable: true,
         dupe_key: u32::MAX,
+        component: 0,
         emission: None,
         check_portals: true,
     }
@@ -556,7 +705,6 @@ fn full_native_wire_and_dense_capture_pages_wait_for_every_real_ack() {
     let second = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
     let mut stored = vec![6; NATIVE_PAYLOAD_BYTES];
     let binding = NativeCueBinding {
-        sound: Some(SoundId(77)),
         entity: Some(EntityId {
             slot: 2,
             generation: 19,
@@ -564,7 +712,7 @@ fn full_native_wire_and_dense_capture_pages_wait_for_every_real_ack() {
     };
     for index in 0..NATIVE_CUE_CAPACITY {
         let offset = index * NATIVE_CUE_MIN_WIRE_BYTES;
-        stored[offset..offset + 3].copy_from_slice(&[9, 0, 1]);
+        stored[offset..offset + 4].copy_from_slice(&[1, 2, 0, 0]);
         binding
             .write_capture(
                 offset as u32,
@@ -590,7 +738,6 @@ fn full_native_wire_and_dense_capture_pages_wait_for_every_real_ack() {
     );
     for offset in [0, (NATIVE_CUE_CAPACITY - 1) * NATIVE_CUE_MIN_WIRE_BYTES] {
         let captured = payload.cue(&copied, offset).unwrap();
-        assert_eq!(captured.sound, binding.sound);
         assert_eq!(captured.entity, binding.entity);
     }
     assert_eq!(payload.len(), NATIVE_WIRE_BYTES);

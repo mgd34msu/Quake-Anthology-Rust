@@ -209,9 +209,10 @@ fn removing_one_held_device_preserves_other_seats_and_focus_clears_all() {
     assert!(input.assign(DeviceId::Controller(42), second));
 }
 fn frame(input: &mut Input, ms: u64) -> [qa_core::primitives::UserCmd; 4] {
+    let policy = input.elapsed_policy(200.0);
     input.build_frame_with_policy(
         EventTime(ms * 1_000_000),
-        &[support::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
+        &[policy; qa_core::sys_events::SeatId::COUNT],
     )
 }
 #[test]

@@ -1,4 +1,4 @@
-use super::{AllSolid, Contents, Trace, TraceQuery};
+use super::{AllSolid, Contents, Trace, TraceError, TraceQuery};
 pub use qa_core::primitives::ClipNode;
 use qa_core::primitives::{Axis, Plane, Vec3};
 
@@ -299,12 +299,12 @@ impl Q1Hulls {
         model: HullModel,
         query: TraceQuery,
         scratch: &mut HullScratch,
-    ) -> Trace {
+    ) -> Result<Trace, TraceError> {
         if scratch.stack.len() < self.stack_capacity {
-            return Trace::clear(query.end);
+            return Err(TraceError::Scratch);
         }
         let index = Self::hull_index(query);
-        Hull {
+        Ok(Hull {
             nodes: if index == 0 {
                 &self.drawing
             } else {
@@ -313,6 +313,6 @@ impl Q1Hulls {
             planes: &self.planes,
             root: model.roots[index],
         }
-        .trace(query, &mut scratch.stack)
+        .trace(query, &mut scratch.stack))
     }
 }

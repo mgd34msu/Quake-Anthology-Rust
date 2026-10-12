@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     begin_frame();
     for (index, row) in results.iter_mut().enumerate() {
-        *row = black_box(fixture.sample(black_box(index), &mut scratch).1);
+        *row = black_box(fixture.sample(black_box(index), &mut scratch)?.1);
     }
     let all_counts = end_frame();
     let mut output = Vec::with_capacity(results.len() * words * 4);
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut frame_contacts = 0;
             let mut frame_enclosed = 0;
             for _ in 0..QUERIES {
-                let (trace, row) = black_box(fixture.sample(black_box(next), &mut scratch));
+                let (trace, row) = black_box(fixture.sample(black_box(next), &mut scratch)?);
                 frame_mismatches += u64::from(row[..words] != expected[next][..words]);
                 frame_contacts += u64::from(trace.fraction < 1.0);
                 frame_enclosed += u64::from(trace.all_solid);

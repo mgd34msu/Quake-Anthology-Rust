@@ -199,7 +199,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut scratch,
                 CollisionOwner::None,
             )
-            .trace(black_box(query.trace)),
+            .trace(black_box(query.trace))
+            .map_err(|_| "collision query failed")?,
         );
         contacts += usize::from(trace.fraction < 1.0);
         start_solid += usize::from(trace.start_solid);

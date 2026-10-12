@@ -7,12 +7,25 @@ use qa_core::sys_events::{DeviceId, EventKind, EventTime, KeySource, SeatId, Sys
 use qa_input::{Input, InputPolicy, Target};
 use std::fmt::Write;
 
-#[derive(Default)]
 struct Capture {
     input: Input,
+    policy: InputPolicy,
     output: String,
     rejected: u64,
     calls: Vec<(String, Context)>,
+}
+impl Default for Capture {
+    fn default() -> Self {
+        let vars = qa_console::cvars::Cvars::new().unwrap();
+        let handles = qa_console::input_settings::InputHandles::load(&vars).unwrap();
+        Self {
+            input: Input::load(),
+            policy: handles.policy(&vars, qa_core::primitives::RuleSetId::Quake2),
+            output: String::new(),
+            rejected: 0,
+            calls: Vec::new(),
+        }
+    }
 }
 impl Host for Capture {
     fn input(&mut self) -> &mut Input {
@@ -95,7 +108,7 @@ fn key(
 fn frame(host: &mut Capture, ms: u64) -> [qa_core::primitives::UserCmd; SeatId::COUNT] {
     host.input.build_frame_with_policy(
         EventTime::from_milliseconds(ms),
-        &[InputPolicy::native(qa_core::primitives::RuleSetId::Quake2); SeatId::COUNT],
+        &[host.policy; SeatId::COUNT],
     )
 }
 #[test]

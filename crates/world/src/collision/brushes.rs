@@ -4,7 +4,7 @@ use super::tree::Topology;
 pub use super::tree::{BrushTree, CollisionLeaf, ModelRoot};
 use super::{
     AllSolid, BoundsOrigin, Contents, EntityTracePolicy, FractionClamp, OutsideBrush,
-    PositionEndpoint, PositionRules, Trace, TraceQuery,
+    PositionEndpoint, PositionRules, Trace, TraceError, TraceQuery,
 };
 use qa_core::primitives::{Bounds, Plane, SurfaceFlags, Vec3};
 
@@ -87,7 +87,7 @@ impl BrushMap {
         root: ModelRoot,
         query: TraceQuery,
         scratch: &mut BrushScratch,
-    ) -> Trace {
+    ) -> Result<Trace, TraceError> {
         self.topology.trace(self, root, query, scratch)
     }
 

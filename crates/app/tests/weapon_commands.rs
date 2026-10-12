@@ -138,6 +138,8 @@ fn native_weapon(host: &mut FrameHost, slot: i32, addresses: Addresses) -> u8 {
 #[test]
 fn queued_q3_weapon_selection_uses_the_registry_for_independent_seats_and_module_abis() {
     let (mut host, clients) = host();
+    let input_handles =
+        qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
     let registry = &host.runtime.catalog.registry;
     let rail = registry.native_weapon(RuleSetId::Quake3, 7).unwrap();
     let bfg = registry.native_weapon(RuleSetId::Quake3, 9).unwrap();
@@ -181,7 +183,7 @@ fn queued_q3_weapon_selection_uses_the_registry_for_independent_seats_and_module
             }
             let commands = host.runtime.input.build_frame_with_policy(
                 host.time,
-                &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+                &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake3);
                     qa_core::sys_events::SeatId::COUNT],
             );
             assert_eq!([commands[0].weapon, commands[1].weapon], selected);
@@ -282,6 +284,8 @@ fn queued_weapon_selection_cannot_cross_a_reused_connection_generation() {
 #[test]
 fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
     let (mut host, clients) = host();
+    let input_handles =
+        qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
     let rail = host
         .runtime
         .catalog
@@ -310,7 +314,7 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
     }
     let commands = host.runtime.input.build_frame_with_policy(
         EventTime::from_milliseconds(16),
-        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+        &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake3);
             qa_core::sys_events::SeatId::COUNT],
     );
     assert_eq!(
@@ -341,7 +345,7 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
     );
     let commands = host.runtime.input.build_frame_with_policy(
         EventTime::from_milliseconds(32),
-        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+        &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake3);
             qa_core::sys_events::SeatId::COUNT],
     );
     assert_eq!([commands[0].weapon, commands[1].weapon], [None, Some(bfg)]);
@@ -355,7 +359,7 @@ fn cgame_selection_narrows_native_bytes_and_resets_only_the_reused_seat() {
     );
     let commands = host.runtime.input.build_frame_with_policy(
         EventTime::from_milliseconds(48),
-        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+        &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake3);
             qa_core::sys_events::SeatId::COUNT],
     );
     assert_eq!([commands[0].weapon, commands[1].weapon], [None, None]);

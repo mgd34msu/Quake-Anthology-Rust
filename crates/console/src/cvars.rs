@@ -70,6 +70,7 @@ struct Value {
     seat: u8,
     explicit: bool,
     numbers: [f32; 5],
+    default_numbers: [f32; 5],
     integers: [i32; 5],
     name_id: NameId,
     revision: u64,
@@ -237,6 +238,7 @@ impl Cvars {
                     seat,
                     explicit: false,
                     numbers: [0.0; 5],
+                    default_numbers: [0.0; 5],
                     integers: [0; 5],
                     revision: 0,
                     pending_revision: 0,
@@ -555,6 +557,7 @@ impl Cvars {
             explicit: false,
             name_id,
             numbers: [0.0; 5],
+            default_numbers: [0.0; 5],
             integers: [0; 5],
             revision: 0,
             pending_revision: 0,
@@ -606,6 +609,17 @@ impl Cvars {
     /// active map's console context; frame reads never parse text or bind names.
     pub fn value_in(&self, handle: CvarHandle, source: RuleSetId) -> f32 {
         self.values[handle.0 as usize].numbers[source as usize]
+    }
+    /// Finite effective value, falling back to the same catalog's cached default.
+    /// This does not change native registration/admission for other consumers.
+    pub fn finite_value_in(&self, handle: CvarHandle, source: RuleSetId) -> f32 {
+        let value = &self.values[handle.0 as usize];
+        let number = value.numbers[source as usize];
+        if number.is_finite() {
+            number
+        } else {
+            value.default_numbers[source as usize]
+        }
     }
     pub fn integer(&self, handle: CvarHandle) -> i32 {
         self.values[handle.0 as usize].integers[self.context.source as usize]
@@ -1309,6 +1323,12 @@ impl Cvars {
         Ok(length)
     }
     fn refresh_number_at(&mut self, index: usize) {
+        let default_numbers = std::array::from_fn(|s| {
+            number(
+                self.default_text(CvarHandle(index as u32), RuleSetId::ALL[s]),
+                RuleSetId::ALL[s],
+            )
+        });
         let numbers = std::array::from_fn(|s| {
             number(
                 self.effective(CvarHandle(index as u32), RuleSetId::ALL[s]),
@@ -1319,6 +1339,7 @@ impl Cvars {
             integer(self.effective(CvarHandle(index as u32), RuleSetId::ALL[s]))
         });
         self.values[index].numbers = numbers;
+        self.values[index].default_numbers = default_numbers;
         self.values[index].integers = integers;
     }
     fn refresh_numbers(&mut self) {

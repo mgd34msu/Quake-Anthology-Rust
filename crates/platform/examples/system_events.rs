@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("allocation positive control failed".into());
     }
     let mut input = Input::load();
+    let policies = [input.elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT];
     input.assign(DeviceId::Controller(42), SeatId::new(1).ok_or("seat")?);
     let mut pump = EventPump::new();
     let (_, address) = pump.bind_udp("127.0.0.1:0".parse()?)?;
@@ -100,10 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => input.dispatch(event, &mut sink),
             }
         }
-        let commands = input.build_frame_with_policy(
-            frame_time,
-            &[input_console::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
-        );
+        let commands = input.build_frame_with_policy(frame_time, &policies);
         black_box(commands);
         let elapsed = timer.elapsed().as_nanos();
         let counts = end_frame();

@@ -154,23 +154,17 @@ impl FrameHost {
         } else {
             Vec3::default()
         };
-        Some(SoundEvent {
+        Some(wire.into_event(
             sound,
-            spatial: sound_policy,
+            sound_policy,
             entity,
-            channel: u16::from(wire.channel),
             position,
-            positioned: wire.position().is_some(),
-            volume: f32::from(wire.volume) / 255.0,
-            attenuation: f32::from(wire.attenuation) / 64.0,
-            time_offset: f32::from(wire.time_offset) / 1000.0,
-            client: Some(client),
-            action: if static_sound {
+            Some(client),
+            if static_sound {
                 SoundAction::StartLoop
             } else {
                 SoundAction::Play
             },
-            ..SoundEvent::default()
-        })
+        ))
     }
 }

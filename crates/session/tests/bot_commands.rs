@@ -8,6 +8,8 @@ use qa_session::clients::{Connection, Server};
 #[test]
 fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     let mut server = Server::load(64, 128, 1, 0, 0, 0).unwrap();
+    let cvars = qa_console::cvars::Cvars::new().unwrap();
+    let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
     let rules = [
         RuleSetId::Quake,
         RuleSetId::QuakeWorld,
@@ -39,15 +41,15 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     server.build_bot_commands(
         EventTime(5_000_000_000),
         EventTime(5_050_000_000),
-        qa_input::InputPolicy::native,
+        |rules| handles.policy(&cvars, rules),
     );
     for slot in 0..64 {
         let client = &server.clients[slot];
         let local = UserCmdBuilder::build(
-            50_000_000,
+            EventTime(50_000_000),
             EventTime(5_050_000_000),
             client.intent,
-            qa_input::InputPolicy::native(client.player.movement_rules),
+            handles.policy(&cvars, client.player.movement_rules),
         );
         assert_eq!(client.command.duration_ms, 50);
         assert_eq!(client.command.server_time_ms, 5050);
@@ -64,7 +66,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     server.build_bot_commands(
         EventTime(5_050_000_000),
         EventTime(5_100_000_000),
-        qa_input::InputPolicy::native,
+        |rules| handles.policy(&cvars, rules),
     );
     assert_eq!(server.clients[63].command.duration_ms, 77); // disconnected slot excluded
     let reused = server
@@ -74,7 +76,7 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
     server.build_bot_commands(
         EventTime(5_100_000_000),
         EventTime(5_150_000_000),
-        qa_input::InputPolicy::native,
+        |rules| handles.policy(&cvars, rules),
     );
     assert_eq!(server.clients[63].command.movement, [0.0; 3]);
     assert_eq!(server.clients[63].command.weapon, None);
@@ -84,6 +86,8 @@ fn all_64_bot_slots_build_in_server_time_without_local_seat_state() {
 #[test]
 fn bot_duration_uses_movement_policy_instead_of_module_family() {
     let mut server = Server::load(4, 16, 1, 0, 0, 0).unwrap();
+    let cvars = qa_console::cvars::Cvars::new().unwrap();
+    let handles = qa_console::input_settings::InputHandles::load(&cvars).unwrap();
     for (slot, (connection, rule)) in [
         (Connection::Bot, RuleSetId::Quake),
         (Connection::Bot, RuleSetId::Quake2),
@@ -100,11 +104,9 @@ fn bot_duration_uses_movement_policy_instead_of_module_family() {
         server.clients[slot].player.trace_rules = rule;
         server.clients[slot].command.duration_ms = 7;
     }
-    server.build_bot_commands(
-        EventTime(0),
-        EventTime(300_000_000),
-        qa_input::InputPolicy::native,
-    );
+    server.build_bot_commands(EventTime(0), EventTime(300_000_000), |rules| {
+        handles.policy(&cvars, rules)
+    });
     assert_eq!(
         std::array::from_fn::<_, 4, _>(|slot| server.clients[slot].command.duration_ms),
         [100, 100, 200, 7]

@@ -96,7 +96,7 @@ impl Button {
             }
         }
     }
-    fn sample(&mut self, time: EventTime, period: u64, key_state: KeyState) -> (f32, bool) {
+    fn sample(&mut self, time: EventTime, period: EventTime, key_state: KeyState) -> (f32, bool) {
         if self.active() {
             self.elapsed = self.elapsed.saturating_add(time.since(self.down_at));
             self.down_at = time;
@@ -110,10 +110,10 @@ impl Button {
                 (false, false, true) => 1.0,
                 _ => 0.0,
             }
-        } else if period == 0 {
+        } else if period.0 == 0 {
             0.0
         } else {
-            (self.elapsed as f32 / period as f32).clamp(0.0, 1.0)
+            (self.elapsed as f32 / period.0 as f32).clamp(0.0, 1.0)
         };
         let pressed = self.pressed || self.active();
         self.elapsed = 0;
@@ -205,11 +205,7 @@ enum PitchClamp {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct CommandRules {
-    speed: [f32; 3],
-    pitch_speed: f32,
-    always_run: bool,
-    mouse_side: f32,
-    mouse_forward: f32,
+    settings: SettingsRules,
     key_scale: Option<[f32; 2]>,
     key_limit: Option<[f32; 2]>,
     accumulation: Accumulation,
@@ -227,12 +223,21 @@ pub(crate) struct CommandRules {
     integer_frame_time: bool,
     caught_buttons: u32,
 }
+/// Native setting semantics; values and defaults come from the console catalog.
+#[derive(Clone, Copy)]
+pub struct SettingsRules {
+    pub back_follows_forward: bool,
+    pub explicit_run: bool,
+    pub integer_run: bool,
+    pub integer_mouse_flags: bool,
+}
 const Q1_INPUT: CommandRules = CommandRules {
-    speed: [200.0, 350.0, 200.0],
-    pitch_speed: 150.0,
-    always_run: false,
-    mouse_side: 0.8,
-    mouse_forward: 1.0,
+    settings: SettingsRules {
+        back_follows_forward: false,
+        explicit_run: true,
+        integer_run: false,
+        integer_mouse_flags: false,
+    },
     key_scale: None,
     key_limit: None,
     accumulation: Accumulation::Float,
@@ -254,7 +259,12 @@ const Q1_INPUT: CommandRules = CommandRules {
     caught_buttons: 0,
 };
 const Q2_INPUT: CommandRules = CommandRules {
-    speed: [200.0; 3],
+    settings: SettingsRules {
+        back_follows_forward: true,
+        explicit_run: false,
+        integer_run: true,
+        integer_mouse_flags: false,
+    },
     vertical_actions: true,
     pitch_drift: false,
     key_state: KeyState::Elapsed,
@@ -277,15 +287,12 @@ const INPUT_RULES: [CommandRules; 5] = [
         accumulation: Accumulation::Short,
         ..Q2_INPUT
     },
+    Q2_INPUT,
     CommandRules {
-        always_run: true,
-        ..Q2_INPUT
-    },
-    CommandRules {
-        pitch_speed: 140.0,
-        always_run: true,
-        mouse_side: 0.25,
-        mouse_forward: 0.25,
+        settings: SettingsRules {
+            integer_mouse_flags: true,
+            ..Q2_INPUT.settings
+        },
         key_scale: Some([64.0, 127.0]),
         key_limit: Some([-128.0, 127.0]),
         accumulation: Accumulation::Int,
@@ -297,31 +304,10 @@ const INPUT_RULES: [CommandRules; 5] = [
         ..Q2_INPUT
     },
 ];
+pub fn settings_rules(rules: RuleSetId) -> SettingsRules {
+    INPUT_RULES[rules as usize].settings
+}
 impl InputPolicy {
-    pub fn native(rules: RuleSetId) -> Self {
-        let data = INPUT_RULES[rules as usize];
-        Self {
-            rules,
-            speed: data.speed,
-            back_speed: 200.0,
-            angle_speed: [140.0, data.pitch_speed],
-            angle_multiplier: 1.5,
-            move_multiplier: 2.0,
-            always_run: data.always_run,
-            sensitivity: 3.0,
-            acceleration: 0.0,
-            mouse_scale: [0.022; 2],
-            mouse_side: data.mouse_side,
-            mouse_forward: data.mouse_forward,
-            filter: false,
-            freelook: true,
-            look_strafe: false,
-            delta_pitch: 0.0,
-            lookspring: false,
-            center_speed: 500.0,
-            center_delay: 0.15,
-        }
-    }
     pub fn pitch_drift(self) -> bool {
         self.command_rules().pitch_drift
     }
@@ -386,7 +372,7 @@ pub struct Input {
     devices: [Device; MAX_INPUT_DEVICES],
     seats: [Seat; SeatId::COUNT],
     previous: Option<EventTime>,
-    frame_ns: u64,
+    frame_span: EventTime,
     text_seat: SeatId,
     rejected_devices: u64,
 }
@@ -415,7 +401,7 @@ impl Input {
             devices: [Device::default(); MAX_INPUT_DEVICES],
             seats: [Seat::default(); SeatId::COUNT],
             previous: None,
-            frame_ns: 0,
+            frame_span: EventTime::default(),
             text_seat: SeatId::FIRST,
             rejected_devices: 0,
         };
@@ -467,7 +453,7 @@ impl Input {
         if (state.catchers != 0) != (catchers != 0) {
             state.clear_mouse();
             for button in &mut state.actions {
-                button.sample(time, 0, KeyState::Elapsed);
+                button.sample(time, EventTime::default(), KeyState::Elapsed);
             }
         }
         state.catchers = catchers;
@@ -509,7 +495,7 @@ impl Input {
         let rules = policy.command_rules();
         state.angles.0[0] = state.drift.advance(
             time,
-            EventTime(self.frame_ns).seconds(),
+            self.frame_span.seconds(),
             state.angles.0[0],
             view::DriftInput {
                 grounded: player.movement.grounded,
@@ -875,17 +861,16 @@ impl Input {
         time: EventTime,
         policies: &[InputPolicy; SeatId::COUNT],
     ) -> [UserCmd; SeatId::COUNT] {
-        let period = time.since(self.previous.unwrap_or(time));
+        let period = EventTime(time.since(self.previous.unwrap_or(time)));
         self.previous = Some(time);
-        self.frame_ns = period;
+        self.frame_span = period;
         std::array::from_fn(|index| {
             let policy = policies[index];
             let rules = policy.command_rules();
-            let span = EventTime(period);
             let frame_time = if rules.integer_frame_time {
-                EventTime::from_milliseconds(span.milliseconds())
+                EventTime::from_milliseconds(period.milliseconds())
             } else {
-                span
+                period
             };
             let frame_seconds = frame_time.seconds();
             let frame_milliseconds = if rules.integer_frame_time {

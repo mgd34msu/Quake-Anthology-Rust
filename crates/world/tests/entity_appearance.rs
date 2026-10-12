@@ -7,6 +7,7 @@ use qa_world::entities::{AllocationPolicy, EntityTable};
 fn appearance() -> EntityAppearance {
     EntityAppearance {
         source: RuleSetId::Quake2Rerelease,
+        snapshot_excluded: true,
         models: [
             ModelRef::native(ResourceNamespace::Module(ModuleId(7)), 1),
             ModelRef::native(ResourceNamespace::Module(ModuleId(8)), 1),

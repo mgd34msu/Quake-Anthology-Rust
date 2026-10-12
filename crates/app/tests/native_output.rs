@@ -108,6 +108,7 @@ fn publish_from(
                 origin: Vec3([1.0, 0.0, 0.0]),
                 reliable,
                 dupe_key: 0,
+                component: 0,
                 emission: None,
                 check_portals: true,
             },
@@ -146,7 +147,6 @@ fn native_cue_entities_use_the_entity_namespace_independently_of_resources() {
     let mut stored = [0u8; 4 + NATIVE_CUE_CAPTURE_BYTES];
     stored[..4].copy_from_slice(&[1, 5, 0, 0]);
     NativeCueBinding {
-        sound: None,
         entity: Some(emitter),
     }
     .write_capture(0, &mut stored[4..])
@@ -162,6 +162,7 @@ fn native_cue_entities_use_the_entity_namespace_independently_of_resources() {
                 origin: Vec3::default(),
                 reliable: false,
                 dupe_key: 0,
+                component: 0,
                 emission: None,
                 check_portals: false,
             },
@@ -990,6 +991,7 @@ fn fragmented_rerelease_output_retries_exact_bytes_and_oversized_payloads_retire
         origin: Default::default(),
         reliable: false,
         dupe_key: 0,
+        component: 0,
         emission: None,
         check_portals: true,
     };
@@ -1265,6 +1267,7 @@ fn dropped_native_payload_releases_dupe_claim_for_healthy_negotiated_peer() {
                 origin: Vec3::default(),
                 reliable: false,
                 dupe_key: 42,
+                component: 0,
                 emission: Some(NativeEmission {
                     module_lifetime: EntityId {
                         slot: 8,
@@ -1320,6 +1323,7 @@ fn reliable_dupe_waits_for_real_ack_without_stalling_an_independent_peer() {
                 origin: Vec3::default(),
                 reliable: true,
                 dupe_key: 42,
+                component: 0,
                 emission: Some(NativeEmission {
                     module_lifetime: EntityId {
                         slot: 8,
@@ -1397,6 +1401,7 @@ fn same_frame_remote_slot_reconnect_forgets_sent_dupe_and_negotiation() {
         origin: Vec3::default(),
         reliable: false,
         dupe_key: 42,
+        component: 0,
         emission: Some(NativeEmission {
             module_lifetime: EntityId {
                 slot: 8,
@@ -1512,6 +1517,7 @@ fn publish_keyed(runtime: &mut Runtime, target: ClientId, reliable: bool, bytes:
                 origin: Vec3::default(),
                 reliable,
                 dupe_key: 42,
+                component: 0,
                 emission: Some(NativeEmission {
                     module_lifetime: EntityId {
                         slot: 8,

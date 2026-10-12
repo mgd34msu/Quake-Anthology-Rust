@@ -35,6 +35,8 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
         vec![],
     )
     .unwrap();
+    let input_handles =
+        qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
     push(&mut host, EventKind::Time, 0);
     key(&mut host, 53, true, false, 1);
     key(&mut host, 53, true, true, 2);
@@ -63,7 +65,7 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
     // no movement or action bits. Q3 intentionally emits its native TALK bit.
     let command = host.runtime.input.build_frame_with_policy(
         EventTime::from_milliseconds(20),
-        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake2);
+        &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake2);
             qa_core::sys_events::SeatId::COUNT],
     )[0];
     assert_eq!(command.movement, [0.0; 3]);
@@ -79,7 +81,7 @@ fn queued_window_text_reaches_the_one_console_and_repeat_edits_do_not_move() {
     host.console.execute_frame(&mut host.runtime);
     let command = host.runtime.input.build_frame_with_policy(
         EventTime::from_milliseconds(40),
-        &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake2);
+        &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake2);
             qa_core::sys_events::SeatId::COUNT],
     )[0];
     assert!(command.movement[0] > 0.0);

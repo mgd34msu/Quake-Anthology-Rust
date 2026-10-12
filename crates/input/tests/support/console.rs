@@ -2,9 +2,14 @@
 use qa_console::{
     command_text::Arguments,
     commands::{CommandError, Console, Host, ScriptError},
+    cvars::Cvars,
+    input_settings::InputHandles,
     views::Context,
 };
-use qa_core::sys_events::{EventTime, KeySource, SeatId};
+use qa_core::{
+    primitives::RuleSetId,
+    sys_events::{EventTime, KeySource, SeatId},
+};
 use qa_input::{Input, InputPolicy};
 
 #[derive(Default)]
@@ -42,19 +47,25 @@ fn edge(
 pub struct Router {
     pub console: Console<Capture>,
     pub host: Capture,
+    handles: InputHandles,
 }
 impl Default for Router {
     fn default() -> Self {
         let mut console = Console::new(Context::default()).unwrap();
         assert!(console.register("+edge", edge));
         assert!(console.register("-edge", edge));
+        let handles = InputHandles::load(&console.cvars).unwrap();
         Self {
             console,
             host: Capture::default(),
+            handles,
         }
     }
 }
 impl Router {
+    pub fn policy(&self, rules: RuleSetId) -> InputPolicy {
+        self.handles.policy(&self.console.cvars, rules)
+    }
     pub fn command(
         &mut self,
         seat: SeatId,
@@ -86,16 +97,13 @@ pub fn keyboard(control: u16) -> KeySource {
         control,
     }
 }
-pub fn elapsed_policy(speed: f32) -> InputPolicy {
-    let mut policy = InputPolicy::native(qa_core::primitives::RuleSetId::Quake2);
-    policy.speed = [speed; 3];
-    policy.back_speed = speed;
-    policy.sensitivity = 1.0;
-    policy.mouse_side = 0.0;
-    policy.mouse_forward = 0.0;
-    policy.angle_multiplier = 1.0;
-    policy.move_multiplier = 1.0;
-    policy
+pub fn catalog_policies() -> Result<[InputPolicy; 5], String> {
+    let vars = Cvars::new().map_err(|error| format!("{error:?}"))?;
+    let handles = InputHandles::load(&vars)?;
+    Ok(RuleSetId::ALL.map(|rules| handles.policy(&vars, rules)))
+}
+pub fn catalog_policy(rules: RuleSetId) -> InputPolicy {
+    catalog_policies().unwrap()[rules as usize]
 }
 
 pub struct RoutedInput {
@@ -103,6 +111,17 @@ pub struct RoutedInput {
     pub router: Router,
 }
 impl RoutedInput {
+    pub fn elapsed_policy(&self, speed: f32) -> InputPolicy {
+        let mut policy = self.router.policy(RuleSetId::Quake2);
+        policy.speed = [speed; 3];
+        policy.back_speed = speed;
+        policy.sensitivity = 1.0;
+        policy.mouse_side = 0.0;
+        policy.mouse_forward = 0.0;
+        policy.angle_multiplier = 1.0;
+        policy.move_multiplier = 1.0;
+        policy
+    }
     pub fn load() -> Self {
         Self {
             input: Input::load(),

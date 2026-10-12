@@ -1,6 +1,6 @@
 //! Connection-owned wire scratch and explicit entity-number projection.
 use crate::output_namespace::NativeNumbers;
-use qa_core::primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, RuleSetId, Vec3};
+use qa_core::primitives::{Bounds, EntityId, ModelRef, ModuleId, PlayerState, Vec3};
 use qa_network::{
     commands::packet::{Error, Protocol},
     projection::{EntityProjection, EntityRecord, PlayerProjection},
@@ -119,11 +119,7 @@ impl<const N: usize> Rows<N> {
                 appearance.native.loop_sound = 0;
                 rejected += 1;
             }
-            if matches!(
-                appearance.source,
-                RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
-            ) && columns.flags[slot] & 1 != 0
-            {
+            if appearance.snapshot_excluded {
                 continue;
             }
             // QW playerinfo is emitted independently of packetentities.
@@ -464,6 +460,9 @@ impl EntityScratch {
                 continue;
             }
             let appearance = source.entities.columns.appearance[slot];
+            if appearance.snapshot_excluded {
+                continue;
+            }
             let context = super::player_context(
                 &client.player,
                 number - 1,

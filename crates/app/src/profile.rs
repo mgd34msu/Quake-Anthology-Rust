@@ -1,15 +1,15 @@
 //! Saved settings are a cold JSON boundary, never an input history or player.
 //! Schema: C settings/codec.c and frontend/shared_storage.c/config_store.c.
 use crate::Runtime;
-use qa_console::{catalog::Scope, commands::Console, cvars::Cvars, views::Context};
+use qa_console::{catalog::Scope, commands::Console, views::Context};
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::{
     names::canonical_path,
-    primitives::{CvarHandle, RuleSetId},
+    primitives::RuleSetId,
     sys_events::{EventTime, SeatId},
 };
 use qa_formats::archive::ArchiveReader;
-use qa_input::{InputPolicy, Target, keys};
+use qa_input::{Target, keys};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -392,99 +392,3 @@ pub fn load(
 #[cfg(test)]
 #[path = "../tests/fixtures/profile.rs"]
 mod tests;
-
-const INPUT_NAMES: [&str; 21] = [
-    "cl_forwardspeed",
-    "cl_backspeed",
-    "cl_sidespeed",
-    "cl_upspeed",
-    "cl_yawspeed",
-    "cl_pitchspeed",
-    "cl_anglespeedkey",
-    "cl_movespeedkey",
-    "cl_run",
-    "sensitivity",
-    "cl_mouseAccel",
-    "m_yaw",
-    "m_pitch",
-    "m_side",
-    "m_forward",
-    "m_filter",
-    "freelook",
-    "lookstrafe",
-    "lookspring",
-    "v_centerspeed",
-    "v_centermove",
-];
-pub struct InputHandles([CvarHandle; INPUT_NAMES.len()]);
-impl InputHandles {
-    pub fn load(vars: &Cvars) -> Result<Self, String> {
-        let mut handles = [CvarHandle(0); INPUT_NAMES.len()];
-        for (index, name) in INPUT_NAMES.iter().enumerate() {
-            handles[index] = vars
-                .find(name)
-                .ok_or_else(|| format!("missing input cvar {name}"))?;
-        }
-        Ok(Self(handles))
-    }
-    pub fn policy(&self, vars: &Cvars, rules: RuleSetId) -> InputPolicy {
-        let source = rules;
-        let mut policy = InputPolicy::native(rules);
-        let value = |index: usize, fallback: f32| {
-            vars.native_number(self.0[index], source)
-                .filter(|number| number.is_finite())
-                .unwrap_or(fallback)
-        };
-        policy.speed = [
-            value(0, policy.speed[0]),
-            value(2, policy.speed[1]),
-            value(3, policy.speed[2]),
-        ];
-        policy.back_speed = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-            value(1, policy.back_speed)
-        } else {
-            vars.explicit_number(self.0[1], source)
-                .filter(|number| number.is_finite())
-                .unwrap_or(policy.speed[0])
-        };
-        policy.angle_speed = [
-            value(4, policy.angle_speed[0]),
-            value(5, policy.angle_speed[1]),
-        ];
-        policy.angle_multiplier = value(6, policy.angle_multiplier);
-        policy.move_multiplier = value(7, policy.move_multiplier);
-        policy.always_run = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-            vars.explicit_number(self.0[8], source)
-                .filter(|number| number.is_finite())
-                .is_some_and(|number| number != 0.0)
-        } else {
-            vars.native_integer(self.0[8], source)
-                .map_or(policy.always_run, |number| number != 0)
-        };
-        policy.sensitivity = value(9, policy.sensitivity);
-        policy.acceleration = value(10, policy.acceleration);
-        policy.mouse_scale = [
-            value(11, policy.mouse_scale[0]),
-            value(12, policy.mouse_scale[1]),
-        ];
-        policy.mouse_side = value(13, policy.mouse_side);
-        policy.mouse_forward = value(14, policy.mouse_forward);
-        policy.filter = if rules == RuleSetId::Quake3 {
-            vars.native_integer(self.0[15], source)
-                .is_some_and(|number| number != 0)
-        } else {
-            value(15, 0.0) != 0.0
-        };
-        policy.freelook = if rules == RuleSetId::Quake3 {
-            vars.native_integer(self.0[16], source)
-                .map_or(policy.freelook, |number| number != 0)
-        } else {
-            value(16, 1.0) != 0.0
-        };
-        policy.look_strafe = value(17, 0.0) != 0.0;
-        policy.lookspring = value(18, 0.0) != 0.0;
-        policy.center_speed = value(19, policy.center_speed);
-        policy.center_delay = value(20, policy.center_delay);
-        policy
-    }
-}

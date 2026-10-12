@@ -17,6 +17,7 @@ fn source(protocol: Protocol) -> EntityRecord {
         angles: Vec3([45., 90., -90.]),
         appearance: EntityAppearance {
             source: protocol.rule_set(),
+            snapshot_excluded: false,
             models: [
                 ModelRef::native(MODULE, 8),
                 ModelRef::native(MODULE, 9),

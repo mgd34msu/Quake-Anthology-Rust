@@ -9,7 +9,7 @@ use qa_core::{
 pub struct UserCmdBuilder;
 impl UserCmdBuilder {
     pub fn build(
-        duration_ns: u64,
+        duration: EventTime,
         time: EventTime,
         intent: CommandIntent,
         policy: InputPolicy,
@@ -80,10 +80,8 @@ impl UserCmdBuilder {
             }
         }
         UserCmd {
-            duration_ms: EventTime(duration_ns)
-                .milliseconds()
-                .min(u64::from(u16::MAX)) as u16,
-            duration_ns,
+            duration_ms: duration.milliseconds().min(u64::from(u16::MAX)) as u16,
+            duration_ns: duration.0,
             server_time_ms: time.milliseconds() as i32,
             view_angles: intent.view_angles,
             movement,

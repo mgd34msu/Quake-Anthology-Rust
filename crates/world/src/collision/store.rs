@@ -1,5 +1,5 @@
 use super::{
-    Contents, EntityTracePolicy, Trace, TraceQuery,
+    Contents, EntityTracePolicy, Trace, TraceError, TraceQuery,
     brushes::{Brush, BrushMap, BrushTree, GeometryError, ModelRoot},
     hulls::{HullError, HullModel, HullScratch, Q1Hulls},
     surfaces::{SurfaceTable, SurfaceView},
@@ -297,13 +297,10 @@ impl CollisionStore {
         rules: ModelRules,
         entity: Option<EntityId>,
         scratch: &mut TraceScratch,
-    ) -> Trace {
+    ) -> Result<Trace, TraceError> {
         match shape {
-            CollisionShape::Box => super::boxes::trace_box(query, body, entity),
+            CollisionShape::Box => Ok(super::boxes::trace_box(query, body, entity)),
             CollisionShape::Model { geometry, index } => {
-                if self.model_bounds(geometry, index).is_none() {
-                    return Trace::clear(query.end);
-                }
                 let mut trace = self.trace_transformed(
                     geometry,
                     index,
@@ -312,14 +309,14 @@ impl CollisionStore {
                     angles,
                     rules,
                     scratch,
-                );
+                )?;
                 if trace.fraction < 1.0 || trace.start_solid || trace.all_solid {
                     trace.entity = entity;
                 }
                 trace.brush_solid = true;
-                trace
+                Ok(trace)
             }
-            CollisionShape::None => Trace::clear(query.end),
+            CollisionShape::None => Ok(Trace::clear(query.end)),
         }
     }
 
@@ -329,11 +326,13 @@ impl CollisionStore {
         index: u32,
         query: TraceQuery,
         scratch: &mut TraceScratch,
-    ) -> Trace {
-        let Some((geometry, model)) = self.resolve(geometry, index) else {
-            return Trace::clear(query.end);
+    ) -> Result<Trace, TraceError> {
+        let invalid = TraceError::Geometry {
+            geometry,
+            model: index,
         };
-        let offset = match geometry {
+        let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
+        let offset = match resource {
             Geometry::Hulls(_) => Some(Q1Hulls::clip_offset(query)),
             Geometry::Brushes(_) => None,
         };
@@ -346,7 +345,7 @@ impl CollisionStore {
         } else {
             query
         };
-        let mut trace = trace_native(geometry, model.root, local, scratch);
+        let mut trace = trace_native(resource, model.root, local, scratch, invalid)?;
         if let Some(offset) = offset {
             trace.end = if trace.fraction != 1.0 {
                 trace.end + offset
@@ -354,7 +353,7 @@ impl CollisionStore {
                 query.end
             };
         }
-        trace
+        Ok(trace)
     }
 
     pub fn point_contents_model(
@@ -363,7 +362,7 @@ impl CollisionStore {
         index: u32,
         point: Vec3,
         rules: EntityTracePolicy,
-    ) -> Contents {
+    ) -> Result<Contents, TraceError> {
         match self.resolve(geometry, index) {
             Some((
                 Geometry::Hulls(hulls),
@@ -371,15 +370,18 @@ impl CollisionStore {
                     root: Root::Hull(model),
                     ..
                 },
-            )) => hulls.point_contents(*model, point),
+            )) => Ok(hulls.point_contents(*model, point)),
             Some((
                 Geometry::Brushes(brushes),
                 Model {
                     root: Root::Brush(root),
                     ..
                 },
-            )) => brushes.point_contents_root(*root, point, rules),
-            _ => Contents::EMPTY,
+            )) => Ok(brushes.point_contents_root(*root, point, rules)),
+            _ => Err(TraceError::Geometry {
+                geometry,
+                model: index,
+            }),
         }
     }
 
@@ -396,15 +398,17 @@ impl CollisionStore {
         angles: Vec3,
         rules: ModelRules,
         scratch: &mut TraceScratch,
-    ) -> Trace {
-        let Some((geometry, model)) = self.resolve(geometry, index) else {
-            return Trace::clear(query.end);
+    ) -> Result<Trace, TraceError> {
+        let invalid = TraceError::Geometry {
+            geometry,
+            model: index,
         };
+        let (resource, model) = self.resolve(geometry, index).ok_or(invalid)?;
         let mut local = query;
         if rules.rotation == ModelRotation::TransposeBasis {
             local.center_box();
         }
-        let offset = match geometry {
+        let offset = match resource {
             Geometry::Hulls(_) => Q1Hulls::clip_offset(local) + origin,
             Geometry::Brushes(_) => origin,
         };
@@ -428,7 +432,7 @@ impl CollisionStore {
         };
         // The wrapper's symmetric bounds still pass through raw BrushWork
         // centering, including its separate f32 rounding operation.
-        let mut trace = trace_native(geometry, model.root, local, scratch);
+        let mut trace = trace_native(resource, model.root, local, scratch, invalid)?;
         if let Some(matrix) = matrix
             && trace.fraction != 1.0
         {
@@ -450,7 +454,7 @@ impl CollisionStore {
         } else {
             query.start.lerp(query.end, trace.fraction)
         };
-        trace
+        Ok(trace)
     }
 
     #[expect(
@@ -466,7 +470,7 @@ impl CollisionStore {
         angles: Vec3,
         rules: ModelRules,
         caller: EntityTracePolicy,
-    ) -> Contents {
+    ) -> Result<Contents, TraceError> {
         let mut local = point - origin;
         if rules.rotation != ModelRotation::TranslationOnly
             && angles.0.iter().any(|&angle| angle != 0.0)
@@ -484,7 +488,8 @@ fn trace_native(
     root: Root,
     query: TraceQuery,
     scratch: &mut TraceScratch,
-) -> Trace {
+    invalid: TraceError,
+) -> Result<Trace, TraceError> {
     match (geometry, root) {
         (Geometry::Hulls(hulls), Root::Hull(model)) => {
             hulls.trace_local(model, query, &mut scratch.hulls)
@@ -492,7 +497,7 @@ fn trace_native(
         (Geometry::Brushes(brushes), Root::Brush(root)) => {
             brushes.trace_root(root, query, &mut scratch.brushes)
         }
-        _ => Trace::clear(query.end),
+        _ => Err(invalid),
     }
 }
 

@@ -4,7 +4,7 @@ use qa_core::{
     primitives::{CommandIntent, RuleSetId, buttons},
     sys_events::{EventTime, SeatId},
 };
-use qa_input::{Action, Input, InputPolicy, UserCmdBuilder};
+use qa_input::{Action, Input, UserCmdBuilder};
 
 #[test]
 fn sampled_human_and_bot_intents_share_native_rule_scales() {
@@ -21,7 +21,7 @@ fn sampled_human_and_bot_intents_share_native_rule_scales() {
             }),
             EventTime(0),
         );
-        let policy = InputPolicy::native(rules);
+        let policy = support::catalog_policy(rules);
         let human =
             input.build_frame_with_policy(EventTime(100_000_000), &[policy; SeatId::COUNT])[0];
         let fraction = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
@@ -30,7 +30,7 @@ fn sampled_human_and_bot_intents_share_native_rule_scales() {
             1.0
         };
         let bot = UserCmdBuilder::build(
-            100_000_000,
+            EventTime(100_000_000),
             EventTime(100_000_000),
             CommandIntent::moving([fraction, 0.0, 0.0]),
             policy,
@@ -59,10 +59,10 @@ fn float_rules_keep_fractions_and_short_rules_convert_each_contribution() {
         (RuleSetId::Quake3, 12.0, 24.0),
     ] {
         let command = UserCmdBuilder::build(
-            16_000_000,
+            EventTime(16_000_000),
             EventTime(16_000_000),
             intent,
-            InputPolicy::native(rules),
+            support::catalog_policy(rules),
         );
         assert!((command.movement[0] - forward).abs() < 0.00001);
         assert!((command.movement[1] - side).abs() < 0.00001);
@@ -93,7 +93,7 @@ fn crouch_and_holster_aliases_use_the_same_action_storage() {
         }),
         EventTime(0),
     );
-    let policy = InputPolicy::native(RuleSetId::Quake3);
+    let policy = support::catalog_policy(RuleSetId::Quake3);
     let command =
         input.build_frame_with_policy(EventTime(100_000_000), &[policy; SeatId::COUNT])[0];
     assert_eq!(command.movement[2], -127.0);

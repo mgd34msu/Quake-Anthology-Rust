@@ -47,32 +47,38 @@ fn native_hull_epsilon_and_startsolid_follow_world_c() {
     let (planes, nodes, models) = wall();
     let hulls = load(planes, nodes.clone(), nodes, models).unwrap();
     let mut scratch = hulls.store.scratch();
-    let result = hulls.store.trace_model(
-        hulls.geometry,
-        0,
-        TraceQuery::point(
-            Vec3([1.0, 0.0, 0.0]),
-            Vec3([-1.0, 0.0, 0.0]),
-            TraceRules::LEGACY,
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
-        ),
-        &mut scratch,
-    );
+    let result = hulls
+        .store
+        .trace_model(
+            hulls.geometry,
+            0,
+            TraceQuery::point(
+                Vec3([1.0, 0.0, 0.0]),
+                Vec3([-1.0, 0.0, 0.0]),
+                TraceRules::LEGACY,
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+            ),
+            &mut scratch,
+        )
+        .expect("valid collision query");
     assert_eq!(result.fraction, 0.484375);
     assert_eq!(result.end.0[0], 0.03125);
     assert_eq!(result.plane.normal, Vec3([1.0, 0.0, 0.0]));
     assert!(result.in_open && !result.start_solid && !result.all_solid);
-    let embedded = hulls.store.trace_model(
-        hulls.geometry,
-        0,
-        TraceQuery::point(
-            Vec3([-1.0, 0.0, 0.0]),
-            Vec3([-2.0, 0.0, 0.0]),
-            TraceRules::LEGACY,
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
-        ),
-        &mut scratch,
-    );
+    let embedded = hulls
+        .store
+        .trace_model(
+            hulls.geometry,
+            0,
+            TraceQuery::point(
+                Vec3([-1.0, 0.0, 0.0]),
+                Vec3([-2.0, 0.0, 0.0]),
+                TraceRules::LEGACY,
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+            ),
+            &mut scratch,
+        )
+        .expect("valid collision query");
     assert!(embedded.start_solid && embedded.all_solid);
     assert_eq!(embedded.fraction, 1.0);
 }
@@ -90,19 +96,23 @@ fn foreign_caller_epsilon_is_used_on_compiled_hull_topology() {
     );
     let contact = hulls
         .store
-        .trace_model(hulls.geometry, 0, query, &mut scratch);
+        .trace_model(hulls.geometry, 0, query, &mut scratch)
+        .expect("valid collision query");
     assert_eq!(contact.fraction, 0.4375);
     assert_eq!(contact.end.0[0], 0.125);
-    let embedded = hulls.store.trace_model(
-        hulls.geometry,
-        0,
-        TraceQuery {
-            start: Vec3([-1.0, 0.0, 0.0]),
-            end: Vec3([-2.0, 0.0, 0.0]),
-            ..query
-        },
-        &mut scratch,
-    );
+    let embedded = hulls
+        .store
+        .trace_model(
+            hulls.geometry,
+            0,
+            TraceQuery {
+                start: Vec3([-1.0, 0.0, 0.0]),
+                end: Vec3([-2.0, 0.0, 0.0]),
+                ..query
+            },
+            &mut scratch,
+        )
+        .expect("valid collision query");
     assert!(embedded.start_solid && embedded.all_solid);
     assert_eq!(embedded.fraction, 0.0);
     assert_eq!(embedded.end, Vec3([-1.0, 0.0, 0.0]));
@@ -131,10 +141,12 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
     for _ in 0..32 {
         let hit = geometry
             .store
-            .trace_model(geometry.geometry, 0, crossing, &mut first);
+            .trace_model(geometry.geometry, 0, crossing, &mut first)
+            .expect("valid collision query");
         let inside = geometry
             .store
-            .trace_model(geometry.geometry, 0, embedded, &mut second);
+            .trace_model(geometry.geometry, 0, embedded, &mut second)
+            .expect("valid collision query");
         assert_eq!(hit.fraction.to_bits(), 0.484375f32.to_bits());
         assert_eq!(hit.end.0.map(f32::to_bits), [0.03125f32.to_bits(), 0, 0]);
         assert!(hit.in_open && !hit.start_solid && !hit.all_solid);
@@ -144,10 +156,12 @@ fn independent_callers_reuse_scratch_over_one_immutable_hull() {
         assert_eq!(inside.contents, Contents::SOLID);
         let swapped_hit = geometry
             .store
-            .trace_model(geometry.geometry, 0, crossing, &mut second);
+            .trace_model(geometry.geometry, 0, crossing, &mut second)
+            .expect("valid collision query");
         let swapped_inside = geometry
             .store
-            .trace_model(geometry.geometry, 0, embedded, &mut first);
+            .trace_model(geometry.geometry, 0, embedded, &mut first)
+            .expect("valid collision query");
         assert_eq!(swapped_hit.fraction.to_bits(), hit.fraction.to_bits());
         assert_eq!(
             swapped_hit.end.0.map(f32::to_bits),
@@ -199,30 +213,37 @@ fn compiled_hull_height_is_not_silently_claimed_to_fit_a_foreign_crouch() {
     };
     let stock = hulls
         .store
-        .trace_model(hulls.geometry, 0, standing, &mut scratch);
+        .trace_model(hulls.geometry, 0, standing, &mut scratch)
+        .expect("valid collision query");
     assert_eq!(stock.end.0[2], -32.03125);
-    let crouched = hulls.store.trace_model(
-        hulls.geometry,
-        0,
-        TraceQuery {
-            maxs: Vec3([16.0, 16.0, 4.0]),
-            ..standing
-        },
-        &mut scratch,
-    );
+    let crouched = hulls
+        .store
+        .trace_model(
+            hulls.geometry,
+            0,
+            TraceQuery {
+                maxs: Vec3([16.0, 16.0, 4.0]),
+                ..standing
+            },
+            &mut scratch,
+        )
+        .expect("valid collision query");
     // Native SV_HullForEntity chooses by X width, so the authored standing
     // ceiling remains. Rebuilding a four-unit-high hull is separate work.
     assert_eq!(crouched.end, stock.end);
-    let foreign = hulls.store.trace_model(
-        hulls.geometry,
-        0,
-        TraceQuery {
-            maxs: Vec3([16.0, 16.0, 4.0]),
-            rules: TraceRules::ARENA,
-            ..standing
-        },
-        &mut scratch,
-    );
+    let foreign = hulls
+        .store
+        .trace_model(
+            hulls.geometry,
+            0,
+            TraceQuery {
+                maxs: Vec3([16.0, 16.0, 4.0]),
+                rules: TraceRules::ARENA,
+                ..standing
+            },
+            &mut scratch,
+        )
+        .expect("valid collision query");
     assert_eq!(foreign.end.0[2], -32.125);
 }
 

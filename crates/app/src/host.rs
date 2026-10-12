@@ -151,7 +151,7 @@ pub struct FrameHost {
     fov: CvarHandle,
     roll_angle: CvarHandle,
     roll_speed: CvarHandle,
-    input_handles: crate::profile::InputHandles,
+    input_handles: qa_console::input_settings::InputHandles,
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
     center_time: CvarHandle,
@@ -227,7 +227,7 @@ impl FrameHost {
             .cvars
             .find("cl_rollspeed")
             .ok_or("missing cl_rollspeed")?;
-        let input_handles = crate::profile::InputHandles::load(&console.cvars)?;
+        let input_handles = qa_console::input_settings::InputHandles::load(&console.cvars)?;
         let movement_handles = qa_console::movement::MovementHandles::bind(&console.cvars)?;
         let notify_time = console
             .cvars
@@ -905,8 +905,15 @@ impl FrameHost {
                         prediction.player.movement_rules,
                         base,
                     );
-                    prediction.advance(commands[seat], &mut trace);
+                    let result = prediction.advance(commands[seat], &mut trace);
                     prediction.player.movement.tuning = base;
+                    if let Err(error) = result {
+                        let _ = self.runtime.server.events.console_formatted(format_args!(
+                            "Prediction client {}: {error:?}\n",
+                            id.0
+                        ));
+                        continue;
+                    }
                     if let Some(seat_id) = SeatId::new(seat as u8)
                         && let Some(angles) = self.runtime.input.drift_view(
                             seat_id,

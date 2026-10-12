@@ -5,7 +5,10 @@ use super::{Error, Protocol};
 use crate::message::{Encoding, Reader, Writer};
 use qa_core::{
     math::{eighth_to_short, short_to_eighth},
-    primitives::{SoundAction, SoundEvent, Vec3},
+    primitives::{
+        ClientId, NativeSoundFields, SoundAction, SoundEmitter, SoundEvent, SoundId, SpatialPolicy,
+        Vec3,
+    },
 };
 
 const VOLUME: u8 = 1;
@@ -28,6 +31,39 @@ pub struct Sound {
     pub position: Vec3,
 }
 impl Sound {
+    /// Bound identity and position come from the producing or receiving owner;
+    /// quantized native fields are never reconstructed from normalized floats.
+    pub fn into_event(
+        self,
+        sound: SoundId,
+        spatial: SpatialPolicy,
+        entity: Option<SoundEmitter>,
+        position: Vec3,
+        client: Option<ClientId>,
+        action: SoundAction,
+    ) -> SoundEvent {
+        SoundEvent {
+            sound,
+            source_ordinal: Some(u32::from(self.index)),
+            native_fields: Some(NativeSoundFields {
+                flags: self.flags,
+                volume: self.volume,
+                attenuation: self.attenuation,
+                time_offset: self.time_offset,
+                entity: self.entity,
+            }),
+            spatial,
+            entity,
+            channel: u16::from(self.channel),
+            position,
+            positioned: self.position().is_some(),
+            volume: f32::from(self.volume) / 255.0,
+            attenuation: f32::from(self.attenuation) / 64.0,
+            time_offset: f32::from(self.time_offset) / 1000.0,
+            client,
+            action,
+        }
+    }
     pub fn entity(self) -> Option<u16> {
         (self.flags & ENTITY != 0).then_some(self.entity)
     }
@@ -59,6 +95,41 @@ pub fn sound(
     positioned: bool,
     output: &mut [u8],
 ) -> Result<usize, Error> {
+    if let Some(fields) = event.native_fields {
+        let mut wire = Sound {
+            flags: fields.flags,
+            index: u16::try_from(event.source_ordinal.ok_or(Error::Unsupported)?)
+                .map_err(|_| Error::Unsupported)?,
+            volume: fields.volume,
+            attenuation: fields.attenuation,
+            time_offset: fields.time_offset,
+            entity: if fields.flags & ENTITY != 0 {
+                u16::try_from(entity.ok_or(Error::Unsupported)?).map_err(|_| Error::Unsupported)?
+            } else {
+                fields.entity
+            },
+            channel: u8::try_from(event.channel).map_err(|_| Error::Unsupported)?,
+            position: event.position,
+        }
+        .with_index(ordinal)?;
+        let cue = match event.action {
+            SoundAction::Play => {
+                if ordinal == 0 || ordinal >= protocol.resource_layout().resources[1].count {
+                    return Err(Error::Unsupported);
+                }
+                if protocol == Protocol::Quake2_34 {
+                    if wire.index > u16::from(u8::MAX) {
+                        return Err(Error::Unsupported);
+                    }
+                    wire.flags &= !INDEX16;
+                }
+                Cue::Sound(wire)
+            }
+            SoundAction::StartLoop => Cue::StaticSound(wire),
+            SoundAction::Stop => return Err(Error::Unsupported),
+        };
+        return write_cue(protocol, project_cue(protocol, cue)?, output);
+    }
     if event.action == SoundAction::StartLoop && protocol == Protocol::QuakeWorld28 {
         if ordinal == 0 || ordinal >= 256 || event.time_offset != 0.0 {
             return Err(Error::Unsupported);

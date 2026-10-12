@@ -150,9 +150,9 @@ fn cold_conversion_keeps_models_separate_and_native_brush_numbers() {
                 rules,
                 entity_rules,
             );
-            let unplaced = store.trace_model(geometry, 0, query, &mut scratch);
+            let unplaced = store.trace_model(geometry, 0, query, &mut scratch).unwrap();
             assert_eq!(unplaced.fraction, 1.0);
-            let inline = store.trace_model(geometry, 1, query, &mut scratch);
+            let inline = store.trace_model(geometry, 1, query, &mut scratch).unwrap();
             assert!(inline.fraction < 1.0);
             assert_eq!(inline.plane.normal, Vec3([1.0, 0.0, 0.0]));
             let world_query =
@@ -160,12 +160,14 @@ fn cold_conversion_keeps_models_separate_and_native_brush_numbers() {
             assert!(
                 store
                     .trace_model(geometry, 0, world_query, &mut scratch)
+                    .unwrap()
                     .fraction
                     < 1.0
             );
             assert_eq!(
                 store
                     .trace_model(geometry, 1, world_query, &mut scratch)
+                    .unwrap()
                     .fraction,
                 1.0
             );
@@ -182,30 +184,36 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
     let mut store = CollisionStore::new();
     let (geometry, _) = collision(&map, &mut store).unwrap();
     assert_eq!(
-        store.point_contents_model(
-            geometry,
-            0,
-            Vec3([40.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
-        ),
+        store
+            .point_contents_model(
+                geometry,
+                0,
+                Vec3([40.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            )
+            .unwrap(),
         Contents::WATER
     );
     assert_eq!(
-        store.point_contents_model(
-            geometry,
-            0,
-            Vec3([40.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        store
+            .point_contents_model(
+                geometry,
+                0,
+                Vec3([40.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .unwrap(),
         Contents::EMPTY
     );
     assert_eq!(
-        store.point_contents_model(
-            geometry,
-            0,
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        store
+            .point_contents_model(
+                geometry,
+                0,
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .unwrap(),
         Contents::SOLID
     );
     let mut scratch = store.scratch();
@@ -216,7 +224,10 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
         qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
     );
     assert_eq!(
-        store.trace_model(geometry, 0, q2, &mut scratch).fraction,
+        store
+            .trace_model(geometry, 0, q2, &mut scratch)
+            .unwrap()
+            .fraction,
         1.0
     );
     let q3 = TraceQuery {
@@ -224,7 +235,13 @@ fn stored_q2_leaf_contents_survive_and_the_caller_selects_their_use() {
         entity_rules: qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         ..q2
     };
-    assert!(store.trace_model(geometry, 0, q3, &mut scratch).fraction < 1.0);
+    assert!(
+        store
+            .trace_model(geometry, 0, q3, &mut scratch)
+            .unwrap()
+            .fraction
+            < 1.0
+    );
 }
 
 #[test]
@@ -236,21 +253,25 @@ fn stored_q2_aux_leaf_contents_survive_cold_conversion() {
     let mut store = CollisionStore::new();
     let (geometry, _) = collision(&map, &mut store).unwrap();
     assert_eq!(
-        store.point_contents_model(
-            geometry,
-            0,
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
-        ),
+        store
+            .point_contents_model(
+                geometry,
+                0,
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            )
+            .unwrap(),
         Contents::AUX | Contents::WATER
     );
     assert_eq!(
-        store.point_contents_model(
-            geometry,
-            0,
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        store
+            .point_contents_model(
+                geometry,
+                0,
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .unwrap(),
         Contents::SOLID
     );
 }
@@ -282,11 +303,15 @@ fn q3_trace_contacts_convert_early_side_flags_and_modern_shader_flags() {
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
         );
         assert_eq!(
-            store.trace_model(geometry, 0, query, &mut scratch).surface,
+            store
+                .trace_model(geometry, 0, query, &mut scratch)
+                .unwrap()
+                .surface,
             SurfaceFlags::SLICK
         );
         let id = store
             .trace_model(geometry, 0, query, &mut scratch)
+            .unwrap()
             .surface_id
             .unwrap();
         let row = store.surface(id).unwrap();
@@ -323,12 +348,14 @@ fn q2_texinfo_contacts_keep_full_native_flags_name_value_and_index() {
     let mut scratch = store.scratch();
     let (rules, entities) =
         qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2);
-    let hit = store.trace_model(
-        geometry,
-        0,
-        TraceQuery::point(Vec3([40.0, 0.0, 0.0]), Vec3::default(), rules, entities),
-        &mut scratch,
-    );
+    let hit = store
+        .trace_model(
+            geometry,
+            0,
+            TraceQuery::point(Vec3([40.0, 0.0, 0.0]), Vec3::default(), rules, entities),
+            &mut scratch,
+        )
+        .unwrap();
     let id = hit.surface_id.unwrap();
     assert_eq!(id.index, 1);
     let row = store.surface(id).unwrap();

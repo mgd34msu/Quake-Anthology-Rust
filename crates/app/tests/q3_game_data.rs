@@ -160,6 +160,25 @@ impl Fixture {
             .map(|body| body.id)
             .collect()
     }
+    fn empty_collision(&mut self) {
+        let geometry = self
+            .runtime
+            .geometry
+            .load_brushes(
+                vec![],
+                vec![],
+                qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
+                qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
+                vec![qa_core::primitives::Bounds {
+                    mins: Vec3([-100.0; 3]),
+                    maxs: Vec3([100.0; 3]),
+                }],
+            )
+            .unwrap();
+        let collision = self.runtime.collision.as_mut().unwrap();
+        collision.geometry = geometry;
+        collision.scratch = self.runtime.geometry.scratch();
+    }
     fn collision_model(&mut self) {
         use qa_core::primitives::{Bounds, IndexSpan, Plane, SurfaceFlags};
         use qa_world::collision::{
@@ -721,6 +740,26 @@ fn registered_player_values_accept_wrapped_nonnull_qvm_zero_bases() {
 }
 
 #[test]
+fn qvm_native_snapshot_exclusion_is_published_without_narrowing_raw_flags() {
+    let mut f = Fixture::new();
+    f.row(ENTITIES, 0, 1);
+    f.register(ENTITIES, 1).unwrap();
+    f.call(30, &[0, ENTITIES as i32]).unwrap();
+    let entity = f.binding(0);
+    for flags in [0x0100_0001, 0x0100_0000] {
+        f.vm.memory.write_word(ENTITIES + 424, flags).unwrap();
+        f.publish();
+        let columns = &f.runtime.server.entities.columns;
+        assert_eq!(columns.flags[entity.slot as usize], flags as u32);
+        assert_eq!(
+            columns.appearance[entity.slot as usize].snapshot_excluded,
+            flags & 1 != 0,
+        );
+        assert_eq!(f.vm.memory.read_word(ENTITIES + 424).unwrap(), flags);
+    }
+}
+
+#[test]
 fn qvm_registered_entity_zero_links_with_word_flags_and_reuses_owned_lifetimes() {
     let mut f = Fixture::new();
     f.row(ENTITIES, 0, 1);
@@ -896,6 +935,7 @@ fn qvm_count_growth_borrowed_client_and_trigger_roles_use_the_shared_projection(
 #[test]
 fn qvm_point_contents_reads_published_pose_between_imports_without_relink() {
     let mut f = Fixture::new();
+    f.empty_collision();
     f.trace_rules = RuleSetId::Quake3;
     f.row(ENTITIES, 0, 1);
     f.register(ENTITIES, 1).unwrap();
@@ -924,19 +964,7 @@ fn qvm_live_contents_reads_zero_contents_boxes_and_rejects_only_executed_targets
     let mut f = Fixture::new();
     // The inline-model case below needs a real model-zero resource, while
     // the other registration fixtures only require visibility metadata.
-    f.runtime
-        .geometry
-        .load_brushes(
-            vec![],
-            vec![],
-            qa_world::collision::surfaces::SurfaceTable::flags(vec![]),
-            qa_world::collision::brushes::BrushTree::direct(0).unwrap(),
-            vec![qa_core::primitives::Bounds {
-                mins: Vec3([-100.0; 3]),
-                maxs: Vec3([100.0; 3]),
-            }],
-        )
-        .unwrap();
+    f.empty_collision();
     f.trace_rules = RuleSetId::Quake3;
     let point = PLAYERS + 512;
     f.vm.memory

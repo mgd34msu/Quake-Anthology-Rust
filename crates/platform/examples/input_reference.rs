@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("key names path")?;
     let text = std::fs::read_to_string(path)?;
     let mut input = Input::load();
+    let policies = [input.elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT];
     input.seed(EventTime(0));
     input
         .bind_text(82, "+forward", EventTime(0), &mut Sink)
@@ -59,10 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         time += u64::from(duration);
-        let command = input.build_frame_with_policy(
-            EventTime(time * 1_000_000),
-            &[input_console::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
-        )[0];
+        let command = input.build_frame_with_policy(EventTime(time * 1_000_000), &policies)[0];
         println!("F {}", command.movement[0]);
     }
     Ok(())

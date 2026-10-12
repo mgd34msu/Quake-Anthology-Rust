@@ -1,7 +1,7 @@
 #[path = "../tests/support/mod.rs"]
 mod support;
 use qa_core::primitives::{PlayerState, RuleSetId, UserCmd, Vec3};
-fn main() {
+fn main() -> Result<(), &'static str> {
     let arena = std::env::args().nth(1).as_deref() == Some("q3");
     let rules = if arena {
         RuleSetId::Quake3
@@ -81,7 +81,8 @@ fn main() {
                     0.0
                 };
             }
-            qa_movement::pmove(command, &mut player, &mut world, Default::default());
+            qa_movement::pmove(command, &mut player, &mut world, Default::default())
+                .map_err(|_| "movement trace failed")?;
             if arena {
                 let p = player.body.position.0;
                 let v = player.body.velocity.0;
@@ -115,4 +116,5 @@ fn main() {
             );
         }
     }
+    Ok(())
 }

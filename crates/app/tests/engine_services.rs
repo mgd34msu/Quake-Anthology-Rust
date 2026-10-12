@@ -65,9 +65,11 @@ fn module_messages_are_independent_and_rejected_appends_preserve_the_prefix() {
                 origin: Default::default(),
                 reliable: true,
                 dupe_key: 0,
+                component: 0,
                 emission: None,
                 check_portals: true,
             },
+            qa_gameplay::rules::sound_policy(RuleSetId::Quake2),
         )
         .unwrap();
     };
@@ -239,6 +241,42 @@ fn duplicate_module_config_ranges_are_rejected_at_load() {
         ServiceStorage::load(&[(ModuleId(1), 2), (ModuleId(1), 3)], 4, &console.cvars),
         Err(CallError::ConfigString)
     ));
+}
+
+#[test]
+fn shared_trace_services_reject_stale_geometry_instead_of_clear_space() {
+    use qa_core::primitives::{GeometryId, Vec3};
+    use qa_world::collision::{TraceQuery, trace_policy};
+    let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
+    let mut console = Console::new(Context::default()).unwrap();
+    let mut storage = ServiceStorage::load(&[], 0, &console.cvars).unwrap();
+    let geometry = GeometryId {
+        slot: 0,
+        generation: 1,
+    };
+    runtime.collision = Some(qa_app::WorldCollision::new(&runtime.geometry, geometry, 0));
+    let mut scratch = runtime.geometry.scratch();
+    let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
+    let (rules, entities) = trace_policy(RuleSetId::Quake2);
+    let query = TraceQuery::point(Vec3::default(), Vec3([32.0, 0.0, 0.0]), rules, entities);
+    assert!(matches!(
+        (ENGINE_CALLS.trace)(&mut services, query, None),
+        Err(CallError::Geometry)
+    ));
+    assert!(matches!(
+        services.clip(query, qa_compat::services::ClipTarget::World),
+        Err(CallError::Geometry)
+    ));
+    assert_eq!(
+        (ENGINE_CALLS.point_contents)(
+            &mut services,
+            Vec3::default(),
+            entities,
+            qa_core::primitives::CollisionOwner::None,
+            None,
+        ),
+        Err(CallError::Geometry)
+    );
 }
 
 #[test]

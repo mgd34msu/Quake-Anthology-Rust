@@ -6,6 +6,7 @@ pub mod conversion;
 pub mod cvars;
 pub mod cvars_generated;
 pub mod editor;
+pub mod input_settings;
 pub mod logger;
 pub mod movement;
 pub mod numbers;

@@ -667,6 +667,7 @@ pub(super) fn server_sounds_wait_for_resource_ack_without_stalling_other_clients
                     origin: Vec3::default(),
                     reliable: true,
                     dupe_key: 0,
+                    component: 0,
                     emission: None,
                     check_portals: true,
                 },
@@ -1167,6 +1168,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
             origin: Vec3::default(),
             reliable: false,
             dupe_key: 0,
+            component: 0,
             emission: None,
             check_portals: false,
         };
@@ -1182,19 +1184,24 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                 None,
             )
             .unwrap();
-        NativeCueBinding {
-            sound: Some(b),
-            entity: Some(foreign_emitter),
-        }
-        .write_capture(0, &mut bytes[length..length + NATIVE_CUE_CAPTURE_BYTES])
-        .unwrap();
+        let (qa_network::outputs::Cue::Sound(wire), _) =
+            qa_network::outputs::read_cue(protocol, &bytes[..length]).unwrap()
+        else {
+            panic!("sound")
+        };
         host.runtime
             .server
             .events
-            .native_message_bound(
+            .push_delivered(
                 delivery,
-                length,
-                &bytes[..length + NATIVE_CUE_CAPTURE_BYTES],
+                FrameEvent::Sound(wire.into_event(
+                    b,
+                    qa_gameplay::rules::sound_policy(rules),
+                    Some(SoundEmitter::Entity(foreign_emitter)),
+                    wire.position,
+                    None,
+                    SoundAction::Play,
+                )),
             )
             .unwrap();
         for tick in 19..=23 {

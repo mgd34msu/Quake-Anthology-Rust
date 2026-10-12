@@ -1556,6 +1556,24 @@ fn rejected_protected_remove_preserves_lifetime_area_and_native_bytes() {
 }
 
 #[test]
+fn quakec_fly_flag_stays_visible_and_raw_at_shared_publication() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, value);
+            write(&mut vm, value, b"flags", &[1.0f32.to_bits()]);
+            write(&mut vm, value, b"modelindex", &[7.0f32.to_bits()]);
+            vm.project_entities(calls.services, calls.context).unwrap();
+            let columns = &calls.services.server.entities.columns;
+            assert_eq!(columns.flags[id.slot as usize], 1);
+            assert!(!columns.appearance[id.slot as usize].snapshot_excluded);
+            assert_eq!(read(&vm, value, b"flags", 1), [1.0f32.to_bits()]);
+        });
+    }
+}
+
+#[test]
 fn explicit_pose_size_and_item_link_use_shared_bounds_without_implicit_relinks() {
     with_services(RuleSetId::Quake, |calls| {
         let mut vm = seeded_vm(calls, 8);
@@ -2452,71 +2470,293 @@ fn vm_rejects_zero_stride_before_entity_number_or_builtin_resolution() {
 }
 
 #[test]
-fn native_staging_preserves_full_wire_capacity_with_one_or_dense_cues() {
-    use qa_core::events::{FrameEvent, NativeReceipt, OutputSubmission, OutputTarget};
+fn native_staging_dense_sounds_reject_the_whole_group_without_resync() {
+    use qa_core::events::{FrameEvent, OutputTarget};
     for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
-        for cue_count in [1, NATIVE_CUE_CAPACITY] {
-            with_services(rules, |calls| {
-                let consumer = calls
-                    .services
-                    .server
-                    .events
-                    .bind(OutputTarget::Client(ClientId(0)))
-                    .unwrap();
-                let mut wire = vec![6; NATIVE_WIRE_BYTES]; // native svc_nop after the recognized prefix
-                for cue in wire[..cue_count * NATIVE_CUE_MIN_WIRE_BYTES].chunks_exact_mut(3) {
-                    cue.copy_from_slice(&[9, 0, 1]);
-                }
-                for &byte in &wire {
-                    (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), u32::from(byte), 8)
-                        .unwrap();
-                }
-                assert_eq!(
-                    (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), 6, 8),
-                    Err(CallError::Capacity)
-                );
-                let sequence = (ENGINE_CALLS.native_message)(
+        with_services(rules, |calls| {
+            let sound = bind_native_message_sound(calls);
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            let mut wire = vec![6; NATIVE_WIRE_BYTES];
+            for cue in wire[..(NATIVE_WIRE_BYTES / 3) * 3].chunks_exact_mut(3) {
+                cue.copy_from_slice(&[9, 0, 1]);
+            }
+            stage_native_message(calls, &wire);
+            assert_eq!(
+                (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), 6, 8),
+                Err(CallError::Capacity)
+            );
+            let before = calls.services.server.events.sequence_range();
+            let counters = calls.services.server.events.counters(consumer).unwrap();
+            assert_eq!(
+                (ENGINE_CALLS.native_message)(
                     calls.services,
-                    NativeDelivery {
-                        module: ModuleId(1),
-                        source: rules,
-                        target: NativeTarget::Client(ClientId(0)),
-                        origin: Vec3::default(),
-                        reliable: true,
-                        dupe_key: 0,
-                        emission: None,
-                        check_portals: false,
-                    },
+                    native_message_delivery(rules),
+                    calls.context.sound_policy
+                ),
+                Err(CallError::Capacity)
+            );
+            let ring = &calls.services.server.events;
+            assert_eq!(ring.sequence_range(), before);
+            assert_eq!(ring.counters(consumer), Some(counters));
+            assert!(!ring.needs_resync(consumer));
+            assert_eq!(ring.rejected_publications(), 1);
+            // The failed emission consumed staging and cannot retry a prefix.
+            assert_eq!(
+                (ENGINE_CALLS.native_message)(
+                    calls.services,
+                    native_message_delivery(rules),
+                    calls.context.sound_policy
+                )
+                .unwrap(),
+                None
+            );
+            stage_native_message(calls, &[9, 0, 1]);
+            (ENGINE_CALLS.native_message)(
+                calls.services,
+                native_message_delivery(rules),
+                calls.context.sound_policy,
+            )
+            .unwrap();
+            let ring = &calls.services.server.events;
+            let mut batch = ring.batch(consumer).unwrap();
+            assert!(
+                matches!(ring.next(&mut batch).unwrap().event, FrameEvent::Sound(e) if e.sound == sound && e.native_fields.unwrap().flags == 0)
+            );
+            assert!(ring.next(&mut batch).is_none());
+        });
+    }
+}
+fn native_message_delivery(rules: RuleSetId) -> NativeDelivery {
+    NativeDelivery {
+        module: ModuleId(1),
+        source: rules,
+        target: NativeTarget::All,
+        origin: Vec3::default(),
+        reliable: true,
+        dupe_key: 0,
+        component: 0,
+        emission: None,
+        check_portals: false,
+    }
+}
+fn stage_native_message(calls: &mut QuakeCCalls<'_, '_>, bytes: &[u8]) {
+    for &byte in bytes {
+        (ENGINE_CALLS.message_bits)(calls.services, ModuleId(1), u32::from(byte), 8).unwrap();
+    }
+}
+fn bind_native_message_sound(calls: &mut QuakeCCalls<'_, '_>) -> SoundId {
+    let rate = std::num::NonZeroU32::new(44100).unwrap();
+    let bank = std::sync::Arc::new(
+        qa_audio::Bank::load(
+            rate,
+            vec![(
+                "sound/test.wav".into(),
+                Pcm {
+                    rate,
+                    channels: PcmChannels::Mono,
+                    samples: vec![100; 4],
+                    loop_start: None,
+                },
+            )],
+        )
+        .unwrap(),
+    );
+    let sound = bank.find("sound/test.wav").unwrap();
+    let sounds = calls.services.storage.resources(ModuleId(1)).unwrap()[1];
+    (ENGINE_CALLS.configstring)(
+        calls.services,
+        ModuleId(1),
+        sounds.first as usize + 1,
+        b"test.wav",
+    )
+    .unwrap();
+    calls
+        .services
+        .storage
+        .bind_sound_bank(ModuleId(1), sounds, bank)
+        .unwrap();
+    sound
+}
+#[test]
+fn native_mixed_print_and_sound_components_use_one_ring_in_source_order() {
+    use qa_core::events::{FrameEvent, OutputSubmission, OutputTarget};
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        with_services(rules, |calls| {
+            let sound = bind_native_message_sound(calls);
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            let bytes = [10, 2, b'p', 0, 9, 3, 1, 255, 64, 9, 0, 1, 10, 2, b'q', 0];
+            for _ in 0..2 {
+                stage_native_message(calls, &bytes);
+                (ENGINE_CALLS.native_message)(
+                    calls.services,
+                    native_message_delivery(rules),
+                    calls.context.sound_policy,
+                )
+                .unwrap();
+            }
+            // Later config mutation cannot replace the captured PCM handle.
+            let sounds = calls.services.storage.resources(ModuleId(1)).unwrap()[1];
+            (ENGINE_CALLS.configstring)(
+                calls.services,
+                ModuleId(1),
+                sounds.first as usize + 1,
+                b"missing.wav",
+            )
+            .unwrap();
+            let ring = &mut calls.services.server.events;
+            let mut batch = ring.batch(consumer).unwrap();
+            for _ in 0..2 {
+                for (component, expected_flags, expected_text) in [
+                    (0, None, Some(&bytes[..4])),
+                    (4, Some(3), None),
+                    (9, Some(0), None),
+                    (12, None, Some(&bytes[12..])),
+                ] {
+                    let record = ring.next(&mut batch).unwrap();
+                    assert_eq!(record.delivery.unwrap().component, component);
+                    match record.event {
+                        FrameEvent::Sound(event) => {
+                            assert_eq!(event.sound, sound);
+                            assert_eq!(event.native_fields.unwrap().flags, expected_flags.unwrap());
+                            assert_eq!(event.spatial, calls.context.sound_policy);
+                        }
+                        FrameEvent::Native(payload) => {
+                            assert_eq!(
+                                ring.texts.copy_payload(payload, &mut [0; 64]).unwrap(),
+                                expected_text.unwrap()
+                            );
+                        }
+                        _ => panic!("unexpected component"),
+                    }
+                    assert!(ring.submit(consumer, record.sequence, OutputSubmission::BestEffort));
+                }
+            }
+            assert!(ring.next(&mut batch).is_none());
+            assert!(ring.is_empty());
+            assert_eq!(ring.rejected_publications(), 0);
+        });
+    }
+}
+
+#[test]
+fn native_sound_captures_the_emitter_lifetime_before_slot_reuse() {
+    use qa_core::events::{FrameEvent, OutputTarget};
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        with_services(rules, |calls| {
+            let sound = bind_native_message_sound(calls);
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            let old = calls
+                .services
+                .server
+                .entities
+                .allocate(
+                    ThinkTime::Seconds(0.0),
+                    ModuleId(1),
+                    AllocationPolicy::EDICT,
                 )
                 .unwrap()
+                .id;
+            let native = NativeEntity {
+                module: ModuleId(1),
+                slot: 7,
+            };
+            calls.services.server.entities.columns.native_entity[old.slot as usize] = Some(native);
+            stage_native_message(calls, &[9, 8, 1, 58, 0]);
+            (ENGINE_CALLS.native_message)(
+                calls.services,
+                native_message_delivery(rules),
+                calls.context.sound_policy,
+            )
+            .unwrap();
+            assert!(
+                calls
+                    .services
+                    .server
+                    .entities
+                    .release(old, ThinkTime::Seconds(1.0))
+            );
+            let replacement = calls
+                .services
+                .server
+                .entities
+                .allocate(
+                    ThinkTime::Seconds(1000.0),
+                    ModuleId(1),
+                    AllocationPolicy::EDICT,
+                )
+                .unwrap()
+                .id;
+            assert_eq!(replacement.slot, old.slot);
+            assert_ne!(replacement.generation, old.generation);
+            calls.services.server.entities.columns.native_entity[replacement.slot as usize] =
+                Some(native);
+            let ring = &calls.services.server.events;
+            let mut batch = ring.batch(consumer).unwrap();
+            let FrameEvent::Sound(event) = ring.next(&mut batch).unwrap().event else {
+                panic!("missing sound")
+            };
+            assert_eq!(event.sound, sound);
+            assert_eq!(event.entity, Some(SoundEmitter::Entity(old)));
+            assert_eq!(event.native_fields.unwrap().entity, 7);
+            assert_eq!(event.source_ordinal, Some(1));
+            assert!(ring.next(&mut batch).is_none());
+        });
+    }
+}
+
+#[test]
+fn unresolved_native_sound_preserves_sibling_print_runs() {
+    use qa_core::events::{FrameEvent, OutputSubmission, OutputTarget};
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        with_services(rules, |calls| {
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(OutputTarget::Client(ClientId(0)))
                 .unwrap();
-                let ring = &mut calls.services.server.events;
-                let mut batch = ring.batch(consumer).unwrap();
-                let FrameEvent::Native(payload) = ring.next(&mut batch).unwrap().event else {
-                    panic!("native payload")
+            let bytes = [10, 2, b'p', 0, 9, 0, 1, 10, 2, b'q', 0];
+            stage_native_message(calls, &bytes);
+            (ENGINE_CALLS.native_message)(
+                calls.services,
+                native_message_delivery(rules),
+                calls.context.sound_policy,
+            )
+            .unwrap();
+            let ring = &mut calls.services.server.events;
+            let mut batch = ring.batch(consumer).unwrap();
+            for (component, expected) in [(0, &bytes[..4]), (7, &bytes[7..])] {
+                let record = ring.next(&mut batch).unwrap();
+                assert_eq!(record.delivery.unwrap().component, component);
+                let FrameEvent::Native(payload) = record.event else {
+                    panic!("unresolved sound must not publish")
                 };
-                let mut copied = vec![0; NATIVE_PAYLOAD_BYTES];
-                let bytes = ring.texts.copy_payload(payload, &mut copied).unwrap();
-                assert_eq!(&bytes[..NATIVE_WIRE_BYTES], wire);
                 assert_eq!(
-                    bytes.len(),
-                    NATIVE_WIRE_BYTES + cue_count * NATIVE_CUE_CAPTURE_BYTES
+                    ring.texts.copy_payload(payload, &mut [0; 32]).unwrap(),
+                    expected
                 );
-                for offset in [0, (cue_count - 1) * NATIVE_CUE_MIN_WIRE_BYTES] {
-                    assert!(payload.cue(bytes, offset).is_some());
-                }
-                assert_eq!(ring.rejected_publications(), 0);
-                assert!(ring.submit(
-                    consumer,
-                    sequence,
-                    OutputSubmission::Reliable(NativeReceipt(71))
-                ));
-                assert_eq!(ring.acknowledge(consumer, NativeReceipt(70)), 0);
-                assert!(ring.texts.copy_payload(payload, &mut copied).is_some());
-                assert_eq!(ring.acknowledge(consumer, NativeReceipt(71)), 1);
-                assert!(ring.texts.copy_payload(payload, &mut copied).is_none());
-            });
-        }
+                assert!(ring.submit(consumer, record.sequence, OutputSubmission::BestEffort));
+            }
+            assert!(ring.next(&mut batch).is_none());
+            assert!(ring.is_empty());
+            assert!(!ring.needs_resync(consumer));
+            assert_eq!(ring.rejected_publications(), 1);
+        });
     }
 }
 

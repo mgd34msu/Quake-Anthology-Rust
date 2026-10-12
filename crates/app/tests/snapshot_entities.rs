@@ -497,6 +497,82 @@ fn quakeworld_native_players_use_playerinfo_and_accepted_client_entity_rows() ->
 }
 
 #[test]
+fn snapshot_exclusion_is_a_shared_capability_independent_of_source_and_wire_flags()
+-> Result<(), String> {
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        let (mut host, client) = host(protocol, 1)?;
+        for (index, source) in [
+            RuleSetId::Quake,
+            RuleSetId::QuakeWorld,
+            RuleSetId::Quake2,
+            RuleSetId::Quake2Rerelease,
+            RuleSetId::Quake3,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let visible = add(
+                &mut host,
+                Some(NativeEntity {
+                    module: MODULE,
+                    slot: 42 + index as i32 * 2,
+                }),
+                source,
+                Vec3([20.0 + index as f32, 0.0, 0.0]),
+            );
+            // Raw native flag words have already been converted at the module
+            // boundary; a bit in that ABI column does not select visibility.
+            host.runtime.server.entities.columns.flags[visible.slot as usize] = 1;
+            let excluded = add(
+                &mut host,
+                Some(NativeEntity {
+                    module: MODULE,
+                    slot: 43 + index as i32 * 2,
+                }),
+                source,
+                Vec3([40.0 + index as f32, 0.0, 0.0]),
+            );
+            host.runtime.server.entities.columns.appearance[excluded.slot as usize]
+                .snapshot_excluded = true;
+        }
+        if protocol == Protocol::QuakeWorld28 {
+            assert!(
+                host.runtime
+                    .send_local_command(client, &Default::default(), EventTime(0))
+            );
+            dispatch(&mut host, EventTime(1_000_000_000));
+        }
+        transmit(
+            &mut host,
+            client,
+            EventTime(1_000_000_000),
+            None,
+            None,
+            None,
+        )?;
+        dispatch(&mut host, EventTime(1_000_000_000));
+        let rows = records(&host, client)?;
+        for index in 0..5 {
+            assert!(
+                rows.iter().any(|(number, _)| *number == 42 + index * 2),
+                "{protocol:?}"
+            );
+            assert!(
+                rows.iter().all(|(number, _)| *number != 43 + index * 2),
+                "{protocol:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(), String> {
     let (mut host, client) = host(Protocol::Quake2_34, 1)?;
     let foreign = add(
@@ -527,6 +603,7 @@ fn native_namespace_wins_over_foreign_handles_and_generation_reuse() -> Result<(
         Vec3([60., 0., 0.]),
     );
     host.runtime.server.entities.columns.flags[hidden.slot as usize] = 1;
+    host.runtime.server.entities.columns.appearance[hidden.slot as usize].snapshot_excluded = true;
     let first = transmit(
         &mut host,
         client,

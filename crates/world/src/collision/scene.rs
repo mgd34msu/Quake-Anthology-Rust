@@ -1,7 +1,7 @@
 use super::EntityTraceFlags;
 use super::{
-    CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceQuery, TraceScope,
-    TraceScratch, WorldEntityRule,
+    CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, Trace, TraceError, TraceQuery,
+    TraceScope, TraceScratch, WorldEntityRule,
 };
 use crate::{area::AreaGrid, entities::EntityTable};
 use qa_core::primitives::{
@@ -102,7 +102,7 @@ impl<'a> WorldTrace<'a> {
         self
     }
 
-    pub fn trace(&mut self, mut query: TraceQuery) -> Trace {
+    pub fn trace(&mut self, mut query: TraceQuery) -> Result<Trace, TraceError> {
         if query.pass == CollisionOwner::None {
             query.pass = self.pass;
         }
@@ -113,7 +113,7 @@ impl<'a> WorldTrace<'a> {
         }
         let mut result = self
             .store
-            .trace_model(self.geometry, self.model, query, self.scratch);
+            .trace_model(self.geometry, self.model, query, self.scratch)?;
         let world_entity = match query.entity_rules.world_entity {
             WorldEntityRule::HitOrStartSolid => result.fraction < 1.0 || result.start_solid,
             WorldEntityRule::Always => true,
@@ -125,7 +125,7 @@ impl<'a> WorldTrace<'a> {
         if query.scope == TraceScope::World
             || result.fraction == 0.0 && query.entity_rules.stop_at_zero()
         {
-            return result;
+            return Ok(result);
         }
         let missile = query.entity_rules.quake_kind() == Some(QuakeTraceKind::Missile);
         let (mins, maxs) = if missile {
@@ -243,10 +243,10 @@ impl<'a> WorldTrace<'a> {
                 target.rules,
                 Some(id),
                 self.scratch,
-            );
+            )?;
             result.merge_linked(incoming, query.entity_rules);
         }
-        result
+        Ok(result)
     }
 
     pub fn point_contents(
@@ -254,13 +254,13 @@ impl<'a> WorldTrace<'a> {
         point: Vec3,
         rules: EntityTracePolicy,
         excluded: &[EntityId],
-    ) -> Contents {
-        let mut result = self
-            .store
-            .point_contents_model(self.geometry, self.model, point, rules);
+    ) -> Result<Contents, TraceError> {
+        let mut result =
+            self.store
+                .point_contents_model(self.geometry, self.model, point, rules)?;
         // Q1 SV_PointContents is the world hull, without linked-body contents.
         if !rules.filtering.contains(EntityTraceFlags::LINKED_CONTENTS) {
-            return result;
+            return Ok(result);
         }
         let role = rules.link_role;
         for linked in self.area.query(
@@ -303,7 +303,7 @@ impl<'a> WorldTrace<'a> {
                         pose.angles,
                         target.rules,
                         rules,
-                    );
+                    )?;
                     continue;
                 }
                 CollisionShape::Box => {}
@@ -326,7 +326,7 @@ impl<'a> WorldTrace<'a> {
                 result |= Contents::BODY;
             }
         }
-        result
+        Ok(result)
     }
 
     fn owner(&self, entity: CollisionOwner) -> Option<CollisionOwner> {

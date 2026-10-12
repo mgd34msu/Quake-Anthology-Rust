@@ -45,11 +45,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let index: usize = arg.parse()?;
     let rules = *RuleSetId::ALL.get(index).ok_or("native rule id")?;
-    let policy = InputPolicy::native(rules);
+    let policy = input_console::catalog_policies()?[rules as usize];
     let mut seed = 0x434d4449;
     for _ in 0..10000 {
-        let command =
-            UserCmdBuilder::build(16_000_000, EventTime(16_000_000), intent(&mut seed), policy);
+        let command = UserCmdBuilder::build(
+            EventTime(16_000_000),
+            EventTime(16_000_000),
+            intent(&mut seed),
+            policy,
+        );
         println!(
             "{:08x} {:08x} {:08x} {}",
             command.movement[0].to_bits(),
@@ -105,13 +109,14 @@ fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
             return Err("input device assignment".into());
         }
     }
+    let catalog = input_console::catalog_policies()?;
     let policies = [
         RuleSetId::Quake,
         RuleSetId::QuakeWorld,
         RuleSetId::Quake2,
         RuleSetId::Quake3,
     ]
-    .map(InputPolicy::native);
+    .map(|rules| catalog[rules as usize]);
     begin_frame();
     let control = black_box(vec![0u8; 128]);
     let positive = end_frame();
@@ -214,11 +219,12 @@ fn view(qw: bool) -> Result<(), Box<dyn std::error::Error>> {
     input.seed(EventTime(0));
     input.set_view_angles(SeatId::FIRST, Vec3([40.0, 5.0, 0.0]));
     let mut player = PlayerState::default();
-    let policy = InputPolicy::native(if qw {
+    let catalog = input_console::catalog_policies()?;
+    let policy = catalog[if qw {
         RuleSetId::QuakeWorld
     } else {
         RuleSetId::Quake
-    });
+    } as usize];
     let mut ms = 0;
     for frame in 0..10000 {
         ms += [1, 7, 16, 33, 100][frame % 5];
@@ -267,8 +273,8 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut seed = 0x434d4449;
     let intents: [CommandIntent; 64] = std::array::from_fn(|_| intent(&mut seed));
-    let policies: [InputPolicy; 64] =
-        std::array::from_fn(|index| InputPolicy::native(RuleSetId::ALL[index % 5]));
+    let catalog = input_console::catalog_policies()?;
+    let policies: [InputPolicy; 64] = std::array::from_fn(|index| catalog[index % 5]);
     let mut samples = [0u64; 600];
     let mut allocations = 0;
     let mut bytes = 0;
@@ -278,7 +284,7 @@ fn bench() -> Result<(), Box<dyn std::error::Error>> {
         let timer = Stopwatch::start();
         for index in 0..64 {
             let command = black_box(UserCmdBuilder::build(
-                16_666_667,
+                EventTime(16_666_667),
                 EventTime(frame * 16_666_667),
                 black_box(intents[index]),
                 policies[index],
@@ -322,13 +328,14 @@ fn bench_view() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut input = Input::load();
     input.seed(EventTime(0));
+    let catalog = input_console::catalog_policies()?;
     let policies = [
         RuleSetId::Quake,
         RuleSetId::QuakeWorld,
         RuleSetId::Quake2,
         RuleSetId::Quake3,
     ]
-    .map(InputPolicy::native);
+    .map(|rules| catalog[rules as usize]);
     let mut player = PlayerState::default();
     player.movement.grounded = true;
     for seat in 0..SeatId::COUNT {

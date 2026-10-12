@@ -48,6 +48,7 @@ fn config_names_hex_and_modifier_sides_share_one_control_table() {
 #[test]
 fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
     let mut input = Input::load();
+    let policy = input.elapsed_policy(127.0);
     input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
@@ -87,7 +88,7 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
     assert_ne!(
         input.build_frame_with_policy(
             EventTime(30_000_000),
-            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+            &[policy; qa_core::sys_events::SeatId::COUNT]
         )[0]
         .buttons
             & qa_core::primitives::buttons::JUMP,
@@ -97,6 +98,7 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
 #[test]
 fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     let mut input = Input::load();
+    let policy = input.elapsed_policy(127.0);
     input.seed(EventTime(0));
     let mut sink = Sink::default();
     input
@@ -123,7 +125,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     assert_eq!(
         input.build_frame_with_policy(
             EventTime(40_000_000),
-            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+            &[policy; qa_core::sys_events::SeatId::COUNT]
         )[0]
         .movement[0],
         127.0
@@ -150,7 +152,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
     assert_eq!(
         input.build_frame_with_policy(
             EventTime(60_000_000),
-            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+            &[policy; qa_core::sys_events::SeatId::COUNT]
         )[0]
         .movement,
         [0.0; 3]

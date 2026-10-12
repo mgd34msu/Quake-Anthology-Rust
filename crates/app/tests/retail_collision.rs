@@ -192,7 +192,9 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
                 mask: Contents(u64::MAX),
                 ..TraceQuery::point(start, end, rules, entity_rules)
             };
-            let trace = geometry.trace_model(handle, 1, query, &mut scratch);
+            let trace = geometry
+                .trace_model(handle, 1, query, &mut scratch)
+                .unwrap();
             contacts += usize::from(trace.fraction < 1.0);
             let words = [
                 trace.fraction.to_bits(),
@@ -218,13 +220,22 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
     for (handle, query, words) in retained {
         let trace = geometry.trace_model(handle, 1, query, &mut scratch);
         if handle == removed {
-            assert_eq!(trace.fraction, 1.0);
-            assert_eq!(trace.end, query.end);
+            assert_eq!(
+                trace.unwrap_err(),
+                qa_world::collision::TraceError::Geometry {
+                    geometry: handle,
+                    model: 1
+                }
+            );
             assert_eq!(
                 geometry.point_contents_model(handle, 1, Vec3::default(), query.entity_rules),
-                Contents::EMPTY
+                Err(qa_world::collision::TraceError::Geometry {
+                    geometry: handle,
+                    model: 1
+                })
             );
         } else {
+            let trace = trace.unwrap();
             assert_eq!(
                 words,
                 [

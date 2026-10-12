@@ -1,6 +1,6 @@
 use qa_core::primitives::{Plane, Vec3};
 use qa_movement::TraceServices;
-use qa_world::collision::{Contents, EntityTracePolicy, Trace, TraceQuery};
+use qa_world::collision::{Contents, EntityTracePolicy, Trace, TraceError, TraceQuery};
 
 /// Analytic native-kernel comparison fixture; no scene or retail-map claim.
 #[derive(Default)]
@@ -9,7 +9,7 @@ pub struct FixtureWorld {
     pub water: bool,
 }
 impl TraceServices for FixtureWorld {
-    fn trace(&mut self, query: TraceQuery) -> Trace {
+    fn trace(&mut self, query: TraceQuery) -> Result<Trace, TraceError> {
         // The extracted original movement fixture and this analytic oracle
         // both have zero contact bias. Production hull/brush services apply
         // the explicit caller policy received through this same entry.
@@ -115,13 +115,13 @@ impl TraceServices for FixtureWorld {
         if result.fraction < 1.0 || result.start_solid {
             result.contents = Contents::SOLID;
         }
-        result
+        Ok(result)
     }
-    fn point_contents(&self, point: Vec3, _: EntityTracePolicy) -> Contents {
-        if self.water && point.0[2] < 64.0 {
+    fn point_contents(&self, point: Vec3, _: EntityTracePolicy) -> Result<Contents, TraceError> {
+        Ok(if self.water && point.0[2] < 64.0 {
             Contents::WATER
         } else {
             Contents::EMPTY
-        }
+        })
     }
 }

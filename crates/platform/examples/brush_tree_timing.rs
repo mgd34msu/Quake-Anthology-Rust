@@ -69,13 +69,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let trace =
             fixture
                 .store
-                .trace_model(geometry, query.model as u32, query.trace, &mut scratch);
+                .trace_model(geometry, query.model as u32, query.trace, &mut scratch)?;
         let point = fixture.store.point_contents_model(
             geometry,
             query.model as u32,
             query.point,
             entity_rules,
-        );
+        )?;
         if fixture::result(trace, point) != *expected {
             return Err("native row mismatch before timing".into());
         }
@@ -102,13 +102,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 query.model as u32,
                 black_box(query.trace),
                 &mut scratch,
-            );
+            )?;
             let point = fixture.store.point_contents_model(
                 geometry,
                 query.model as u32,
                 black_box(query.point),
                 entity_rules,
-            );
+            )?;
             let row = black_box(fixture::result(trace, point));
             frame_mismatches += u64::from(row != expected[next_query]);
             frame_contacts += u64::from(trace.fraction < 1.0);

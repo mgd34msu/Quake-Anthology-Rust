@@ -114,40 +114,43 @@ fn brush_membership_uses_geometric_orientation_and_keeps_native_contact_encoding
         let (clipping, entities) = qa_world::collision::trace_policy(rules);
         assert_eq!(
             map.store
-                .point_contents_model(map.geometry, 0, Vec3::default(), entities),
+                .point_contents_model(map.geometry, 0, Vec3::default(), entities)
+                .expect("valid collision query"),
             Contents::SOLID
         );
         for axis in 0..3 {
             for sign in [-1.0, 1.0] {
                 assert_eq!(
-                    map.store.point_contents_model(
-                        map.geometry,
-                        0,
-                        Vec3::axis(axis, sign),
-                        entities,
-                    ),
+                    map.store
+                        .point_contents_model(map.geometry, 0, Vec3::axis(axis, sign), entities,)
+                        .expect("valid collision query"),
                     Contents::SOLID
                 );
                 assert_eq!(
-                    map.store.point_contents_model(
-                        map.geometry,
-                        0,
-                        Vec3::axis(axis, sign * 2.0),
-                        entities,
-                    ),
+                    map.store
+                        .point_contents_model(
+                            map.geometry,
+                            0,
+                            Vec3::axis(axis, sign * 2.0),
+                            entities,
+                        )
+                        .expect("valid collision query"),
                     Contents::EMPTY
                 );
-                let trace = map.store.trace_model(
-                    map.geometry,
-                    0,
-                    TraceQuery::point(
-                        Vec3::axis(axis, sign * 2.0),
-                        Vec3::default(),
-                        clipping,
-                        entities,
-                    ),
-                    &mut scratch,
-                );
+                let trace = map
+                    .store
+                    .trace_model(
+                        map.geometry,
+                        0,
+                        TraceQuery::point(
+                            Vec3::axis(axis, sign * 2.0),
+                            Vec3::default(),
+                            clipping,
+                            entities,
+                        ),
+                        &mut scratch,
+                    )
+                    .expect("valid collision query");
                 assert_eq!(
                     trace.fraction,
                     (1.0 - clipping.contact_epsilon as f32) / 2.0
@@ -200,7 +203,8 @@ fn native_negative_axial_tree_keeps_its_original_coordinate_descent_and_front_ti
     ] {
         assert_eq!(
             map.store
-                .point_contents_model(map.geometry, 0, Vec3([x, 0.0, 0.0]), entities),
+                .point_contents_model(map.geometry, 0, Vec3([x, 0.0, 0.0]), entities)
+                .expect("valid collision query"),
             contents
         );
     }
@@ -246,77 +250,96 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
     )
     .unwrap();
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            0,
-            Vec3([1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                0,
+                Vec3([1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            )
+            .expect("valid collision query"),
         Contents::SLIME
     );
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            0,
-            Vec3([1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                0,
+                Vec3([1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .expect("valid collision query"),
         Contents::WATER
     );
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            0,
-            Vec3([-1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                0,
+                Vec3([-1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            )
+            .expect("valid collision query"),
         Contents::LAVA
     );
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            0,
-            Vec3([-1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                0,
+                Vec3([-1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .expect("valid collision query"),
         Contents::SOLID
     );
     // Points exactly on a native splitting plane select front0.
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            0,
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                0,
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
+            )
+            .expect("valid collision query"),
         Contents::SLIME
     );
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            1,
-            Vec3([0.0, 1.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                1,
+                Vec3([0.0, 1.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .expect("valid collision query"),
         Contents::PLAYER_CLIP
     );
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            1,
-            Vec3([0.0, 3.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        map.store
+            .point_contents_model(
+                map.geometry,
+                1,
+                Vec3([0.0, 3.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     assert_eq!(
-        map.store.point_contents_model(
-            map.geometry,
-            99,
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
-        Contents::EMPTY
+        map.store
+            .point_contents_model(
+                map.geometry,
+                99,
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .unwrap_err(),
+        qa_world::collision::TraceError::Geometry {
+            geometry: map.geometry,
+            model: 99,
+        }
     );
     let mut scratch = map.store.scratch();
     let query = TraceQuery {
@@ -326,10 +349,14 @@ fn native_point_contents_and_model_membership_are_caller_selected() {
     assert_eq!(
         map.store
             .trace_model(map.geometry, 0, query, &mut scratch)
+            .expect("valid collision query")
             .fraction,
         1.0
     );
-    let inline = map.store.trace_model(map.geometry, 1, query, &mut scratch);
+    let inline = map
+        .store
+        .trace_model(map.geometry, 1, query, &mut scratch)
+        .expect("valid collision query");
     assert_eq!(inline.fraction, (10.0 - 2.0 - 0.125) / 10.0);
     assert_eq!(inline.surface, SurfaceFlags(33));
     assert_eq!(inline.contents, Contents::PLAYER_CLIP);
@@ -367,19 +394,25 @@ fn ordered_leaf_references_preserve_ties_and_each_query_has_its_own_stamps() {
             ..query(rules, [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0])
         };
         for scratch in [&mut first, &mut second] {
-            let trace = map.store.trace_model(map.geometry, 0, query, scratch);
+            let trace = map
+                .store
+                .trace_model(map.geometry, 0, query, scratch)
+                .expect("valid collision query");
             assert_eq!(trace.fraction, ((1.0 - rules.contact_epsilon) / 2.0) as f32);
             assert_eq!(trace.contents, Contents::PLAYER_CLIP);
             assert_eq!(trace.surface, SurfaceFlags(22));
-            let solid = map.store.trace_model(
-                map.geometry,
-                0,
-                TraceQuery {
-                    mask: Contents::SOLID,
-                    ..query
-                },
-                scratch,
-            );
+            let solid = map
+                .store
+                .trace_model(
+                    map.geometry,
+                    0,
+                    TraceQuery {
+                        mask: Contents::SOLID,
+                        ..query
+                    },
+                    scratch,
+                )
+                .expect("valid collision query");
             assert_eq!(solid.contents, Contents::SOLID);
             assert_eq!(solid.surface, SurfaceFlags(11));
         }
@@ -422,20 +455,26 @@ fn near_first_and_front_first_position_order_keep_the_native_first_contact() {
             mask: Contents::SOLID | Contents::PLAYER_CLIP,
             ..query(rules, [0.015625, 0.0, 0.0], [-0.0625, 0.0, 0.0])
         };
-        let trace = map.store.trace_model(map.geometry, 0, moving, &mut scratch);
+        let trace = map
+            .store
+            .trace_model(map.geometry, 0, moving, &mut scratch)
+            .expect("valid collision query");
         assert_eq!(trace.fraction, 0.0);
         assert_eq!(trace.contents, Contents::PLAYER_CLIP);
         assert_eq!(trace.surface, SurfaceFlags(22));
-        let position = map.store.trace_model(
-            map.geometry,
-            0,
-            TraceQuery {
-                start: Vec3::default(),
-                end: Vec3::default(),
-                ..moving
-            },
-            &mut scratch,
-        );
+        let position = map
+            .store
+            .trace_model(
+                map.geometry,
+                0,
+                TraceQuery {
+                    start: Vec3::default(),
+                    end: Vec3::default(),
+                    ..moving
+                },
+                &mut scratch,
+            )
+            .expect("valid collision query");
         assert!(position.start_solid && position.all_solid);
         assert_eq!(position.contents, Contents::PLAYER_CLIP);
     }
@@ -467,12 +506,15 @@ fn brush_clipping_uses_the_original_full_segment_after_tree_splitting() {
     .unwrap();
     let mut scratch = map.store.scratch();
     for rules in [TraceRules::LEGACY, TraceRules::ARENA] {
-        let trace = map.store.trace_model(
-            map.geometry,
-            0,
-            query(rules, [10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]),
-            &mut scratch,
-        );
+        let trace = map
+            .store
+            .trace_model(
+                map.geometry,
+                0,
+                query(rules, [10.0, 0.0, 0.0], [-10.0, 0.0, 0.0]),
+                &mut scratch,
+            )
+            .expect("valid collision query");
         assert_eq!(
             trace.fraction,
             ((10.0 - 5.0 - rules.contact_epsilon) / 20.0) as f32
@@ -510,12 +552,14 @@ fn q2_leaf_gate_precedes_stamp_and_q3_ignores_that_gate_on_the_same_tree() {
     assert_eq!(
         map.store
             .trace_model(map.geometry, 0, legacy, &mut scratch)
+            .expect("valid collision query")
             .fraction,
         (10.0 - 0.03125) / 20.0
     );
     assert_eq!(
         map.store
             .trace_model(map.geometry, 1, legacy, &mut scratch)
+            .expect("valid collision query")
             .fraction,
         1.0
     );
@@ -523,6 +567,7 @@ fn q2_leaf_gate_precedes_stamp_and_q3_ignores_that_gate_on_the_same_tree() {
     assert_eq!(
         map.store
             .trace_model(map.geometry, 1, arena, &mut scratch)
+            .expect("valid collision query")
             .fraction,
         (10.0 - 0.125) / 20.0
     );
@@ -572,6 +617,7 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
                     query(rules, [0.0; 3], [0.0; 3]),
                     &mut native
                 )
+                .expect("valid collision query")
                 .fraction,
             1.0
         );
@@ -579,12 +625,26 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
             position_leaf_limit: 1025,
             ..rules
         };
-        let blocked = map.store.trace_model(
-            map.geometry,
-            0,
-            query(custom, [0.0; 3], [0.0; 3]),
-            &mut extended,
+        assert_eq!(
+            map.store
+                .trace_model(
+                    map.geometry,
+                    0,
+                    query(custom, [0.0; 3], [0.0; 3]),
+                    &mut native,
+                )
+                .unwrap_err(),
+            qa_world::collision::TraceError::Scratch,
         );
+        let blocked = map
+            .store
+            .trace_model(
+                map.geometry,
+                0,
+                query(custom, [0.0; 3], [0.0; 3]),
+                &mut extended,
+            )
+            .expect("valid collision query");
         assert_eq!(blocked.fraction, 0.0);
         assert!(blocked.start_solid && blocked.all_solid);
         assert_eq!(blocked.contents, Contents::SOLID);
@@ -602,6 +662,7 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
                 query(zero_limit, [0.0; 3], [0.0; 3]),
                 &mut no_collection
             )
+            .expect("valid collision query")
             .fraction,
         1.0
     );
@@ -614,6 +675,7 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
                 query(zero_limit, [0.0; 3], [0.0; 3]),
                 &mut no_collection
             )
+            .expect("valid collision query")
             .fraction,
         0.0
     );
@@ -625,6 +687,7 @@ fn stationary_leaf_truncation_is_compatibility_data_and_can_be_extended_cold() {
                 query(TraceRules::ARENA, [0.0; 3], [0.0; 3]),
                 &mut no_collection
             )
+            .expect("valid collision query")
             .fraction,
         0.0
     );
@@ -635,12 +698,15 @@ fn stationary_native_endpoint_preserves_q2_start_signed_zero() {
     let map = load(vec![], vec![]).unwrap();
     let mut scratch = map.store.scratch();
     for (rules, expected) in [(TraceRules::LEGACY, -0.0f32), (TraceRules::ARENA, 0.0f32)] {
-        let trace = map.store.trace_model(
-            map.geometry,
-            0,
-            query(rules, [-0.0, 0.0, 0.0], [0.0; 3]),
-            &mut scratch,
-        );
+        let trace = map
+            .store
+            .trace_model(
+                map.geometry,
+                0,
+                query(rules, [-0.0, 0.0, 0.0], [0.0; 3]),
+                &mut scratch,
+            )
+            .expect("valid collision query");
         assert_eq!(trace.fraction, 1.0);
         assert_eq!(trace.end.0[0].to_bits(), expected.to_bits());
     }
@@ -684,21 +750,25 @@ fn axial_position_bounds_accept_both_native_prefix_orders_and_foreign_sides_fall
         assert!(
             !map.store
                 .trace_model(map.geometry, 0, position, &mut scratch)
+                .expect("valid collision query")
                 .all_solid
         );
-        let legacy = map.store.trace_model(
-            map.geometry,
-            0,
-            TraceQuery {
-                rules: TraceRules::LEGACY,
-                entity_rules: qa_world::collision::trace_policy(
-                    qa_core::primitives::RuleSetId::Quake2,
-                )
-                .1,
-                ..position
-            },
-            &mut scratch,
-        );
+        let legacy = map
+            .store
+            .trace_model(
+                map.geometry,
+                0,
+                TraceQuery {
+                    rules: TraceRules::LEGACY,
+                    entity_rules: qa_world::collision::trace_policy(
+                        qa_core::primitives::RuleSetId::Quake2,
+                    )
+                    .1,
+                    ..position
+                },
+                &mut scratch,
+            )
+            .expect("valid collision query");
         assert!(legacy.all_solid);
     }
     // This is foreign convex geometry, not a Q3 assumed six-plane prefix.
@@ -718,6 +788,7 @@ fn axial_position_bounds_accept_both_native_prefix_orders_and_foreign_sides_fall
                 query(TraceRules::ARENA, [0.0; 3], [0.0; 3]),
                 &mut map.store.scratch()
             )
+            .expect("valid collision query")
             .fraction,
         1.0
     );
@@ -776,22 +847,26 @@ fn caller_side_margin_and_nonaxial_offset_select_visitation_on_one_graph() {
         assert_eq!(
             map.store
                 .trace_model(map.geometry, 0, legacy, &mut scratch)
+                .expect("valid collision query")
                 .fraction,
             1.0
         );
-        let arena = map.store.trace_model(
-            map.geometry,
-            0,
-            TraceQuery {
-                rules: TraceRules::ARENA,
-                entity_rules: qa_world::collision::trace_policy(
-                    qa_core::primitives::RuleSetId::Quake3,
-                )
-                .1,
-                ..legacy
-            },
-            &mut scratch,
-        );
+        let arena = map
+            .store
+            .trace_model(
+                map.geometry,
+                0,
+                TraceQuery {
+                    rules: TraceRules::ARENA,
+                    entity_rules: qa_world::collision::trace_policy(
+                        qa_core::primitives::RuleSetId::Quake3,
+                    )
+                    .1,
+                    ..legacy
+                },
+                &mut scratch,
+            )
+            .expect("valid collision query");
         // The point endpoint lies inside the1/8 contact band, so the native
         // far split is10/11 rather than clamping to1 and pruning that leaf.
         // The nonaxial volume case is enclosed after the2048-offset visit.
@@ -830,9 +905,15 @@ fn centered_min_only_tree_point_classification_does_not_remove_brush_support() {
     };
     // Center rounds to origin: size0 becomes0 but size1 remains2. Q3's
     // nonaxial tree offset is0; the direct brush still has that2-unit support.
-    let world = map.store.trace_model(map.geometry, 0, query, &mut scratch);
+    let world = map
+        .store
+        .trace_model(map.geometry, 0, query, &mut scratch)
+        .expect("valid collision query");
     assert!(!world.start_solid);
-    let direct = map.store.trace_model(map.geometry, 1, query, &mut scratch);
+    let direct = map
+        .store
+        .trace_model(map.geometry, 1, query, &mut scratch)
+        .expect("valid collision query");
     assert!(direct.start_solid);
     assert!(!direct.all_solid);
     assert_eq!(direct.fraction, 1.0);

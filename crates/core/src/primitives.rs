@@ -598,6 +598,7 @@ pub struct NativeAppearanceTail {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EntityAppearance {
     pub source: RuleSetId,
+    pub snapshot_excluded: bool,
     pub models: [Option<ModelRef>; 4],
     pub frame: i32,
     pub skin: i32,
@@ -610,6 +611,7 @@ impl Default for EntityAppearance {
     fn default() -> Self {
         Self {
             source: RuleSetId::default(),
+            snapshot_excluded: false,
             models: [None; 4],
             frame: 0,
             skin: 0,
@@ -1032,6 +1034,8 @@ pub struct SoundEvent {
     pub sound: SoundId,
     /// The source boundary's ordinal, retained without replacing PCM identity.
     pub source_ordinal: Option<u32>,
+    /// Exact quantized fields captured at a native wire boundary.
+    pub native_fields: Option<NativeSoundFields>,
     /// Spatial behavior belongs to this emission, independently of shared PCM.
     pub spatial: SpatialPolicy,
     pub entity: Option<SoundEmitter>,
@@ -1049,6 +1053,15 @@ impl SoundEvent {
     pub fn applies_to_client(self, client: ClientId) -> bool {
         self.client.is_none_or(|recipient| recipient == client)
     }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeSoundFields {
+    pub flags: u8,
+    pub volume: u8,
+    pub attenuation: u8,
+    pub time_offset: u8,
+    /// Original native slot, independent of the captured common lifetime.
+    pub entity: u16,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SoundAction {
@@ -1134,6 +1147,8 @@ pub struct NativeDelivery {
     pub origin: Vec3,
     pub reliable: bool,
     pub dupe_key: u32,
+    /// Stable source-service offset distinguishes siblings of one emission.
+    pub component: u32,
     /// Captured at publication, never reconstructed from a later host frame.
     pub emission: Option<NativeEmission>,
     pub check_portals: bool,
@@ -1145,9 +1160,9 @@ pub struct NativeEmission {
 }
 /// Immutable native-cue boundary identities, stored with the leased bytes.
 pub const NATIVE_WIRE_BYTES: usize = 32 * 1024;
-pub const NATIVE_CUE_CAPTURE_BYTES: usize = 16;
-/// An opcode, flags byte and 8-bit sound ordinal are the smallest native cue.
-pub const NATIVE_CUE_MIN_WIRE_BYTES: usize = 3;
+pub const NATIVE_CUE_CAPTURE_BYTES: usize = 12;
+/// Muzzle flashes are the remaining native cues with captured entity lifetimes.
+pub const NATIVE_CUE_MIN_WIRE_BYTES: usize = 4;
 pub const NATIVE_CUE_CAPACITY: usize = NATIVE_WIRE_BYTES / NATIVE_CUE_MIN_WIRE_BYTES;
 pub const NATIVE_PAYLOAD_BYTES: usize =
     NATIVE_WIRE_BYTES + NATIVE_CUE_CAPACITY * NATIVE_CUE_CAPTURE_BYTES;
@@ -1157,16 +1172,17 @@ pub const NATIVE_PAYLOAD_PAGES: usize = NATIVE_PAYLOAD_BYTES.div_ceil(OUTPUT_PAG
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeCueBinding {
-    pub sound: Option<SoundId>,
     pub entity: Option<EntityId>,
 }
 impl NativeCueBinding {
+    pub fn offset(row: &[u8]) -> Option<u32> {
+        Some(u32::from_le_bytes(row.get(..4)?.try_into().ok()?))
+    }
     pub fn write_capture(self, offset: u32, output: &mut [u8]) -> Option<()> {
         let row = output.get_mut(..NATIVE_CUE_CAPTURE_BYTES)?;
         row[..4].copy_from_slice(&offset.to_le_bytes());
-        row[4..8].copy_from_slice(&self.sound.map_or(u32::MAX, |sound| sound.0).to_le_bytes());
-        row[8..12].copy_from_slice(&self.entity.map_or(u32::MAX, |id| id.slot).to_le_bytes());
-        row[12..16].copy_from_slice(&self.entity.map_or(0, |id| id.generation).to_le_bytes());
+        row[4..8].copy_from_slice(&self.entity.map_or(u32::MAX, |id| id.slot).to_le_bytes());
+        row[8..12].copy_from_slice(&self.entity.map_or(0, |id| id.generation).to_le_bytes());
         Some(())
     }
 }
@@ -1184,7 +1200,7 @@ impl NativePayload {
     pub fn is_empty(self) -> bool {
         self.length == 0
     }
-    /// Sorted (native-service byte offset, captured PCM identity) entries live
+    /// Sorted (native-service byte offset, captured entity lifetime) entries live
     /// in the same leased pages as the original bytes, never module storage.
     pub fn cue(self, stored: &[u8], offset: usize) -> Option<NativeCueBinding> {
         let rows = stored.get(self.length..self.stored_length)?;
@@ -1194,16 +1210,14 @@ impl NativePayload {
             let index = low + (high - low) / 2;
             let first = index * NATIVE_CUE_CAPTURE_BYTES;
             let row = rows.get(first..first + NATIVE_CUE_CAPTURE_BYTES)?;
-            let at = u32::from_le_bytes(row[..4].try_into().ok()?) as usize;
+            let at = NativeCueBinding::offset(row)? as usize;
             match at.cmp(&offset) {
                 std::cmp::Ordering::Less => low = index + 1,
                 std::cmp::Ordering::Greater => high = index,
                 std::cmp::Ordering::Equal => {
-                    let sound = u32::from_le_bytes(row[4..8].try_into().ok()?);
-                    let slot = u32::from_le_bytes(row[8..12].try_into().ok()?);
-                    let generation = u32::from_le_bytes(row[12..16].try_into().ok()?);
+                    let slot = u32::from_le_bytes(row[4..8].try_into().ok()?);
+                    let generation = u32::from_le_bytes(row[8..12].try_into().ok()?);
                     return Some(NativeCueBinding {
-                        sound: (sound != u32::MAX).then_some(SoundId(sound)),
                         entity: (slot != u32::MAX).then_some(EntityId { slot, generation }),
                     });
                 }

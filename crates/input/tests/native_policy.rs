@@ -1,6 +1,8 @@
 //! Original input references: NQ/QW cl_input.c CL_KeyState/CL_BaseMove,
 //! Q2 client/cl_input.c CL_BaseMove/CL_ClampPitch, Q3 client/cl_input.c
 //! CL_KeyMove/CL_MouseMove/CL_CreateCmd and game/q_math.c ClampChar.
+#[path = "support/console.rs"]
+mod support;
 use qa_core::{
     primitives::{RuleSetId, UserCmd, Vec3, buttons},
     sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
@@ -56,7 +58,7 @@ fn input() -> Input {
 #[test]
 fn quake3_uses_integer_event_milliseconds_for_keyboard_angles_and_mouse_acceleration() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    let mut policy = support::catalog_policy(RuleSetId::Quake3);
     policy.sensitivity = 0.0;
     policy.acceleration = 1.0;
     policy.mouse_scale = [1.0; 2];
@@ -77,7 +79,7 @@ fn quake3_uses_integer_event_milliseconds_for_keyboard_angles_and_mouse_accelera
 fn quake_keyboard_transitions_remain_native_at_arbitrary_event_times() {
     for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
         let mut input = input();
-        let policy = InputPolicy::native(rules);
+        let policy = support::catalog_policy(rules);
         held(&mut input, Action::Forward, true, 80);
         assert_eq!(frame(&mut input, 100, policy).movement[0], 100.0);
         assert_eq!(frame(&mut input, 200, policy).movement[0], 200.0);
@@ -99,7 +101,7 @@ fn quake2_and_quake3_keep_elapsed_time_key_fractions() {
         let mut input = input();
         held(&mut input, Action::Forward, true, 80);
         assert_eq!(
-            frame(&mut input, 100, InputPolicy::native(rules)).movement[0],
+            frame(&mut input, 100, support::catalog_policy(rules)).movement[0],
             expected
         );
     }
@@ -108,7 +110,7 @@ fn quake2_and_quake3_keep_elapsed_time_key_fractions() {
 #[test]
 fn independent_forward_back_speeds_and_combined_strafe_are_not_normalized() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake);
+    let mut policy = support::catalog_policy(RuleSetId::Quake);
     policy.speed[0] = 400.0;
     held(&mut input, Action::Back, true, 0);
     assert_eq!(frame(&mut input, 100, policy).movement[0], -100.0);
@@ -124,7 +126,7 @@ fn independent_forward_back_speeds_and_combined_strafe_are_not_normalized() {
 #[test]
 fn released_modifiers_do_not_change_native_movement_or_mouse_mode() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake2);
+    let mut policy = support::catalog_policy(RuleSetId::Quake2);
     policy.freelook = false;
     policy.mouse_forward = 1.0;
     held(&mut input, Action::Forward, true, 0);
@@ -142,7 +144,7 @@ fn released_modifiers_do_not_change_native_movement_or_mouse_mode() {
 #[test]
 fn quake_speed_key_changes_saved_keyboard_speed_and_angle_rate() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake);
+    let mut policy = support::catalog_policy(RuleSetId::Quake);
     policy.speed[0] = 400.0;
     policy.angle_speed[0] = 200.0;
     policy.angle_multiplier = 2.0;
@@ -161,7 +163,7 @@ fn quake_speed_key_changes_saved_keyboard_speed_and_angle_rate() {
 #[test]
 fn quake3_world_unit_settings_do_not_scale_native_byte_commands() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    let mut policy = support::catalog_policy(RuleSetId::Quake3);
     policy.speed = [10_000.0, 1.0, 32_000.0];
     policy.back_speed = 0.0;
     policy.move_multiplier = 0.0;
@@ -182,7 +184,7 @@ fn quake3_world_unit_settings_do_not_scale_native_byte_commands() {
 #[test]
 fn quake3_truncates_each_key_contribution_before_mouse_clamping() {
     let mut input = input();
-    let policy = InputPolicy::native(RuleSetId::Quake3);
+    let policy = support::catalog_policy(RuleSetId::Quake3);
     held(&mut input, Action::Strafe, true, 0);
     held(&mut input, Action::TurnRight, true, 90);
     held(&mut input, Action::Right, true, 90);
@@ -198,7 +200,7 @@ fn quake3_truncates_each_key_contribution_before_mouse_clamping() {
 #[test]
 fn mouse_filter_inversion_and_freelook_use_the_cached_policy() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    let mut policy = support::catalog_policy(RuleSetId::Quake3);
     policy.sensitivity = 2.0;
     policy.filter = true;
     policy.mouse_scale = [0.1, -0.2];
@@ -219,7 +221,7 @@ fn mouse_filter_inversion_and_freelook_use_the_cached_policy() {
 #[test]
 fn native_pitch_limits_keep_quake3_accumulation_and_quake2_delta_angles() {
     let mut input = input();
-    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    let mut policy = support::catalog_policy(RuleSetId::Quake3);
     policy.sensitivity = 1.0;
     policy.mouse_scale[1] = 1.0;
     input.set_view_angles(SeatId::FIRST, Vec3([170.0, 0.0, 0.0]));
@@ -227,7 +229,7 @@ fn native_pitch_limits_keep_quake3_accumulation_and_quake2_delta_angles() {
     assert_eq!(frame(&mut input, 10, policy).view_angles.0[0], 260.0);
     mouse(&mut input, 15, 0, -1000);
     assert_eq!(frame(&mut input, 20, policy).view_angles.0[0], 170.0);
-    let mut q2 = InputPolicy::native(RuleSetId::Quake2);
+    let mut q2 = support::catalog_policy(RuleSetId::Quake2);
     q2.delta_pitch = 20.0;
     input.set_view_angles(SeatId::FIRST, Vec3([100.0, 0.0, 0.0]));
     assert_eq!(frame(&mut input, 30, q2).view_angles.0[0], 69.0);
@@ -241,7 +243,7 @@ fn client_module_zoom_scales_after_acceleration_and_preserves_zero_and_reset() {
     use qa_core::primitives::WeaponId;
     let mut input = input();
     let seat = SeatId::FIRST;
-    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    let mut policy = support::catalog_policy(RuleSetId::Quake3);
     policy.sensitivity = 1.7;
     policy.acceleration = 0.9;
     policy.mouse_scale = [0.031, 0.047];

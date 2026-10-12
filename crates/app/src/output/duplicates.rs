@@ -17,6 +17,7 @@ struct Key {
     lifetime: EntityId,
     frame: u64,
     dupe: u32,
+    component: u32,
     group: PhysicalGroup,
 }
 struct Entry {
@@ -126,6 +127,7 @@ impl Coordinator {
             lifetime: emission.module_lifetime,
             frame: emission.provider_frame,
             dupe: delivery.dupe_key,
+            component: delivery.component,
             group,
         };
         let mut found = None;

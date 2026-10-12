@@ -106,11 +106,18 @@ class Catalog:
         value = r'(?:' + NUMBER + r'|"[^"\n]*")'
         # Only alternatives stated literally in the owner input become selectors.
         platform_value = value if type_hint != 'string' else r'(?:' + value + r'|[A-Za-z_][A-Za-z_0-9.-]*)'
-        operating_system = re.fullmatch(r'(' + platform_value + r') \((' + platform_value + r') on (__(?:MACOS|linux)__|Linux|Windows)\)', raw)
+        operating_system = re.fullmatch(r'(' + platform_value + r') \((' + platform_value + r') on (__(?:MACOS|linux)__|MACOS_X|Linux|Windows)\)', raw)
         if operating_system:
-            condition = {'__MACOS__': 'MAC', '__linux__': 'LINUX', 'Linux': 'LINUX', 'Windows': 'WINDOWS'}[operating_system[3]]
+            condition = {'__MACOS__': 'MAC', 'MACOS_X': 'MAC', '__linux__': 'LINUX', 'Linux': 'LINUX', 'Windows': 'WINDOWS'}[operating_system[3]]
             return [(operating_system[1], operating_system[0], 'NOT_' + condition),
                     (operating_system[2], operating_system[0], condition)]
+        linux_input = re.fullmatch(r'(' + value + r') \((' + value + r') in Linux/IRIX input layers\)', raw)
+        if linux_input:
+            return [(linux_input[1], raw, 'NOT_LINUX'), (linux_input[2], raw, 'LINUX')]
+        # SDL uses the primary QW/GLX registration, not this retired backend.
+        obsolete_input = re.fullmatch(r'(' + value + r') \(' + value + r' in gl_vidlinux\.c\)', raw)
+        if obsolete_input:
+            return [(obsolete_input[1], raw, 'ALWAYS')]
         roles = list(re.finditer(r'(' + value + r') \((game|server|engine|cgame)\)', raw))
         if roles and re.fullmatch(r'(?:' + value + r' \((?:game|server|engine|cgame)\)\s*(?:[/;]\s*)?)+', raw):
             return [(match[1], match[0], 'ENGINE' if match[2] == 'server' else match[2].upper()) for match in roles]

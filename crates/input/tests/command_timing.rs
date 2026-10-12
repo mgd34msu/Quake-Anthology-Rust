@@ -28,10 +28,10 @@ fn command_duration_keeps_submillisecond_precision_and_saturates_the_native_widt
         u64::MAX,
     ] {
         let command = UserCmdBuilder::build(
-            ns,
+            EventTime(ns),
             EventTime(0),
             CommandIntent::default(),
-            qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake),
+            support::catalog_policy(qa_core::primitives::RuleSetId::Quake),
         );
         assert_eq!(command.duration_ns, ns);
         assert_eq!(
@@ -43,6 +43,7 @@ fn command_duration_keeps_submillisecond_precision_and_saturates_the_native_widt
 #[test]
 fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
     let mut input = Input::load();
+    let policy = support::catalog_policy(qa_core::primitives::RuleSetId::Quake2);
     input.dispatch(
         SysEvent {
             time: EventTime(5_000_000_000),
@@ -53,7 +54,7 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
     assert_eq!(
         input.build_frame_with_policy(
             EventTime(5_000_000_000),
-            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+            &[policy; qa_core::sys_events::SeatId::COUNT]
         )[0]
         .duration_ms,
         0
@@ -68,7 +69,7 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
     assert_eq!(
         input.build_frame_with_policy(
             EventTime(5_020_000_000),
-            &[support::elapsed_policy(127.0); qa_core::sys_events::SeatId::COUNT]
+            &[policy; qa_core::sys_events::SeatId::COUNT]
         )[0]
         .duration_ms,
         20
@@ -79,16 +80,16 @@ fn first_time_event_excludes_startup_and_builder_has_no_seat_or_history() {
         ..CommandIntent::moving([0.1, -0.2, 0.3])
     };
     let first = UserCmdBuilder::build(
-        25_000_000,
+        EventTime(25_000_000),
         EventTime(9_000_000_000),
         intent,
-        qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3),
+        support::catalog_policy(qa_core::primitives::RuleSetId::Quake3),
     );
     let other = UserCmdBuilder::build(
-        10_000_000,
+        EventTime(10_000_000),
         EventTime(50_000_000),
         intent,
-        qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3),
+        support::catalog_policy(qa_core::primitives::RuleSetId::Quake3),
     );
     assert_eq!(first.duration_ms, 25);
     assert_eq!(other.duration_ms, 10);

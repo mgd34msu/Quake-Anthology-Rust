@@ -1,9 +1,11 @@
 //! Native centerview and render-phase pitch drift, through the one input state.
+#[path = "support/console.rs"]
+mod support;
 use qa_core::{
     primitives::{PlayerState, RuleSetId, Vec3},
     sys_events::{EventTime, SeatId},
 };
-use qa_input::{Action, Input, InputPolicy};
+use qa_input::{Action, Input};
 
 #[test]
 fn delta_centering_changes_only_the_selected_seat() {
@@ -18,7 +20,7 @@ fn delta_centering_changes_only_the_selected_seat() {
         for seat in [SeatId::FIRST, second] {
             input.set_view_angles(seat, Vec3([40.0, 5.0, 2.0]));
         }
-        let mut policy = InputPolicy::native(rules);
+        let mut policy = support::catalog_policy(rules);
         policy.delta_pitch = 20.0;
         input.center_view(second);
         let cmds = input.build_frame_with_policy(EventTime(16_000_000), &[policy; SeatId::COUNT]);
@@ -46,7 +48,7 @@ fn quake_drift_follows_native_render_phase_and_ground_state() {
         input.seed(EventTime(0));
         input.set_view_angles(SeatId::FIRST, Vec3([40.0, 5.0, 0.0]));
         input.center_view(SeatId::FIRST);
-        let policy = InputPolicy::native(rules);
+        let policy = support::catalog_policy(rules);
         let mut player = PlayerState {
             ideal_pitch: 20.0,
             ..Default::default()

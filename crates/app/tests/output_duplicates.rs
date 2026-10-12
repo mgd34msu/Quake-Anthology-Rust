@@ -9,6 +9,7 @@ fn delivery(frame: u64, key: u32) -> NativeDelivery {
         origin: Vec3::default(),
         reliable: true,
         dupe_key: key,
+        component: 0,
         emission: Some(NativeEmission {
             module_lifetime: EntityId {
                 slot: 8,
@@ -27,6 +28,80 @@ fn record(ring: &mut EventRing, owner: OutputConsumerId, frame: u64, key: u32) -
     std::iter::from_fn(|| ring.next(&mut batch))
         .find(|r| r.sequence == sequence)
         .unwrap()
+}
+#[test]
+fn emission_siblings_have_independent_claims_and_duplicate_seats_share_them() {
+    let mut ring = EventRing::load(8, 2, 8, 32).unwrap();
+    let a = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let b = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    ring.publish_group(3, |group| {
+        for component in [0, 8, 11] {
+            group.native_message_parts(
+                NativeDelivery {
+                    component,
+                    ..delivery(10, 43)
+                },
+                b"\x0fpart\0",
+                &[],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let mut gate = Coordinator::load(8, 2);
+    let mut batch = ring.batch(a).unwrap();
+    while let Some(record) = ring.next(&mut batch) {
+        assert_eq!(
+            gate.admit(
+                record,
+                ClientId(0),
+                a,
+                PhysicalGroup::Engine,
+                ring.sequence_range()
+            ),
+            Admission::Send
+        );
+        assert_eq!(
+            gate.admit(
+                record,
+                ClientId(1),
+                b,
+                PhysicalGroup::Engine,
+                ring.sequence_range()
+            ),
+            Admission::Pending
+        );
+        let receipt = NativeReceipt(record.sequence + 10);
+        gate.submitted(
+            a,
+            record.sequence,
+            OutputSubmission::Reliable(receipt),
+            false,
+            false,
+        );
+        gate.acknowledged(a, NativeReceipt(receipt.0 + 100));
+        assert_eq!(
+            gate.admit(
+                record,
+                ClientId(1),
+                b,
+                PhysicalGroup::Engine,
+                ring.sequence_range()
+            ),
+            Admission::Pending
+        );
+        gate.acknowledged(a, receipt);
+        assert_eq!(
+            gate.admit(
+                record,
+                ClientId(1),
+                b,
+                PhysicalGroup::Engine,
+                ring.sequence_range()
+            ),
+            Admission::Suppressed
+        );
+    }
 }
 #[test]
 fn native_ack_fragment_failure_and_resync_have_distinct_duplicate_outcomes() {

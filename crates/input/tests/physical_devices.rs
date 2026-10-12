@@ -50,9 +50,10 @@ fn key(input: &mut Input, sink: &mut Sink, ms: u64, id: u32, code: u16, down: bo
     );
 }
 fn frame(input: &mut Input, ms: u64) -> [UserCmd; SeatId::COUNT] {
+    let policy = input.elapsed_policy(200.0);
     input.build_frame_with_policy(
         EventTime::from_milliseconds(ms),
-        &[support::elapsed_policy(200.0); qa_core::sys_events::SeatId::COUNT],
+        &[policy; qa_core::sys_events::SeatId::COUNT],
     )
 }
 
@@ -169,8 +170,7 @@ fn catcher_suppresses_only_its_seat_and_keeps_release_accounting() {
     input.seed(EventTime(0));
     key(&mut input, &mut sink, 0, 0, 26, true);
     key(&mut input, &mut sink, 0, 28, 26, true);
-    let policies =
-        [qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3); SeatId::COUNT];
+    let policies = [support::catalog_policy(qa_core::primitives::RuleSetId::Quake3); SeatId::COUNT];
     input.set_catcher(SeatId::FIRST, key_catchers::CONSOLE, true, EventTime(0));
     event(
         &mut input,

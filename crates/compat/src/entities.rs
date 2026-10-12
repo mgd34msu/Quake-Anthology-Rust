@@ -37,6 +37,7 @@ pub(crate) struct EntityLayout {
     pub linked: Option<(usize, bool)>,
     pub link_count: usize,
     pub flags: usize,
+    pub snapshot_exclusion_mask: u32,
     pub player_flag: u32,
     pub projectile_flag: u32,
     pub unsupported_flags: u32,
@@ -743,7 +744,7 @@ impl EntityProjection {
                 continue;
             }
             let (body, angles) = self.body(memory, address)?;
-            let appearance = if layout.in_use.is_none()
+            let mut appearance = if layout.in_use.is_none()
                 && layout
                     .linked
                     .is_some_and(|at| field(memory, address, at).is_ok_and(|linked| linked == 0))
@@ -753,6 +754,7 @@ impl EntityProjection {
                 self.appearance(memory, address, context.module)?
             };
             let flags = memory.read_word(address + self.native_layout()?.flags as u64)? as u32;
+            appearance.snapshot_excluded = flags & layout.snapshot_exclusion_mask != 0;
             let bound = self.binding(
                 &services.server.entities,
                 NativeEntity {
@@ -831,6 +833,7 @@ impl EntityProjection {
             alpha,
             scale,
             native,
+            ..EntityAppearance::default()
         })
     }
     pub(crate) fn identity(

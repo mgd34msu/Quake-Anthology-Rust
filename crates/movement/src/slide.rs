@@ -4,6 +4,7 @@ use qa_core::{
     math,
     primitives::{RuleSetId, Vec3},
 };
+use qa_world::collision::TraceError;
 
 pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: RuleSetId) -> Vec3 {
     let dot = velocity.dot(normal);
@@ -26,7 +27,7 @@ pub(crate) fn clip(velocity: Vec3, normal: Vec3, rules: RuleSetId) -> Vec3 {
     }
     out
 }
-fn legacy_slide(step: &mut Step<'_>) -> u8 {
+fn legacy_slide(step: &mut Step<'_>) -> Result<u8, TraceError> {
     let rules = step.parameters.rules;
     let primal = step.player.body.velocity;
     let mut original = primal;
@@ -40,7 +41,7 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
         }
         let start = step.player.body.position;
         let end = start + step.player.body.velocity * remaining;
-        let mut tr = step.trace(start, end);
+        let mut tr = step.trace(start, end)?;
         if tr.all_solid || step.qw() && tr.start_solid {
             if step.classic() || step.rr() {
                 step.player.body.velocity.0[2] = 0.0;
@@ -50,7 +51,7 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
             if step.rr() {
                 step.contact(&tr);
             }
-            return 3;
+            return Ok(3);
         }
         if step.rr()
             && let Some(secondary) = tr.secondary_plane
@@ -92,7 +93,7 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
         remaining -= remaining * tr.fraction;
         if count == 5 {
             step.player.body.velocity = Vec3::default();
-            return 3;
+            return Ok(3);
         }
         if step.rr()
             && planes[..count]
@@ -102,7 +103,7 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
             step.player.body.position.0[0] += tr.plane.normal.0[0] * 0.01;
             step.player.body.position.0[1] += tr.plane.normal.0[1] * 0.01;
             if step.parameters.special.recover_stuck
-                && let Some(position) = step.recover_position(step.player.body.position)
+                && let Some(position) = step.recover_position(step.player.body.position)?
             {
                 step.player.body.position = position;
             }
@@ -130,7 +131,7 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
         if !accepted {
             if count != 2 {
                 step.player.body.velocity = Vec3::default();
-                return 7;
+                return Ok(7);
             }
             let direction = math::cross(planes[0], planes[1]);
             candidate = direction
@@ -151,9 +152,9 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
     {
         step.player.body.velocity = primal;
     }
-    blocked
+    Ok(blocked)
 }
-fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
+fn arena_slide(step: &mut Step<'_>, gravity: bool) -> Result<u8, TraceError> {
     let mut primal = step.player.body.velocity;
     let mut end_velocity = primal;
     if gravity {
@@ -180,10 +181,10 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
     let mut blocked = 0;
     for _ in 0..4 {
         let start = step.player.body.position;
-        let tr = step.trace(start, start + step.player.body.velocity * remaining);
+        let tr = step.trace(start, start + step.player.body.velocity * remaining)?;
         if tr.all_solid {
             step.player.body.velocity.0[2] = 0.0;
-            return 3;
+            return Ok(3);
         }
         if tr.fraction > 0.0 {
             step.player.body.position = tr.end;
@@ -196,7 +197,7 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
         remaining -= remaining * tr.fraction;
         if count == 5 {
             step.player.body.velocity = Vec3::default();
-            return 3;
+            return Ok(3);
         }
         let normal = tr.plane.normal;
         if planes[..count].iter().any(|&p| normal.dot(p) > 0.99) {
@@ -225,7 +226,7 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
                 end_candidate = direction * direction.dot(end_velocity);
                 if (0..count).any(|k| k != i && k != j && candidate.dot(planes[k]) < 0.1) {
                     step.player.body.velocity = Vec3::default();
-                    return 3;
+                    return Ok(3);
                 }
             }
             step.player.body.velocity = candidate;
@@ -239,9 +240,9 @@ fn arena_slide(step: &mut Step<'_>, gravity: bool) -> u8 {
     if step.player.movement.remaining_ms != 0 {
         step.player.body.velocity = primal;
     }
-    blocked
+    Ok(blocked)
 }
-pub(crate) fn slide(step: &mut Step<'_>, gravity: bool) -> u8 {
+pub(crate) fn slide(step: &mut Step<'_>, gravity: bool) -> Result<u8, TraceError> {
     if step.arena() {
         arena_slide(step, gravity)
     } else {
@@ -253,7 +254,7 @@ fn horizontal_distance(a: Vec3, b: Vec3) -> f32 {
     delta.0[0] * delta.0[0] + delta.0[1] * delta.0[1]
 }
 
-pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
+pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) -> Result<(), TraceError> {
     let start = step.player.body.position;
     let start_velocity = step.player.body.velocity;
     let old_ground = step.player.movement.grounded;
@@ -263,40 +264,40 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
     }
     if step.qw() && old_ground {
         step.player.body.velocity.0[2] = 0.0;
-        let tr = step.trace(start, start + step.player.body.velocity * step.dt);
+        let tr = step.trace(start, start + step.player.body.velocity * step.dt)?;
         if tr.fraction == 1.0 {
             step.player.body.position = tr.end;
-            return;
+            return Ok(());
         }
     }
-    let blocked = slide(step, gravity);
+    let blocked = slide(step, gravity)?;
     if step.parameters.no_step || step.qw() && !old_ground {
-        return;
+        return Ok(());
     }
     if step.nq() && (blocked & 2 == 0 || !old_ground && step.player.movement.water_level == 0) {
-        return;
+        return Ok(());
     }
     if step.arena() && blocked == 0 {
-        return;
+        return Ok(());
     }
     if step.arena() {
-        let ground = step.trace(start, start + Vec3([0.0, 0.0, -18.0]));
+        let ground = step.trace(start, start + Vec3([0.0, 0.0, -18.0]))?;
         if step.player.body.velocity.0[2] > 0.0
             && (ground.fraction == 1.0 || ground.plane.normal.0[2] < 0.7)
         {
-            return;
+            return Ok(());
         }
     }
     let down = step.player.body.position;
     let down_velocity = step.player.body.velocity;
     let up = start + Vec3([0.0, 0.0, 18.0]);
     let raised = if step.classic() {
-        step.trace(up, up)
+        step.trace(up, up)?
     } else {
-        step.trace(start, up)
+        step.trace(start, up)?
     };
     if raised.all_solid {
-        return;
+        return Ok(());
     }
     step.player.body.position = if step.classic() { up } else { raised.end };
     step.player.body.velocity = start_velocity;
@@ -304,7 +305,7 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
         step.player.body.velocity.0[2] = 0.0;
     }
     let height = step.player.body.position.0[2] - start.0[2];
-    slide(step, gravity);
+    slide(step, gravity)?;
     let mut drop = step.player.body.position;
     drop.0[2] -= if step.nq() {
         18.0 - start_velocity.0[2] * step.dt
@@ -317,11 +318,11 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
     if step.parameters.special.lower_step_probe && start.0[2] < drop.0[2] {
         drop.0[2] = start.0[2] - 1.0;
     }
-    let dropped = step.trace(step.player.body.position, drop);
+    let dropped = step.trace(step.player.body.position, drop)?;
     if !dropped.all_solid {
         step.player.body.position = if step.parameters.special.lower_step_probe {
             step.result.step_clip |= step.player.body.velocity.0[2] > 0.0;
-            step.trace(step.player.body.position, original_drop).end
+            step.trace(step.player.body.position, original_drop)?.end
         } else {
             dropped.end
         };
@@ -334,7 +335,7 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
                 RuleSetId::Quake3,
             );
         }
-        return;
+        return Ok(());
     }
     if dropped.plane.normal.0[2] < 0.7
         || !step.nq()
@@ -354,9 +355,10 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
                 && step.player.body.velocity.0[2] <= 0.0)
     {
         let origin = step.player.body.position;
-        let trace = step.trace(origin, origin - Vec3([0.0, 0.0, 18.0]));
+        let trace = step.trace(origin, origin - Vec3([0.0, 0.0, 18.0]))?;
         if trace.fraction < 1.0 {
             step.player.body.position = trace.end;
         }
     }
+    Ok(())
 }

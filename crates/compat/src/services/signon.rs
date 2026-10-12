@@ -311,6 +311,7 @@ fn publish(
                 let event = SoundEvent {
                     sound,
                     source_ordinal: Some(native.source_ordinal),
+                    native_fields: None,
                     spatial: row.spatial,
                     entity: Some(SoundEmitter::Static {
                         namespace: ResourceNamespace::Module(context.module),
@@ -336,6 +337,7 @@ fn publish(
             origin: position,
             reliable: true,
             dupe_key: 0,
+            component: 0,
             emission: Some(NativeEmission {
                 module_lifetime: lifetime,
                 provider_frame: context.server_frame,

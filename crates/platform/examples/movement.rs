@@ -101,6 +101,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         allocations::{begin_frame, end_frame},
     };
     let heap_only = std::env::args().any(|arg| arg == "--heap-only");
+    let vars = qa_console::cvars::Cvars::new().map_err(|error| format!("{error:?}"))?;
+    let handles = qa_console::input_settings::InputHandles::load(&vars)?;
+    let policies = RuleSetId::ALL.map(|rules| handles.policy(&vars, rules));
     let mut server = Server::load(64, 128, 1, 0, 0, 0).map_err(|e| format!("{e:?}"))?;
     server.area = AreaGrid::load(
         128,
@@ -186,10 +189,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prediction.apply_snapshot(&client.player);
             if client.connection != Some(Connection::Bot) {
                 let command = qa_input::UserCmdBuilder::build(
-                    end.since(start),
+                    EventTime(end.since(start)),
                     end,
                     intent,
-                    qa_input::InputPolicy::native(client.player.movement_rules),
+                    policies[client.player.movement_rules as usize],
                 );
                 server.submit_command(
                     ClientId(slot as u32),
@@ -199,8 +202,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-        server.build_bot_commands(start, end, qa_input::InputPolicy::native);
-        let count = server.move_pending_clients(&store, geometry, 0, &mut scratch);
+        server.build_bot_commands(start, end, |rules| policies[rules as usize]);
+        let mut rejected = None;
+        let count = server.move_pending_clients(&store, geometry, 0, &mut scratch, |_, error| {
+            rejected = Some(error);
+        });
+        if let Some(error) = rejected {
+            return Err(error.into());
+        }
         for (client, prediction) in server.clients.iter().zip(&mut predictions) {
             let mut trace = WorldTrace::new(
                 &store,
@@ -211,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut scratch,
                 CollisionOwner::Lifetime(client.entity),
             );
-            prediction.advance(client.command, &mut trace);
+            prediction.advance(client.command, &mut trace)?;
         }
         let elapsed = timer.map(|timer| timer.elapsed().as_nanos() as u64);
         let counts = end_frame();

@@ -6,8 +6,8 @@ use qa_core::primitives::{
 use qa_world::{
     area::{AreaGrid, LinkFlags, LinkIntent, LinkOrder},
     collision::{
-        CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, TraceQuery, TraceRules,
-        WorldTrace,
+        CollisionStore, Contents, EntityTracePolicy, QuakeTraceKind, TraceError, TraceQuery,
+        TraceRules, WorldTrace,
         brushes::{Brush, BrushTree, CollisionLeaf, ModelRoot},
         hulls::HullModel,
     },
@@ -241,24 +241,28 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
         &mut scratch,
         CollisionOwner::None,
     );
-    let result = scene.trace(input);
+    let result = scene.trace(input).expect("valid collision query");
     assert_eq!(result.contents, Contents::WATER);
     assert_eq!(result.entity, table.id_at(0));
     assert_eq!(result.end.0[0].to_bits(), (22.0f32 + 0.03125).to_bits());
     assert_eq!(
-        scene.point_contents(
-            Vec3([20.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
-            &[]
-        ),
+        scene
+            .point_contents(
+                Vec3([20.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::WATER
     );
     assert_eq!(
-        scene.point_contents(
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
-            &[]
-        ),
+        scene
+            .point_contents(
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     let mut scene = WorldTrace::new(
@@ -270,7 +274,10 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
         &mut scratch,
         CollisionOwner::None,
     );
-    assert_eq!(scene.trace(input).fraction, 1.0);
+    assert_eq!(
+        scene.trace(input).expect("valid collision query").fraction,
+        1.0
+    );
     let mut scene = WorldTrace::new(
         &store,
         first,
@@ -280,7 +287,10 @@ fn explicit_world_geometry_and_inline_ordinal_do_not_default_to_model_zero() {
         &mut scratch,
         CollisionOwner::None,
     );
-    assert_eq!(scene.trace(input).contents, Contents::SOLID);
+    assert_eq!(
+        scene.trace(input).expect("valid collision query").contents,
+        Contents::SOLID
+    );
 }
 
 #[test]
@@ -354,7 +364,8 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
         &mut scratch,
         CollisionOwner::None,
     )
-    .trace(input);
+    .trace(input)
+    .expect("valid collision query");
     assert_eq!(result.entity, Some(hull_entity));
     assert!(result.brush_solid);
     assert_eq!(result.end.0[0].to_bits(), (10.0f32 + 0.03125).to_bits());
@@ -371,7 +382,8 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
     .trace(TraceQuery {
         excluded: &excluded,
         ..input
-    });
+    })
+    .expect("valid collision query");
     assert_eq!(result.entity, Some(brush_entity));
     assert!(store.remove(hull));
     let replacement = hull_model(&mut store);
@@ -387,8 +399,16 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
         &mut scratch,
         CollisionOwner::None,
     )
-    .trace(input);
-    assert_eq!(result.entity, Some(brush_entity));
+    .trace(input)
+    .unwrap_err();
+    assert_eq!(
+        result,
+        TraceError::Geometry {
+            geometry: hull,
+            model: 1
+        }
+    );
+    area.unlink(hull_entity);
     table.columns.collision_shape[brush_entity.slot as usize] = CollisionShape::Model {
         geometry: brush,
         index: u32::MAX,
@@ -402,8 +422,15 @@ fn linked_hull_and_brush_models_share_filters_and_stale_handles_are_scoped() {
         &mut scratch,
         CollisionOwner::None,
     )
-    .trace(input);
-    assert_eq!(result.fraction, 1.0);
+    .trace(input)
+    .unwrap_err();
+    assert_eq!(
+        result,
+        TraceError::Geometry {
+            geometry: brush,
+            model: u32::MAX
+        }
+    );
 }
 
 #[test]
@@ -449,10 +476,12 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
                 &mut scratch,
                 CollisionOwner::None,
             );
-            let result = scene.trace(TraceQuery {
-                mask: Contents::WATER,
-                ..query(Vec3([40.0, 40.0, 50.0]), Vec3([20.0, 40.0, 50.0]), caller)
-            });
+            let result = scene
+                .trace(TraceQuery {
+                    mask: Contents::WATER,
+                    ..query(Vec3([40.0, 40.0, 50.0]), Vec3([20.0, 40.0, 50.0]), caller)
+                })
+                .expect("valid collision query");
             assert_eq!(result.entity, Some(target));
             assert_eq!(result.contents, Contents::WATER);
             let edge = if rotation == ModelRotation::TranslationOnly {
@@ -489,7 +518,9 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
             {
                 // Native SV_PointContents never adds linked model contents.
                 assert_eq!(
-                    scene.point_contents(Vec3([30.0, 44.0, 50.0]), caller, &[]),
+                    scene
+                        .point_contents(Vec3([30.0, 44.0, 50.0]), caller, &[])
+                        .expect("valid collision query"),
                     Contents::EMPTY
                 );
             } else {
@@ -498,10 +529,22 @@ fn target_role_selects_rotated_collision_and_contents_under_foreign_callers() {
                 } else {
                     (Vec3([30.0, 44.0, 50.0]), Vec3([34.0, 40.0, 50.0]))
                 };
-                assert_eq!(scene.point_contents(inside, caller, &[]), Contents::WATER);
-                assert_eq!(scene.point_contents(outside, caller, &[]), Contents::EMPTY);
                 assert_eq!(
-                    scene.point_contents(inside, caller, &[target]),
+                    scene
+                        .point_contents(inside, caller, &[])
+                        .expect("valid collision query"),
+                    Contents::WATER
+                );
+                assert_eq!(
+                    scene
+                        .point_contents(outside, caller, &[])
+                        .expect("valid collision query"),
+                    Contents::EMPTY
+                );
+                assert_eq!(
+                    scene
+                        .point_contents(inside, caller, &[target])
+                        .expect("valid collision query"),
                     Contents::EMPTY
                 );
             }
@@ -685,7 +728,8 @@ fn unchanged_rotated_link_cube_does_not_freeze_the_narrow_phase_pose() {
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             &[]
-        ),
+        )
+        .expect("valid collision query"),
         Contents::SOLID
     );
     table.columns.angles[target.slot as usize] = Vec3([0.0, 180.0, 0.0]);
@@ -710,7 +754,8 @@ fn unchanged_rotated_link_cube_does_not_freeze_the_narrow_phase_pose() {
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
             &[]
-        ),
+        )
+        .expect("valid collision query"),
         Contents::EMPTY
     );
 }
@@ -754,7 +799,8 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
-        ),
+        )
+        .expect("valid collision query"),
         Contents::EMPTY
     );
     table.columns.point_contents_pose[target.slot as usize] = Some(EntityPose {
@@ -773,21 +819,25 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
         CollisionOwner::None,
     );
     assert_eq!(
-        scene.point_contents(
-            point,
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-            &[]
-        ),
+        scene
+            .point_contents(
+                point,
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::WATER
     );
-    let result = scene.trace(TraceQuery {
-        mask: Contents::WATER,
-        ..query(
-            Vec3([40.0, 40.0, 50.0]),
-            Vec3([20.0, 40.0, 50.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-        )
-    });
+    let result = scene
+        .trace(TraceQuery {
+            mask: Contents::WATER,
+            ..query(
+                Vec3([40.0, 40.0, 50.0]),
+                Vec3([20.0, 40.0, 50.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+            )
+        })
+        .expect("valid collision query");
     assert_eq!(result.entity, Some(target));
     assert!((result.end.0[0] - 31.125).abs() < 0.00001);
     // A published pose beyond the physical link bounds does not introduce a
@@ -810,7 +860,8 @@ fn published_contents_pose_is_independent_with_physical_broadphase_and_reset() {
             Vec3([300.0, 40.0, 50.0]),
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
-        ),
+        )
+        .expect("valid collision query"),
         Contents::EMPTY
     );
     area.unlink(target);
@@ -882,7 +933,8 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
             point,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
             &[]
-        ),
+        )
+        .expect("valid collision query"),
         Contents::BODY
     );
     table.columns.point_contents_pose[slot] = Some(EntityPose {
@@ -899,19 +951,23 @@ fn box_contents_uses_published_origin_and_ignores_published_angles() {
         CollisionOwner::None,
     );
     assert_eq!(
-        scene.point_contents(
-            point,
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-            &[]
-        ),
+        scene
+            .point_contents(
+                point,
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     assert_eq!(
-        scene.point_contents(
-            Vec3([36.0, 40.0, 50.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-            &[]
-        ),
+        scene
+            .point_contents(
+                Vec3([36.0, 40.0, 50.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::BODY
     );
 }

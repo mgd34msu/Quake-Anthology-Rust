@@ -2,6 +2,7 @@
 //! history belong to THE-821; this stores no journal or replay mechanism.
 use qa_core::primitives::{PlayerState, UserCmd};
 use qa_movement::{MovementResult, TraceServices};
+use qa_world::collision::TraceError;
 
 #[derive(Default)]
 pub struct Prediction {
@@ -19,7 +20,11 @@ impl Prediction {
         self.player.view_offset = source.view_offset;
         self.player.ideal_pitch = source.ideal_pitch;
     }
-    pub fn advance(&mut self, command: UserCmd, trace: &mut dyn TraceServices) -> MovementResult {
+    pub fn advance(
+        &mut self,
+        command: UserCmd,
+        trace: &mut dyn TraceServices,
+    ) -> Result<MovementResult, TraceError> {
         qa_movement::pmove(command, &mut self.player, trace, Default::default())
     }
 }

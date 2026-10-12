@@ -376,9 +376,11 @@ pub(super) fn commands_move_a_native_client_once() {
         let other_angles = Vec3([10.0, 217.0, -5.0]);
         host.runtime.input.set_view_angles(other_seat, other_angles);
         host.connect_q2_client(&api, id, b"\\name\\once").unwrap();
+        let input_handles =
+            qa_console::input_settings::InputHandles::load(&host.console.cvars).unwrap();
         let initial = host.runtime.input.build_frame_with_policy(
             EventTime::default(),
-            &[qa_input::InputPolicy::native(qa_core::primitives::RuleSetId::Quake3);
+            &[input_handles.policy(&host.console.cvars, qa_core::primitives::RuleSetId::Quake3);
                 qa_core::sys_events::SeatId::COUNT],
         );
         assert_eq!(initial[0].view_angles, Vec3::default());
@@ -425,7 +427,8 @@ pub(super) fn commands_move_a_native_client_once() {
                 &mut expected,
                 &mut trace,
                 Default::default(),
-            );
+            )
+            .unwrap();
             assert!(host.runtime.send_local_command(
                 id,
                 &command,
@@ -448,7 +451,8 @@ pub(super) fn commands_move_a_native_client_once() {
                     &host.runtime.geometry,
                     world.geometry,
                     0,
-                    &mut world.scratch
+                    &mut world.scratch,
+                    |_, error| panic!("movement failed: {error:?}"),
                 ),
                 0
             );
@@ -491,6 +495,7 @@ pub(super) fn commands_move_a_native_client_once() {
                 world.geometry,
                 0,
                 &mut world.scratch,
+                |_, error| panic!("movement failed: {error:?}"),
             ),
             0
         );

@@ -120,7 +120,7 @@ impl FrameHost {
             player.movement.tuning =
                 self.movement_handles
                     .resolve(&self.console.cvars, player.movement_rules, base);
-            self.runtime.server.move_pending_client(
+            let result = self.runtime.server.move_pending_client(
                 id,
                 &self.runtime.geometry,
                 world.geometry,
@@ -131,6 +131,13 @@ impl FrameHost {
                 .player
                 .movement
                 .tuning = base;
+            if let Err(error) = result {
+                let _ = self
+                    .runtime
+                    .server
+                    .events
+                    .console_formatted(format_args!("Movement client {}: {error:?}\n", id.0));
+            }
         }
     }
     /// Capture the owning native provider's completed frame at publication,

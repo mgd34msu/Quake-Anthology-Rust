@@ -48,70 +48,78 @@ impl World {
     }
 }
 impl TraceServices for World {
-    fn trace(&mut self, query: TraceQuery) -> Trace {
-        assert_eq!(query.rules, self.rules);
-        assert_eq!(query.entity_rules, self.entities);
-        let mut result = self.fixture.trace(query);
-        if self.ground_current && result.fraction < 1.0 && result.plane.normal.0[2] > 0.7 {
-            result.contents |= Contents::from_q2(1 << 18);
-        }
-        let delta = query.end - query.start;
-        if self.ladder
-            && delta.0[2] == 0.0
-            && delta.0[0] > 0.9
-            && delta.0[0] <= 1.00001
-            && query.mask.intersects(Contents::SOLID | Contents::LADDER)
-        {
-            self.ladder_queries += 1;
-            result.fraction = 0.5;
-            result.end = query.start.lerp(query.end, 0.5);
-            result.plane.normal = Vec3([-1.0, 0.0, 0.0]);
-            result.contents = Contents::SOLID | Contents::LADDER;
-        }
-        if let Some(height) = self.shelf {
-            let body = Body {
-                position: Vec3([40.0, 0.0, height * 0.5]),
-                mins: Vec3([0.0, -1000.0, -height * 0.5]),
-                maxs: Vec3([1000.0, 1000.0, height * 0.5]),
-                ..Default::default()
-            };
-            let mut shelf = boxes::trace_box(
-                TraceQuery {
-                    mask: Contents::BODY,
-                    ..query
-                },
-                &body,
-                None,
-            );
-            shelf.contents = if shelf.fraction < 1.0 || shelf.start_solid {
-                Contents::SOLID
-            } else {
-                Contents::EMPTY
-            };
-            if shelf.fraction < result.fraction || shelf.all_solid || shelf.start_solid {
-                result = shelf;
+    fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+        Ok((|| {
+            assert_eq!(query.rules, self.rules);
+            assert_eq!(query.entity_rules, self.entities);
+            let mut result = self.fixture.trace(query).expect("valid movement query");
+            if self.ground_current && result.fraction < 1.0 && result.plane.normal.0[2] > 0.7 {
+                result.contents |= Contents::from_q2(1 << 18);
             }
-        }
-        result
-    }
-    fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
-        assert_eq!(rules, self.entities);
-        self.point_queries.set(self.point_queries.get() + 1);
-        if self.ledge_points && point.0[0] > 20.0 && point.0[2] >= 68.0 && point.0[2] < 84.0 {
-            return Contents::SOLID;
-        }
-        if self.water && point.0[2] < self.water_height {
-            let mut result = Contents::WATER;
-            if self.no_waterjump {
-                result |= Contents::NO_WATERJUMP;
+            let delta = query.end - query.start;
+            if self.ladder
+                && delta.0[2] == 0.0
+                && delta.0[0] > 0.9
+                && delta.0[0] <= 1.00001
+                && query.mask.intersects(Contents::SOLID | Contents::LADDER)
+            {
+                self.ladder_queries += 1;
+                result.fraction = 0.5;
+                result.end = query.start.lerp(query.end, 0.5);
+                result.plane.normal = Vec3([-1.0, 0.0, 0.0]);
+                result.contents = Contents::SOLID | Contents::LADDER;
             }
-            if self.current {
-                result |= Contents::from_q2(1 << 18);
+            if let Some(height) = self.shelf {
+                let body = Body {
+                    position: Vec3([40.0, 0.0, height * 0.5]),
+                    mins: Vec3([0.0, -1000.0, -height * 0.5]),
+                    maxs: Vec3([1000.0, 1000.0, height * 0.5]),
+                    ..Default::default()
+                };
+                let mut shelf = boxes::trace_box(
+                    TraceQuery {
+                        mask: Contents::BODY,
+                        ..query
+                    },
+                    &body,
+                    None,
+                );
+                shelf.contents = if shelf.fraction < 1.0 || shelf.start_solid {
+                    Contents::SOLID
+                } else {
+                    Contents::EMPTY
+                };
+                if shelf.fraction < result.fraction || shelf.all_solid || shelf.start_solid {
+                    result = shelf;
+                }
             }
             result
-        } else {
-            Contents::EMPTY
-        }
+        })())
+    }
+    fn point_contents(
+        &self,
+        point: Vec3,
+        rules: EntityTracePolicy,
+    ) -> Result<Contents, qa_world::collision::TraceError> {
+        Ok((|| {
+            assert_eq!(rules, self.entities);
+            self.point_queries.set(self.point_queries.get() + 1);
+            if self.ledge_points && point.0[0] > 20.0 && point.0[2] >= 68.0 && point.0[2] < 84.0 {
+                return Contents::SOLID;
+            }
+            if self.water && point.0[2] < self.water_height {
+                let mut result = Contents::WATER;
+                if self.no_waterjump {
+                    result |= Contents::NO_WATERJUMP;
+                }
+                if self.current {
+                    result |= Contents::from_q2(1 << 18);
+                }
+                result
+            } else {
+                Contents::EMPTY
+            }
+        })())
     }
 }
 fn player(rules: RuleSetId) -> PlayerState {
@@ -146,7 +154,8 @@ fn classic_ladder_uses_signed_pitch_and_vertical_controls_before_acceleration() 
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert!(state.movement.ladder);
         assert_eq!(state.body.velocity.0[2], expected_z);
         assert!(state.body.velocity.0[0].abs() <= 2.0);
@@ -166,7 +175,8 @@ fn ladder_idle_braking_uses_ground_friction_and_approaches_zero() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         let after_friction = 100.0f32 * ((100.0 - 100.0 * 6.0 * 0.008) / 100.0);
         let expected = after_friction - 800.0 * 0.008;
         assert_eq!(
@@ -195,7 +205,8 @@ fn classic_ladder_flag_is_transient_but_rerelease_retains_it_during_a_native_tim
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.movement.ladder, rules == RuleSetId::Quake2Rerelease);
         assert_eq!(world.ladder_queries, 0);
     }
@@ -211,7 +222,8 @@ fn rerelease_ladder_strafe_projects_onto_the_ladder_plane_and_stops_at_waist_wat
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(state.movement.ladder);
     let acceleration = 10.0 * (8.0f32 * 0.001) * 50.0;
     assert_eq!(state.body.velocity, Vec3([0.0, -acceleration, 0.0]));
@@ -223,7 +235,8 @@ fn rerelease_ladder_strafe_projects_onto_the_ladder_plane_and_stops_at_waist_wat
         &mut submerged,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(!submerged.movement.ladder);
 }
 
@@ -240,14 +253,16 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut dry,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     world.water = true;
     pmove(
         command(8, [0.0; 3], 0.0),
         &mut wet,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(wet.body.velocity.0[0], dry.body.velocity.0[0]);
     let mut current = player(RuleSetId::Quake2);
     world.ladder = false;
@@ -257,7 +272,8 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut current,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(current.body.velocity.0[0] > 0.0);
 
     let mut conveyor = player(RuleSetId::Quake2);
@@ -270,7 +286,8 @@ fn ladder_excludes_water_friction_and_native_currents_adjust_the_shared_wish() {
         &mut conveyor,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(conveyor.body.velocity.0[0], 8.0);
 }
 
@@ -286,7 +303,8 @@ fn q2_and_q3_water_jump_preserve_their_impulses_timer_phase_and_gravity_order() 
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert!(state.movement.timer.contains(MovementTimer::WATER_JUMP));
         assert_eq!(
             state.movement.remaining_ms,
@@ -330,7 +348,8 @@ fn water_jump_ignores_input_and_cancels_native_timers_on_descent() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert_eq!(state.movement.timer, MovementTimer::NONE);
         assert_eq!(state.movement.remaining_ms, 0);
         assert_eq!(state.body.velocity.0[0], 10.0);
@@ -348,7 +367,7 @@ fn qw_water_jump_uses_seconds_and_only_held_jump_decrements_the_native_clock() {
         world.ledge_points = true;
         let mut cmd = command(8, [300.0, 0.0, 0.0], 0.0);
         cmd.buttons = if held { buttons::JUMP } else { 0 };
-        pmove(cmd, &mut state, &mut world, Default::default());
+        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
         assert_eq!(
             state.movement.water_jump_seconds,
             if held { 2.0 - 0.008 } else { 2.0 }
@@ -368,7 +387,8 @@ fn qw_water_jump_uses_seconds_and_only_held_jump_decrements_the_native_clock() {
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.movement.water_jump_seconds, 0.0);
 }
 
@@ -383,7 +403,8 @@ fn rerelease_water_jump_preview_accepts_a_dry_ledge_and_keeps_live_contacts_isol
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(state.movement.timer.contains(MovementTimer::WATER_JUMP));
     assert_eq!(state.movement.remaining_ms, 2040);
     assert_eq!(
@@ -413,7 +434,8 @@ fn rerelease_water_jump_rejects_no_intent_forbidden_water_and_missing_or_wet_flo
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert!(!state.movement.timer.contains(MovementTimer::WATER_JUMP));
     }
 }
@@ -428,7 +450,8 @@ fn q3_native_movement_does_not_acquire_ladder_behavior_from_foreign_geometry() {
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert!(!state.movement.ladder);
     assert_eq!(world.ladder_queries, 0);
     assert!(state.body.velocity.0[2] < 0.0);
@@ -449,7 +472,8 @@ fn landing_from_water_jump_keeps_the_new_native_landing_cooldown() {
             &mut state,
             &mut world,
             Default::default(),
-        );
+        )
+        .expect("valid movement query");
         assert!(
             state.movement.timer.contains(MovementTimer::LAND),
             "{rules:?}"
@@ -473,7 +497,7 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
         world.water_height = 100.0;
         let mut cmd = command(8, [0.0, 0.0, 99.0], 0.0);
         cmd.buttons = buttons;
-        pmove(cmd, &mut state, &mut world, Default::default());
+        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
         assert_eq!(state.body.velocity.0[2], expected_z);
     }
     let mut state = player(RuleSetId::Quake2Rerelease);
@@ -486,7 +510,8 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
         &mut state,
         &mut world,
         Default::default(),
-    );
+    )
+    .expect("valid movement query");
     assert_eq!(state.body.velocity, Vec3::default());
     assert!(state.movement.grounded);
 }
@@ -495,17 +520,27 @@ fn rerelease_swim_buttons_accelerate_without_a_jump_impulse_and_crouch_wins() {
 fn native_q2_water_speed_caps_do_not_reuse_the_air_duck_cap() {
     struct LowCeiling(World);
     impl TraceServices for LowCeiling {
-        fn trace(&mut self, query: TraceQuery) -> Trace {
-            if query.start == query.end && query.maxs.0[2] == 32.0 {
-                let mut trace = Trace::clear(query.end);
-                trace.start_solid = true;
-                trace.all_solid = true;
-                return trace;
-            }
-            self.0.trace(query)
+        fn trace(&mut self, query: TraceQuery) -> Result<Trace, qa_world::collision::TraceError> {
+            Ok((|| {
+                if query.start == query.end && query.maxs.0[2] == 32.0 {
+                    let mut trace = Trace::clear(query.end);
+                    trace.start_solid = true;
+                    trace.all_solid = true;
+                    return trace;
+                }
+                self.0.trace(query).expect("valid movement query")
+            })())
         }
-        fn point_contents(&self, point: Vec3, rules: EntityTracePolicy) -> Contents {
-            self.0.point_contents(point, rules)
+        fn point_contents(
+            &self,
+            point: Vec3,
+            rules: EntityTracePolicy,
+        ) -> Result<Contents, qa_world::collision::TraceError> {
+            Ok((|| {
+                self.0
+                    .point_contents(point, rules)
+                    .expect("valid movement query")
+            })())
         }
     }
     for (rules, speed) in [
@@ -530,7 +565,7 @@ fn native_q2_water_speed_caps_do_not_reuse_the_air_duck_cap() {
         if rules == RuleSetId::Quake2 {
             expected.0 = expected.0.map(math::narrow_eighth);
         }
-        pmove(cmd, &mut state, &mut world, Default::default());
+        pmove(cmd, &mut state, &mut world, Default::default()).expect("valid movement query");
         assert!(state.movement.ducked);
         assert_eq!(state.body.velocity, expected, "{rules:?}");
     }

@@ -1,11 +1,12 @@
 //! Bounded native position recovery through the same caller-owned trace service.
 use crate::physics::Step;
 use qa_core::primitives::Vec3;
+use qa_world::collision::TraceError;
 
 impl Step<'_> {
     /// Native initial-snap order: Z, then Y, then X with offsets 0,-1,+1.
     /// It changes the rollback origin only after finding a valid full hull.
-    pub(crate) fn initial_snap(&mut self, origin: Vec3, scale: f32) -> Vec3 {
+    pub(crate) fn initial_snap(&mut self, origin: Vec3, scale: f32) -> Result<Vec3, TraceError> {
         for z in [0.0, -1.0, 1.0] {
             for y in [0.0, -1.0, 1.0] {
                 for x in [0.0, -1.0, 1.0] {
@@ -17,23 +18,23 @@ impl Step<'_> {
                     if scale == 0.125 {
                         candidate.0 = candidate.0.map(qa_core::math::narrow_eighth);
                     }
-                    if !self.trace(candidate, candidate).all_solid {
+                    if !self.trace(candidate, candidate)?.all_solid {
                         self.player.body.position = candidate;
-                        return candidate;
+                        return Ok(candidate);
                     }
                 }
             }
         }
-        origin
+        Ok(origin)
     }
-    pub(crate) fn recover_position(&mut self, origin: Vec3) -> Option<Vec3> {
+    pub(crate) fn recover_position(&mut self, origin: Vec3) -> Result<Option<Vec3>, TraceError> {
         let mins = self.player.body.mins;
         let maxs = self.player.body.maxs;
         if !self
-            .trace_mask(origin, origin, mins, maxs, self.mask)
+            .trace_mask(origin, origin, mins, maxs, self.mask)?
             .start_solid
         {
-            return Some(origin);
+            return Ok(Some(origin));
         }
         let mut candidates = [(0.0f32, Vec3::default()); 6];
         let mut count = 0;
@@ -54,7 +55,7 @@ impl Step<'_> {
             let mut face_maxs = maxs;
             face_mins.0[axis] = 0.0;
             face_maxs.0[axis] = 0.0;
-            let mut trace = self.trace_mask(start, start, face_mins, face_maxs, self.mask);
+            let mut trace = self.trace_mask(start, start, face_mins, face_maxs, self.mask)?;
             let mut epsilon = None;
             if trace.start_solid {
                 for tangent in 0..3 {
@@ -63,14 +64,14 @@ impl Step<'_> {
                     }
                     let mut shifted = start;
                     shifted.0[tangent] += 1.0;
-                    trace = self.trace_mask(shifted, shifted, face_mins, face_maxs, self.mask);
+                    trace = self.trace_mask(shifted, shifted, face_mins, face_maxs, self.mask)?;
                     if !trace.start_solid {
                         start = shifted;
                         epsilon = Some((tangent, 1.0));
                         break;
                     }
                     shifted.0[tangent] -= 2.0;
-                    trace = self.trace_mask(shifted, shifted, face_mins, face_maxs, self.mask);
+                    trace = self.trace_mask(shifted, shifted, face_mins, face_maxs, self.mask)?;
                     if !trace.start_solid {
                         start = shifted;
                         epsilon = Some((tangent, -1.0));
@@ -86,7 +87,7 @@ impl Step<'_> {
             if let Some((tangent, direction)) = epsilon {
                 opposite.0[tangent] += direction;
             }
-            trace = self.trace_mask(start, opposite, face_mins, face_maxs, self.mask);
+            trace = self.trace_mask(start, opposite, face_mins, face_maxs, self.mask)?;
             if trace.start_solid {
                 continue;
             }
@@ -97,7 +98,7 @@ impl Step<'_> {
                 candidate.0[tangent] += direction;
             }
             if self
-                .trace_mask(candidate, candidate, mins, maxs, self.mask)
+                .trace_mask(candidate, candidate, mins, maxs, self.mask)?
                 .start_solid
             {
                 continue;
@@ -106,7 +107,7 @@ impl Step<'_> {
             count += 1;
         }
         if count == 0 {
-            return None;
+            return Ok(None);
         }
         let mut best = candidates[0];
         // qsrc's sort endpoint excludes its last recorded candidate. Selecting
@@ -116,6 +117,6 @@ impl Step<'_> {
                 best = candidate;
             }
         }
-        Some(best.1)
+        Ok(Some(best.1))
     }
 }

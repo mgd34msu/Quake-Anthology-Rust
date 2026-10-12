@@ -241,6 +241,10 @@ fn appearance_for_abi(rerelease: bool) {
         first,
     );
     assert_eq!(
+        host.runtime.server.entities.columns.flags[old.slot as usize],
+        0x0100_0001
+    );
+    assert_eq!(
         host.runtime.server.entities.columns.position[old.slot as usize],
         Vec3([11., -12., 13.])
     );
@@ -273,6 +277,10 @@ fn appearance_for_abi(rerelease: bool) {
     let relinks = host.runtime.server.area.relinks;
     run_frame(&mut host, module, frame);
     assert_eq!(find_native(&host, native), old);
+    assert_eq!(
+        host.runtime.server.entities.columns.flags[old.slot as usize],
+        0x0100_0000
+    );
     assert_appearance(
         host.runtime.server.entities.columns.appearance[old.slot as usize],
         second,
@@ -318,6 +326,7 @@ fn appearance(source: RuleSetId, module: ModuleId, phase: u32) -> EntityAppearan
     let rr = source == RuleSetId::Quake2Rerelease;
     EntityAppearance {
         source,
+        snapshot_excluded: phase == 0,
         models: [
             ModelRef::native(ResourceNamespace::Module(module), 7 + phase),
             None,
@@ -395,6 +404,12 @@ fn write_edict(bytes: &mut [u8], rr: bool, value: EntityAppearance, position: Ve
         bytes[96] = value.native.instance_bits;
     }
     put(bytes, if rr { 1376 } else { 96 }, 1, if rr { 1 } else { 4 });
+    put(
+        bytes,
+        if rr { 1392 } else { 200 },
+        0x0100_0000 | u64::from(value.snapshot_excluded),
+        4,
+    );
     vector(bytes, if rr { 1396 } else { 204 }, Vec3([-4., -5., -6.]));
     vector(bytes, if rr { 1408 } else { 216 }, Vec3([7., 8., 9.]));
 }
@@ -456,6 +471,7 @@ fn find_native(
         .unwrap()
 }
 fn assert_appearance(actual: EntityAppearance, expected: EntityAppearance) {
+    assert_eq!(actual.snapshot_excluded, expected.snapshot_excluded);
     assert_eq!(
         (actual.source, actual.models, actual.frame, actual.skin),
         (

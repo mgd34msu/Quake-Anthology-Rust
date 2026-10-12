@@ -10,3 +10,6 @@ qa-world = { path = "../world" }
 qa-input = { path = "../input" }
 qa-movement = { path = "../movement" }
 qa-navigation = { path = "../navigation" }
+
+[dev-dependencies]
+qa-console = { path = "../console" }

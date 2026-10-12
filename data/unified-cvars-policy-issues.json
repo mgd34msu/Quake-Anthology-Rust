@@ -6,12 +6,12 @@
     "owner_cells": 26460,
     "aliases": 237,
     "bindings": 1531,
-    "defaults": 6368,
+    "defaults": 6372,
     "flag_clauses": 2332,
     "conversions": 237,
     "operands": 43,
     "maps": 67,
-    "issues": 1398
+    "issues": 1393
   },
   "policy_issues": [
     {
@@ -1065,13 +1065,6 @@
       "bits": 1
     },
     {
-      "row": 243,
-      "name": "r_inGameVideo",
-      "field": "default_Q3",
-      "reason": "conditional, owner-dependent or symbolic default",
-      "bits": 2
-    },
-    {
       "row": 244,
       "name": "cl_serverStatusResendTime",
       "field": "type/range_units",
@@ -1107,13 +1100,6 @@
       "bits": 1
     },
     {
-      "row": 248,
-      "name": "m_side",
-      "field": "default_Q2",
-      "reason": "conditional, owner-dependent or symbolic default",
-      "bits": 2
-    },
-    {
       "row": 249,
       "name": "m_filter",
       "field": "flags_QW",
@@ -1126,20 +1112,6 @@
       "field": "type/range_units",
       "reason": "single-name inferred hints; not runtime validators",
       "bits": 1
-    },
-    {
-      "row": 249,
-      "name": "m_filter",
-      "field": "default_QW",
-      "reason": "conditional, owner-dependent or symbolic default",
-      "bits": 2
-    },
-    {
-      "row": 249,
-      "name": "m_filter",
-      "field": "default_Q3",
-      "reason": "conditional, owner-dependent or symbolic default",
-      "bits": 2
     },
     {
       "row": 250,
@@ -1903,13 +1875,6 @@
       "field": "type/range_units",
       "reason": "single-name inferred hints; not runtime validators",
       "bits": 1
-    },
-    {
-      "row": 334,
-      "name": "com_hunkMegs",
-      "field": "default_Q3",
-      "reason": "conditional, owner-dependent or symbolic default",
-      "bits": 2
     },
     {
       "row": 335,

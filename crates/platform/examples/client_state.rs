@@ -56,6 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..CommandIntent::moving([0.01, 0.02, 0.03])
         };
     }
+    let vars = qa_console::cvars::Cvars::new().map_err(|error| format!("{error:?}"))?;
+    let handles = qa_console::input_settings::InputHandles::load(&vars)?;
+    let policies = RuleSetId::ALL.map(|rules| handles.policy(&vars, rules));
     let inventory = server.clients[511].player.inventory.item_counts.as_ptr();
     let mut measured_calls = 0;
     let mut measured_bytes = 0;
@@ -80,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.build_bot_commands(
             EventTime(frame * 50_000_000),
             EventTime((frame + 1) * 50_000_000),
-            qa_input::InputPolicy::native,
+            |rules| policies[rules as usize],
         );
         for (slot, client) in server.clients.iter_mut().enumerate() {
             client.player.inventory.item_counts[1] = slot as i32;

@@ -22,6 +22,97 @@ fn exact(protocol: Protocol, bytes: &[u8]) -> Cue {
     }
     cue
 }
+#[test]
+fn shared_sound_events_preserve_explicit_defaults_and_index_width_flags() {
+    use qa_core::primitives::{SoundAction, SoundId, SpatialPolicy, Vec3};
+    for (protocol, bytes) in [
+        (Protocol::Quake2_34, &[9, 27, 1, 255, 64, 0, 10, 0][..]),
+        (
+            Protocol::Quake2Repro1038,
+            &[9, 59, 1, 0, 255, 64, 0, 10, 0][..],
+        ),
+        (Protocol::Quake2_34, &[9, 0, 1][..]),
+        (Protocol::Quake2Repro1038, &[9, 32, 1, 0][..]),
+    ] {
+        let Cue::Sound(wire) = exact(protocol, bytes) else {
+            panic!("sound")
+        };
+        let event = wire.into_event(
+            SoundId(3),
+            SpatialPolicy::default(),
+            None,
+            Vec3::default(),
+            None,
+            SoundAction::Play,
+        );
+        let mut output = [0xa5; 64];
+        // Reliable RR normally requests a position. Captured presence wins.
+        let length = outputs::sound(
+            protocol,
+            event,
+            u32::from(wire.index),
+            wire.entity().map(u32::from),
+            true,
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(&output[..length], bytes);
+        assert_eq!(output[length], 0xa5);
+        assert_eq!(event.native_fields.unwrap().flags, wire.flags);
+    }
+}
+#[test]
+fn native_quantized_parameters_and_float_position_bits_survive_shared_sound() {
+    use qa_core::primitives::{SoundAction, SoundId, SpatialPolicy, Vec3};
+    for value in 0..=u8::MAX {
+        let mut bytes = vec![9, 63, 1, 0, value, value, value, 10, 0];
+        for bits in [(-0.0f32).to_bits(), 0x7fc1_2345, 0x3f80_0001] {
+            bytes.extend(bits.to_le_bytes());
+        }
+        let (Cue::Sound(wire), length) =
+            outputs::read_cue(Protocol::Quake2Repro1038, &bytes).unwrap()
+        else {
+            panic!("sound")
+        };
+        assert_eq!(length, bytes.len());
+        let event = wire.into_event(
+            SoundId(2),
+            SpatialPolicy::default(),
+            None,
+            wire.position,
+            None,
+            SoundAction::Play,
+        );
+        let mut output = [0; 64];
+        let length = outputs::sound(
+            Protocol::Quake2Repro1038,
+            event,
+            1,
+            Some(1),
+            false,
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(&output[..length], bytes);
+        assert_eq!(event.position.0[0].to_bits(), (-0.0f32).to_bits());
+        let no_position = outputs::Sound {
+            flags: 0,
+            position: Vec3::default(),
+            ..wire
+        };
+        let event = no_position.into_event(
+            SoundId(2),
+            SpatialPolicy::default(),
+            None,
+            Vec3::default(),
+            None,
+            SoundAction::Play,
+        );
+        let length =
+            outputs::sound(Protocol::Quake2_34, event, 1, None, false, &mut output).unwrap();
+        assert_eq!(&output[..length], &[9, 0, 1]);
+    }
+}
 
 #[test]
 fn native_static_sound_keeps_q1_qw_wire_fields_and_persistent_kind() {

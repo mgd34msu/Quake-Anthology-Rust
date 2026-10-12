@@ -131,6 +131,7 @@ fn trace(world: &FixtureWorld, table: &EntityTable, area: &AreaGrid, query: Trac
         CollisionOwner::None,
     )
     .trace(query)
+    .expect("valid collision query")
 }
 
 #[test]
@@ -542,51 +543,63 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         CollisionOwner::None,
     );
     assert_eq!(
-        service.point_contents(
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
-            &[]
-        ),
+        service
+            .point_contents(
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     assert_eq!(
-        service.point_contents(
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
-            &[]
-        ),
+        service
+            .point_contents(
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::BODY
     );
     assert_eq!(
-        service.point_contents(
-            Vec3([1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
-            &[]
-        ),
+        service
+            .point_contents(
+                Vec3([1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     assert_eq!(
-        service.point_contents(
-            Vec3([-1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
-            &[]
-        ),
+        service
+            .point_contents(
+                Vec3([-1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::BODY
     );
     assert_eq!(
-        service.point_contents(
-            Vec3([1.0, 0.0, 0.0]),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-            &[]
-        ),
+        service
+            .point_contents(
+                Vec3([1.0, 0.0, 0.0]),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::BODY
     );
     assert_eq!(
-        service.point_contents(
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-            &[target]
-        ),
+        service
+            .point_contents(
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+                &[target]
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     let pass_service = WorldTrace::new(
@@ -599,19 +612,23 @@ fn native_contents_filter_and_point_contents_face_semantics() {
         CollisionOwner::Lifetime(target),
     );
     assert_eq!(
-        pass_service.point_contents(
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
-            &[]
-        ),
+        pass_service
+            .point_contents(
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::BODY
     );
     assert_eq!(
-        pass_service.point_contents(
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
-            &[]
-        ),
+        pass_service
+            .point_contents(
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
+                &[]
+            )
+            .expect("valid collision query"),
         Contents::EMPTY
     );
     area.link(
@@ -755,4 +772,72 @@ fn rerelease_entity_class_filters_are_independent_of_geometry_and_other_callers(
             assert_eq!(trace(&world, &table, &area, q).entity, Some(target));
         }
     }
+}
+
+#[test]
+fn stale_linked_geometry_rejects_the_whole_query_instead_of_a_partial_hit() {
+    let mut world = brush_world(
+        vec![Plane::oriented(Vec3([-1.0, 0.0, 0.0]), -24.0)],
+        vec![Brush {
+            sides: qa_core::primitives::IndexSpan { first: 0, count: 1 },
+            contents: Contents::SOLID,
+        }],
+    );
+    let (mut table, mut area) = table();
+    let id = body(
+        &mut table,
+        &mut area,
+        Vec3::default(),
+        Vec3([-2.0; 3]),
+        Vec3([2.0; 3]),
+    );
+    let stale = world
+        .store
+        .load_brushes(
+            Vec::new(),
+            Vec::new(),
+            qa_world::collision::surfaces::SurfaceTable::flags(Vec::new()),
+            BrushTree::direct(0).unwrap(),
+            vec![Bounds {
+                mins: Vec3([-4.0; 3]),
+                maxs: Vec3([4.0; 3]),
+            }],
+        )
+        .unwrap();
+    table.columns.collision_shape[id.slot as usize] = CollisionShape::Model {
+        geometry: stale,
+        index: 0,
+    };
+    let mut scratch = world.store.scratch();
+    assert!(world.store.remove(stale));
+    let rules = qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1;
+    let input = query(rules);
+    let native_world = world
+        .store
+        .trace_model(world.geometry, 0, input, &mut scratch)
+        .expect("valid world");
+    assert!(native_world.fraction < 1.0 && native_world.fraction > 0.0);
+    let mut trace = WorldTrace::new(
+        &world.store,
+        world.geometry,
+        0,
+        &table,
+        &area,
+        &mut scratch,
+        CollisionOwner::None,
+    );
+    assert_eq!(
+        trace.trace(input).unwrap_err(),
+        qa_world::collision::TraceError::Geometry {
+            geometry: stale,
+            model: 0
+        }
+    );
+    assert_eq!(
+        trace.point_contents(Vec3::default(), rules, &[]),
+        Err(qa_world::collision::TraceError::Geometry {
+            geometry: stale,
+            model: 0
+        })
+    );
 }

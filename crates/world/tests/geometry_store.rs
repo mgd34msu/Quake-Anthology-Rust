@@ -2,7 +2,7 @@ use qa_core::primitives::{
     Axis, Bounds, ClipNode, GeometryId, ModelRules, Plane, SurfaceFlags, Vec3,
 };
 use qa_world::collision::{
-    CollisionStore, Contents, EntityTracePolicy, StoreError, TraceQuery, TraceRules,
+    CollisionStore, Contents, EntityTracePolicy, StoreError, TraceError, TraceQuery, TraceRules,
     brushes::{Brush, BrushTree, CollisionLeaf, GeometryError, ModelRoot},
     hulls::{HullError, HullModel},
     surfaces::{SurfaceInput, SurfaceTable},
@@ -39,7 +39,9 @@ fn contact_rows_keep_exact_names_native_fields_and_resource_lifetimes() -> Resul
         TraceRules::LEGACY,
         qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
     );
-    let hit = store.trace_model(first, 0, query, &mut scratch);
+    let hit = store
+        .trace_model(first, 0, query, &mut scratch)
+        .expect("valid collision query");
     assert_eq!(hit.fraction.to_bits(), ((1.0f32 - 0.03125) / 2.0).to_bits());
     let contact = hit.surface_id.expect("loaded contact");
     assert_eq!(contact.geometry, first);
@@ -52,6 +54,7 @@ fn contact_rows_keep_exact_names_native_fields_and_resource_lifetimes() -> Resul
     assert_eq!(row.flags.to_q2(), 0x80000083);
     let other = store
         .trace_model(second, 0, query, &mut scratch)
+        .expect("valid collision query")
         .surface_id
         .expect("second contact");
     assert_eq!(store.surface(other).expect("other row").name, b"wall_a");
@@ -181,15 +184,26 @@ fn mixed_topologies_keep_native_models_and_caller_rules_independent() -> Result<
         ),
     ] {
         let query = crossing(rules, entities);
-        let hull_hit = store.trace_model(hull, 0, query, &mut first);
-        let brush_hit = store.trace_model(brush, 1, query, &mut second);
+        let hull_hit = store
+            .trace_model(hull, 0, query, &mut first)
+            .expect("valid collision query");
+        let brush_hit = store
+            .trace_model(brush, 1, query, &mut second)
+            .expect("valid collision query");
         assert_eq!(hull_hit.fraction, fraction);
         assert_eq!(brush_hit.fraction, fraction);
         assert_eq!(brush_hit.surface, SurfaceFlags(77));
-        assert_eq!(store.trace_model(brush, 0, query, &mut first).fraction, 1.0);
+        assert_eq!(
+            store
+                .trace_model(brush, 0, query, &mut first)
+                .expect("valid collision query")
+                .fraction,
+            1.0
+        );
         assert_eq!(
             store
                 .trace_model(brush, 1, query, &mut first)
+                .expect("valid collision query")
                 .fraction
                 .to_bits(),
             brush_hit.fraction.to_bits()
@@ -197,21 +211,28 @@ fn mixed_topologies_keep_native_models_and_caller_rules_independent() -> Result<
         assert_eq!(
             store
                 .trace_model(hull, 0, query, &mut second)
+                .expect("valid collision query")
                 .end
                 .0
                 .map(f32::to_bits),
             hull_hit.end.0.map(f32::to_bits)
         );
         assert_eq!(
-            store.point_contents_model(brush, 0, query.end, entities),
+            store
+                .point_contents_model(brush, 0, query.end, entities)
+                .expect("valid collision query"),
             Contents::EMPTY
         );
         assert_eq!(
-            store.point_contents_model(brush, 1, query.end, entities),
+            store
+                .point_contents_model(brush, 1, query.end, entities)
+                .expect("valid collision query"),
             Contents::SOLID
         );
         assert_eq!(
-            store.point_contents_model(hull, 0, query.end, entities),
+            store
+                .point_contents_model(hull, 0, query.end, entities)
+                .expect("valid collision query"),
             Contents::SOLID
         );
     }
@@ -228,14 +249,21 @@ fn removal_compacts_private_rows_and_reuse_rejects_stale_handles() -> Result<(),
         TraceRules::ARENA,
         qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1,
     );
-    let before = store.trace_model(brush, 1, query, &mut scratch);
+    let before = store
+        .trace_model(brush, 1, query, &mut scratch)
+        .expect("valid collision query");
     assert!(store.remove(old_hull));
     assert!(!store.remove(old_hull));
     assert_eq!(store.model_count(old_hull), None);
     assert_eq!(store.model_bounds(old_hull, 0), None);
     assert_eq!(
-        store.trace_model(old_hull, 0, query, &mut scratch).fraction,
-        1.0
+        store
+            .trace_model(old_hull, 0, query, &mut scratch)
+            .unwrap_err(),
+        TraceError::Geometry {
+            geometry: old_hull,
+            model: 0
+        }
     );
     assert_eq!(
         store.point_contents_model(
@@ -244,9 +272,14 @@ fn removal_compacts_private_rows_and_reuse_rejects_stale_handles() -> Result<(),
             query.end,
             qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
         ),
-        Contents::EMPTY
+        Err(TraceError::Geometry {
+            geometry: old_hull,
+            model: 0
+        })
     );
-    let after = store.trace_model(brush, 1, query, &mut scratch);
+    let after = store
+        .trace_model(brush, 1, query, &mut scratch)
+        .expect("valid collision query");
     assert_eq!(after.fraction.to_bits(), before.fraction.to_bits());
     assert_eq!(
         after.end.0.map(f32::to_bits),
@@ -258,21 +291,37 @@ fn removal_compacts_private_rows_and_reuse_rejects_stale_handles() -> Result<(),
     assert_eq!(new_hull.slot, old_hull.slot);
     assert_eq!(new_hull.generation, old_hull.generation + 1);
     assert_eq!(
-        store.trace_model(old_hull, 0, query, &mut scratch).fraction,
-        1.0
+        store
+            .trace_model(old_hull, 0, query, &mut scratch)
+            .unwrap_err(),
+        TraceError::Geometry {
+            geometry: old_hull,
+            model: 0
+        }
     );
     assert_eq!(
-        store.trace_model(new_hull, 0, query, &mut scratch).fraction,
+        store
+            .trace_model(new_hull, 0, query, &mut scratch)
+            .expect("valid collision query")
+            .fraction,
         0.4375
     );
     assert_eq!(
-        store.trace_model(brush, 2, query, &mut scratch).fraction,
-        1.0
+        store
+            .trace_model(brush, 2, query, &mut scratch)
+            .unwrap_err(),
+        TraceError::Geometry {
+            geometry: brush,
+            model: 2
+        }
     );
     assert_eq!(store.model_bounds(brush, 2), None);
     assert!(store.remove(brush));
     assert_eq!(
-        store.trace_model(new_hull, 0, query, &mut scratch).fraction,
+        store
+            .trace_model(new_hull, 0, query, &mut scratch)
+            .expect("valid collision query")
+            .fraction,
         0.4375
     );
     Ok(())
@@ -289,10 +338,16 @@ fn removing_the_middle_resource_preserves_both_neighbors() -> Result<(), StoreEr
         TraceRules::LEGACY,
         qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1,
     );
-    let before = [first, last].map(|geometry| store.trace_model(geometry, 0, query, &mut scratch));
+    let before = [first, last].map(|geometry| {
+        store
+            .trace_model(geometry, 0, query, &mut scratch)
+            .expect("valid collision query")
+    });
     assert!(store.remove(middle));
     for (geometry, before) in [first, last].into_iter().zip(before) {
-        let after = store.trace_model(geometry, 0, query, &mut scratch);
+        let after = store
+            .trace_model(geometry, 0, query, &mut scratch)
+            .expect("valid collision query");
         assert_eq!(after.fraction.to_bits(), before.fraction.to_bits());
         assert_eq!(
             after.end.0.map(f32::to_bits),
@@ -396,6 +451,7 @@ fn malformed_cold_resources_preserve_registered_geometry() -> Result<(), StoreEr
                 ),
                 &mut scratch
             )
+            .expect("valid collision query")
             .fraction,
         0.484375
     );
@@ -424,44 +480,52 @@ fn terminal_hull_models_and_stale_scratch_remain_scoped() -> Result<(), StoreErr
     assert_eq!(
         store
             .trace_model(terminal, 1, query, &mut old_scratch)
-            .fraction,
-        1.0
-    );
-    assert!(
-        !store
-            .trace_model(terminal, 1, query, &mut old_scratch)
-            .start_solid
+            .unwrap_err(),
+        TraceError::Scratch
     );
     let mut scratch = store.scratch();
-    let empty = store.trace_model(terminal, 0, query, &mut scratch);
+    let empty = store
+        .trace_model(terminal, 0, query, &mut scratch)
+        .expect("valid collision query");
     assert_eq!(empty.fraction, 1.0);
     assert!(empty.in_open && !empty.all_solid);
-    let solid = store.trace_model(terminal, 1, query, &mut scratch);
+    let solid = store
+        .trace_model(terminal, 1, query, &mut scratch)
+        .expect("valid collision query");
     assert!(solid.start_solid && solid.all_solid);
     assert_eq!(solid.fraction, 1.0);
     assert_eq!(
-        store.point_contents_model(
-            terminal,
-            2,
-            Vec3::default(),
-            qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-        ),
+        store
+            .point_contents_model(
+                terminal,
+                2,
+                Vec3::default(),
+                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
+            )
+            .expect("valid collision query"),
         Contents::WATER
     );
     let brush = add_brush(&mut store)?;
     // The previously provisioned workspace cannot gain stamp/DFS storage while
     // tracing a subsequently loaded resource. The caller provisions it cold.
-    let clear = store.trace_model(brush, 1, query, &mut scratch);
-    assert_eq!(clear.fraction, 1.0);
-    assert_eq!(clear.end.0.map(f32::to_bits), query.end.0.map(f32::to_bits));
+    assert_eq!(
+        store
+            .trace_model(brush, 1, query, &mut scratch)
+            .unwrap_err(),
+        TraceError::Scratch
+    );
     let mut refreshed = store.scratch();
     assert_eq!(
-        store.trace_model(brush, 1, query, &mut refreshed).fraction,
+        store
+            .trace_model(brush, 1, query, &mut refreshed)
+            .expect("valid collision query")
+            .fraction,
         0.484375
     );
     assert!(
         store
             .trace_model(terminal, 1, query, &mut refreshed)
+            .expect("valid collision query")
             .all_solid
     );
     Ok(())
@@ -485,31 +549,111 @@ fn translated_hull_forms_the_whole_native_offset_before_subtraction() -> Result<
     // world.c forms (clipmins - mins) + origin = 1 first. The resulting
     // local segment is [1,-1]; subtracting origin and clipmins separately
     // loses that one-unit translation through f32 cancellation.
-    let hit = store.trace_transformed(
-        geometry,
-        0,
-        query,
-        Vec3([-16_777_215.0, 0.0, 0.0]),
-        Vec3::default(),
-        ModelRules::default(),
-        &mut scratch,
-    );
+    let hit = store
+        .trace_transformed(
+            geometry,
+            0,
+            query,
+            Vec3([-16_777_215.0, 0.0, 0.0]),
+            Vec3::default(),
+            ModelRules::default(),
+            &mut scratch,
+        )
+        .expect("valid collision query");
     assert_eq!(hit.fraction, 0.484375);
     assert_eq!(hit.end.0[0], 1.03125);
     let miss = TraceQuery {
         end: Vec3([4.0, -0.0, 0.0]),
         ..query
     };
-    let clear = store.trace_transformed(
-        geometry,
-        0,
-        miss,
-        Vec3([-16_777_215.0, 0.0, 0.0]),
-        Vec3::default(),
-        ModelRules::default(),
-        &mut scratch,
-    );
+    let clear = store
+        .trace_transformed(
+            geometry,
+            0,
+            miss,
+            Vec3([-16_777_215.0, 0.0, 0.0]),
+            Vec3::default(),
+            ModelRules::default(),
+            &mut scratch,
+        )
+        .expect("valid collision query");
     assert_eq!(clear.fraction, 1.0);
     assert_eq!(clear.end.0.map(f32::to_bits), miss.end.0.map(f32::to_bits));
     Ok(())
+}
+
+#[test]
+fn intentional_none_and_box_shapes_do_not_require_geometry_or_scratch() {
+    use qa_core::primitives::{Body, CollisionShape};
+    let store = CollisionStore::new();
+    let mut scratch = store.scratch();
+    let query = crossing(
+        TraceRules::LEGACY,
+        qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1,
+    );
+    let body = Body {
+        mins: Vec3([-0.5; 3]),
+        maxs: Vec3([0.5; 3]),
+        ..Default::default()
+    };
+    let clear = store
+        .trace_body(
+            query,
+            CollisionShape::None,
+            &body,
+            Vec3::default(),
+            ModelRules::default(),
+            None,
+            &mut scratch,
+        )
+        .expect("intentional no geometry");
+    assert_eq!(clear.fraction.to_bits(), 1.0f32.to_bits());
+    assert_eq!(clear.end.0.map(f32::to_bits), query.end.0.map(f32::to_bits));
+    let expected = qa_world::collision::boxes::trace_box(query, &body, None);
+    let boxed = store
+        .trace_body(
+            query,
+            CollisionShape::Box,
+            &body,
+            Vec3::default(),
+            ModelRules::default(),
+            None,
+            &mut scratch,
+        )
+        .expect("temporary box");
+    assert_eq!(boxed.fraction.to_bits(), expected.fraction.to_bits());
+    assert_eq!(
+        boxed.end.0.map(f32::to_bits),
+        expected.end.0.map(f32::to_bits)
+    );
+    let geometry = GeometryId {
+        slot: 0,
+        generation: 1,
+    };
+    assert_eq!(
+        store
+            .trace_body(
+                query,
+                CollisionShape::Model { geometry, index: 3 },
+                &body,
+                Vec3::default(),
+                ModelRules::default(),
+                None,
+                &mut scratch
+            )
+            .unwrap_err(),
+        TraceError::Geometry { geometry, model: 3 }
+    );
+    assert_eq!(
+        store.point_contents_transformed(
+            geometry,
+            3,
+            Vec3::default(),
+            Vec3::default(),
+            Vec3::default(),
+            ModelRules::default(),
+            query.entity_rules
+        ),
+        Err(TraceError::Geometry { geometry, model: 3 })
+    );
 }

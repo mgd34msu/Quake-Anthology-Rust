@@ -298,8 +298,10 @@ pub fn dispatch(
                                                 delivery.module,
                                                 &server.entities,
                                                 &mut runtime.native_numbers[slot],
-                                                &runtime.config_publications[slot],
-                                                payload.cue(bytes, offset),
+                                                payload.cue(
+                                                    bytes,
+                                                    offset + delivery.component as usize,
+                                                ),
                                             )
                                         },
                                         |bytes| {
@@ -627,7 +629,7 @@ fn encode_record(
     }
     match event {
         FrameEvent::Sound(sound) => {
-            let entity = sound_entity(entities, numbers, sound.entity, delivery.module);
+            let entity = sound_entity(entities, numbers, sound, delivery.module);
             if sound.entity.is_some()
                 && entity.is_none()
                 && !matches!(sound.entity, Some(SoundEmitter::Static { .. }))
@@ -647,15 +649,32 @@ fn encode_record(
 fn sound_entity(
     entities: &qa_world::entities::EntityTable,
     numbers: &mut crate::output_namespace::NativeNumbers,
-    emitter: Option<SoundEmitter>,
+    sound: qa_core::primitives::SoundEvent,
     module: ModuleId,
 ) -> Option<u32> {
-    match emitter? {
-        SoundEmitter::Entity(id) => numbers.project(entities, id),
+    match sound.entity? {
+        SoundEmitter::Entity(id) => {
+            entities.resolve(id)?;
+            if let Some(fields) = sound.native_fields
+                && numbers.is_native_module(module)
+            {
+                Some(u32::from(fields.entity))
+            } else {
+                numbers.project(entities, id)
+            }
+        }
         SoundEmitter::Native {
             namespace: ResourceNamespace::Module(owner),
             slot,
-        } if owner == module => numbers.native(entities, owner, slot),
+        } if owner == module => {
+            if let Some(fields) = sound.native_fields {
+                numbers
+                    .is_native_module(module)
+                    .then_some(u32::from(fields.entity))
+            } else {
+                numbers.native(entities, owner, slot)
+            }
+        }
         _ => None,
     }
 }
@@ -664,49 +683,12 @@ fn project_cue(
     module: ModuleId,
     entities: &qa_world::entities::EntityTable,
     numbers: &mut crate::output_namespace::NativeNumbers,
-    publication: &crate::client_resources::ConfigPublication,
     captured: Option<qa_core::primitives::NativeCueBinding>,
 ) -> Result<qa_network::outputs::Cue, qa_network::outputs::Error> {
     use qa_network::outputs::{Cue, Error};
     let native_entity_namespace = numbers.is_native_module(module);
     Ok(match cue {
-        Cue::Sound(mut sound) | Cue::StaticSound(mut sound) => {
-            let static_sound = matches!(cue, Cue::StaticSound(_));
-            let id = captured
-                .and_then(|binding| binding.sound)
-                .ok_or(Error::Unsupported)?;
-            let (ordinal, readiness) = publication
-                .project_sound(module, Some(u32::from(sound.index)), id)
-                .ok_or(Error::Unsupported)?;
-            match readiness {
-                crate::client_resources::ResourceReadiness::Pending => return Err(Error::Pending),
-                crate::client_resources::ResourceReadiness::Unsupported => {
-                    return Err(Error::Unsupported);
-                }
-                crate::client_resources::ResourceReadiness::Ready => {}
-            }
-            sound = sound.with_index(ordinal)?;
-            if let Some(entity) = sound.entity() {
-                sound.entity = u16::try_from(if native_entity_namespace {
-                    u32::from(entity)
-                } else {
-                    numbers
-                        .project(
-                            entities,
-                            captured
-                                .and_then(|binding| binding.entity)
-                                .ok_or(Error::Unsupported)?,
-                        )
-                        .ok_or(Error::Unsupported)?
-                })
-                .map_err(|_| Error::Unsupported)?;
-            }
-            if static_sound {
-                Cue::StaticSound(sound)
-            } else {
-                Cue::Sound(sound)
-            }
-        }
+        Cue::Sound(_) | Cue::StaticSound(_) => return Err(Error::Unsupported),
         Cue::MuzzleFlash(mut flash) => {
             flash.entity = u16::try_from(if native_entity_namespace {
                 u32::from(flash.entity)

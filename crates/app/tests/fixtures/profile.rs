@@ -1,5 +1,5 @@
 use super::*;
-use qa_console::views::Role;
+use qa_console::{cvars::Cvars, input_settings::InputHandles, views::Role};
 use serde_json::json;
 
 #[test]

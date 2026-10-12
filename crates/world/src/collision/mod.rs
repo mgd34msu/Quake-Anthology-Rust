@@ -9,12 +9,34 @@ pub mod tree;
 
 pub use contents::Contents;
 use qa_core::primitives::{
-    CollisionOwner, EntityId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
+    CollisionOwner, EntityId, GeometryId, Plane, RuleSetId, SurfaceFlags, SurfaceId, Vec3,
 };
 pub use scene::{
     NativeModelNames, NativeTraceEntities, NativeTraceFields, NativeTraceTarget, WorldTrace,
 };
 pub use store::{CollisionStore, StoreError, TraceScratch};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceError {
+    Geometry { geometry: GeometryId, model: u32 },
+    Scratch,
+}
+
+impl std::fmt::Display for TraceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Geometry { geometry, model } => {
+                write!(
+                    formatter,
+                    "unavailable collision geometry {geometry:?}, model {model}"
+                )
+            }
+            Self::Scratch => formatter.write_str("insufficient collision scratch"),
+        }
+    }
+}
+
+impl std::error::Error for TraceError {}
 
 #[inline]
 pub(super) fn split_segment(p1f: f32, p2f: f32, p1: Vec3, p2: Vec3, fraction: f32) -> (f32, Vec3) {
