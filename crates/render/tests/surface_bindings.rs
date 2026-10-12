@@ -24,11 +24,11 @@ fn inputs(count: usize) -> (WorldGeometry, VisibilityWorld) {
         vertices: [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 0.0, 1.0]]
             .map(|position| WorldVertex {
                 vertex: Vertex {
+                    normal: Vec3([-1.0, 0.0, 0.0]),
                     position: Vec3(position),
                     lightmap_coord: [0.25, 0.75],
                     ..Vertex::default()
                 },
-                normal: Vec3([-1.0, 0.0, 0.0]),
             })
             .into(),
         indices: vec![0, 1, 2],

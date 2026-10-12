@@ -445,7 +445,7 @@ impl Product {
             .map(|&index| {
                 let vertex = geometry.vertices[index as usize];
                 Vertex {
-                    normal: vertex.normal,
+                    normal: vertex.vertex.normal,
                     ..vertex.vertex
                 }
             })

@@ -48,16 +48,10 @@ pub enum GeometryError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldVertex {
     pub vertex: Vertex,
-    pub normal: Vec3,
 }
 impl WorldVertex {
     pub fn is_finite(self) -> bool {
-        // World geometry supplies the authoritative normal separately.
-        Vertex {
-            normal: self.normal,
-            ..self.vertex
-        }
-        .is_finite()
+        self.vertex.is_finite()
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -323,7 +317,6 @@ fn load_legacy(
                     lightmap_coord: [0.0; 2],
                     color: [255; 4],
                 },
-                normal: plane.normal,
             });
         }
         let (minima, extents) = texture_lattice(uv_min, uv_max)?;
@@ -509,7 +502,6 @@ fn load_modern(
                     .map(|v| if v.is_finite() { v } else { 0.0 }),
                 color: color_shift(source.color, options.vertex_color_shift),
             },
-            normal: source.normal,
         });
     }
     let lighting = map.bsp.bytes(Lump::Lighting);

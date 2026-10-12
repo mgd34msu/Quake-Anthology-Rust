@@ -269,6 +269,70 @@ fn q3_native_registration_adopts_user_reset_default_without_replacing_current_va
 }
 
 #[test]
+fn user_set_and_module_registration_share_one_row_and_native_ownership() {
+    for source in RuleSetId::ALL {
+        let mut cvars = Cvars::new().unwrap();
+        let engine = Context {
+            source,
+            ..Context::default()
+        };
+        let count = cvars.entries().count();
+        let user = cvars
+            .set_user("_QA_UserSetting", "27", engine, None, 1)
+            .unwrap();
+        let replacement = cvars
+            .set_user("_qa_usersetting", "31", engine, None, 0)
+            .unwrap();
+        assert_eq!(replacement.canonical(), user.canonical());
+        assert_eq!(cvars.entries().count(), count + 1);
+        assert_eq!(cvars.numeric(replacement).unwrap(), 31.0);
+        assert_eq!(cvars.integer_view(replacement).unwrap(), 31);
+        assert_eq!(
+            cvars.flags(replacement),
+            1 | if source == RuleSetId::Quake3 { 128 } else { 0 }
+        );
+        let native = cvars
+            .register("_qa_usersetting", Some("3"), 0, context(source))
+            .unwrap();
+        assert_eq!(cvars.read(native).unwrap().as_str(), "31");
+        cvars.reset_view(native, true).unwrap();
+        assert_eq!(
+            cvars.read(native).unwrap().as_str(),
+            if source == RuleSetId::Quake3 {
+                "3"
+            } else {
+                "27"
+            }
+        );
+        let alias = cvars.set_user("FOV", "107", engine, None, 0).unwrap();
+        assert_eq!(alias.canonical(), cvars.find("cg_fov").unwrap());
+        assert_eq!(cvars.entries().count(), count + 1);
+        assert_eq!(cvars.read(alias).unwrap().as_str(), "107");
+    }
+}
+
+#[test]
+fn q3_user_setting_checks_native_name_before_binding_another_source_row() {
+    let mut cvars = Cvars::new().unwrap();
+    let q2 = Context {
+        source: RuleSetId::Quake2,
+        ..Context::default()
+    };
+    let foreign = cvars.register("bad;name", Some("original"), 0, q2).unwrap();
+    let q3 = Context::default();
+    let user = cvars
+        .set_user("bad;name", "replacement", q3, None, 0)
+        .unwrap();
+    assert_ne!(user.canonical(), foreign.canonical());
+    assert_eq!(
+        user.canonical(),
+        cvars.bind("BADNAME", q3).unwrap().canonical()
+    );
+    assert_eq!(cvars.read(user).unwrap().as_str(), "replacement");
+    assert_eq!(cvars.read(foreign).unwrap().as_str(), "original");
+}
+
+#[test]
 fn user_default_adoption_requires_q3_nonempty_non_user_registration() {
     let mut cvars = Cvars::new().unwrap();
     let q3 = context(RuleSetId::Quake3);

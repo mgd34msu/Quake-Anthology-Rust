@@ -138,13 +138,13 @@ fn fixture(reverse: bool, vertex_color: bool, equal: bool) -> Fixture {
             }
             WorldVertex {
                 vertex: Vertex {
+                    normal: Vec3([0.0, 0.0, 1.0]),
                     position: Vec3(position),
                     texcoord: [position[0] / 4.0, position[1] / 4.0],
                     lightmap_coord: [0.25 + position[0] / 8.0, 0.25 + position[1] / 8.0],
                     color,
                     ..Vertex::default()
                 },
-                normal: Vec3([0.0, 0.0, 1.0]),
             }
         })
         .collect();

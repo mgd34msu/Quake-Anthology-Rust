@@ -2262,12 +2262,16 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
         text
     }
     for rr in [false, true] {
-        for accepted in [false, true] {
+        for (accepted, independent_console) in [(false, false), (true, false), (true, true)] {
+            if rr && independent_console {
+                continue;
+            }
             let rules = if rr {
                 RuleSetId::Quake2Rerelease
             } else {
                 RuleSetId::Quake2
             };
+            let admitted = accepted && !independent_console;
             let stride = if rr { 1472 } else { 280 };
             let target = 0x180003000 + stride * 2;
             let mut file = q2_table_file();
@@ -2310,7 +2314,13 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 (
                     if rr { 24 } else { 16 },
                     0x1620,
-                    if accepted { 3 } else { 1 },
+                    if admitted {
+                        3
+                    } else if independent_console {
+                        0
+                    } else {
+                        1
+                    },
                     0,
                 ),
             ] {
@@ -2461,6 +2471,9 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 export: Export::words(CallbackId(0), &[imports_address]),
             });
             request.shutdown.push(shutdown);
+            if independent_console {
+                request.context.console.source = RuleSetId::Quake3;
+            }
             let context = request.context.console;
             let mut host = FrameHost::load_modules(
                 Console::new(Context::default()).unwrap(),
@@ -2470,11 +2483,25 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
             )
             .unwrap();
             let maxclients = host.console.cvars.bind("sv_maxclients", context).unwrap();
-            host.console.cvars.force_write(maxclients, "2").unwrap();
+            if independent_console {
+                let native_limit = host.console.cvars.integer_in(maxclients.canonical(), rules);
+                let console_limit = host
+                    .console
+                    .cvars
+                    .integer_in(maxclients.canonical(), context.source);
+                assert_eq!(native_limit, 1);
+                assert!(console_limit > 1);
+            } else {
+                host.console.cvars.force_write(maxclients, "2").unwrap();
+            }
             host.initialize_modules(Phase::Server);
             let result = host.connect_q2_client(&api, id, b"\\name\\NativeClient");
-            assert_eq!(result.is_ok(), accepted, "{rules:?}: {result:?}");
-            if accepted {
+            assert_eq!(
+                result.is_ok(),
+                admitted,
+                "{rules:?}, independent console {independent_console}: {result:?}"
+            );
+            if admitted {
                 assert_eq!(result.unwrap(), 1);
                 let client = &host.runtime.server.clients[id.0 as usize];
                 assert_eq!(
@@ -2568,6 +2595,19 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                         Some((91 + index) as u32)
                     );
                 }
+            } else if independent_console {
+                assert_eq!(
+                    result.unwrap_err(),
+                    "native client outside module maxclients"
+                );
+                let client = &host.runtime.server.clients[id.0 as usize];
+                assert!(client.connection.is_some());
+                assert_eq!(
+                    host.runtime.server.entities.columns.native_entity[client.entity.slot as usize],
+                    None
+                );
+                assert!(host.runtime.server.module_moves(id).is_none());
+                assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, 1);
             } else {
                 assert!(
                     host.runtime.server.clients[id.0 as usize]
@@ -2577,7 +2617,13 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
             }
             host.shutdown_modules();
-            let calls = if accepted { 7 } else { 3 };
+            let calls = if admitted {
+                7
+            } else if independent_console {
+                2
+            } else {
+                3
+            };
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().calls, calls);
             assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
             host.shutdown_modules();

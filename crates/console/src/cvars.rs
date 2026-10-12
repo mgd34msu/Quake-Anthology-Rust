@@ -410,6 +410,44 @@ impl Cvars {
         self.bind_id(self.lookup_name(name)?, context)
     }
 
+    /// Console and saved-profile writes share native user-created ownership
+    /// and the same capacity reserved for module registrations at load.
+    pub fn set_user(
+        &mut self,
+        name: &str,
+        text: &str,
+        context: Context,
+        full_flags: Option<u32>,
+        added_flags: u32,
+    ) -> Result<View, WriteError> {
+        let name = registration_name(name, context.source);
+        let view = match self.bind(name, context) {
+            Some(view) => view,
+            None => self.register(
+                name,
+                Some(text),
+                full_flags.unwrap_or(if context.source == RuleSetId::Quake3 {
+                    USER_CREATED
+                } else {
+                    0
+                }),
+                context,
+            )?,
+        };
+        let written = if let Some(flags) = full_flags {
+            self.full_set(view, text, flags)
+        } else {
+            self.write(view, text)
+        };
+        if added_flags != 0 {
+            // Q3 adds these flags after an ordinary write even when policy
+            // rejects it. Register retains an existing catalog alias View.
+            self.register(name, None, added_flags, context)?;
+        }
+        written?;
+        Ok(view)
+    }
+
     /// Module names enter the existing table using capacity reserved at load.
     /// Catalog defaults and previously written values survive registration.
     /// Flags use the registry's common meanings; ABIs convert native bits.
@@ -938,10 +976,7 @@ impl Cvars {
         let current = self.effective(view.handle, view.context.source);
         let detail = self.detail(view);
         let operands = |row| self.effective(self.slot(row as usize, 0), view.context.source);
-        let c = if binding.is_none_or(|b| b.canonical)
-            && view.context.role == Role::Engine
-            && binding.is_none_or(|b| DEFINITIONS[b.row as usize].stored)
-        {
+        let c = if self.reads_stored(view).unwrap_or(true) {
             &CONVERSIONS[0]
         } else {
             self.conversion(view)

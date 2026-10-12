@@ -1,6 +1,6 @@
 //! Bounded nonblocking terminal/pipe lines feeding the one system-event ring.
 use crate::clock::Clock;
-use qa_core::sys_events::{EventKind, SysEvent, SysEventQueue};
+use qa_core::sys_events::{EventKind, QueueError, SysEvent, SysEventQueue};
 use std::{
     fs::File,
     io::{self, Read},
@@ -11,7 +11,6 @@ pub(crate) struct ConsoleInput {
     file: Option<File>,
     line: Box<[u8; LINE_BYTES]>,
     len: usize,
-    ready: bool,
     discard: bool,
     skip_lf: bool,
     pending: [u8; 4096],
@@ -52,11 +51,13 @@ impl ConsoleInput {
         };
         #[cfg(not(target_os = "linux"))]
         let file = None;
+        Self::with_file(file)
+    }
+    fn with_file(file: Option<File>) -> Self {
         Self {
             file,
             line: Box::new([0; LINE_BYTES]),
             len: 0,
-            ready: false,
             discard: false,
             skip_lf: false,
             pending: [0; 4096],
@@ -73,27 +74,6 @@ impl ConsoleInput {
         let mut emitted = 0;
         let mut consumed = 0;
         while emitted < 8 && consumed < 4096 && queue.has_ordinary_room() {
-            if self.ready {
-                if self.len > 0 {
-                    if let Ok(text) = std::str::from_utf8(&self.line[..self.len]) {
-                        if queue
-                            .push(SysEvent {
-                                time: clock.now(),
-                                kind: EventKind::ConsoleLine(text),
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                        self.lines += 1;
-                        emitted += 1;
-                    } else {
-                        self.discarded += 1;
-                    }
-                }
-                self.ready = false;
-                self.len = 0;
-            }
             if self.cursor == self.end {
                 if self.eof {
                     break;
@@ -105,14 +85,10 @@ impl ConsoleInput {
                     Ok(0) => {
                         self.eof = true;
                         self.file = None;
-                        if self.discard {
-                            self.discard = false;
-                            self.discarded += 1;
-                            self.len = 0;
-                        } else {
-                            self.ready = self.len > 0;
-                        }
-                        continue;
+                        // EOF completes the remaining partial line in this
+                        // intake. A rejected event is counted by the queue.
+                        let _ = self.complete_line(clock, queue);
+                        break;
                     }
                     Ok(count) => {
                         self.cursor = 0;
@@ -144,12 +120,12 @@ impl ConsoleInput {
             }
             if matches!(byte, b'\r' | b'\n') {
                 self.skip_lf = byte == b'\r';
-                if self.discard {
-                    self.discard = false;
-                    self.len = 0;
-                    self.discarded += 1;
-                } else {
-                    self.ready = true;
+                // Admit before checking the next byte/line budget, even when
+                // this delimiter is the final byte allowed in this intake.
+                match self.complete_line(clock, queue) {
+                    Ok(true) => emitted += 1,
+                    Ok(false) => {}
+                    Err(_) => break,
                 }
             } else if !self.discard {
                 if self.len == LINE_BYTES || byte == 0 {
@@ -162,4 +138,35 @@ impl ConsoleInput {
             }
         }
     }
+    fn complete_line(
+        &mut self,
+        clock: &Clock,
+        queue: &mut SysEventQueue,
+    ) -> Result<bool, QueueError> {
+        // Only incomplete framing survives an intake. Completed events belong
+        // to the shared ring or its bounded rejection count, never a retry.
+        let len = std::mem::take(&mut self.len);
+        if self.discard {
+            self.discard = false;
+            self.discarded += 1;
+            return Ok(false);
+        }
+        if len == 0 {
+            return Ok(false);
+        }
+        let Ok(text) = std::str::from_utf8(&self.line[..len]) else {
+            self.discarded += 1;
+            return Ok(false);
+        };
+        queue.push(SysEvent {
+            time: clock.now(),
+            kind: EventKind::ConsoleLine(text),
+        })?;
+        self.lines += 1;
+        Ok(true)
+    }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/stdin/lines.rs"]
+mod tests;

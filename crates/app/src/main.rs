@@ -746,6 +746,9 @@ fn run() -> Result<(), String> {
     host.set_model_catalog(std::sync::Arc::new(models), client_profiles);
     let mut audio = qa_app::audio::Output::open(bank)?;
     host.local_clients = local_clients;
+    if let Some(world) = &loaded_world {
+        host.local_presentations.fill(world.presentation);
+    }
     for (world, client) in host.local_worlds.iter_mut().zip(local_clients) {
         *world = client.and(render_world);
     }

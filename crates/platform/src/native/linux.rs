@@ -100,6 +100,24 @@ struct Timespec {
     seconds: std::ffi::c_long,
     nanos: std::ffi::c_long,
 }
+impl Timespec {
+    fn remaining(started: &Stopwatch, timeout: Duration) -> Result<Self, NativeError> {
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(NativeError::Timeout)?;
+        Ok(Self {
+            seconds: remaining
+                .as_secs()
+                .try_into()
+                .map_err(|_| NativeError::Extent)?,
+            nanos: remaining
+                .subsec_nanos()
+                .try_into()
+                .map_err(|_| NativeError::Extent)?,
+        })
+    }
+}
 
 struct Mapping {
     address: NonNull<u8>,
@@ -184,25 +202,12 @@ pub(super) fn transfer(
 ) -> Result<(), NativeError> {
     while !bytes.is_empty() {
         let io = if let Some((started, timeout)) = deadline {
-            let remaining = timeout
-                .checked_sub(started.elapsed())
-                .filter(|d| !d.is_zero())
-                .ok_or(NativeError::Timeout)?;
             let mut fd = PollFd {
                 fd: stream.as_raw_fd(),
                 events: if writing { 4 } else { 1 },
                 returned: 0,
             };
-            let timeout = Timespec {
-                seconds: remaining
-                    .as_secs()
-                    .try_into()
-                    .map_err(|_| NativeError::Extent)?,
-                nanos: remaining
-                    .subsec_nanos()
-                    .try_into()
-                    .map_err(|_| NativeError::Extent)?,
-            };
+            let timeout = Timespec::remaining(started, timeout)?;
             // SAFETY: one live owned socket and initialized stack records.
             // ppoll uses the remaining absolute budget without changing socket
             // options. Readiness is followed by nonblocking IO, so a short
@@ -711,13 +716,9 @@ impl NativeProcess {
         let offset = usize::try_from(address.checked_sub(self.base).ok_or(NativeError::Extent)?)
             .map_err(|_| NativeError::Extent)?;
         let end = offset.checked_add(5).ok_or(NativeError::Extent)?;
-        let region = self
-            .regions
-            .partition_point(|region| region.offset <= offset)
-            .checked_sub(1)
-            .and_then(|index| self.regions.get(index))
-            .ok_or(NativeError::Extent)?;
-        if region.permissions & 4 == 0 || end > region.offset + region.length {
+        let index = super::region_at(&self.regions, offset, 4).ok_or(NativeError::Extent)?;
+        let region = &self.regions[index];
+        if end > region.offset + region.length {
             return Err(NativeError::Extent);
         }
         let displacement = i32::try_from(i128::from(target) - i128::from(address) - 5)

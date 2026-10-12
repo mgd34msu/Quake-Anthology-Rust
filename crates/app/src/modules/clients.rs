@@ -182,8 +182,9 @@ impl FrameHost {
             if row.state != State::Running || native_client >= 256 {
                 return Err("client module unavailable or native slot out of range".into());
             }
-            let context = row.request.context.console;
-            let maxclients = row.storage.max_clients(&self.console.cvars, context.source);
+            let maxclients = row
+                .storage
+                .max_clients(&self.console.cvars, row.request.context.native_rules);
             if native_client >= maxclients.max(0) as u32 {
                 return Err("native client outside module maxclients".into());
             }

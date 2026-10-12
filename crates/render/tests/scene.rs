@@ -80,10 +80,10 @@ fn world(assets: &mut Assets, materials: &[SurfaceMaterial]) -> WorldId {
         vertices: [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 0.0, 1.0]]
             .map(|position| WorldVertex {
                 vertex: Vertex {
+                    normal: Vec3([-1.0, 0.0, 0.0]),
                     position: Vec3(position),
                     ..Vertex::default()
                 },
-                normal: Vec3([-1.0, 0.0, 0.0]),
             })
             .into(),
         indices: vec![0, 1, 2],

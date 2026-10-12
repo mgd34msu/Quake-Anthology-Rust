@@ -1,7 +1,7 @@
 use crate::transport::{self, Submission};
 use qa_core::{events::OutputSubmission, primitives::NativeDelivery, sys_events::EventTime};
 use qa_network::{
-    channel::{TransmitError, Unreliable},
+    channel::{Channel, TransmitError, Unreliable},
     ingress::Connection,
 };
 
@@ -11,6 +11,18 @@ pub(super) fn transmit(
     time: EventTime,
     admit: impl FnMut(&[u8]) -> bool,
 ) -> Result<(Option<OutputSubmission>, Submission), TransmitError> {
+    if connection.pending_output.is_some()
+        && connection.channel.pending_packet().is_none()
+        && !connection.channel.pending_fragments()
+    {
+        // QW reply alignment can cancel an unsent packet. Its ring record
+        // remains unsent and must be encoded again, not completed by a new
+        // empty control reply.
+        connection.pending_output = None;
+        if payload.is_none() {
+            return Ok((None, Submission::default()));
+        }
+    }
     let Some(sequence) = connection
         .pending_output
         .or(payload.map(|(sequence, _)| sequence))
@@ -134,15 +146,18 @@ pub(super) fn submit_encoded(
         return Ok((OutputSubmission::BestEffort, Submission::default()));
     }
     if delivery.reliable {
-        return match connection.channel.queue_reliable(bytes) {
-            Ok(receipt) => Ok((OutputSubmission::Reliable(receipt), Submission::default())),
-            Err(qa_network::channel::TransmitError::Full) => {
-                Ok((OutputSubmission::Unsent, Submission::default()))
-            }
-            Err(_) => Err(()),
-        };
+        return reliable(&mut connection.channel, bytes)
+            .map(|submission| (submission, Submission::default()));
     }
     let (disposition, submitted) =
         transmit(connection, Some((sequence, bytes)), time, admit).map_err(|_| ())?;
     Ok((disposition.unwrap_or(OutputSubmission::Unsent), submitted))
+}
+
+pub(super) fn reliable(channel: &mut Channel, bytes: &[u8]) -> Result<OutputSubmission, ()> {
+    match channel.queue_reliable(bytes) {
+        Ok(receipt) => Ok(OutputSubmission::Reliable(receipt)),
+        Err(TransmitError::Full) => Ok(OutputSubmission::Unsent),
+        Err(_) => Err(()),
+    }
 }

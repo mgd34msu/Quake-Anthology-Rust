@@ -127,6 +127,19 @@ pub struct PresentationDefaults {
     pub lightstyles: [LightStyle; 256],
     pub identity_light: f32,
 }
+impl Default for PresentationDefaults {
+    fn default() -> Self {
+        let view = Refdef::default();
+        Self {
+            cpu: view.cpu_presentation,
+            perspective_step: view.perspective_step,
+            blend_phase: view.blend_phase,
+            palette_transform: view.palette_transform,
+            lightstyles: view.lightstyles,
+            identity_light: view.identity_light,
+        }
+    }
+}
 impl PresentationDefaults {
     pub fn apply(&self, view: &mut Refdef) {
         view.cpu_presentation = self.cpu;
@@ -200,14 +213,7 @@ pub fn load_world(
             .map(|source| load_palette(vfs, assets, source))
             .transpose()?
     };
-    let mut presentation = PresentationDefaults {
-        cpu: CpuPresentation::Rgb,
-        perspective_step: PerspectiveStep::Eight,
-        blend_phase: BlendPhase::AfterView,
-        palette_transform: None,
-        lightstyles: [LightStyle::default(); 256],
-        identity_light: 1.0,
-    };
+    let mut presentation = PresentationDefaults::default();
     // Native presentation choices are resolved here, independently of movement,
     // client protocol and module format. There is no family branch in drawing.
     if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {

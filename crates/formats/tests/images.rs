@@ -281,6 +281,47 @@ fn wad_qpic_and_font_views_keep_the_source_alive_without_lump_copies() {
     };
     assert_eq!((font.width, font.height), (128, 128));
 }
+
+#[test]
+fn wad_folded_lookup_preserves_first_directory_ordinal_and_exact_name_bytes() {
+    let names: &[&[u8]] = &[b"fOo", b"FOO", b"fOo", b"\x80X", b"\x80x", b"\x81x", b""];
+    let mut bytes = b"WAD2".to_vec();
+    bytes.extend((names.len() as i32).to_le_bytes());
+    bytes.extend((12i32 + names.len() as i32).to_le_bytes());
+    for index in 0..names.len() {
+        bytes.push(index as u8);
+    }
+    for (index, name) in names.iter().enumerate() {
+        bytes.extend((12i32 + index as i32).to_le_bytes());
+        bytes.extend(1i32.to_le_bytes());
+        bytes.extend(1i32.to_le_bytes());
+        bytes.extend([0, 0, 0, 0]);
+        let mut field = [0; 16];
+        field[..name.len()].copy_from_slice(name);
+        bytes.extend(field);
+    }
+    let wad = Wad::parse(&bytes).unwrap();
+    let actual: Vec<_> = wad.lumps.iter().map(|lump| lump.name).collect();
+    assert_eq!(actual, names);
+    // NameTable's folded representative is not necessarily the first source
+    // row. The cached ordinal must retain W_GetLumpinfo's directory order.
+    for name in [b"foo".as_slice(), b"FOO", b"FoO"] {
+        assert_eq!(wad.find(name), Some(0));
+    }
+    assert_eq!(wad.find(b"\x80x"), Some(3));
+    assert_eq!(wad.find(b"\x81X"), Some(5));
+    assert_eq!(wad.find(b""), Some(6));
+    assert_eq!(wad.find(b"missing"), None);
+    assert_eq!(wad.find(b"\x82x"), None);
+    let WadImage::Raw(first) = wad.image(wad.find(b"FOO").unwrap()).unwrap() else {
+        panic!("expected raw fixture lump")
+    };
+    assert_eq!(first, &[0]);
+    assert!(std::ptr::eq(first.as_ptr(), bytes[12..].as_ptr()));
+    let empty = [b'W', b'A', b'D', b'2', 0, 0, 0, 0, 12, 0, 0, 0];
+    let empty = Wad::parse(&empty).unwrap();
+    assert_eq!(empty.find(b""), None);
+}
 #[test]
 fn malformed_raster_data_returns_a_scoped_error() {
     let mut p = pcx(1);

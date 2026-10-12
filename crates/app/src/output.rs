@@ -82,13 +82,15 @@ pub fn dispatch(
                         counts.sounds += 1;
                         let sent = source.sound(event);
                         counts.unhandled_sounds += u64::from(!sent);
-                        sent
+                        // A missing or rejecting presentation backend is a
+                        // counted drop, with no retry contract.
+                        true
                     }
                     FrameEvent::Effect(event) => {
                         counts.effects += 1;
                         let sent = source.effect(event);
                         counts.unhandled_effects += u64::from(!sent);
-                        sent
+                        true
                     }
                     FrameEvent::Print(event) => {
                         counts.prints += 1;
@@ -196,10 +198,11 @@ pub fn dispatch(
                 submitted.complete,
                 connection.pending_output == Some(sequence),
             );
-            let Some(disposition) = disposition else {
+            if let Some(disposition) = disposition {
+                server.events.submit(id, sequence, disposition);
+            } else if connection.pending_output.is_some() {
                 continue;
-            };
-            server.events.submit(id, sequence, disposition);
+            }
         }
         let stopped = std::cell::Cell::new(false);
         qa_core::events::dispatch_consumer_until(
@@ -440,9 +443,12 @@ pub fn dispatch(
                             text,
                             &mut bytes,
                         ) {
-                            Ok(n) => match connection.channel.queue_reliable(&bytes[..n]) {
-                                Ok(receipt) => OutputSubmission::Reliable(receipt),
-                                Err(_) => OutputSubmission::Unsent,
+                            Ok(n) => match native::reliable(&mut connection.channel, &bytes[..n]) {
+                                Ok(submission) => submission,
+                                Err(()) => {
+                                    counts.native_unsupported += 1;
+                                    OutputSubmission::BestEffort
+                                }
                             },
                             Err(_) => {
                                 counts.native_unsupported += 1;

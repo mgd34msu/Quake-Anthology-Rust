@@ -2,9 +2,7 @@
 //! This value borrows no engine ownership; namespaces remain caller-selected.
 use super::{Convert, Field};
 use crate::{commands::packet::Protocol, states};
-use qa_core::primitives::{
-    EntityAppearance, EntityRecord, ModelRef, ResourceNamespace, RuleSetId,
-};
+use qa_core::primitives::{EntityAppearance, EntityRecord, ModelRef, ResourceNamespace, RuleSetId};
 
 #[derive(Clone, Copy)]
 enum Source {

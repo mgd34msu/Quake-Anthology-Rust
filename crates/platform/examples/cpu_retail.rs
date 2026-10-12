@@ -608,7 +608,9 @@ fn run() -> Result<(), String> {
                 return Err("diagnostic scene capacity".into());
             }
             let packet = isolated.finish();
-            let result = cpu.render(&packet, &assets);
+            let result = draw(&mut cpu, &mut dispatch, &packet, &assets, None);
+            let _ = dispatch.merge_counts(qa_platform::allocations::Counts::default());
+            let result = result.map_err(|e| format!("diagnostic retail CPU dispatch: {e}"))?;
             if result.rejected != 0 {
                 logger::console(format_args!(
                     "{{\"event\":\"retail_surface_rejected\",\"surface\":{},\"rejected\":{},\"material\":{}}}\n",

@@ -33,11 +33,11 @@ fn fixture_world(
         .enumerate()
         .map(|(i, position)| WorldVertex {
             vertex: Vertex {
+                normal: Vec3([-1.0, 0.0, 0.0]),
                 position: Vec3(position),
                 texcoord: [[0.0, 0.0], [16.0, 0.0], [16.0, 16.0], [0.0, 16.0]][i],
                 ..Vertex::default()
             },
-            normal: Vec3([-1.0, 0.0, 0.0]),
         })
         .collect();
     let bounds = Bounds {
@@ -672,6 +672,7 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
                     let v = row as f32 * 0.5;
                     g.vertices.push(WorldVertex {
                         vertex: Vertex {
+                            normal: Vec3([-1.0, 0.0, 0.0]),
                             position: Vec3([
                                 2.0 + if row == 1 && column == 1 { 0.5 } else { 0.0 },
                                 3.0 - 6.0 * u,
@@ -681,7 +682,6 @@ fn curved_patch_grid_keeps_triangle_coverage_and_curve_counters() {
                             lightmap_coord: [u, v],
                             ..Vertex::default()
                         },
-                        normal: Vec3([-1.0, 0.0, 0.0]),
                     });
                 }
             }
@@ -1782,10 +1782,10 @@ fn indexed_wall_on_eye_plane_skips_without_rejecting_nearby_drawable_wall() {
                 .into_iter()
                 .map(|position| WorldVertex {
                     vertex: Vertex {
+                        normal: normal,
                         position: Vec3(position),
                         ..Vertex::default()
                     },
-                    normal,
                 })
                 .collect();
             geometry.indices = vec![0, 1, 2, 0, 2, 4, 0, 1, 2, 3, 4];
@@ -3042,4 +3042,89 @@ fn shared_depth_gate_validates_sample_before_using_draw_override() {
     assert!(buffers.depth_test(0, 1.0, 0.5, 7, DepthFunc::Lequal));
     assert!(!buffers.depth_test(0, 1.0, 0.5, 0, DepthFunc::Equal));
     assert!(buffers.depth_test(0, 1.0, 0.5, 7, DepthFunc::Equal));
+}
+
+#[test]
+fn band_counts_one_scanner_rejection_and_keeps_healthy_surface() {
+    let mut assets = Assets::load().unwrap();
+    let image = assets.register_image(1, 1, &[255; 4]).unwrap();
+    let material = stages(
+        &mut assets,
+        &[Stage {
+            texture: StageTexture::Image(image),
+            sampler: Sampler {
+                filter: Filter::Nearest,
+                mipmaps: false,
+                ..Sampler::default()
+            },
+            ..Stage::default()
+        }],
+        MaterialSettings {
+            cull: Cull::None,
+            ..MaterialSettings::default()
+        },
+    );
+    let worlds = [4.0, 8.0].map(|depth| {
+        fixture_world(
+            &mut assets,
+            depth,
+            1.0,
+            SurfaceMaterial {
+                material,
+                ..SurfaceMaterial::default()
+            },
+            None,
+            GeometryPartition::Unpartitioned,
+            |_| {},
+        )
+    });
+    let list = packet(&assets, &worlds, test_view());
+    let view = list
+        .commands()
+        .iter()
+        .find_map(|command| match *command {
+            Command::View(view) => Some(view),
+            _ => None,
+        })
+        .unwrap();
+    let mut cpu = CpuBackend::load_with_limits(
+        29,
+        19,
+        &assets,
+        CpuLimits {
+            bands: RasterBands::One,
+            auto_bands: false,
+            ..CpuLimits::default()
+        },
+    )
+    .unwrap();
+    cpu.frame.pixels.fill(u32::from_le_bytes([3, 5, 7, 255]));
+    cpu.clear_depth(view.refdef.viewport, view.refdef.far);
+    let camera = Camera::load(view.refdef, 29, 19).unwrap();
+    let mut world = cpu.world.take().unwrap();
+    let mut stats = crate::BackendStats::default();
+    assert!(world.prepare.prepare_view(
+        &camera,
+        &list,
+        view.scene,
+        &assets,
+        &cpu.evaluator,
+        &mut stats,
+    ));
+    assert_eq!(world.prepare.geometry.primitive_count, 2);
+    assert_eq!(world.prepare.opaque_count, 2);
+    // Failed edge preparation leaves this primitive in its existing band bin.
+    // The scanner owns the rejection; the adjacent valid primitive must draw.
+    world.prepare.geometry.primitives[0].winding = None;
+    world.bands[0].render_opaque(
+        &world.prepare,
+        &camera,
+        &assets,
+        row_buffers(&mut cpu, 0..19),
+        &mut stats,
+    );
+    assert_eq!(world.bands[0].stats.rejected, 1);
+    assert_eq!(stats.rejected, 1);
+    assert_eq!(world.stats().rejected, 1);
+    assert!(cpu.frame.pixels.contains(&u32::MAX));
 }

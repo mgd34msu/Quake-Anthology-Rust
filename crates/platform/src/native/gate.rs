@@ -249,25 +249,12 @@ pub(super) unsafe fn read(address: usize, handoff: u64) -> Result<Packet, Native
 }
 
 pub(super) fn wait(fd: i32, started: &Stopwatch, timeout: Duration) -> Result<i16, NativeError> {
-    let remaining = timeout
-        .checked_sub(started.elapsed())
-        .filter(|remaining| !remaining.is_zero())
-        .ok_or(NativeError::Timeout)?;
     let mut descriptor = PollFd {
         fd,
         events: 1,
         returned: 0,
     };
-    let time = Timespec {
-        seconds: remaining
-            .as_secs()
-            .try_into()
-            .map_err(|_| NativeError::Extent)?,
-        nanos: remaining
-            .subsec_nanos()
-            .try_into()
-            .map_err(|_| NativeError::Extent)?,
-    };
+    let time = Timespec::remaining(started, timeout)?;
     // SAFETY: initialized fixed records; this descriptor has one owner. Unlike
     // bootstrap traffic, interruption of an active invocation tears it down.
     let result = unsafe { super::ppoll(&mut descriptor, 1, &time, std::ptr::null()) };

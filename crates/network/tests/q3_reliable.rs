@@ -202,7 +202,16 @@ fn native_string_width_gaps_duplicates_and_future_ack_are_bounded() {
     assert!(client.receive_command(3, b"server gap").unwrap());
     assert!(!client.receive_command(2, b"old").unwrap());
     let (mut client, mut server) = pair();
-    let receipt = server.queue_reliable(&[b'y'; 2000]).unwrap();
+    assert_eq!(
+        server.queue_reliable(&[b'y'; 1023]),
+        Err(TransmitError::MessageTooLarge)
+    );
+    assert_eq!(
+        server.queue_reliable(&[b'y'; 2000]),
+        Err(TransmitError::MessageTooLarge)
+    );
+    assert_eq!(server.command_state().unwrap().queued, 0);
+    let receipt = server.queue_reliable(&[b'y'; 1022]).unwrap();
     let mut text = Vec::new();
     loop {
         let data = server
@@ -216,18 +225,17 @@ fn native_string_width_gaps_duplicates_and_future_ack_are_bounded() {
         let seq = received.header.sequence;
         if let Delivery::Payload(body) = received.delivery {
             let mut bytes = body.to_vec();
-            assert_eq!(
-                client.decode_server_output(&mut bytes, seq, |_, bytes| text
-                    .extend_from_slice(bytes)),
-                Err(packet::Error::Opcode)
-            );
+            client
+                .decode_server_output(&mut bytes, seq, |_, bytes| text.extend_from_slice(bytes))
+                .unwrap();
             break;
         }
     }
-    assert_eq!(text, vec![b'y'; 1023]);
+    assert_eq!(text, vec![b'y'; 1022]);
     assert_eq!(server.command_state().unwrap().submitted, 1);
     assert!(server.acknowledge_commands(2, 1).is_err());
     assert!(server.acknowledge_commands(1, 0).is_err());
-    server.acknowledge_commands(1, 1).unwrap();
+    let mut codec = Commands::load(Protocol::Quake3_68);
+    move_message(&mut client, &mut server, &mut codec, 16);
     assert_eq!(server.reliable_receipts(), &[receipt]);
 }

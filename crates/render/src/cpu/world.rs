@@ -1891,10 +1891,7 @@ impl SurfacePrepare {
         // receive the original ClipGraph interpolation after these sources.
         for (corner, (output, &index)) in vertices.iter_mut().zip(indices).enumerate() {
             let loaded = geometry.vertices[index as usize];
-            let mut vertex = Vertex {
-                normal: loaded.normal,
-                ..loaded.vertex
-            };
+            let mut vertex = loaded.vertex;
             if let Some((projection, minima)) = indexed_coordinates {
                 vertex.texcoord = std::array::from_fn(|axis| {
                     (crate::world::geometry::project_texture(projection[axis], vertex.position)
@@ -2926,9 +2923,9 @@ mod tests {
             points.map(|point| crate::world::geometry::WorldVertex {
                 vertex: Vertex {
                     position: Vec3(point),
+                    normal: Vec3::default(),
                     ..Vertex::default()
                 },
-                normal: Vec3::default(),
             })
         };
         let line = loaded([[0.0; 3], [1.0, 2.0, 3.0], [2.0, 4.0, 6.0]]);

@@ -438,6 +438,363 @@ fn unreliable_transport_retry_keeps_its_record_and_does_not_hold_a_healthy_peer(
             .is_none()
     );
 }
+
+fn queue_move(host: &mut FrameHost, peer: &mut Channel, protocol: Protocol, time: EventTime) {
+    let command = UserCmd {
+        duration_ms: 16,
+        server_time_ms: time.milliseconds() as i32,
+        ..Default::default()
+    };
+    let mut bytes = [0; 1400];
+    let length = Commands::load(protocol)
+        .encode(&command, 0, peer, &mut bytes)
+        .unwrap();
+    let packet = peer
+        .prepare_move(&bytes[..length], time, None)
+        .unwrap()
+        .unwrap()
+        .bytes
+        .to_vec();
+    peer.submitted(time).unwrap();
+    host.queue
+        .push(SysEvent {
+            time,
+            kind: EventKind::Packet {
+                socket: 0,
+                from: Peer::Socket(([127, 0, 0, 1], 2000).into()),
+                bytes: &packet,
+            },
+        })
+        .unwrap();
+}
+
+#[test]
+fn qw_cancelled_reply_rebuilds_its_retained_event_after_a_new_queued_move() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let blocked = remote(&mut runtime, Protocol::QuakeWorld28, 2000);
+    let healthy = remote(&mut runtime, Protocol::Quake2_34, 2001);
+    let mut peer =
+        Channel::load(Protocol::QuakeWorld28.channel(), Endpoint::Client, 8192, 16).unwrap();
+    peer.set_qport(2000);
+    let mut healthy_peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    let mut source = Source {
+        reject: Some(2000),
+        ..Default::default()
+    };
+    queue_move(&mut host, &mut peer, Protocol::QuakeWorld28, source.now);
+    let sequence = publish_from(
+        &mut host.runtime,
+        RuleSetId::QuakeWorld,
+        false,
+        NativeTarget::All,
+        b"\x1arebuilt\0",
+    );
+    let first = host.frame(&mut source, true);
+    assert_eq!(first.output.native_blocked, 1);
+    assert_eq!(host.runtime.network.commands, 1);
+    let owner = host.runtime.server.clients[blocked.0 as usize]
+        .output
+        .unwrap();
+    assert!(host.runtime.server.events.retained_for(owner, sequence));
+    assert_eq!(source.packets.len(), 1);
+    assert_eq!(
+        receive(&mut healthy_peer, &source.packets[0].1),
+        b"\x0frebuilt\0"
+    );
+
+    // This newer real clc_move cancels the rejected packet while the old ring
+    // record remains retained. A replacement empty reply cannot retire it.
+    source.now = EventTime::from_milliseconds(25);
+    queue_move(&mut host, &mut peer, Protocol::QuakeWorld28, source.now);
+    publish(
+        &mut host.runtime,
+        false,
+        NativeTarget::Client(healthy),
+        b"\x0fhealthy\0",
+    );
+    source.packets.clear();
+    let second = host.frame(&mut source, true);
+    assert_eq!(host.runtime.network.commands, 2);
+    assert_eq!(host.runtime.network.command_errors, 0);
+    assert_eq!(second.server_ticks, 1);
+    assert_eq!(second.output.native_blocked, 1);
+    assert!(host.runtime.server.events.retained_for(owner, sequence));
+    let connection = host.runtime.network.get(blocked, Endpoint::Server).unwrap();
+    assert_eq!(connection.pending_output, Some(sequence));
+    let packet = connection.channel.pending_packet().unwrap();
+    let (_, body) = qa_network::headers::decode(
+        qa_network::headers::QUAKEWORLD,
+        qa_network::headers::Direction::ToClient,
+        packet.bytes,
+    )
+    .unwrap();
+    assert_eq!(body, b"\x1arebuilt\0");
+    assert_eq!(source.packets.len(), 1);
+    assert_eq!(source.packets[0].0, 2001);
+    assert_eq!(
+        receive(&mut healthy_peer, &source.packets[0].1),
+        b"\x0fhealthy\0"
+    );
+
+    source.reject = None;
+    source.now = EventTime::from_milliseconds(50);
+    source.packets.clear();
+    let third = host.frame(&mut source, true);
+    assert_eq!(third.server_ticks, 1);
+    assert_eq!(source.packets.len(), 1);
+    assert_eq!(source.packets[0].0, 2000);
+    assert_eq!(receive(&mut peer, &source.packets[0].1), b"\x1arebuilt\0");
+    assert!(host.runtime.server.events.is_empty());
+    assert!(
+        host.runtime
+            .network
+            .get(blocked, Endpoint::Server)
+            .unwrap()
+            .pending_output
+            .is_none()
+    );
+    source.now = EventTime::from_milliseconds(75);
+    source.packets.clear();
+    assert_eq!(host.frame(&mut source, true).server_ticks, 1);
+    assert!(source.packets.is_empty());
+}
+
+#[test]
+fn overlarge_common_print_is_a_counted_terminal_drop_without_blocking_a_healthy_peer() {
+    for protocol in [
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake3_68,
+    ] {
+        let mut runtime = Runtime::load(2, []).unwrap();
+        let target = remote(&mut runtime, protocol, 2000);
+        let healthy = remote(&mut runtime, Protocol::Quake2_34, 2001);
+        let owner = runtime.server.clients[target.0 as usize].output.unwrap();
+        // Q3's command body reaches 1023 bytes with the print prefix/quotes;
+        // MSG_ReadString cannot consume its terminator at that width.
+        let text = vec![
+            b'x';
+            if protocol == Protocol::Quake3_68 {
+                1015
+            } else {
+                1500
+            }
+        ];
+        let sequence = runtime
+            .server
+            .events
+            .print_bytes(Some(target), PrintKind::Console, &text)
+            .unwrap();
+        publish(
+            &mut runtime,
+            false,
+            NativeTarget::Client(healthy),
+            b"\x0fhealthy\0",
+        );
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::fixed(25).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let mut source = Source::default();
+        let first = host.frame(&mut source, true);
+        assert_eq!(first.output.native_unsupported, 1, "{protocol:?}");
+        assert_eq!(first.output.native_disconnected, 0);
+        assert!(!host.runtime.server.events.retained_for(owner, sequence));
+        assert!(host.runtime.server.events.is_empty());
+        assert_eq!(source.packets.len(), 1);
+        assert_eq!(source.packets[0].0, 2001);
+        let mut peer =
+            Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+        assert_eq!(receive(&mut peer, &source.packets[0].1), b"\x0fhealthy\0");
+        source.packets.clear();
+        for frame in 1..=40 {
+            source.now = EventTime::from_milliseconds(frame * 25);
+            let result = host.frame(&mut source, true);
+            assert_eq!(result.server_ticks, 1);
+            assert_eq!(result.output.native_unsupported, 0);
+            assert_eq!(result.output.native_disconnected, 0);
+            assert!(!host.runtime.server.events.needs_resync(owner));
+        }
+        assert!(source.packets.is_empty());
+        assert_eq!(
+            host.runtime.server.clients[target.0 as usize].connection,
+            Some(Connection::Remote)
+        );
+    }
+}
+
+#[test]
+fn q3_common_prints_keep_the_native_width_limit_and_wait_for_a_real_queued_ack() {
+    for length in [900, 1014] {
+        let mut runtime = Runtime::load(2, []).unwrap();
+        let target = remote(&mut runtime, Protocol::Quake3_68, 2000);
+        let healthy = remote(&mut runtime, Protocol::Quake2_34, 2001);
+        let owner = runtime.server.clients[target.0 as usize].output.unwrap();
+        let text = vec![b'x'; length];
+        let sequence = runtime
+            .server
+            .events
+            .print_bytes(Some(target), PrintKind::Console, &text)
+            .unwrap();
+        publish(
+            &mut runtime,
+            false,
+            NativeTarget::Client(healthy),
+            b"\x0fhealthy\0",
+        );
+        let mut host = FrameHost::load(
+            Console::new(Context::default()).unwrap(),
+            runtime,
+            TickRate::fixed(25).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let mut source = Source::default();
+        let first = host.frame(&mut source, true);
+        assert_eq!(first.output.native_unsupported, 0);
+        assert!(host.runtime.server.events.retained_for(owner, sequence));
+        let channel = &host
+            .runtime
+            .network
+            .get(target, Endpoint::Server)
+            .unwrap()
+            .channel;
+        assert_eq!(channel.command_state().unwrap().queued, 1);
+        assert_eq!(channel.command_state().unwrap().submitted, 1);
+        assert_eq!(channel.command_state().unwrap().acknowledged, 0);
+
+        let mut peer =
+            Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 16).unwrap();
+        peer.set_qport(2000);
+        let mut commands = Vec::new();
+        let mut healthy_peer =
+            Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+        for (port, bytes) in &source.packets {
+            if *port == 2000 {
+                let received = peer.receive(bytes, EventTime(1)).unwrap();
+                let sequence = received.header.sequence;
+                if let Delivery::Payload(body) = received.delivery {
+                    let mut body = body.to_vec();
+                    peer.decode_server_output(&mut body, sequence, |_, bytes| {
+                        commands.push(bytes.to_vec())
+                    })
+                    .unwrap();
+                }
+            } else {
+                assert_eq!(*port, 2001);
+                assert_eq!(receive(&mut healthy_peer, bytes), b"\x0fhealthy\0");
+            }
+        }
+        let mut native = vec![0; OUTPUT_PAGE_BYTES];
+        let count = qa_network::outputs::print(
+            Protocol::Quake3_68,
+            PrintKind::Console,
+            PrintKind::Console.default_level(),
+            &text,
+            &mut native,
+        )
+        .unwrap();
+        assert_eq!(commands, [native[..count - 1].to_vec()]);
+        assert!(host.runtime.server.events.retained_for(owner, sequence));
+
+        source.now = EventTime::from_milliseconds(25);
+        queue_move(&mut host, &mut peer, Protocol::Quake3_68, source.now);
+        source.packets.clear();
+        let next = host.frame(&mut source, true);
+        assert_eq!(next.server_ticks, 1);
+        assert_eq!(host.runtime.network.command_errors, 0);
+        assert!(!host.runtime.server.events.retained_for(owner, sequence));
+        assert!(host.runtime.server.events.is_empty());
+        assert_eq!(
+            host.runtime
+                .network
+                .get(target, Endpoint::Server)
+                .unwrap()
+                .channel
+                .command_state()
+                .unwrap()
+                .acknowledged,
+            1
+        );
+    }
+}
+
+#[test]
+fn absent_presentation_backends_drop_once_and_leave_peer_delivery_and_ticks_running() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    let client = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    runtime
+        .server
+        .events
+        .push(qa_core::events::FrameEvent::Sound(SoundEvent::default()))
+        .unwrap();
+    runtime
+        .server
+        .events
+        .push(qa_core::events::FrameEvent::Effect(EffectEvent {
+            effect: EffectId(1),
+            position: Vec3::default(),
+            direction: Vec3::default(),
+            count: 1,
+        }))
+        .unwrap();
+    publish(
+        &mut runtime,
+        false,
+        NativeTarget::Client(client),
+        b"\x0fhealthy\0",
+    );
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::fixed(25).unwrap(),
+        vec![],
+    )
+    .unwrap();
+    // Source has no sound/effect backend, using the same false defaults as an
+    // unloaded live capability. Counters report rejection, never playback.
+    let mut source = Source::default();
+    let first = host.frame(&mut source, true);
+    assert_eq!((first.output.sounds, first.output.effects), (1, 1));
+    assert_eq!(
+        (
+            first.output.unhandled_sounds,
+            first.output.unhandled_effects
+        ),
+        (1, 1)
+    );
+    assert!(host.runtime.server.events.is_empty());
+    assert_eq!(source.packets.len(), 1);
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    assert_eq!(receive(&mut peer, &source.packets[0].1), b"\x0fhealthy\0");
+    source.now = EventTime::from_milliseconds(25);
+    source.packets.clear();
+    let second = host.frame(&mut source, true);
+    assert_eq!(second.server_ticks, 1);
+    assert_eq!((second.output.sounds, second.output.effects), (0, 0));
+    assert_eq!(
+        (
+            second.output.unhandled_sounds,
+            second.output.unhandled_effects
+        ),
+        (0, 0)
+    );
+    assert!(source.packets.is_empty());
+    assert_eq!(second.output.native_disconnected, 0);
+}
+
 #[test]
 fn reliable_native_pages_retire_only_on_the_selected_peers_channel_ack() {
     let mut runtime = Runtime::load(2, []).unwrap();

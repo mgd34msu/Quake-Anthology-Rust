@@ -753,14 +753,7 @@ impl Assets {
                 },
             });
         }
-        let vertices: Vec<_> = geometry
-            .vertices
-            .iter()
-            .map(|v| Vertex {
-                normal: v.normal,
-                ..v.vertex
-            })
-            .collect();
+        let vertices: Vec<_> = geometry.vertices.iter().map(|v| v.vertex).collect();
         let mesh = self.register_model(&vertices, &indices, MaterialId(0))?;
         self.worlds.push(World {
             geometry,

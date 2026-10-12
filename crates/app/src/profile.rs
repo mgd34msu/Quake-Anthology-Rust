@@ -4,6 +4,7 @@ use crate::Runtime;
 use qa_console::{catalog::Scope, commands::Console, cvars::Cvars, views::Context};
 use qa_content::vfs::{FileRef, Vfs};
 use qa_core::{
+    names::canonical_path,
     primitives::{CvarHandle, RuleSetId},
     sys_events::{EventTime, SeatId},
 };
@@ -53,17 +54,21 @@ fn put(
         source,
         ..console.cvars.context()
     };
-    let view = console.cvars.bind(name, context).or_else(|| {
-        console.cvars.bind(
-            name,
-            Context {
-                side: Scope::Server,
-                ..context
-            },
-        )
-    });
-    if let Some(view) = view
-        && console.cvars.write(view, value).is_ok()
+    let server = Context {
+        side: Scope::Server,
+        ..context
+    };
+    let context = if console.cvars.bind(name, context).is_none()
+        && console.cvars.bind(name, server).is_some()
+    {
+        server
+    } else {
+        context
+    };
+    if console
+        .cvars
+        .set_user(name, value, context, None, 0)
+        .is_ok()
     {
         report.cvars += 1;
     } else {
@@ -259,7 +264,7 @@ pub fn load(
         .find(|(_, name)| name.as_slice() == b"cvars/shared/canonical.json");
     let default_source = client;
     let movement_source = movement;
-    let prefix = format!("{product}/").to_ascii_lowercase();
+    let prefix = canonical_path(&format!("{product}/"));
     if let Some((file, name)) = canonical {
         let value = document(&runtime.vfs, *file)?;
         if value.get("dialect").and_then(Value::as_str) != Some("q3") {
@@ -376,6 +381,10 @@ pub fn load(
     }
     Ok(report)
 }
+
+#[cfg(test)]
+#[path = "../tests/fixtures/profile.rs"]
+mod tests;
 
 const INPUT_NAMES: [&str; 21] = [
     "cl_forwardspeed",

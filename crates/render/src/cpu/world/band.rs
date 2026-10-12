@@ -224,15 +224,13 @@ impl WorldBand {
                     continue;
                 }
                 debug_assert_eq!(primitive.depth_policy, policy);
-                if !self.edges.add_polygon(
+                self.edges.add_polygon(
                     index,
                     primitive.depth_key,
                     primitive.draw_rank,
                     prepared.bins.edges(primitive.edges),
                     primitive.winding,
-                ) {
-                    self.stats.rejected = self.stats.rejected.saturating_add(1);
-                }
+                );
             }
             let width = self.width;
             let cache = &mut self.cache;

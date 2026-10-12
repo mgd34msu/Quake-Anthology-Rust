@@ -17,6 +17,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug)]
 pub struct ClientView {
     pub world: qa_render::world::WorldId,
+    pub presentation: qa_render::material::world_load::PresentationDefaults,
     pub origin: qa_core::primitives::Vec3,
     pub angles: qa_core::primitives::Vec3,
     pub fov_x: f32,
@@ -143,6 +144,7 @@ pub struct FrameHost {
     pub local_clients: [Option<ClientId>; SeatId::COUNT],
     /// A seat's world/presentation choice is independent of its physics rules.
     pub local_worlds: [Option<qa_render::world::WorldId>; SeatId::COUNT],
+    pub local_presentations: [qa_render::material::world_load::PresentationDefaults; SeatId::COUNT],
     maxfps: CvarHandle,
     fov: CvarHandle,
     roll_angle: CvarHandle,
@@ -263,6 +265,7 @@ impl FrameHost {
             developer,
             local_clients: [None; SeatId::COUNT],
             local_worlds: [None; SeatId::COUNT],
+            local_presentations: [Default::default(); SeatId::COUNT],
             maxfps,
             fov,
             roll_angle,
@@ -409,6 +412,7 @@ impl FrameHost {
             let world = self.local_worlds[seat]?;
             Some(ClientView {
                 world,
+                presentation: self.local_presentations[seat],
                 origin: player.eye(),
                 angles: player.view_angles,
                 fov_x: self.console.cvars.value(self.fov),

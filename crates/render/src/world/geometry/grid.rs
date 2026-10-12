@@ -223,8 +223,7 @@ fn split(points: &[WorldVertex], axis: usize, middle: f32) -> (Vec<WorldVertex>,
 fn interpolate(a: WorldVertex, b: WorldVertex, fraction: f32) -> WorldVertex {
     let mut out = a;
     out.vertex.position = a.vertex.position.lerp(b.vertex.position, fraction);
-    out.normal = a.normal.lerp(b.normal, fraction);
-    out.vertex.normal = out.normal;
+    out.vertex.normal = a.vertex.normal.lerp(b.vertex.normal, fraction);
     out.vertex.texcoord = qa_core::math::lerp_array(a.vertex.texcoord, b.vertex.texcoord, fraction);
     out.vertex.lightmap_coord =
         qa_core::math::lerp_array(a.vertex.lightmap_coord, b.vertex.lightmap_coord, fraction);
@@ -245,7 +244,7 @@ fn center(points: &[WorldVertex]) -> WorldVertex {
     let mut color = [0.0; 4];
     for point in points {
         position = position + point.vertex.position;
-        normal = normal + point.normal;
+        normal = normal + point.vertex.normal;
         for i in 0..2 {
             uv[i] += point.vertex.texcoord[i];
             lightmap[i] += point.vertex.lightmap_coord[i];
@@ -257,8 +256,7 @@ fn center(points: &[WorldVertex]) -> WorldVertex {
     // Q2 VectorScale(total, 1.0/numverts) multiplies by a double reciprocal.
     let inverse = 1.0 / points.len() as f64;
     out.vertex.position = Vec3(position.0.map(|n| (f64::from(n) * inverse) as f32));
-    out.normal = normal / points.len() as f32;
-    out.vertex.normal = out.normal;
+    out.vertex.normal = normal / points.len() as f32;
     out.vertex.texcoord = uv.map(|n| n / points.len() as f32);
     out.vertex.lightmap_coord = lightmap.map(|n| n / points.len() as f32);
     out.vertex.color = color.map(|n| (n / points.len() as f32).round() as u8);

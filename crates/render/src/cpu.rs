@@ -814,50 +814,38 @@ impl CpuBackend {
                 {
                     continue;
                 }
-                let weights = weights.map(|w| w * area_inverse);
-                let inverse_depth = weights[0] * vertices[0].inverse_depth
-                    + weights[1] * vertices[1].inverse_depth
-                    + weights[2] * vertices[2].inverse_depth;
+                let weights = Vec3(weights.map(|w| w * area_inverse));
+                let inverse_depth = weights.dot(Vec3(vertices.map(|v| v.inverse_depth)));
                 let depth_score = if pass.depth_hack {
                     inverse_depth * 0.3 + 0.7 / camera.refdef.near
                 } else {
                     inverse_depth
                 };
                 let index = buffers.offset(width, x, y);
-                if !depth_passes(
-                    pass.stage.stage.depth_func,
+                if !buffers.depth_test(
+                    index,
+                    inverse_depth,
                     depth_score,
-                    buffers.inverse_depth[index],
                     pass.draw_rank,
-                    buffers.depth_ranks[index],
+                    pass.stage.stage.depth_func,
                 ) {
                     continue;
                 }
                 let depth = 1.0 / inverse_depth;
                 let coordinates = std::array::from_fn(|i| {
                     if pass.indexed.is_some() {
-                        return weights[0] * vertices[0].indexed_texcoord[i]
-                            + weights[1] * vertices[1].indexed_texcoord[i]
-                            + weights[2] * vertices[2].indexed_texcoord[i];
+                        return weights.dot(Vec3(vertices.map(|v| v.indexed_texcoord[i])));
                     }
-                    (weights[0] * vertices[0].texcoord_over_depth[i]
-                        + weights[1] * vertices[1].texcoord_over_depth[i]
-                        + weights[2] * vertices[2].texcoord_over_depth[i])
-                        * depth
+                    weights.dot(Vec3(vertices.map(|v| v.texcoord_over_depth[i]))) * depth
                 });
                 let color = std::array::from_fn(|i| {
-                    (weights[0] * vertices[0].color_over_depth[i]
-                        + weights[1] * vertices[1].color_over_depth[i]
-                        + weights[2] * vertices[2].color_over_depth[i])
-                        * depth
+                    weights.dot(Vec3(vertices.map(|v| v.color_over_depth[i]))) * depth
                 });
                 if let Some(indexed) = pass.indexed {
                     if !alpha_pass(pass.stage.stage.alpha_test, color[3]) {
                         continue;
                     }
-                    let light = weights[0] * vertices[0].indexed_light
-                        + weights[1] * vertices[1].indexed_light
-                        + weights[2] * vertices[2].indexed_light;
+                    let light = weights.dot(Vec3(vertices.map(|v| v.indexed_light)));
                     let Some((color, write_depth)) = indexed.sample(
                         coordinates,
                         light,
@@ -1093,8 +1081,11 @@ fn draw_vertex(draw: Draw2d, at: [f32; 2]) -> Vertex {
     Vertex {
         position: Vec3([at[0], at[1], 0.0]),
         texcoord: std::array::from_fn(|axis| {
-            draw.texcoords[axis]
-                + fraction[axis] * (draw.texcoords[axis + 2] - draw.texcoords[axis])
+            qa_core::math::lerp(
+                draw.texcoords[axis],
+                draw.texcoords[axis + 2],
+                fraction[axis],
+            )
         }),
         color: draw.color,
         ..Vertex::default()
@@ -1451,15 +1442,11 @@ fn sample<const LINEAR: bool, const REPEAT: bool, const MASK_REPEAT: bool>(
             linear_taps::<REPEAT, MASK_REPEAT>(base[0], size[0], image.bounds[0], image.bounds[2]);
         let [y0, y1] =
             linear_taps::<REPEAT, MASK_REPEAT>(base[1], size[1], image.bounds[1], image.bounds[3]);
-        let x0 = x0 - image.storage_origin[0] as usize;
-        let x1 = x1 - image.storage_origin[0] as usize;
-        let row0 = (y0 - image.storage_origin[1] as usize) * image.row_stride as usize;
-        let row1 = (y1 - image.storage_origin[1] as usize) * image.row_stride as usize;
         let offsets = [
-            (row0 + x0) * 4,
-            (row0 + x1) * 4,
-            (row1 + x0) * 4,
-            (row1 + x1) * 4,
+            image.offset(x0, y0),
+            image.offset(x1, y0),
+            image.offset(x0, y1),
+            image.offset(x1, y1),
         ];
         let samples = offsets
             .map(|offset| crate::stage::unit_rgba(std::array::from_fn(|i| image.rgba[offset + i])));

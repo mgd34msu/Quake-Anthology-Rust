@@ -59,6 +59,11 @@ impl Window {
         self.sequence = sequence;
     }
     fn queue(&mut self, text: &[u8], receipt: NativeReceipt) -> Result<(), TransmitError> {
+        // MSG_ReadString stops after STRING_BYTES - 1 payload bytes. Keep
+        // room for its terminator so the next service remains readable.
+        if qa_core::text::until_nul(text).len() >= STRING_BYTES - 1 {
+            return Err(TransmitError::MessageTooLarge);
+        }
         if self.sequence - self.acknowledged >= SLOTS as u32 || self.sequence == i32::MAX as u32 {
             return Err(TransmitError::Full);
         }

@@ -1,4 +1,5 @@
 use super::*;
+use qa_core::names::NameTable;
 
 #[derive(Debug)]
 pub struct WadLump<'a> {
@@ -11,6 +12,8 @@ pub struct WadLump<'a> {
 pub struct Wad<'a> {
     pub wad3: bool,
     pub lumps: Vec<WadLump<'a>>,
+    names: NameTable,
+    first_lump: Box<[Option<usize>]>,
 }
 pub enum WadImage<'a> {
     Image(IndexedImage<'a>),
@@ -50,15 +53,25 @@ impl<'a> Wad<'a> {
                 compression,
             });
         }
+        let names = NameTable::load(lumps.iter().map(|lump| lump.name))
+            .map_err(|_| FormatError::InvalidRange)?;
+        let mut first_lump = vec![None; names.len()].into_boxed_slice();
+        for (index, lump) in lumps.iter().enumerate() {
+            let name = names
+                .find_folded(lump.name)
+                .ok_or(FormatError::InvalidValue)?;
+            first_lump[name.0 as usize].get_or_insert(index);
+        }
         Ok(Self {
             wad3: magic == b"WAD3",
             lumps,
+            names,
+            first_lump,
         })
     }
     pub fn find(&self, name: &[u8]) -> Option<usize> {
-        self.lumps
-            .iter()
-            .position(|lump| lump.name.eq_ignore_ascii_case(name))
+        let name = self.names.find_folded(name)?;
+        self.first_lump[name.0 as usize]
     }
     pub fn image(&self, index: usize) -> Result<WadImage<'a>, FormatError> {
         let lump = self

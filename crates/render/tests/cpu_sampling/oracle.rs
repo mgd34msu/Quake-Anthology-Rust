@@ -3,6 +3,9 @@ use crate::assets::upload::{MipLevel, PreparedImage};
 use crate::assets::{Filter, Image, Sampler, TextureIntensity};
 use crate::lightmap::AtlasRegion;
 
+#[path = "raster.rs"]
+mod raster;
+
 // Frozen four-corner sampler from e9e6211:crates/render/src/cpu.rs::sample.
 // This reference always borrows the complete native image, never a copied ROI.
 fn original_texel(coordinate: f32, size: u32, wrap: Wrap) -> usize {

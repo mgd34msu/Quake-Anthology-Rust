@@ -34,6 +34,7 @@ fn fixture_world(
             }
             WorldVertex {
                 vertex: Vertex {
+                    normal: Vec3([-1.0, 0.0, 0.0]),
                     position: Vec3(position),
                     texcoord: if constant_uv { [-0.25, 0.5] } else { uv[i] },
                     lightmap_coord: [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]][i],
@@ -45,7 +46,6 @@ fn fixture_world(
                     ][i],
                     ..Vertex::default()
                 },
-                normal: Vec3([-1.0, 0.0, 0.0]),
             }
         })
         .collect();

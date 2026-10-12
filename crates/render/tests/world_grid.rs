@@ -118,8 +118,7 @@ fn grid_subdivision_replaces_gl_triangles_and_preserves_cpu_polygon() {
                 point.vertex.texcoord,
                 [point.vertex.position.0[0], point.vertex.position.0[1]]
             );
-            assert_eq!(point.normal, Vec3([0.0, 0.0, 1.0]));
-            assert_eq!(point.vertex.normal, point.normal);
+            assert_eq!(point.vertex.normal, Vec3([0.0, 0.0, 1.0]));
             assert_eq!(point.vertex.color, [255; 4]);
         }
         assert!(
@@ -176,8 +175,7 @@ fn center_fan_keeps_native_position_reciprocal_and_normal_division() {
             .iter_mut()
             .zip([[-1.0, 1.0, 0.0], [-2.0, 1.0, 0.0], [-4.0, 3.0, 0.0]])
     {
-        vertex.normal = Vec3(normal);
-        vertex.vertex.normal = vertex.normal;
+        vertex.vertex.normal = Vec3(normal);
     }
     let stats = subdivide_surface(
         &mut world,
@@ -195,10 +193,9 @@ fn center_fan_keeps_native_position_reciprocal_and_normal_division() {
         [0x4015_5555, 0x3eaa_aaab, 0]
     );
     assert_eq!(
-        center.normal.0.map(f32::to_bits),
+        center.vertex.normal.0.map(f32::to_bits),
         [0xc015_5555, 0x3fd5_5555, 0]
     );
-    assert_eq!(center.vertex.normal, center.normal);
 }
 
 #[test]
@@ -214,8 +211,7 @@ fn generic_vertex_attributes_use_the_same_edge_fraction() {
         let x = vertex.vertex.position.0[0];
         vertex.vertex.lightmap_coord = [x / 32.0, 1.0];
         vertex.vertex.color = [if x < 0.0 { 0 } else { 200 }, 17, 33, 255];
-        vertex.normal = Vec3([x / 16.0, 0.0, 1.0]);
-        vertex.vertex.normal = vertex.normal;
+        vertex.vertex.normal = Vec3([x / 16.0, 0.0, 1.0]);
     }
     subdivide_surface(&mut world, 0, GridOptions::default()).unwrap();
     let intersections: Vec<_> = world.vertices[4..]
@@ -226,8 +222,7 @@ fn generic_vertex_attributes_use_the_same_edge_fraction() {
     for point in intersections {
         assert_eq!(point.vertex.lightmap_coord, [0.0, 1.0]);
         assert_eq!(point.vertex.color, [100, 17, 33, 255]);
-        assert_eq!(point.normal, Vec3([0.0, 0.0, 1.0]));
-        assert_eq!(point.vertex.normal, point.normal);
+        assert_eq!(point.vertex.normal, Vec3([0.0, 0.0, 1.0]));
     }
 }
 

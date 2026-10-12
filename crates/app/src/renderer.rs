@@ -10,7 +10,7 @@ use qa_render::{
     Assets, BackendStats, BlendPhase, FrontEnd, Limits, Refdef, Viewport,
     cpu::{CpuBackend, CpuLimits, RasterBands, RasterConfig, run_cpu_job},
     gl::GlBackend,
-    material::world_load::{LoadedWorld, PresentationDefaults},
+    material::world_load::LoadedWorld,
     world::WorldView,
 };
 
@@ -184,8 +184,26 @@ enum Backend {
     Gl(GlBackend),
 }
 struct WorldScene {
-    presentation: PresentationDefaults,
     views: [WorldView; SeatId::COUNT],
+}
+/// Each CLIENT supplies its selected presentation independently of the world.
+pub fn view_refdef(client: ClientView, viewport: Viewport, kind: Kind) -> Refdef {
+    let basis = angle_vectors(client.angles);
+    let fov = qa_render::scene::fov_from_x(client.fov_x, viewport.width, viewport.height);
+    let mut refdef = Refdef {
+        viewport,
+        origin: client.origin,
+        axes: basis.axes(),
+        fov,
+        time_ms: client.time_ms,
+        ..Refdef::default()
+    };
+    client.presentation.apply(&mut refdef);
+    if matches!(kind, Kind::Gl) {
+        refdef.blend_phase = BlendPhase::AfterView;
+        refdef.palette_transform = None;
+    }
+    refdef
 }
 pub struct Renderer {
     frontend: FrontEnd,
@@ -219,7 +237,7 @@ impl Renderer {
             let world = assets.world(loaded.world).ok_or("missing loaded world")?;
             let index = loaded.world.0 as usize;
             if scenes[index].is_some() {
-                return Err("duplicate world presentation".into());
+                return Err("duplicate world geometry".into());
             }
             for diagnostic in &loaded.diagnostics {
                 qa_console::logger::console(format_args!(
@@ -229,12 +247,11 @@ impl Renderer {
             }
             max_surfaces = max_surfaces.max(world.visibility().surface_count());
             scenes[index] = Some(WorldScene {
-                presentation: loaded.presentation,
                 views: std::array::from_fn(|_| WorldView::load(world)),
             });
         }
         if scenes.iter().any(Option::is_none) {
-            return Err("missing world presentation defaults".into());
+            return Err("missing loaded world geometry".into());
         }
         let mut limits = Limits::default();
         limits.surfaces = limits.surfaces.max(
@@ -378,21 +395,7 @@ impl Renderer {
                 rejected += 1;
                 continue;
             };
-            let basis = angle_vectors(client.angles);
-            let fov = qa_render::scene::fov_from_x(client.fov_x, viewport.width, viewport.height);
-            let mut refdef = Refdef {
-                viewport,
-                origin: client.origin,
-                axes: basis.axes(),
-                fov,
-                time_ms: client.time_ms,
-                ..Refdef::default()
-            };
-            scene.presentation.apply(&mut refdef);
-            if matches!(self.kind, Kind::Gl) {
-                refdef.blend_phase = BlendPhase::AfterView;
-                refdef.palette_transform = None;
-            }
+            let refdef = view_refdef(*client, viewport, self.kind);
             // Native snapshot areas use at most 255 bytes. This bounded stack
             // scratch is shared by visibility and the copied scene command.
             let mut area_mask = [0; 256];

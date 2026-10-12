@@ -341,7 +341,7 @@ fn q3_patch_uses_native_curve_deviation_collinear_pruning_and_triangle_order() {
             [column as f32 * 0.125, 0.0]
         );
         assert_eq!(vertices[column + 9].vertex.position.0[1], 128.0);
-        assert!(vertices[column].normal.0[2] > 0.5);
+        assert!(vertices[column].vertex.normal.0[2] > 0.5);
     }
     let base = face.vertices.first;
     assert_eq!(
@@ -453,7 +453,6 @@ fn fixture_grid(
                     lightmap_coord: [x as f32 * 0.0625, y as f32 * 0.03125],
                     color: [(x * 31 + y * 17) as u8, (x * 19 + y * 7) as u8, 123, 255],
                 },
-                normal: Vec3([0.0, 0.0, 1.0]),
             })
             .collect(),
         width_errors: (0..width).map(|x| x as f32 * 0.125).collect(),
@@ -471,7 +470,7 @@ fn fixture_geometry(grids: &[FixtureGrid], curved: bool, tolerance: f32) -> Worl
             position: v.vertex.position,
             texcoord: v.vertex.texcoord,
             lightmap_coord: v.vertex.lightmap_coord,
-            normal: v.normal,
+            normal: v.vertex.normal,
             color: v.vertex.color,
         }));
         let mut surface = q3_surface(
@@ -710,7 +709,7 @@ fn original_patch_comparison_fixtures() {
                     .position
                     .0
                     .into_iter()
-                    .chain(v.normal.0)
+                    .chain(v.vertex.normal.0)
                     .chain(v.vertex.texcoord)
                     .chain(v.vertex.lightmap_coord)
                 {
@@ -752,7 +751,7 @@ fn original_patch_comparison_fixtures() {
                     .position
                     .0
                     .into_iter()
-                    .chain(v.normal.0)
+                    .chain(v.vertex.normal.0)
                     .chain(v.vertex.texcoord)
                     .chain(v.vertex.lightmap_coord)
                 {

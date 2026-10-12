@@ -571,11 +571,11 @@ fn world_bound(
         .enumerate()
         .map(|(i, position)| WorldVertex {
             vertex: Vertex {
+                normal: Vec3([-1.0, 0.0, 0.0]),
                 position: Vec3(position),
                 texcoord: [[0.0, 0.0], [16.0, 0.0], [16.0, 16.0], [0.0, 16.0]][i],
                 ..Vertex::default()
             },
-            normal: Vec3([-1.0, 0.0, 0.0]),
         })
         .collect();
     let bounds = Bounds {
@@ -1659,7 +1659,6 @@ fn positional_bulge_keeps_raw_collinear_world_vertices_drawable() {
                 vertex.vertex.position = Vec3(position);
                 vertex.vertex.texcoord = [s, 0.0];
                 vertex.vertex.normal = Vec3([0.0, 0.0, 1.0]);
-                vertex.normal = vertex.vertex.normal;
             }
             geometry.indices = vec![0, 1, 2, 0, 1, 2];
             geometry.boundaries[0] = Span { first: 3, count: 3 };

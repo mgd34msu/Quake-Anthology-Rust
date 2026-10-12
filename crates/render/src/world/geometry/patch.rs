@@ -229,8 +229,7 @@ fn mesh_normals(rows: &mut [Vec<WorldVertex>], width: usize, height: usize) {
                     sum = sum + normalized_or_zero(cross(around[next], around[neighbor]));
                 }
             }
-            rows[row][column].normal = normalized_or_zero(sum);
-            rows[row][column].vertex.normal = rows[row][column].normal;
+            rows[row][column].vertex.normal = normalized_or_zero(sum);
         }
     }
 }
