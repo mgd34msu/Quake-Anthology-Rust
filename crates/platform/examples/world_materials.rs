@@ -19,10 +19,13 @@ fn run() -> Result<(), String> {
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
     let mut collision = qa_world::collision::CollisionStore::new();
     let start = Stopwatch::start();
-    let loaded = map::read(&vfs, &name)?.load(
+    let input = map::read(&vfs, &name)?;
+    let presentation = input.native_source;
+    let loaded = input.load(
         &vfs,
         &mut assets,
         &mut collision,
+        presentation,
         WorldLoadOptions::default(),
     )?;
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;

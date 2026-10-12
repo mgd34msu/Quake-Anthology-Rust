@@ -1,5 +1,7 @@
 #[path = "../../compat/tests/support/quakec_program.rs"]
 mod quakec_program;
+#[path = "modules/quakec_thinks.rs"]
+mod quakec_thinks;
 #[path = "support/service_program.rs"]
 mod service_program;
 
@@ -1913,7 +1915,7 @@ fn host_ticks_both_program_types_at_independent_rates_and_drains_the_shared_comm
         Some(ModuleResult::QuakeC([
             (-2.0f32).to_bits(),
             144,
-            0.1f32.to_bits()
+            0.0f32.to_bits()
         ]))
     );
     assert_eq!(

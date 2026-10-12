@@ -99,7 +99,7 @@ pub struct WorldLoadOptions {
     pub map_overbright: u8,
     pub renderer_overbright: u8,
     pub sky_environment: SkyEnvironment,
-    /// None resolves original native defaults at this map-format boundary.
+    /// None resolves defaults from the caller's explicit presentation role.
     pub image_settings: Option<ImageSettings>,
 }
 impl Default for WorldLoadOptions {
@@ -138,6 +138,7 @@ impl PresentationDefaults {
 }
 pub struct LoadedWorld {
     pub world: WorldId,
+    pub presentation_rules: RuleSetId,
     pub presentation: PresentationDefaults,
     pub diagnostics: Box<[String]>,
 }
@@ -165,39 +166,38 @@ impl From<LightmapError> for WorldMaterialError {
     }
 }
 
+/// Presentation is caller-selected; BSP decoding, flags and coordinates retain
+/// their source semantics independently of the selected view/image policy.
 pub fn load_world(
     vfs: &Vfs,
     map: &Map<'_>,
     assets: &mut Assets,
+    presentation_rules: RuleSetId,
     mut options: WorldLoadOptions,
 ) -> Result<LoadedWorld, WorldMaterialError> {
-    let rules = map.bsp.format.rule_set();
+    let geometry_source = map.bsp.format.rule_set();
     let image_settings = options
         .image_settings
-        .unwrap_or_else(|| ImageSettings::native(rules));
+        .unwrap_or_else(|| ImageSettings::native(presentation_rules));
     if options.renderer_overbright > 2
         || options.map_overbright > 8
         || options.map_overbright < options.renderer_overbright
     {
         return Err(WorldMaterialError::Boundary("invalid overbright settings"));
     }
-    let palette = match rules {
-        RuleSetId::Quake => Some(load_palette(
-            vfs,
-            assets,
-            PaletteSource::Lmp {
-                colors: b"gfx/palette.lmp",
-                shades: b"gfx/colormap.lmp",
-            },
-        )?),
-        RuleSetId::Quake2 => Some(load_palette(
-            vfs,
-            assets,
-            PaletteSource::Pcx {
-                image: b"pics/colormap.pcx",
-            },
-        )?),
-        _ => None,
+    // Disk indices expand through their source palette; CPU shading uses the
+    // independently selected presentation palette. Equal resources share one.
+    let source_palette = PaletteSource::native(geometry_source);
+    let palette = source_palette
+        .map(|source| load_palette(vfs, assets, source))
+        .transpose()?;
+    let selected_palette = PaletteSource::native(presentation_rules);
+    let presentation_palette = if selected_palette == source_palette {
+        palette
+    } else {
+        selected_palette
+            .map(|source| load_palette(vfs, assets, source))
+            .transpose()?
     };
     let mut presentation = PresentationDefaults {
         cpu: CpuPresentation::Rgb,
@@ -209,12 +209,15 @@ pub fn load_world(
     };
     // Native presentation choices are resolved here, independently of movement,
     // client protocol and module format. There is no family branch in drawing.
-    if matches!(rules, RuleSetId::Quake) {
+    if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
         presentation.lightstyles[0].indexed_scale = 264;
         presentation.lightstyles[0].rgb = [264.0 / 256.0; 3];
         presentation.blend_phase = BlendPhase::FinalPalette;
         presentation.palette_transform = Some(PaletteTransform::default());
-    } else if matches!(rules, RuleSetId::Quake2) {
+    } else if matches!(
+        presentation_rules,
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+    ) {
         for style in &mut presentation.lightstyles {
             style.indexed_scale = 384;
         }
@@ -226,16 +229,18 @@ pub fn load_world(
             ..PaletteTransform::default()
         });
     } else {
-        options.geometry.vertex_color_shift =
-            (options.map_overbright - options.renderer_overbright) as i8;
         presentation.identity_light = 1.0 / (1u32 << options.renderer_overbright) as f32;
     }
+    if matches!(geometry_source, RuleSetId::Quake3) {
+        options.geometry.vertex_color_shift =
+            (options.map_overbright - options.renderer_overbright) as i8;
+    }
     if !options.cpu_rgb
-        && let Some(palette) = palette
+        && let Some(palette) = presentation_palette
     {
         presentation.cpu = CpuPresentation::Indexed {
             palette,
-            lighting: if matches!(rules, RuleSetId::Quake) {
+            lighting: if matches!(presentation_rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
                 IndexedLighting::Gray
             } else {
                 IndexedLighting::NativeRgb
@@ -252,10 +257,10 @@ pub fn load_world(
         assets,
         &options,
         &presentation.lightstyles,
-        rules,
+        geometry_source,
     )?;
     for surface in &geometry.surfaces {
-        if !matches!(rules, RuleSetId::Quake3)
+        if !matches!(geometry_source, RuleSetId::Quake3)
             && let Some(region) = regions[surface.source_id as usize]
         {
             for vertex in &mut geometry.vertices[surface.vertices.range()] {
@@ -265,11 +270,18 @@ pub fn load_world(
         }
     }
     let catalog = load_catalog(vfs).map_err(WorldMaterialError::Catalog)?;
-    let mut images = Images::new(vfs, assets, rules, image_settings)?;
+    let mut images = Images::new(
+        vfs,
+        assets,
+        geometry_source,
+        presentation_rules,
+        image_settings,
+        palette.zip(presentation_palette),
+    )?;
     let mut diagnostics = Vec::new();
     let mut textures = Vec::with_capacity(map.textures.len());
     let mut layered_skies = Vec::with_capacity(map.textures.len());
-    if matches!(rules, RuleSetId::Quake) {
+    if matches!(geometry_source, RuleSetId::Quake) {
         for texture in &map.textures {
             textures.push(match texture {
                 // R_InitSky uploads the two split layers directly, rather
@@ -297,7 +309,7 @@ pub fn load_world(
     let mut legacy_kinds = Vec::with_capacity(geometry.surfaces.len());
     for source in 0..geometry.surfaces.len() {
         let surface = &geometry.surfaces[source];
-        let legacy_name = if matches!(rules, RuleSetId::Quake) {
+        let legacy_name = if matches!(geometry_source, RuleSetId::Quake) {
             surface
                 .source_texture
                 .and_then(|i| map.textures.get(i as usize))
@@ -306,7 +318,11 @@ pub fn load_world(
         } else {
             None
         };
-        let kind = legacy_kind(rules, legacy_name.unwrap_or_default(), surface.source_flags);
+        let kind = legacy_kind(
+            geometry_source,
+            legacy_name.unwrap_or_default(),
+            surface.source_flags,
+        );
         legacy_kinds.push(kind);
         let (warp, sky) = kind;
         if warp || sky {
@@ -322,12 +338,12 @@ pub fn load_world(
                 &mut geometry,
                 source,
                 GridOptions {
-                    spacing: if matches!(rules, RuleSetId::Quake) {
+                    spacing: if matches!(geometry_source, RuleSetId::Quake) {
                         128.0
                     } else {
                         64.0
                     },
-                    fan: if matches!(rules, RuleSetId::Quake) {
+                    fan: if matches!(geometry_source, RuleSetId::Quake) {
                         GridFan::PolygonAnchor
                     } else {
                         GridFan::CenterFan
@@ -345,7 +361,7 @@ pub fn load_world(
             bindings.push(SurfaceMaterial::default());
             continue;
         }
-        let (name, image, mut scale, flags) = if matches!(rules, RuleSetId::Quake) {
+        let (name, image, mut scale, flags) = if matches!(geometry_source, RuleSetId::Quake) {
             let index = surface.source_texture.ok_or(WorldMaterialError::Boundary(
                 "missing embedded texture index",
             ))? as usize;
@@ -363,7 +379,7 @@ pub fn load_world(
                 [1.0 / mip.width as f32, 1.0 / mip.height as f32],
                 surface.source_flags,
             )
-        } else if matches!(rules, RuleSetId::Quake2) {
+        } else if matches!(geometry_source, RuleSetId::Quake2) {
             let info = &map.texture_info[surface
                 .source_texture_info
                 .ok_or(WorldMaterialError::Boundary("missing texture info"))?
@@ -397,13 +413,13 @@ pub fn load_world(
             );
             (name, ImageId(0), [1.0; 2], shader.surface_flags as u32)
         };
-        let legacy_sky = if matches!(rules, RuleSetId::Quake) {
+        let legacy_sky = if matches!(geometry_source, RuleSetId::Quake) {
             surface
                 .source_texture
                 .and_then(|index| layered_skies.get(index as usize))
                 .copied()
                 .flatten()
-        } else if matches!(rules, RuleSetId::Quake2) && sky {
+        } else if matches!(geometry_source, RuleSetId::Quake2) && sky {
             Some(Sky::Cube {
                 outer_box: Some(load_indexed_box(
                     &options.sky_environment,
@@ -444,7 +460,7 @@ pub fn load_world(
         if warp {
             scale = [1.0 / 64.0; 2];
         }
-        let legacy_shader_name = (!matches!(rules, RuleSetId::Quake3))
+        let legacy_shader_name = (!matches!(geometry_source, RuleSetId::Quake3))
             .then(|| canonical_path(&format!("textures/{name}")));
         let definition = catalog.find_canonical(legacy_shader_name.as_deref().unwrap_or(&name));
         let material = if let Some(definition) = definition.filter(|d| d.valid) {
@@ -453,7 +469,7 @@ pub fn load_world(
             if definition.is_some() {
                 diagnostics.push(format!("native shader fallback: {name}"));
             }
-            if matches!(rules, RuleSetId::Quake3) {
+            if matches!(geometry_source, RuleSetId::Quake3) {
                 let image = images.raster(&name, ImageUse::default())?;
                 default_material(&name, image, surface.light_source, &mut images)?
             } else {
@@ -461,7 +477,7 @@ pub fn load_world(
                     &name,
                     image,
                     flags,
-                    rules,
+                    geometry_source,
                     kind,
                     surface.light_source,
                     legacy_sky,
@@ -499,6 +515,7 @@ pub fn load_world(
     }
     Ok(LoadedWorld {
         world,
+        presentation_rules,
         presentation,
         diagnostics: diagnostics.into_boxed_slice(),
     })
@@ -1039,14 +1056,8 @@ fn load_layered_sky(
     let masked = IndexedTexture::load_base(128, 128, &layers.masked_indices, Some(0))
         .map_err(WorldMaterialError::Boundary)?;
     let ids = [
-        images
-            .assets
-            .register_rgba_with_indexed(128, 128, &layers.opaque_rgba, opaque)
-            .map_err(WorldMaterialError::Boundary)?,
-        images
-            .assets
-            .register_rgba_with_indexed(128, 128, &layers.masked_rgba, masked)
-            .map_err(WorldMaterialError::Boundary)?,
+        images.register_indexed_rgba(128, 128, &layers.opaque_rgba, opaque, palette)?,
+        images.register_indexed_rgba(128, 128, &layers.masked_rgba, masked, palette)?,
     ];
     let params = images.upload_params(ImageUse {
         role: ImageRole::LayeredSky,

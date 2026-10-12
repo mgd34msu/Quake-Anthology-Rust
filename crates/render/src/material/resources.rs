@@ -36,7 +36,7 @@ impl From<upload::UploadError> for ResourceError {
     }
 }
 
-/// Raw load settings selected from the world's cvar source, independently of
+/// Raw load settings selected from the presentation's cvar source, independently of
 /// the client's movement/modules. Gamma is already an exponent: legacy
 /// vid_gamma, or the reciprocal of canonical r_gamma.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,6 +140,22 @@ enum ImageRecipe {
 struct ImageKey {
     name: NameId,
     recipe: ImageRecipe,
+}
+
+struct IndexedRemap {
+    source: PaletteId,
+    target: PaletteId,
+    maps: Vec<(Option<u8>, [u8; 256])>,
+}
+
+fn palette_index(colors: &PaletteLighting, rgba: [u8; 4], transparent: Option<u8>) -> u8 {
+    if rgba[3] == 0
+        && let Some(index) = transparent
+    {
+        index
+    } else {
+        colors.nearest_index([rgba[0], rgba[1], rgba[2]], transparent)
+    }
 }
 
 struct ImageRecipes {
@@ -309,6 +325,7 @@ pub fn read_file(
 
 /// These are resource formats, not renderer pipelines. The selected palette
 /// can later present any world, independently of its movement/module family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaletteSource {
     Lmp {
         colors: &'static [u8],
@@ -317,6 +334,20 @@ pub enum PaletteSource {
     Pcx {
         image: &'static [u8],
     },
+}
+impl PaletteSource {
+    pub fn native(rules: RuleSetId) -> Option<Self> {
+        match rules {
+            RuleSetId::Quake | RuleSetId::QuakeWorld => Some(Self::Lmp {
+                colors: b"gfx/palette.lmp",
+                shades: b"gfx/colormap.lmp",
+            }),
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => Some(Self::Pcx {
+                image: b"pics/colormap.pcx",
+            }),
+            RuleSetId::Quake3 => None,
+        }
+    }
 }
 pub fn load_palette(
     vfs: &Vfs,
@@ -373,24 +404,151 @@ pub struct Images<'a> {
     vfs: &'a Vfs,
     reader: ArchiveReader,
     recipes: ImageRecipes,
+    source_rules: RuleSetId,
+    indexed_remap: Option<IndexedRemap>,
     resolved: Vec<(ImageKey, ResolvedImage, ImageUse)>,
     pub conflicts: Vec<ImageConflict>,
 }
 impl<'a> Images<'a> {
+    /// Decode using source provenance, then upload with the presentation role.
+    /// An optional source/target palette pair remaps software indices at load;
+    /// native equal pairs retain exact original bytes and source RGBA.
     pub fn new(
         vfs: &'a Vfs,
         assets: &'a mut Assets,
-        rules: RuleSetId,
+        source_rules: RuleSetId,
+        presentation_rules: RuleSetId,
         settings: ImageSettings,
+        indexed_palettes: Option<(PaletteId, PaletteId)>,
     ) -> Result<Self, ResourceError> {
         Ok(Self {
             assets,
             vfs,
             reader: ArchiveReader::default(),
-            recipes: ImageRecipes::new(rules, settings)?,
+            recipes: ImageRecipes::new(presentation_rules, settings)?,
+            source_rules,
+            indexed_remap: indexed_palettes
+                .filter(|(source, target)| source != target)
+                .map(|(source, target)| IndexedRemap {
+                    source,
+                    target,
+                    maps: Vec::new(),
+                }),
             resolved: Vec::new(),
             conflicts: Vec::new(),
         })
+    }
+    fn remap_texture(
+        &mut self,
+        texture: IndexedTexture,
+        palette: PaletteId,
+    ) -> Result<IndexedTexture, ResourceError> {
+        let Some(remap) = &mut self.indexed_remap else {
+            return Ok(texture);
+        };
+        if palette != remap.source {
+            return Ok(texture);
+        }
+        let transparent = texture.transparent_index();
+        let index = match remap.maps.iter().position(|(mask, _)| *mask == transparent) {
+            Some(index) => index,
+            None => {
+                let source = self
+                    .assets
+                    .palette(remap.source)
+                    .ok_or(ResourceError::Asset("missing source image palette"))?;
+                let target = self
+                    .assets
+                    .palette(remap.target)
+                    .ok_or(ResourceError::Asset("missing presentation image palette"))?;
+                let indices = std::array::from_fn(|index| {
+                    if transparent == Some(index as u8) {
+                        index as u8
+                    } else {
+                        palette_index(target, source.color(index as u8).to_le_bytes(), transparent)
+                    }
+                });
+                remap.maps.push((transparent, indices));
+                remap.maps.len() - 1
+            }
+        };
+        let translation = &remap.maps[index].1;
+        let mips: [Option<Vec<u8>>; 4] = std::array::from_fn(|mip| {
+            texture.mip(mip as u8).map(|level| {
+                level
+                    .indices()
+                    .iter()
+                    .map(|&index| translation[index as usize])
+                    .collect()
+            })
+        });
+        let base = texture
+            .mip(0)
+            .ok_or(ResourceError::Asset("missing indexed base mip"))?;
+        if let [Some(a), Some(b), Some(c), Some(d)] = &mips {
+            IndexedTexture::load_masked(base.width, base.height, [a, b, c, d], transparent)
+        } else {
+            IndexedTexture::load_base(
+                base.width,
+                base.height,
+                mips[0]
+                    .as_deref()
+                    .ok_or(ResourceError::Asset("missing remapped base mip"))?,
+                transparent,
+            )
+        }
+        .map_err(ResourceError::Asset)
+    }
+    fn register_indexed(
+        &mut self,
+        texture: IndexedTexture,
+        palette: PaletteId,
+    ) -> Result<ImageId, ResourceError> {
+        if self
+            .indexed_remap
+            .as_ref()
+            .is_none_or(|remap| remap.source != palette)
+        {
+            return self
+                .assets
+                .register_indexed_image(texture, palette)
+                .map_err(ResourceError::Asset);
+        }
+        let base = texture
+            .mip(0)
+            .ok_or(ResourceError::Asset("missing indexed base mip"))?;
+        let colors = self
+            .assets
+            .palette(palette)
+            .ok_or(ResourceError::Asset("missing source image palette"))?;
+        let rgba = IndexedImage {
+            width: base.width,
+            height: base.height,
+            indices: std::borrow::Cow::Borrowed(base.indices()),
+            palette: None,
+        }
+        .expand(
+            &Palette(Box::new(colors.rgba_table())),
+            &PaletteOptions {
+                transparent_index: texture.transparent_index(),
+                ..PaletteOptions::default()
+            },
+        )?;
+        self.register_indexed_rgba(rgba.width, rgba.height, &rgba.pixels, texture, palette)
+    }
+    /// Source RGBA and selected software indices are independently retained.
+    pub fn register_indexed_rgba(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+        texture: IndexedTexture,
+        palette: PaletteId,
+    ) -> Result<ImageId, ResourceError> {
+        let texture = self.remap_texture(texture, palette)?;
+        self.assets
+            .register_rgba_with_indexed(width, height, rgba, texture)
+            .map_err(ResourceError::Asset)
     }
     pub fn upload_params(&self, usage: ImageUse) -> Result<upload::UploadParams, ResourceError> {
         self.recipes.params(usage)
@@ -450,10 +608,7 @@ impl<'a> Images<'a> {
         } else {
             None
         };
-        let id = self
-            .assets
-            .register_indexed_image(texture, palette)
-            .map_err(ResourceError::Asset)?;
+        let id = self.register_indexed(texture, palette)?;
         self.prepare(id, ImageUse::default(), gl_pixels.as_deref())?;
         Ok(id)
     }
@@ -482,7 +637,8 @@ impl<'a> Images<'a> {
     /// Retain original PCX indices and select the presentation's global palette.
     /// A separate native RGBA resource supplies GL pixels (Q2 sky TGA). If the
     /// indexed resource is absent, quantize that resource once into the selected
-    /// software palette; existing PCX indices/dimensions always remain intact.
+    /// software palette. Native source/presentation pairs keep their exact
+    /// original indices; foreign presentation remaps once at registration.
     pub fn indexed_pcx(
         &mut self,
         name: &str,
@@ -540,9 +696,16 @@ impl<'a> Images<'a> {
         } else {
             None
         };
+        let texture_palette = if decoded.is_none() {
+            self.indexed_remap
+                .as_ref()
+                .map_or(palette, |remap| remap.target)
+        } else {
+            palette
+        };
         let colors = self
             .assets
-            .palette(palette)
+            .palette(texture_palette)
             .ok_or(ResourceError::Asset("missing image palette"))?;
         let texture = if let Some(decoded) = &decoded {
             IndexedTexture::load_base(
@@ -556,13 +719,11 @@ impl<'a> Images<'a> {
                 .pixels
                 .chunks_exact(4)
                 .map(|color| {
-                    if color[3] == 0
-                        && let Some(index) = transparent_index
-                    {
-                        index
-                    } else {
-                        colors.nearest_index([color[0], color[1], color[2]], transparent_index)
-                    }
+                    palette_index(
+                        colors,
+                        [color[0], color[1], color[2], color[3]],
+                        transparent_index,
+                    )
                 })
                 .collect();
             IndexedTexture::load_base(rgba.width, rgba.height, &indices, transparent_index)
@@ -572,8 +733,13 @@ impl<'a> Images<'a> {
         .map_err(ResourceError::Asset)?;
         let mut gl_pixels = None;
         let id = if let Some(rgba) = rgba {
-            self.assets
-                .register_rgba_with_indexed(rgba.width, rgba.height, &rgba.pixels, texture)
+            self.register_indexed_rgba(
+                rgba.width,
+                rgba.height,
+                &rgba.pixels,
+                texture,
+                texture_palette,
+            )?
         } else {
             let decoded = decoded.ok_or(ResourceError::Asset("missing indexed image"))?;
             let rgba = decoded.expand(
@@ -586,9 +752,8 @@ impl<'a> Images<'a> {
             )?;
             upload::validate_dimensions(rgba.width, rgba.height)?;
             gl_pixels = Some(rgba.pixels);
-            self.assets.register_indexed_image(texture, palette)
-        }
-        .map_err(ResourceError::Asset)?;
+            self.register_indexed(texture, palette)?
+        };
         self.prepare(id, usage, gl_pixels.as_deref())?;
         self.remember(key, id, usage);
         Ok(id)
@@ -596,7 +761,7 @@ impl<'a> Images<'a> {
     /// Original Q3 lookup tries TGA, then JPEG for a missing TGA. Explicit
     /// supported extensions are retained; newer formats use the same decoder.
     pub fn raster(&mut self, name: &str, usage: ImageUse) -> Result<ResolvedImage, ResourceError> {
-        let rules = self.recipes.rules;
+        let rules = self.source_rules;
         let key = ImageKey {
             name: self
                 .assets
@@ -607,7 +772,7 @@ impl<'a> Images<'a> {
         if let Some(index) = self.find(key) {
             let first = self.resolved[index].2;
             let requested = self.recipes.effective_use(usage);
-            if rules == RuleSetId::Quake3
+            if self.recipes.rules == RuleSetId::Quake3
                 && (first.sampler != requested.sampler
                     || first.allow_picmip != requested.allow_picmip)
                 && !self

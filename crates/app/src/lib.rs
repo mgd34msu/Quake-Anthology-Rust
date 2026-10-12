@@ -48,6 +48,7 @@ pub struct Runtime {
     pub input: qa_input::Input,
     pub input_time: qa_core::sys_events::EventTime,
     pub(crate) output_bytes: Box<[u8]>,
+    pub(crate) output_native_bytes: Box<[u8]>,
     script_reader: qa_formats::archive::ArchiveReader,
 }
 
@@ -192,6 +193,7 @@ impl Runtime {
             input: qa_input::Input::load(),
             input_time: qa_core::sys_events::EventTime::default(),
             output_bytes: vec![0; 32768].into_boxed_slice(),
+            output_native_bytes: vec![0; 32768].into_boxed_slice(),
             script_reader: qa_formats::archive::ArchiveReader::default(),
         })
     }

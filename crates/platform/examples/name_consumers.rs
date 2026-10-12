@@ -84,7 +84,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &vfs,
         &mut assets,
         Lineage::Quake3,
+        Lineage::Quake3,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
+        None,
     )
     .map_err(|e| format!("{e:?}"))?;
     let image = images

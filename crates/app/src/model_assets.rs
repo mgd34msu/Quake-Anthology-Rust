@@ -15,6 +15,8 @@ use qa_render::{Assets, MaterialId, ModelId, PaletteId, Vertex};
 #[derive(Clone, Copy, Debug)]
 pub struct ModelRequest<'a> {
     pub path: &'a str,
+    /// File decoding follows the resource's provenance, independently of upload.
+    pub source_rules: RuleSetId,
     /// Image upload policy is independent of model format and map geometry.
     pub rules: RuleSetId,
     pub palette: Option<PaletteId>,
@@ -27,6 +29,7 @@ impl<'a> ModelRequest<'a> {
     pub fn native(path: &'a str, rules: RuleSetId, palette: Option<PaletteId>) -> Self {
         Self {
             path,
+            source_rules: rules,
             rules,
             palette,
             image_settings: ImageSettings::native(rules),
@@ -122,6 +125,7 @@ pub struct ModelCapacity {
 
 #[derive(Clone, Copy)]
 struct Options {
+    source_rules: RuleSetId,
     rules: RuleSetId,
     palette: Option<PaletteId>,
     image_settings: ImageSettings,
@@ -129,7 +133,9 @@ struct Options {
 }
 impl Options {
     fn same_images(self, other: Self) -> bool {
-        self.rules == other.rules && self.image_settings == other.image_settings
+        self.source_rules == other.source_rules
+            && self.rules == other.rules
+            && self.image_settings == other.image_settings
     }
 }
 struct Registration {
@@ -174,6 +180,7 @@ impl ModelCatalog {
             registrations.push(Registration {
                 path,
                 options: Options {
+                    source_rules: request.source_rules,
                     rules: request.rules,
                     palette: request.palette,
                     image_settings: request.image_settings,
@@ -232,8 +239,15 @@ impl ModelCatalog {
         }
         for group in groups {
             let options = group[0].options;
-            let mut images = Images::new(vfs, assets, options.rules, options.image_settings)
-                .map_err(|error| format!("model images: {error:?}"))?;
+            let mut images = Images::new(
+                vfs,
+                assets,
+                options.source_rules,
+                options.rules,
+                options.image_settings,
+                None,
+            )
+            .map_err(|error| format!("model images: {error:?}"))?;
             for registration in group {
                 let name = names
                     .find(registration.path.as_bytes())

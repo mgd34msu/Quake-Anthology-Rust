@@ -359,8 +359,8 @@ pub fn load_q3(
     Ok(())
 }
 
-/// StartFrame dispatches through shared services; map/client spawn phases stay
-/// independent of this initial provider entry.
+/// StartFrame and the native MOVETYPE_NONE phase use the shared services and
+/// think dispatcher. Map/client spawn and other physics phases remain separate.
 pub fn load_quakec(
     runtime: &mut Runtime,
     specs: &[QuakeCSpec],

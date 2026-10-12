@@ -196,6 +196,20 @@ impl<C: ThinkWorld> FunctionTable<C> {
         self.binding(module).unwrap_or_default()
     }
 
+    /// Install a module's load-selected rejected-call adapter without adding
+    /// another timing path. QC must clear native nextthink even when the due
+    /// native function is missing; other hosts retain their default rejection.
+    pub fn bind_missing(&mut self, module: ModuleId, function: FunctionBinding<C>) -> bool {
+        let Some(binding) = self.binding(module) else {
+            return false;
+        };
+        let Some(entry) = self.functions.get_mut(binding.missing as usize) else {
+            return false;
+        };
+        entry.function = function;
+        true
+    }
+
     /// Bind the current lifetime at a load/spawn or native field-write boundary.
     /// Rebind after ownership changes; internal paths never go on the wire.
     pub fn bind_think(

@@ -78,6 +78,38 @@ fn format(protocol: Protocol) -> Result<Format, Error> {
         _ => Err(Error::Unsupported),
     }
 }
+/// Resource-relative ordinals have already been translated by configuration
+/// publication. Only native representation limits are selected here.
+pub(super) fn project_cue(protocol: Protocol, mut cue: Cue) -> Result<Cue, Error> {
+    let format = format(protocol)?;
+    match &mut cue {
+        Cue::Sound(sound) => {
+            if protocol == Protocol::Quake2_34 {
+                if sound.index > u8::MAX.into()
+                    || sound.entity().is_some_and(|entity| {
+                        usize::from(entity)
+                            >= crate::snapshots::snapshot_limits(protocol).native_numbers
+                    })
+                {
+                    return Err(Error::Unsupported);
+                }
+                sound.flags &= !INDEX16;
+            }
+        }
+        Cue::MuzzleFlash(muzzle) => {
+            if !format.muzzle_entity(muzzle.entity) {
+                return Err(Error::Unsupported);
+            }
+            if protocol == Protocol::Quake2_34 && muzzle.format == MuzzleFormat::MonsterWide {
+                if muzzle.flash > u8::MAX.into() {
+                    return Err(Error::Unsupported);
+                }
+                muzzle.format = MuzzleFormat::Monster;
+            }
+        }
+    }
+    Ok(cue)
+}
 pub fn read_cue(protocol: Protocol, bytes: &[u8]) -> Result<(Cue, usize), Error> {
     let format = format(protocol)?;
     let mut reader = Reader::new(bytes, Encoding::Bytes);

@@ -46,6 +46,7 @@ fn run() -> Result<(), String> {
     let mut cpu_bands = None;
     let mut map_name = None;
     let mut movement_rules = None;
+    let mut presentation_rules = None;
     let mut trace_rules = None;
     let mut client_module = None;
     let mut seat_policies = [None; SeatId::COUNT];
@@ -135,6 +136,12 @@ fn run() -> Result<(), String> {
                 movement_rules = Some(
                     RuleSetId::parse(&args.next().ok_or("--movement needs q1/qw/q2/q2rr/q3")?)
                         .ok_or("unknown movement rule set")?,
+                );
+            }
+            "--presentation" => {
+                presentation_rules = Some(
+                    RuleSetId::parse(&args.next().ok_or("--presentation needs q1/qw/q2/q2rr/q3")?)
+                        .ok_or("unknown presentation rule set")?,
                 );
             }
             "--client-module" => {
@@ -319,12 +326,13 @@ fn run() -> Result<(), String> {
         return Err("--cpu-bands requires --renderer cpu".into());
     }
     if (movement_rules.is_some()
+        || presentation_rules.is_some()
         || trace_rules.is_some()
         || client_module.is_some()
         || seat_policies.iter().any(Option::is_some))
         && map_name.is_none()
     {
-        return Err("movement and trace roles need a loaded --map".into());
+        return Err("movement, trace and presentation roles need a loaded --map".into());
     }
     if max_clients < seat_count {
         return Err("client capacity must cover the local seats".into());
@@ -364,7 +372,6 @@ fn run() -> Result<(), String> {
         );
     }
     let mut loaded_world = None;
-    let mut map_rules = None;
     let mut local_clients = [None; SeatId::COUNT];
     let mut world_rate = TickRate::FrameDriven;
     let mut map_path = None;
@@ -408,12 +415,13 @@ fn run() -> Result<(), String> {
     }
     let mut assets = Assets::load().map_err(|e| e.to_string())?;
     if let Some((input, policy)) = staged_map {
-        let image_settings =
-            qa_app::render_settings::image_settings(&console.cvars, input.native_source)?;
+        let presentation = presentation_rules.unwrap_or(input.native_source);
+        let image_settings = qa_app::render_settings::image_settings(&console.cvars, presentation)?;
         let loaded = input.load(
             &runtime.vfs,
             &mut assets,
             &mut runtime.geometry,
+            presentation,
             WorldLoadOptions {
                 image_settings: Some(image_settings),
                 ..WorldLoadOptions::default()
@@ -432,7 +440,6 @@ fn run() -> Result<(), String> {
             policy.client.name(),
             qa_gameplay::rules::link_order(policy.client) == qa_world::area::LinkOrder::Head,
         );
-        map_rules = Some(loaded.native_source);
         native_entity_source = Some(runtime.entity_sources.len());
         runtime.entity_sources.push(loaded.entity_source);
         runtime.server.area = qa_world::area::AreaGrid::load(
@@ -607,27 +614,13 @@ fn run() -> Result<(), String> {
     let mut palettes = [None; 5];
     if let Some(world) = &loaded_world
         && let qa_render::CpuPresentation::Indexed { palette, .. } = world.presentation.cpu
-        && let Some(rules) = map_rules
     {
-        palettes[rules as usize] = Some(palette);
+        palettes[world.presentation_rules as usize] = Some(palette);
     }
     let mut requests = Vec::with_capacity(precaches.len());
     for (rules, name) in precaches {
         let path = std::str::from_utf8(name).map_err(|error| format!("model precache: {error}"))?;
-        let palette_source = match rules {
-            RuleSetId::Quake | RuleSetId::QuakeWorld => {
-                Some(qa_render::material::resources::PaletteSource::Lmp {
-                    colors: b"gfx/palette.lmp",
-                    shades: b"gfx/colormap.lmp",
-                })
-            }
-            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
-                Some(qa_render::material::resources::PaletteSource::Pcx {
-                    image: b"pics/colormap.pcx",
-                })
-            }
-            RuleSetId::Quake3 => None,
-        };
+        let palette_source = qa_render::material::resources::PaletteSource::native(rules);
         if palettes[rules as usize].is_none()
             && let Some(source) = palette_source
         {

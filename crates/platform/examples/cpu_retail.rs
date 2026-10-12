@@ -55,6 +55,7 @@ struct Options {
     hold_ms: u64,
     bands: Option<RasterBands>,
     stage_timings: bool,
+    presentation: Option<qa_core::primitives::RuleSetId>,
 }
 impl Options {
     fn read() -> Result<Self, String> {
@@ -63,6 +64,7 @@ impl Options {
         let mut bands = None;
         let mut hold_ms = 1500;
         let mut stage_timings = false;
+        let mut presentation = None;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -73,6 +75,14 @@ impl Options {
                 }
                 "--map" if map.is_none() => {
                     map = Some(args.next().ok_or("--map needs a virtual map name")?)
+                }
+                "--presentation" if presentation.is_none() => {
+                    presentation = Some(
+                        qa_core::primitives::RuleSetId::parse(
+                            &args.next().ok_or("--presentation needs q1/qw/q2/q2rr/q3")?,
+                        )
+                        .ok_or("unknown presentation rule set")?,
+                    );
                 }
                 "--output" if output.is_none() => {
                     output = Some(PathBuf::from(
@@ -123,6 +133,7 @@ impl Options {
             hold_ms,
             bands,
             stage_timings,
+            presentation,
         })
     }
 }
@@ -467,7 +478,7 @@ fn run() -> Result<(), String> {
     let mut runtime = Runtime::load(64, names.iter().map(|name| name.as_ref()))?;
     drop(names);
     runtime.vfs = vfs;
-    let source = input.native_source;
+    let source = options.presentation.unwrap_or(input.native_source);
     let policy = qa_app::client_policy::ClientPolicy::select(None, input.client_rules, None, None)?;
     let rules = policy.movement;
     let mut console = Console::<Runtime>::new(Context {
@@ -492,6 +503,7 @@ fn run() -> Result<(), String> {
         &runtime.vfs,
         &mut assets,
         &mut runtime.geometry,
+        source,
         WorldLoadOptions {
             image_settings: Some(image_settings),
             ..WorldLoadOptions::default()

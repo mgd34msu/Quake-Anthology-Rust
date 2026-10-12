@@ -237,6 +237,7 @@ pub fn dispatch(
                             record.sequence,
                             message,
                             bytes,
+                            &mut runtime.output_native_bytes,
                             time,
                             |bytes| {
                                 crate::transport::admit_output(
@@ -247,7 +248,8 @@ pub fn dispatch(
                                 )
                             },
                         ) {
-                            Ok((submission, submitted)) => {
+                            Ok((submission, submitted, unsupported)) => {
+                                counts.native_unsupported += unsupported;
                                 counts.add_native(&submitted);
                                 submission
                             }

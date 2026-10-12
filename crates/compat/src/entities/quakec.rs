@@ -4,6 +4,34 @@ use super::*;
 use qa_formats::program::quakec::Image;
 use qa_world::entities::FullTable;
 
+pub(super) struct ThinkBindings {
+    module: qa_session::dispatch::ModuleBinding,
+    functions: Box<[qa_core::primitives::ThinkBinding]>,
+}
+impl ThinkBindings {
+    fn missing(
+        module: qa_session::dispatch::ModuleBinding,
+        word: u32,
+    ) -> qa_core::primitives::ThinkBinding {
+        let mut missing = module.think(None);
+        missing.callback = Some(qa_core::primitives::CallbackId(word));
+        missing
+    }
+}
+
+fn client_edicts(
+    rules: qa_core::primitives::RuleSetId,
+    max_clients: i32,
+) -> Result<usize, CallError> {
+    // QW reserves fixed protocol client ordinals, independently of the live
+    // maxclients cvar. NQ reserves the server's actual client count.
+    if rules == qa_core::primitives::RuleSetId::QuakeWorld {
+        Ok(32)
+    } else {
+        usize::try_from(max_clients).map_err(|_| CallError::Entity)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct QuakeCLayout {
     stride: usize,
@@ -28,6 +56,8 @@ pub(crate) struct QuakeCLayout {
     take_damage: Option<usize>,
     colormap: Option<usize>,
     next_think: Option<usize>,
+    think: Option<usize>,
+    move_type: Option<usize>,
 }
 impl QuakeCLayout {
     fn load(image: &Image, stride: usize, header: usize) -> Self {
@@ -57,6 +87,8 @@ impl QuakeCLayout {
             take_damage: field(b"takedamage", 2),
             colormap: field(b"colormap", 2),
             next_think: field(b"nextthink", 2),
+            think: field(b"think", 6),
+            move_type: field(b"movetype", 2),
         }
     }
     fn address(self, memory: &ModuleMemory<'_>, value: u32) -> Result<u64, CallError> {
@@ -211,6 +243,7 @@ impl EntityProjection {
             model_handles: Box::new([]),
             owner: None,
             bindings: vec![None; capacity].into_boxed_slice(),
+            quakec_thinks: None,
             observed_count: 1,
             leaves: [0; 128],
         }
@@ -220,6 +253,75 @@ impl EntityProjection {
             EntitySchema::QuakeC(layout) => Ok(layout),
             EntitySchema::Native(_) => Err(CallError::Entity),
         }
+    }
+    pub(crate) fn quakec_bind_thinks(
+        &mut self,
+        module: qa_session::dispatch::ModuleBinding,
+        entries: &[u32],
+        function_count: usize,
+    ) {
+        let mut functions = (0..function_count)
+            .map(|word| ThinkBindings::missing(module, word as u32))
+            .collect::<Box<[_]>>();
+        for (callback, &entry) in entries.iter().enumerate().rev() {
+            if let Some(to) = functions.get_mut(entry as usize) {
+                *to = module.think(Some(qa_core::primitives::CallbackId(callback as u32)));
+            }
+        }
+        self.quakec_thinks = Some(ThinkBindings { module, functions });
+        for row in self.bindings.iter_mut().flatten() {
+            row.think_word = None;
+        }
+    }
+    pub(crate) fn quakec_physics_entity(
+        &self,
+        entities: &EntityTable,
+        memory: &ModuleMemory<'_>,
+        cursor: &mut usize,
+        rules: qa_core::primitives::RuleSetId,
+        max_clients: i32,
+    ) -> Result<Option<crate::quakec::PhysicsEntity>, CallError> {
+        let layout = self.quakec_layout()?;
+        let module = self.owner.ok_or(CallError::Entity)?;
+        while *cursor < self.observed_count {
+            let native_slot = *cursor;
+            *cursor += 1;
+            let native = NativeEntity {
+                module,
+                slot: native_slot as i32,
+            };
+            // The namespace rows establish observable native order, while
+            // EntityTable's generation and sole liveness bitset own lifetime.
+            let Some(entity) = self.binding(entities, native)? else {
+                continue;
+            };
+            let client = native_slot > 0 && native_slot <= client_edicts(rules, max_clients)?;
+            let none = if !client && layout.move_type.is_some() {
+                let move_type = layout.number(
+                    memory,
+                    (native_slot * layout.stride) as u64,
+                    layout.move_type,
+                )?;
+                if rules == qa_core::primitives::RuleSetId::QuakeWorld {
+                    crate::numbers::native_integer(f64::from(move_type)) == 0
+                } else {
+                    move_type == 0.0
+                }
+            } else {
+                false
+            };
+            return Ok(Some(crate::quakec::PhysicsEntity { entity, none }));
+        }
+        Ok(None)
+    }
+    pub(crate) fn quakec_clear_think(
+        &self,
+        memory: &mut ModuleMemory<'_>,
+        value: u32,
+    ) -> Result<(), CallError> {
+        let layout = self.quakec_layout()?;
+        let address = layout.address(memory, value)?;
+        layout.write_number(memory, address, layout.next_think, 0.0)
     }
     fn quakec_identity(
         &self,
@@ -243,19 +345,13 @@ impl EntityProjection {
         if self.owner != Some(context.module) {
             return Err(CallError::Entity);
         }
-        // QW's ED_Alloc reserves the protocol's fixed 32 client edicts even
-        // when maxclients is lower. NQ reserves the active server's count.
-        let clients = if context.native_rules == qa_core::primitives::RuleSetId::QuakeWorld {
-            32
-        } else {
+        let clients = client_edicts(
+            context.native_rules,
             services
                 .storage
-                .max_clients(services.cvars, context.native_rules)
-        };
-        let first = usize::try_from(clients)
-            .map_err(|_| CallError::Entity)?
-            .checked_add(1)
-            .ok_or(CallError::Capacity)?;
+                .max_clients(services.cvars, context.native_rules),
+        )?;
+        let first = clients.checked_add(1).ok_or(CallError::Capacity)?;
         if first >= self.bindings.len() {
             return Err(CallError::Capacity);
         }
@@ -412,7 +508,7 @@ impl EntityProjection {
         Ok(())
     }
     fn quakec_publish(
-        &self,
+        &mut self,
         services: &mut EngineServices<'_>,
         memory: &ModuleMemory<'_>,
         strings: &ModuleMemory<'_>,
@@ -509,6 +605,34 @@ impl EntityProjection {
         columns.collision_tags[slot] = QuakeCLayout::tags(flags);
         columns.collision_contents[slot] = Contents::SOLID.0;
         columns.appearance[slot] = appearance;
+        if let Some(thinks) = &self.quakec_thinks {
+            if layout.next_think.is_some() {
+                columns.next_think[slot] = Some(qa_core::primitives::ThinkTime::Seconds(
+                    f64::from(layout.number(memory, address, layout.next_think)?),
+                ));
+            }
+            let word = layout
+                .think
+                .map(|field| layout.word(memory, address, Some(field)))
+                .transpose()?;
+            let row = self.bindings[native.slot as usize]
+                .as_mut()
+                .ok_or(CallError::Entity)?;
+            if row.think_word != word || columns.think_binding(slot).path == 0 {
+                let binding = word.map_or_else(
+                    || thinks.module.think(None),
+                    |word| {
+                        thinks
+                            .functions
+                            .get(word as usize)
+                            .copied()
+                            .unwrap_or_else(|| ThinkBindings::missing(thinks.module, word))
+                    },
+                );
+                columns.set_think_function(slot, binding);
+                row.think_word = word;
+            }
+        }
         let mut link_flags = match solid {
             1 => LinkFlags::TRIGGER,
             2..=4 => LinkFlags::SOLID,
@@ -535,7 +659,7 @@ impl EntityProjection {
         Ok(())
     }
     pub(crate) fn quakec_project_row(
-        &self,
+        &mut self,
         services: &mut EngineServices<'_>,
         memory: &ModuleMemory<'_>,
         strings: &ModuleMemory<'_>,

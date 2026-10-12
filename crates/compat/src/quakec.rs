@@ -42,11 +42,21 @@ struct Frame {
     return_pc: usize,
 }
 struct StateFields {
-    self_global: usize,
-    time_global: usize,
     nextthink: usize,
     frame: usize,
     think: usize,
+}
+struct CallFields {
+    self_global: Option<usize>,
+    other_global: Option<usize>,
+    time_global: Option<usize>,
+    frame_time: Option<usize>,
+}
+/// One current native row at its physics phase. This is borrowed ABI
+/// classification, not another entity lifetime or movement implementation.
+pub struct PhysicsEntity {
+    pub entity: qa_core::primitives::EntityId,
+    pub none: bool,
 }
 struct TraceFields {
     scalars: [usize; 6],
@@ -98,6 +108,7 @@ pub struct Vm {
     dirty_slots: Box<[usize]>,
     dirty_count: usize,
     state: Option<StateFields>,
+    call_fields: CallFields,
     trace_fields: Option<TraceFields>,
     vector_globals: Option<[usize; 3]>,
     state_step: f64,
@@ -143,13 +154,17 @@ impl Vm {
         )?;
         let state = (|| {
             Some(StateFields {
-                self_global: image.global(b"self")?,
-                time_global: image.global(b"time")?,
-                nextthink: image.field(b"nextthink")?,
-                frame: image.field(b"frame")?,
-                think: image.field(b"think")?,
+                nextthink: definition(&image, true, b"nextthink", 2)?,
+                frame: definition(&image, true, b"frame", 2)?,
+                think: definition(&image, true, b"think", 6)?,
             })
         })();
+        let call_fields = CallFields {
+            self_global: definition(&image, false, b"self", 4),
+            other_global: definition(&image, false, b"other", 4),
+            time_global: definition(&image, false, b"time", 2),
+            frame_time: definition(&image, false, b"frametime", 2),
+        };
         let hook_bytes = image
             .globals
             .len()
@@ -207,6 +222,7 @@ impl Vm {
             dirty_slots: vec![0; layout.entities].into_boxed_slice(),
             dirty_count: 0,
             state,
+            call_fields,
             trace_fields,
             vector_globals,
             state_step: layout.state_step,
@@ -226,6 +242,62 @@ impl Vm {
     ) -> Result<(), crate::services::CallError> {
         self.projection.seed(entities, module)
     }
+    /// Cache the native function-to-session callback conversion once at load.
+    pub fn bind_thinks(&mut self, binding: qa_session::dispatch::ModuleBinding, entries: &[u32]) {
+        self.projection
+            .quakec_bind_thinks(binding, entries, self.image.functions.len());
+    }
+    pub fn needs_self(&self) -> bool {
+        self.call_fields.self_global.is_some()
+    }
+    pub fn needs_world(&self) -> bool {
+        self.call_fields.other_global.is_some()
+    }
+    /// Set the native per-call globals and clear a due native deadline before
+    /// running bytecode. World is the explicitly bound native world entity.
+    pub fn prepare_call(
+        &mut self,
+        entity: Option<u32>,
+        world: Option<u32>,
+        time: qa_core::primitives::ThinkTime,
+        think: bool,
+    ) -> Result<(), Trap> {
+        if think {
+            self.projection
+                .quakec_clear_think(&mut self.entities, entity.ok_or(Trap::Memory)?)
+                .map_err(|_| Trap::Memory)?;
+        }
+        for (global, value) in [
+            (self.call_fields.self_global, entity),
+            (self.call_fields.other_global, world),
+        ] {
+            if let Some(global) = global {
+                self.image.globals[global] = value.ok_or(Trap::Memory)?;
+            }
+        }
+        if let Some(global) = self.call_fields.time_global {
+            self.image.globals[global] = (time.seconds() as f32).to_bits();
+        }
+        Ok(())
+    }
+    pub fn frame_time(&mut self, step: f64) {
+        if let Some(global) = self.call_fields.frame_time {
+            self.image.globals[global] = (step as f32).to_bits();
+        }
+    }
+    /// Advance through the existing native namespace, rechecking canonical
+    /// lifetime liveness at each row. Later spawns join the same native pass;
+    /// an earlier reused ordinal is visited on the next pass.
+    pub fn physics_entity(
+        &self,
+        entities: &qa_world::entities::EntityTable,
+        cursor: &mut usize,
+        rules: qa_core::primitives::RuleSetId,
+        max_clients: i32,
+    ) -> Result<Option<PhysicsEntity>, crate::services::CallError> {
+        self.projection
+            .quakec_physics_entity(entities, &self.entities, cursor, rules, max_clients)
+    }
     /// Import bytecode field stores without replacing explicit native relinks.
     /// Scheduling remains owned by the provider's native think phase.
     pub fn project_entities(
@@ -241,7 +313,7 @@ impl Vm {
     }
     /// Spatial queries consume only successful bytecode entity writes since
     /// the previous import. Export projection also catches external byte edits.
-    pub(crate) fn project_dirty_entities(
+    pub fn project_dirty_entities(
         &mut self,
         services: &mut crate::services::EngineServices<'_>,
         context: crate::services::CallContext,
@@ -555,11 +627,14 @@ impl Vm {
                 }
                 State => {
                     let state = self.state.as_ref().ok_or(Trap::Memory)?;
-                    let entity = self.image.globals[state.self_global];
+                    let entity =
+                        self.image.globals[self.call_fields.self_global.ok_or(Trap::Memory)?];
                     let nextthink = self.field_address(entity, state.nextthink as u32, 1)?;
                     let frame = self.field_address(entity, state.frame as u32, 1)?;
                     let think = self.field_address(entity, state.think as u32, 1)?;
-                    let time = f32::from_bits(self.image.globals[state.time_global]);
+                    let time = f32::from_bits(
+                        self.image.globals[self.call_fields.time_global.ok_or(Trap::Memory)?],
+                    );
                     self.store_entity_word(
                         nextthink,
                         ((time as f64 + self.state_step) as f32).to_bits(),

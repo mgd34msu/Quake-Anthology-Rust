@@ -17,8 +17,15 @@ fn shared_rule_selection_preserves_native_uploads_for_all_five_sources() {
     vfs.mount_directory(&root.0, 0).unwrap();
     let pixels = |rules| {
         let mut assets = Assets::load().unwrap();
-        let mut images =
-            Images::new(&vfs, &mut assets, rules, ImageSettings::native(rules)).unwrap();
+        let mut images = Images::new(
+            &vfs,
+            &mut assets,
+            rules,
+            rules,
+            ImageSettings::native(rules),
+            None,
+        )
+        .unwrap();
         let resolved = images.raster("odd.tga", ImageUse::default()).unwrap();
         let image = images.assets.image(resolved.id).unwrap();
         let prepared = image.prepared.as_ref().unwrap();
@@ -101,7 +108,9 @@ fn indexed_pcx_uses_selected_global_palette_and_explicit_mask() {
         &vfs,
         &mut assets,
         RuleSetId::Quake2,
+        RuleSetId::Quake2,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
+        None,
     )
     .unwrap();
     let opaque = images
@@ -142,7 +151,9 @@ fn sky_resource_keeps_distinct_native_tga_pixels_and_pcx_dimensions() {
         &vfs,
         &mut assets,
         RuleSetId::Quake2,
+        RuleSetId::Quake2,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake2),
+        None,
     )
     .unwrap();
     let id = images
@@ -186,7 +197,15 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         ..ImageSettings::native(qa_core::primitives::RuleSetId::Quake2)
     };
     // Different native contexts can coexist in the one numeric image table.
-    let mut images = Images::new(&vfs, &mut assets, RuleSetId::Quake2, settings).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2,
+        settings,
+        None,
+    )
+    .unwrap();
     let surface = images.raster("env/odd.tga", ImageUse::default()).unwrap();
     let image = images.assets.image(surface.id).unwrap();
     assert_eq!((image.width, image.height), (3, 3));
@@ -202,7 +221,15 @@ fn native_q2_surface_and_sky_select_distinct_upload_rules() {
         (1.0f32 / 2.5).to_bits()
     );
     drop(images);
-    let mut images = Images::new(&vfs, &mut assets, RuleSetId::Quake2, settings).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2,
+        settings,
+        None,
+    )
+    .unwrap();
     let sky = images
         .raster(
             "env/odd.tga",
@@ -239,8 +266,15 @@ fn tga_only_q2_sky_keeps_truecolor_gl_and_selected_palette_cpu_pixels() {
         let palette = assets
             .register_palette(PaletteLighting::load(&colors, &shades, None, 256).unwrap())
             .unwrap();
-        let mut images =
-            Images::new(&vfs, &mut assets, rules, ImageSettings::native(rules)).unwrap();
+        let mut images = Images::new(
+            &vfs,
+            &mut assets,
+            rules,
+            rules,
+            ImageSettings::native(rules),
+            None,
+        )
+        .unwrap();
         let usage = ImageUse {
             role: ImageRole::CubeSky,
             ..ImageUse::pic()
@@ -292,7 +326,9 @@ fn q2_sky_uses_existing_pcx_when_the_truecolor_alternate_is_missing() {
         &vfs,
         &mut assets,
         RuleSetId::Quake2,
+        RuleSetId::Quake2,
         ImageSettings::native(RuleSetId::Quake2),
+        None,
     )
     .unwrap();
     let id = images
@@ -341,7 +377,9 @@ fn native_q3_first_image_flags_and_sampler_win_on_reuse() {
         &vfs,
         &mut assets,
         RuleSetId::Quake3,
+        RuleSetId::Quake3,
         ImageSettings::native(qa_core::primitives::RuleSetId::Quake3),
+        None,
     )
     .unwrap();
     let usage = ImageUse {
@@ -394,7 +432,15 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
         gamma_exponent: 2.0,
         ..ImageSettings::native(qa_core::primitives::RuleSetId::Quake3)
     };
-    let mut images = Images::new(&vfs, &mut assets, RuleSetId::Quake3, settings).unwrap();
+    let mut images = Images::new(
+        &vfs,
+        &mut assets,
+        RuleSetId::Quake3,
+        RuleSetId::Quake3,
+        settings,
+        None,
+    )
+    .unwrap();
     let mipped = images
         .raster("env/mipped.tga", ImageUse::default())
         .unwrap();
@@ -446,10 +492,12 @@ fn native_q3_picmip_nomip_fast_path_and_weighted_selection() {
         &vfs,
         &mut assets,
         RuleSetId::Quake3,
+        RuleSetId::Quake3,
         ImageSettings {
             simple_mipmaps: false,
             ..settings
         },
+        None,
     )
     .unwrap();
     let weighted = images

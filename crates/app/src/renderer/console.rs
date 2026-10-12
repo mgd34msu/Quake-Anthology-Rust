@@ -91,16 +91,7 @@ impl ConsoleAssets {
             legacy_gl_alpha: matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld),
         };
         if !q3 && console.palette.is_none() {
-            let source = if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
-                PaletteSource::Lmp {
-                    colors: b"gfx/palette.lmp",
-                    shades: b"gfx/colormap.lmp",
-                }
-            } else {
-                PaletteSource::Pcx {
-                    image: b"pics/colormap.pcx",
-                }
-            };
+            let source = PaletteSource::native(rules).ok_or("missing console palette policy")?;
             match load_palette(vfs, assets, source) {
                 Ok(palette) => console.palette = Some(palette),
                 Err(error) => {
@@ -112,7 +103,7 @@ impl ConsoleAssets {
                 }
             }
         }
-        let mut images = Images::new(vfs, assets, rules, settings)
+        let mut images = Images::new(vfs, assets, rules, rules, settings, None)
             .map_err(|error| format!("console images: {error:?}"))?;
         if q3 {
             let catalog = material::load_catalog(vfs)

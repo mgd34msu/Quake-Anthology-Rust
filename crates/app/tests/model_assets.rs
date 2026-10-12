@@ -146,6 +146,40 @@ fn mdl_indices_and_uv_seams_do_not_inherit_presentation_from_file_format() {
 }
 
 #[test]
+fn external_skin_decoding_does_not_inherit_upload_presentation() {
+    let mut model = support::md2();
+    for skin in 0..2 {
+        let start = 68 + skin * 64;
+        model[start..start + 64].fill(0);
+        let name = b"models/test/skin.tga";
+        model[start..start + name.len()].copy_from_slice(name);
+    }
+    let mut tga = vec![0; 18];
+    tga[2] = 2;
+    tga[12..14].copy_from_slice(&2u16.to_le_bytes());
+    tga[14..16].copy_from_slice(&2u16.to_le_bytes());
+    tga[16] = 24;
+    tga[17] = 32; // Top-origin source, which native Q3 deliberately ignores.
+    tga.extend([0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 0, 0]);
+    let fixture = support::Fixture::new(&[
+        ("models/test/tris.md2", model),
+        ("models/test/skin.tga", tga),
+    ]);
+    let mut assets = Assets::load().unwrap();
+    let mut request = ModelRequest::native("models/test/tris.md2", RuleSetId::Quake3, None);
+    request.source_rules = RuleSetId::Quake2;
+    let catalog = load(&fixture, &mut assets, &[request], ModelLimits::default()).unwrap();
+    let binding = catalog.resolve_path(request.path, 0).unwrap();
+    assert_eq!(binding.rules, RuleSetId::Quake3);
+    let skin = assets
+        .image(image(&assets, &catalog, request.path, 0))
+        .unwrap();
+    assert_eq!(&skin.rgba[..8], &[255, 0, 0, 255, 255, 0, 0, 255]);
+    assert_eq!(&skin.rgba[8..], &[0, 0, 255, 255, 0, 0, 255, 255]);
+    assert!(skin.prepared.is_some());
+}
+
+#[test]
 fn canonical_name_registration_is_unique_and_numeric_skin_lookup_falls_back_to_zero() {
     let fixture = support::Fixture::models();
     let mut assets = Assets::load().unwrap();

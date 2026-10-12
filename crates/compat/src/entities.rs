@@ -202,6 +202,7 @@ struct Binding {
     published: bool,
     // A native ordinal's reuse delay is independent of its common lifetime.
     freed_at: Option<ThinkTime>,
+    think_word: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -225,6 +226,7 @@ pub struct EntityProjection {
     model_handles: Box<[Option<CachedModel>]>,
     owner: Option<ModuleId>,
     bindings: Box<[Option<Binding>]>,
+    quakec_thinks: Option<quakec::ThinkBindings>,
     observed_count: usize,
     leaves: [u32; 128],
 }
@@ -243,6 +245,7 @@ impl EntityProjection {
             model_handles: vec![None; models.count as usize].into_boxed_slice(),
             owner: None,
             bindings: vec![None; MAX_ENTITIES].into_boxed_slice(),
+            quakec_thinks: None,
             observed_count: 0,
             leaves: [0; 128],
         }
@@ -300,6 +303,7 @@ impl EntityProjection {
             owned: false,
             published: false,
             freed_at: None,
+            think_word: None,
         });
         Ok(())
     }
@@ -584,6 +588,7 @@ impl EntityProjection {
             owned: true,
             published: false,
             freed_at: None,
+            think_word: None,
         });
         Ok(entity)
     }

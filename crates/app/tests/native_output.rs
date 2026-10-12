@@ -75,13 +75,22 @@ fn remote(runtime: &mut Runtime, protocol: Protocol, port: u16) -> ClientId {
     id
 }
 fn publish(runtime: &mut Runtime, reliable: bool, target: NativeTarget, bytes: &[u8]) -> u64 {
+    publish_from(runtime, RuleSetId::Quake2, reliable, target, bytes)
+}
+fn publish_from(
+    runtime: &mut Runtime,
+    source: RuleSetId,
+    reliable: bool,
+    target: NativeTarget,
+    bytes: &[u8],
+) -> u64 {
     runtime
         .server
         .events
         .native_message(
             NativeDelivery {
                 module: ModuleId(7),
-                source: RuleSetId::Quake2,
+                source,
                 target,
                 origin: Vec3([1.0, 0.0, 0.0]),
                 reliable,
@@ -91,6 +100,193 @@ fn publish(runtime: &mut Runtime, reliable: bool, target: NativeTarget, bytes: &
             bytes,
         )
         .unwrap()
+}
+
+#[test]
+fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let classic = remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let rerelease = remote(&mut runtime, Protocol::Quake2Repro1038, 2001);
+    let mut peers = [
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap(),
+        Channel::load(
+            Protocol::Quake2Repro1038.channel(),
+            Endpoint::Client,
+            8192,
+            16,
+        )
+        .unwrap(),
+    ];
+    for (peer, port) in peers.iter_mut().zip([2000, 2001]) {
+        peer.set_qport(port);
+    }
+    let source_bytes = [
+        10, 2, b'p', 0x80, 0xff, 0, 9, 31, 49, 204, 128, 125, 41, 0, 247, 255, 162, 0, 1, 4, 1, 5,
+        0, 128, 4, b'l', 0xff, 0,
+    ];
+    publish(&mut runtime, true, NativeTarget::All, &source_bytes);
+    let mut source = Source {
+        now: EventTime(10),
+        ..Default::default()
+    };
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_unsupported, 0);
+    assert_eq!(source.packets.len(), 2);
+    for (port, bytes) in &source.packets {
+        let index = usize::from(*port - 2000);
+        let payload = receive(&mut peers[index], bytes);
+        if index == 0 {
+            assert_eq!(payload, source_bytes);
+        } else {
+            let mut remaining = payload.as_slice();
+            let (print, n) =
+                qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
+                    .unwrap();
+            let qa_network::outputs::NativeService::Print(print) = print else {
+                panic!("print");
+            };
+            assert_eq!(print.text, b"p\x80\xff");
+            remaining = &remaining[n..];
+            let (cue, n) =
+                qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
+                    .unwrap();
+            let qa_network::outputs::NativeService::Cue(qa_network::outputs::Cue::Sound(sound)) =
+                cue
+            else {
+                panic!("sound");
+            };
+            assert_eq!(sound.position, Vec3([-1.125, 20.25, 128.125]));
+            assert_eq!((sound.entity, sound.channel, sound.index), (5, 1, 49));
+            remaining = &remaining[n..];
+            let (_, n) =
+                qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
+                    .unwrap();
+            remaining = &remaining[n..];
+            let (layout, n) =
+                qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
+                    .unwrap();
+            assert!(
+                matches!(layout, qa_network::outputs::NativeService::Print(print)
+                if print.kind == PrintKind::Layout && print.text == b"l\xff")
+            );
+            assert_eq!(n, remaining.len());
+        }
+    }
+    assert_eq!(runtime.server.events.len(), 1);
+    for (index, client) in [classic, rerelease].into_iter().enumerate() {
+        let packet = peers[index]
+            .prepare(None, EventTime(40))
+            .unwrap()
+            .unwrap()
+            .bytes
+            .to_vec();
+        peers[index].submitted(EventTime(40)).unwrap();
+        runtime.network.receive(
+            0,
+            Peer::Socket(([127, 0, 0, 1], 2000 + index as u16).into()),
+            &packet,
+            EventTime(50),
+            |id, endpoint, incoming| {
+                assert_eq!((id, endpoint), (client, Endpoint::Server));
+                if let Incoming::Acknowledged {
+                    receipt,
+                    output: Some(id),
+                } = incoming
+                {
+                    runtime.server.events.acknowledge(id, receipt);
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        assert_eq!(runtime.server.events.len(), usize::from(index == 0));
+    }
+}
+
+#[test]
+fn a_classic_peer_drops_only_unrepresentable_rerelease_cues_and_receives_later_prints() {
+    let mut runtime = Runtime::load(1, []).unwrap();
+    remote(&mut runtime, Protocol::Quake2_34, 2000);
+    let bytes = [
+        9, 32, 1, 4, 32, 7, 0, 2, 3, 10, 5, b'c', 0x80, 0, 4, b'l', 0xff, 0,
+    ];
+    publish_from(
+        &mut runtime,
+        RuleSetId::Quake2Rerelease,
+        false,
+        NativeTarget::All,
+        &bytes,
+    );
+    let mut source = Source {
+        now: EventTime(10),
+        ..Default::default()
+    };
+    let counts = dispatch(&mut runtime, &mut source);
+    assert_eq!(counts.native_unsupported, 2);
+    assert_eq!(source.packets.len(), 1);
+    let mut peer =
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
+    assert_eq!(
+        receive(&mut peer, &source.packets[0].1),
+        b"\x0fc\x80\0\x04l\xff\0"
+    );
+    assert!(runtime.server.events.is_empty());
+}
+
+#[test]
+fn converted_unreliable_bytes_survive_a_blocked_peer_and_reused_output_scratch() {
+    let mut runtime = Runtime::load(2, []).unwrap();
+    let blocked = remote(&mut runtime, Protocol::Quake2Repro1038, 2000);
+    remote(&mut runtime, Protocol::Quake2_34, 2001);
+    let mut peers = [
+        Channel::load(
+            Protocol::Quake2Repro1038.channel(),
+            Endpoint::Client,
+            8192,
+            16,
+        )
+        .unwrap(),
+        Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap(),
+    ];
+    let cue = [9, 4, 49, 247, 255, 162, 0, 1, 4];
+    let sequence = publish(&mut runtime, false, NativeTarget::All, &cue);
+    let mut source = Source {
+        reject: Some(2000),
+        now: EventTime(10),
+        ..Default::default()
+    };
+    assert_eq!(dispatch(&mut runtime, &mut source).native_blocked, 1);
+    assert_eq!(source.packets.len(), 1);
+    assert_eq!(receive(&mut peers[1], &source.packets[0].1), cue);
+    assert_eq!(
+        runtime
+            .network
+            .get(blocked, Endpoint::Server)
+            .unwrap()
+            .pending_output,
+        Some(sequence)
+    );
+    publish(&mut runtime, false, NativeTarget::All, b"\x0fB\0");
+    source.reject = None;
+    source.packets.clear();
+    dispatch(&mut runtime, &mut source);
+    let mut delivered = [Vec::new(), Vec::new()];
+    for (port, bytes) in &source.packets {
+        let index = usize::from(*port - 2000);
+        delivered[index].push(receive(&mut peers[index], bytes));
+    }
+    assert_eq!(delivered[0].len(), 2);
+    let (converted, count) =
+        qa_network::outputs::read_cue(Protocol::Quake2Repro1038, &delivered[0][0]).unwrap();
+    assert_eq!(count, delivered[0][0].len());
+    assert_eq!(
+        converted,
+        qa_network::outputs::read_cue(Protocol::Quake2_34, &cue)
+            .unwrap()
+            .0
+    );
+    assert_eq!(delivered[0][1], b"\x0fB\0");
+    assert_eq!(delivered[1], [b"\x0fB\0".to_vec()]);
+    assert!(runtime.server.events.is_empty());
 }
 fn dispatch(runtime: &mut Runtime, source: &mut Source) -> qa_app::output::OutputCounts {
     let mut scrollback = qa_console::presentation::Scrollback::default();

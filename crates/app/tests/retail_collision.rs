@@ -65,6 +65,7 @@ fn load_retail(product: &str, name: &str, rules: RuleSetId) {
             &vfs,
             &mut Assets::load().unwrap(),
             &mut geometry,
+            rules,
             WorldLoadOptions::default(),
         )
         .expect("production map/collision admission");
@@ -158,12 +159,14 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
     let mut assets = Assets::load().unwrap();
     let mut loaded = Vec::new();
     for (_, name, rules, entity_rules) in cases {
-        let map = qa_app::map::read(&vfs, name)
-            .expect("shared VFS map")
+        let input = qa_app::map::read(&vfs, name).expect("shared VFS map");
+        let presentation = input.native_source;
+        let map = input
             .load(
                 &vfs,
                 &mut assets,
                 &mut geometry,
+                presentation,
                 WorldLoadOptions::default(),
             )
             .expect("retail geometry admission");
@@ -244,6 +247,7 @@ fn retail_families_keep_inline_models_in_one_generation_checked_store() {
             &vfs,
             &mut assets,
             &mut geometry,
+            RuleSetId::Quake2,
             WorldLoadOptions::default(),
         )
         .expect("reload geometry");

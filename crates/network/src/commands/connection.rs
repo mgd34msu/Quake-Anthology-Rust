@@ -572,8 +572,7 @@ impl Commands {
                         };
                         self.delta_request = snapshot;
                     }
-                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26)
-                    | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 4 | 10 | 15) => {
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 8 | 26) => {
                         let mut prints = Prints::new(self.protocol, &scratch[at..]);
                         let print = prints
                             .next()
@@ -582,14 +581,24 @@ impl Commands {
                         at = scratch.len() - prints.remaining().len();
                         consume(Incoming::Print(print));
                     }
-                    (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 1 | 2 | 9 | 32) => {
-                        let (cue, count) = crate::outputs::read_cue(self.protocol, &scratch[at..])
-                            .map_err(|_| packet::Error::Opcode)?;
+                    (
+                        Protocol::Quake2_34 | Protocol::Quake2Repro1038,
+                        1 | 2 | 4 | 9 | 10 | 15 | 32,
+                    ) => {
+                        let (service, count) =
+                            crate::outputs::read_native_service(self.protocol, &scratch[at..])
+                                .map_err(|_| packet::Error::Opcode)?;
                         at += count;
-                        consume(Incoming::Cue {
-                            cue,
-                            current: channel.current_snapshot(),
-                        });
+                        match service {
+                            crate::outputs::NativeService::Cue(cue) => consume(Incoming::Cue {
+                                cue,
+                                current: channel.current_snapshot(),
+                            }),
+                            crate::outputs::NativeService::Print(print) => {
+                                consume(Incoming::Print(print))
+                            }
+                            crate::outputs::NativeService::Nop => {}
+                        }
                     }
                     (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 13) => {
                         let (config, count) =

@@ -12,7 +12,7 @@ use qa_core::primitives::{
     CallbackCall, CallbackId, ClientId, EntityId, ModuleId, RuleSetId, ThinkTime,
 };
 use qa_session::{
-    dispatch::{CallError, FunctionBinding, FunctionTable, ThinkWorld},
+    dispatch::{CallError, FunctionBinding, FunctionTable, ThinkFrame, ThinkWorld, run_think},
     timing::{Tick, TickRate},
 };
 
@@ -39,17 +39,18 @@ pub enum Program {
 }
 pub struct QuakeCProgram {
     vm: Box<quakec::Vm>,
-    self_global: Option<usize>,
-    time_global: Option<usize>,
+    physics: Option<QwPhysics>,
+}
+struct QwPhysics {
+    minimum: qa_core::primitives::CvarHandle,
+    maximum: qa_core::primitives::CvarHandle,
+    last: Option<qa_core::sys_events::EventTime>,
 }
 impl Program {
     pub fn quakec(vm: quakec::Vm) -> Self {
-        let self_global = vm.image.global(b"self");
-        let time_global = vm.image.global(b"time");
         Self::QuakeC(QuakeCProgram {
             vm: Box::new(vm),
-            self_global,
-            time_global,
+            physics: None,
         })
     }
     fn entry(&self) -> fn(&mut FrameHost, ModuleId, u32, CallbackCall) -> bool {
@@ -173,6 +174,9 @@ pub struct Counts {
     pub rejected: u64,
     pub traps: u64,
     pub last_result: Option<ModuleResult>,
+    /// Native QC physics rows whose client/movetype phase is not yet adopted.
+    /// They never pass through a blanket think scan.
+    pub unsupported_physics: u64,
 }
 impl Counts {
     fn record(&mut self, result: Result<ModuleResult, ()>) -> bool {
@@ -251,7 +255,7 @@ impl FrameHost {
             })
             .collect();
         let mut host = Self::load(console, runtime, world_rate, providers)?;
-        let functions = FunctionTable::load(requests.iter().map(|m| {
+        let mut functions = FunctionTable::load(requests.iter().map(|m| {
             (
                 m.context.module,
                 m.timing_rules,
@@ -302,14 +306,43 @@ impl FrameHost {
                 {
                     return Err("invalid QuakeC function".into());
                 }
-                if qc.self_global.is_some() {
-                    native_self(
+                if qc.vm.needs_self() || qc.vm.needs_world() {
+                    let native = native_self(
                         &host.runtime,
                         request.anchor,
                         request.context.module,
                         &qc.vm,
                     )
                     .ok_or("missing QuakeC entity namespace")?;
+                    if qc.vm.needs_world() && native != 0 {
+                        return Err("missing QuakeC world namespace".into());
+                    }
+                }
+                qc.vm.bind_thinks(
+                    functions.module_binding(request.context.module),
+                    &request.entries,
+                );
+                functions.bind_missing(
+                    request.context.module,
+                    FunctionBinding {
+                        entry: u32::MAX,
+                        call: quakec_entry,
+                    },
+                );
+                if request.timing_rules == RuleSetId::QuakeWorld {
+                    qc.physics = Some(QwPhysics {
+                        minimum: host
+                            .console
+                            .cvars
+                            .find("sv_mintic")
+                            .ok_or("missing QW minimum tick cvar")?,
+                        maximum: host
+                            .console
+                            .cvars
+                            .find("sv_maxtic")
+                            .ok_or("missing QW maximum tick cvar")?,
+                        last: None,
+                    });
                 }
                 qc.vm
                     .seed_entities(&host.runtime.server.entities, request.context.module)
@@ -634,31 +667,131 @@ fn frame(host: &mut FrameHost, tick: Tick) {
     let qa_session::timing::TickTarget::Provider(module) = tick.target else {
         return;
     };
-    let Some(row) = host.module_row_mut(module) else {
+    let (Some(modules), cvars) = (host.modules.as_mut(), &host.console.cvars) else {
+        return;
+    };
+    let Some(row) = modules.row_mut(module) else {
         return;
     };
     // qsrc advances the SERVER frame number after RunFrame. Loading calls
     // retain zero; completed ticks are visible to later imports and shutdown.
     let _ = row.storage.reset_message(module);
     row.request.context.server_frame = tick.index - 1;
-    let time = row.request.context.clock.at(tick.end);
-    invoke_frame(host, module, time);
+    let quakec = matches!(row.request.program, Program::QuakeC(_));
+    // NQ advances sv.time after SV_Physics; QW advances it before physics in
+    // SV_Frame. Both retain the provider's independent native frame duration.
+    let start = if quakec && row.request.timing_rules == RuleSetId::Quake {
+        tick.start
+    } else {
+        tick.end
+    };
+    let time = row.request.context.clock.at(start);
+    if quakec {
+        row.request.context.clock = time;
+    }
+    let mut step = qa_core::sys_events::EventTime(tick.end.since(tick.start)).seconds();
+    let mut physics_due = true;
+    if let Program::QuakeC(qc) = &mut row.request.program
+        && let Some(physics) = &mut qc.physics
+    {
+        let last = *physics.last.get_or_insert(tick.start);
+        step = qa_core::sys_events::EventTime(tick.end.since(last)).seconds();
+        let minimum = cvars.value_in(physics.minimum, RuleSetId::QuakeWorld);
+        let maximum = cvars.value_in(physics.maximum, RuleSetId::QuakeWorld);
+        if step < f64::from(minimum) {
+            physics_due = false;
+        } else {
+            if step > f64::from(maximum) {
+                step = f64::from(maximum);
+            }
+            physics.last = Some(tick.end);
+        }
+    }
+    if physics_due
+        && let Program::QuakeC(qc) = &mut row.request.program
+        && row.request.timing_rules == RuleSetId::QuakeWorld
+    {
+        qc.vm.frame_time(step);
+    }
+    if physics_due && invoke_frame(host, module, time) && quakec {
+        quakec_none_phase(host, module, time, step);
+    }
     if let Some(row) = host.module_row_mut(module) {
         row.request.context.server_frame = tick.index;
+        if quakec {
+            row.request.context.clock = row.request.context.clock.at(tick.end);
+        }
     }
 }
-fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) {
+fn invoke_frame(host: &mut FrameHost, module: ModuleId, time: ThinkTime) -> bool {
     let Some(row) = host.module_row(module) else {
-        return;
+        return false;
     };
     if row.state != State::Running {
-        return;
+        return false;
     }
     let export = row.request.frame;
-    if host.call_module_export(module, export, time).is_err()
-        && let Some(row) = host.module_row_mut(module)
-    {
-        row.counts.rejected += 1;
+    if host.call_module_export(module, export, time).is_err() {
+        if let Some(row) = host.module_row_mut(module) {
+            row.counts.rejected += 1;
+        }
+        false
+    } else {
+        true
+    }
+}
+
+/// SV_Physics_None belongs after StartFrame in the native edict-order pass.
+/// Step, toss and pusher thinking belongs at their own motion phase positions,
+/// and is explicitly counted as unsupported rather than run prematurely.
+fn quakec_none_phase(host: &mut FrameHost, module: ModuleId, time: ThinkTime, step: f64) {
+    let Some(modules) = host.modules.as_ref() else {
+        return;
+    };
+    let functions = Arc::clone(&modules.functions);
+    let mut cursor = 0;
+    loop {
+        let Some(row) = host.module_row(module) else {
+            return;
+        };
+        let Program::QuakeC(qc) = &row.request.program else {
+            return;
+        };
+        let max_clients = row
+            .storage
+            .max_clients(&host.console.cvars, row.request.context.native_rules);
+        let next = qc.vm.physics_entity(
+            &host.runtime.server.entities,
+            &mut cursor,
+            row.request.context.native_rules,
+            max_clients,
+        );
+        match next {
+            Ok(Some(entity)) if entity.none => {
+                let result = run_think(host, &functions, entity.entity, |owner| {
+                    (owner == module).then_some(ThinkFrame::Seconds {
+                        now: time.seconds(),
+                        step,
+                    })
+                });
+                if let Some(row) = host.module_row_mut(module) {
+                    row.counts.rejected += u64::from(result.rejected);
+                }
+            }
+            Ok(Some(_)) => {
+                if let Some(row) = host.module_row_mut(module) {
+                    row.counts.unsupported_physics += 1;
+                }
+            }
+            Ok(None) => return,
+            Err(_) => {
+                if let Some(row) = host.module_row_mut(module) {
+                    row.counts.rejected += 1;
+                }
+                // A malformed native row rejects that entity. The monotonic
+                // cursor already advanced, so other lifetimes keep running.
+            }
+        }
     }
 }
 
@@ -767,6 +900,7 @@ fn native_self(
     u32::try_from(offset).ok()
 }
 fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
+    let think = matches!(call, CallbackCall::Think { .. });
     let (CallbackCall::Think { entity, time } | CallbackCall::Export { entity, time, .. }) = call
     else {
         return false;
@@ -781,14 +915,10 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     let Program::QuakeC(qc) = &mut row.request.program else {
         return false;
     };
-    if let Some(index) = qc.self_global {
-        let Some(value) = native_self(&host.runtime, entity, module, &qc.vm) else {
-            return false;
-        };
-        qc.vm.image.globals[index] = value;
-    }
-    if let Some(index) = qc.time_global {
-        qc.vm.image.globals[index] = (time.seconds() as f32).to_bits();
+    let native = native_self(&host.runtime, entity, module, &qc.vm);
+    let world = native_self(&host.runtime, row.request.anchor, module, &qc.vm);
+    if qc.vm.prepare_call(native, world, time, think).is_err() {
+        return false;
     }
     let mut services =
         host.runtime
@@ -796,7 +926,13 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
     let mut calls = QuakeCCalls {
         services: &mut services,
         table: &QUAKEC,
-        context: context(row.request.context, time),
+        // ED_Alloc/ED_Free use sv.time, while QC global time is the chosen
+        // think time and can lie ahead within this native physics frame.
+        context: if think {
+            row.request.context
+        } else {
+            context(row.request.context, time)
+        },
         platform_time: host.time,
         developer: host.developer,
         unknown: &mut row.unknown,
@@ -807,7 +943,11 @@ fn quakec_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callba
         .call(&mut calls, entry, row.request.instruction_budget, false);
     // VM-owned entvars are visible after the call, including admitted writes
     // preceding a call-scoped trap. Importing pose never implicitly relinks.
-    let projection = qc.vm.project_entities(calls.services, calls.context);
+    let projection = if think {
+        qc.vm.project_dirty_entities(calls.services, calls.context)
+    } else {
+        qc.vm.project_entities(calls.services, calls.context)
+    };
     let result = execution.map_err(|_| ()).and_then(|value| {
         projection
             .map(|()| ModuleResult::QuakeC(value))

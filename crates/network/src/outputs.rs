@@ -10,6 +10,7 @@ mod cues;
 pub use configstrings::{
     ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring, read_configstring,
 };
+use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, write_cue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,15 +25,114 @@ impl From<MessageError> for Error {
         Self::Message(error)
     }
 }
-/// gi.WritePosition selects short coordinates for classic Q2 and float
-/// coordinates for the rerelease. q2repro 1038 uses the FLOAT multicast stream
-/// (qsrc q2proto_proto_q2repro.c); never send either stream as the other.
-pub fn native(protocol: Protocol, source: RuleSetId, bytes: &[u8]) -> Result<&[u8], Error> {
-    match (protocol, source) {
-        (Protocol::Quake2_34, RuleSetId::Quake2)
-        | (Protocol::Quake2Repro1038, RuleSetId::Quake2Rerelease) => Ok(bytes),
+/// One borrowed service stream uses the same scalar readers as CLIENT ingress.
+/// Unknown opcodes stop the stream: their payload length cannot be inferred.
+pub enum NativeService<'a> {
+    Cue(Cue),
+    Print(Print<'a>),
+    Nop,
+}
+pub fn read_native_service(
+    protocol: Protocol,
+    bytes: &[u8],
+) -> Result<(NativeService<'_>, usize), Error> {
+    if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+        return Err(Error::Unsupported);
+    }
+    match bytes.first().copied().ok_or(Error::Truncated)? {
+        1 | 2 | 9 | 32 => {
+            let (cue, length) = read_cue(protocol, bytes)?;
+            Ok((NativeService::Cue(cue), length))
+        }
+        4 | 10 | 15 => {
+            let mut prints = Prints::new(protocol, bytes);
+            let value = prints.next().ok_or(Error::Truncated)??;
+            Ok((
+                NativeService::Print(value),
+                bytes.len() - prints.remaining().len(),
+            ))
+        }
+        6 => Ok((NativeService::Nop, 1)),
         _ => Err(Error::Unsupported),
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeEncoding {
+    pub length: usize,
+    /// Recognized services that the destination cannot represent.
+    pub unsupported: u64,
+}
+
+/// gi.WritePosition selects short coordinates for classic Q2 and float
+/// coordinates for the rerelease. Convert recognized services through their
+/// existing readers/writers; never send one coordinate stream as the other.
+/// Same-source opaque payloads retain their original bytes.
+pub fn native(
+    protocol: Protocol,
+    source: RuleSetId,
+    bytes: &[u8],
+    output: &mut [u8],
+) -> Result<NativeEncoding, Error> {
+    let source = match source {
+        RuleSetId::Quake2 => Protocol::Quake2_34,
+        RuleSetId::Quake2Rerelease => Protocol::Quake2Repro1038,
+        _ => return Err(Error::Unsupported),
+    };
+    if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
+        return Err(Error::Unsupported);
+    }
+    if source == protocol {
+        let capacity = output.len();
+        let target = output
+            .get_mut(..bytes.len())
+            .ok_or(Error::Message(MessageError {
+                byte: capacity,
+                kind: crate::message::ErrorKind::Capacity,
+            }))?;
+        target.copy_from_slice(bytes);
+        return Ok(NativeEncoding {
+            length: bytes.len(),
+            unsupported: 0,
+        });
+    }
+    let mut encoded = NativeEncoding::default();
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let (service, consumed) = read_native_service(source, remaining)?;
+        remaining = &remaining[consumed..];
+        let target = &mut output[encoded.length..];
+        let result = match service {
+            NativeService::Cue(cue) => {
+                project_cue(protocol, cue).and_then(|cue| write_cue(protocol, cue, target))
+            }
+            NativeService::Print(value) => {
+                let mut level = value.level.unwrap_or(value.kind.default_level());
+                // Rerelease levels 4/5 request localized center display; classic
+                // print priorities with those bytes still mean console output.
+                if protocol == Protocol::Quake2Repro1038
+                    && value.kind != PrintKind::Center
+                    && PrintKind::from_localized_level(level) != value.kind
+                {
+                    level = value.kind.default_level();
+                }
+                print(protocol, value.kind, level, value.text, target)
+            }
+            NativeService::Nop => {
+                let mut writer = Writer::new(target, Encoding::Bytes);
+                writer
+                    .write_bits(6, 8)
+                    .map(|()| writer.size())
+                    .map_err(Error::from)
+            }
+        };
+        match result {
+            Ok(length) => encoded.length += length,
+            Err(Error::Unsupported) => encoded.unsupported += 1,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(encoded)
 }
 
 #[derive(Clone, Copy)]

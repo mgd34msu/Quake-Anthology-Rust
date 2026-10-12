@@ -69,22 +69,46 @@ pub(super) fn submit(
     sequence: u64,
     message: NativeMessage,
     bytes: &[u8],
+    output: &mut [u8],
     time: EventTime,
     admit: impl FnMut(&[u8]) -> bool,
-) -> Result<(OutputSubmission, Submission), ()> {
+) -> Result<(OutputSubmission, Submission, u64), ()> {
     let protocol = connection.commands.as_ref().ok_or(())?.protocol;
-    let bytes =
-        qa_network::outputs::native(protocol, message.delivery.source, bytes).map_err(|_| ())?;
+    let encoded = qa_network::outputs::native(protocol, message.delivery.source, bytes, output)
+        .map_err(|_| ())?;
+    let bytes = &output[..encoded.length];
+    if bytes.is_empty() {
+        return Ok((
+            OutputSubmission::BestEffort,
+            Submission::default(),
+            encoded.unsupported,
+        ));
+    }
     if message.delivery.reliable {
         return match connection.channel.queue_reliable(bytes) {
-            Ok(receipt) => Ok((OutputSubmission::Reliable(receipt), Submission::default())),
+            Ok(receipt) => Ok((
+                OutputSubmission::Reliable(receipt),
+                Submission::default(),
+                encoded.unsupported,
+            )),
             Err(qa_network::channel::TransmitError::Full) => {
-                Ok((OutputSubmission::Unsent, Submission::default()))
+                Ok((OutputSubmission::Unsent, Submission::default(), 0))
             }
             Err(_) => Err(()),
         };
     }
     let (disposition, submitted) =
         transmit(connection, Some((sequence, bytes)), time, admit).map_err(|_| ())?;
-    Ok((disposition.unwrap_or(OutputSubmission::Unsent), submitted))
+    Ok((
+        disposition.unwrap_or(OutputSubmission::Unsent),
+        submitted,
+        // Count projected-away services once the channel owns this record's
+        // bytes, including a blocked or fragmented initial submission. Pending
+        // completion retries those owned bytes without another projection.
+        if disposition.is_some() || connection.pending_output == Some(sequence) {
+            encoded.unsupported
+        } else {
+            0
+        },
+    ))
 }
