@@ -48,7 +48,18 @@ fn move_message(client: &mut Channel, server: &mut Channel, codec: &mut Commands
     let mut decoded = None;
     assert_eq!(
         codec
-            .decode(n, sequence, time, server, |cmd, _, _| decoded = Some(cmd))
+            .decode(n, sequence, time, server, None, |incoming| {
+                if let qa_network::ingress::Incoming::Command {
+                    command: cmd,
+                    native_weapon: _,
+                    observation: _,
+                    ..
+                } = incoming
+                {
+                    decoded = Some(cmd);
+                }
+                std::ops::ControlFlow::Continue(())
+            })
             .unwrap(),
         1
     );

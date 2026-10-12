@@ -139,7 +139,10 @@ layout(location=1) in vec2 a_texcoord;
 layout(location=2) in vec2 a_lightmap;
 layout(location=3) in vec4 a_color;
 layout(location=4) in vec3 a_normal;
+layout(location=5) in vec3 a_old_position;
+layout(location=6) in vec3 a_old_normal;
 uniform mat4 u_mvp;
+uniform vec4 u_frame_weights;
 uniform vec4 u_color;
 uniform vec4 u_alpha_value;
 uniform vec4 u_view_origin;
@@ -189,7 +192,15 @@ float noise(vec4 point) {
 }
 void main() {
     precise vec3 position=a_position;
-    vec3 normal=a_normal;
+    precise vec3 normal=a_normal;
+    if(u_frame_weights.x!=0.0) {
+        precise vec3 old_position=a_old_position*u_frame_weights.x;
+        precise vec3 new_position=a_position*u_frame_weights.y;
+        precise vec3 old_normal=a_old_normal*u_frame_weights.x;
+        precise vec3 new_normal=a_normal*u_frame_weights.y;
+        position=old_position+new_position;
+        normal=normal_fast(old_normal+new_normal);
+    }
     for(int i=0;i<3;i++) {
         vec4 a=u_deform_data[i*2],b=u_deform_data[i*2+1];
         if(u_deform_kind[i]==1) {
@@ -287,6 +298,7 @@ struct Mesh {
 }
 struct Uniforms {
     mvp: i32,
+    frame_weights: i32,
     color: i32,
     texgen: i32,
     alpha_value: i32,
@@ -324,6 +336,7 @@ struct State {
     sampler: u32,
     polygon_offset: Option<bool>,
     depth_hack: bool,
+    frame_weights: Option<[f32; 2]>,
 }
 struct Dynamic {
     buffer: u32,
@@ -364,6 +377,7 @@ pub struct GlBackend {
     program: u32,
     uniforms: Uniforms,
     static_vao: u32,
+    model_vao: u32,
     static_buffers: [u32; 2],
     meshes: Box<[Mesh]>,
     textures: Box<[u32]>,
@@ -419,6 +433,7 @@ impl GlBackend {
         let uniforms = unsafe {
             Uniforms {
                 mvp: (gl.uniform_location)(program, c"u_mvp".as_ptr()),
+                frame_weights: (gl.uniform_location)(program, c"u_frame_weights".as_ptr()),
                 color: (gl.uniform_location)(program, c"u_color".as_ptr()),
                 texgen: (gl.uniform_location)(program, c"u_texgen".as_ptr()),
                 alpha_value: (gl.uniform_location)(program, c"u_alpha_value".as_ptr()),
@@ -449,6 +464,7 @@ impl GlBackend {
             program,
             uniforms,
             static_vao: 0,
+            model_vao: 0,
             static_buffers: [0; 2],
             meshes: Box::new([]),
             textures: Box::new([]),
@@ -477,7 +493,7 @@ impl GlBackend {
             backend.dynamic.capacity = dynamic_vertices;
             (gl.gen_vertex_arrays)(1, &mut backend.dynamic.vao);
             (gl.bind_vertex_array)(backend.dynamic.vao);
-            vertex_layout(gl);
+            vertex_layout(gl, 0, None);
             (gl.use_program)(program);
             (gl.uniform_integer)((gl.uniform_location)(program, c"u_image".as_ptr()), 0);
             (gl.uniform_integer)((gl.uniform_location)(program, c"u_tables".as_ptr()), 1);
@@ -585,7 +601,7 @@ impl GlBackend {
                 vertices.as_ptr().cast(),
                 0x88e4,
             );
-            vertex_layout(gl);
+            vertex_layout(gl, 0, None);
             (gl.bind_buffer)(ELEMENT_ARRAY_BUFFER, self.static_buffers[1]);
             (gl.buffer_data)(
                 ELEMENT_ARRAY_BUFFER,
@@ -593,6 +609,12 @@ impl GlBackend {
                 indices.as_ptr().cast(),
                 0x88e4,
             );
+            // The model VAO selects frame offsets in these same static buffers.
+            // Worlds retain the base layout and dynamic submissions their ring.
+            (gl.gen_vertex_arrays)(1, &mut self.model_vao);
+            (gl.bind_vertex_array)(self.model_vao);
+            vertex_layout(gl, 0, Some(0));
+            (gl.bind_buffer)(ELEMENT_ARRAY_BUFFER, self.static_buffers[1]);
             (gl.gen_textures)(texture_count, self.textures.as_mut_ptr());
             (gl.pixel_store)(0x0cf5, 1);
             for (image, &texture) in assets.images().iter().zip(self.textures.iter()) {
@@ -1146,10 +1168,14 @@ impl GlBackend {
         far: f32,
         stats: &mut BackendStats,
     ) {
-        let (Some(_), Some(&mesh)) = (
+        let (Some(model), Some(&mesh)) = (
             assets.model(entity.model),
             self.meshes.get(entity.model.0 as usize),
         ) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
+        let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
@@ -1178,7 +1204,18 @@ impl GlBackend {
         inputs.entity_texcoord = entity.shader_texcoord;
         inputs.entity_shader_time = entity.shader_time;
         inputs.lighting = entity.lighting;
-        self.bind_vao(self.static_vao);
+        self.bind_vao(self.model_vao);
+        let [current, previous] = frames
+            .offsets()
+            .map(|offset| (mesh.base_vertex as usize + offset) * size_of::<Vertex>());
+        // SAFETY: registration bounds both frame spans and their indices;
+        // load_static bounds the complete byte allocation. These are GPU
+        // offsets into that owned buffer, with the model VAO/context current.
+        unsafe {
+            (self.gl.bind_buffer)(ARRAY_BUFFER, self.static_buffers[0]);
+            vertex_layout(&self.gl, current, Some(previous));
+        }
+        self.frame_weights(frames.weights());
         self.set_depth_hack(entity.depth_hack);
         for stage in material.stages.iter() {
             if !self.stage(*stage, material.settings, inputs, &matrix, true, false) {
@@ -1191,7 +1228,7 @@ impl GlBackend {
                     mesh.count,
                     UNSIGNED_INT,
                     (mesh.first_index * size_of::<u32>()) as *const c_void,
-                    mesh.base_vertex,
+                    0,
                 );
             }
             stats.stages = stats.stages.saturating_add(1);
@@ -1601,9 +1638,24 @@ impl GlBackend {
     }
 
     fn bind_vao(&mut self, vao: u32) {
+        if vao != self.model_vao {
+            self.frame_weights([0.0, 1.0]);
+        }
         if self.state.vao != vao {
             unsafe { (self.gl.bind_vertex_array)(vao) };
             self.state.vao = vao;
+        }
+    }
+    fn frame_weights(&mut self, weights: [f32; 2]) {
+        if self.state.frame_weights != Some(weights) {
+            unsafe {
+                (self.gl.uniform_color)(
+                    self.uniforms.frame_weights,
+                    1,
+                    [weights[0], weights[1], 0.0, 0.0].as_ptr(),
+                );
+            }
+            self.state.frame_weights = Some(weights);
         }
     }
     fn depth_state(&mut self, depth: bool, write: bool) {
@@ -1690,6 +1742,7 @@ impl Drop for GlBackend {
             (self.gl.delete_buffers)(2, self.static_buffers.as_ptr());
             (self.gl.delete_buffers)(1, &self.dynamic.buffer);
             (self.gl.delete_vertex_arrays)(1, &self.static_vao);
+            (self.gl.delete_vertex_arrays)(1, &self.model_vao);
             (self.gl.delete_vertex_arrays)(1, &self.dynamic.vao);
             (self.gl.delete_textures)(self.textures.len() as i32, self.textures.as_ptr());
             (self.gl.delete_buffers)(1, &self.table_buffer);
@@ -1700,7 +1753,7 @@ impl Drop for GlBackend {
     }
 }
 
-unsafe fn vertex_layout(gl: &Gl) {
+unsafe fn vertex_layout(gl: &Gl, current: usize, previous: Option<usize>) {
     let stride = size_of::<Vertex>() as i32;
     unsafe {
         for index in 0..5 {
@@ -1712,7 +1765,7 @@ unsafe fn vertex_layout(gl: &Gl) {
             FLOAT,
             0,
             stride,
-            offset_of!(Vertex, position) as *const c_void,
+            (current + offset_of!(Vertex, position)) as *const c_void,
         );
         (gl.vertex_attribute)(
             1,
@@ -1720,7 +1773,7 @@ unsafe fn vertex_layout(gl: &Gl) {
             FLOAT,
             0,
             stride,
-            offset_of!(Vertex, texcoord) as *const c_void,
+            (current + offset_of!(Vertex, texcoord)) as *const c_void,
         );
         (gl.vertex_attribute)(
             2,
@@ -1728,7 +1781,7 @@ unsafe fn vertex_layout(gl: &Gl) {
             FLOAT,
             0,
             stride,
-            offset_of!(Vertex, lightmap_coord) as *const c_void,
+            (current + offset_of!(Vertex, lightmap_coord)) as *const c_void,
         );
         (gl.vertex_attribute)(
             3,
@@ -1736,7 +1789,7 @@ unsafe fn vertex_layout(gl: &Gl) {
             UNSIGNED_BYTE,
             1,
             stride,
-            offset_of!(Vertex, color) as *const c_void,
+            (current + offset_of!(Vertex, color)) as *const c_void,
         );
         (gl.vertex_attribute)(
             4,
@@ -1744,8 +1797,24 @@ unsafe fn vertex_layout(gl: &Gl) {
             FLOAT,
             0,
             stride,
-            offset_of!(Vertex, normal) as *const c_void,
+            (current + offset_of!(Vertex, normal)) as *const c_void,
         );
+        if let Some(previous) = previous {
+            for (index, offset) in [
+                (5, offset_of!(Vertex, position)),
+                (6, offset_of!(Vertex, normal)),
+            ] {
+                (gl.enable_vertex_attribute)(index);
+                (gl.vertex_attribute)(
+                    index,
+                    3,
+                    FLOAT,
+                    0,
+                    stride,
+                    (previous + offset) as *const c_void,
+                );
+            }
+        }
     }
 }
 

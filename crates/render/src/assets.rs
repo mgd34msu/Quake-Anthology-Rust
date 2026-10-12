@@ -278,6 +278,87 @@ pub struct Model {
     pub vertices: Box<[Vertex]>,
     pub indices: Box<[u32]>,
     pub material: MaterialId,
+    pub vertices_per_frame: usize,
+    frame_count: u32,
+}
+
+/// A resolved frame pair. Both backends validate the entity once, before
+/// looking up vertices in the same immutable frame-major model table.
+#[derive(Clone, Copy)]
+pub struct ModelFrames<'a> {
+    model: &'a Model,
+    current: Span,
+    previous: Span,
+    weights: [f32; 2],
+}
+impl Model {
+    pub fn frame_count(&self) -> u32 {
+        self.frame_count
+    }
+
+    pub fn frames(&self, frame: u32, old_frame: u32, back_lerp: f32) -> Option<ModelFrames<'_>> {
+        if frame >= self.frame_count
+            || old_frame >= self.frame_count
+            || !back_lerp.is_finite()
+            || !(0.0..=1.0).contains(&back_lerp)
+        {
+            return None;
+        }
+        let back_lerp = if frame == old_frame { 0.0 } else { back_lerp };
+        let count = self.vertices_per_frame as u32;
+        Some(ModelFrames {
+            model: self,
+            current: Span {
+                first: frame * count,
+                count,
+            },
+            previous: Span {
+                first: old_frame * count,
+                count,
+            },
+            weights: [back_lerp, 1.0 - back_lerp],
+        })
+    }
+}
+impl ModelFrames<'_> {
+    pub fn len(self) -> usize {
+        self.current.count as usize
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.current.count == 0
+    }
+
+    /// Q3's decoded frame blend, before material deforms and stage evaluation.
+    /// UVs/colors belong to the current frame; only position and normal blend.
+    pub fn vertex(self, index: usize) -> Vertex {
+        let current = self.current_vertex(index);
+        if self.weights[0] == 0.0 {
+            return current;
+        }
+        let previous = self.model.vertices[self.previous.range()][index];
+        Vertex {
+            position: previous.position * self.weights[0] + current.position * self.weights[1],
+            normal: qa_core::math::normalized_fast(
+                previous.normal * self.weights[0] + current.normal * self.weights[1],
+            ),
+            ..current
+        }
+    }
+
+    /// Native alias software lighting selects the new frame's normal even
+    /// when its position is blended with the old frame.
+    pub(crate) fn current_vertex(self, index: usize) -> Vertex {
+        self.model.vertices[self.current.range()][index]
+    }
+
+    pub(crate) fn offsets(self) -> [usize; 2] {
+        [self.current.first as usize, self.previous.first as usize]
+    }
+
+    pub(crate) fn weights(self) -> [f32; 2] {
+        self.weights
+    }
 }
 pub struct Assets {
     names: NameTable,
@@ -320,6 +401,8 @@ impl Assets {
                 vertices: Box::new([]),
                 indices: Box::new([]),
                 material: MaterialId(0),
+                vertices_per_frame: 0,
+                frame_count: 1,
             }],
             worlds: Vec::new(),
             palettes: Vec::new(),
@@ -512,9 +595,35 @@ impl Assets {
         indices: &[u32],
         material: MaterialId,
     ) -> Result<ModelId, &'static str> {
+        self.register_animated_model(vertices, vertices.len(), indices, material)
+    }
+
+    /// Load all frame-major vertices once. Indices address a single frame.
+    pub fn register_animated_model(
+        &mut self,
+        vertices: &[Vertex],
+        vertices_per_frame: usize,
+        indices: &[u32],
+        material: MaterialId,
+    ) -> Result<ModelId, &'static str> {
+        let frame_count = if vertices_per_frame == 0 {
+            if !vertices.is_empty() || !indices.is_empty() {
+                return Err("invalid mesh frames");
+            }
+            1
+        } else {
+            if vertices.is_empty()
+                || !vertices.len().is_multiple_of(vertices_per_frame)
+                || u32::try_from(vertices.len()).is_err()
+            {
+                return Err("invalid mesh frames");
+            }
+            u32::try_from(vertices.len() / vertices_per_frame)
+                .map_err(|_| "mesh frame table full")?
+        };
         if self.material(material).is_none()
             || !indices.len().is_multiple_of(3)
-            || indices.iter().any(|&i| i as usize >= vertices.len())
+            || indices.iter().any(|&i| i as usize >= vertices_per_frame)
             || vertices.iter().any(|v| !v.is_finite())
         {
             return Err("invalid mesh");
@@ -524,6 +633,8 @@ impl Assets {
             vertices: vertices.into(),
             indices: indices.into(),
             material,
+            vertices_per_frame,
+            frame_count,
         });
         Ok(id)
     }

@@ -10,6 +10,7 @@ fn runtime_child() -> NativeProcess {
     let mut imports: Vec<_> = FUNCTIONS
         .iter()
         .map(|f| NativeImport {
+            format: None,
             filter: None,
             trap: false,
             number: f.number,
@@ -19,6 +20,7 @@ fn runtime_child() -> NativeProcess {
         })
         .collect();
     imports.push(NativeImport {
+        format: None,
         filter: None,
         trap: false,
         number: 777,
@@ -162,6 +164,7 @@ fn windows_thread_storage_has_real_stack_bounds_and_child_local_gs() {
     let imports: Vec<_> = FUNCTIONS
         .iter()
         .map(|f| NativeImport {
+            format: None,
             filter: None,
             trap: false,
             number: f.number,

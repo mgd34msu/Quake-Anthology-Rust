@@ -491,27 +491,32 @@ fn connected_heap() -> Result<(), String> {
                 Peer::Loopback(ClientId(0)),
                 &packet_bytes[..length],
                 EventTime(2),
-                |_, _, incoming| match incoming {
-                    Incoming::Snapshot(snapshots::ReceivedFrame::Quake2(received)) => {
-                        frames += 1;
-                        valid &= received.sequence == frame
-                            && received.player[1] == frame
-                            && received.entities.len() == 1
-                            && received.entities[0].words[8] == entity.words[8];
-                        valid &=
-                            projection
-                                .apply(received.player, &mut imported, &mut context, |_| None)
-                                && imported.body.position == source.body.position
+                |_, _, incoming| {
+                    match incoming {
+                        Incoming::Snapshot(snapshots::ReceivedFrame::Quake2(received)) => {
+                            frames += 1;
+                            valid &= received.sequence == frame
+                                && received.player[1] == frame
+                                && received.entities.len() == 1
+                                && received.entities[0].words[8] == entity.words[8];
+                            valid &= projection.apply(
+                                received.player,
+                                &mut imported,
+                                &mut context,
+                                |_| None,
+                            ) && imported.body.position == source.body.position
                                 && imported.body.velocity == source.body.velocity
                                 && imported.health == 100
                                 && imported.movement_rules == RuleSetId::Quake3
                                 && imported.trace_rules == RuleSetId::Quake;
-                    }
-                    Incoming::Print(print) => {
-                        prints += 1;
-                        valid &= print.text == b"x";
-                    }
-                    _ => valid = false,
+                        }
+                        Incoming::Print(print) => {
+                            prints += 1;
+                            valid &= print.text == b"x";
+                        }
+                        _ => valid = false,
+                    };
+                    std::ops::ControlFlow::Continue(())
                 },
             );
             if !valid || frames != 1 || prints != 1 {
@@ -540,7 +545,8 @@ fn connected_heap() -> Result<(), String> {
                 client.channel.send_state().sequence,
                 0,
                 &mut server,
-                |_, _, _| {},
+                None,
+                |_| std::ops::ControlFlow::Continue(()),
             )?;
             if server_commands.delta_request() != Some(frame) {
                 return Err(qa_network::commands::packet::Error::Context);
@@ -677,8 +683,17 @@ fn connected_qw_heap() -> Result<(), String> {
             };
             let length = server_commands.stage(bytes)?;
             let mut received = None;
-            server_commands.decode(length, sequence, 0, &mut server, |command, _, _| {
-                received = Some(command);
+            server_commands.decode(length, sequence, 0, &mut server, None, |incoming| {
+                if let qa_network::ingress::Incoming::Command {
+                    command,
+                    native_weapon: _,
+                    observation: _,
+                    ..
+                } = incoming
+                {
+                    received = Some(command);
+                }
+                std::ops::ControlFlow::Continue(())
             })?;
             let received = received.ok_or(Error::Context)?;
             if received.movement[0] != 300.
@@ -731,36 +746,39 @@ fn connected_qw_heap() -> Result<(), String> {
                 Peer::Loopback(ClientId(0)),
                 &wire[..length],
                 EventTime(4),
-                |_, _, incoming| match incoming {
-                    Incoming::Snapshot(ReceivedFrame::QuakeWorld(frame)) => {
-                        invalid |= frame.sequence != sequence
-                            || frame.entities.len() != 1
-                            || frame.entities[0].words[5] != x.to_bits();
-                        outputs += 1;
-                    }
-                    Incoming::PlayerInfo(info) => {
-                        invalid |= info.number != 31
-                            || info.words[8] != 42
-                            || info.command.msec != 20
-                            || info.command.movement != [300, 0, 0]
-                            || !projection.apply(
-                                &info.words,
-                                &mut destination,
-                                &mut context,
-                                |_| None,
-                            )
-                            || destination.body.position.0[0] != x
-                            || destination.body.velocity.0[0] != 300.
-                            || destination.movement_rules != RuleSetId::Quake3
-                            || destination.trace_rules != RuleSetId::Quake2
-                            || destination.health != 100;
-                        outputs += 1;
-                    }
-                    Incoming::Print(print) => {
-                        invalid |= print.text != b"connected";
-                        outputs += 1;
-                    }
-                    _ => invalid = true,
+                |_, _, incoming| {
+                    match incoming {
+                        Incoming::Snapshot(ReceivedFrame::QuakeWorld(frame)) => {
+                            invalid |= frame.sequence != sequence
+                                || frame.entities.len() != 1
+                                || frame.entities[0].words[5] != x.to_bits();
+                            outputs += 1;
+                        }
+                        Incoming::PlayerInfo(info) => {
+                            invalid |= info.number != 31
+                                || info.words[8] != 42
+                                || info.command.msec != 20
+                                || info.command.movement != [300, 0, 0]
+                                || !projection.apply(
+                                    &info.words,
+                                    &mut destination,
+                                    &mut context,
+                                    |_| None,
+                                )
+                                || destination.body.position.0[0] != x
+                                || destination.body.velocity.0[0] != 300.
+                                || destination.movement_rules != RuleSetId::Quake3
+                                || destination.trace_rules != RuleSetId::Quake2
+                                || destination.health != 100;
+                            outputs += 1;
+                        }
+                        Incoming::Print(print) => {
+                            invalid |= print.text != b"connected";
+                            outputs += 1;
+                        }
+                        _ => invalid = true,
+                    };
+                    std::ops::ControlFlow::Continue(())
                 },
             );
             if invalid || outputs != 3 {
@@ -896,25 +914,32 @@ fn connected_nq_heap() -> Result<(), String> {
                 Peer::Loopback(ClientId(0)),
                 &bytes[..length],
                 EventTime(2),
-                |_, _, incoming| match incoming {
-                    Incoming::Snapshot(ReceivedFrame::NetQuake(frame)) => {
-                        invalid |= frame.sequence != sequence
-                            || frame.time != ThinkTime::Seconds(f64::from(seconds))
-                            || frame.entities.len() != 1
-                            || frame.entities[0].words[5] != x.to_bits()
-                            || !projection
-                                .apply(frame.player, &mut imported, &mut context, |_| None)
-                            || imported.health != 100
-                            || imported.body.velocity.0[0] != -32.
-                            || imported.movement_rules != RuleSetId::Quake3
-                            || imported.trace_rules != RuleSetId::Quake2;
-                        count += 1;
-                    }
-                    Incoming::Print(print) => {
-                        invalid |= print.text != b"connected";
-                        count += 1;
-                    }
-                    _ => invalid = true,
+                |_, _, incoming| {
+                    match incoming {
+                        Incoming::Snapshot(ReceivedFrame::NetQuake(frame)) => {
+                            invalid |= frame.sequence != sequence
+                                || frame.time != ThinkTime::Seconds(f64::from(seconds))
+                                || frame.entities.len() != 1
+                                || frame.entities[0].words[5] != x.to_bits()
+                                || !projection.apply(
+                                    frame.player,
+                                    &mut imported,
+                                    &mut context,
+                                    |_| None,
+                                )
+                                || imported.health != 100
+                                || imported.body.velocity.0[0] != -32.
+                                || imported.movement_rules != RuleSetId::Quake3
+                                || imported.trace_rules != RuleSetId::Quake2;
+                            count += 1;
+                        }
+                        Incoming::Print(print) => {
+                            invalid |= print.text != b"connected";
+                            count += 1;
+                        }
+                        _ => invalid = true,
+                    };
+                    std::ops::ControlFlow::Continue(())
                 },
             );
             if invalid || count != 2 {

@@ -84,7 +84,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     socket,
                     from,
                     bytes,
-                } => network.receive(socket, from, bytes, event.time, |_, _, _| {}),
+                } => network.receive(socket, from, bytes, event.time, |_, _, _| {
+                    std::ops::ControlFlow::Continue(())
+                }),
                 _ => input.dispatch(event, &mut sink),
             }
         }

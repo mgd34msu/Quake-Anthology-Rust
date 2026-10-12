@@ -114,3 +114,90 @@ fn sky_batches_draw_once_per_view_and_discard_untouched_previous_bounds() {
     );
     assert!(batches.take_for_draw(0).is_some());
 }
+
+#[test]
+fn sky_entity_triangles_use_the_same_selected_frame_pair_as_mesh_draws() {
+    use crate::scene::{Command, FrontEnd, Limits, Refdef, SceneEntity, Viewport};
+
+    let mut assets = Assets::load().unwrap();
+    let old = [
+        Vec3([8.0, -2.0, 1.0]),
+        Vec3([8.0, 2.0, 1.0]),
+        Vec3([8.0, 0.0, -2.0]),
+    ];
+    let current = old.map(|point| point + Vec3([4.0, 3.0, 2.0]));
+    let vertices: Vec<_> = old
+        .into_iter()
+        .chain(current)
+        .map(|position| Vertex {
+            position,
+            ..Vertex::default()
+        })
+        .collect();
+    let model = assets
+        .register_animated_model(&vertices, 3, &[0, 1, 2], MaterialId(0))
+        .unwrap();
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    for (frame, old_frame, back, valid) in [(1, 0, 0.25, true), (2, 0, 0.0, false)] {
+        let entity = SceneEntity {
+            model,
+            frame,
+            old_frame,
+            back_lerp: back,
+            origin: Vec3([1.0, -2.0, 3.0]),
+            ..SceneEntity::default()
+        };
+        let mut submission = frontend.begin_frame([0; 4]).unwrap();
+        assert!(submission.add_entity(entity));
+        assert!(submission.render_scene(
+            Refdef {
+                viewport: Viewport {
+                    width: 32,
+                    height: 24,
+                    ..Viewport::default()
+                },
+                ..Refdef::default()
+            },
+            &[],
+            &assets
+        ));
+        let list = submission.finish();
+        let draws = list
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                Command::View(view) => Some(view.scene.draws),
+                _ => None,
+            })
+            .unwrap();
+        let mut triangles = Vec::new();
+        let mut missing = 0;
+        for_each_sky_triangle(&list, draws, &assets, |_, geometry| {
+            match geometry {
+                SkySubmission::Begin(_) => {}
+                SkySubmission::Triangle(points) => triangles.push(points),
+                SkySubmission::MissingSurface => missing += 1,
+            }
+            true
+        });
+        if valid {
+            let expected = [0, 1, 2].map(|index| {
+                math::transform_point(
+                    entity.origin,
+                    entity.axes,
+                    old[index] * back + current[index] * (1.0 - back),
+                )
+            });
+            assert_eq!(triangles.len(), 1);
+            assert_eq!(
+                triangles[0].map(|point| point.0.map(f32::to_bits)),
+                expected.map(|point| point.0.map(f32::to_bits))
+            );
+            assert_eq!(missing, 0);
+        } else {
+            assert!(triangles.is_empty());
+            assert_eq!(missing, 1);
+        }
+        assert!(frontend.recycle(list).is_ok());
+    }
+}

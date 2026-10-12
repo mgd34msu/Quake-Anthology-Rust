@@ -8,6 +8,7 @@ use crate::assets::{
 };
 use crate::shader::{Cull, StageBlend};
 use crate::stage::{DrawInputs, PreparedStage, StageEvaluator, alpha_pass, blend_pixel};
+mod indexed;
 mod rgba;
 mod sky;
 mod span;
@@ -66,11 +67,23 @@ struct ClipVertex {
     texcoord: [f32; 2],
     lightmap_coord: [f32; 2],
     color: [f32; 4],
+    indexed_light: f32,
 }
 
 impl ClipVertex {
+    fn from_vertex(vertex: Vertex, camera: Vec3) -> Self {
+        Self {
+            camera,
+            texcoord: vertex.texcoord,
+            lightmap_coord: vertex.lightmap_coord,
+            color: crate::stage::unit_rgba(vertex.color),
+            indexed_light: 0.0,
+        }
+    }
+
     fn finite(self) -> bool {
         self.camera.is_finite()
+            && self.indexed_light.is_finite()
             && self
                 .texcoord
                 .iter()
@@ -89,6 +102,7 @@ impl ClipVertex {
                 fraction,
             ),
             color: qa_core::math::lerp_array(self.color, end.color, fraction),
+            indexed_light: qa_core::math::lerp(self.indexed_light, end.indexed_light, fraction),
         }
     }
 }
@@ -100,9 +114,24 @@ struct ScreenVertex {
     texcoord_over_depth: [f32; 2],
     lightmap_over_depth: [f32; 2],
     color_over_depth: [f32; 4],
+    indexed_texcoord: [f32; 2],
+    indexed_light: f32,
 }
 
 impl ScreenVertex {
+    fn with_attributes(self, vertex: ClipVertex) -> Self {
+        Self {
+            texcoord_over_depth: vertex.texcoord.map(|value| value * self.inverse_depth),
+            lightmap_over_depth: vertex
+                .lightmap_coord
+                .map(|value| value * self.inverse_depth),
+            color_over_depth: vertex.color.map(|value| value * self.inverse_depth),
+            indexed_texcoord: vertex.texcoord,
+            indexed_light: vertex.indexed_light,
+            ..self
+        }
+    }
+
     fn finite(self) -> bool {
         self.xy
             .iter()
@@ -111,6 +140,7 @@ impl ScreenVertex {
             .chain(self.color_over_depth.iter())
             .all(|v| v.is_finite())
             && self.inverse_depth.is_finite()
+            && self.indexed_light.is_finite()
     }
 }
 
@@ -130,6 +160,7 @@ struct RasterPass<'a> {
     depth_hack: bool,
     first_stage: bool,
     draw_rank: u32,
+    indexed: Option<indexed::Raster<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -192,12 +223,7 @@ impl Camera {
     }
 
     fn vertex(&self, vertex: Vertex, world_position: Vec3) -> ClipVertex {
-        ClipVertex {
-            camera: self.to_view(world_position),
-            texcoord: vertex.texcoord,
-            lightmap_coord: vertex.lightmap_coord,
-            color: crate::stage::unit_rgba(vertex.color),
-        }
+        ClipVertex::from_vertex(vertex, self.to_view(world_position))
     }
 
     fn rgb(&self) -> bool {
@@ -237,10 +263,9 @@ impl Camera {
                         * (1.0 - vertex.camera.0[1] * inverse_depth / self.tangent[1]),
             ],
             inverse_depth,
-            texcoord_over_depth: vertex.texcoord.map(|c| c * inverse_depth),
-            lightmap_over_depth: vertex.lightmap_coord.map(|c| c * inverse_depth),
-            color_over_depth: vertex.color.map(|c| c * inverse_depth),
+            ..ScreenVertex::default()
         }
+        .with_attributes(vertex)
     }
 
     fn distance(&self, vertex: ClipVertex, plane: usize) -> f32 {
@@ -511,7 +536,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
-        if !self.mesh_supported(camera, material) {
+        if !self.mesh_supported(material) {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
@@ -523,7 +548,8 @@ impl CpuBackend {
             inputs,
             false,
             draw_rank,
-            vertices,
+            |index| vertices[index],
+            |index| vertices[index].normal,
             crate::affine::fan(vertices.len()),
             |position| position,
             assets,
@@ -547,6 +573,10 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         };
+        let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp) else {
+            stats.rejected = stats.rejected.saturating_add(1);
+            return;
+        };
         let Some(material) = entity.material(assets).and_then(|id| assets.material(id)) else {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
@@ -555,7 +585,7 @@ impl CpuBackend {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
-        if !self.mesh_supported(camera, material) {
+        if !self.mesh_supported(material) {
             stats.rejected = stats.rejected.saturating_add(1);
             return;
         }
@@ -574,7 +604,8 @@ impl CpuBackend {
             inputs,
             entity.depth_hack,
             draw_rank,
-            &model.vertices,
+            |index| frames.vertex(index),
+            |index| frames.current_vertex(index).normal,
             model.indices.chunks_exact(3).map(|indices| {
                 [
                     indices[0] as usize,
@@ -599,7 +630,8 @@ impl CpuBackend {
         inputs: DrawInputs,
         depth_hack: bool,
         draw_rank: u32,
-        vertices: &[Vertex],
+        vertex: impl Fn(usize) -> Vertex,
+        lighting_normal: impl Fn(usize) -> Vec3,
         triangles: impl Iterator<Item = [usize; 3]> + Clone,
         to_world: impl Fn(Vec3) -> Vec3,
         assets: &Assets,
@@ -618,6 +650,16 @@ impl CpuBackend {
                 stats.rejected = stats.rejected.saturating_add(1);
                 continue;
             };
+            let Ok(indexed) = indexed::Raster::prepare(
+                camera.refdef.cpu_presentation,
+                image,
+                &stage,
+                inputs.lighting,
+                assets,
+            ) else {
+                stats.rejected = stats.rejected.saturating_add(1);
+                continue;
+            };
             let pass = RasterPass {
                 material,
                 stage,
@@ -626,24 +668,26 @@ impl CpuBackend {
                 depth_hack,
                 first_stage: stage_index == 0,
                 draw_rank,
+                indexed,
             };
             stats.stages = stats.stages.saturating_add(1);
             for indices in triangles.clone() {
                 let triangle = indices.map(|i| {
                     let vertex =
-                        world::evaluated_vertex(vertices[i], deforms, Some(stage), &self.evaluator);
-                    camera.vertex(vertex, to_world(vertex.position))
+                        world::evaluated_vertex(vertex(i), deforms, Some(stage), &self.evaluator);
+                    let mut clipped = camera.vertex(vertex, to_world(vertex.position));
+                    if let Some(indexed) = indexed {
+                        clipped.indexed_light = indexed.light(lighting_normal(i), vertex.color);
+                    }
+                    clipped
                 });
                 self.triangle(camera, triangle, pass, stats);
             }
         }
     }
 
-    fn mesh_supported(&self, camera: &Camera, material: &Material) -> bool {
-        // Native indexed model/light shading is a separate native kernel; an
-        // RGB model must not masquerade as stock indexed presentation.
-        camera.rgb()
-            && material.settings.sky.is_none()
+    fn mesh_supported(&self, material: &Material) -> bool {
+        material.settings.sky.is_none()
             && material.settings.fog.is_none()
             && !material.settings.portal
             && !material.settings.polygon_offset
@@ -733,20 +777,22 @@ impl CpuBackend {
         ];
         let include_edge = edges.map(|(a, b)| top_left(a, b));
         let area_inverse = 1.0 / area;
-        let mip_planes = (image_mips(pass.image, pass.stage.stage.sampler) > 1).then(|| {
-            let points = vertices.map(|v| v.xy.map(f64::from));
-            let determinant = crate::affine::determinant(points);
-            (
-                world::Affine::fit(points, vertices.map(|v| v.inverse_depth), determinant),
-                std::array::from_fn(|coordinate| {
-                    world::Affine::fit(
-                        points,
-                        vertices.map(|v| v.texcoord_over_depth[coordinate]),
-                        determinant,
-                    )
-                }),
-            )
-        });
+        let mip_planes = (pass.indexed.is_none()
+            && image_mips(pass.image, pass.stage.stage.sampler) > 1)
+            .then(|| {
+                let points = vertices.map(|v| v.xy.map(f64::from));
+                let determinant = crate::affine::determinant(points);
+                (
+                    world::Affine::fit(points, vertices.map(|v| v.inverse_depth), determinant),
+                    std::array::from_fn(|coordinate| {
+                        world::Affine::fit(
+                            points,
+                            vertices.map(|v| v.texcoord_over_depth[coordinate]),
+                            determinant,
+                        )
+                    }),
+                )
+            });
         let width = self.frame.width;
         let mut buffers = self.frame.buffers();
         for y in y_start..y_end {
@@ -788,6 +834,11 @@ impl CpuBackend {
                 }
                 let depth = 1.0 / inverse_depth;
                 let coordinates = std::array::from_fn(|i| {
+                    if pass.indexed.is_some() {
+                        return weights[0] * vertices[0].indexed_texcoord[i]
+                            + weights[1] * vertices[1].indexed_texcoord[i]
+                            + weights[2] * vertices[2].indexed_texcoord[i];
+                    }
                     (weights[0] * vertices[0].texcoord_over_depth[i]
                         + weights[1] * vertices[1].texcoord_over_depth[i]
                         + weights[2] * vertices[2].texcoord_over_depth[i])
@@ -799,6 +850,34 @@ impl CpuBackend {
                         + weights[2] * vertices[2].color_over_depth[i])
                         * depth
                 });
+                if let Some(indexed) = pass.indexed {
+                    if !alpha_pass(pass.stage.stage.alpha_test, color[3]) {
+                        continue;
+                    }
+                    let light = weights[0] * vertices[0].indexed_light
+                        + weights[1] * vertices[1].indexed_light
+                        + weights[2] * vertices[2].indexed_light;
+                    let Some(color) = indexed.sample(
+                        coordinates,
+                        light,
+                        color[3],
+                        buffers.indices[index],
+                        buffers.palettes[index],
+                    ) else {
+                        continue;
+                    };
+                    buffers.write_indexed(
+                        index,
+                        color,
+                        indexed.palette,
+                        indexed.palette_id.0,
+                        pass.stage
+                            .stage
+                            .depth_write
+                            .then_some((depth_score, pass.draw_rank)),
+                    );
+                    continue;
+                }
                 let source = (pass.sampler)(texels, coordinates, color);
                 if !alpha_pass(pass.stage.stage.alpha_test, source[3]) {
                     continue;

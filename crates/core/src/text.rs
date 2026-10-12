@@ -107,13 +107,16 @@ impl<const N: usize> FixedText<N> {
         self.len = 0;
     }
     pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) -> fmt::Result {
+        self.replace_bytes(range, text.as_bytes())
+    }
+    pub fn replace_bytes(&mut self, range: std::ops::Range<usize>, text: &[u8]) -> fmt::Result {
         let len = self.len - range.len() + text.len();
         if len > N {
             return Err(fmt::Error);
         }
         self.bytes
             .copy_within(range.end..self.len, range.start + text.len());
-        self.bytes[range.start..range.start + text.len()].copy_from_slice(text.as_bytes());
+        self.bytes[range.start..range.start + text.len()].copy_from_slice(text);
         self.len = len;
         Ok(())
     }

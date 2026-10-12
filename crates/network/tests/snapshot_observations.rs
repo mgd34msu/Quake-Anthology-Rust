@@ -180,8 +180,17 @@ fn moves(
     let length = codec.stage(body).unwrap();
     let mut result = Vec::new();
     codec
-        .decode(length, sequence, 9, channel, |command, _, observation| {
-            result.push((command.movement[0], observation))
+        .decode(length, sequence, 9, channel, None, |incoming| {
+            if let qa_network::ingress::Incoming::Command {
+                command,
+                native_weapon: _,
+                observation,
+                ..
+            } = incoming
+            {
+                result.push((command.movement[0], observation));
+            }
+            std::ops::ControlFlow::Continue(())
         })
         .unwrap();
     result
@@ -317,8 +326,17 @@ fn different_protocol_ack_fields_project_the_same_native_provider_observation() 
         let length = commands.stage(&bytes[..length]).unwrap();
         let mut observed = Vec::new();
         commands
-            .decode(length, 1, 10, &mut channel, |_, _, observation| {
-                observed.push(observation)
+            .decode(length, 1, 10, &mut channel, None, |incoming| {
+                if let qa_network::ingress::Incoming::Command {
+                    command: _,
+                    native_weapon: _,
+                    observation,
+                    ..
+                } = incoming
+                {
+                    observed.push(observation);
+                }
+                std::ops::ControlFlow::Continue(())
             })
             .unwrap();
         assert_eq!(observed, [Some(source(4))], "{protocol:?}");
@@ -371,4 +389,50 @@ fn classic_q2_repeats_keep_their_original_snapshot_observation() {
             (40., Some(source(8)))
         ]
     );
+}
+
+#[test]
+fn qw_suffix_provenance_uses_only_delta_records_before_native_abort() {
+    use packet::ZERO_QW;
+    use qa_network::ingress::Incoming;
+    for stop in [254, 3] {
+        let protocol = Protocol::QuakeWorld28;
+        let mut channel = Channel::load(protocol.channel(), Endpoint::Server, 8192, 16).unwrap();
+        channel.configure_snapshots(protocol).unwrap();
+        for (sequence, observation) in [(302, source(4)), (304, source(8))] {
+            publish_protocol(&mut channel, protocol, sequence);
+            channel
+                .prepare_snapshot(sequence, Some(observation), b"snapshot", EventTime(1))
+                .unwrap()
+                .unwrap();
+            channel.submitted(EventTime(1)).unwrap();
+        }
+        let movement = Move::QuakeWorld {
+            loss: 0,
+            commands: [ZERO_QW; 3],
+            delta_request: Some(46),
+        };
+        let mut bytes = [0; 1400];
+        let length = packet::write(&mut bytes, &movement, 1, Key::default()).unwrap();
+        bytes[length..length + 3].copy_from_slice(&[stop, 5, 48]);
+        let mut commands = Commands::load(protocol);
+        let length = commands.stage(&bytes[..length + 3]).unwrap();
+        let mut observed = Vec::new();
+        let result = commands.decode(length, 1, 10, &mut channel, None, |incoming| {
+            if let Incoming::Command { observation, .. } = incoming {
+                observed.push(observation);
+            }
+            std::ops::ControlFlow::Continue(())
+        });
+        assert_eq!(
+            result,
+            if stop == 3 {
+                Ok(1)
+            } else {
+                Err(packet::Error::Opcode)
+            }
+        );
+        assert_eq!(observed, [Some(source(4))]);
+        assert_eq!(commands.delta_request(), Some(46));
+    }
 }

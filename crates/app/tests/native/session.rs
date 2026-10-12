@@ -2392,6 +2392,8 @@ fn q2_clients_bind_after_initialization_and_disconnect_before_shutdown() {
                 usercmd: 0x180005c00,
                 abi: qa_compat::q2_abi::client_layout(rules).unwrap(),
                 think: CallbackId(game.entry(b"ClientThink").unwrap()),
+                command: CallbackId(game.entry(b"ClientCommand").unwrap()),
+                userinfo_changed: CallbackId(game.entry(b"ClientUserinfoChanged").unwrap()),
                 social: 0x180005800,
             };
             let imports = game.imports;
@@ -2923,21 +2925,26 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         let trap_name = if rr {
             b"GetPathToGoal".as_slice()
         } else {
-            b"bprintf".as_slice()
+            b"DebugGraph".as_slice()
         };
-        let pointer = pointers[if rr { 52 } else { 0 }];
+        let pointer = pointers[if rr { 52 } else { 43 }];
         let code_at = (target - base) as usize;
         let mut code = vec![0x48, 0x83, 0xec, 0x28];
-        if rr {
-            code.extend([0x48, 0xb9]);
-            code.extend((base + 0x1700).to_le_bytes());
-            code.extend([0x48, 0xb8]);
-            code.extend(pointers[1].to_le_bytes());
-            code.extend([0xff, 0xd0]);
-            let text = b"API 2023 print\0";
-            game.vm.process.memory_mut().unwrap()[0x1700..0x1700 + text.len()]
-                .copy_from_slice(text);
+        code.extend([0x48, 0xb9]);
+        code.extend((base + 0x1700).to_le_bytes());
+        if !rr {
+            // Classic dprintf is variadic, unlike API2023's plain string.
+            code.extend([0xba, 7, 0, 0, 0]);
         }
+        code.extend([0x48, 0xb8]);
+        code.extend(pointers[1].to_le_bytes());
+        code.extend([0xff, 0xd0]);
+        let text = if rr {
+            b"API 2023 print\0".as_slice()
+        } else {
+            b"API classic print %d\xff\0"
+        };
+        game.vm.process.memory_mut().unwrap()[0x1700..0x1700 + text.len()].copy_from_slice(text);
         code.extend([0x48, 0xb8]);
         code.extend(pointer.to_le_bytes());
         code.extend([0xff, 0xd0, 0x0f, 0x0b]);
@@ -2981,7 +2988,13 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         while let Some(record) = runtime.server.events.next(&mut batch) {
             if let FrameEvent::Print(print) = record.event {
                 let text = runtime.server.events.texts.get(print.text).unwrap();
-                if text == b"API 2023 print" {
+                if text
+                    == if rr {
+                        b"API 2023 print".as_slice()
+                    } else {
+                        b"API classic print 7\xff"
+                    }
+                {
                     prints += 1;
                 } else {
                     assert!(text.windows(trap_name.len()).any(|s| s == trap_name));
@@ -2990,7 +3003,7 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             }
         }
         assert_eq!(logs, 1);
-        assert_eq!(prints, if rr { 3 } else { 0 });
+        assert_eq!(prints, 3);
         // Reach the actual declared cvar import through the owned child.
         let name = b"_qa_child_cvar\0";
         let default = b"3\0";
@@ -4943,6 +4956,7 @@ impl FrameSource for Source {
 
 fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(functions: bool) {
     let system_v = [NativeImport {
+        format: None,
         filter: None,
         trap: false,
         number: 0,
@@ -4951,6 +4965,7 @@ fn two_native_modules_use_session_rates_and_the_same_calltable_output_ring(funct
         result: NativeScalar::Word,
     }];
     let microsoft = [NativeImport {
+        format: None,
         filter: None,
         trap: false,
         number: 0,
@@ -5161,12 +5176,23 @@ fn pe_static_tls_template_is_owned_and_aligned_before_child_start() {
     }
 }
 
+mod commands;
 #[path = "observations.rs"]
 mod observations;
 #[path = "pmove.rs"]
 mod pmove;
 
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--q2-command-stream") {
+        commands::packet_commands_keep_native_order_and_borrowed_arguments();
+        println!("native Q2 packet command stream checks passed");
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--q2-api") {
+        q2_api_layouts_bind_the_full_table_and_name_missing_engine_services();
+        println!("native Q2 API checks passed");
+        return;
+    }
     if std::env::args().any(|arg| arg == "--snapshot-observations") {
         observations::snapshot_frames_follow_native_provider_lifetimes();
         println!("native snapshot observation checks passed");
@@ -5179,6 +5205,7 @@ pub fn run() {
         return;
     }
     pmove::commands_move_a_native_client_once();
+    commands::packet_commands_keep_native_order_and_borrowed_arguments();
     observations::snapshot_frames_follow_native_provider_lifetimes();
     native_area_connection_uses_shared_topology_through_session_dispatch();
     native_visibility_uses_compiled_pvs_through_session_dispatch();

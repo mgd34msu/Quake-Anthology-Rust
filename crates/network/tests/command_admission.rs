@@ -69,8 +69,17 @@ fn admit_bytes(
     let length = codec.stage(bytes).unwrap();
     let mut commands = Vec::new();
     let accepted = codec
-        .decode(length, sequence, 123, channel, |command, _, _| {
-            commands.push(command)
+        .decode(length, sequence, 123, channel, None, |incoming| {
+            if let qa_network::ingress::Incoming::Command {
+                command,
+                native_weapon: _,
+                observation: _,
+                ..
+            } = incoming
+            {
+                commands.push(command);
+            }
+            std::ops::ControlFlow::Continue(())
         })
         .unwrap();
     assert_eq!(accepted, commands.len());
@@ -323,11 +332,22 @@ fn malformed_or_bad_crc_moves_never_reach_the_command_callback() {
             native_move(protocol, [(11, 1), (13, 2), (17, 3)])
         };
         let bytes = payload(&movement, 1);
-        let length = codec.stage(&bytes[..bytes.len() - 1]).unwrap();
+        // QW appends a two-byte delta request outside the MOVE record.
+        let truncation = if protocol == Protocol::QuakeWorld28 {
+            3
+        } else {
+            1
+        };
+        let length = codec.stage(&bytes[..bytes.len() - truncation]).unwrap();
         let mut accepted = 0;
         assert!(
             codec
-                .decode(length, 1, 0, &mut channel, |_, _, _| accepted += 1)
+                .decode(length, 1, 0, &mut channel, None, |incoming| {
+                    if let qa_network::ingress::Incoming::Command { .. } = incoming {
+                        accepted += 1;
+                    }
+                    std::ops::ControlFlow::Continue(())
+                })
                 .is_err()
         );
         assert_eq!(accepted, 0);
@@ -336,7 +356,12 @@ fn malformed_or_bad_crc_moves_never_reach_the_command_callback() {
             bytes[1] ^= 1; // Protected checksum byte.
             let length = codec.stage(&bytes).unwrap();
             assert_eq!(
-                codec.decode(length, 1, 0, &mut channel, |_, _, _| accepted += 1),
+                codec.decode(length, 1, 0, &mut channel, None, |incoming| {
+                    if let qa_network::ingress::Incoming::Command { .. } = incoming {
+                        accepted += 1;
+                    }
+                    std::ops::ControlFlow::Continue(())
+                }),
                 Err(packet::Error::Checksum)
             );
             assert_eq!(accepted, 0);
@@ -401,7 +426,8 @@ fn ingress_dispatches_command_batches_synchronously_and_preserves_nq_frame_polic
                     {
                         assert_eq!(execution, protocol.command_execution());
                         received.push(command);
-                    }
+                    };
+                    std::ops::ControlFlow::Continue(())
                 },
             );
             assert_eq!(connections.commands as usize, received.len());

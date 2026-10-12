@@ -61,7 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("move payload".into());
         };
         let n = codec.stage(body)?;
-        codec.decode(n, sequence, 16, &mut server, |_, _, _| {})?;
+        codec.decode(n, sequence, 16, &mut server, None, |_| {
+            std::ops::ControlFlow::Continue(())
+        })?;
         for _ in 0..count {
             server.queue_reliable(&string(&mut input)?)?;
         }

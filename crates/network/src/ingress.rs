@@ -8,6 +8,7 @@ use qa_core::{
     primitives::ClientId,
     sys_events::EventTime,
 };
+use std::ops::ControlFlow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Route {
@@ -63,6 +64,20 @@ pub enum BindError {
 }
 /// Borrowed delivery callbacks never retain a packet or create another queue.
 pub enum Incoming<'a> {
+    CommandString {
+        protocol: crate::commands::packet::Protocol,
+        sequence: Option<u32>,
+        text: &'a [u8],
+        output: Option<OutputConsumerId>,
+    },
+    Userinfo {
+        protocol: crate::commands::packet::Protocol,
+        text: &'a [u8],
+        output: Option<OutputConsumerId>,
+    },
+    Disconnect {
+        output: Option<OutputConsumerId>,
+    },
     Payload(&'a [u8]),
     ReliableCommand {
         sequence: u32,
@@ -180,7 +195,7 @@ impl Connections {
         from: impl Into<Peer>,
         bytes: &[u8],
         time: EventTime,
-        mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+        mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>) -> ControlFlow<()>,
     ) {
         let from = from.into();
         self.packets = self.packets.saturating_add(1);
@@ -250,32 +265,30 @@ impl Connections {
                     {
                         let sequence = received.header.sequence;
                         let length = commands.stage(payload);
-                        let execution = commands.protocol.command_execution();
                         let output = connection.output;
+                        let mut accepted = 0;
+                        let mut delivered = false;
                         let decoded = length.and_then(|length| {
                             commands.decode(
                                 length,
                                 sequence,
                                 time.milliseconds() as i32,
                                 &mut connection.channel,
-                                |command, native_weapon, observation| {
-                                    consume(
-                                        client,
-                                        endpoint,
-                                        Incoming::Command {
-                                            command,
-                                            native_weapon,
-                                            observation,
-                                            execution,
-                                            output,
-                                        },
-                                    );
+                                output,
+                                |incoming| {
+                                    delivered = true;
+                                    accepted +=
+                                        u64::from(matches!(incoming, Incoming::Command { .. }));
+                                    consume(client, endpoint, incoming)
                                 },
                             )
                         });
+                        // Native parsing retains earlier effects if a later
+                        // command is malformed, so count callback deliveries.
+                        self.commands += accepted;
                         match decoded {
-                            Ok(0) => self.command_duplicates += 1,
-                            Ok(accepted) => self.commands += accepted as u64,
+                            Ok(0) if !delivered => self.command_duplicates += 1,
+                            Ok(_) => {}
                             Err(_) => self.command_errors += 1,
                         }
                     } else if !payload.is_empty()
@@ -289,19 +302,21 @@ impl Connections {
                                 length,
                                 sequence,
                                 &mut connection.channel,
-                                |incoming| consume(client, endpoint, incoming),
+                                |incoming| {
+                                    let _ = consume(client, endpoint, incoming);
+                                },
                             )
                         }) {
                             Err(_) => self.command_errors += 1,
                             Ok(Some(sequence)) => {
                                 if let Some(frame) = connection.channel.snapshot(sequence) {
-                                    consume(client, endpoint, Incoming::Snapshot(frame));
+                                    let _ = consume(client, endpoint, Incoming::Snapshot(frame));
                                 }
                             }
                             Ok(None) => {}
                         }
                     } else {
-                        consume(client, endpoint, Incoming::Payload(payload));
+                        let _ = consume(client, endpoint, Incoming::Payload(payload));
                     }
                 }
             }
@@ -311,7 +326,7 @@ impl Connections {
         // Consume receipts even on that native receive outcome.
         for &receipt in connection.channel.reliable_receipts() {
             self.acknowledged += 1;
-            consume(
+            let _ = consume(
                 client,
                 endpoint,
                 Incoming::Acknowledged {

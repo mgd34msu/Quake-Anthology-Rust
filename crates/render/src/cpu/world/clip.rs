@@ -214,12 +214,7 @@ impl ClipGraph {
                         Some(stage),
                         evaluator,
                     );
-                    ClipVertex {
-                        camera: self.nodes[index].base.camera,
-                        texcoord: vertex.texcoord,
-                        lightmap_coord: vertex.lightmap_coord,
-                        color: crate::stage::unit_rgba(vertex.color),
-                    }
+                    ClipVertex::from_vertex(vertex, self.nodes[index].base.camera)
                 }
                 ClipOperation::Intersection {
                     left,
@@ -236,18 +231,7 @@ impl ClipGraph {
         }
         for index in 0..self.count {
             let attributes = self.attributes[self.input[index]];
-            let geometry = self.geometry[index];
-            let vertex = ScreenVertex {
-                xy: geometry.xy,
-                inverse_depth: geometry.inverse_depth,
-                texcoord_over_depth: attributes
-                    .texcoord
-                    .map(|value| value * geometry.inverse_depth),
-                lightmap_over_depth: attributes
-                    .lightmap_coord
-                    .map(|value| value * geometry.inverse_depth),
-                color_over_depth: attributes.color.map(|value| value * geometry.inverse_depth),
-            };
+            let vertex = self.geometry[index].with_attributes(attributes);
             if !vertex.finite() {
                 return None;
             }

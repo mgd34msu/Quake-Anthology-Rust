@@ -2,6 +2,24 @@ use qa_core::text::FixedText;
 use std::fmt::Write;
 
 #[test]
+fn byte_replacement_preserves_native_text_and_rejects_growth_atomically() {
+    let mut text = FixedText::<8>::default();
+    text.set_bytes(b"A\x80BC\xfe").unwrap();
+    text.replace_bytes(1..3, b"\xfd\x82Z").unwrap();
+    assert_eq!(text.as_bytes(), b"A\xfd\x82ZC\xfe");
+    let before = text.clone();
+    assert!(text.replace_bytes(2..3, b"1234").is_err());
+    assert_eq!(text.as_bytes(), before.as_bytes());
+    text.replace_bytes(1..4, b"Q").unwrap();
+    assert_eq!(text.as_bytes(), b"AQC\xfe");
+    text.replace_bytes(4..4, b"!").unwrap();
+    assert_eq!(text.as_bytes(), b"AQC\xfe!");
+    text.replace_bytes(0..5, b"ok").unwrap();
+    text.replace(1..2, "é").unwrap();
+    assert_eq!(text.as_str(), "oé");
+}
+
+#[test]
 fn info_key_and_value_limits_are_independent_and_validate_before_removal() {
     use qa_core::text::{InfoBytes, InfoError, InfoRules, info_set};
     for value_bytes in [64, 256] {

@@ -3,6 +3,8 @@ use super::{
     implementation::{NativeProcess, child_main, executable_offset, transfer},
 };
 use std::{os::unix::process::ExitStatusExt, process::Command, time::Duration};
+#[path = "format.rs"]
+mod format_tests;
 #[path = "parent_death.rs"]
 mod parent_death_tests;
 #[path = "runtime.rs"]
@@ -99,6 +101,7 @@ fn a_zero_budget_cannot_transfer_even_a_ready_packet() {
 fn a_missing_import_aborts_the_call_and_keeps_the_owned_child() {
     for abi in [NativeAbi::SystemV, NativeAbi::Microsoft] {
         let imports = [NativeImport {
+            format: None,
             filter: None,
             trap: true,
             number: 0,
@@ -143,6 +146,7 @@ fn a_missing_import_in_a_runtime_callback_returns_through_rust_frames() {
     let abi = NativeAbi::Microsoft;
     let imports = [
         NativeImport {
+            format: None,
             filter: None,
             trap: false,
             number: sort.number,
@@ -151,6 +155,7 @@ fn a_missing_import_in_a_runtime_callback_returns_through_rust_frames() {
             result: sort.result,
         },
         NativeImport {
+            format: None,
             filter: None,
             trap: true,
             number: 0,
@@ -247,6 +252,7 @@ fn c_runtime_imports_execute_in_the_child_without_an_engine_round_trip() {
         let imports: Vec<_> = FUNCTIONS
             .iter()
             .map(|f| NativeImport {
+                format: None,
                 filter: None,
                 trap: false,
                 number: f.number,
@@ -395,6 +401,7 @@ fn c_runtime_scans_cross_region_boundaries_without_crossing_gaps() {
         .iter()
         .take(7)
         .map(|f| NativeImport {
+            format: None,
             filter: None,
             trap: false,
             number: f.number,
@@ -491,6 +498,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         .iter()
         .filter(|f| f.windows_object())
         .map(|f| NativeImport {
+            format: None,
             filter: None,
             trap: false,
             number: f.number,
@@ -500,6 +508,7 @@ fn msvc_stream_objects_keep_native_layout_and_nested_callbacks() {
         })
         .collect();
     imports.push(NativeImport {
+        format: None,
         filter: None,
         trap: false,
         number: 7,
@@ -1437,6 +1446,7 @@ fn typed_native_function_imports_decode_scalar_arguments_and_return_in_the_nativ
             let mut bytes = vec![0; 8192];
             bytes[..code.len()].copy_from_slice(&code);
             let imports = [NativeImport {
+                format: None,
                 filter: None,
                 trap: false,
                 number: 137,
@@ -1544,6 +1554,7 @@ fn native_integer_imports_apply_declared_widths_in_both_directions() {
             bytes[..code.len()].copy_from_slice(&code);
             let parameters = [kind];
             let imports = [NativeImport {
+                format: None,
                 filter: None,
                 trap: false,
                 number: 141,
@@ -1678,6 +1689,7 @@ fn list_filters_execute_in_the_child_with_native_end_and_count_only_semantics() 
             };
             let imports = [
                 NativeImport {
+                    format: None,
                     trap: false,
                     number: 23,
                     abi,
@@ -1686,6 +1698,7 @@ fn list_filters_execute_in_the_child_with_native_end_and_count_only_semantics() 
                     filter: Some(filter),
                 },
                 NativeImport {
+                    format: None,
                     trap: false,
                     number: 777,
                     abi,
@@ -1905,6 +1918,7 @@ fn list_filter_descriptors_validate_slots_banks_and_memory_before_execution() {
         },
     ] {
         let imports = [NativeImport {
+            format: None,
             filter: Some(filter),
             trap: false,
             number: 23,

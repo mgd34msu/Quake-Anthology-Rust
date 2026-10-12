@@ -46,6 +46,30 @@ impl NativeListFilter {
     }
 }
 
+/// A load-selected bounded format adapter, executed inside the owned child.
+/// The fixed descriptor ends with the format pointer; variadic values follow
+/// the native calling convention rather than the thirteen-word IPC shape.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeFormat {
+    pub buffer: u64,
+    /// Includes the terminating NUL. Classic Q2 uses 2048 for broadcasts,
+    /// 1024 for console, client, center and fatal prints.
+    pub capacity: u16,
+    pub format: u8,
+}
+impl NativeFormat {
+    fn valid(self, parameters: &[NativeScalar]) -> bool {
+        self.capacity != 0
+            && self.capacity <= 2048
+            && parameters.len() == usize::from(self.format) + 1
+            && parameters.len() <= 3
+            && parameters.last() == Some(&NativeScalar::Word)
+            && parameters
+                .iter()
+                .all(|p| matches!(p, NativeScalar::Word | NativeScalar::I32))
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct NativeImport<'a> {
     /// Missing imports have no scalar argument descriptor and abort only the
@@ -57,6 +81,7 @@ pub struct NativeImport<'a> {
     pub result: NativeScalar,
     /// Optional module callback processing, executed only inside the child.
     pub filter: Option<NativeListFilter>,
+    pub format: Option<NativeFormat>,
 }
 
 #[derive(Clone, Copy, Debug)]

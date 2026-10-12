@@ -212,6 +212,18 @@ pub const FUNCTIONS: &[Function] = &[
         result: Void,
         operation: Operation::Free,
     },
+    Function { name: b"sprintf", number: FIRST + 18, heap: false, provider: LIBC,
+        versions: BASE_VERSION, parameters: &[Word, Word], result: I32,
+        operation: Operation::Format { sized: false, list: false } },
+    Function { name: b"snprintf", number: FIRST + 19, heap: false, provider: LIBC,
+        versions: BASE_VERSION, parameters: &[Word, Word, Word], result: I32,
+        operation: Operation::Format { sized: true, list: false } },
+    Function { name: b"vsprintf", number: FIRST + 20, heap: false, provider: LIBC,
+        versions: BASE_VERSION, parameters: &[Word, Word, Word], result: I32,
+        operation: Operation::Format { sized: false, list: true } },
+    Function { name: b"vsnprintf", number: FIRST + 21, heap: false, provider: LIBC,
+        versions: BASE_VERSION, parameters: &[Word, Word, Word, Word], result: I32,
+        operation: Operation::Format { sized: true, list: true } },
     windows(FIRST + 100, b"msvcp140.dll", b"?_Incref@facet@locale@std@@UEAAXXZ", Operation::Msvc(Msvc::Incref), &[Word], NativeScalar::Void),
     windows(FIRST + 101, b"msvcp140.dll", b"?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ", Operation::Msvc(Msvc::Decref), &[Word], NativeScalar::Word),
     windows(FIRST + 102, b"msvcp140.dll", b"??1facet@locale@std@@MEAA@XZ", Operation::Msvc(Msvc::FacetDtor), &[Word], NativeScalar::Void),
@@ -365,6 +377,7 @@ const fn tagged(
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
+    Format { sized: bool, list: bool },
     Copy,
     Fill,
     Strncpy,
@@ -493,6 +506,7 @@ impl Function {
                 b"api-ms-win-crt-heap-l1-1-0.dll"
             }
             Operation::Math(_, _) => b"api-ms-win-crt-math-l1-1-0.dll",
+            Operation::Format { .. } => b"api-ms-win-crt-stdio-l1-1-0.dll",
             _ => return false,
         };
         equal(library)

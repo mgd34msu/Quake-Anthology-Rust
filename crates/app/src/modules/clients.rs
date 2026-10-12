@@ -246,7 +246,7 @@ impl FrameHost {
             })();
             if result.is_err() {
                 if accepted {
-                    self.disconnect_module_client(id);
+                    self.disconnect_client(id);
                 } else {
                     self.runtime.server.disconnect(id);
                 }
@@ -288,6 +288,120 @@ impl FrameHost {
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
             let _ = (api, id, command, server_frame);
+            Err(ClientCommandError::Unsupported)
+        }
+    }
+
+    /// Packet text is client input, never an unrestricted local-console command.
+    /// The module's load-selected tokenizer exposes native argv through the
+    /// same session function table and owned-child import path as ClientThink.
+    pub fn client_string_command(
+        &mut self,
+        id: ClientId,
+        rules: qa_core::primitives::RuleSetId,
+        bytes: &[u8],
+    ) -> Result<std::ops::ControlFlow<()>, ClientCommandError> {
+        let api = self
+            .runtime
+            .server
+            .module_moves(id)
+            .and_then(|native| self.module_row(native.module))
+            .and_then(|row| row.client_api.map(|api| (api, row.request.context.console)));
+        let context = api.map_or(
+            qa_console::views::Context {
+                source: rules,
+                side: qa_console::catalog::Scope::Server,
+                ..Default::default()
+            },
+            |(_, mut context)| {
+                context.source = rules;
+                context
+            },
+        );
+        let mut text = qa_core::text::FixedText::<{ qa_console::text::MAX_TEXT }>::default();
+        text.append_bytes(bytes)
+            .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
+        // Classic Q2 expands cvars in server client commands. Rerelease passes
+        // macroExpand=false; syntax belongs to the explicit protocol boundary.
+        let mut tokens = std::mem::take(&mut self.command_tokens);
+        let result = (|| {
+            if rules == qa_core::primitives::RuleSetId::Quake2 {
+                qa_console::command_text::expand_bytes(&mut text, &mut tokens, |name| {
+                    let name = std::str::from_utf8(name).ok()?;
+                    let view = self.console.cvars.bind(name, context)?;
+                    self.console.cvars.read(view).ok()
+                })
+                .map_err(|_| ClientCommandError::Usercmd(qa_compat::services::CallError::Text))?;
+            }
+            let args =
+                qa_console::command_text::tokenize_bytes(text.as_bytes(), rules, &mut tokens)
+                    .map_err(|_| {
+                        ClientCommandError::Usercmd(qa_compat::services::CallError::Text)
+                    })?;
+            if args.is_empty() {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
+            if args.get_bytes(0) == b"disconnect" {
+                self.disconnect_client(id);
+                return Ok(std::ops::ControlFlow::Break(()));
+            }
+            let Some((api, _)) = api else {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            };
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                let (native, address, time) = self.module_client(id)?;
+                let mut argv = [&[][..]; 1024];
+                for (to, from) in argv.iter_mut().zip(args.iter_bytes()) {
+                    *to = from;
+                }
+                let mut export = Export::words(api.command, &[address]);
+                export.client = Some(id);
+                self.call_module_command(
+                    native.module,
+                    export,
+                    time,
+                    qa_core::primitives::CommandArgs {
+                        argv: &argv[..args.len()],
+                        raw: args.raw_bytes(),
+                    },
+                )
+                .map_err(ClientCommandError::Dispatch)?;
+                Ok(std::ops::ControlFlow::Continue(()))
+            }
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            {
+                let _ = api;
+                Err(ClientCommandError::Unsupported)
+            }
+        })();
+        self.command_tokens = tokens;
+        result
+    }
+
+    pub fn userinfo_q2_client(
+        &mut self,
+        id: ClientId,
+        text: &[u8],
+    ) -> Result<(), ClientCommandError> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let (native, address, time) = self.module_client(id)?;
+            let api = self
+                .module_row(native.module)
+                .and_then(|row| row.client_api)
+                .ok_or(ClientCommandError::Inactive)?;
+            self.native_memory(native.module)?
+                .write_string(api.userinfo, api.abi.userinfo_bytes, text)
+                .map_err(|error| ClientCommandError::Usercmd(error.into()))?;
+            let mut export = Export::words(api.userinfo_changed, &[address, api.userinfo]);
+            export.client = Some(id);
+            self.call_module_export(native.module, export, time)
+                .map_err(ClientCommandError::Dispatch)
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = (id, text);
             Err(ClientCommandError::Unsupported)
         }
     }
@@ -344,24 +458,25 @@ impl FrameHost {
     pub(super) fn disconnect_module_clients(&mut self) {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         for index in 0..self.runtime.server.clients.len() {
-            self.disconnect_module_client(ClientId(index as u32));
+            let id = ClientId(index as u32);
+            if self.runtime.server.module_moves(id).is_some() {
+                self.disconnect_client(id);
+            }
         }
     }
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn disconnect_module_client(&mut self, id: ClientId) {
+    pub(crate) fn disconnect_client(&mut self, id: ClientId) {
         // Only clients admitted through this lifecycle have a disconnect entry.
         // Failed modules still release those clients without re-entering them.
-        let Some(callback) = self
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some(callback) = self
             .runtime
             .server
             .clients
             .get(id.0 as usize)
             .and_then(|client| self.module_row(client.module))
             .and_then(|row| row.client_api.map(|api| api.disconnect))
-        else {
-            return;
-        };
-        if let Ok((native, address, time)) = self.module_client(id) {
+            && let Ok((native, address, time)) = self.module_client(id)
+        {
             let _ =
                 self.call_module_export(native.module, Export::words(callback, &[address]), time);
         }

@@ -11,7 +11,11 @@ use crate::{
     message::{Encoding, Reader},
     outputs::Prints,
 };
-use qa_core::primitives::{SnapshotObservation, UserCmd};
+use qa_core::{
+    events::OutputConsumerId,
+    primitives::{SnapshotObservation, UserCmd},
+};
+use std::ops::ControlFlow;
 
 pub struct Commands {
     pub protocol: Protocol,
@@ -35,26 +39,36 @@ fn recover<C: Copy>(
     previous: (C, Option<SnapshotObservation>),
     commands: [C; 3],
     observation: Option<SnapshotObservation>,
-    mut consume: impl FnMut(C, Option<SnapshotObservation>),
-) -> usize {
+    mut consume: impl FnMut(C, Option<SnapshotObservation>) -> ControlFlow<()>,
+) -> ControlFlow<usize, usize> {
     let mut accepted = 0;
     if dropped < 20 {
         while dropped > 2 {
-            consume(previous.0, previous.1);
             accepted += 1;
+            if consume(previous.0, previous.1).is_break() {
+                return ControlFlow::Break(accepted);
+            }
             dropped -= 1;
         }
         if dropped > 1 {
-            consume(commands[0], observation);
             accepted += 1;
+            if consume(commands[0], observation).is_break() {
+                return ControlFlow::Break(accepted);
+            }
         }
         if dropped > 0 {
-            consume(commands[1], observation);
             accepted += 1;
+            if consume(commands[1], observation).is_break() {
+                return ControlFlow::Break(accepted);
+            }
         }
     }
-    consume(commands[2], observation);
-    accepted + 1
+    accepted += 1;
+    if consume(commands[2], observation).is_break() {
+        ControlFlow::Break(accepted)
+    } else {
+        ControlFlow::Continue(accepted)
+    }
 }
 impl Commands {
     pub fn load(protocol: Protocol) -> Self {
@@ -162,70 +176,158 @@ impl Commands {
             .copy_from_slice(bytes);
         Ok(bytes.len())
     }
+    /// Delivers each accepted record synchronously in native packet order.
+    /// Return value counts delivered usercmds; text does not enter an input queue.
     pub fn decode(
         &mut self,
         length: usize,
         sequence: u32,
         server_time: i32,
         channel: &mut Channel,
-        mut consume: impl FnMut(UserCmd, Option<u8>, Option<SnapshotObservation>),
+        output: Option<OutputConsumerId>,
+        mut consume: impl FnMut(Incoming<'_>) -> ControlFlow<()>,
     ) -> Result<usize, packet::Error> {
         if self.protocol == Protocol::QuakeWorld28 {
-            // SV_ExecuteClientMessage starts each message with delta_sequence=-1.
             self.delta_request = None;
             channel.align_reply(sequence);
         }
-        let scratch = &mut self.scratch[..length];
-        // Keys borrow retained native strings. Scratch keeps that key stable
-        // while optional incoming commands update the opposite direction.
-        let mut command_text = [0; crate::channel::commands::STRING_BYTES];
-        let mut message_acknowledged = 0;
-        let key = if self.protocol == Protocol::Quake3_68 {
-            let ack = packet::acknowledgements(scratch)?;
-            message_acknowledged = ack.message as u32;
-            let key = channel.command_key(Some(ack))?;
-            let n = key.server_command.len();
-            command_text[..n].copy_from_slice(key.server_command);
-            let key = Key {
-                server_command: &command_text[..n],
-                ..key
+        // Move the sole owned scratch pointer so callback delivery can update
+        // connection state while text still borrows this same fixed storage.
+        let mut storage = std::mem::take(&mut self.scratch);
+        let result = (|| {
+            let scratch = storage.get_mut(..length).ok_or(packet::Error::Count)?;
+            let mut command_text = [0; crate::channel::commands::STRING_BYTES];
+            let mut message_acknowledged = 0;
+            let key = if self.protocol == Protocol::Quake3_68 {
+                let ack = packet::acknowledgements(scratch)?;
+                message_acknowledged = ack.message as u32;
+                let key = channel.command_key(Some(ack))?;
+                let n = key.server_command.len();
+                command_text[..n].copy_from_slice(key.server_command);
+                let key = Key {
+                    server_command: &command_text[..n],
+                    ..key
+                };
+                channel.acknowledge_commands(ack.reliable as u32, ack.message as u32)?;
+                key
+            } else {
+                Key::default()
             };
-            channel.acknowledge_commands(ack.reliable as u32, ack.message as u32)?;
-            key
-        } else {
-            Key::default()
-        };
-        let Some(movement) =
-            packet::read_with_commands(self.protocol, scratch, sequence, key, |sequence, text| {
-                channel.receive_command(sequence, text).map(|_| ())
-            })?
-        else {
-            return Ok(0);
-        };
-        let dropped = channel.state().dropped;
+            let mut packet_request = None;
+            if self.protocol == Protocol::QuakeWorld28 {
+                // CL_SendCmd places its packet-level ACK after MOVE. Walk the
+                // same parser inertly to associate only deltas before a native
+                // packet stop. A later error must not suppress live prefix effects.
+                let _ =
+                    packet::read_with_commands(self.protocol, scratch, sequence, key, |record| {
+                        if let packet::Record::Delta(value) = record {
+                            packet_request = Some(u32::from(value));
+                        }
+                        Ok(ControlFlow::Continue(()))
+                    });
+            }
+            let packet_observation =
+                packet_request.and_then(|request| channel.snapshot_observation(request));
+            let dropped = channel.state().dropped;
+            let execution = self.protocol.command_execution();
+            let mut accepted = 0;
+            packet::read_with_commands(
+                self.protocol,
+                scratch,
+                sequence,
+                key,
+                |record| match record {
+                    packet::Record::Move(movement) => {
+                        let flow = self.decode_move(
+                            movement,
+                            server_time,
+                            dropped,
+                            message_acknowledged,
+                            packet_observation,
+                            channel,
+                            |command, native_weapon, observation| {
+                                consume(Incoming::Command {
+                                    command,
+                                    native_weapon,
+                                    observation,
+                                    execution,
+                                    output,
+                                })
+                            },
+                        )?;
+                        match flow {
+                            ControlFlow::Continue(count) => accepted += count,
+                            ControlFlow::Break(count) => {
+                                accepted += count;
+                                return Ok(ControlFlow::Break(()));
+                            }
+                        }
+                        Ok(ControlFlow::Continue(()))
+                    }
+                    packet::Record::Delta(value) => {
+                        self.delta_request = Some(u32::from(value));
+                        Ok(ControlFlow::Continue(()))
+                    }
+                    packet::Record::String { sequence, text } => {
+                        if let Some(sequence) = sequence
+                            && !channel.receive_command(sequence, text)?
+                        {
+                            return Ok(ControlFlow::Continue(()));
+                        }
+                        Ok(consume(Incoming::CommandString {
+                            protocol: self.protocol,
+                            sequence,
+                            text,
+                            output,
+                        }))
+                    }
+                    packet::Record::Userinfo(text) => Ok(consume(Incoming::Userinfo {
+                        protocol: self.protocol,
+                        text,
+                        output,
+                    })),
+                    packet::Record::Disconnect => Ok(consume(Incoming::Disconnect { output })),
+                },
+            )?;
+            Ok(accepted)
+        })();
+        self.scratch = storage;
+        result
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The bounded native admission shares packet provenance and connection state without another queue"
+    )]
+    fn decode_move(
+        &mut self,
+        movement: Move,
+        server_time: i32,
+        dropped: u32,
+        message_acknowledged: u32,
+        packet_observation: Option<SnapshotObservation>,
+        channel: &Channel,
+        mut consume: impl FnMut(UserCmd, Option<u8>, Option<SnapshotObservation>) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<usize, usize>, packet::Error> {
         let accepted = match movement {
             Move::NetQuake { command, .. } => {
                 // NetQuake's wire has no duration. SERVER resolves it once
                 // when consuming the latest command for its queued frame span.
                 let command = from_q1_move(command, 0, server_time);
                 self.previous_time = command.server_time_ms;
-                consume(command, None, None);
-                1
+                if consume(command, None, None).is_break() {
+                    ControlFlow::Break(1)
+                } else {
+                    ControlFlow::Continue(1)
+                }
             }
-            Move::QuakeWorld {
-                commands,
-                delta_request,
-                ..
-            } => {
-                self.delta_request = delta_request.map(u32::from);
+            Move::QuakeWorld { commands, .. } => {
                 let Some(NativeBackup::QuakeWorld(previous, previous_observation)) =
                     self.previous_command
                 else {
                     return Err(packet::Error::Context);
                 };
-                let observation = self
-                    .delta_request
-                    .and_then(|sequence| channel.snapshot_observation(sequence));
+                let observation = packet_observation;
                 let accepted = recover(
                     dropped,
                     (previous, previous_observation),
@@ -238,13 +340,15 @@ impl Commands {
                             from_qw_usercmd(native, self.previous_time),
                             None,
                             observation,
-                        );
+                        )
                     },
                 );
                 let mut previous = commands[2];
                 // SV_ExecuteClientMessage avoids repeated fire during recovery.
                 previous.buttons = 0;
-                self.previous_command = Some(NativeBackup::QuakeWorld(previous, observation));
+                if accepted.is_continue() {
+                    self.previous_command = Some(NativeBackup::QuakeWorld(previous, observation));
+                }
                 accepted
             }
             Move::Quake2 {
@@ -272,10 +376,12 @@ impl Commands {
                             from_q2_usercmd(native, self.previous_time),
                             None,
                             observation,
-                        );
+                        )
                     },
                 );
-                self.previous_command = Some(NativeBackup::Quake2(commands[2], observation));
+                if accepted.is_continue() {
+                    self.previous_command = Some(NativeBackup::Quake2(commands[2], observation));
+                }
                 accepted
             }
             Move::Quake2Repro {
@@ -306,10 +412,13 @@ impl Commands {
                             from_q2_rr_usercmd(native, self.previous_time),
                             None,
                             observation,
-                        );
+                        )
                     },
                 );
-                self.previous_command = Some(NativeBackup::Quake2Repro(commands[2], observation));
+                if accepted.is_continue() {
+                    self.previous_command =
+                        Some(NativeBackup::Quake2Repro(commands[2], observation));
+                }
                 accepted
             }
             Move::Quake3 {
@@ -328,10 +437,12 @@ impl Commands {
                     }
                     let command = from_q3_usercmd(native, self.previous_time, None);
                     self.previous_time = native.server_time;
-                    consume(command, Some(native.weapon), observation);
                     accepted += 1;
+                    if consume(command, Some(native.weapon), observation).is_break() {
+                        return Ok(ControlFlow::Break(accepted));
+                    }
                 }
-                accepted
+                ControlFlow::Continue(accepted)
             }
         };
         Ok(accepted)

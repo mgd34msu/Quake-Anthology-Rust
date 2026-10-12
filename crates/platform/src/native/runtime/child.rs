@@ -9,6 +9,9 @@ use std::sync::{
 };
 #[path = "crt.rs"]
 mod crt;
+#[path = "format.rs"]
+mod format;
+pub(super) use format::Capture;
 #[path = "kernel.rs"]
 mod kernel;
 #[path = "msvc.rs"]
@@ -198,6 +201,7 @@ static CHILD: OnceLock<Runtime> = OnceLock::new();
 
 pub(super) enum ImportBinding {
     Engine(Option<(crate::native::NativeAbi, crate::native::NativeListFilter)>),
+    Formatted(crate::native::NativeAbi, crate::native::NativeFormat),
     Runtime(&'static Function, NativeEntry),
     Trap,
 }
@@ -215,6 +219,9 @@ pub(super) fn initialize(
         regions,
     };
     for binding in &imports {
+        if let ImportBinding::Formatted(_, format) = binding {
+            memory.range(format.buffer, usize::from(format.capacity), 3)?;
+        }
         if let ImportBinding::Engine(Some((_, filter))) = binding {
             memory.range(
                 filter.buffer,
@@ -267,12 +274,40 @@ pub(super) fn invoke(
     ordinal: usize,
     words: [u64; 13],
     floats: [u64; 8],
+    capture: Capture,
 ) -> Result<Option<ImportResult>, NativeError> {
     let runtime = CHILD.get().ok_or(NativeError::Protocol)?;
     let (function, entry) = match runtime.imports.get(ordinal).ok_or(NativeError::Protocol)? {
         ImportBinding::Engine(filter) => {
             return filter.map_or(Ok(None), |(abi, filter)| {
                 runtime.filtered(ordinal, abi, filter, words, floats)
+            });
+        }
+        ImportBinding::Formatted(abi, format) => {
+            let formatted = || {
+                let arguments = format::Arguments::direct(
+                    &runtime.memory,
+                    *abi,
+                    usize::from(format.format) + 1,
+                    words,
+                    floats,
+                    capture,
+                )?;
+                format::write(
+                    &runtime.memory,
+                    format.buffer,
+                    usize::from(format.capacity),
+                    words[usize::from(format.format)],
+                    arguments,
+                    false,
+                )?;
+                let mut words = words;
+                words[usize::from(format.format)] = format.buffer;
+                Ok(Some(super::host_import(ordinal as u64, words, floats, 1)))
+            };
+            return formatted().map_err(|_: NativeError| NativeError::ImportTrap {
+                ordinal,
+                address: 0,
             });
         }
         ImportBinding::Trap => {
@@ -284,7 +319,36 @@ pub(super) fn invoke(
         ImportBinding::Runtime(function, entry) => (*function, *entry),
     };
     let arguments = entry.unpack(words, floats);
-    let value = runtime.call(function.operation, arguments, entry.abi)?;
+    let value = if let Operation::Format { sized, list } = function.operation {
+        let format_index = if sized { 2 } else { 1 };
+        let capacity = if sized {
+            usize::try_from(arguments[1]).map_err(|_| NativeError::Extent)?
+        } else {
+            format::MAX_OUTPUT + 1
+        };
+        let cursor = if list {
+            format::Arguments::list(&runtime.memory, entry.abi, arguments[format_index + 1])?
+        } else {
+            format::Arguments::direct(
+                &runtime.memory,
+                entry.abi,
+                format_index + 1,
+                words,
+                floats,
+                capture,
+            )?
+        };
+        format::write(
+            &runtime.memory,
+            arguments[0],
+            capacity,
+            arguments[format_index],
+            cursor,
+            sized,
+        )? as u64
+    } else {
+        runtime.call(function.operation, arguments, entry.abi)?
+    };
     Ok(Some(ImportResult {
         value: entry.result(value),
         kind: entry.control & 3,
@@ -430,7 +494,7 @@ impl Runtime {
             Operation::Kernel(operation) => return self.kernel(operation, a),
             Operation::Crt(operation) => return self.crt(operation, a, abi),
             Operation::Math(operation, precision) => return self.math(operation, precision, a),
-            Operation::Data(_) => return Err(NativeError::Unsupported),
+            Operation::Data(_) | Operation::Format { .. } => return Err(NativeError::Unsupported),
             Operation::Copy => {
                 m.copy(a[0], a[1], size(a[2])?)?;
                 a[0]

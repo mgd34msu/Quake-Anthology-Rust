@@ -200,6 +200,7 @@ fn reliable_native_pages_retire_only_on_the_selected_peers_channel_ack() {
             {
                 runtime.server.events.acknowledge(id, receipt);
             }
+            std::ops::ControlFlow::Continue(())
         },
     );
     assert!(runtime.server.events.is_empty());

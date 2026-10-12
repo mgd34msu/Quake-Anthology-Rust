@@ -220,6 +220,7 @@ std::arch::global_asm!(
     lea r10, [rsp + 40]
     mov r11d, 5
 .Limport:
+    mov byte ptr [rip + .Limport_state + 712], al
     mov [rip + .Limport_state], rsp
     pushfq
     pop qword ptr [rip + .Limport_state + 8]
@@ -258,6 +259,8 @@ std::arch::global_asm!(
     mov rdx, [rip + .Limport_state + 704]
     mov rcx, [rip + .Limport_state]
     mov rcx, [rcx]
+    mov r8, [rip + .Limport_state]
+    movzx r9d, byte ptr [rip + .Limport_state + 712]
     call {import}
     // A named trap returns through every private Rust callback frame before
     // abandoning the foreign stack at this gate's ordinary restore point.

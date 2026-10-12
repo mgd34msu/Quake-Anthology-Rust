@@ -321,7 +321,8 @@ fn snapshots_share_reliable_command_xor_channel_and_packet_ingress() -> Result<(
                 snapshots += 1;
             } else if let Incoming::ReliableCommand { .. } = incoming {
                 reliable += 1;
-            }
+            };
+            std::ops::ControlFlow::Continue(())
         },
     );
     assert_eq!(snapshots, 1);
@@ -394,7 +395,11 @@ fn deliver_client_move(
         client.send_state().sequence,
         time,
         server,
-        |_, _, _| {},
+        None,
+        |incoming| {
+            if let qa_network::ingress::Incoming::Command { .. } = incoming {}
+            std::ops::ControlFlow::Continue(())
+        },
     )? > 0;
     Ok((delta, accepted))
 }
@@ -629,7 +634,7 @@ fn q2_deliver_frame(
     frame: u32,
     delta: Option<u32>,
     deliver: bool,
-    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+    mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
 ) -> Result<(), Error> {
     let mut payload = [0; 1400];
     let mut writer = Writer::new(&mut payload, Encoding::Bytes);
@@ -654,7 +659,10 @@ fn q2_deliver_frame(
             Peer::Loopback(ClientId(0)),
             &bytes[..n],
             EventTime(2),
-            consume,
+            |id, endpoint, incoming| {
+                consume(id, endpoint, incoming);
+                std::ops::ControlFlow::Continue(())
+            },
         );
     }
     Ok(())
@@ -690,7 +698,11 @@ fn q2_request(
         client.channel.send_state().sequence,
         0,
         server,
-        |_, _, _| {},
+        None,
+        |incoming| {
+            if let qa_network::ingress::Incoming::Command { .. } = incoming {}
+            std::ops::ControlFlow::Continue(())
+        },
     )?;
     let expected = (last_frame >= 0).then_some(last_frame as u32);
     assert_eq!(receiver.delta_request(), expected);
@@ -1025,8 +1037,17 @@ fn qw_move(
         };
         let length = commands.stage(payload)?;
         let mut command = None;
-        commands.decode(length, sequence, 0, server, |current, _, _| {
-            command = Some(current)
+        commands.decode(length, sequence, 0, server, None, |incoming| {
+            if let qa_network::ingress::Incoming::Command {
+                command: current,
+                native_weapon: _,
+                observation: _,
+                ..
+            } = incoming
+            {
+                command = Some(current);
+            }
+            std::ops::ControlFlow::Continue(())
         })?;
         let command = command.ok_or(Error::Context)?;
         assert_eq!(command.movement[0], 300.);
@@ -1042,7 +1063,7 @@ fn qw_reply(
     sequence: u32,
     request: Option<(u32, u8)>,
     deliver: bool,
-    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+    mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
 ) -> Result<(), Error> {
     assert_eq!(server.send_state().sequence, sequence);
     server.publish_snapshot(snapshots::ReceivedFrame::QuakeWorld(
@@ -1081,7 +1102,10 @@ fn qw_reply(
             Peer::Loopback(ClientId(0)),
             &bytes[..length],
             EventTime(3),
-            consume,
+            |id, endpoint, incoming| {
+                consume(id, endpoint, incoming);
+                std::ops::ControlFlow::Continue(())
+            },
         );
     }
     Ok(())
@@ -1332,7 +1356,8 @@ fn qw_reply_alignment_rebuilds_unsent_payload_without_retiring_reliable_data() -
             if let Incoming::Print(print) = incoming {
                 assert_eq!(print.text, b"retained");
                 delivered += 1;
-            }
+            };
+            std::ops::ControlFlow::Continue(())
         },
     );
     assert_eq!(delivered, 1);
@@ -1347,7 +1372,7 @@ fn server_payload(
     server: &mut Channel,
     connections: &mut Connections,
     payload: &[u8],
-    consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
+    mut consume: impl FnMut(ClientId, Endpoint, Incoming<'_>),
 ) -> Result<(), Error> {
     let packet = server
         .prepare_move(payload, EventTime(2), None)
@@ -1362,7 +1387,10 @@ fn server_payload(
         Peer::Loopback(ClientId(0)),
         &bytes[..length],
         EventTime(3),
-        consume,
+        |id, endpoint, incoming| {
+            consume(id, endpoint, incoming);
+            std::ops::ControlFlow::Continue(())
+        },
     );
     Ok(())
 }
@@ -1965,12 +1993,11 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
         )?;
         assert_eq!(bytes[0], 3); // clc_move
         assert_eq!(&bytes[1..5], &expected.to_bits().to_le_bytes());
-        let Some(Move::NetQuake { timestamp, .. }) = packet::read_with_commands(
+        let Move::NetQuake { timestamp, .. } = packet::read(
             Protocol::NetQuake15,
             &mut bytes[..length],
             0,
             Key::default(),
-            |_, _| Ok(()),
         )?
         else {
             return Err(Error::Context);
@@ -1983,9 +2010,18 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
         let length = server_commands.stage(&bytes[..length])?;
         let mut decoded = None;
         assert_eq!(
-            server_commands.decode(length, 0, 4321, &mut server_channel, |command, _, _| {
-                decoded = Some(command)
-            },)?,
+            server_commands.decode(length, 0, 4321, &mut server_channel, None, |incoming| {
+                if let qa_network::ingress::Incoming::Command {
+                    command,
+                    native_weapon: _,
+                    observation: _,
+                    ..
+                } = incoming
+                {
+                    decoded = Some(command);
+                }
+                std::ops::ControlFlow::Continue(())
+            })?,
             1
         );
         let decoded = decoded.ok_or(Error::Context)?;
@@ -2064,17 +2100,20 @@ fn nq_reliable_service_stream_waits_for_native_ack_after_client_publication() ->
         Peer::Loopback(ClientId(0)),
         &bytes[..length],
         EventTime(2),
-        |_, _, incoming| match incoming {
-            Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
-                assert_eq!(frame.time, ThinkTime::Seconds(1.0625));
-                assert_eq!(frame.player[12] as i32, -17);
-                seen += 1;
-            }
-            Incoming::Print(print) => {
-                assert_eq!(print.text, b"reliable");
-                seen += 1;
-            }
-            _ => panic!("NQ reliable service stream"),
+        |_, _, incoming| {
+            match incoming {
+                Incoming::Snapshot(snapshots::ReceivedFrame::NetQuake(frame)) => {
+                    assert_eq!(frame.time, ThinkTime::Seconds(1.0625));
+                    assert_eq!(frame.player[12] as i32, -17);
+                    seen += 1;
+                }
+                Incoming::Print(print) => {
+                    assert_eq!(print.text, b"reliable");
+                    seen += 1;
+                }
+                _ => panic!("NQ reliable service stream"),
+            };
+            std::ops::ControlFlow::Continue(())
         },
     );
     assert_eq!((seen, connections.command_errors), (2, 0));

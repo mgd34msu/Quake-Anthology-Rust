@@ -66,14 +66,17 @@ fn q2_native_ack_survives_a_rejected_fragment_body() -> Result<(), String> {
         &bytes[..n],
         EventTime(2),
         |id, endpoint, incoming| {
-            assert_eq!((id, endpoint), (client, Endpoint::Server));
-            if let Incoming::Acknowledged {
-                receipt: actual, ..
-            } = incoming
             {
-                assert_eq!(actual, receipt);
-                acknowledgements += 1;
-            }
+                assert_eq!((id, endpoint), (client, Endpoint::Server));
+                if let Incoming::Acknowledged {
+                    receipt: actual, ..
+                } = incoming
+                {
+                    assert_eq!(actual, receipt);
+                    acknowledgements += 1;
+                }
+            };
+            std::ops::ControlFlow::Continue(())
         },
     );
     assert_eq!(
@@ -146,11 +149,14 @@ fn socket_and_local_packets_route_to_only_the_bound_endpoint() -> Result<(), Str
             &bytes[..n],
             EventTime(5),
             |id, endpoint, incoming| {
-                assert_eq!((id, endpoint), (client, Endpoint::Server));
-                if let Incoming::Payload(payload) = incoming {
-                    assert_eq!(payload, b"native");
-                    calls += 1;
-                }
+                {
+                    assert_eq!((id, endpoint), (client, Endpoint::Server));
+                    if let Incoming::Payload(payload) = incoming {
+                        assert_eq!(payload, b"native");
+                        calls += 1;
+                    }
+                };
+                std::ops::ControlFlow::Continue(())
             },
         );
     }
@@ -160,7 +166,10 @@ fn socket_and_local_packets_route_to_only_the_bound_endpoint() -> Result<(), Str
         (Endpoint::Server.socket(), Peer::Loopback(ClientId(99))),
     ] {
         peers.receive(socket, peer, &bytes[..n], EventTime(6), |_, _, _| {
-            calls += 100
+            {
+                calls += 100
+            };
+            std::ops::ControlFlow::Continue(())
         });
     }
     assert_eq!((calls, peers.delivered, peers.unrouted), (2, 2, 3));
@@ -174,7 +183,10 @@ fn socket_and_local_packets_route_to_only_the_bound_endpoint() -> Result<(), Str
         1
     );
     peers.unbind(ClientId(3));
-    peers.receive(1, remote, &bytes[..n], EventTime(7), |_, _, _| calls += 100);
+    peers.receive(1, remote, &bytes[..n], EventTime(7), |_, _, _| {
+        calls += 100;
+        std::ops::ControlFlow::Continue(())
+    });
     assert_eq!(peers.unrouted, 4);
     Ok(())
 }
@@ -353,11 +365,14 @@ fn native_qports_isolate_shared_addresses_and_update_only_the_selected_peer() ->
             &bytes[..n],
             EventTime(1),
             |id, endpoint, incoming| {
-                assert_eq!((id, endpoint), (ClientId(1), Endpoint::Server));
-                if let Incoming::Payload(payload) = incoming {
-                    assert_eq!(payload, b"native");
-                    count += 1;
-                }
+                {
+                    assert_eq!((id, endpoint), (ClientId(1), Endpoint::Server));
+                    if let Incoming::Payload(payload) = incoming {
+                        assert_eq!(payload, b"native");
+                        count += 1;
+                    }
+                };
+                std::ops::ControlFlow::Continue(())
             },
         );
         assert_eq!(count, 1);
@@ -396,7 +411,10 @@ fn native_qports_isolate_shared_addresses_and_update_only_the_selected_peer() ->
             (7, changed, &bytes[..4]),
             (7, changed, &[255; 4][..]),
         ] {
-            peers.receive(socket, from, packet, EventTime(2), |_, _, _| count += 100);
+            peers.receive(socket, from, packet, EventTime(2), |_, _, _| {
+                count += 100;
+                std::ops::ControlFlow::Continue(())
+            });
         }
         assert_eq!(count, 1);
         assert_eq!(peers.unrouted, 5);
@@ -455,12 +473,18 @@ fn omitted_qport_and_client_receivers_keep_exact_socket_routes() -> Result<(), S
         let translated = Peer::Socket("127.0.0.1:28000".parse().map_err(|e| format!("{e}"))?);
         let mut count = 0;
         peers.receive(7, translated, &bytes[..n], EventTime(1), |_, _, _| {
-            count += 100
+            {
+                count += 100
+            };
+            std::ops::ControlFlow::Continue(())
         });
         peers.receive(7, original, &bytes[..n], EventTime(2), |_, _, incoming| {
-            if matches!(incoming, Incoming::Payload(_)) {
-                count += 1
-            }
+            {
+                if matches!(incoming, Incoming::Payload(_)) {
+                    count += 1
+                }
+            };
+            std::ops::ControlFlow::Continue(())
         });
         assert_eq!(count, 1);
         assert_eq!(
@@ -539,10 +563,13 @@ fn qport_routing_keeps_native_ack_receipts_with_the_selected_peer() -> Result<()
                 &bytes[..n],
                 EventTime(1),
                 |id, _, incoming| {
-                    if matches!(incoming, Incoming::Acknowledged { .. }) {
-                        assert_eq!(id, ClientId(1));
-                        receipts += 1;
-                    }
+                    {
+                        if matches!(incoming, Incoming::Acknowledged { .. }) {
+                            assert_eq!(id, ClientId(1));
+                            receipts += 1;
+                        }
+                    };
+                    std::ops::ControlFlow::Continue(())
                 },
             );
             assert_eq!(receipts, u64::from(qport == 23));
@@ -614,9 +641,12 @@ fn translated_ipv6_port_preserves_registered_scope_and_flow() -> Result<(), Stri
         &packet[..n],
         EventTime(1),
         |_, _, incoming| {
-            if matches!(incoming, Incoming::Payload(_)) {
-                count += 1
-            }
+            {
+                if matches!(incoming, Incoming::Payload(_)) {
+                    count += 1
+                }
+            };
+            std::ops::ControlFlow::Continue(())
         },
     );
     let mut expected = bound;
@@ -682,9 +712,12 @@ fn mixed_header_offsets_cannot_route_an_exact_peer_to_another_protocol() -> Resu
         &packet[..n],
         EventTime(1),
         |client, _, incoming| {
-            if matches!(incoming, Incoming::Payload(_)) {
-                selected = Some(client);
-            }
+            {
+                if matches!(incoming, Incoming::Payload(_)) {
+                    selected = Some(client);
+                }
+            };
+            std::ops::ControlFlow::Continue(())
         },
     );
     assert_eq!(selected, Some(ClientId(1)));

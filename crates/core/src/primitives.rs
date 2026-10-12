@@ -338,8 +338,16 @@ impl ThinkTime {
     }
 }
 
+/// Borrowed command tokens survive only the synchronous module invocation.
+/// The console owns tokenization; ABI adapters only project these bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CommandArgs<'a> {
+    pub argv: &'a [&'a [u8]],
+    pub raw: &'a [u8],
+}
+
 #[derive(Clone, Copy, Debug)]
-pub enum CallbackCall {
+pub enum CallbackCall<'a> {
     /// A module export keeps its native words at the ABI boundary. The entity
     /// supplies the module owner and lifetime to the same dispatch table.
     Export {
@@ -347,6 +355,7 @@ pub enum CallbackCall {
         time: ThinkTime,
         arguments: [u64; 9],
         client: Option<ClientId>,
+        command: CommandArgs<'a>,
     },
     Think {
         entity: EntityId,
@@ -375,7 +384,7 @@ pub enum CallbackCall {
     },
 }
 
-impl CallbackCall {
+impl CallbackCall<'_> {
     pub fn entity(self) -> EntityId {
         match self {
             Self::Export { entity, .. }

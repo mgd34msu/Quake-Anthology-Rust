@@ -1,5 +1,5 @@
 //! Connected native move payloads, independent of movement and map rules.
-//! A packet is decoded into temporary native records before any SERVER action.
+//! Borrowed records are delivered in native order after each record validates.
 use super::{Q1Move, Q2Cmd, Q2RrCmd, Q3Cmd, QwCmd, delta};
 use crate::{
     channel,
@@ -7,6 +7,7 @@ use crate::{
 };
 pub use qa_core::primitives::CommandExecution;
 use qa_core::{checksum, primitives::Vec3};
+use std::ops::ControlFlow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
@@ -17,6 +18,18 @@ pub enum Protocol {
     Quake3_68,
 }
 impl Protocol {
+    /// Native protocol identity at the wire boundary, independent of the
+    /// connection's selected movement, presentation and module capabilities.
+    pub const fn rule_set(self) -> qa_core::primitives::RuleSetId {
+        use qa_core::primitives::RuleSetId;
+        match self {
+            Self::NetQuake15 => RuleSetId::Quake,
+            Self::QuakeWorld28 => RuleSetId::QuakeWorld,
+            Self::Quake2_34 => RuleSetId::Quake2,
+            Self::Quake2Repro1038 => RuleSetId::Quake2Rerelease,
+            Self::Quake3_68 => RuleSetId::Quake3,
+        }
+    }
     pub const fn command_execution(self) -> CommandExecution {
         match self {
             Self::NetQuake15 => CommandExecution::FrameLatest,
@@ -219,6 +232,9 @@ fn read_repro_move(reader: &mut Reader<'_>) -> Result<(i32, [Q2RrCmd; 3]), Error
     if reader.read_bits(8)? != 2 {
         return Err(Error::Opcode);
     }
+    read_repro_body(reader)
+}
+fn read_repro_body(reader: &mut Reader<'_>) -> Result<(i32, [Q2RrCmd; 3]), Error> {
     let last_frame = reader.read_bits(32)? as i32;
     let mut commands = [ZERO_Q2_RR; 3];
     read_series(reader, &mut commands, ZERO_Q2_RR, delta::read_q2_repro)?;
@@ -374,39 +390,85 @@ pub fn acknowledgements(bytes: &[u8]) -> Result<Acknowledgements, Error> {
         reliable: r.read_bits(32)? as i32,
     })
 }
+/// A synchronous view of one native packet record. No record survives its callback.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The native move owns bounded temporary command scratch, never a heap record"
+)]
+pub enum Record<'a> {
+    Move(Move),
+    String {
+        sequence: Option<u32>,
+        text: &'a [u8],
+    },
+    Delta(u8),
+    Userinfo(&'a [u8]),
+    Disconnect,
+}
+
 pub fn read(
     protocol: Protocol,
     bytes: &mut [u8],
     sequence: u32,
     key: Key<'_>,
 ) -> Result<Move, Error> {
-    read_with_commands(protocol, bytes, sequence, key, |_, _| Ok(()))?.ok_or(Error::Opcode)
+    let mut movement = None;
+    let mut delta_request = None;
+    read_with_commands(protocol, bytes, sequence, key, |record| {
+        match record {
+            Record::Move(value) => movement = Some(value),
+            Record::Delta(value) => delta_request = Some(value),
+            _ => {}
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
+    let mut movement = movement.ok_or(Error::Opcode)?;
+    if let Move::QuakeWorld {
+        delta_request: request,
+        ..
+    } = &mut movement
+    {
+        *request = delta_request;
+    }
+    Ok(movement)
 }
 
-/// SV_ExecuteClientMessage permits nop and repeated clc_delta around one move.
-/// Requests replace earlier requests; their bytes are outside the move CRC.
-fn qw_opcode(
+/// Native Q1/QW/Q2 MSG_ReadString uses signed chars: 0xff and NUL terminate,
+/// while bytes such as 0x80 retain their original representation. Q2repro uses
+/// unsigned text and rejects strings of MAX_STRING_CHARS bytes or more.
+fn legacy_string<'a>(
     reader: &mut Reader<'_>,
-    length: usize,
-    request: &mut Option<u8>,
-) -> Result<Option<u32>, Error> {
-    while reader.byte_position() < length {
-        match reader.read_bits(8)? {
-            1 => {} // clc_nop
-            5 => *request = Some(reader.read_bits(8)? as u8),
-            opcode => return Ok(Some(opcode)),
+    text: &'a mut [u8; 2048],
+    rerelease: bool,
+) -> Result<&'a [u8], Error> {
+    let maximum = if rerelease { 1024 } else { text.len() };
+    let mut length = 0;
+    while length + 1 < maximum {
+        let byte = reader.read_bits(8)? as u8;
+        if byte == 0 || (!rerelease && byte == 255) {
+            return Ok(&text[..length]);
+        }
+        text[length] = byte;
+        length += 1;
+    }
+    if rerelease {
+        if reader.read_bits(8)? != 0 {
+            return Err(Error::Count);
         }
     }
-    Ok(None)
+    Ok(&text[..length])
 }
 
+/// Natively accepted prefix effects remain visible when a later record fails.
+/// A second QW/Q2 move stops the packet without retracting its first move.
 pub fn read_with_commands(
     protocol: Protocol,
     bytes: &mut [u8],
     sequence: u32,
     key: Key<'_>,
-    mut consume: impl FnMut(u32, &[u8]) -> Result<(), Error>,
-) -> Result<Option<Move>, Error> {
+    mut consume: impl FnMut(Record<'_>) -> Result<ControlFlow<()>, Error>,
+) -> Result<(), Error> {
     let acknowledgements = if protocol == Protocol::Quake3_68 {
         let ack = acknowledgements(bytes)?;
         if ack != key.acknowledgements {
@@ -423,129 +485,189 @@ pub fn read_with_commands(
         Acknowledgements::default()
     };
     let mut r = Reader::new(bytes, protocol.encoding());
-    let movement = match protocol {
-        Protocol::NetQuake15 => {
-            if r.read_bits(8)? != 3 {
-                return Err(Error::Opcode);
-            }
-            let timestamp = r.read_float()?;
-            let mut angles = [0.; 3];
-            for angle in &mut angles {
-                *angle = qa_core::math::byte_to_angle(r.read_signed(8)?);
-            }
-            let mut movement = [0; 3];
-            for value in &mut movement {
-                *value = r.read_signed(16)? as i16;
-            }
-            Move::NetQuake {
-                timestamp,
-                command: Q1Move {
-                    view_angles: Vec3(angles),
-                    movement,
-                    buttons: r.read_bits(8)? as u8,
-                    impulse: r.read_bits(8)? as u8,
-                },
-            }
+    if protocol == Protocol::Quake3_68 {
+        for _ in 0..3 {
+            r.read_bits(32)?;
         }
-        Protocol::QuakeWorld28 => {
-            let mut delta_request = None;
-            if qw_opcode(&mut r, bytes.len(), &mut delta_request)? != Some(3) {
-                return Err(Error::Opcode);
-            }
-            let checksum_index = r.byte_position();
-            let checksum = r.read_bits(8)? as u8;
-            let loss = r.read_bits(8)? as u8;
-            let mut commands = [ZERO_QW; 3];
-            read_series(&mut r, &mut commands, ZERO_QW, delta::read_qw)?;
-            if checksum
-                != checksum::qw_sequence_crc(
-                    &bytes[checksum_index + 1..r.byte_position()],
-                    sequence,
-                )
-            {
-                return Err(Error::Checksum);
-            }
-            if qw_opcode(&mut r, bytes.len(), &mut delta_request)?.is_some() {
-                return Err(Error::Opcode);
-            }
-            Move::QuakeWorld {
-                loss,
-                commands,
-                delta_request,
-            }
-        }
-        Protocol::Quake2_34 => {
-            if r.read_bits(8)? != 2 {
-                return Err(Error::Opcode);
-            }
-            let checksum = r.read_bits(8)? as u8;
-            let last_frame = r.read_bits(32)? as i32;
-            let mut commands = [ZERO_Q2; 3];
-            read_series(&mut r, &mut commands, ZERO_Q2, delta::read_q2)?;
-            if checksum != checksum::q2_sequence_crc(&bytes[2..r.byte_position()], sequence) {
-                return Err(Error::Checksum);
-            }
-            Move::Quake2 {
-                last_frame,
-                commands,
-            }
-        }
-        Protocol::Quake2Repro1038 => {
-            let (last_frame, commands) = read_repro_move(&mut r)?;
-            Move::Quake2Repro {
-                last_frame,
-                commands,
-            }
-        }
-        Protocol::Quake3_68 => {
-            for _ in 0..3 {
-                r.read_bits(32)?;
-            }
-            let mut text = [0; crate::channel::commands::STRING_BYTES];
-            let mut opcode = r.read_bits(8)?;
-            let mut command_count = 0;
-            while opcode == 4 {
-                if command_count >= 64 {
-                    return Err(Error::Count);
-                }
-                let seq = r.read_bits(32)?;
-                let text = crate::channel::commands::read_string(&mut r, &mut text)?;
-                consume(seq, text)?;
-                command_count += 1;
-                opcode = r.read_bits(8)?;
-            }
-            if opcode == 5 {
-                return Ok(None);
-            }
-            if !matches!(opcode, 2 | 3) {
-                return Err(Error::Opcode);
-            }
-            let count = r.read_bits(8)? as u8;
-            if !(1..=32).contains(&count) {
-                return Err(Error::Count);
-            }
-            let mut commands = [ZERO_Q3; 32];
-            let command_key = key.checksum_feed
-                ^ acknowledgements.message as u32
-                ^ command_key(key.server_command);
-            read_series(
-                &mut r,
-                &mut commands[..usize::from(count)],
-                ZERO_Q3,
-                |reader, old| delta::read_q3(reader, old, command_key),
-            )?;
-            if r.read_bits(8)? != 5 {
-                return Err(Error::Trailing);
-            }
-            Move::Quake3 {
-                commands,
-                count,
-                delta: opcode == 2,
-            }
-        }
-    };
-    if protocol != Protocol::Quake3_68 && r.byte_position() != bytes.len() {
-        return Err(Error::Trailing);
     }
-    Ok(Some(movement))
+    let mut move_issued = false;
+    let mut string_count = 0;
+    let mut delta_request = None;
+    let mut text = [0; 2048];
+    let mut q3_text = [0; crate::channel::commands::STRING_BYTES];
+    loop {
+        if protocol != Protocol::Quake3_68 && r.byte_position() == bytes.len() {
+            return Ok(());
+        }
+        let opcode = r.read_bits(8)?;
+        match (protocol, opcode) {
+            (
+                Protocol::NetQuake15
+                | Protocol::QuakeWorld28
+                | Protocol::Quake2_34
+                | Protocol::Quake2Repro1038,
+                1,
+            ) => {}
+            (Protocol::NetQuake15, 2) => {
+                let _ = consume(Record::Disconnect)?;
+                return Ok(());
+            }
+            (Protocol::QuakeWorld28, 5) => {
+                let request = r.read_bits(8)? as u8;
+                delta_request = Some(request);
+                if consume(Record::Delta(request))?.is_break() {
+                    return Ok(());
+                }
+            }
+            (
+                Protocol::NetQuake15
+                | Protocol::QuakeWorld28
+                | Protocol::Quake2_34
+                | Protocol::Quake2Repro1038,
+                4,
+            )
+            | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 3) => {
+                let rerelease = protocol == Protocol::Quake2Repro1038;
+                let text = legacy_string(&mut r, &mut text, rerelease)?;
+                let record = if opcode == 3 {
+                    Record::Userinfo(text)
+                } else {
+                    string_count += 1;
+                    let maximum = match protocol {
+                        Protocol::Quake2_34 => 7,
+                        Protocol::Quake2Repro1038 => 8,
+                        _ => usize::MAX,
+                    };
+                    if string_count > maximum {
+                        continue;
+                    }
+                    Record::String {
+                        sequence: None,
+                        text,
+                    }
+                };
+                if consume(record)?.is_break() {
+                    return Ok(());
+                }
+            }
+            (Protocol::Quake3_68, 4) => {
+                let sequence = r.read_bits(32)?;
+                let text = crate::channel::commands::read_string(&mut r, &mut q3_text)?;
+                if consume(Record::String {
+                    sequence: Some(sequence),
+                    text,
+                })?
+                .is_break()
+                {
+                    return Ok(());
+                }
+            }
+            (Protocol::Quake3_68, 5) => return Ok(()),
+            (Protocol::NetQuake15, 3)
+            | (Protocol::QuakeWorld28, 3)
+            | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 2)
+            | (Protocol::Quake3_68, 2 | 3) => {
+                if move_issued && protocol != Protocol::NetQuake15 {
+                    return Ok(());
+                }
+                move_issued = true;
+                let movement = match protocol {
+                    Protocol::NetQuake15 => {
+                        let timestamp = r.read_float()?;
+                        let mut angles = [0.; 3];
+                        for angle in &mut angles {
+                            *angle = qa_core::math::byte_to_angle(r.read_signed(8)?);
+                        }
+                        let mut movement = [0; 3];
+                        for value in &mut movement {
+                            *value = r.read_signed(16)? as i16;
+                        }
+                        Move::NetQuake {
+                            timestamp,
+                            command: Q1Move {
+                                view_angles: Vec3(angles),
+                                movement,
+                                buttons: r.read_bits(8)? as u8,
+                                impulse: r.read_bits(8)? as u8,
+                            },
+                        }
+                    }
+                    Protocol::QuakeWorld28 => {
+                        let checksum_index = r.byte_position();
+                        let checksum = r.read_bits(8)? as u8;
+                        let loss = r.read_bits(8)? as u8;
+                        let mut commands = [ZERO_QW; 3];
+                        read_series(&mut r, &mut commands, ZERO_QW, delta::read_qw)?;
+                        if checksum
+                            != checksum::qw_sequence_crc(
+                                &bytes[checksum_index + 1..r.byte_position()],
+                                sequence,
+                            )
+                        {
+                            return Err(Error::Checksum);
+                        }
+                        Move::QuakeWorld {
+                            loss,
+                            commands,
+                            delta_request,
+                        }
+                    }
+                    Protocol::Quake2_34 => {
+                        let checksum_index = r.byte_position();
+                        let checksum = r.read_bits(8)? as u8;
+                        let last_frame = r.read_bits(32)? as i32;
+                        let mut commands = [ZERO_Q2; 3];
+                        read_series(&mut r, &mut commands, ZERO_Q2, delta::read_q2)?;
+                        if checksum
+                            != checksum::q2_sequence_crc(
+                                &bytes[checksum_index + 1..r.byte_position()],
+                                sequence,
+                            )
+                        {
+                            return Err(Error::Checksum);
+                        }
+                        Move::Quake2 {
+                            last_frame,
+                            commands,
+                        }
+                    }
+                    Protocol::Quake2Repro1038 => {
+                        let (last_frame, commands) = read_repro_body(&mut r)?;
+                        Move::Quake2Repro {
+                            last_frame,
+                            commands,
+                        }
+                    }
+                    Protocol::Quake3_68 => {
+                        let count = r.read_bits(8)? as u8;
+                        if !(1..=32).contains(&count) {
+                            return Err(Error::Count);
+                        }
+                        let mut commands = [ZERO_Q3; 32];
+                        let command_key = key.checksum_feed
+                            ^ acknowledgements.message as u32
+                            ^ command_key(key.server_command);
+                        read_series(
+                            &mut r,
+                            &mut commands[..usize::from(count)],
+                            ZERO_Q3,
+                            |reader, old| delta::read_q3(reader, old, command_key),
+                        )?;
+                        Move::Quake3 {
+                            commands,
+                            count,
+                            delta: opcode == 2,
+                        }
+                    }
+                };
+                if protocol == Protocol::Quake3_68 && r.read_bits(8)? != 5 {
+                    return Err(Error::Trailing);
+                }
+                if consume(Record::Move(movement))?.is_break() || protocol == Protocol::Quake3_68 {
+                    return Ok(());
+                }
+            }
+            _ => return Err(Error::Opcode),
+        }
+    }
 }

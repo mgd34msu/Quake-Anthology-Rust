@@ -9,7 +9,7 @@ use qa_core::{
     primitives::{NameId, RuleSetId},
 };
 use qa_formats::program::native::{Encoding, Image, Region};
-use qa_platform::native::{NativeAbi, NativeImport, NativeScalar, PAGE_BYTES};
+use qa_platform::native::{NativeAbi, NativeFormat, NativeImport, NativeScalar, PAGE_BYTES};
 use std::time::Duration;
 
 struct Function {
@@ -447,6 +447,15 @@ impl Game {
             .filter(|&n| n <= 512 * 1024 * 1024)
             .ok_or(Error::Export)?;
         let address = image.base.checked_add(offset as u64).ok_or(Error::Export)?;
+        // Classic print adapters share synchronous scratch in the load-owned
+        // import page, past every pointer slot and before cvar storage.
+        let format_offset = PAGE_BYTES / 2;
+        if layout.import_header + layout.imports.len() * 8 > format_offset {
+            return Err(Error::Export);
+        }
+        let format_address = address
+            .checked_add(format_offset as u64)
+            .ok_or(Error::Export)?;
         image.base.checked_add(end as u64).ok_or(Error::Export)?;
         let mut bytes = std::mem::take(&mut image.bytes).into_vec();
         bytes.resize(end, 0);
@@ -496,6 +505,7 @@ impl Game {
                     let function =
                         qa_platform::native::runtime::function(number).ok_or(Error::Export)?;
                     return Ok(NativeImport {
+                        format: None,
                         filter: None,
                         trap: false,
                         number,
@@ -504,7 +514,18 @@ impl Game {
                         result: function.result,
                     });
                 }
-                let signature = if layout.version == 3 && ordinal == 21 {
+                let formatted = layout.version == 3 && matches!(ordinal, 0..=3 | 7);
+                let signature = if formatted {
+                    Some((
+                        match ordinal {
+                            0 => &[NativeScalar::I32, NativeScalar::Word][..],
+                            2 => &[NativeScalar::Word, NativeScalar::I32, NativeScalar::Word][..],
+                            3 => &[NativeScalar::Word, NativeScalar::Word][..],
+                            _ => &[NativeScalar::Word][..],
+                        },
+                        NativeScalar::Void,
+                    ))
+                } else if layout.version == 3 && ordinal == 21 {
                     Some((&[NativeScalar::Word][..], NativeScalar::Void))
                 } else if ordinal == 4 {
                     Some((
@@ -797,6 +818,17 @@ impl Game {
                     None
                 };
                 Ok(NativeImport {
+                    format: formatted.then_some(NativeFormat {
+                        buffer: format_address,
+                        capacity: if ordinal == 0 { 2048 } else { 1024 },
+                        format: if ordinal == 2 {
+                            2
+                        } else if matches!(ordinal, 0 | 3) {
+                            1
+                        } else {
+                            0
+                        },
+                    }),
                     filter: if ordinal == 23 { filter } else { None },
                     trap: signature.is_none(),
                     number: ordinal as u32,
@@ -809,6 +841,7 @@ impl Game {
         let mut imports = imports;
         if layout.version == 2023 {
             imports.push(NativeImport {
+                format: None,
                 number: 70,
                 abi,
                 parameters: &[NativeScalar::Word],

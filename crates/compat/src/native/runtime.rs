@@ -265,6 +265,7 @@ pub(super) fn bind(
             let ordinal = existing.unwrap_or_else(|| {
                 let ordinal = prefix + imports.len();
                 imports.push(NativeImport {
+                    format: None,
                     filter: None,
                     trap: true,
                     number: 0,
@@ -298,6 +299,7 @@ pub(super) fn bind(
             None => {
                 let ordinal = imports.len();
                 imports.push(NativeImport {
+                    format: None,
                     filter: None,
                     trap: false,
                     number: function.number,
@@ -358,6 +360,7 @@ pub(super) fn bind(
         for function in FUNCTIONS.iter().filter(|f| f.windows_object()) {
             if !imports.iter().any(|i| i.number == function.number) {
                 imports.push(NativeImport {
+                    format: None,
                     filter: None,
                     trap: false,
                     number: function.number,

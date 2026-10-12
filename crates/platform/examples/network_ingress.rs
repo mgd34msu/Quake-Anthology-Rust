@@ -135,20 +135,23 @@ fn main() -> Result<(), String> {
                         from,
                         std::hint::black_box(bytes),
                         event.time,
-                        |_, endpoint, incoming| match incoming {
-                            Incoming::Payload(bytes) if !bytes.is_empty() => {
-                                bad |= endpoint != Endpoint::Client || bytes != body;
-                                payloads += 1;
-                            }
-                            Incoming::Acknowledged {
-                                receipt,
-                                output: Some(consumer),
-                            } => {
-                                let n = outputs.acknowledge(consumer, receipt);
-                                bad |= endpoint != Endpoint::Server || n != 1;
-                                retired += n;
-                            }
-                            _ => {}
+                        |_, endpoint, incoming| {
+                            match incoming {
+                                Incoming::Payload(bytes) if !bytes.is_empty() => {
+                                    bad |= endpoint != Endpoint::Client || bytes != body;
+                                    payloads += 1;
+                                }
+                                Incoming::Acknowledged {
+                                    receipt,
+                                    output: Some(consumer),
+                                } => {
+                                    let n = outputs.acknowledge(consumer, receipt);
+                                    bad |= endpoint != Endpoint::Server || n != 1;
+                                    retired += n;
+                                }
+                                _ => {}
+                            };
+                            std::ops::ControlFlow::Continue(())
                         },
                     );
                 }

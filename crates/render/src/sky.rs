@@ -61,12 +61,17 @@ pub(crate) fn for_each_sky_triangle(
                 let Some(model) = assets.model(entity.model) else {
                     continue;
                 };
+                let Some(frames) = model.frames(entity.frame, entity.old_frame, entity.back_lerp)
+                else {
+                    visit(material, SkySubmission::MissingSurface);
+                    continue;
+                };
                 for triangle in model.indices.chunks_exact(3) {
                     let points = [triangle[0], triangle[1], triangle[2]].map(|index| {
                         math::transform_point(
                             entity.origin,
                             entity.axes,
-                            model.vertices[index as usize].position,
+                            frames.vertex(index as usize).position,
                         )
                     });
                     visit(material, SkySubmission::Triangle(points));

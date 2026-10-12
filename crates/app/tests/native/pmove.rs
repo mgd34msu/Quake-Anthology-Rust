@@ -194,6 +194,8 @@ pub(super) fn commands_move_a_native_client_once() {
             begin: CallbackId(game.entry(b"ClientBegin").unwrap()),
             disconnect: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
             think: CallbackId(game.entry(b"ClientThink").unwrap()),
+            command: CallbackId(game.entry(b"ClientCommand").unwrap()),
+            userinfo_changed: CallbackId(game.entry(b"ClientUserinfoChanged").unwrap()),
             userinfo: 0x180004000,
             usercmd: 0x180004c00,
             abi: qa_compat::q2_abi::client_layout(rules).unwrap(),

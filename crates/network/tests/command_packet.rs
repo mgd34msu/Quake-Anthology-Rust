@@ -32,8 +32,19 @@ fn q3_connection_preserves_every_projected_weapon_byte_without_casting_common_id
         let mut received = None;
         assert_eq!(
             incoming
-                .decode(length, 0, 0, &mut server, |command, native_weapon, _| {
-                    received = Some((command, native_weapon));
+                .decode(length, 0, 0, &mut server, None, |incoming| {
+                    if let qa_network::ingress::Incoming::Command {
+                        command,
+                        native_weapon,
+                        observation: _,
+                        ..
+                    } = incoming
+                    {
+                        {
+                            received = Some((command, native_weapon));
+                        };
+                    }
+                    std::ops::ControlFlow::Continue(())
                 })
                 .unwrap(),
             1
@@ -103,23 +114,38 @@ fn qw_delta_requests_are_outside_crc_and_replace_per_message()
     )?;
     let mut connection = Commands::load(Protocol::QuakeWorld28);
     let n = connection.stage(&message)?;
-    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_, _, _| {})?, 1);
+    assert_eq!(
+        connection.decode(n, 17, 0, &mut channel, None, |_| {
+            std::ops::ControlFlow::Continue(())
+        })?,
+        1
+    );
     assert_eq!(connection.delta_request(), Some(23));
     // The next message omits clc_delta and must not retain its predecessor.
     let n = connection.stage(&bytes[..length - 2])?;
-    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_, _, _| {})?, 1);
+    assert_eq!(
+        connection.decode(n, 17, 0, &mut channel, None, |_| {
+            std::ops::ControlFlow::Continue(())
+        })?,
+        1
+    );
     assert_eq!(connection.delta_request(), None);
     let n = connection.stage(&message)?;
-    connection.decode(n, 17, 0, &mut channel, |_, _, _| {})?;
+    connection.decode(n, 17, 0, &mut channel, None, |_| {
+        std::ops::ControlFlow::Continue(())
+    })?;
     assert_eq!(connection.delta_request(), Some(23));
     message.push(5);
     let n = connection.stage(&message)?;
     assert!(
         connection
-            .decode(n, 17, 0, &mut channel, |_, _, _| {})
+            .decode(n, 17, 0, &mut channel, None, |_| {
+                std::ops::ControlFlow::Continue(())
+            })
             .is_err()
     );
-    assert_eq!(connection.delta_request(), None);
+    // Accepted controls survive a malformed later control, like native parsing.
+    assert_eq!(connection.delta_request(), Some(23));
 
     for end in 0..length - 2 {
         assert!(
@@ -141,16 +167,19 @@ fn qw_delta_requests_are_outside_crc_and_replace_per_message()
         )
         .is_err()
     );
-    bytes[length] = 3; // A second move is never admitted.
-    assert_eq!(
+    bytes[length] = 3; // A second move stops without undoing the first.
+    assert!(matches!(
         packet::read(
             Protocol::QuakeWorld28,
             &mut bytes[..length + 1],
             17,
             Key::default()
         ),
-        Err(Error::Opcode)
-    );
+        Ok(Move::QuakeWorld {
+            delta_request: Some(255),
+            ..
+        })
+    ));
     bytes[2] ^= 1; // Actual move bytes remain protected by the sequence CRC.
     assert_eq!(
         packet::read(

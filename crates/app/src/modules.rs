@@ -443,6 +443,16 @@ impl FrameHost {
         export: Export,
         time: ThinkTime,
     ) -> Result<(), CallError> {
+        self.call_module_command(module, export, time, Default::default())
+    }
+
+    fn call_module_command(
+        &mut self,
+        module: ModuleId,
+        export: Export,
+        time: ThinkTime,
+        command: qa_core::primitives::CommandArgs<'_>,
+    ) -> Result<(), CallError> {
         let row = self.module_row(module).ok_or(CallError::MissingModule)?;
         let entity = row.request.anchor;
         let slot = self
@@ -466,6 +476,7 @@ impl FrameHost {
                 time,
                 arguments,
                 client: export.client,
+                command,
             },
         )
     }
@@ -647,19 +658,20 @@ fn context(mut context: CallContext, time: ThinkTime) -> CallContext {
     context.clock = time;
     context
 }
-fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall) -> bool {
-    let (time, words, native_player) = match call {
+fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: CallbackCall<'_>) -> bool {
+    let (time, words, native_player, command) = match call {
         CallbackCall::Think { time, .. } => {
             let mut arguments = [0; 9];
             arguments[0] = time.milliseconds() as u64;
-            (time, arguments, None)
+            (time, arguments, None, Default::default())
         }
         CallbackCall::Export {
             time,
             arguments,
             client,
+            command,
             ..
-        } => (time, arguments, client),
+        } => (time, arguments, client, command),
         _ => return false,
     };
     let Some(row) = host
@@ -684,7 +696,7 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 table: imports,
                 context: call_context,
                 platform_time: host.time,
-                command: &[],
+                command: command.argv,
                 unknown: &mut row.unknown,
             };
             let mut arguments = [0; 10];
@@ -703,8 +715,8 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
                 table: imports,
                 context: call_context,
                 platform_time: host.time,
-                command: &[],
-                raw_args: b"",
+                command: command.argv,
+                raw_args: command.raw,
                 native_player,
                 unknown: &mut row.unknown,
             };

@@ -335,9 +335,14 @@ pub const Q2_CLASSIC: CallTable = {
     let mut table = CallTable {
         entries: [None; 256],
     };
+    table.entries[0] = scalar!(native_print::<false, false>);
+    table.entries[1] = scalar!(print);
+    table.entries[2] = scalar!(native_print::<true, false>);
+    table.entries[3] = scalar!(native_print::<true, true>);
     table.entries[4] = scalar!(native_sound::<false, false>);
     table.entries[5] = scalar!(native_sound::<true, false>);
     table.entries[6] = scalar!(config_set);
+    table.entries[7] = scalar!(abort);
     table.entries[8] = scalar!(resource_index::<0>);
     table.entries[9] = scalar!(resource_index::<1>);
     table.entries[10] = scalar!(resource_index::<2>);

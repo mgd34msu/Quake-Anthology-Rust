@@ -150,6 +150,8 @@ fn snapshot_frames_for_protocol(protocol: qa_network::commands::packet::Protocol
             begin: CallbackId(game.entry(b"ClientBegin").unwrap()),
             disconnect: CallbackId(game.entry(b"ClientDisconnect").unwrap()),
             think: CallbackId(game.entry(b"ClientThink").unwrap()),
+            command: CallbackId(game.entry(b"ClientCommand").unwrap()),
+            userinfo_changed: CallbackId(game.entry(b"ClientUserinfoChanged").unwrap()),
             abi: &qa_compat::q2_abi::RERELEASE,
             userinfo: 0x180005000,
             social: 0x180005800,

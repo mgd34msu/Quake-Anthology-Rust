@@ -137,6 +137,7 @@ pub struct FrameHost {
     timeline: Timeline,
     providers: Box<[Provider]>,
     module_outputs: Box<[Option<qa_core::events::OutputConsumerId>]>,
+    pub(crate) command_tokens: qa_console::command_text::Tokens,
 }
 
 #[derive(Default)]
@@ -243,6 +244,7 @@ impl FrameHost {
             volume,
             mouse_enabled,
             previous: None,
+            command_tokens: Default::default(),
             timeline,
             providers: providers.into_boxed_slice(),
             module_outputs,
@@ -442,6 +444,7 @@ impl FrameHost {
             &mut self.runtime.network,
             qa_network::ingress::Connections::load(0),
         );
+        let mut disconnected = None;
         network.receive(socket, from, bytes, time, |id, endpoint, incoming| {
             use qa_network::ingress::Incoming;
             match endpoint {
@@ -478,6 +481,49 @@ impl FrameHost {
                     }
                 }
                 qa_core::loopback::Endpoint::Server => match incoming {
+                    Incoming::CommandString {
+                        protocol,
+                        text,
+                        output,
+                        ..
+                    } => {
+                        if output.is_some()
+                            && self.runtime.server.clients[id.0 as usize].output == output
+                        {
+                            match self.client_string_command(id, protocol.rule_set(), text) {
+                                Ok(std::ops::ControlFlow::Break(())) => {
+                                    disconnected = Some(id);
+                                    return std::ops::ControlFlow::Break(());
+                                }
+                                Ok(std::ops::ControlFlow::Continue(())) => {}
+                                Err(error) => {
+                                    let _ = self.runtime.server.events.console_formatted(
+                                        format_args!("ClientCommand: {error}\n"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Incoming::Userinfo { text, output, .. } => {
+                        if output.is_some()
+                            && self.runtime.server.clients[id.0 as usize].output == output
+                            && self.runtime.server.module_moves(id).is_some()
+                            && let Err(error) = self.userinfo_q2_client(id, text)
+                        {
+                            let _ = self.runtime.server.events.console_formatted(format_args!(
+                                "ClientUserinfoChanged: {error}\n"
+                            ));
+                        }
+                    }
+                    Incoming::Disconnect { output } => {
+                        if output.is_some()
+                            && self.runtime.server.clients[id.0 as usize].output == output
+                        {
+                            self.disconnect_client(id);
+                            disconnected = Some(id);
+                            return std::ops::ControlFlow::Break(());
+                        }
+                    }
                     Incoming::Command {
                         mut command,
                         native_weapon,
@@ -506,7 +552,14 @@ impl FrameHost {
                     _ => {}
                 },
             }
+            std::ops::ControlFlow::Continue(())
         });
+        if let Some(id) = disconnected {
+            network.unbind(id);
+            if let Some(binding) = self.runtime.local_snapshots[id.0 as usize].take() {
+                self.local_clients[binding.seat.index()] = None;
+            }
+        }
         self.runtime.network = network;
     }
 

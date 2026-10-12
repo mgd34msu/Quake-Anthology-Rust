@@ -109,7 +109,8 @@ fn oracle() -> Result<(), String> {
             |client, _, incoming| {
                 if matches!(incoming, Incoming::Payload(_)) {
                     selected = client.0;
-                }
+                };
+                std::ops::ControlFlow::Continue(())
             },
         );
         let heap = allocations::end_frame();
@@ -200,7 +201,8 @@ fn heap() -> Result<(), String> {
                     |client, _, incoming| {
                         if matches!(incoming, Incoming::Payload(_)) {
                             matched = Some(client);
-                        }
+                        };
+                        std::ops::ControlFlow::Continue(())
                     },
                 );
                 if matched != Some(ClientId(slot as u32)) {

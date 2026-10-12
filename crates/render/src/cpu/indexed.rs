@@ -1,0 +1,166 @@
+//! Native indexed mesh shading within the shared clip/triangle consumer.
+//! Q1 r_alias.c R_AliasSetupLighting/R_AliasTransformAndProjectFinalVerts;
+//! Q2 ref_soft/r_alias.c R_AliasSetupLighting/R_AliasTransformFinalVerts.
+use crate::assets::{Assets, Image, PaletteId, Wrap};
+use crate::scene::CpuPresentation;
+use crate::shader::{RgbGen, StageBlend};
+use crate::stage::{EntityLighting, PreparedStage};
+use crate::surface_cache::{IndexedLighting, IndexedMip, PaletteLighting};
+use qa_core::primitives::Vec3;
+
+const LIGHT_MIN: i32 = 5;
+const COLOR_BITS: u32 = 6;
+const GRADES: f32 = (1u32 << COLOR_BITS) as f32;
+
+#[derive(Clone, Copy)]
+struct AliasLight {
+    ambient: i32,
+    shade: f32,
+    direction: Vec3,
+}
+impl AliasLight {
+    /// The presentation adapter supplies its native ambient/shade values and
+    /// model-local direction. Q2 lightpoint averaging, clamps and effect flags
+    /// are not inferred from the model's file format here.
+    fn prepare(lighting: EntityLighting, policy: IndexedLighting) -> Option<Self> {
+        if !lighting.direction.is_finite()
+            || !lighting
+                .ambient
+                .iter()
+                .chain(lighting.directed.iter())
+                .all(|v| v.is_finite())
+        {
+            return None;
+        }
+        let ambient = policy
+            .scalar(lighting.ambient)
+            .clamp(LIGHT_MIN as f32, 255.0) as i32;
+        let shade = policy.scalar(lighting.directed).max(0.0) * GRADES;
+        if !shade.is_finite() {
+            return None;
+        }
+        Some(Self {
+            ambient: ((255 - ambient) << COLOR_BITS).max(LIGHT_MIN),
+            shade,
+            direction: lighting.direction,
+        })
+    }
+
+    fn vertex(self, normal: Vec3) -> f32 {
+        let cosine = normal.dot(self.direction);
+        let mut light = self.ambient;
+        if cosine < 0.0 {
+            light += (self.shade * cosine) as i32;
+            light = light.max(0);
+        }
+        light as f32
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Raster<'a> {
+    pub palette: &'a PaletteLighting,
+    pub palette_id: PaletteId,
+    mip: &'a IndexedMip,
+    transparent_index: Option<u8>,
+    wrap: Wrap,
+    lighting: IndexedLighting,
+    alias_light: Option<AliasLight>,
+    fullbright: bool,
+    blend: bool,
+}
+
+impl<'a> Raster<'a> {
+    pub fn prepare(
+        presentation: CpuPresentation,
+        image: &'a Image,
+        stage: &PreparedStage,
+        lighting: Option<EntityLighting>,
+        assets: &'a Assets,
+    ) -> Result<Option<Self>, &'static str> {
+        let CpuPresentation::Indexed {
+            palette,
+            lighting: policy,
+            fullbright,
+            ..
+        } = presentation
+        else {
+            return Ok(None);
+        };
+        let palette_resource = assets.palette(palette).ok_or("missing mesh palette")?;
+        let texture = image
+            .indexed
+            .as_ref()
+            .ok_or("mesh image has no native indices")?;
+        let blend = match stage.stage.blend {
+            None => false,
+            Some(StageBlend::ALPHA) if palette_resource.translucency_map().is_some() => true,
+            _ => return Err("unsupported indexed mesh blend"),
+        };
+        let alias_light = if matches!(stage.stage.rgb_gen, RgbGen::LightingDiffuse) {
+            Some(
+                AliasLight::prepare(lighting.ok_or("missing alias lighting")?, policy)
+                    .ok_or("nonfinite alias lighting")?,
+            )
+        } else {
+            None
+        };
+        Ok(Some(Self {
+            palette: palette_resource,
+            palette_id: palette,
+            mip: texture.mip(0).ok_or("missing native mesh mip")?,
+            transparent_index: texture.transparent_index(),
+            wrap: image.native_sampler.unwrap_or(stage.stage.sampler).wrap,
+            lighting: policy,
+            alias_light,
+            fullbright,
+            blend,
+        }))
+    }
+
+    pub fn light(self, normal: Vec3, color: [u8; 4]) -> f32 {
+        if self.fullbright {
+            return 0.0;
+        }
+        if let Some(alias) = self.alias_light {
+            return alias.vertex(normal);
+        }
+        let brightness = self.lighting.scalar([color[0], color[1], color[2]]);
+        ((255 - i32::from(brightness)) << COLOR_BITS) as f32
+    }
+
+    pub fn sample(
+        self,
+        coordinates: [f32; 2],
+        light: f32,
+        alpha: f32,
+        destination: u8,
+        destination_palette: u32,
+    ) -> Option<u8> {
+        let x = super::texel(coordinates[0], self.mip.width, self.wrap);
+        let y = super::texel(coordinates[1], self.mip.height, self.wrap);
+        let raw = self.mip.indices()[y * self.mip.width as usize + x];
+        if self.transparent_index == Some(raw) {
+            return None;
+        }
+        let shade = (light as i32).clamp(0, 63 * 256 + 255) as usize & 0xff00;
+        let color = self.palette.colormap()[shade + raw as usize];
+        if !self.blend || alpha >= 1.0 {
+            return Some(color);
+        }
+        if alpha <= 0.0 || destination_palette != self.palette_id.0 {
+            return None;
+        }
+        let map = self.palette.translucency_map()?;
+        let [major, minor] = if alpha > 0.33 {
+            [color, destination]
+        } else {
+            [destination, color]
+        };
+        Some(map[usize::from(major) * 256 + usize::from(minor)])
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/cpu_indexed/oracle.rs"]
+mod tests;

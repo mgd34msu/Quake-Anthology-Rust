@@ -620,6 +620,30 @@ pub enum IndexedLighting {
     BrightestRgb,
 }
 
+impl IndexedLighting {
+    /// Native palette lighting retains Q2's strict R/G tie rule; the raised
+    /// brightest policy takes the true maximum. Float callers admit finite
+    /// channels at their input boundary.
+    pub fn scalar<T: Copy + PartialOrd>(self, [red, green, blue]: [T; 3]) -> T {
+        match self {
+            Self::Gray => red,
+            Self::NativeRgb => {
+                if red > green && red > blue {
+                    red
+                } else if green > red && green > blue {
+                    green
+                } else {
+                    blue
+                }
+            }
+            Self::BrightestRgb => {
+                let largest = if red > green { red } else { green };
+                if largest > blue { largest } else { blue }
+            }
+        }
+    }
+}
+
 /// Style scales have already been converted at the presentation boundary:
 /// Q1 letter*22/empty=256; Q2 lightstyle.white*128. Dynamic values are signed
 /// additive 8.8 scalar light on this surface's sample grid.
@@ -1192,19 +1216,7 @@ fn build_lightmap(source: &SurfaceSource, state: BuildState<'_>, scratch: &mut [
         if let Some(grid) = &source.lightmap {
             for style in 0..grid.style_count {
                 let rgb = grid.samples[style * cells + cell];
-                let value = match state.lighting {
-                    IndexedLighting::Gray => rgb[0],
-                    IndexedLighting::NativeRgb => {
-                        if rgb[0] > rgb[1] && rgb[0] > rgb[2] {
-                            rgb[0]
-                        } else if rgb[1] > rgb[0] && rgb[1] > rgb[2] {
-                            rgb[1]
-                        } else {
-                            rgb[2]
-                        }
-                    }
-                    IndexedLighting::BrightestRgb => rgb[0].max(rgb[1]).max(rgb[2]),
-                };
+                let value = state.lighting.scalar(rgb);
                 light += i64::from(value) * i64::from(state.style_scales[style]);
             }
         }
