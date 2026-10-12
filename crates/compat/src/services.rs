@@ -450,7 +450,6 @@ impl ServiceStorage {
                     let index = self.config(owner, ordinal)?;
                     self.bind_sound_at(owner, index)?;
                 }
-                self.ranges[i].signon.freeze_initial();
             }
         }
         Ok(())
@@ -622,6 +621,7 @@ pub struct EngineServices<'a> {
     pub model_lookup: Option<&'a dyn ModelLookup>,
     pub localization: &'a qa_content::localization::Catalog,
     pub registry: &'a qa_gameplay::registry::Registry,
+    pub names: &'a mut NameTable,
     pub storage: &'a mut ServiceStorage,
     pub geometry: &'a CollisionStore,
     pub world: Option<(GeometryId, u32)>,
@@ -796,13 +796,11 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
         let wire_length = row.written;
         let (wire, metadata) = row.message.split_at_mut(wire_length);
         let mut captured = 0;
-        let protocol = match delivery.source {
-            RuleSetId::Quake2 => Some(qa_network::commands::packet::Protocol::Quake2_34),
-            RuleSetId::Quake2Rerelease => {
-                Some(qa_network::commands::packet::Protocol::Quake2Repro1038)
-            }
-            _ => None,
-        };
+        let protocol = matches!(
+            delivery.source,
+            RuleSetId::Quake2 | RuleSetId::Quake2Rerelease
+        )
+        .then(|| qa_network::commands::packet::Protocol::native(delivery.source));
         if let Some(protocol) = protocol {
             let mut offset = 0;
             while offset < wire.len() {

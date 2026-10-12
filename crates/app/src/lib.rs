@@ -136,6 +136,7 @@ impl Runtime {
             vfs: &self.vfs,
             localization: &self.localization,
             registry: &self.catalog.registry,
+            names: &mut self.catalog.names,
             model_loader: self
                 .model_loader
                 .as_mut()

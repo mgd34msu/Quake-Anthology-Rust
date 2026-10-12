@@ -55,16 +55,126 @@ fn print_opcodes_and_all_native_priority_bytes_remain_exact() -> Result<(), Erro
                 b"raw\x80\xff",
                 &mut bytes,
             )?;
-            assert_eq!(&bytes[..n], &[opcode, level, b'r', b'a', b'w', 128, 255, 0]);
+            assert_eq!(&bytes[..n], &[opcode, level, b'r', b'a', b'w', 128, 0]);
             assert_eq!(bytes[n], 0xcc);
             let print = Prints::new(protocol, &bytes[..n])
                 .next()
                 .ok_or(Error::Truncated)??;
             assert_eq!(print.level, Some(level));
-            assert_eq!(print.text, b"raw\x80\xff");
+            assert_eq!(print.text, b"raw\x80");
         }
     }
     Ok(())
+}
+
+#[test]
+fn print_streams_consume_each_native_terminator_and_preserve_the_following_service() {
+    for (protocol, bytes, text) in [
+        (
+            Protocol::NetQuake15,
+            &b"\x08a\x80\xff\x1anext\0"[..],
+            &b"a\x80"[..],
+        ),
+        (
+            Protocol::QuakeWorld28,
+            &b"\x08\x02a\x80\xff\x1anext\0"[..],
+            &b"a\x80"[..],
+        ),
+        (
+            Protocol::Quake2_34,
+            &b"\x0a\x02a\x80\xff\x0fnext\0"[..],
+            &b"a\x80"[..],
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            &b"\x0a\x02a\x80\xff\0\x0fnext\0"[..],
+            &b"a\x80\xff"[..],
+        ),
+    ] {
+        let mut prints = Prints::new(protocol, bytes);
+        let first = prints.next().unwrap().unwrap();
+        assert_eq!(first.text, text);
+        let text_at = if protocol == Protocol::NetQuake15 {
+            1
+        } else {
+            2
+        };
+        assert_eq!(first.text.as_ptr(), bytes[text_at..].as_ptr());
+        assert_eq!(prints.next().unwrap().unwrap().text, b"next");
+        assert!(prints.next().is_none());
+    }
+}
+
+#[test]
+fn mapped_rerelease_prints_stop_at_the_target_boundary_without_hiding_later_services() {
+    use outputs::NativeService;
+    use qa_core::primitives::RuleSetId;
+    let source = b"\x0a\x02a\x80\xffdiscarded\0\x0fnext\0\x06";
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+    ] {
+        let mut bytes = [0xcc; 128];
+        let encoded = outputs::native(
+            protocol,
+            RuleSetId::Quake2Rerelease,
+            source,
+            &mut bytes,
+            true,
+            |cue, _| Ok(cue),
+        )
+        .unwrap();
+        assert_eq!(encoded.unsupported, 0);
+        let mut rest = &bytes[..encoded.length];
+        for expected in [&b"a\x80"[..], &b"next"[..]] {
+            let (service, used) = outputs::read_native_service(protocol, rest).unwrap();
+            let NativeService::Print(print) = service else {
+                panic!("print");
+            };
+            assert_eq!(print.text, expected);
+            rest = &rest[used..];
+        }
+        let (service, used) = outputs::read_native_service(protocol, rest).unwrap();
+        assert!(matches!(service, NativeService::Nop));
+        assert_eq!(rest.len(), used);
+        assert_eq!(bytes[encoded.length], 0xcc);
+    }
+
+    for (protocol, rules, source) in [
+        (
+            Protocol::Quake2_34,
+            RuleSetId::Quake2,
+            &b"\x0a\x02a\x80\xff\0\x0fnext\0"[..],
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            RuleSetId::Quake2Rerelease,
+            &b"\x0a\x02a\x80\xfftail\0\x0fnext\0"[..],
+        ),
+    ] {
+        let mut bytes = [0xcc; 128];
+        let encoded =
+            outputs::native(protocol, rules, source, &mut bytes, true, |cue, _| Ok(cue)).unwrap();
+        assert_eq!(&bytes[..encoded.length], source);
+    }
+}
+
+#[test]
+fn generated_legacy_prints_leave_room_for_the_native_terminator() {
+    for (protocol, kind, length) in [
+        (Protocol::NetQuake15, PrintKind::Chat, 2045),
+        (Protocol::QuakeWorld28, PrintKind::Console, 2046),
+        (Protocol::Quake2_34, PrintKind::Console, 2046),
+    ] {
+        let mut bytes = [0xcc; 4096];
+        let mut n = outputs::print(protocol, kind, 2, &[b'x'; 2050], &mut bytes).unwrap();
+        n += outputs::print(protocol, PrintKind::Center, 2, b"next", &mut bytes[n..]).unwrap();
+        let mut prints = Prints::new(protocol, &bytes[..n]);
+        assert_eq!(prints.next().unwrap().unwrap().text.len(), length);
+        assert_eq!(prints.next().unwrap().unwrap().text, b"next");
+        assert!(prints.next().is_none());
+    }
 }
 
 #[test]
@@ -215,8 +325,8 @@ fn q2_native_streams_transcode_known_services_in_order_without_changing_raw_text
     use qa_network::outputs::{Cue, NativeService};
     // Print, fully present sound fields, player muzzle flash, layout and nop.
     let source = [
-        10, 2, b'r', 0x80, 0xff, 0, 9, 31, 49, 204, 128, 125, 41, 0, 247, 255, 162, 0, 1, 4, 1, 5,
-        0, 128, 4, b'l', 0x80, 0, 6,
+        10, 2, b'r', 0x80, 0, 9, 31, 49, 204, 128, 125, 41, 0, 247, 255, 162, 0, 1, 4, 1, 5, 0,
+        128, 4, b'l', 0x80, 0, 6,
     ];
     let mut output = [0xcc; 128];
     let encoded = outputs::native(
@@ -236,7 +346,7 @@ fn q2_native_streams_transcode_known_services_in_order_without_changing_raw_text
     };
     assert_eq!(
         (print.kind, print.text),
-        (PrintKind::Console, &b"r\x80\xff"[..])
+        (PrintKind::Console, &b"r\x80"[..])
     );
     remaining = &remaining[n..];
     let (record, n) = outputs::read_native_service(Protocol::Quake2Repro1038, remaining)?;
@@ -305,7 +415,7 @@ fn unrepresentable_rerelease_services_drop_individually_and_later_records_contin
     assert_eq!(result.unsupported, 3);
     assert_eq!(
         &output[..result.length],
-        &[2, 7, 0, 17, 9, 0, 49, 15, b'c', 0x80, 0, 4, b'l', 0xff, 0]
+        &[2, 7, 0, 17, 9, 0, 49, 15, b'c', 0x80, 0, 4, b'l', 0]
     );
     assert_eq!(output[result.length], 0xcc);
     assert_eq!(

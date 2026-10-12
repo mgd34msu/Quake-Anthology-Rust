@@ -171,6 +171,56 @@ fn empty_target_strings_are_distinct_from_missing_fields() {
 }
 
 #[test]
+fn common_optional_names_clear_on_lifetime_reuse_without_losing_empty_values() {
+    let names = NameTable::load([b"door".as_slice()]).unwrap();
+    let door = names.find(b"door").unwrap();
+    let mut table = EntityTable::new(4, 1).unwrap();
+    let id = table
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    let slot = id.slot as usize;
+    assert_eq!(table.columns.classname[slot], None);
+    assert_eq!(table.columns.target[slot], None);
+    table.columns.classname[slot] = Some(NameId(0));
+    table.columns.target[slot] = Some(door);
+    assert!(table.set_targetname(id, Some(NameId(0))));
+    let mut index = TargetIndex::new(&table);
+    assert!(index.refresh(&mut table, &names));
+    assert_eq!(
+        index
+            .find(NameId(0), NameMatch::Exact, &names)
+            .collect::<Vec<_>>(),
+        [id]
+    );
+    assert!(table.release(id, ThinkTime::Seconds(0.0)));
+    let reused = table
+        .allocate(
+            ThinkTime::Seconds(0.0),
+            ModuleId(1),
+            AllocationPolicy::EDICT,
+        )
+        .unwrap()
+        .id;
+    assert_eq!(reused.slot, id.slot);
+    assert_ne!(reused.generation, id.generation);
+    assert_eq!(table.columns.classname[slot], None);
+    assert_eq!(table.columns.target[slot], None);
+    assert_eq!(table.columns.targetname(slot), None);
+    assert!(index.refresh(&mut table, &names));
+    assert!(
+        index
+            .find(NameId(0), NameMatch::Exact, &names)
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn unnamed_churn_leaves_named_rows_and_refresh_counters_unchanged() -> Result<(), &'static str> {
     let names = NameTable::load([b"door".as_slice()]).map_err(|_| "names")?;
     let door = names.find(b"door").ok_or("door")?;

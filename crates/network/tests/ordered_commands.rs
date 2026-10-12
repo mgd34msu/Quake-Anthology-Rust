@@ -345,3 +345,44 @@ fn q2_userinfo_is_a_distinct_byte_preserving_record_with_rerelease_length_limit(
         (Err(packet::Error::Count), vec![])
     );
 }
+
+#[test]
+fn native_command_strings_keep_signed_terminators_and_continue_at_their_native_limit() {
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+    ] {
+        let mut bytes = vec![4, b'a', 0x80, 0xff];
+        bytes.extend(move_bytes(protocol, 11));
+        assert_eq!(
+            deliver(protocol, &bytes),
+            (Ok(1), vec![Seen::Text(b"a\x80".to_vec()), Seen::Move(11)])
+        );
+        let mut bytes = vec![4];
+        bytes.extend([b'x'; 2047]);
+        bytes.extend(move_bytes(protocol, 11));
+        assert_eq!(
+            deliver(protocol, &bytes),
+            (Ok(1), vec![Seen::Text(vec![b'x'; 2047]), Seen::Move(11)])
+        );
+    }
+    let protocol = Protocol::Quake2Repro1038;
+    let mut bytes = vec![4, b'a', 0x80, 0xff, 0];
+    bytes.extend(move_bytes(protocol, 11));
+    assert_eq!(
+        deliver(protocol, &bytes),
+        (
+            Ok(1),
+            vec![Seen::Text(b"a\x80\xff".to_vec()), Seen::Move(11)]
+        )
+    );
+    let mut bytes = vec![4];
+    bytes.extend([b'x'; 1023]);
+    bytes.push(0);
+    bytes.extend(move_bytes(protocol, 11));
+    assert_eq!(
+        deliver(protocol, &bytes),
+        (Ok(1), vec![Seen::Text(vec![b'x'; 1023]), Seen::Move(11)])
+    );
+}

@@ -50,6 +50,74 @@ const fn decode_table() -> [(u16, u8); 2048] {
 }
 const DECODE: [(u16, u8); 2048] = decode_table();
 
+pub const COMMAND_STRING_BYTES: usize = 1024;
+
+/// Native string boundaries are wire policy, separate from a caller's storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StringPolicy {
+    maximum: usize,
+    signed_terminator: bool,
+    stop_at_limit: bool,
+    sanitize: bool,
+}
+impl StringPolicy {
+    /// NQ/QW/Q2 MSG_ReadChar strings: 0xff terminates, and a full native
+    /// 2048-byte buffer stops before reading the next byte.
+    pub const LEGACY: Self = Self {
+        maximum: 2047,
+        signed_terminator: true,
+        stop_at_limit: true,
+        sanitize: false,
+    };
+    /// Rerelease/q2proto strings borrow every byte through their NUL.
+    pub const UNSIGNED: Self = Self {
+        maximum: usize::MAX,
+        signed_terminator: false,
+        stop_at_limit: false,
+        sanitize: false,
+    };
+    /// Q3 MSG_ReadString keeps its original 1024-byte buffer and conversion.
+    pub const Q3: Self = Self {
+        maximum: COMMAND_STRING_BYTES - 1,
+        signed_terminator: false,
+        stop_at_limit: true,
+        sanitize: true,
+    };
+    pub const fn limited(self, maximum: usize) -> Self {
+        Self { maximum, ..self }
+    }
+    pub(crate) const fn reserved(self, bytes: usize) -> Self {
+        Self {
+            maximum: self.maximum.saturating_sub(bytes),
+            ..self
+        }
+    }
+    fn terminates(self, byte: u8) -> bool {
+        byte == 0 || (self.signed_terminator && byte == 255)
+    }
+    /// Generated strings leave room for the terminator in a native reader
+    /// that stops at its fixed buffer limit. Raw native packets are not mapped.
+    pub(crate) fn payload(self, text: &[u8]) -> &[u8] {
+        let length = text
+            .iter()
+            .position(|&byte| self.terminates(byte))
+            .unwrap_or(text.len());
+        let maximum = if self.stop_at_limit {
+            self.maximum.saturating_sub(1)
+        } else {
+            self.maximum
+        };
+        &text[..length.min(maximum)]
+    }
+    pub(crate) fn byte(self, byte: u8) -> u8 {
+        if self.sanitize && (byte > 127 || byte == b'%') {
+            b'.'
+        } else {
+            byte
+        }
+    }
+}
+
 fn valid_width(encoding: Encoding, width: u8) -> bool {
     match encoding {
         Encoding::Bytes => matches!(width, 8 | 16 | 32),
@@ -166,6 +234,52 @@ impl<'a> Reader<'a> {
             *byte = self.read_bits(8)? as u8;
         }
         Ok(())
+    }
+    fn string(
+        &mut self,
+        policy: StringPolicy,
+        mut store: impl FnMut(usize, u8),
+    ) -> Result<usize, Error> {
+        let mut length = 0;
+        loop {
+            if policy.stop_at_limit && length == policy.maximum {
+                return Ok(length);
+            }
+            let byte = self.read_bits(8)? as u8;
+            if policy.terminates(byte) {
+                return if length <= policy.maximum {
+                    Ok(length)
+                } else {
+                    Err(self.error(ErrorKind::Capacity))
+                };
+            }
+            if length < policy.maximum {
+                store(length, policy.byte(byte));
+            }
+            length += 1;
+        }
+    }
+    /// Borrow a raw byte string and leave the cursor at its native boundary.
+    pub fn read_string(&mut self, policy: StringPolicy) -> Result<&'a [u8], Error> {
+        if self.encoding != Encoding::Bytes || policy.sanitize {
+            return Err(self.error(ErrorKind::Width));
+        }
+        let start = self.byte_position();
+        let length = self.string(policy, |_, _| {})?;
+        Ok(&self.data[start..start + length])
+    }
+    /// Fixed caller scratch is needed only when native decoding changes bytes.
+    pub fn read_string_into<'b>(
+        &mut self,
+        policy: StringPolicy,
+        output: &'b mut [u8],
+    ) -> Result<&'b [u8], Error> {
+        if policy.maximum >= output.len() {
+            return Err(self.error(ErrorKind::Capacity));
+        }
+        let length = self.string(policy, |index, byte| output[index] = byte)?;
+        output[length] = 0;
+        Ok(&output[..length])
     }
 }
 
@@ -298,6 +412,14 @@ impl<'a> Writer<'a> {
             self.write_bits(u32::from(byte), 8)?;
         }
         Ok(())
+    }
+    /// Write a generated raw string at its destination's native boundary.
+    pub fn write_string(&mut self, policy: StringPolicy, text: &[u8]) -> Result<(), Error> {
+        if self.encoding != Encoding::Bytes || policy.sanitize {
+            return Err(self.error(ErrorKind::Width));
+        }
+        self.write_data(policy.payload(text))?;
+        self.write_bits(0, 8)
     }
 }
 

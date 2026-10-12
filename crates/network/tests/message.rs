@@ -1,4 +1,120 @@
-use qa_network::message::{Encoding, ErrorKind, Reader, Writer};
+use qa_network::message::{Encoding, ErrorKind, Reader, StringPolicy, Writer};
+
+#[test]
+fn native_raw_strings_keep_signed_and_unsigned_terminators_and_borrow_the_wire() {
+    for (policy, wire, expected, consumed) in [
+        (
+            StringPolicy::LEGACY,
+            &b"a\x80\xff\x09"[..],
+            &b"a\x80"[..],
+            3,
+        ),
+        (StringPolicy::LEGACY, &b"a\x80\0\x09"[..], &b"a\x80"[..], 3),
+        (
+            StringPolicy::UNSIGNED,
+            &b"a\x80\xff\0\x09"[..],
+            &b"a\x80\xff"[..],
+            4,
+        ),
+    ] {
+        let mut reader = Reader::new(wire, Encoding::Bytes);
+        let text = reader.read_string(policy).unwrap();
+        assert_eq!(text, expected);
+        assert_eq!(text.as_ptr(), wire.as_ptr());
+        assert_eq!(reader.byte_position(), consumed);
+        assert_eq!(reader.read_bits(8), Ok(9));
+    }
+    for policy in [StringPolicy::LEGACY, StringPolicy::UNSIGNED] {
+        let mut reader = Reader::new(b"unterminated", Encoding::Bytes);
+        let error = reader.read_string(policy).unwrap_err();
+        assert_eq!((error.byte, error.kind), (12, ErrorKind::Truncated));
+    }
+}
+
+#[test]
+fn native_string_limits_keep_stop_and_full_consumption_rejection_distinct() {
+    let mut wire = vec![b'x'; 2047];
+    wire.extend_from_slice(&[0, 9]);
+    let mut reader = Reader::new(&wire, Encoding::Bytes);
+    assert_eq!(
+        reader.read_string(StringPolicy::LEGACY).unwrap().len(),
+        2047
+    );
+    assert_eq!(reader.byte_position(), 2047);
+    assert_eq!(reader.read_bits(8), Ok(0));
+    assert_eq!(reader.read_bits(8), Ok(9));
+
+    for length in [1023, 1024, 2048] {
+        let mut wire = vec![b'x'; length];
+        wire.extend_from_slice(&[0, 9]);
+        let mut reader = Reader::new(&wire, Encoding::Bytes);
+        let result = reader.read_string(StringPolicy::UNSIGNED.limited(1023));
+        if length == 1023 {
+            assert_eq!(result.unwrap().len(), length);
+        } else {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Capacity);
+        }
+        assert_eq!(reader.byte_position(), length + 1);
+        assert_eq!(reader.read_bits(8), Ok(9));
+    }
+}
+
+#[test]
+fn q3_string_scratch_uses_the_same_boundary_with_native_sanitization_and_bits() {
+    let mut wire = [0; 64];
+    let mut writer = Writer::new(&mut wire, Encoding::Q3);
+    writer.write_data(b"a\x80%\xff\0").unwrap();
+    let end = writer.bit_position();
+    writer.write_bits(9, 8).unwrap();
+    let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
+    let mut scratch = [0xcc; 1024];
+    assert_eq!(
+        reader
+            .read_string_into(StringPolicy::Q3, &mut scratch)
+            .unwrap(),
+        b"a..."
+    );
+    assert_eq!(scratch[4], 0);
+    assert_eq!(scratch[5], 0xcc);
+    assert_eq!(reader.bit_position(), end);
+    assert_eq!(reader.read_bits(8), Ok(9));
+
+    let mut writer = Writer::new(&mut wire, Encoding::Bytes);
+    writer.write_data(b"x\0").unwrap();
+    let mut reader = Reader::new(writer.bytes(), Encoding::Bytes);
+    let mut short = [0xcc; 1023];
+    assert_eq!(
+        reader
+            .read_string_into(StringPolicy::Q3, &mut short)
+            .unwrap_err()
+            .kind,
+        ErrorKind::Capacity
+    );
+    assert_eq!(reader.bit_position(), 0);
+    assert!(short.iter().all(|&byte| byte == 0xcc));
+}
+
+#[test]
+fn q3_full_native_string_stops_before_its_unread_terminator() {
+    let mut wire = [0; 8192];
+    let mut writer = Writer::new(&mut wire, Encoding::Q3);
+    writer.write_data(&[b'x'; 1023]).unwrap();
+    let end = writer.bit_position();
+    writer.write_bits(0, 8).unwrap();
+    writer.write_bits(9, 8).unwrap();
+    let mut reader = Reader::new(writer.bytes(), Encoding::Q3);
+    let mut scratch = [0; 1024];
+    assert_eq!(
+        reader
+            .read_string_into(StringPolicy::Q3, &mut scratch)
+            .unwrap()
+            .len(),
+        1023
+    );
+    assert_eq!(reader.bit_position(), end);
+    assert_eq!(reader.read_bits(8), Ok(0));
+    assert_eq!(reader.read_bits(8), Ok(9));
+}
 
 #[test]
 fn native_byte_writer_resumes_without_clearing_the_prefix() {

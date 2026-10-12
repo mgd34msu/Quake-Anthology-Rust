@@ -37,6 +37,7 @@ pub(crate) struct QuakeCLayout {
     header: usize,
     fields: usize,
     client_edicts: Option<usize>,
+    name_fields: [Option<usize>; 3],
     origin: Option<usize>,
     velocity: Option<usize>,
     angles: Option<usize>,
@@ -71,6 +72,8 @@ impl QuakeCLayout {
             header,
             fields: image.entityfields * 4,
             client_edicts: None,
+            name_fields: [b"classname".as_slice(), b"target", b"targetname"]
+                .map(|name| field(name, 1)),
             origin: field(b"origin", 3),
             velocity: field(b"velocity", 3),
             angles: field(b"angles", 3),
@@ -949,6 +952,19 @@ impl EntityProjection {
         let layout = self.quakec_layout()?;
         let address = u64::from(value);
         let slot = entity.slot as usize;
+        let mut names = [None; 3];
+        for (field, name) in layout.name_fields.into_iter().zip(&mut names) {
+            if let Some(field) = field {
+                let string = layout.word(memory, address, Some(field))?;
+                let bytes = strings.cstring(u64::from(string))?;
+                *name = Some(
+                    services
+                        .names
+                        .intern(bytes)
+                        .map_err(|_| CallError::Capacity)?,
+                );
+            }
+        }
         let columns = &services.server.entities.columns;
         let target = layout.target(
             memory,
@@ -1003,7 +1019,10 @@ impl EntityProjection {
         if layout.effects.is_some() {
             appearance.native.effects = u64::from(number(layout.effects)? as u32);
         }
+        services.server.entities.set_targetname(entity, names[2]);
         let columns = &mut services.server.entities.columns;
+        columns.classname[slot] = names[0];
+        columns.target[slot] = names[1];
         columns.set_body(slot, body);
         columns.angles[slot] = angles;
         columns.flags[slot] = flags;

@@ -6,7 +6,7 @@ use qa_compat::{
     quakec::{Builtins, Layout, Trap, Vm},
     services::{
         CallContext, CallError, ENGINE_CALLS, EngineServices, ModelLoader, ModelLookup,
-        ServiceStorage,
+        ServiceStorage, SignonCursor,
     },
 };
 use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
@@ -170,7 +170,7 @@ fn with_collision_services(
     world_boxes: &[Bounds],
     run: impl FnOnce(&mut QuakeCCalls<'_, '_>),
 ) {
-    let names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
+    let mut names = NameTable::load(qa_gameplay::registry::Registry::names_needed()).unwrap();
     let registry = qa_gameplay::registry::Registry::load(&names).unwrap();
     let mut server = qa_session::clients::Server::load(1, 32, 1, 1, 1, 1).unwrap();
     let mut cvars = Cvars::new().unwrap();
@@ -240,6 +240,7 @@ fn with_collision_services(
         model_lookup: None,
         localization: &localization,
         registry: &registry,
+        names: &mut names,
         storage: &mut storage,
         geometry: &geometry,
         world: Some((world, 0)),
@@ -619,11 +620,18 @@ fn qc_sound_uses_registered_bank_ring_native_origin_and_independent_sound_rules(
                 .bind_sound_bank(calls.context.module, sounds, bank)
                 .unwrap();
             calls.context.sound_policy = qa_gameplay::rules::sound_policy(RuleSetId::Quake3);
-            let consumer = calls
+            let client = calls
                 .services
                 .server
-                .events
-                .bind(qa_core::events::OutputTarget::Client(ClientId(0)))
+                .connect(
+                    qa_session::clients::Connection::Remote,
+                    ModuleId::default(),
+                    PlayerTail::default(),
+                    None,
+                )
+                .unwrap();
+            let consumer = calls.services.server.clients[client.0 as usize]
+                .output
                 .unwrap();
             let channel = if rules == RuleSetId::QuakeWorld {
                 9.0f32
@@ -734,6 +742,343 @@ fn seed_vm(calls: &mut QuakeCCalls<'_, '_>, mut vm: Vm) -> Vm {
     )
     .unwrap();
     vm
+}
+
+fn named_vm(calls: &mut QuakeCCalls<'_, '_>, defined: &[&[u8]]) -> Vm {
+    let mut fields = FIELDS.to_vec();
+    fields.extend(
+        [b"classname".as_slice(), b"target", b"targetname"]
+            .into_iter()
+            .enumerate()
+            .filter(|(_, name)| defined.contains(name))
+            .map(|(index, name)| (1, 37 + index as u16, name)),
+    );
+    let bytes = quakec_program::program_with_definitions(
+        &[(Opcode::StorePS, 28, 31, 0), (Opcode::Return, 1, 0, 0)],
+        &[0, 1],
+        GLOBALS,
+        &fields,
+        40,
+        96,
+    );
+    let vm = Vm::load(
+        Image::parse(&bytes, Some(5927)).unwrap(),
+        Layout {
+            entities: if calls.context.native_rules == RuleSetId::QuakeWorld {
+                36
+            } else {
+                5
+            },
+            header_bytes: 16,
+            extra_string_bytes: 1024,
+            state_step: 0.1,
+        },
+    )
+    .unwrap();
+    let (names, bytes) = vm.name_history_reservation().unwrap();
+    calls.services.names.reserve(names, bytes).unwrap();
+    seed_vm(calls, vm)
+}
+
+#[test]
+fn native_names_publish_exact_raw_bytes_and_dirty_target_changes_to_one_index() {
+    use qa_core::names::NameMatch;
+    use qa_world::targets::TargetIndex;
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            calls.context.console.source = RuleSetId::Quake2Rerelease;
+            calls.context.trace_rules = RuleSetId::Quake3;
+            let mut vm = named_vm(calls, &[b"classname", b"target", b"targetname"]);
+            let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, value);
+            let class = vm.insert_string(b"Monster\xff").unwrap() as u32;
+            let target = vm.insert_string(b"door\\path\xfe").unwrap() as u32;
+            let name = vm.insert_string(b"Door\xff").unwrap() as u32;
+            for (field, word) in [
+                (b"classname".as_slice(), class),
+                (b"target", target),
+                (b"targetname", name),
+            ] {
+                write(&mut vm, value, field, &[word]);
+            }
+            let capacity = (
+                calls.services.names.capacity(),
+                calls.services.names.byte_capacity(),
+            );
+            vm.project_entities(calls.services, calls.context).unwrap();
+            let slot = id.slot as usize;
+            let class_id = calls.services.names.find(b"Monster\xff").unwrap();
+            let target_id = calls.services.names.find(b"door\\path\xfe").unwrap();
+            let upper = calls.services.names.find(b"Door\xff").unwrap();
+            assert_eq!(
+                calls.services.server.entities.columns.classname[slot],
+                Some(class_id)
+            );
+            assert_eq!(
+                calls.services.server.entities.columns.target[slot],
+                Some(target_id)
+            );
+            assert_eq!(
+                calls.services.server.entities.columns.targetname(slot),
+                Some(upper)
+            );
+            assert_eq!(
+                calls.services.names.get(target_id),
+                Some(b"door\\path\xfe".as_slice())
+            );
+            let mut targets = TargetIndex::new(&calls.services.server.entities);
+            assert!(targets.refresh(&mut calls.services.server.entities, calls.services.names));
+            assert_eq!(
+                targets
+                    .find(upper, NameMatch::Exact, calls.services.names)
+                    .collect::<Vec<_>>(),
+                [id]
+            );
+
+            let lower_word = vm.insert_string(b"door\xff").unwrap() as u32;
+            vm.image.globals[28] = lower_word;
+            vm.image.globals[31] = vm
+                .field_address(value, vm.image.field(b"targetname").unwrap() as u32, 1)
+                .unwrap() as u32;
+            vm.call(calls, 1, 100, false).unwrap();
+            // StorePS writes the VM row; only its existing publication imports it.
+            assert_eq!(
+                calls.services.server.entities.columns.targetname(slot),
+                Some(upper)
+            );
+            vm.project_dirty_entities(calls.services, calls.context)
+                .unwrap();
+            let lower = calls.services.names.find(b"door\xff").unwrap();
+            assert_ne!(upper, lower);
+            assert!(targets.refresh(&mut calls.services.server.entities, calls.services.names));
+            assert!(
+                targets
+                    .find(upper, NameMatch::Exact, calls.services.names)
+                    .next()
+                    .is_none()
+            );
+            assert_eq!(
+                targets
+                    .find(lower, NameMatch::Exact, calls.services.names)
+                    .collect::<Vec<_>>(),
+                [id]
+            );
+            assert_eq!(
+                targets
+                    .find(upper, NameMatch::Folded, calls.services.names)
+                    .collect::<Vec<_>>(),
+                [id]
+            );
+            vm.project_entities(calls.services, calls.context).unwrap();
+            assert!(!targets.refresh(&mut calls.services.server.entities, calls.services.names));
+            assert_eq!(
+                (
+                    calls.services.names.capacity(),
+                    calls.services.names.byte_capacity()
+                ),
+                capacity
+            );
+
+            vm.remove_entity(calls.services, calls.context, value)
+                .unwrap();
+            assert!(targets.refresh(&mut calls.services.server.entities, calls.services.names));
+            assert!(
+                targets
+                    .find(lower, NameMatch::Exact, calls.services.names)
+                    .next()
+                    .is_none()
+            );
+            calls.context.clock = ThinkTime::Seconds(4.0);
+            let reused = vm.spawn_entity(calls.services, calls.context).unwrap();
+            assert_eq!(reused, value);
+            let next = entity(calls, &vm, reused);
+            assert_ne!(next, id);
+            let slot = next.slot as usize;
+            assert_eq!(calls.services.server.entities.columns.classname[slot], None);
+            assert_eq!(calls.services.server.entities.columns.target[slot], None);
+            assert_eq!(
+                calls.services.server.entities.columns.targetname(slot),
+                None
+            );
+        });
+    }
+}
+
+#[test]
+fn native_name_definitions_preserve_absence_and_explicit_empty_offsets() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for present in [false, true] {
+            with_services(rules, |calls| {
+                let fields: &[&[u8]] = if present {
+                    &[b"classname", b"target", b"targetname"]
+                } else {
+                    &[]
+                };
+                let mut vm = named_vm(calls, fields);
+                let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+                let id = entity(calls, &vm, value);
+                vm.project_entities(calls.services, calls.context).unwrap();
+                let slot = id.slot as usize;
+                let expected = present.then_some(NameId(0));
+                assert_eq!(
+                    calls.services.server.entities.columns.classname[slot],
+                    expected
+                );
+                assert_eq!(
+                    calls.services.server.entities.columns.target[slot],
+                    expected
+                );
+                assert_eq!(
+                    calls.services.server.entities.columns.targetname(slot),
+                    expected
+                );
+                if present {
+                    let empty = vm.insert_string(b"").unwrap() as u32;
+                    assert_ne!(empty, 0);
+                    for field in [b"classname".as_slice(), b"target", b"targetname"] {
+                        write(&mut vm, value, field, &[empty]);
+                    }
+                    vm.project_entities(calls.services, calls.context).unwrap();
+                    assert_eq!(
+                        calls.services.server.entities.columns.classname[slot],
+                        expected
+                    );
+                    assert_eq!(
+                        calls.services.server.entities.columns.target[slot],
+                        expected
+                    );
+                    assert_eq!(
+                        calls.services.server.entities.columns.targetname(slot),
+                        expected
+                    );
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn rejected_native_name_import_preserves_prior_common_names_and_skips_retired_rows() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = named_vm(calls, &[b"classname", b"target", b"targetname"]);
+        let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, value);
+        let name = vm.insert_string(b"live").unwrap() as u32;
+        for field in [b"classname".as_slice(), b"target", b"targetname"] {
+            write(&mut vm, value, field, &[name]);
+        }
+        vm.project_entities(calls.services, calls.context).unwrap();
+        let slot = id.slot as usize;
+        let before = (
+            calls.services.server.entities.columns.classname[slot],
+            calls.services.server.entities.columns.target[slot],
+            calls.services.server.entities.columns.targetname(slot),
+        );
+        for bad in [u32::MAX, vm.strings.len() as u32] {
+            write(&mut vm, value, b"targetname", &[bad]);
+            assert_eq!(
+                vm.project_entities(calls.services, calls.context),
+                Err(CallError::Memory)
+            );
+            assert_eq!(
+                (
+                    calls.services.server.entities.columns.classname[slot],
+                    calls.services.server.entities.columns.target[slot],
+                    calls.services.server.entities.columns.targetname(slot)
+                ),
+                before
+            );
+        }
+        let unterminated = vm.strings.len() - 1;
+        vm.strings.write(unterminated as u64, &[0xff]).unwrap();
+        write(&mut vm, value, b"targetname", &[unterminated as u32]);
+        assert_eq!(
+            vm.project_entities(calls.services, calls.context),
+            Err(CallError::Memory)
+        );
+        assert_eq!(
+            calls.services.server.entities.columns.targetname(slot),
+            before.2
+        );
+        write(&mut vm, value, b"targetname", &[name]);
+        let next = vm.insert_string(b"not-yet-published").unwrap() as u32;
+        let mut counter = 0;
+        loop {
+            let text = format!("history-{counter}");
+            if calls.services.names.intern(text.as_bytes()).is_err() {
+                break;
+            }
+            counter += 1;
+        }
+        write(&mut vm, value, b"targetname", &[next]);
+        assert_eq!(
+            vm.project_entities(calls.services, calls.context),
+            Err(CallError::Capacity)
+        );
+        assert_eq!(
+            (
+                calls.services.server.entities.columns.classname[slot],
+                calls.services.server.entities.columns.target[slot],
+                calls.services.server.entities.columns.targetname(slot)
+            ),
+            before
+        );
+        assert_eq!(
+            calls.services.names.get(before.0.unwrap()),
+            Some(b"live".as_slice())
+        );
+        // ED_Free need not inspect target strings; the dead ordinal cannot
+        // cause a later full-export scan to read malformed name offsets.
+        write(&mut vm, value, b"targetname", &[u32::MAX]);
+        vm.remove_entity(calls.services, calls.context, value)
+            .unwrap();
+        vm.project_entities(calls.services, calls.context).unwrap();
+    });
+}
+
+#[test]
+fn two_native_modules_share_exact_names_without_sharing_native_string_offsets() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut first = named_vm(calls, &[b"classname", b"target", b"targetname"]);
+        let a = first.spawn_entity(calls.services, calls.context).unwrap();
+        let a_id = entity(calls, &first, a);
+        let a_word = first.insert_string(b"shared\xff").unwrap() as u32;
+        write(&mut first, a, b"classname", &[a_word]);
+        first
+            .project_entities(calls.services, calls.context)
+            .unwrap();
+        let shared = calls.services.server.entities.columns.classname[a_id.slot as usize].unwrap();
+        let before = calls.services.names.get(shared).unwrap().to_vec();
+
+        calls.context.module = ModuleId(2);
+        let mut second = named_vm(calls, &[b"classname", b"target", b"targetname"]);
+        let b = second.spawn_entity(calls.services, calls.context).unwrap();
+        let b_id = entity(calls, &second, b);
+        second
+            .insert_string(b"padding changes the native offset")
+            .unwrap();
+        let b_word = second.insert_string(b"shared\xff").unwrap() as u32;
+        assert_ne!(a_word, b_word);
+        write(&mut second, b, b"classname", &[b_word]);
+        let different = second.insert_string(b"SHARED\xff").unwrap() as u32;
+        write(&mut second, b, b"target", &[different]);
+        second
+            .project_entities(calls.services, calls.context)
+            .unwrap();
+        assert_eq!(
+            calls.services.server.entities.columns.classname[b_id.slot as usize],
+            Some(shared)
+        );
+        let variant = calls.services.server.entities.columns.target[b_id.slot as usize].unwrap();
+        assert_ne!(variant, shared);
+        assert_eq!(
+            calls.services.names.folded(variant),
+            calls.services.names.folded(shared)
+        );
+        assert_eq!(calls.services.names.get(shared), Some(before.as_slice()));
+        assert_eq!(read(&first, a, b"classname", 1), [a_word]);
+        assert_eq!(read(&second, b, b"classname", 1), [b_word]);
+    });
 }
 
 fn find(
@@ -2295,11 +2640,18 @@ fn makestatic_copies_native_signon_values_then_frees_the_original_lifetime() {
             write(&mut vm, value, b"skin", &[(-1.9f32).to_bits()]);
             write(&mut vm, value, b"colormap", &[513.9f32.to_bits()]);
             write(&mut vm, value, b"effects", &[999.0f32.to_bits()]);
-            let consumer = calls
+            let client = calls
                 .services
                 .server
-                .events
-                .bind(qa_core::events::OutputTarget::Client(ClientId(0)))
+                .connect(
+                    qa_session::clients::Connection::Remote,
+                    calls.context.module,
+                    PlayerTail::default(),
+                    None,
+                )
+                .unwrap();
+            let consumer = calls.services.server.clients[client.0 as usize]
+                .output
                 .unwrap();
             parameters(&mut vm, &[&[value]]);
             calls.call(&mut vm, 69, 1).unwrap();
@@ -2321,10 +2673,12 @@ fn makestatic_copies_native_signon_values_then_frees_the_original_lifetime() {
                 .bind_sound_bank(calls.context.module, sounds, bank)
                 .unwrap();
             assert_eq!(
-                calls
-                    .services
-                    .storage
-                    .publish_initial_signon(calls.services.server, calls.context),
+                calls.services.storage.publish_signon(
+                    calls.services.server,
+                    calls.context,
+                    client,
+                    &mut SignonCursor::default(),
+                ),
                 Ok(1)
             );
             let mut batch = calls.services.server.events.batch(consumer).unwrap();
@@ -2406,11 +2760,23 @@ fn makestatic_rejects_protected_and_malformed_removal_without_retained_ghosts() 
             .storage
             .bind_sound_bank(calls.context.module, sounds, bank)
             .unwrap();
+        let client = calls
+            .services
+            .server
+            .connect(
+                qa_session::clients::Connection::Remote,
+                ModuleId::default(),
+                PlayerTail::default(),
+                None,
+            )
+            .unwrap();
         assert_eq!(
-            calls
-                .services
-                .storage
-                .publish_initial_signon(calls.services.server, calls.context),
+            calls.services.storage.publish_signon(
+                calls.services.server,
+                calls.context,
+                client,
+                &mut SignonCursor::default(),
+            ),
             Ok(0)
         );
     });

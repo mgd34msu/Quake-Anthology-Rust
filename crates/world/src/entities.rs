@@ -142,7 +142,8 @@ pub struct EntityColumns {
     /// the entity columns never narrow these to a legacy wire width.
     pub collision_contents: Box<[u64]>,
     pub collision_tags: Box<[CollisionTags]>,
-    pub classname: Box<[NameId]>,
+    pub classname: Box<[Option<NameId>]>,
+    pub target: Box<[Option<NameId>]>,
     targetname: Box<[Option<NameId>]>,
     attachment: Box<[Option<BodyAttachment>]>,
     pub flags: Box<[u32]>,
@@ -173,7 +174,8 @@ impl EntityColumns {
             point_contents_pose: vec![None; capacity].into_boxed_slice(),
             collision_contents: vec![0; capacity].into_boxed_slice(),
             collision_tags: vec![CollisionTags::default(); capacity].into_boxed_slice(),
-            classname: vec![NameId::default(); capacity].into_boxed_slice(),
+            classname: vec![None; capacity].into_boxed_slice(),
+            target: vec![None; capacity].into_boxed_slice(),
             targetname: vec![None; capacity].into_boxed_slice(),
             attachment: vec![None; capacity].into_boxed_slice(),
             flags: vec![0; capacity].into_boxed_slice(),
@@ -202,7 +204,8 @@ impl EntityColumns {
         self.point_contents_pose[slot] = None;
         self.collision_contents[slot] = 0;
         self.collision_tags[slot] = CollisionTags::default();
-        self.classname[slot] = NameId::default();
+        self.classname[slot] = None;
+        self.target[slot] = None;
         self.targetname[slot] = None;
         self.attachment[slot] = None;
         self.flags[slot] = 0;

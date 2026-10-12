@@ -264,6 +264,23 @@ impl Vm {
         self.projection
             .quakec_seed(entities, module, rules, max_clients)
     }
+    /// Cold reservation for retained common names across this module's map
+    /// lifetime. Reused temporary strings and suffixes can exhaust this fixed
+    /// history budget; publication then returns Capacity without growing it.
+    pub fn name_history_reservation(&self) -> Result<(usize, usize), Trap> {
+        let fields = (self.entities.len() / self.stride)
+            .checked_mul(3)
+            .ok_or(Trap::Memory)?;
+        let names = fields
+            .checked_add(self.string_limit.div_ceil(TEMP_STRING_BYTES))
+            .ok_or(Trap::Memory)?;
+        let bytes = self
+            .string_limit
+            .checked_mul(4)
+            .and_then(|bytes| fields.checked_mul(TEMP_STRING_BYTES)?.checked_add(bytes))
+            .ok_or(Trap::Memory)?;
+        Ok((names, bytes))
+    }
     /// Cache the native function-to-session callback conversion once at load.
     pub fn bind_thinks(&mut self, binding: qa_session::dispatch::ModuleBinding, entries: &[u32]) {
         self.projection

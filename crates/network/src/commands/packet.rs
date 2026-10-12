@@ -3,7 +3,7 @@
 use super::{Q1Move, Q2Cmd, Q2RrCmd, Q3Cmd, QwCmd, delta};
 use crate::{
     channel,
-    message::{Encoding, Error as MessageError, Reader, Writer},
+    message::{Encoding, Error as MessageError, Reader, StringPolicy, Writer},
 };
 pub use qa_core::primitives::CommandExecution;
 use qa_core::{checksum, primitives::Vec3};
@@ -18,6 +18,23 @@ pub enum Protocol {
     Quake3_68,
 }
 impl Protocol {
+    pub const fn native(rules: qa_core::primitives::RuleSetId) -> Self {
+        use qa_core::primitives::RuleSetId;
+        match rules {
+            RuleSetId::Quake => Self::NetQuake15,
+            RuleSetId::QuakeWorld => Self::QuakeWorld28,
+            RuleSetId::Quake2 => Self::Quake2_34,
+            RuleSetId::Quake2Rerelease => Self::Quake2Repro1038,
+            RuleSetId::Quake3 => Self::Quake3_68,
+        }
+    }
+    pub const fn string_policy(self) -> StringPolicy {
+        match self {
+            Self::Quake2Repro1038 => StringPolicy::UNSIGNED,
+            Self::Quake3_68 => StringPolicy::Q3,
+            _ => StringPolicy::LEGACY,
+        }
+    }
     /// Native protocol identity at the wire boundary, independent of the
     /// connection's selected movement, presentation and module capabilities.
     pub const fn rule_set(self) -> qa_core::primitives::RuleSetId {
@@ -290,7 +307,7 @@ pub fn xor(data: &mut [u8], start: usize, mut key: u8, text: &[u8]) {
     let mut at = 0;
     for (i, byte) in data.iter_mut().enumerate().skip(start) {
         let ch = if length == 0 { 0 } else { text[at] };
-        let ch = crate::channel::commands::read_string_byte(ch);
+        let ch = StringPolicy::Q3.byte(ch);
         key ^= ch.wrapping_shl((i & 1) as u32);
         *byte ^= key;
         if length != 0 {
@@ -464,32 +481,6 @@ pub fn read(
     Ok(movement)
 }
 
-/// Native Q1/QW/Q2 MSG_ReadString uses signed chars: 0xff and NUL terminate,
-/// while bytes such as 0x80 retain their original representation. Q2repro uses
-/// unsigned text and rejects strings of MAX_STRING_CHARS bytes or more.
-fn legacy_string<'a>(
-    reader: &mut Reader<'_>,
-    text: &'a mut [u8; 2048],
-    rerelease: bool,
-) -> Result<&'a [u8], Error> {
-    let maximum = if rerelease { 1024 } else { text.len() };
-    let mut length = 0;
-    while length + 1 < maximum {
-        let byte = reader.read_bits(8)? as u8;
-        if byte == 0 || (!rerelease && byte == 255) {
-            return Ok(&text[..length]);
-        }
-        text[length] = byte;
-        length += 1;
-    }
-    if rerelease {
-        if reader.read_bits(8)? != 0 {
-            return Err(Error::Count);
-        }
-    }
-    Ok(&text[..length])
-}
-
 /// Natively accepted prefix effects remain visible when a later record fails.
 /// A second QW/Q2 move stops the packet without retracting its first move.
 pub fn read_with_commands(
@@ -523,7 +514,6 @@ pub fn read_with_commands(
     let mut move_issued = false;
     let mut string_count = 0;
     let mut delta_request = None;
-    let mut text = [0; 2048];
     let mut q3_text = [0; crate::channel::commands::STRING_BYTES];
     loop {
         if protocol != Protocol::Quake3_68 && r.byte_position() == bytes.len() {
@@ -557,8 +547,20 @@ pub fn read_with_commands(
                 4,
             )
             | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 3) => {
-                let rerelease = protocol == Protocol::Quake2Repro1038;
-                let text = legacy_string(&mut r, &mut text, rerelease)?;
+                let policy = if protocol == Protocol::Quake2Repro1038 {
+                    protocol
+                        .string_policy()
+                        .limited(crate::message::COMMAND_STRING_BYTES - 1)
+                } else {
+                    protocol.string_policy()
+                };
+                let text = r.read_string(policy).map_err(|error| {
+                    if error.kind == crate::message::ErrorKind::Capacity {
+                        Error::Count
+                    } else {
+                        Error::Message(error)
+                    }
+                })?;
                 let record = if opcode == 3 {
                     Record::Userinfo(text)
                 } else {
@@ -582,7 +584,7 @@ pub fn read_with_commands(
             }
             (Protocol::Quake3_68, 4) => {
                 let sequence = r.read_bits(32)?;
-                let text = crate::channel::commands::read_string(&mut r, &mut q3_text)?;
+                let text = r.read_string_into(protocol.string_policy(), &mut q3_text)?;
                 if consume(Record::String {
                     sequence: Some(sequence),
                     text,

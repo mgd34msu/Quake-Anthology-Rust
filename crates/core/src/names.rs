@@ -79,11 +79,21 @@ impl NameTable {
             .try_fold(extra_bytes, |sum, name| sum.checked_add(name.len()))
             .filter(|&n| n <= u32::MAX as usize)
             .ok_or(NamesError::Capacity)?;
+        let mut table = Self::allocate(capacity, bytes)?;
+        for name in unique {
+            table.intern(name)?;
+        }
+        Ok(table)
+    }
+    fn allocate(capacity: usize, bytes: usize) -> Result<Self, NamesError> {
+        if capacity == 0 || capacity > u32::MAX as usize || bytes > u32::MAX as usize {
+            return Err(NamesError::Capacity);
+        }
         let buckets = capacity
             .checked_mul(2)
             .and_then(usize::checked_next_power_of_two)
             .ok_or(NamesError::Capacity)?;
-        let mut table = Self {
+        Ok(Self {
             bytes: vec![0; bytes].into_boxed_slice(),
             entries: vec![(0, 0); capacity].into_boxed_slice(),
             exact_entries: vec![NameId(0); capacity].into_boxed_slice(),
@@ -92,17 +102,54 @@ impl NameTable {
             buckets: vec![u32::MAX; buckets].into_boxed_slice(),
             len: 0,
             used: 0,
-        };
-        for name in unique {
-            table.intern(name)?;
+        })
+    }
+    /// Expand the load reservation without reassigning existing identities.
+    /// Call only before module callbacks; runtime intern never grows storage.
+    pub fn reserve(
+        &mut self,
+        additional_names: usize,
+        additional_bytes: usize,
+    ) -> Result<(), NamesError> {
+        if additional_names == 0 && additional_bytes == 0 {
+            return Ok(());
         }
-        Ok(table)
+        let capacity = self
+            .capacity()
+            .checked_add(additional_names)
+            .ok_or(NamesError::Capacity)?;
+        let bytes = self
+            .bytes
+            .len()
+            .checked_add(additional_bytes)
+            .ok_or(NamesError::Capacity)?;
+        let mut reserved = Self::allocate(capacity, bytes)?;
+        reserved.bytes[..self.used].copy_from_slice(&self.bytes[..self.used]);
+        reserved.entries[..self.len].copy_from_slice(&self.entries[..self.len]);
+        reserved.exact_entries[..self.len].copy_from_slice(&self.exact_entries[..self.len]);
+        reserved.folded_ids[..self.len].copy_from_slice(&self.folded_ids[..self.len]);
+        reserved.path_ids[..self.len].copy_from_slice(&self.path_ids[..self.len]);
+        reserved.len = self.len;
+        reserved.used = self.used;
+        for index in 0..reserved.len {
+            if reserved.folded_ids[index] == NameId(index as u32) {
+                let (offset, length) = reserved.entries[index];
+                let bytes = &reserved.bytes[offset as usize..(offset + length) as usize];
+                let (bucket, _) = reserved.folded_bucket(bytes.iter().copied().map(fold));
+                reserved.buckets[bucket] = index as u32;
+            }
+        }
+        *self = reserved;
+        Ok(())
     }
     pub fn len(&self) -> usize {
         self.len
     }
     pub fn capacity(&self) -> usize {
         self.entries.len()
+    }
+    pub fn byte_capacity(&self) -> usize {
+        self.bytes.len()
     }
     pub fn is_empty(&self) -> bool {
         self.len == 0

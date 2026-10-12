@@ -529,7 +529,7 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
             let mut vm = code.vm();
             vm.image.globals[80] = vm.insert_string(b"#foo.wav").unwrap() as u32;
             vm.image.globals[81] = vm.insert_string(b"*foo.wav").unwrap() as u32;
-            vm.image.globals[82] = vm.insert_string(b"aM\xff").unwrap() as u32;
+            vm.image.globals[82] = vm.insert_string(b"aM\x80").unwrap() as u32;
             vm.image.globals[83] = sound;
             vm.image.globals[84] = lightstyle;
             let mut runtime = Runtime::load(1, []).unwrap();
@@ -638,7 +638,7 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
                 );
             }
             if let Some(index) = resources.layout.style_index(1) {
-                assert_eq!(resources.configs.config(index).unwrap().text, b"aM\xff");
+                assert_eq!(resources.configs.config(index).unwrap().text, b"aM\x80");
             } else {
                 assert_eq!(protocol, Protocol::Quake3_68);
             }

@@ -1,7 +1,7 @@
 //! Native output payloads. Protocol limits and opcodes are connection data.
 use crate::{
     commands::packet::Protocol,
-    message::{Encoding, Error as MessageError, Writer},
+    message::{Encoding, Error as MessageError, ErrorKind, Reader, Writer},
 };
 use qa_core::primitives::{PrintKind, RuleSetId};
 
@@ -29,6 +29,18 @@ impl From<MessageError> for Error {
     fn from(error: MessageError) -> Self {
         Self::Message(error)
     }
+}
+fn string_error(error: MessageError) -> Error {
+    if error.kind == ErrorKind::Truncated {
+        Error::Truncated
+    } else {
+        Error::Message(error)
+    }
+}
+fn read_text<'a>(protocol: Protocol, reader: &mut Reader<'a>) -> Result<&'a [u8], Error> {
+    reader
+        .read_string(protocol.string_policy())
+        .map_err(string_error)
 }
 /// One borrowed service stream uses the same scalar readers as CLIENT ingress.
 /// Unknown opcodes stop the stream: their payload length cannot be inferred.
@@ -81,13 +93,10 @@ pub fn native(
     primary: bool,
     mut project: impl FnMut(Cue, usize) -> Result<Cue, Error>,
 ) -> Result<NativeEncoding, Error> {
-    let source = match source {
-        RuleSetId::Quake => Protocol::NetQuake15,
-        RuleSetId::QuakeWorld => Protocol::QuakeWorld28,
-        RuleSetId::Quake2 => Protocol::Quake2_34,
-        RuleSetId::Quake2Rerelease => Protocol::Quake2Repro1038,
-        _ => return Err(Error::Unsupported),
-    };
+    let source = Protocol::native(source);
+    if source == Protocol::Quake3_68 {
+        return Err(Error::Unsupported);
+    }
     if protocol == Protocol::Quake3_68 {
         return Err(Error::Unsupported);
     }
@@ -117,6 +126,13 @@ pub fn native(
             NativeService::Cue(cue) => project(cue, offset)
                 .and_then(|cue| project_cue(protocol, cue))
                 .and_then(|cue| write_cue(protocol, cue, target)),
+            NativeService::Print(_) if primary && source == protocol => {
+                let mut writer = Writer::new(target, Encoding::Bytes);
+                writer
+                    .write_data(&bytes[offset..offset + consumed])
+                    .map(|()| writer.size())
+                    .map_err(Error::from)
+            }
             NativeService::Print(value) => {
                 let mut level = value.level.unwrap_or(value.kind.default_level());
                 // Rerelease levels 4/5 request localized center display; classic
@@ -236,7 +252,8 @@ pub fn print(
         _ => (format.print, format.level),
     };
     let chat_prefix = format.chat_prefix && kind == PrintKind::Chat;
-    let n = qa_core::text::until_nul(text).len();
+    let policy = protocol.string_policy().reserved(usize::from(chat_prefix));
+    let n = policy.payload(text).len();
     let need = n + 2 + usize::from(has_level) + usize::from(chat_prefix);
     let capacity = output.len();
     let output = output.get_mut(..need).ok_or(Error::Message(MessageError {
@@ -251,8 +268,7 @@ pub fn print(
     if chat_prefix {
         writer.write_bits(1, 8)?;
     }
-    writer.write_data(&text[..n])?;
-    writer.write_bits(0, 8)?;
+    writer.write_string(policy, &text[..n])?;
     Ok(writer.size())
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,11 +332,15 @@ impl<'a> Iterator for Prints<'a> {
         } else {
             (None, rest)
         };
-        let Some(text) = qa_core::text::terminated(rest) else {
-            self.rest = &[];
-            return Some(Err(Error::Truncated));
+        let mut reader = Reader::new(rest, Encoding::Bytes);
+        let text = match read_text(self.protocol, &mut reader) {
+            Ok(text) => text,
+            Err(error) => {
+                self.rest = &[];
+                return Some(Err(error));
+            }
         };
-        self.rest = &rest[text.len() + 1..];
+        self.rest = &rest[reader.byte_position()..];
         let mut text = text;
         if format.chat_prefix && kind == PrintKind::Console && text.first() == Some(&1) {
             kind = PrintKind::Chat;

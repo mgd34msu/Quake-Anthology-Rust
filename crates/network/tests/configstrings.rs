@@ -43,7 +43,7 @@ fn connected_q2_channels_deliver_config_rows_and_continue_the_service_stream() {
         let mut client = Channel::load(protocol.channel(), Endpoint::Client, 8192, 4).unwrap();
         let mut commands = Commands::load(protocol);
         let mut payload = [0; 64];
-        let mut count = outputs::configstring(protocol, 62, b"model\xff", &mut payload).unwrap();
+        let mut count = outputs::configstring(protocol, 62, b"model\x80", &mut payload).unwrap();
         count += outputs::configstring(protocol, 63, b"", &mut payload[count..]).unwrap();
         count += outputs::print(
             protocol,
@@ -83,7 +83,7 @@ fn connected_q2_channels_deliver_config_rows_and_continue_the_service_stream() {
                 },
             )
             .unwrap();
-        assert_eq!(rows, [(62, b"model\xff".to_vec()), (63, vec![])]);
+        assert_eq!(rows, [(62, b"model\x80".to_vec()), (63, vec![])]);
         assert_eq!(prints, [b"next".to_vec()]);
     }
 }
@@ -96,12 +96,23 @@ fn q2_live_configstrings_keep_u16_index_raw_bytes_and_message_boundaries() {
             let n = outputs::configstring(protocol, index, b"models/\x80\xff", &mut bytes).unwrap();
             assert_eq!(bytes[0], 13);
             assert_eq!(&bytes[1..3], &(index as u16).to_le_bytes());
-            assert_eq!(&bytes[3..n], b"models/\x80\xff\0");
+            assert_eq!(
+                &bytes[3..n],
+                if protocol == Protocol::Quake2_34 {
+                    &b"models/\x80\0"[..]
+                } else {
+                    &b"models/\x80\xff\0"[..]
+                }
+            );
             assert_eq!(bytes[n], 0xcc);
             let (config, used) = outputs::read_configstring(protocol, &bytes[..n + 1]).unwrap();
             assert_eq!(
                 (config.index, config.text, used),
-                (index, &b"models/\x80\xff"[..], n)
+                if protocol == Protocol::Quake2_34 {
+                    (index, &b"models/\x80"[..], n)
+                } else {
+                    (index, &b"models/\x80\xff"[..], n)
+                }
             );
             assert_eq!(
                 outputs::read_configstring(protocol, &bytes[..n - 1]),
@@ -124,6 +135,97 @@ fn q2_live_configstrings_keep_u16_index_raw_bytes_and_message_boundaries() {
             Err(Error::Unsupported)
         );
     }
+}
+
+#[test]
+fn generated_config_rows_map_signed_terminators_and_leave_following_services_readable() {
+    for protocol in [
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+    ] {
+        let index = protocol.resource_layout().resources[0].first + 1;
+        let mut bytes = [0xcc; 128];
+        let mut n = outputs::configstring(protocol, index, b"a\x80\xfftail", &mut bytes).unwrap();
+        let used = n;
+        n += outputs::print(
+            protocol,
+            qa_core::primitives::PrintKind::Console,
+            2,
+            b"next",
+            &mut bytes[n..],
+        )
+        .unwrap();
+        let mut rows = Vec::new();
+        assert_eq!(
+            outputs::read_configstrings(protocol, &bytes[..n], |row| {
+                rows.push((row.index, row.text.to_vec()));
+            })
+            .unwrap(),
+            used
+        );
+        assert_eq!(
+            rows,
+            [(
+                index,
+                if protocol == Protocol::Quake2Repro1038 {
+                    b"a\x80\xfftail".to_vec()
+                } else {
+                    b"a\x80".to_vec()
+                }
+            )]
+        );
+        assert_eq!(
+            outputs::Prints::new(protocol, &bytes[used..n])
+                .next()
+                .unwrap()
+                .unwrap()
+                .text,
+            b"next"
+        );
+        assert_eq!(bytes[n], 0xcc);
+    }
+}
+
+#[test]
+fn config_rows_use_native_signed_and_unsigned_string_boundaries_in_service_streams() {
+    for (protocol, bytes, expected) in [
+        (
+            Protocol::Quake2_34,
+            &b"\r\x20\0a\x80\xff\r\x21\0b\0"[..],
+            &b"a\x80"[..],
+        ),
+        (
+            Protocol::Quake2Repro1038,
+            &b"\r\x20\0a\x80\xff\0\r\x21\0b\0"[..],
+            &b"a\x80\xff"[..],
+        ),
+    ] {
+        let (first, consumed) = outputs::read_configstring(protocol, bytes).unwrap();
+        assert_eq!((first.index, first.text), (32, expected));
+        assert_eq!(first.text.as_ptr(), bytes[3..].as_ptr());
+        let (second, used) = outputs::read_configstring(protocol, &bytes[consumed..]).unwrap();
+        assert_eq!((second.index, second.text), (33, &b"b"[..]));
+        assert_eq!(consumed + used, bytes.len());
+    }
+    let bytes = b"\x2e\0a\x80\xffb\0\0\0\x01";
+    let mut rows = Vec::new();
+    let used =
+        outputs::read_configstrings(Protocol::QuakeWorld28, bytes, |row| rows.push(row)).unwrap();
+    assert_eq!(used, bytes.len() - 1);
+    assert_eq!(
+        rows,
+        [
+            outputs::ConfigString {
+                index: 257,
+                text: b"a\x80"
+            },
+            outputs::ConfigString {
+                index: 258,
+                text: b"b"
+            }
+        ]
+    );
 }
 
 #[test]

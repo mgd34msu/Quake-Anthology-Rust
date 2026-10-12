@@ -6,6 +6,22 @@ use qa_network::commands::{
 };
 
 #[test]
+fn native_protocol_boundary_is_the_exact_inverse_of_its_source_rule_set() {
+    for rules in qa_core::primitives::RuleSetId::ALL {
+        assert_eq!(Protocol::native(rules).rule_set(), rules);
+    }
+    for protocol in [
+        Protocol::NetQuake15,
+        Protocol::QuakeWorld28,
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        assert_eq!(Protocol::native(protocol.rule_set()), protocol);
+    }
+}
+
+#[test]
 fn q3_connection_preserves_every_projected_weapon_byte_without_casting_common_ids() {
     use qa_core::{
         loopback::Endpoint,

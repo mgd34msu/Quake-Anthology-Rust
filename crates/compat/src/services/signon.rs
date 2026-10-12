@@ -1,6 +1,6 @@
 use super::*;
 use qa_core::{
-    events::EventRing,
+    events::{EventRing, OutputConsumerId},
     primitives::{
         NativeEmission, NativeTarget, ResourceNamespace, SoundAction, SoundEmitter, SoundId,
     },
@@ -21,20 +21,29 @@ pub struct AmbientSound {
 /// One cursor belongs to one module lifetime and one signon recipient.
 #[derive(Default)]
 pub struct SignonCursor {
-    owner: Option<(ModuleId, EntityId, Option<ClientId>)>,
+    owner: Option<(ModuleId, EntityId, Option<(ClientId, EntityId)>)>,
     next: usize,
+    end: Option<usize>,
 }
 impl SignonCursor {
     fn bind(
         &mut self,
         module: ModuleId,
         lifetime: EntityId,
-        target: Option<ClientId>,
+        target: Option<(ClientId, EntityId)>,
+        end: Option<usize>,
     ) -> Result<(), CallError> {
         let owner = (module, lifetime, target);
-        if self.owner.is_some_and(|old| old != owner) {
-            return Err(CallError::Entity);
+        if let Some(old) = self.owner {
+            if old.0 != module || old.2.map(|client| client.0) != target.map(|client| client.0) {
+                return Err(CallError::Entity);
+            }
         }
+        if self.owner != Some(owner) {
+            self.next = 0;
+            self.end = None;
+        }
+        self.end = self.end.or(end);
         self.owner = Some(owner);
         Ok(())
     }
@@ -66,8 +75,6 @@ pub(super) struct SignonRegistry {
     rows: Box<[Registration]>,
     length: usize,
     bytes: usize,
-    initial_end: Option<usize>,
-    initial: SignonCursor,
 }
 impl SignonRegistry {
     pub(super) fn load(capacity: usize) -> Self {
@@ -75,18 +82,11 @@ impl SignonRegistry {
             rows: vec![Registration::default(); capacity].into_boxed_slice(),
             length: 0,
             bytes: 0,
-            initial_end: None,
-            initial: SignonCursor::default(),
         }
     }
     pub(super) fn reset(&mut self) {
         self.length = 0;
         self.bytes = 0;
-        self.initial_end = None;
-        self.initial = SignonCursor::default();
-    }
-    pub(super) fn freeze_initial(&mut self) {
-        self.initial_end.get_or_insert(self.length);
     }
 }
 
@@ -158,45 +158,9 @@ impl ServiceStorage {
         Ok(slot as u32)
     }
 
-    /// Initial map publication ends at the first PCM attachment. Later native
-    /// registrations remain signon data for future clients, not broadcasts.
-    pub fn publish_initial_signon(
-        &mut self,
-        server: &mut Server,
-        context: CallContext,
-    ) -> Result<usize, CallError> {
-        let bank = self.sound_bank.as_deref();
-        let row = self
-            .ranges
-            .iter_mut()
-            .find(|row| row.module == context.module)
-            .ok_or(CallError::ConfigString)?;
-        let Some(end) = row.signon.initial_end else {
-            return Ok(0);
-        };
-        let (Some(bank), Some(bindings)) = (bank, row.sound_bindings.as_ref()) else {
-            return Ok(0);
-        };
-        let lifetime = row.lifetime.ok_or(CallError::Entity)?;
-        if server.entities.resolve(lifetime).is_none() {
-            return Err(CallError::Entity);
-        }
-        publish(
-            &mut server.events,
-            &mut row.signon.rows[..end],
-            &mut row.signon.initial,
-            context,
-            row.native_rules,
-            lifetime,
-            None,
-            SoundAction::StartLoop,
-            bank,
-            bindings,
-        )
-    }
-
-    /// Explicit late-client signon uses its own cursor and the current retained
-    /// registration count. A missing PCM bank never consumes registrations.
+    /// Each connected recipient snapshots retained registrations on its first
+    /// eligible admission. Static models do not require a sound bank. Later
+    /// registrations belong to future connections.
     pub fn publish_signon(
         &mut self,
         server: &mut Server,
@@ -244,32 +208,59 @@ impl ServiceStorage {
             .iter_mut()
             .find(|row| row.module == context.module)
             .ok_or(CallError::ConfigString)?;
-        let (Some(bank), Some(bindings)) = (bank, row.sound_bindings.as_ref()) else {
-            return Ok(0);
-        };
+        let sounds = bank.zip(row.sound_bindings.as_ref());
         let lifetime = row.lifetime.ok_or(CallError::Entity)?;
         if action == SoundAction::StartLoop && server.entities.resolve(lifetime).is_none() {
             return Err(CallError::Entity);
         }
-        let end = row.signon.length;
+        let recipient = client
+            .map(|id| {
+                let client = server.clients.get(id.0 as usize).ok_or(CallError::Entity)?;
+                if action == SoundAction::StartLoop
+                    && (client.connection.is_none()
+                        || client.connection == Some(qa_session::clients::Connection::Bot)
+                        || server.entities.resolve(client.entity).is_none())
+                {
+                    return Err(CallError::Entity);
+                }
+                Ok((id, client.entity))
+            })
+            .transpose()?;
+        let consumer = if action == SoundAction::StartLoop {
+            let id = client.ok_or(CallError::Entity)?;
+            let output = server.clients[id.0 as usize]
+                .output
+                .ok_or(CallError::Entity)?;
+            if server.events.counters(output).is_none() {
+                return Err(CallError::Entity);
+            }
+            if server.events.needs_resync(output) {
+                return Ok(0);
+            }
+            Some(output)
+        } else {
+            None
+        };
+        let end = (sounds.is_some() || action == SoundAction::Stop).then_some(row.signon.length);
+        cursor.bind(context.module, lifetime, recipient, end)?;
         publish(
             &mut server.events,
-            &mut row.signon.rows[..end],
+            &mut row.signon.rows[..row.signon.length],
             cursor,
             context,
             row.native_rules,
             lifetime,
             client,
             action,
-            bank,
-            bindings,
+            sounds,
+            consumer,
         )
     }
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "One publisher serves initial, late and stop signon paths without copying the admission loop."
+    reason = "One publisher serves recipient and stop signon paths without copying the admission loop."
 )]
 fn publish(
     events: &mut EventRing,
@@ -280,24 +271,34 @@ fn publish(
     lifetime: EntityId,
     client: Option<ClientId>,
     action: SoundAction,
-    bank: &qa_audio::Bank,
-    bindings: &qa_audio::SoundBindings,
+    sounds: Option<(&qa_audio::Bank, &qa_audio::SoundBindings)>,
+    consumer: Option<OutputConsumerId>,
 ) -> Result<usize, CallError> {
-    cursor.bind(context.module, lifetime, client)?;
     let mut published = 0;
+    let end = rows.len();
     while let Some(row) = rows.get_mut(cursor.next) {
+        if cursor.end.is_some_and(|end| cursor.next >= end) {
+            break;
+        }
+        if consumer.is_some_and(|consumer| events.needs_resync(consumer)) {
+            break;
+        }
         let (event, position, sound) = match row.native {
             SignonRecord::StaticEntity(entity) => {
                 if action == SoundAction::Stop {
                     cursor.next += 1;
                     continue;
                 }
+                cursor.end.get_or_insert(end);
                 (FrameEvent::StaticEntity(entity), entity.position, None)
             }
             SignonRecord::Sound(native) => {
                 let sound = if action == SoundAction::Stop {
                     row.published_sound
                 } else {
+                    let Some((bank, bindings)) = sounds else {
+                        break;
+                    };
                     bindings
                         .sound(native.source_ordinal)
                         .filter(|sound| bank.has_loop_marker(*sound))
@@ -341,7 +342,10 @@ fn publish(
             }),
             check_portals: false,
         };
-        if events.push_delivered(delivery, event).is_err() {
+        let Ok(sequence) = events.push_delivered(delivery, event) else {
+            break;
+        };
+        if consumer.is_some_and(|consumer| !events.retained_for(consumer, sequence)) {
             break;
         }
         if action == SoundAction::StartLoop {

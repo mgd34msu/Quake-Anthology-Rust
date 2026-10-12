@@ -1,6 +1,6 @@
 //! Native configstring payloads and Q3's existing reliable-command syntax.
-use super::{Error, MessageError, Protocol};
-use crate::message::{Encoding, ErrorKind, Writer};
+use super::{Error, MessageError, Protocol, read_text, string_error};
+use crate::message::{Encoding, ErrorKind, Reader, Writer};
 use qa_core::{configstrings::ConfigLayout, text::FixedText};
 use std::fmt::Write;
 
@@ -41,6 +41,7 @@ pub fn configstring(
     if text.contains(&0) {
         return Err(Error::Opcode);
     }
+    let text = protocol.string_policy().payload(text);
     let need = text
         .len()
         .checked_add(4)
@@ -56,8 +57,7 @@ pub fn configstring(
     let mut writer = Writer::new(bytes, Encoding::Bytes);
     writer.write_bits(13, 8)?;
     writer.write_bits(u32::from(index), 16)?;
-    writer.write_data(text)?;
-    writer.write_bits(0, 8)?;
+    writer.write_string(protocol.string_policy(), text)?;
     Ok(writer.size())
 }
 
@@ -73,7 +73,8 @@ pub fn read_configstring(
         let index = ConfigLayout::QUAKEWORLD
             .style_index(usize::from(header[1]))
             .ok_or(Error::Opcode)? as u32;
-        let text = qa_core::text::terminated(&bytes[2..]).ok_or(Error::Truncated)?;
+        let mut reader = Reader::new(&bytes[2..], Encoding::Bytes);
+        let text = read_text(protocol, &mut reader)?;
         if text.len()
             > protocol
                 .config_capacity(index as usize)
@@ -81,7 +82,7 @@ pub fn read_configstring(
         {
             return Err(Error::Unsupported);
         }
-        return Ok((ConfigString { index, text }, text.len() + 3));
+        return Ok((ConfigString { index, text }, reader.byte_position() + 2));
     }
     if !matches!(protocol, Protocol::Quake2_34 | Protocol::Quake2Repro1038) {
         return Err(Error::Unsupported);
@@ -91,8 +92,9 @@ pub fn read_configstring(
         return Err(Error::Opcode);
     }
     let index = u16::from_le_bytes([header[1], header[2]]).into();
-    let text = qa_core::text::terminated(&bytes[3..]).ok_or(Error::Truncated)?;
-    Ok((ConfigString { index, text }, text.len() + 4))
+    let mut reader = Reader::new(&bytes[3..], Encoding::Bytes);
+    let text = read_text(protocol, &mut reader)?;
+    Ok((ConfigString { index, text }, reader.byte_position() + 3))
 }
 
 /// QW retail list chunks contain several consecutive resource rows. Borrow
@@ -110,15 +112,14 @@ pub fn read_configstrings<'a>(
     let header = bytes.get(..2).ok_or(Error::Truncated)?;
     let range = ConfigLayout::QUAKEWORLD.resources[usize::from(header[0] == 46)];
     let mut ordinal = u32::from(header[1]);
-    let mut at = 2;
+    let mut reader = Reader::new(&bytes[2..], Encoding::Bytes);
     loop {
-        let text = qa_core::text::terminated(&bytes[at..]).ok_or(Error::Truncated)?;
-        at += text.len() + 1;
+        let text = read_text(protocol, &mut reader)?;
         if text.is_empty() {
             // Original CL_Parse{Model,Sound}list reads the continuation byte
             // after the empty terminator, even on the final zero continuation.
-            bytes.get(at).ok_or(Error::Truncated)?;
-            return Ok(at + 1);
+            reader.read_bits(8).map_err(string_error)?;
+            return Ok(reader.byte_position() + 2);
         }
         ordinal += 1;
         let index = range.get(ordinal as usize).ok_or(Error::Unsupported)? as u32;
@@ -144,6 +145,7 @@ fn qw_configstring(index: u32, text: &[u8], output: &mut [u8]) -> Result<usize, 
     {
         return Err(Error::Unsupported);
     }
+    let text = Protocol::QuakeWorld28.string_policy().payload(text);
     let (opcode, ordinal, list) = if layout.lights.contains(index) {
         (12, index - layout.lights.first as usize, false)
     } else {
@@ -169,8 +171,7 @@ fn qw_configstring(index: u32, text: &[u8], output: &mut [u8]) -> Result<usize, 
     let mut writer = Writer::new(bytes, Encoding::Bytes);
     writer.write_bits(opcode, 8)?;
     writer.write_bits(ordinal as u32, 8)?;
-    writer.write_data(text)?;
-    writer.write_bits(0, 8)?;
+    writer.write_string(Protocol::QuakeWorld28.string_policy(), text)?;
     if list {
         writer.write_bits(0, 8)?; // empty resource terminates this chunk
         writer.write_bits(0, 8)?; // no further native list chunk requested

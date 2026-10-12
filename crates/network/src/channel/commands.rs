@@ -2,7 +2,7 @@
 use super::{Channel, TransmitError};
 use crate::{
     commands::packet,
-    message::{Encoding, Reader, Writer},
+    message::{Encoding, Reader, StringPolicy, Writer},
 };
 use qa_core::{events::NativeReceipt, loopback::Endpoint};
 
@@ -11,7 +11,7 @@ const SLOTS: usize = 64;
 const fn slot(sequence: u32) -> usize {
     sequence as usize & (SLOTS - 1)
 }
-pub(crate) const STRING_BYTES: usize = 1024;
+pub(crate) use crate::message::COMMAND_STRING_BYTES as STRING_BYTES;
 
 struct Slot {
     text: [u8; STRING_BYTES],
@@ -175,23 +175,6 @@ pub fn write_string(writer: &mut Writer<'_>, text: &[u8]) -> Result<(), packet::
     writer.write_bits(0, 8)?;
     Ok(())
 }
-pub fn read_string<'a>(
-    reader: &mut Reader<'_>,
-    text: &'a mut [u8; STRING_BYTES],
-) -> Result<&'a [u8], packet::Error> {
-    let mut n = 0;
-    while n < STRING_BYTES - 1 {
-        let b = reader.read_bits(8)? as u8;
-        if b == 0 {
-            break;
-        }
-        text[n] = read_string_byte(b);
-        n += 1;
-    }
-    text[n] = 0;
-    Ok(&text[..n])
-}
-
 impl Channel {
     pub fn command_state(&self) -> Option<CommandState> {
         let c = self.commands.as_ref()?;
@@ -348,7 +331,7 @@ impl Channel {
                 }
                 5 => {
                     let seq = reader.read_bits(32)?;
-                    let text = read_string(&mut reader, &mut text)?;
+                    let text = reader.read_string_into(StringPolicy::Q3, &mut text)?;
                     if c.incoming.receive(seq, text, true)? {
                         consume(seq, text);
                     }
@@ -370,13 +353,5 @@ impl Channel {
                 _ => return Err(packet::Error::Opcode),
             }
         }
-    }
-}
-
-pub(crate) fn read_string_byte(byte: u8) -> u8 {
-    if byte > 127 || byte == b'%' {
-        b'.'
-    } else {
-        byte
     }
 }

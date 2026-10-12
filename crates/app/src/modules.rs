@@ -6,10 +6,10 @@ use crate::{
 use qa_compat::{
     abi::{CallTable, QUAKEC, QuakeCCalls, QvmCalls, UnknownCalls},
     quakec, qvm,
-    services::{CallContext, ServiceStorage},
+    services::{CallContext, ServiceStorage, SignonCursor},
 };
 use qa_core::primitives::{
-    CallbackCall, CallbackId, ClientId, EntityId, ModuleId, RuleSetId, ThinkTime,
+    CallbackCall, CallbackId, ClientId, EntityId, IndexSpan, ModuleId, RuleSetId, ThinkTime,
 };
 use qa_session::{
     dispatch::{
@@ -215,6 +215,7 @@ struct Module {
     clock: qa_gameplay::rules::FrameClock,
     physics: Option<QwPhysics>,
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
+    signon: IndexSpan,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -229,6 +230,7 @@ pub struct Modules {
     functions: Arc<FunctionTable<FrameHost>>,
     rows: Box<[Option<Module>]>,
     storage: ServiceStorage,
+    signon: Box<[SignonCursor]>,
 }
 impl Modules {
     fn row(&self, id: ModuleId) -> Option<&Module> {
@@ -275,6 +277,33 @@ impl FrameHost {
             })
             .collect();
         let mut host = Self::load(console, runtime, world_rate, providers)?;
+        let (names, bytes) =
+            requests
+                .iter()
+                .try_fold((0usize, 0usize), |(names, bytes), request| {
+                    let Program::QuakeC(qc) = &request.program else {
+                        return Ok((names, bytes));
+                    };
+                    let (additional_names, additional_bytes) = qc
+                        .vm
+                        .name_history_reservation()
+                        .map_err(|error| format!("QuakeC name reservation: {error:?}"))?;
+                    Ok::<_, String>((
+                        names
+                            .checked_add(additional_names)
+                            .ok_or("QuakeC name capacity")?,
+                        bytes
+                            .checked_add(additional_bytes)
+                            .ok_or("QuakeC name byte capacity")?,
+                    ))
+                })?;
+        if names != 0 || bytes != 0 {
+            host.runtime
+                .catalog
+                .names
+                .reserve(names, bytes)
+                .map_err(|error| format!("QuakeC name reservation: {error}"))?;
+        }
         let mut functions = FunctionTable::load(requests.iter().map(|m| {
             (
                 m.context.module,
@@ -296,6 +325,15 @@ impl FrameHost {
             .unwrap_or(0);
         let mut rows: Box<[Option<Module>]> =
             std::iter::repeat_with(|| None).take(capacity).collect();
+        let client_capacity = host.runtime.server.clients.len();
+        let signon_capacity = requests
+            .len()
+            .checked_mul(client_capacity)
+            .filter(|&capacity| capacity <= u32::MAX as usize)
+            .ok_or("module signon capacity")?;
+        let signon = std::iter::repeat_with(SignonCursor::default)
+            .take(signon_capacity)
+            .collect();
         let services: Vec<_> = requests
             .iter()
             .map(|request| {
@@ -309,7 +347,7 @@ impl FrameHost {
             .collect();
         let mut storage = ServiceStorage::load_modules(&services, &host.console.cvars)
             .map_err(|e| format!("module services: {e:?}"))?;
-        for mut request in requests {
+        for (ordinal, mut request) in requests.into_iter().enumerate() {
             let index = usize::from(request.context.module.0);
             let entity = host
                 .runtime
@@ -486,12 +524,17 @@ impl FrameHost {
                 clock,
                 physics,
                 duration,
+                signon: IndexSpan {
+                    first: (ordinal * client_capacity) as u32,
+                    count: client_capacity as u32,
+                },
             });
         }
         host.modules = Some(Modules {
             functions: Arc::new(functions),
             rows,
             storage,
+            signon,
         });
         host.configure_output_resources();
         Ok(host)
@@ -569,13 +612,30 @@ impl FrameHost {
             }
             let mut context = row.request.context;
             context.clock = row.time(self.time);
-            if modules
-                .storage
-                .publish_initial_signon(&mut self.runtime.server, context)
-                .is_err()
-            {
-                row.counts.rejected += 1;
-                row.state = State::Failed;
+            for (index, cursor) in modules.signon[row.signon.range()].iter_mut().enumerate() {
+                let id = ClientId(index as u32);
+                let client = &self.runtime.server.clients[index];
+                let Some(output) = client.output else {
+                    continue;
+                };
+                if client.connection.is_none()
+                    || client.connection == Some(qa_session::clients::Connection::Bot)
+                    || self.runtime.server.events.needs_resync(output)
+                    || self
+                        .runtime
+                        .network
+                        .get(id, qa_core::loopback::Endpoint::Server)
+                        .is_none_or(|connection| connection.output != Some(output))
+                {
+                    continue;
+                }
+                if modules
+                    .storage
+                    .publish_signon(&mut self.runtime.server, context, id, cursor)
+                    .is_err()
+                {
+                    row.counts.rejected += 1;
+                }
             }
         }
     }

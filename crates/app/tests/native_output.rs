@@ -209,7 +209,7 @@ fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack(
     for (peer, port) in peers.iter_mut().zip([2000, 2001]) {
         peer.set_qport(port);
     }
-    let source_bytes = [10, 2, b'p', 0x80, 0xff, 0, 1, 5, 0, 128, 4, b'l', 0xff, 0];
+    let source_bytes = [10, 2, b'p', 0x80, 0x81, 0, 1, 5, 0, 128, 4, b'l', 0x81, 0];
     publish(&mut runtime, true, NativeTarget::All, &source_bytes);
     let mut source = Source {
         now: EventTime(10),
@@ -231,7 +231,7 @@ fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack(
             let qa_network::outputs::NativeService::Print(print) = print else {
                 panic!("print");
             };
-            assert_eq!(print.text, b"p\x80\xff");
+            assert_eq!(print.text, b"p\x80\x81");
             remaining = &remaining[n..];
             let (cue, n) =
                 qa_network::outputs::read_native_service(Protocol::Quake2Repro1038, remaining)
@@ -246,7 +246,7 @@ fn recognized_q2_records_reach_both_native_protocols_and_wait_for_each_real_ack(
                     .unwrap();
             assert!(
                 matches!(layout, qa_network::outputs::NativeService::Print(print)
-                if print.kind == PrintKind::Layout && print.text == b"l\xff")
+                if print.kind == PrintKind::Layout && print.text == b"l\x81")
             );
             assert_eq!(n, remaining.len());
         }
@@ -286,7 +286,7 @@ fn a_classic_peer_drops_only_unrepresentable_rerelease_cues_and_receives_later_p
     let mut runtime = Runtime::load(1, []).unwrap();
     remote(&mut runtime, Protocol::Quake2_34, 2000);
     let bytes = [
-        9, 32, 1, 4, 32, 7, 0, 2, 3, 10, 5, b'c', 0x80, 0, 4, b'l', 0xff, 0,
+        9, 32, 1, 4, 32, 7, 0, 2, 3, 10, 5, b'c', 0x80, 0, 4, b'l', 0x81, 0,
     ];
     publish_from(
         &mut runtime,
@@ -306,7 +306,7 @@ fn a_classic_peer_drops_only_unrepresentable_rerelease_cues_and_receives_later_p
         Channel::load(Protocol::Quake2_34.channel(), Endpoint::Client, 8192, 16).unwrap();
     assert_eq!(
         receive(&mut peer, &source.packets[0].1),
-        b"\x0fc\x80\0\x04l\xff\0"
+        b"\x0fc\x80\0\x04l\x81\0"
     );
     assert!(runtime.server.events.is_empty());
 }
@@ -802,7 +802,7 @@ fn reliable_native_pages_retire_only_on_the_selected_peers_channel_ack() {
     let _foreign = remote(&mut runtime, Protocol::Quake3_68, 2001);
     let mut source = Source::default();
     source.now = EventTime(10);
-    publish(&mut runtime, true, NativeTarget::All, b"\x0fraw\x80\xff\0");
+    publish(&mut runtime, true, NativeTarget::All, b"\x0fraw\x80\x81\0");
     let counts = dispatch(&mut runtime, &mut source);
     assert_eq!(counts.native_unsupported, 1);
     assert_eq!(runtime.server.events.len(), 1);
@@ -812,7 +812,7 @@ fn reliable_native_pages_retire_only_on_the_selected_peers_channel_ack() {
     peer.set_qport(2000);
     assert_eq!(
         receive(&mut peer, &source.packets[0].1),
-        b"\x0fraw\x80\xff\0"
+        b"\x0fraw\x80\x81\0"
     );
     let ack = peer
         .prepare(None, EventTime(40))

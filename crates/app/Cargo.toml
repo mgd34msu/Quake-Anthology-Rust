@@ -34,3 +34,8 @@ path = "src/main.rs"
 name = "native_modules"
 path = "tests/native_modules.rs"
 harness = false
+
+[[test]]
+name = "module_signon"
+path = "tests/module_signon.rs"
+harness = false

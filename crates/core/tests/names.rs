@@ -183,3 +183,59 @@ fn path_registration_does_not_reuse_or_merge_a_raw_case_variant() {
     assert_eq!(names.find_path("WALL"), Some(path));
     assert_eq!(names.find_folded(b"wall"), Some(raw));
 }
+
+#[test]
+fn cold_reservation_preserves_exact_folded_and_path_identities() {
+    let mut names = NameTable::load_reserved([b"middle".as_slice(), b"WALL"], 2, 32).unwrap();
+    let middle = names.find(b"middle").unwrap();
+    let wall = names.find(b"WALL").unwrap();
+    let upper = names.intern(b"MIDDLE").unwrap();
+    let path = names.intern_path("Wall").unwrap();
+    let identities = (0..names.len())
+        .map(|index| {
+            let id = NameId(index as u32);
+            (id, names.get(id).unwrap().to_vec(), names.folded(id))
+        })
+        .collect::<Vec<_>>();
+    let capacity = names.capacity();
+    let bytes = names.byte_capacity();
+    names.reserve(4, 64).unwrap();
+    assert_eq!(names.capacity(), capacity + 4);
+    assert_eq!(names.byte_capacity(), bytes + 64);
+    for (id, text, folded) in identities {
+        assert_eq!(names.get(id), Some(text.as_slice()));
+        assert_eq!(names.find(&text), Some(id));
+        assert_eq!(names.folded(id), folded);
+    }
+    assert_eq!(names.find_folded(b"mIdDlE"), Some(middle));
+    assert_eq!(names.folded(upper), Some(middle));
+    assert_eq!(names.find_folded(b"wall"), Some(wall));
+    assert_eq!(names.find_path("WALL"), Some(path));
+    let first = names.intern(b"a").unwrap();
+    assert_eq!(names.find(b"a"), Some(first));
+    assert_eq!(names.find(b"middle"), Some(middle));
+    assert_eq!(names.find(b"MIDDLE"), Some(upper));
+    assert_eq!(names.find_path("Wall"), Some(path));
+    names.reserve(0, 0).unwrap();
+    assert_eq!(names.find_folded(b"MIDDLE"), Some(middle));
+}
+
+#[test]
+fn rejected_cold_reservation_and_runtime_registration_leave_prior_names_intact() {
+    let mut names = NameTable::load([b"live\xff".as_slice()]).unwrap();
+    let live = names.find(b"live\xff").unwrap();
+    let before = (names.len(), names.capacity(), names.byte_capacity());
+    assert_eq!(names.reserve(usize::MAX, 1), Err(NamesError::Capacity));
+    assert_eq!(names.reserve(1, usize::MAX), Err(NamesError::Capacity));
+    assert_eq!(
+        (names.len(), names.capacity(), names.byte_capacity()),
+        before
+    );
+    assert_eq!(names.get(live), Some(b"live\xff".as_slice()));
+    assert_eq!(names.find_folded(b"LIVE\xff"), Some(live));
+    names.reserve(1, 3).unwrap();
+    let next = names.intern(b"new").unwrap();
+    assert_eq!(names.intern(b"later"), Err(NamesError::Capacity));
+    assert_eq!(names.get(live), Some(b"live\xff".as_slice()));
+    assert_eq!(names.get(next), Some(b"new".as_slice()));
+}
