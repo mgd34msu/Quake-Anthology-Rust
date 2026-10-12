@@ -1,9 +1,38 @@
 //! Borrowed map spawn text converted once to numeric keys and typed columns.
 use crate::{FormatError, text::Tokens};
-use qa_core::{names::NameTable, primitives::NameId};
-use std::ops::Range;
+use qa_core::{
+    names::{NameMatch, NameTable},
+    primitives::NameId,
+};
+use std::{borrow::Cow, ops::Range};
 
 pub use qa_core::primitives::Lineage as EntitySyntax;
+
+/// ED_NewString/G_NewString consumes every escape byte: `\n` becomes LF,
+/// other escapes become one backslash, and a final backslash remains intact.
+/// Tokens without escapes keep their borrowed source span.
+pub fn level_string(bytes: &[u8]) -> Cow<'_, [u8]> {
+    if !bytes.contains(&b'\\') {
+        return Cow::Borrowed(bytes);
+    }
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'\\' {
+            at += 1;
+            decoded.push(if bytes.get(at) == Some(&b'n') {
+                b'\n'
+            } else {
+                b'\\'
+            });
+        } else {
+            decoded.push(bytes[at]);
+        }
+        at += 1;
+    }
+    Cow::Owned(decoded)
+}
+
 /// The same byte tokenizer used by cold entity conversion and module reads.
 pub struct EntityTokens<'a> {
     tokens: Tokens<'a>,
@@ -67,6 +96,23 @@ pub struct SpawnColumns<'a, T> {
 }
 impl<'a> EntityLump<'a> {
     pub fn parse(bytes: &'a [u8], syntax: EntitySyntax) -> Result<Self, FormatError> {
+        Self::parse_with_match(
+            bytes,
+            syntax,
+            if syntax == EntitySyntax::Quake {
+                NameMatch::Exact
+            } else {
+                NameMatch::Folded
+            },
+        )
+    }
+    /// Lexical rules and a module's field-name equivalence are independent.
+    /// Exact identities remain in the name table even with folded field keys.
+    pub fn parse_with_match(
+        bytes: &'a [u8],
+        syntax: EntitySyntax,
+        matching: NameMatch,
+    ) -> Result<Self, FormatError> {
         let mut tokens = EntityTokens::new(bytes, syntax);
         let mut pairs = Vec::new();
         let mut records = Vec::new();
@@ -94,10 +140,9 @@ impl<'a> EntityLump<'a> {
             .into_iter()
             .map(|(key, value)| {
                 Ok(SpawnField {
-                    key: (if syntax == EntitySyntax::Quake {
-                        names.find(key)
-                    } else {
-                        names.find_folded(key)
+                    key: (match matching {
+                        NameMatch::Exact => names.find(key),
+                        NameMatch::Folded => names.find_folded(key),
                     })
                     .ok_or(FormatError::InvalidValue)?,
                     value,

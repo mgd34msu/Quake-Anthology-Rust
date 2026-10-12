@@ -1,4 +1,27 @@
-use qa_core::text::atof_prefix;
+use qa_core::text::{atof_prefix, atof_prefix_bytes};
+
+#[test]
+fn float_prefix_accepts_raw_suffixes_and_preserves_native_end_positions() {
+    for (bytes, bits, consumed) in [
+        (
+            b" \t-3.125e+2\xfftail".as_slice(),
+            (-312.5f64).to_bits(),
+            11,
+        ),
+        (b" \t+1e+\xff", 1.0f64.to_bits(), 4),
+        (b"-.0\xff", (-0.0f64).to_bits(), 3),
+        (b"0x1.8p2\xff", 6.0f64.to_bits(), 7),
+        (b"12\0\xff", 12.0f64.to_bits(), 2),
+        (b" nan(7)\x80", 0x7ff8_0000_0000_0007, 7),
+        (b"-infinity\x80", f64::NEG_INFINITY.to_bits(), 9),
+        (b"\xff12", 0, 0),
+        (b"  +\x80", 0, 0),
+    ] {
+        let result = atof_prefix_bytes(bytes);
+        assert_eq!(result.0.to_bits(), bits, "{bytes:?}");
+        assert_eq!(result.1, consumed, "{bytes:?}");
+    }
+}
 
 #[test]
 fn decimal_integer_scan_preserves_end_pointer_and_native_widths() {
@@ -427,5 +450,10 @@ fn prefix_and_binary64_rounding_match_glibc() {
         let result = atof_prefix(text);
         assert_eq!(result.0.to_bits(), bits, "{text}");
         assert_eq!(result.1, consumed, "{text}");
+        let mut raw = text.as_bytes().to_vec();
+        raw.extend_from_slice(b"\xff\x80");
+        let result = atof_prefix_bytes(&raw);
+        assert_eq!(result.0.to_bits(), bits, "{raw:?}");
+        assert_eq!(result.1, consumed, "{raw:?}");
     }
 }

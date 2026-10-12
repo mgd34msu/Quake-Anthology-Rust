@@ -102,7 +102,8 @@ impl ConfigStrings {
     }
 }
 
-/// Native configstring indices are source data, independent of movement and map.
+/// Module storage indices are source data, independent of movement and map.
+/// Q1/QW rows are internal storage, not native wire configstring numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConfigLayout {
     pub rules: RuleSetId,
@@ -110,18 +111,37 @@ pub struct ConfigLayout {
     /// Model, sound and image ordinals, in that order. An absent range is empty.
     pub resources: [IndexSpan; 3],
     pub players: IndexSpan,
-    lights: IndexSpan,
+    pub lights: IndexSpan,
     items: IndexSpan,
     general: IndexSpan,
     statusbar: IndexSpan,
     scalar: [usize; 3],
     ordinary_bytes: usize,
+    light_bytes: usize,
     general_end: usize,
 }
 const fn span(first: u32, count: u32) -> IndexSpan {
     IndexSpan { first, count }
 }
 impl ConfigLayout {
+    pub const QUAKE: Self = Self {
+        rules: RuleSetId::Quake,
+        count: 576,
+        resources: [span(0, 256), span(256, 256), span(512, 0)],
+        players: span(0, 0),
+        lights: span(512, 64),
+        items: span(0, 0),
+        general: span(0, 0),
+        statusbar: span(0, 0),
+        scalar: [usize::MAX; 3],
+        ordinary_bytes: MAX_TEXT + 1,
+        light_bytes: 64,
+        general_end: 576,
+    };
+    pub const QUAKEWORLD: Self = Self {
+        rules: RuleSetId::QuakeWorld,
+        ..Self::QUAKE
+    };
     pub const QUAKE2: Self = Self {
         rules: RuleSetId::Quake2,
         count: 2080,
@@ -133,6 +153,7 @@ impl ConfigLayout {
         statusbar: span(5, 24),
         scalar: [29, 30, 31],
         ordinary_bytes: 64,
+        light_bytes: 64,
         general_end: 2080,
     };
     pub const QUAKE2_RERELEASE: Self = Self {
@@ -146,6 +167,7 @@ impl ConfigLayout {
         statusbar: span(5, 54),
         scalar: [59, 60, 61],
         ordinary_bytes: 96,
+        light_bytes: 96,
         general_end: 12448,
     };
     pub const QUAKE3: Self = Self {
@@ -159,22 +181,29 @@ impl ConfigLayout {
         statusbar: span(0, 0),
         scalar: [usize::MAX; 3],
         ordinary_bytes: 8192,
+        light_bytes: 8192,
         general_end: 1024,
     };
-    pub const fn for_rules(rules: RuleSetId) -> Option<Self> {
+    pub const fn for_rules(rules: RuleSetId) -> Self {
         match rules {
-            RuleSetId::Quake2 => Some(Self::QUAKE2),
-            RuleSetId::Quake2Rerelease => Some(Self::QUAKE2_RERELEASE),
-            RuleSetId::Quake3 => Some(Self::QUAKE3),
-            RuleSetId::Quake | RuleSetId::QuakeWorld => None,
+            RuleSetId::Quake => Self::QUAKE,
+            RuleSetId::QuakeWorld => Self::QUAKEWORLD,
+            RuleSetId::Quake2 => Self::QUAKE2,
+            RuleSetId::Quake2Rerelease => Self::QUAKE2_RERELEASE,
+            RuleSetId::Quake3 => Self::QUAKE3,
         }
+    }
+    pub fn style_index(self, ordinal: usize) -> Option<usize> {
+        self.lights.get(ordinal)
     }
     /// Maximum text bytes, excluding the native trailing NUL.
     pub fn capacity(self, index: usize) -> Option<usize> {
         if index >= self.count {
             return None;
         }
-        let bytes = if self.statusbar.contains(index) {
+        let bytes = if self.lights.contains(index) {
+            self.light_bytes
+        } else if self.statusbar.contains(index) {
             (self.statusbar.range().end - index) * self.ordinary_bytes
         } else if self.general.contains(index) {
             (self.general_end - index) * self.ordinary_bytes
@@ -197,12 +226,15 @@ impl ConfigLayout {
             .into_iter()
             .zip(self.resources)
             .chain(std::iter::once((source.players, self.players)))
+            .chain(std::iter::once((source.lights, self.lights)))
         {
             if from.contains(index) {
                 return to.get(index - from.first as usize);
             }
         }
-        if self.rules == RuleSetId::Quake3 || source.rules == RuleSetId::Quake3 {
+        if !matches!(self.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+            || !matches!(source.rules, RuleSetId::Quake2 | RuleSetId::Quake2Rerelease)
+        {
             return None;
         }
         if index < 5 {
@@ -213,7 +245,6 @@ impl ConfigLayout {
         }
         for (from, to) in [
             (source.statusbar, self.statusbar),
-            (source.lights, self.lights),
             (source.items, self.items),
             (source.general, self.general),
         ] {

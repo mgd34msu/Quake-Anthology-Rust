@@ -165,8 +165,7 @@ fn with_model_services(
     let mut commands = CommandBuffer::new();
     let vfs = qa_content::vfs::Vfs::default();
     let localization = qa_content::localization::Catalog::default();
-    let config_count =
-        qa_core::configstrings::ConfigLayout::for_rules(rules).map_or(512, |layout| layout.count);
+    let config_count = qa_core::configstrings::ConfigLayout::for_rules(rules).count;
     let mut storage =
         ServiceStorage::load_native(&[(ModuleId(1), config_count, rules)], 0, &cvars).unwrap();
     let mut geometry = CollisionStore::new();
@@ -265,6 +264,81 @@ impl ModelLoader for Models {
         } else {
             self.bounds(path, source).ok_or(CallError::Geometry)
         }
+    }
+}
+
+#[test]
+fn cold_lightstyle_builtin_uses_shared_rows_raw_strings_and_native_index_conversion() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = vm(1);
+            let layout = qa_core::configstrings::ConfigLayout::for_rules(rules);
+            let return_words = [0xa55a_1234, 0x1122_3344, 0x5566_7788];
+            vm.image.globals[1..4].copy_from_slice(&return_words);
+            let text = vm.insert_string(b"aM\x80\xffz").unwrap() as u32;
+            for (style, ordinal) in [(-0.5f32, 0usize), (31.9, 31), (63.9, 63)] {
+                parameters(&mut vm, &[&[style.to_bits()], &[text]]);
+                calls.call(&mut vm, 35, 2).unwrap();
+                assert_eq!(vm.image.globals[1..4], return_words);
+                assert_eq!(
+                    calls
+                        .services
+                        .storage
+                        .configstring(calls.context.module, layout.style_index(ordinal).unwrap())
+                        .unwrap()
+                        .0,
+                    b"aM\x80\xffz",
+                );
+            }
+            let index = layout.style_index(31).unwrap();
+            let revision = calls
+                .services
+                .storage
+                .configstring(calls.context.module, index)
+                .unwrap()
+                .1;
+            for style in [-1.0f32, 64.0, f32::INFINITY, f32::NAN] {
+                parameters(&mut vm, &[&[style.to_bits()], &[text]]);
+                assert_eq!(calls.call(&mut vm, 35, 2), Err(Trap::Builtin));
+                assert_eq!(
+                    calls
+                        .services
+                        .storage
+                        .configstring(calls.context.module, index)
+                        .unwrap(),
+                    (b"aM\x80\xffz".as_slice(), revision)
+                );
+            }
+            let long = vm.insert_string(&[b'm'; 64]).unwrap() as u32;
+            parameters(&mut vm, &[&[31.0f32.to_bits()], &[long]]);
+            assert_eq!(calls.call(&mut vm, 35, 2), Err(Trap::Builtin));
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .configstring(calls.context.module, index)
+                    .unwrap(),
+                (b"aM\x80\xffz".as_slice(), revision)
+            );
+            assert_eq!(calls.call(&mut vm, 35, 1), Err(Trap::Builtin));
+            parameters(&mut vm, &[&[31.0f32.to_bits()], &[0]]);
+            calls.call(&mut vm, 35, 2).unwrap();
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .configstring(calls.context.module, index)
+                    .unwrap()
+                    .0,
+                b""
+            );
+            assert!(calls.services.server.events.is_empty());
+            assert_eq!(calls.unknown.calls, 0);
+            assert_eq!(
+                calls.services.storage.resources(calls.context.module),
+                Some(layout.resources)
+            );
+        });
     }
 }
 

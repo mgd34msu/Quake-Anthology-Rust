@@ -1,4 +1,6 @@
-use qa_audio::{Bank, SoundBindingError, SoundBindings, sound_path};
+use qa_audio::{
+    Bank, SoundBindingError, SoundBindings, native_sound_name, same_sound_codec, sound_path,
+};
 use qa_core::primitives::{Pcm, PcmChannels, SoundId};
 use std::num::NonZeroU32;
 
@@ -214,4 +216,80 @@ fn quake_filename_prefixes_are_literal_while_q2_resources_keep_native_markers() 
             .unwrap();
         assert_eq!(bindings.sound(3), bank.find("sound/*foo.wav"));
     }
+}
+
+#[test]
+fn forward_and_inverse_filename_codecs_preserve_literal_and_escaped_paths() {
+    use qa_core::primitives::RuleSetId;
+    let bank = bank(&[
+        "sound/#foo.wav",
+        "sound/*foo.wav",
+        "sound/a.wav",
+        "music/a.wav",
+    ]);
+    let rules = [
+        RuleSetId::Quake,
+        RuleSetId::QuakeWorld,
+        RuleSetId::Quake2,
+        RuleSetId::Quake2Rerelease,
+        RuleSetId::Quake3,
+    ];
+    for source in rules {
+        for target in rules {
+            assert_eq!(
+                same_sound_codec(source, target),
+                source == target
+                    || matches!(
+                        (source, target),
+                        (RuleSetId::Quake, RuleSetId::QuakeWorld)
+                            | (RuleSetId::QuakeWorld, RuleSetId::Quake)
+                            | (RuleSetId::Quake2, RuleSetId::Quake2Rerelease)
+                            | (RuleSetId::Quake2Rerelease, RuleSetId::Quake2)
+                    )
+            );
+        }
+    }
+    for target in rules {
+        for path in [
+            "sound/#foo.wav",
+            "sound/*foo.wav",
+            "sound/a.wav",
+            "music/a.wav",
+        ] {
+            let sound = bank.find(path).unwrap();
+            let name = native_sound_name(target, &bank, sound);
+            if matches!(target, RuleSetId::Quake | RuleSetId::QuakeWorld)
+                && path.starts_with("music/")
+            {
+                assert!(name.is_none());
+            } else {
+                let name = name.unwrap();
+                assert_eq!(
+                    sound_path(name.as_bytes(), target)
+                        .unwrap()
+                        .unwrap()
+                        .as_bytes(),
+                    path.as_bytes()
+                );
+            }
+        }
+    }
+    let literal = bank.find("sound/#foo.wav").unwrap();
+    assert_eq!(
+        native_sound_name(RuleSetId::Quake, &bank, literal)
+            .unwrap()
+            .as_bytes(),
+        b"#foo.wav"
+    );
+    assert_eq!(
+        native_sound_name(RuleSetId::Quake2, &bank, literal)
+            .unwrap()
+            .as_bytes(),
+        b"#sound/#foo.wav"
+    );
+    assert!(
+        sound_path(b"*player.wav", RuleSetId::Quake2)
+            .unwrap()
+            .is_none()
+    );
 }

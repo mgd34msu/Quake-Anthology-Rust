@@ -547,7 +547,7 @@ fn unsent_peer_cannot_stop_healthy_delivery_or_mixed_rate_server_ticks() {
 
 #[test]
 fn configuration_reaches_client_only_through_reliable_packets_and_retires_on_ack() {
-    use qa_core::{configstrings::ConfigLayout, events::OutputTarget};
+    use qa_core::events::OutputTarget;
     use qa_network::commands::packet::Protocol;
     for protocol in [
         Protocol::Quake2_34,
@@ -573,7 +573,7 @@ fn configuration_reaches_client_only_through_reliable_packets_and_retires_on_ack
                 0,
             )
             .unwrap();
-        let layout = ConfigLayout::for_rules(protocol.rule_set()).unwrap();
+        let layout = protocol.config_layout().unwrap();
         let index = layout.resources[0].first as usize + 1;
         let text = if protocol == Protocol::Quake3_68 {
             vec![b'x'; 8000]

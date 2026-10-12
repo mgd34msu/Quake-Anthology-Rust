@@ -117,7 +117,7 @@ impl FrameHost {
             else {
                 continue;
             };
-            let Some(target) = ConfigLayout::for_rules(protocol.rule_set()) else {
+            let Some(target) = protocol.config_layout() else {
                 continue;
             };
             let publication = &mut runtime.config_publications[index];
@@ -149,8 +149,8 @@ impl FrameHost {
             if let Some(row) = modules
                 .row(client.module)
                 .filter(|row| row.state == State::Running)
-                && let Some(source) = ConfigLayout::for_rules(row.request.context.native_rules)
             {
+                let source = ConfigLayout::for_rules(row.request.context.native_rules);
                 for native_index in 0..row.request.configstrings.min(source.count) {
                     let Ok((text, revision)) =
                         row.storage.configstring(client.module, native_index)
@@ -177,30 +177,29 @@ impl FrameHost {
                         publication.seen(native_index, revision);
                         continue;
                     };
-                    // Q2/RR bare filenames and Q3 full paths have distinct
-                    // native resource codecs. Preserve exact same-codec text.
+                    // Preserve exact text only when both native filename
+                    // codecs agree, including Quake's literal prefix bytes.
                     let converted;
-                    let text = if is_sound
-                        && !text.is_empty()
-                        && (source.rules == RuleSetId::Quake3)
-                            != (target.rules == RuleSetId::Quake3)
-                    {
-                        let Some(name) = runtime
-                            .sound_bank
-                            .as_deref()
-                            .zip(sample)
-                            .and_then(|(bank, sample)| native_sound_name(target, bank, sample))
-                        else {
-                            publication.unsupported += 1;
-                            publication.published(destination, None);
-                            publication.seen(native_index, revision);
-                            continue;
+                    let text =
+                        if is_sound
+                            && !text.is_empty()
+                            && !qa_audio::same_sound_codec(source.rules, target.rules)
+                        {
+                            let Some(name) = runtime.sound_bank.as_deref().zip(sample).and_then(
+                                |(bank, sample)| {
+                                    qa_audio::native_sound_name(target.rules, bank, sample)
+                                },
+                            ) else {
+                                publication.unsupported += 1;
+                                publication.published(destination, None);
+                                publication.seen(native_index, revision);
+                                continue;
+                            };
+                            converted = name;
+                            converted.as_bytes()
+                        } else {
+                            text
                         };
-                        converted = name;
-                        converted.as_bytes()
-                    } else {
-                        text
-                    };
                     if text.len() > target.capacity(destination).unwrap_or(0) {
                         publication.unsupported += 1;
                         publication.published(destination, None);
@@ -330,7 +329,7 @@ fn publish_sound(
     if !publication.unpublished(index) {
         return true;
     }
-    let Some(name) = native_sound_name(target, bank, sound) else {
+    let Some(name) = qa_audio::native_sound_name(target.rules, bank, sound) else {
         publication.unsupported += 1;
         publication.published(index, None);
         return true;
@@ -357,26 +356,4 @@ fn publish_sound(
         }
         Err(_) => false,
     }
-}
-
-/// The sole outbound filename codec is the inverse of audio::sound_path.
-fn native_sound_name(
-    target: ConfigLayout,
-    bank: &qa_audio::Bank,
-    sound: qa_core::primitives::SoundId,
-) -> Option<qa_core::text::FixedText<8198>> {
-    let path = bank.name(sound)?;
-    let mut name = qa_core::text::FixedText::default();
-    if target.rules == RuleSetId::Quake3 {
-        name.append_bytes(path).ok()?;
-    } else if let Some(relative) = path.strip_prefix(b"sound/")
-        && !relative.starts_with(b"#")
-        && !relative.starts_with(b"*")
-    {
-        name.append_bytes(relative).ok()?;
-    } else {
-        name.append_bytes(b"#").ok()?;
-        name.append_bytes(path).ok()?;
-    }
-    Some(name)
 }

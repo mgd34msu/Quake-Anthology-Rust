@@ -24,7 +24,7 @@ impl ClientResources {
         protocol: Protocol,
         sound_rules: RuleSetId,
     ) -> Result<Option<Self>, String> {
-        let Some(layout) = ConfigLayout::for_rules(protocol.rule_set()) else {
+        let Some(layout) = protocol.config_layout() else {
             return Ok(None);
         };
         Ok(Some(Self {
@@ -159,8 +159,8 @@ pub enum ResourceReadiness {
 impl ConfigPublication {
     pub fn load() -> Self {
         let layout = ConfigLayout::for_rules(RuleSetId::Quake2Rerelease);
-        let count = layout.map_or(0, |layout| layout.count);
-        let sounds = layout.map_or(0, |layout| layout.resources[1].count as usize);
+        let count = layout.count;
+        let sounds = layout.resources[1].count as usize;
         Self {
             module: None,
             layout: None,

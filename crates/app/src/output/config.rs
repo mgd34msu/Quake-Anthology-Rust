@@ -1,5 +1,5 @@
 //! Configuration records retain their ring text until native channel delivery.
-use qa_core::{configstrings::ConfigLayout, events::OutputSubmission};
+use qa_core::events::OutputSubmission;
 use qa_network::{
     channel::{Channel, TransmitError},
     commands::packet::Protocol,
@@ -13,7 +13,7 @@ pub(super) fn submit(
     text: &[u8],
     pending: &mut Option<(u64, usize)>,
 ) -> Result<OutputSubmission, ()> {
-    let target = ConfigLayout::for_rules(protocol.rule_set()).ok_or(())?;
+    let target = protocol.config_layout().ok_or(())?;
     let index = index as usize;
     if text.len() > target.capacity(index).ok_or(())? {
         return Err(());

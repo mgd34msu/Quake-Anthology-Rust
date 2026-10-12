@@ -429,7 +429,7 @@ pub fn load_quakec(
             api: None,
             shutdown: Vec::new(),
             instruction_budget: 1_000_000,
-            configstrings: 512,
+            configstrings: qa_core::configstrings::ConfigLayout::for_rules(spec.rules).count,
             files: 32,
             entity_source: None,
         });

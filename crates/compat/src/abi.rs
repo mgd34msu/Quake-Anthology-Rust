@@ -615,6 +615,17 @@ const fn quakec() -> CallTable {
     });
     t.entries[26] = value!(qc_float_string, scalar);
     t.entries[27] = value!(qc_vector_string, vector);
+    t.entries[35] = scalar!(
+        lightstyle,
+        Some(QcSignature::new(
+            QcArgc::Fixed(2),
+            QcArgs::Mixed {
+                vectors: 0,
+                strings: 2,
+            },
+            false,
+        ))
+    );
     t.entries[36] = scalar!(rint, Some(scalar));
     t.entries[37] = scalar!(floor::<false>, Some(scalar));
     t.entries[38] = scalar!(ceil::<false>, Some(scalar));
@@ -830,6 +841,17 @@ fn qc_set_model(
         qc_word(arguments, 1)?,
     )?;
     Ok(CallValue::Word(0))
+}
+fn lightstyle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    let value = float::<false>(c, 0)?;
+    if !value.is_finite() {
+        return Err(CallError::ConfigString);
+    }
+    let style = crate::numbers::native_integer(value);
+    let ordinal = usize::try_from(style).map_err(|_| CallError::ConfigString)?;
+    let text = c.memory.cstring(c.pointer(1)?)?;
+    (ENGINE_CALLS.lightstyle)(c.services, c.context.module, ordinal, text)?;
+    Ok(0)
 }
 fn qc_precache<const MODEL: bool>(
     c: &mut QuakeCCalls<'_, '_>,

@@ -345,7 +345,7 @@ impl Game {
         timeout: Duration,
     ) -> Result<Self, Error> {
         let layout = layout(rules).ok_or(Error::Export)?;
-        let configs = ConfigLayout::for_rules(rules).ok_or(Error::Export)?;
+        let configs = ConfigLayout::for_rules(rules);
         let client = crate::q2_abi::client_layout(rules).ok_or(Error::Export)?;
         if rules == RuleSetId::Quake2Rerelease && (interval_ms == 0 || 1000 % interval_ms != 0) {
             return Err(Error::Export);

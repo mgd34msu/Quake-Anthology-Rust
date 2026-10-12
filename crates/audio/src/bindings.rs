@@ -11,6 +11,24 @@ pub enum SoundBindingError {
     Text,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SoundNames {
+    literal_prefixes: bool,
+    full_path: bool,
+}
+impl SoundNames {
+    fn for_rules(rules: RuleSetId) -> Self {
+        Self {
+            literal_prefixes: matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld),
+            full_path: rules == RuleSetId::Quake3,
+        }
+    }
+}
+
+pub fn same_sound_codec(first: RuleSetId, second: RuleSetId) -> bool {
+    SoundNames::for_rules(first) == SoundNames::for_rules(second)
+}
+
 /// Native resource names select player-relative or explicit file paths.
 pub fn sound_path(
     name: &[u8],
@@ -19,8 +37,9 @@ pub fn sound_path(
     if name.is_empty() {
         return Ok(None);
     }
+    let policy = SoundNames::for_rules(rules);
     let mut path = FixedText::default();
-    if matches!(rules, RuleSetId::Quake | RuleSetId::QuakeWorld) {
+    if policy.literal_prefixes {
         // Quake's loader treats both prefix bytes as literal filenames.
         path.append_bytes(b"sound/")
             .map_err(|_| SoundBindingError::Text)?;
@@ -28,7 +47,7 @@ pub fn sound_path(
             .map_err(|_| SoundBindingError::Text)?;
     } else if name.starts_with(b"*") {
         return Ok(None);
-    } else if rules == RuleSetId::Quake3 {
+    } else if policy.full_path {
         path.append_bytes(name)
             .map_err(|_| SoundBindingError::Text)?;
     } else if let Some(explicit) = name.strip_prefix(b"#") {
@@ -41,6 +60,28 @@ pub fn sound_path(
             .map_err(|_| SoundBindingError::Text)?;
     }
     Ok(Some(path))
+}
+
+/// The inverse filename codec uses the same policy as native resource binding.
+/// Q1/QW cannot represent paths outside their literal sound/ namespace.
+pub fn native_sound_name(rules: RuleSetId, bank: &Bank, sound: SoundId) -> Option<FixedText<8198>> {
+    let path = bank.name(sound)?;
+    let policy = SoundNames::for_rules(rules);
+    let mut name = FixedText::default();
+    if policy.full_path {
+        name.append_bytes(path).ok()?;
+    } else if policy.literal_prefixes {
+        name.append_bytes(path.strip_prefix(b"sound/")?).ok()?;
+    } else if let Some(relative) = path.strip_prefix(b"sound/")
+        && !relative.starts_with(b"#")
+        && !relative.starts_with(b"*")
+    {
+        name.append_bytes(relative).ok()?;
+    } else {
+        name.append_bytes(b"#").ok()?;
+        name.append_bytes(path).ok()?;
+    }
+    Some(name)
 }
 
 /// One numeric binding table for a module or a received CLIENT namespace.

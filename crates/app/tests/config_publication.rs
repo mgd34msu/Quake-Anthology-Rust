@@ -26,7 +26,7 @@ fn bank() -> qa_audio::Bank {
     .unwrap()
 }
 fn publication(bank: &qa_audio::Bank) -> (ConfigPublication, ConfigLayout) {
-    let layout = ConfigLayout::for_rules(RuleSetId::Quake2).unwrap();
+    let layout = ConfigLayout::for_rules(RuleSetId::Quake2);
     let mut publication = ConfigPublication::load();
     publication.configure_sources(4);
     publication.bind_sounds(bank);

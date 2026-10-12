@@ -275,10 +275,7 @@ fn sound_module_options(
             0x180000000 + raw_entry as u64,
             8,
         );
-        let sound_first = qa_core::configstrings::ConfigLayout::for_rules(rules)
-            .unwrap()
-            .resources[1]
-            .first;
+        let sound_first = qa_core::configstrings::ConfigLayout::for_rules(rules).resources[1].first;
         for (entry, row, name, export) in [
             (
                 0x16b0usize,
@@ -351,9 +348,7 @@ fn sound_module_options(
     });
     request.initialize = vec![initialize];
     request.frame = frame;
-    request.configstrings = qa_core::configstrings::ConfigLayout::for_rules(rules)
-        .unwrap()
-        .count;
+    request.configstrings = qa_core::configstrings::ConfigLayout::for_rules(rules).count;
     (request, command)
 }
 
@@ -1124,7 +1119,7 @@ pub(super) fn secondary_modules_share_the_connection_sound_namespace() {
                 slot: i32::from(secondary_entity)
             })
         );
-        let layout = qa_core::configstrings::ConfigLayout::for_rules(rules).unwrap();
+        let layout = qa_core::configstrings::ConfigLayout::for_rules(rules);
         assert!(
             source
                 .remote
@@ -1400,7 +1395,7 @@ pub(super) fn native_sound_ordinals_and_retained_captures_survive_resource_rewri
             2,
             "typed emission keeps the exact requested duplicate ordinal"
         );
-        let layout = qa_core::configstrings::ConfigLayout::for_rules(rules).unwrap();
+        let layout = qa_core::configstrings::ConfigLayout::for_rules(rules);
         assert_eq!(
             host.runtime.client_resources[0]
                 .as_ref()

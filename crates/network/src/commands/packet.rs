@@ -30,6 +30,16 @@ impl Protocol {
             Self::Quake3_68 => RuleSetId::Quake3,
         }
     }
+    /// Storage availability does not imply a native configstring wire adapter.
+    /// NQ/QW lightstyle opcode 12 is not implemented yet.
+    pub const fn config_layout(self) -> Option<qa_core::configstrings::ConfigLayout> {
+        match self {
+            Self::NetQuake15 | Self::QuakeWorld28 => None,
+            _ => Some(qa_core::configstrings::ConfigLayout::for_rules(
+                self.rule_set(),
+            )),
+        }
+    }
     pub const fn command_execution(self) -> CommandExecution {
         match self {
             Self::NetQuake15 => CommandExecution::FrameLatest,

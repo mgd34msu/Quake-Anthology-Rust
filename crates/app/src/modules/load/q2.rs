@@ -166,9 +166,7 @@ pub fn load_q2(
                 }),
                 shutdown,
                 instruction_budget: 10_000_000,
-                configstrings: qa_core::configstrings::ConfigLayout::for_rules(spec.rules)
-                    .ok_or("unsupported native configuration layout")?
-                    .count,
+                configstrings: qa_core::configstrings::ConfigLayout::for_rules(spec.rules).count,
                 files: 32,
                 entity_source: None,
             });

@@ -53,21 +53,6 @@ pub trait ModelLoader: ModelLookup {
     fn precache(&mut self, vfs: &Vfs, path: &[u8], source: RuleSetId) -> Result<Bounds, CallError>;
 }
 
-const QUAKE_RESOURCES: [IndexSpan; 3] = [
-    IndexSpan {
-        first: 0,
-        count: 256,
-    },
-    IndexSpan {
-        first: 256,
-        count: 256,
-    },
-    IndexSpan {
-        first: 512,
-        count: 0,
-    },
-];
-
 /// Supplied by the module host. No capability inherits another role's rules.
 #[derive(Clone, Copy)]
 pub struct CallContext {
@@ -164,14 +149,11 @@ impl ServiceStorage {
         let mut ranges = Vec::new();
         let mut capacities = Vec::new();
         for (module, count, native_rules) in configs {
-            let layout = native_rules.and_then(ConfigLayout::for_rules);
+            let layout = native_rules.map(ConfigLayout::for_rules);
             let resources = if count == 0 {
                 None
             } else {
-                native_rules.map(|rules| {
-                    ConfigLayout::for_rules(rules)
-                        .map_or(QUAKE_RESOURCES, |layout| layout.resources)
-                })
+                layout.map(|layout| layout.resources)
             };
             if resources.is_some_and(|ranges| ranges.iter().any(|range| !range.fits(count))) {
                 return Err(CallError::ConfigString);
@@ -700,6 +682,7 @@ pub struct EngineCallTable {
     pub command: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub command_insert: fn(&mut EngineServices<'_>, Context, &str) -> Result<(), CallError>,
     pub configstring: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
+    pub lightstyle: fn(&mut EngineServices<'_>, ModuleId, usize, &[u8]) -> Result<(), CallError>,
     pub resource_index: ResourceIndexCall,
     pub resource_register:
         fn(&mut EngineServices<'_>, ModuleId, IndexSpan, &[u8]) -> Result<(u32, bool), CallError>,
@@ -877,6 +860,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     command: |s, c, t| s.command(c, t),
     command_insert: |s, c, t| s.commands.insert(t, c).map_err(|_| CallError::Text),
     configstring: |s, m, i, t| s.configstring(m, i, t),
+    lightstyle: |s, m, i, t| s.lightstyle(m, i, t),
     resource_index: |s, m, r, n| s.storage.resource_index(m, r, n),
     resource_register: |s, m, r, n| {
         s.storage
@@ -1180,6 +1164,22 @@ impl EngineServices<'_> {
         text: &[u8],
     ) -> Result<(), CallError> {
         self.storage.set_configstring(module, ordinal, text)
+    }
+    pub fn lightstyle(
+        &mut self,
+        module: ModuleId,
+        ordinal: usize,
+        text: &[u8],
+    ) -> Result<(), CallError> {
+        let rules = self
+            .storage
+            .range(module)
+            .ok_or(CallError::ConfigString)?
+            .native_rules;
+        let index = ConfigLayout::for_rules(rules)
+            .style_index(ordinal)
+            .ok_or(CallError::ConfigString)?;
+        self.configstring(module, index, text)
     }
     pub fn file_open(&mut self, owner: ModuleId, path: &[u8]) -> Result<(u32, u64), CallError> {
         let reference = self.vfs.open(path).ok_or(CallError::File)?;

@@ -5,7 +5,9 @@ use std::num::NonZeroU32;
 mod mixer;
 pub use mixer::{Bank, Listener, MixCounts, Mixer};
 mod bindings;
-pub use bindings::{SoundBindingError, SoundBindings, sound_path};
+pub use bindings::{
+    SoundBindingError, SoundBindings, native_sound_name, same_sound_codec, sound_path,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PrepareError {

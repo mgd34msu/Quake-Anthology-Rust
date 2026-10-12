@@ -226,6 +226,156 @@ fn native_entity(host: &FrameHost, module: ModuleId, native: i32) -> EntityId {
 }
 
 #[test]
+fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
+    use qa_app::{client_policy::ClientPolicy, map::SpawnAnchor};
+    use qa_core::configstrings::ConfigLayout;
+    use qa_network::commands::packet::Protocol;
+    use std::{num::NonZeroU32, sync::Arc};
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        for protocol in [
+            Protocol::Quake2_34,
+            Protocol::Quake2Repro1038,
+            Protocol::Quake3_68,
+        ] {
+            let mut code = Code::new();
+            let sound = code.builtin(19);
+            let lightstyle = code.builtin(35);
+            let initialize = code.function(&[
+                (StoreS, 80, 4, 0),
+                (Call1, 83, 0, 0),
+                (StoreS, 81, 4, 0),
+                (Call1, 83, 0, 0),
+                (StoreF, 48, 4, 0),
+                (StoreS, 82, 7, 0),
+                (Call2, 84, 0, 0),
+                (Return, 1, 0, 0),
+            ]);
+            let frame = code.function(&[(Return, 1, 0, 0)]);
+            let mut vm = code.vm();
+            vm.image.globals[80] = vm.insert_string(b"#foo.wav").unwrap() as u32;
+            vm.image.globals[81] = vm.insert_string(b"*foo.wav").unwrap() as u32;
+            vm.image.globals[82] = vm.insert_string(b"aM\xff").unwrap() as u32;
+            vm.image.globals[83] = sound;
+            vm.image.globals[84] = lightstyle;
+            let mut runtime = Runtime::load(1, []).unwrap();
+            let module = ModuleId(1);
+            let client = runtime
+                .connect_local(
+                    SeatId::FIRST,
+                    SpawnAnchor {
+                        position: Vec3::default(),
+                        angles: Vec3::default(),
+                        entity: 0,
+                        fixture_fallback: false,
+                    },
+                    ClientPolicy {
+                        client: RuleSetId::Quake3,
+                        movement: RuleSetId::Quake2,
+                        trace: RuleSetId::QuakeWorld,
+                    },
+                    protocol,
+                    0,
+                )
+                .unwrap();
+            assert!(
+                runtime
+                    .server
+                    .bind_client_native(client, NativeEntity { module, slot: 1 })
+            );
+            let (mut request, _) = request(
+                &mut runtime,
+                module,
+                rules,
+                vm,
+                vec![initialize, frame],
+                frame,
+                10,
+                &[],
+            );
+            request.configstrings = ConfigLayout::for_rules(rules).count;
+            request.initialize = vec![Export::clocked(CallbackId(0))];
+            let mut host = load(runtime, vec![request]);
+            host.local_clients[0] = Some(client);
+            host.initialize_modules(Phase::Server);
+            assert_eq!(
+                host.module_state(module),
+                Some(qa_app::modules::State::Running)
+            );
+            assert_eq!(host.module_counts(module).unwrap().traps, 0);
+            let rate = NonZeroU32::new(44100).unwrap();
+            let bank = Arc::new(
+                qa_audio::Bank::load(
+                    rate,
+                    ["sound/#foo.wav", "sound/*foo.wav"]
+                        .map(|path| {
+                            (
+                                path.to_owned(),
+                                Pcm {
+                                    rate,
+                                    channels: PcmChannels::Mono,
+                                    samples: vec![1; 2],
+                                    loop_start: None,
+                                },
+                            )
+                        })
+                        .into(),
+                )
+                .unwrap(),
+            );
+            host.runtime.sound_bank = Some(Arc::clone(&bank));
+            host.bind_sounds(&bank).unwrap();
+            let first_sound = protocol.config_layout().unwrap().resources[1].first as usize;
+            let resources = host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap();
+            assert!(
+                resources
+                    .state
+                    .configs
+                    .config(first_sound + 1)
+                    .unwrap()
+                    .text
+                    .is_empty()
+            );
+            for milliseconds in [0, 100, 200, 300, 400] {
+                tick(&mut host, milliseconds);
+            }
+            let resources = &host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state;
+            for (ordinal, path) in [(1, "sound/#foo.wav"), (2, "sound/*foo.wav")] {
+                assert_eq!(resources.sound(ordinal), bank.find(path));
+                let expected = if protocol == Protocol::Quake3_68 {
+                    path.as_bytes().to_vec()
+                } else {
+                    let mut name = vec![b'#'];
+                    name.extend_from_slice(path.as_bytes());
+                    name
+                };
+                assert_eq!(
+                    resources
+                        .configs
+                        .config(first_sound + ordinal as usize)
+                        .unwrap()
+                        .text,
+                    expected
+                );
+            }
+            if let Some(index) = resources.layout.style_index(1) {
+                assert_eq!(resources.configs.config(index).unwrap().text, b"aM\xff");
+            } else {
+                assert_eq!(protocol, Protocol::Quake3_68);
+            }
+            assert_eq!(resources.rejected, 0);
+            assert_eq!(host.runtime.network.command_errors, 0);
+            assert_eq!(host.module_counts(module).unwrap().traps, 0);
+        }
+    }
+}
+
+#[test]
 fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog() {
     use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
     use qa_compat::services::ModelLookup;

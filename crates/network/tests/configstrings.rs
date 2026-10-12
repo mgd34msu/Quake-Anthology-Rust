@@ -4,6 +4,29 @@ use qa_network::{
 };
 
 #[test]
+fn module_storage_layout_does_not_enable_missing_native_wire_adapters() {
+    for protocol in [Protocol::NetQuake15, Protocol::QuakeWorld28] {
+        assert_eq!(protocol.config_layout(), None);
+        assert_eq!(
+            qa_core::configstrings::ConfigLayout::for_rules(protocol.rule_set()).count,
+            576,
+        );
+    }
+    for protocol in [
+        Protocol::Quake2_34,
+        Protocol::Quake2Repro1038,
+        Protocol::Quake3_68,
+    ] {
+        assert_eq!(
+            protocol.config_layout(),
+            Some(qa_core::configstrings::ConfigLayout::for_rules(
+                protocol.rule_set()
+            )),
+        );
+    }
+}
+
+#[test]
 fn connected_q2_channels_deliver_config_rows_and_continue_the_service_stream() {
     use qa_core::{loopback::Endpoint, sys_events::EventTime};
     use qa_network::{

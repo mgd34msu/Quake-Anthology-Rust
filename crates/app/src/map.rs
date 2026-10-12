@@ -8,7 +8,7 @@ use qa_core::primitives::{Bounds, ClipNode, GeometryId, RuleSetId, SurfaceFlags,
 use qa_formats::{
     archive::ArchiveReader,
     bsp::{Bsp, BspFormat, Lump, Map},
-    entities::{EntityLump, EntitySyntax},
+    entities::{EntityLump, EntitySyntax, level_string},
 };
 use qa_render::{
     Assets,
@@ -118,30 +118,6 @@ const Q3_NAME_FIELDS: &[NameField] = &[
     NameField::level(b"targetShaderNewName"),
     NameField::raw(b"noise"),
 ];
-
-fn level_string(bytes: &[u8]) -> Cow<'_, [u8]> {
-    if !bytes.contains(&b'\\') {
-        return Cow::Borrowed(bytes);
-    }
-    // ED_NewString/G_NewString: \n becomes LF; every other escaped byte is
-    // consumed and leaves one backslash. A final backslash remains a backslash.
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while at < bytes.len() {
-        if bytes[at] == b'\\' {
-            at += 1;
-            decoded.push(if bytes.get(at) == Some(&b'n') {
-                b'\n'
-            } else {
-                b'\\'
-            });
-        } else {
-            decoded.push(bytes[at]);
-        }
-        at += 1;
-    }
-    Cow::Owned(decoded)
-}
 
 impl NativeEntityText {
     /// Collect native identity values before the common catalog binds IDs.

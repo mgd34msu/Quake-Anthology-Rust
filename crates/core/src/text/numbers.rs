@@ -3,7 +3,12 @@
 /// Return the parsed binary64 value and byte count, including leading ASCII
 /// whitespace on success. An invalid prefix consumes nothing.
 pub fn atof_prefix(text: &str) -> (f64, usize) {
-    let bytes = text.as_bytes();
+    atof_prefix_bytes(text.as_bytes())
+}
+
+/// Parse the ASCII numeric prefix without requiring the remaining native bytes
+/// to be UTF-8. An invalid prefix consumes nothing.
+pub fn atof_prefix_bytes(bytes: &[u8]) -> (f64, usize) {
     let mut at = 0;
     while bytes
         .get(at)
@@ -71,8 +76,12 @@ pub fn atof_prefix(text: &str) -> (f64, usize) {
             return (0.0, 0);
         };
         at = end;
-        // Only the ASCII numeric prefix is indexed, so these are UTF-8 boundaries.
-        text[start..at].parse::<f64>().unwrap_or(0.0)
+        // The scanner selected only ASCII numeric bytes, independently of any
+        // raw trailing text. Keep the existing decimal conversion and rounding.
+        std::str::from_utf8(&bytes[start..at])
+            .unwrap_or("")
+            .parse::<f64>()
+            .unwrap_or(0.0)
     };
     (if negative { -value } else { value }, at)
 }

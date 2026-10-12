@@ -90,6 +90,18 @@ fn level_strings_follow_native_escape_consumption_before_ids_bind() {
 }
 
 #[test]
+fn map_catalog_uses_shared_level_decoder_with_raw_native_suffixes() {
+    let text = b"{ \"classname\" \"worldspawn\" \"targetname\" \"door\\n\xff\x82\" \"model\" \"raw\x80\" }";
+    let source = source(text, EntitySyntax::Quake3);
+    let names = source.catalog_names().unwrap();
+    assert_eq!(names[1].as_ref(), b"door\n\xff\x82");
+    assert!(matches!(&names[1], Cow::Owned(_)));
+    assert_eq!(names[2].as_ref(), b"raw\x80");
+    assert!(matches!(&names[2], Cow::Borrowed(_)));
+    assert_eq!(source.bytes.as_ref(), text);
+}
+
+#[test]
 fn q2_folded_keys_collect_alternate_targets_and_temporary_identity_fields() {
     let source = source(
         br#"{

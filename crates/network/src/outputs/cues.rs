@@ -63,7 +63,8 @@ pub fn sound(
     if event.action != SoundAction::Play
         || ordinal == 0
         || ordinal
-            >= qa_core::configstrings::ConfigLayout::for_rules(protocol.rule_set())
+            >= protocol
+                .config_layout()
                 .ok_or(Error::Unsupported)?
                 .resources[1]
                 .count
