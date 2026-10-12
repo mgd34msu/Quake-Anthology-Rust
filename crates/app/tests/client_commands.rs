@@ -667,6 +667,405 @@ fn disconnect_and_slot_reuse_do_not_lend_a_new_connection() {
     );
 }
 
+fn fallback_host(clients: usize) -> (FrameHost, Vec<ClientId>) {
+    let (runtime, ids) = runtime(clients);
+    let mut host = FrameHost::load(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![],
+    )
+    .unwrap();
+    for (seat, &client) in ids.iter().enumerate() {
+        host.local_clients[seat] = Some(client);
+    }
+    (host, ids)
+}
+
+fn presented_prints(host: &FrameHost) -> Vec<(u64, PrintEvent, Vec<u8>)> {
+    use qa_core::events::FrameEvent;
+    let ring = &host.runtime.server.events;
+    let mut batch = ring.batch(host.runtime.server.presentation).unwrap();
+    let mut prints = Vec::new();
+    while let Some(record) = ring.next(&mut batch) {
+        if let FrameEvent::Print(print) = record.event {
+            prints.push((
+                record.sequence,
+                print,
+                ring.texts.get(print.text).unwrap().to_vec(),
+            ));
+        }
+    }
+    prints
+}
+
+#[derive(Default)]
+struct PresentationSink {
+    packets: usize,
+}
+impl qa_app::host::FrameSource for PresentationSink {
+    fn begin_frame(&mut self) -> Duration {
+        Duration::ZERO
+    }
+    fn poll_events(&mut self, _: &mut SysEventQueue) {}
+    fn wait_time(&mut self, _: Duration) -> Duration {
+        Duration::ZERO
+    }
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn present(&mut self) {}
+    fn sound(&mut self, _: SoundEvent) -> bool {
+        true
+    }
+    fn send_packet(&mut self, _: u16, _: std::net::SocketAddr, _: &[u8]) -> bool {
+        self.packets += 1;
+        false
+    }
+}
+fn dispatch_fallback(host: &mut FrameHost) -> qa_app::output::OutputCounts {
+    qa_app::output::dispatch(
+        &mut host.runtime,
+        &mut PresentationSink::default(),
+        &mut host.console.scrollback,
+        &host.local_clients,
+        host.time,
+        3.0,
+        2.0,
+    )
+}
+fn executed(host: &FrameHost, client: ClientId) -> u32 {
+    host.runtime
+        .network
+        .get(client, Endpoint::Client)
+        .unwrap()
+        .channel
+        .last_executed_server_command()
+        .unwrap()
+}
+fn queued(host: &FrameHost, client: ClientId) -> u32 {
+    host.runtime
+        .network
+        .get(client, Endpoint::Server)
+        .unwrap()
+        .channel
+        .command_state()
+        .unwrap()
+        .queued
+}
+
+fn fallback_commands_publish_once_to_the_selected_local_display_and_hud() {
+    use qa_core::events::OutputTarget;
+    let (mut host, ids) = fallback_host(2);
+    let module = host
+        .runtime
+        .server
+        .events
+        .bind(OutputTarget::Module(ModuleId(99)))
+        .unwrap();
+    wire(
+        &mut host,
+        ids[0],
+        &[
+            b"print \"quit; set sensitivity 999 \x80%\" ignored",
+            b"cp \"first center\" ignored",
+        ],
+    );
+    wire(
+        &mut host,
+        ids[1],
+        &[
+            b"chat \"other\x19 seat\" ignored",
+            b"cp \"second center\" ignored",
+            b"print \"second console\" ignored",
+        ],
+    );
+    let queued_before = [queued(&host, ids[0]), queued(&host, ids[1])];
+    host.client_modules();
+    assert_eq!((executed(&host, ids[0]), executed(&host, ids[1])), (2, 3));
+    let prints = presented_prints(&host);
+    assert_eq!(
+        prints
+            .iter()
+            .map(|(_, print, text)| (print.client, print.kind, text.as_slice()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                Some(ids[0]),
+                PrintKind::Console,
+                b"quit; set sensitivity 999 ..".as_slice()
+            ),
+            (Some(ids[0]), PrintKind::Center, b"first center".as_slice()),
+            (Some(ids[1]), PrintKind::Chat, b"other seat\n".as_slice()),
+            (Some(ids[1]), PrintKind::Center, b"second center".as_slice()),
+            (
+                Some(ids[1]),
+                PrintKind::Console,
+                b"second console".as_slice()
+            ),
+        ]
+    );
+    for (sequence, print, _) in &prints {
+        let selected = print.client.unwrap();
+        for &client in &ids {
+            let consumer = host.runtime.server.clients[client.0 as usize]
+                .output
+                .unwrap();
+            assert_eq!(
+                host.runtime.server.events.retained_for(consumer, *sequence),
+                client == selected
+            );
+        }
+        assert!(!host.runtime.server.events.retained_for(module, *sequence));
+    }
+    let range = host.runtime.server.events.sequence_range();
+    // A real native retransmission is decoded again but cannot reexecute or republish.
+    wire(&mut host, ids[0], &[]);
+    wire(&mut host, ids[1], &[]);
+    host.client_modules();
+    host.client_modules();
+    assert_eq!(host.runtime.server.events.sequence_range(), range);
+    assert_eq!(presented_prints(&host).len(), 5);
+    let counts = dispatch_fallback(&mut host);
+    assert_eq!(counts.stale_texts, 0);
+    assert_eq!(
+        [queued(&host, ids[0]), queued(&host, ids[1])],
+        queued_before,
+        "received text must never echo into SERVER transport"
+    );
+    assert!(host.runtime.server.events.is_empty());
+    let texts = &host.runtime.server.events.texts;
+    assert_eq!(
+        texts.get(
+            host.runtime.server.clients[0]
+                .hud
+                .centerprint
+                .as_ref()
+                .unwrap()
+                .text
+                .id()
+        ),
+        Some(b"first center".as_slice())
+    );
+    assert_eq!(
+        texts.get(
+            host.runtime.server.clients[1]
+                .hud
+                .centerprint
+                .as_ref()
+                .unwrap()
+                .text
+                .id()
+        ),
+        Some(b"second center".as_slice())
+    );
+    assert!(
+        host.runtime.server.clients[0]
+            .hud
+            .notify
+            .iter()
+            .all(Option::is_none)
+    );
+    assert_eq!(
+        texts.get(
+            host.runtime.server.clients[1].hud.notify[3]
+                .as_ref()
+                .unwrap()
+                .text
+                .id()
+        ),
+        Some(b"other seat\n".as_slice())
+    );
+    assert_eq!(
+        host.console.scrollback.chunks(texts).collect::<Vec<_>>(),
+        [
+            b"quit; set sensitivity 999 ..".as_slice(),
+            b"other seat\n".as_slice(),
+            b"second console".as_slice(),
+        ]
+    );
+    let first_center = host.runtime.server.clients[0]
+        .hud
+        .centerprint
+        .as_ref()
+        .unwrap()
+        .text
+        .id();
+    assert!(
+        texts.get(first_center).is_some(),
+        "HUD display lease survives ring retirement"
+    );
+    host.runtime.server.clients[0]
+        .hud
+        .clear_messages(&mut host.runtime.server.events.texts);
+    assert!(host.runtime.server.events.texts.get(first_center).is_none());
+    host.console.execute_frame(&mut host.runtime);
+    assert!(!host.runtime.quit);
+    assert_ne!(
+        host.console
+            .cvars
+            .value(host.console.cvars.find("sensitivity").unwrap()),
+        999.0
+    );
+    assert!(
+        host.runtime
+            .client_resources
+            .iter()
+            .flatten()
+            .all(|resources| resources.unsupported_commands == 0)
+    );
+}
+
+fn fallback_chat_preserves_native_limits_and_team_only_selection() {
+    let (mut host, ids) = fallback_host(1);
+    let team = host
+        .console
+        .cvars
+        .bind(
+            "cg_teamChatsOnly",
+            Context {
+                source: RuleSetId::Quake3,
+                ..Context::default()
+            },
+        )
+        .unwrap();
+    host.console.cvars.force_write(team, "1").unwrap();
+    wire(
+        &mut host,
+        ids[0],
+        &[b"chat \"suppressed\"", b"tchat \"team\x19text\" ignored"],
+    );
+    host.client_modules();
+    let prints = presented_prints(&host);
+    assert_eq!(prints.len(), 1);
+    assert_eq!(
+        (prints[0].1.kind, prints[0].2.as_slice()),
+        (PrintKind::Chat, b"teamtext\n".as_slice())
+    );
+    dispatch_fallback(&mut host);
+    host.console.cvars.force_write(team, "0").unwrap();
+    let mut text = [b'x'; 170];
+    text[0] = 0x19;
+    text[148] = 0x19;
+    text[149] = b'z';
+    let mut command = b"chat \"".to_vec();
+    command.extend_from_slice(&text);
+    command.extend_from_slice(b"\" ignored");
+    wire(&mut host, ids[0], &[&command]);
+    host.client_modules();
+    let prints = presented_prints(&host);
+    let mut expected = vec![b'x'; 147];
+    expected.push(b'\n');
+    assert_eq!(prints.len(), 1);
+    assert_eq!(
+        prints[0].2, expected,
+        "149-byte native copy occurs before escape removal"
+    );
+    assert_eq!(executed(&host, ids[0]), 3);
+    dispatch_fallback(&mut host);
+    assert_eq!(
+        host.runtime.client_resources[0]
+            .as_ref()
+            .unwrap()
+            .unsupported_commands,
+        0
+    );
+}
+
+fn cgame_owns_retained_commands_while_a_ui_only_module_does_not() {
+    let (mut cgame, ids) = host(qvm, 1);
+    wire(&mut cgame, ids[0], &[b"print \"module owned\""]);
+    cgame.client_modules();
+    assert_eq!(executed(&cgame, ids[0]), 0);
+    assert!(presented_prints(&cgame).is_empty());
+    assert_eq!(probe(&mut cgame, 0, 0, 1), 1);
+    assert_eq!(probe(&mut cgame, 0, 2, 1), word(b"modu"));
+    assert!(
+        presented_prints(&cgame).is_empty(),
+        "GetServerCommand leaves display to cgame"
+    );
+
+    let (mut runtime, ids) = runtime(1);
+    let program = Program::Qvm {
+        vm: Box::new(service_program::program(
+            &[(Opcode::Enter, 64), (Opcode::Const, 0), (Opcode::Leave, 64)],
+            &[0; 256],
+        )),
+        imports: &qa_compat::abi::Q3_UI,
+    };
+    let request = request(&mut runtime, ModuleId(1), ids[0], program);
+    let mut ui = FrameHost::load_modules(
+        Console::new(Context::default()).unwrap(),
+        runtime,
+        TickRate::FrameDriven,
+        vec![request],
+    )
+    .unwrap();
+    ui.local_clients[0] = Some(ids[0]);
+    wire(&mut ui, ids[0], &[b"cp \"ui-only fallback\""]);
+    ui.client_modules();
+    assert_eq!(ui.module_counts(ModuleId(1)).unwrap().traps, 0);
+    assert_eq!(executed(&ui, ids[0]), 1);
+    let prints = presented_prints(&ui);
+    assert_eq!(prints.len(), 1);
+    assert_eq!(
+        (prints[0].1.kind, prints[0].2.as_slice()),
+        (PrintKind::Center, b"ui-only fallback".as_slice())
+    );
+    dispatch_fallback(&mut ui);
+    assert_eq!(
+        ui.runtime.server.events.texts.get(
+            ui.runtime.server.clients[0]
+                .hud
+                .centerprint
+                .as_ref()
+                .unwrap()
+                .text
+                .id()
+        ),
+        Some(b"ui-only fallback".as_slice())
+    );
+}
+
+fn bounded_fallback_print_failure_counts_once_without_disconnect_or_reexecution() {
+    let (mut host, ids) = fallback_host(1);
+    let mut held = Vec::new();
+    while let Some(lease) = host.runtime.server.events.texts.insert(b"held") {
+        held.push(lease);
+    }
+    let rejected = host.runtime.server.events.rejected_publications();
+    wire(&mut host, ids[0], &[b"print \"one rejected publication\""]);
+    host.client_modules();
+    assert_eq!(
+        host.runtime.server.events.rejected_publications(),
+        rejected + 1
+    );
+    assert_eq!(executed(&host, ids[0]), 1);
+    assert!(host.runtime.server.clients[0].connection.is_some());
+    assert!(presented_prints(&host).is_empty());
+    for lease in held {
+        host.runtime.server.events.texts.release(lease);
+    }
+    let queued_before = queued(&host, ids[0]);
+    wire(&mut host, ids[0], &[]);
+    host.client_modules();
+    assert_eq!(
+        host.runtime.server.events.rejected_publications(),
+        rejected + 1
+    );
+    assert!(
+        presented_prints(&host).is_empty(),
+        "an already executed rejected command is not replayed"
+    );
+    assert_eq!(queued(&host, ids[0]), queued_before);
+    wire(&mut host, ids[0], &[b"print \"healthy next\""]);
+    host.client_modules();
+    assert_eq!(executed(&host, ids[0]), 2);
+    assert!(host.runtime.server.clients[0].connection.is_some());
+    assert_eq!(presented_prints(&host)[0].2, b"healthy next");
+    dispatch_fallback(&mut host);
+}
+
 fn main() {
     if let Some(status) = qa_platform::native::native_child_bootstrap() {
         std::process::exit(status);
@@ -678,5 +1077,9 @@ fn main() {
     selected_systeminfo_updates_only_the_native_server_id();
     map_restart_clears_selected_notify_and_preserves_pending_server_command();
     disconnect_and_slot_reuse_do_not_lend_a_new_connection();
+    fallback_commands_publish_once_to_the_selected_local_display_and_hud();
+    fallback_chat_preserves_native_limits_and_team_only_selection();
+    cgame_owns_retained_commands_while_a_ui_only_module_does_not();
+    bounded_fallback_print_failure_counts_once_without_disconnect_or_reexecution();
     println!("CLIENT command session fixtures passed");
 }

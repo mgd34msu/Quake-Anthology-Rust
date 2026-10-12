@@ -69,6 +69,14 @@ impl Program {
             Self::QuakeC(_) => quakec_entry,
         }
     }
+    fn consumes_server_commands(&self) -> bool {
+        match self {
+            Self::Qvm { imports, .. } => imports.consumes_server_commands(),
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Self::Native { imports, .. } => imports.consumes_server_commands(),
+            Self::QuakeC(_) => false,
+        }
+    }
 }
 pub struct ModuleRequest {
     pub context: CallContext,
@@ -217,6 +225,7 @@ struct Module {
     duration: Option<(qa_gameplay::rules::FrameDuration, qa_console::cvars::View)>,
     signon: IndexSpan,
     client_connection: Option<(ClientId, EntityId)>,
+    consumes_server_commands: bool,
 }
 impl Module {
     fn time(&self, queued: qa_core::sys_events::EventTime) -> ThinkTime {
@@ -551,6 +560,7 @@ impl FrameHost {
             } else {
                 None
             };
+            let consumes_server_commands = request.program.consumes_server_commands();
             rows[index] = Some(Module {
                 request,
                 scratch: host.runtime.geometry.scratch(),
@@ -559,6 +569,7 @@ impl FrameHost {
                 state,
                 client_api: None,
                 client_connection,
+                consumes_server_commands,
                 clock,
                 physics,
                 duration,
@@ -886,6 +897,11 @@ impl FrameHost {
         }
     }
     fn client_configurations(&mut self) {
+        let team_chats_only = self
+            .console
+            .cvars
+            .integer_in(self.team_chats_only, RuleSetId::Quake3)
+            != 0;
         for index in 0..self.runtime.server.clients.len() {
             let client = &self.runtime.server.clients[index];
             if client.connection.is_none() {
@@ -895,7 +911,9 @@ impl FrameHost {
             let lifetime = client.entity;
             let bound = self.modules.as_ref().is_some_and(|modules| {
                 modules.rows.iter().flatten().any(|row| {
-                    row.state.can_invoke() && row.client_connection == Some((id, lifetime))
+                    row.state.can_invoke()
+                        && row.consumes_server_commands
+                        && row.client_connection == Some((id, lifetime))
                 })
             });
             if bound
@@ -909,7 +927,7 @@ impl FrameHost {
             }
             let disconnected =
                 if let Some((mut view, server)) = self.runtime.client_command_parts(id, lifetime) {
-                    let _ = view.consume_configuration(server);
+                    let _ = view.consume_configuration(server, team_chats_only);
                     view.disconnected
                 } else {
                     false

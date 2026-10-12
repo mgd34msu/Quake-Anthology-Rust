@@ -39,6 +39,9 @@ pub enum EventStorageError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputTarget {
     Presentation,
+    /// Local presentation and the selected CLIENT's existing HUD cursor.
+    /// Received records never enter SERVER/module delivery through this scope.
+    Local(ClientId),
     Client(ClientId),
     Module(ModuleId),
 }
@@ -441,7 +444,14 @@ impl EventRing {
             let consumer = self.active[index];
             let c = &mut self.consumers[consumer];
             let relevant = c.target.is_some()
-                && target.is_none_or(|target| c.target == Some(target))
+                && target.is_none_or(|target| match target {
+                    OutputTarget::Local(id) => {
+                        c.target == Some(OutputTarget::Presentation)
+                            || c.target == Some(OutputTarget::Client(id))
+                            || c.target == Some(target)
+                    }
+                    _ => c.target == Some(target),
+                })
                 && delivery.is_none_or(|delivery| match c.target {
                     Some(OutputTarget::Client(id)) => match delivery.target {
                         NativeTarget::Client(to) => id == to,
@@ -452,15 +462,18 @@ impl EventRing {
                 })
                 && (delivery.is_some()
                     || match (c.target, event) {
-                        (Some(OutputTarget::Client(id)), FrameEvent::Sound(sound)) => {
-                            sound.applies_to_client(id)
-                        }
-                        (Some(OutputTarget::Client(id)), FrameEvent::Print(p)) => {
-                            p.client.is_none_or(|to| to == id)
-                        }
-                        (Some(OutputTarget::Client(id)), FrameEvent::Hud(event)) => {
-                            event.client == id
-                        }
+                        (
+                            Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
+                            FrameEvent::Sound(sound),
+                        ) => sound.applies_to_client(id),
+                        (
+                            Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
+                            FrameEvent::Print(p),
+                        ) => p.client.is_none_or(|to| to == id),
+                        (
+                            Some(OutputTarget::Client(id) | OutputTarget::Local(id)),
+                            FrameEvent::Hud(event),
+                        ) => event.client == id,
                         _ => true,
                     });
             if relevant && c.resync {

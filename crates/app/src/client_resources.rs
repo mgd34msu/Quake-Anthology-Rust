@@ -133,6 +133,7 @@ impl<'a> ClientCommandView<'a> {
     pub(crate) fn consume_configuration(
         &mut self,
         server: &mut qa_session::clients::Server,
+        team_chats_only: bool,
     ) -> Result<(), qa_compat::services::CallError> {
         use qa_compat::services::{CallError, ClientServerCommands};
         let received = self
@@ -145,11 +146,52 @@ impl<'a> ClientCommandView<'a> {
             .last_executed_server_command()
             .map_err(|_| CallError::Text)?;
         for number in executed + 1..=received {
-            if self.select(number as i32, server)?
-                && !matches!(self.arguments().get_bytes(0), b"cs" | b"map_restart")
-            {
-                self.resources.unsupported_commands += 1;
+            if !self.select(number as i32, server)? {
+                continue;
             }
+            let arguments = self.resources.selected.arguments();
+            let kind = match arguments.get_bytes(0) {
+                b"cs" | b"map_restart" => continue,
+                b"print" => qa_core::primitives::PrintKind::Console,
+                b"cp" => qa_core::primitives::PrintKind::Center,
+                b"chat" if team_chats_only => continue,
+                b"chat" | b"tchat" => qa_core::primitives::PrintKind::Chat,
+                _ => {
+                    self.resources.unsupported_commands += 1;
+                    continue;
+                }
+            };
+            let text = if kind == qa_core::primitives::PrintKind::Chat {
+                // Original MAX_SAY_TEXT includes its terminator. Truncate
+                // before removing the native chat escape byte.
+                let raw = arguments.get_bytes(1);
+                self.resources.joined.clear();
+                for &byte in &raw[..raw.len().min(149)] {
+                    if byte != 0x19 {
+                        self.resources
+                            .joined
+                            .append_bytes(&[byte])
+                            .map_err(|_| CallError::Text)?;
+                    }
+                }
+                self.resources
+                    .joined
+                    .append_bytes(b"\n")
+                    .map_err(|_| CallError::Text)?;
+                self.resources.joined.as_bytes()
+            } else {
+                arguments.get_bytes(1)
+            };
+            // Received CLIENT text cannot become another SERVER publication.
+            // EventRing owns admission failures; the native command executes
+            // once even when the bounded display consumer cannot accept it.
+            let _ = server.events.print_level_bytes(
+                Some(qa_core::events::OutputTarget::Local(self.client)),
+                Some(self.client),
+                kind,
+                kind.default_level(),
+                text,
+            );
         }
         Ok(())
     }

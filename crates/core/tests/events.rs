@@ -22,6 +22,41 @@ fn consume(ring: &mut EventRing, id: OutputConsumerId, submission: OutputSubmiss
     sequences
 }
 #[test]
+fn received_local_text_shares_one_record_and_independent_hud_lease() {
+    let mut ring = EventRing::load(4, 4, 4, 32).unwrap();
+    let presentation = ring.bind(OutputTarget::Presentation).unwrap();
+    let selected = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();
+    let other = ring.bind(OutputTarget::Client(ClientId(1))).unwrap();
+    let module = ring.bind(OutputTarget::Module(ModuleId(7))).unwrap();
+    let sequence = ring
+        .print_level_bytes(
+            Some(OutputTarget::Local(ClientId(0))),
+            Some(ClientId(0)),
+            PrintKind::Center,
+            2,
+            b"received text",
+        )
+        .unwrap();
+    assert_eq!(consume(&mut ring, other, OutputSubmission::BestEffort), []);
+    assert_eq!(consume(&mut ring, module, OutputSubmission::BestEffort), []);
+    assert_eq!(
+        consume(&mut ring, presentation, OutputSubmission::BestEffort),
+        [sequence]
+    );
+    assert_eq!(ring.len(), 1);
+    let mut batch = ring.batch(selected).unwrap();
+    let record = ring.next(&mut batch).unwrap();
+    let FrameEvent::Print(print) = record.event else {
+        panic!("local print")
+    };
+    let display = ring.texts.lease(print.text).unwrap();
+    assert!(ring.submit(selected, record.sequence, OutputSubmission::BestEffort));
+    assert_eq!(ring.len(), 0);
+    assert_eq!(ring.texts.get(display.id()), Some(&b"received text"[..]));
+    ring.texts.release(display);
+    assert_eq!(ring.texts.get(print.text), None);
+}
+#[test]
 fn oversized_group_rejection_does_not_cancel_a_stalled_peer() {
     let mut ring = EventRing::load(2, 2, 2, 32).unwrap();
     let stalled = ring.bind(OutputTarget::Client(ClientId(0))).unwrap();

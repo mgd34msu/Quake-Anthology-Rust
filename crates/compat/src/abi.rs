@@ -192,6 +192,7 @@ type QcEntry =
 #[derive(Clone, Copy)]
 enum Handler {
     Shared(Entry),
+    ClientCommands(Entry),
     QuakeC(QcEntry),
 }
 #[derive(Clone, Copy)]
@@ -206,7 +207,7 @@ impl CallEntry {
         string_start: Option<usize>,
     ) -> Result<CallValue, CallError> {
         match self.handler {
-            Handler::Shared(entry) => entry(call, string_start),
+            Handler::Shared(entry) | Handler::ClientCommands(entry) => entry(call, string_start),
             Handler::QuakeC(_) => Err(CallError::Memory),
         }
     }
@@ -290,6 +291,14 @@ impl UnknownCalls {
     }
 }
 impl CallTable {
+    /// Resolved once when a CLIENT module is loaded, from its actual service
+    /// entries rather than its module format or frame phase.
+    pub fn consumes_server_commands(&self) -> bool {
+        self.entries
+            .iter()
+            .flatten()
+            .any(|entry| matches!(entry.handler, Handler::ClientCommands(_)))
+    }
     pub fn invoke(
         &self,
         number: u32,
@@ -391,7 +400,12 @@ const fn client() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
-    t.entries[53] = scalar!(client_server_command);
+    t.entries[53] = Some(CallEntry {
+        handler: Handler::ClientCommands(|call, _| {
+            client_server_command(call).map(CallValue::Word)
+        }),
+        quakec: None,
+    });
     t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[71] = scalar!(snap_vector);
     t.entries[89] = scalar!(file_seek);

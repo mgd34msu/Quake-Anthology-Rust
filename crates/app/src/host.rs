@@ -155,6 +155,7 @@ pub struct FrameHost {
     pub(crate) movement_handles: qa_console::movement::MovementHandles,
     notify_time: CvarHandle,
     center_time: CvarHandle,
+    pub(crate) team_chats_only: CvarHandle,
     volume: CvarHandle,
     mouse_enabled: CvarHandle,
     previous: Option<EventTime>,
@@ -238,6 +239,10 @@ impl FrameHost {
             .cvars
             .find("cg_centertime")
             .ok_or("missing cg_centertime")?;
+        let team_chats_only = console
+            .cvars
+            .find("cg_teamChatsOnly")
+            .ok_or("missing cg_teamChatsOnly")?;
         let timeline = Timeline::load(world_rate, providers.iter().map(|p| (p.module, p.rate)))
             .map_err(|e| format!("provider clocks: {e:?}"))?;
         providers.sort_unstable_by_key(|p| p.module.0);
@@ -277,6 +282,7 @@ impl FrameHost {
             movement_handles,
             notify_time,
             center_time,
+            team_chats_only,
             volume,
             mouse_enabled,
             previous: None,
@@ -694,7 +700,7 @@ impl FrameHost {
                         match incoming {
                             Incoming::Print(print) => {
                                 let _ = self.runtime.server.events.print_level_bytes(
-                                    None,
+                                    Some(qa_core::events::OutputTarget::Local(id)),
                                     Some(id),
                                     print.kind,
                                     print.level.unwrap_or(print.kind.default_level()),
