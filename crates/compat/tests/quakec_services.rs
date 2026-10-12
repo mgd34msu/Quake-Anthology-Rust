@@ -2247,3 +2247,235 @@ fn point_contents_reads_live_candidates_without_flushing_unrelated_dirty_rows() 
         assert_eq!(calls.services.server.area.bounds(id), bounds);
     });
 }
+
+#[test]
+fn makestatic_copies_native_signon_values_then_frees_the_original_lifetime() {
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        with_services(rules, |calls| {
+            let mut vm = seeded_vm(calls, 8);
+            let anchor = entity(calls, &vm, 0);
+            calls
+                .services
+                .storage
+                .bind_lifetime(calls.context.module, anchor)
+                .unwrap();
+            let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, value);
+            let models = calls
+                .services
+                .storage
+                .resources(calls.context.module)
+                .unwrap()[0];
+            let model = (ENGINE_CALLS.resource_index)(
+                calls.services,
+                calls.context.module,
+                models,
+                b"progs/flame.mdl",
+            )
+            .unwrap();
+            let name = vm.insert_string(b"progs/flame.mdl").unwrap() as u32;
+            write(&mut vm, value, b"model", &[name]);
+            write(&mut vm, value, b"modelindex", &[99.0f32.to_bits()]);
+            write(
+                &mut vm,
+                value,
+                b"origin",
+                &[-0.2f32, -0.999, 4096.2].map(f32::to_bits),
+            );
+            write(
+                &mut vm,
+                value,
+                b"angles",
+                &[1.9f32, 180.0, -1.9].map(f32::to_bits),
+            );
+            write(&mut vm, value, b"frame", &[258.9f32.to_bits()]);
+            write(&mut vm, value, b"skin", &[(-1.9f32).to_bits()]);
+            write(&mut vm, value, b"colormap", &[513.9f32.to_bits()]);
+            write(&mut vm, value, b"effects", &[999.0f32.to_bits()]);
+            let consumer = calls
+                .services
+                .server
+                .events
+                .bind(qa_core::events::OutputTarget::Client(ClientId(0)))
+                .unwrap();
+            parameters(&mut vm, &[&[value]]);
+            calls.call(&mut vm, 69, 1).unwrap();
+            assert!(calls.services.server.entities.resolve(id).is_none());
+            assert!(calls.services.server.area.bounds(id).is_none());
+            assert_eq!(read(&vm, value, b"model", 1), [0]);
+            assert_eq!(read(&vm, value, b"nextthink", 1), [(-1.0f32).to_bits()]);
+            assert_eq!(read(&vm, value, b"origin", 3), [0; 3]);
+            let rate = std::num::NonZeroU32::new(44100).unwrap();
+            let bank = std::sync::Arc::new(qa_audio::Bank::load(rate, Vec::new()).unwrap());
+            let sounds = calls
+                .services
+                .storage
+                .resources(calls.context.module)
+                .unwrap()[1];
+            calls
+                .services
+                .storage
+                .bind_sound_bank(calls.context.module, sounds, bank)
+                .unwrap();
+            assert_eq!(
+                calls
+                    .services
+                    .storage
+                    .publish_initial_signon(calls.services.server, calls.context),
+                Ok(1)
+            );
+            let mut batch = calls.services.server.events.batch(consumer).unwrap();
+            let record = calls.services.server.events.next(&mut batch).unwrap();
+            let qa_core::events::FrameEvent::StaticEntity(record) = record.event else {
+                panic!("static entity");
+            };
+            assert_eq!(record.position, Vec3([-0.125, -0.875, -4095.875]));
+            assert_eq!(
+                record.angles,
+                if rules == RuleSetId::Quake {
+                    Vec3([0.0, -180.0, 0.0])
+                } else {
+                    Vec3([1.40625, -180.0, -1.40625])
+                }
+            );
+            assert_eq!(
+                record.appearance.models[0],
+                ModelRef::native(ResourceNamespace::Module(calls.context.module), model)
+            );
+            assert_eq!(
+                (
+                    record.appearance.frame,
+                    record.appearance.skin,
+                    record.appearance.native.colormap,
+                    record.appearance.native.effects
+                ),
+                (2, 255, 1, 0)
+            );
+            calls.context.clock = ThinkTime::Seconds(4.0);
+            let reused = vm.spawn_entity(calls.services, calls.context).unwrap();
+            assert_eq!(reused, value);
+            assert_ne!(entity(calls, &vm, reused), id);
+            assert_eq!(record.position, Vec3([-0.125, -0.875, -4095.875]));
+        });
+    }
+}
+
+#[test]
+fn makestatic_rejects_protected_and_malformed_removal_without_retained_ghosts() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        let anchor = entity(calls, &vm, 0);
+        calls
+            .services
+            .storage
+            .bind_lifetime(calls.context.module, anchor)
+            .unwrap();
+        let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, value);
+        calls.services.server.entities.set_never_free(id, true);
+        let bytes = vm
+            .entities
+            .read(u64::from(value), vm.stride)
+            .unwrap()
+            .to_vec();
+        assert_eq!(
+            vm.make_static(calls.services, calls.context, value),
+            Err(CallError::Entity)
+        );
+        assert_eq!(
+            vm.make_static(calls.services, calls.context, 0),
+            Err(CallError::Entity)
+        );
+        assert_eq!(
+            vm.entities.read(u64::from(value), vm.stride).unwrap(),
+            bytes
+        );
+        assert!(calls.services.server.entities.resolve(id).is_some());
+        let rate = std::num::NonZeroU32::new(44100).unwrap();
+        let bank = std::sync::Arc::new(qa_audio::Bank::load(rate, Vec::new()).unwrap());
+        let sounds = calls
+            .services
+            .storage
+            .resources(calls.context.module)
+            .unwrap()[1];
+        calls
+            .services
+            .storage
+            .bind_sound_bank(calls.context.module, sounds, bank)
+            .unwrap();
+        assert_eq!(
+            calls
+                .services
+                .storage
+                .publish_initial_signon(calls.services.server, calls.context),
+            Ok(0)
+        );
+    });
+    for field in [
+        b"model".as_slice(),
+        b"frame",
+        b"skin",
+        b"colormap",
+        b"nextthink",
+        b"origin",
+        b"angles",
+        b"solid",
+        b"takedamage",
+        b"modelindex",
+    ] {
+        with_services(RuleSetId::Quake, |calls| {
+            let definitions: Vec<_> = FIELDS
+                .iter()
+                .copied()
+                .filter(|(_, _, name)| *name != field)
+                .collect();
+            let image = vm_with_definitions(8, GLOBALS, &definitions);
+            let mut vm = seed_vm(calls, image);
+            let anchor = entity(calls, &vm, 0);
+            calls
+                .services
+                .storage
+                .bind_lifetime(calls.context.module, anchor)
+                .unwrap();
+            let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+            let id = entity(calls, &vm, value);
+            let bytes = vm
+                .entities
+                .read(u64::from(value), vm.stride)
+                .unwrap()
+                .to_vec();
+            assert_eq!(
+                vm.make_static(calls.services, calls.context, value),
+                Err(CallError::Memory),
+                "{field:?}"
+            );
+            assert!(calls.services.server.entities.resolve(id).is_some());
+            assert_eq!(
+                vm.entities.read(u64::from(value), vm.stride).unwrap(),
+                bytes
+            );
+        });
+    }
+}
+
+#[test]
+fn makestatic_capacity_drop_still_releases_the_source_edict() {
+    with_services(RuleSetId::Quake, |calls| {
+        let mut vm = seeded_vm(calls, 8);
+        let anchor = entity(calls, &vm, 0);
+        calls
+            .services
+            .storage
+            .bind_lifetime(calls.context.module, anchor)
+            .unwrap();
+        for _ in 0..qa_compat::services::SIGNON_BYTES / 14 {
+            (ENGINE_CALLS.static_entity)(calls.services, calls.context, EntityRecord::default())
+                .unwrap();
+        }
+        let value = vm.spawn_entity(calls.services, calls.context).unwrap();
+        let id = entity(calls, &vm, value);
+        assert_eq!(vm.make_static(calls.services, calls.context, value), Ok(()));
+        assert!(calls.services.server.entities.resolve(id).is_none());
+        assert_eq!(calls.services.server.events.rejected_publications(), 1);
+    });
+}

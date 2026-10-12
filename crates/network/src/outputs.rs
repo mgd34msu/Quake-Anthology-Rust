@@ -7,12 +7,14 @@ use qa_core::primitives::{PrintKind, RuleSetId};
 
 mod configstrings;
 mod cues;
+mod static_entities;
 pub use configstrings::{
     ConfigChunk, ConfigCommandReader, ConfigString, config_command, configstring,
     read_configstring, read_configstrings,
 };
 use cues::project_cue;
 pub use cues::{Cue, MuzzleFlash, MuzzleFormat, Sound, read_cue, sound, write_cue};
+pub use static_entities::{STATIC_ENTITY_BYTES, read_static_entity, static_entity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

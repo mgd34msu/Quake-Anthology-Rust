@@ -557,13 +557,16 @@ impl EntityTable {
         true
     }
 
+    pub fn can_release(&self, id: EntityId) -> bool {
+        self.resolve(id)
+            .is_some_and(|slot| slot >= self.reserved && !self.never_free[slot])
+    }
+
     pub fn release(&mut self, id: EntityId, now: ThinkTime) -> bool {
-        let Some(slot) = self.resolve(id) else {
-            return false;
-        };
-        if slot < self.reserved || self.never_free[slot] {
+        if !self.can_release(id) {
             return false;
         }
+        let slot = id.slot as usize;
         self.free_bits.insert(slot);
         self.live_count -= 1;
         self.freed_at[slot] = Some(self.reuse[slot].freetime(now));

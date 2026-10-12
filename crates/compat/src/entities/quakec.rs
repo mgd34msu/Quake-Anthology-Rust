@@ -190,6 +190,20 @@ impl QuakeCLayout {
         memory.write_vec3(address + field.ok_or(CallError::Memory)? as u64, value)?;
         Ok(())
     }
+    fn removal_words(self) -> [Option<usize>; 7] {
+        [
+            self.model,
+            self.take_damage,
+            self.model_index,
+            self.colormap,
+            self.skin,
+            self.frame,
+            self.solid,
+        ]
+    }
+    fn removal_vectors(self) -> [Option<usize>; 2] {
+        [self.origin, self.angles]
+    }
     fn link_fields(self, memory: &ModuleMemory<'_>, address: u64) -> Result<(), CallError> {
         for field in [
             self.origin,
@@ -562,6 +576,38 @@ impl EntityProjection {
             .fill(0);
         u32::try_from(address).map_err(|_| CallError::Memory)
     }
+    fn quakec_removal(
+        &self,
+        services: &EngineServices<'_>,
+        memory: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(NativeEntity, EntityId), CallError> {
+        let native = self.quakec_identity(memory, context, value)?;
+        let entity = self
+            .binding(&services.server.entities, native)?
+            .ok_or(CallError::Entity)?;
+        let binding = self.bindings[native.slot as usize].ok_or(CallError::Entity)?;
+        if native.slot == 0 || !binding.owned || !services.server.entities.can_release(entity) {
+            return Err(CallError::Entity);
+        }
+        let layout = self.quakec_layout()?;
+        for field in layout
+            .removal_words()
+            .into_iter()
+            .chain([layout.next_think])
+        {
+            memory.read(u64::from(value) + field.ok_or(CallError::Memory)? as u64, 4)?;
+        }
+        for field in layout.removal_vectors() {
+            memory.read(
+                u64::from(value) + field.ok_or(CallError::Memory)? as u64,
+                12,
+            )?;
+        }
+        Ok((native, entity))
+    }
+
     pub(crate) fn quakec_remove(
         &mut self,
         services: &mut EngineServices<'_>,
@@ -569,37 +615,107 @@ impl EntityProjection {
         context: CallContext,
         value: u32,
     ) -> Result<(), CallError> {
-        let native = self.quakec_identity(memory, context, value)?;
-        let entity = self
-            .binding(&services.server.entities, native)?
-            .ok_or(CallError::Entity)?;
+        let (native, entity) = self.quakec_removal(services, memory, context, value)?;
+        self.quakec_free_validated(services, memory, context, value, native, entity)
+    }
+
+    fn quakec_free_validated(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+        native: NativeEntity,
+        entity: EntityId,
+    ) -> Result<(), CallError> {
         let slot = native.slot as usize;
-        let binding = self.bindings[slot].ok_or(CallError::Entity)?;
-        // World/client lifetime ownership remains at the session boundary.
-        if slot == 0 || !binding.owned {
-            return Err(CallError::Entity);
-        }
         let layout = self.quakec_layout()?;
         (ENGINE_CALLS.free)(services, context, entity)?;
         self.bindings[slot]
             .as_mut()
             .ok_or(CallError::Entity)?
             .freed_at = Some(context.allocation.reuse.freetime(context.clock));
-        for field in [
-            layout.model,
-            layout.take_damage,
-            layout.model_index,
-            layout.colormap,
-            layout.skin,
-            layout.frame,
-            layout.solid,
-        ] {
+        for field in layout.removal_words() {
             layout.write_number(memory, value as u64, field, 0.0)?;
         }
-        for field in [layout.origin, layout.angles] {
+        for field in layout.removal_vectors() {
             layout.write_vector(memory, value as u64, field, Vec3::default())?;
         }
         layout.write_number(memory, value as u64, layout.next_think, -1.0)
+    }
+    pub(crate) fn quakec_make_static(
+        &mut self,
+        services: &mut EngineServices<'_>,
+        memory: &mut ModuleMemory<'_>,
+        strings: &ModuleMemory<'_>,
+        context: CallContext,
+        value: u32,
+    ) -> Result<(), CallError> {
+        use qa_core::{
+            math::{AngleByteForm, angle_to_byte, byte_to_angle, narrow_eighth},
+            primitives::EntityRecord,
+        };
+        let (native, entity) = self.quakec_removal(services, memory, context, value)?;
+        let layout = self.quakec_layout()?;
+        let address = u64::from(value);
+        let model = strings.cstring(u64::from(layout.word(memory, address, layout.model)?))?;
+        let models = services
+            .storage
+            .resources(context.module)
+            .ok_or(CallError::ConfigString)?[0];
+        let ordinal = (ENGINE_CALLS.resource_find)(services, context.module, models, model)?
+            .ok_or(CallError::Geometry)?;
+        let byte = |field| -> Result<u8, CallError> {
+            Ok(
+                crate::numbers::native_integer(f64::from(layout.number(memory, address, field)?))
+                    as u8,
+            )
+        };
+        let angle_form = if context.native_rules == RuleSetId::QuakeWorld {
+            AngleByteForm::Float
+        } else {
+            AngleByteForm::Integral
+        };
+        let record = EntityRecord {
+            position: Vec3(
+                layout
+                    .vector(memory, address, layout.origin)?
+                    .0
+                    .map(narrow_eighth),
+            ),
+            angles: Vec3(
+                layout
+                    .vector(memory, address, layout.angles)?
+                    .0
+                    .map(|angle| byte_to_angle(angle_to_byte(angle, angle_form) as i8 as i32)),
+            ),
+            appearance: EntityAppearance {
+                source: context.native_rules,
+                models: [
+                    ModelRef::native(
+                        ResourceNamespace::Module(context.module),
+                        ordinal as u8 as u32,
+                    ),
+                    None,
+                    None,
+                    None,
+                ],
+                frame: i32::from(byte(layout.frame)?),
+                skin: i32::from(byte(layout.skin)?),
+                native: NativeAppearanceTail {
+                    colormap: u32::from(byte(layout.colormap)?),
+                    ..NativeAppearanceTail::default()
+                },
+                ..EntityAppearance::default()
+            },
+            ..EntityRecord::default()
+        };
+        match (ENGINE_CALLS.static_entity)(services, context, record) {
+            Ok(_) | Err(CallError::Capacity) => {
+                self.quakec_free_validated(services, memory, context, value, native, entity)
+            }
+            Err(error) => Err(error),
+        }
     }
     pub(crate) fn quakec_set_origin(
         &mut self,

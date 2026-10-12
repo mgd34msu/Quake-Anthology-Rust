@@ -495,6 +495,13 @@ impl Commands {
                     (Protocol::NetQuake15 | Protocol::QuakeWorld28, 1)
                     | (Protocol::Quake2_34 | Protocol::Quake2Repro1038, 6) => at += 1,
                     (Protocol::NetQuake15, 4) => {
+                        let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
+                        if reader.read_bits(32)? != self.protocol.number() {
+                            return Err(packet::Error::Context);
+                        }
+                        at += 1 + reader.byte_position();
+                    }
+                    (Protocol::NetQuake15, 7) => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;
                         let mut reader = Reader::new(&scratch[at + 1..], Encoding::Bytes);
                         packet.time = qa_core::primitives::ThinkTime::Seconds(f64::from(
@@ -511,6 +518,16 @@ impl Commands {
                             crate::states::read_nq_player(&mut reader, storage.weapon_is_mask)?;
                         packet.changed = true;
                         at += reader.byte_position();
+                    }
+                    (Protocol::NetQuake15 | Protocol::QuakeWorld28, 20) => {
+                        let (record, length) = crate::outputs::read_static_entity(
+                            self.protocol,
+                            &scratch[at..],
+                            namespace,
+                        )
+                        .map_err(|_| packet::Error::Context)?;
+                        consume(Incoming::StaticEntity(record));
+                        at += length;
                     }
                     (Protocol::NetQuake15, opcode) if opcode & 128 != 0 => {
                         let packet = nq.as_mut().ok_or(packet::Error::Context)?;

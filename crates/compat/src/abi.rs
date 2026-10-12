@@ -659,6 +659,7 @@ const fn quakec() -> CallTable {
         handler: Handler::QuakeC(qc_precache_file),
         quakec: Some(strings),
     });
+    t.entries[69] = qc!(qc_make_static, 1, 0, true);
     t.entries[74] = Some(CallEntry {
         handler: Handler::QuakeC(qc_ambient_sound),
         quakec: Some(QcSignature::new(
@@ -967,6 +968,14 @@ fn qc_precached_sound(
         Ok(_) | Err(CallError::Capacity) => Ok(None),
         Err(error) => Err(error),
     }
+}
+fn qc_make_static(
+    c: &mut QuakeCCalls<'_, '_>,
+    vm: &mut quakec::Vm,
+    arguments: &[u64],
+) -> Result<CallValue, CallError> {
+    vm.make_static(c.services, c.context, qc_word(arguments, 0)?)?;
+    Ok(CallValue::Word(0))
 }
 fn qc_ambient_sound(
     c: &mut QuakeCCalls<'_, '_>,

@@ -87,6 +87,7 @@ pub enum Incoming<'a> {
     PlayerInfo(crate::states::QwPlayerInfo),
     Print(crate::outputs::Print<'a>),
     ConfigString(crate::outputs::ConfigString<'a>),
+    StaticEntity(qa_core::primitives::EntityRecord),
     Cue {
         cue: crate::outputs::Cue,
         current: Option<crate::snapshots::ReceivedFrame<'a>>,

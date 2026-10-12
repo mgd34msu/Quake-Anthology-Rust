@@ -1,6 +1,6 @@
 use qa_compat::services::{
-    AMBIENT_CAPACITY, AmbientCursor, AmbientSound, CallContext, CallError, ENGINE_CALLS,
-    EngineServices, ServiceStorage,
+    AmbientSound, CallContext, CallError, ENGINE_CALLS, EngineServices, SIGNON_BYTES,
+    ServiceStorage, SignonCursor,
 };
 use qa_console::{command_buffer::CommandBuffer, cvars::Cvars, views::Context};
 use qa_core::{
@@ -165,7 +165,7 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
         assert_eq!(
             services
                 .storage
-                .publish_initial_ambients(services.server, context),
+                .publish_initial_signon(services.server, context),
             Ok(0)
         );
         assert!(drain(services, consumer).is_empty());
@@ -176,13 +176,13 @@ fn cold_registration_waits_for_real_loop_binding_and_keeps_independent_source_ro
         assert_eq!(
             services
                 .storage
-                .publish_initial_ambients(services.server, context),
+                .publish_initial_signon(services.server, context),
             Ok(1)
         );
         assert_eq!(
             services
                 .storage
-                .publish_initial_ambients(services.server, context),
+                .publish_initial_signon(services.server, context),
             Ok(0)
         );
         let records = drain(services, consumer);
@@ -238,7 +238,7 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
         assert_eq!(
             services
                 .storage
-                .publish_initial_ambients(services.server, context),
+                .publish_initial_signon(services.server, context),
             Ok(1)
         );
         assert_eq!(drain(services, first).len(), 1);
@@ -253,22 +253,22 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
         assert_eq!(
             services
                 .storage
-                .publish_initial_ambients(services.server, context),
+                .publish_initial_signon(services.server, context),
             Ok(0)
         );
         assert!(drain(services, first).is_empty());
         assert!(drain(services, second).is_empty());
-        let mut cursor = AmbientCursor::default();
+        let mut cursor = SignonCursor::default();
         assert_eq!(
             services
                 .storage
-                .publish_ambients(services.server, context, ClientId(1), &mut cursor),
+                .publish_signon(services.server, context, ClientId(1), &mut cursor),
             Ok(2)
         );
         assert_eq!(
             services
                 .storage
-                .publish_ambients(services.server, context, ClientId(1), &mut cursor),
+                .publish_signon(services.server, context, ClientId(1), &mut cursor),
             Ok(0)
         );
         assert!(drain(services, first).is_empty());
@@ -286,14 +286,14 @@ fn post_attachment_registrations_are_only_for_explicit_late_client_signon() {
         assert_eq!(
             services
                 .storage
-                .publish_ambients(services.server, context, ClientId(0), &mut cursor),
+                .publish_signon(services.server, context, ClientId(0), &mut cursor),
             Err(CallError::Entity)
         );
-        let mut other = AmbientCursor::default();
+        let mut other = SignonCursor::default();
         assert_eq!(
             services
                 .storage
-                .publish_ambients(services.server, context, ClientId(0), &mut other),
+                .publish_signon(services.server, context, ClientId(0), &mut other),
             Ok(2)
         );
         assert_eq!(drain(services, first).len(), 2);
@@ -325,13 +325,13 @@ fn unresolved_or_nonloop_samples_never_gain_fake_handles_and_module_slots_do_not
             assert_eq!(
                 services
                     .storage
-                    .publish_initial_ambients(services.server, context),
+                    .publish_initial_signon(services.server, context),
                 Ok(1)
             );
             assert_eq!(
                 services
                     .storage
-                    .publish_initial_ambients(services.server, context),
+                    .publish_initial_signon(services.server, context),
                 Ok(0)
             );
         }
@@ -362,10 +362,10 @@ fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map()
         (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)).unwrap();
         let bank = bank();
         attach(services, context, &bank);
-        let mut cursor = AmbientCursor::default();
+        let mut cursor = SignonCursor::default();
         services
             .storage
-            .publish_ambients(services.server, context, ClientId(0), &mut cursor)
+            .publish_signon(services.server, context, ClientId(0), &mut cursor)
             .unwrap();
         let started = sound(drain(services, consumer)[0]);
         let sounds = services.storage.resources(context.module).unwrap()[1];
@@ -400,7 +400,7 @@ fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map()
         assert_eq!(
             services
                 .storage
-                .publish_initial_ambients(services.server, context),
+                .publish_initial_signon(services.server, context),
             Err(CallError::Entity)
         );
         let replacement = services
@@ -417,7 +417,7 @@ fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map()
         assert_eq!(
             services
                 .storage
-                .publish_ambients(services.server, context, ClientId(0), &mut cursor),
+                .publish_signon(services.server, context, ClientId(0), &mut cursor),
             Err(CallError::Entity)
         );
         assert_eq!(
@@ -427,11 +427,11 @@ fn stop_keeps_real_identity_after_resource_changes_and_rebind_discards_old_map()
             Ok(0)
         );
         assert_eq!(
-            services.storage.publish_ambients(
+            services.storage.publish_signon(
                 services.server,
                 context,
                 ClientId(0),
-                &mut AmbientCursor::default()
+                &mut SignonCursor::default()
             ),
             Ok(0)
         );
@@ -456,7 +456,7 @@ fn reservation_is_bounded_and_does_not_publish_during_registration() {
             (ENGINE_CALLS.ambient)(services, context, descriptor(sounds.count)),
             Err(CallError::ConfigString)
         );
-        for slot in 0..AMBIENT_CAPACITY {
+        for slot in 0..SIGNON_BYTES / 10 {
             assert_eq!(
                 (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)),
                 Ok(slot as u32)
@@ -467,5 +467,118 @@ fn reservation_is_bounded_and_does_not_publish_during_registration() {
             Err(CallError::Capacity)
         );
         assert!(drain(services, consumer).is_empty());
+    });
+}
+
+#[test]
+fn mixed_static_and_sound_signon_keeps_one_order_and_independent_late_cursors() {
+    with_services(|services, [context, _]| {
+        let consumer = services
+            .server
+            .events
+            .bind(OutputTarget::Client(ClientId(0)))
+            .unwrap();
+        let ordinal = precache(services, context, b"misc/loop.wav");
+        let models = services.storage.resources(context.module).unwrap()[0];
+        let model =
+            (ENGINE_CALLS.resource_index)(services, context.module, models, b"progs/flame.mdl")
+                .unwrap();
+        let entity = EntityRecord {
+            position: Vec3([1.0, 2.0, 3.0]),
+            appearance: EntityAppearance {
+                source: context.native_rules,
+                models: [
+                    ModelRef::native(ResourceNamespace::Module(context.module), model),
+                    None,
+                    None,
+                    None,
+                ],
+                frame: 7,
+                ..EntityAppearance::default()
+            },
+            ..EntityRecord::default()
+        };
+        let lives = services.server.entities.len();
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)),
+            Ok(0)
+        );
+        assert_eq!(
+            (ENGINE_CALLS.static_entity)(services, context, entity),
+            Ok(1)
+        );
+        assert_eq!(services.server.entities.len(), lives);
+        assert!(drain(services, consumer).is_empty());
+        attach(services, context, &bank());
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_signon(services.server, context),
+            Ok(2)
+        );
+        let initial = drain(services, consumer);
+        assert!(matches!(initial[0].event, FrameEvent::Sound(_)));
+        assert!(matches!(initial[1].event, FrameEvent::StaticEntity(value) if value == entity));
+        assert_eq!(
+            (ENGINE_CALLS.static_entity)(services, context, EntityRecord::default()),
+            Ok(2)
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_initial_signon(services.server, context),
+            Ok(0)
+        );
+        assert!(drain(services, consumer).is_empty());
+        let mut cursor = SignonCursor::default();
+        assert_eq!(
+            services
+                .storage
+                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            Ok(3)
+        );
+        let late = drain(services, consumer);
+        assert!(matches!(late[1].event, FrameEvent::StaticEntity(value) if value == entity));
+        assert!(
+            matches!(late[2].event, FrameEvent::StaticEntity(value) if value == EntityRecord::default())
+        );
+        assert_eq!(
+            services
+                .storage
+                .publish_signon(services.server, context, ClientId(0), &mut cursor),
+            Ok(0)
+        );
+        assert_eq!(
+            services
+                .storage
+                .stop_ambients(services.server, context, Some(ClientId(0))),
+            Ok(1)
+        );
+        assert!(drain(services, consumer).iter().all(
+            |row| matches!(row.event, FrameEvent::Sound(sound) if sound.action == SoundAction::Stop)
+        ));
+    });
+}
+
+#[test]
+fn static_models_and_sounds_share_the_same_native_byte_budget_and_rejection_counter() {
+    with_services(|services, [context, _]| {
+        let ordinal = precache(services, context, b"misc/loop.wav");
+        for slot in 0..SIGNON_BYTES / 14 {
+            assert_eq!(
+                (ENGINE_CALLS.static_entity)(services, context, EntityRecord::default()),
+                Ok(slot as u32)
+            );
+        }
+        assert_eq!(
+            (ENGINE_CALLS.ambient)(services, context, descriptor(ordinal)),
+            Err(CallError::Capacity)
+        );
+        assert_eq!(services.server.events.rejected_publications(), 1);
+        assert_eq!(
+            (ENGINE_CALLS.static_entity)(services, context, EntityRecord::default()),
+            Err(CallError::Capacity)
+        );
+        assert_eq!(services.server.events.rejected_publications(), 2);
     });
 }

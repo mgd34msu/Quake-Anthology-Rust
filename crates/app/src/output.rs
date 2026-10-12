@@ -116,6 +116,7 @@ pub fn dispatch(
                     FrameEvent::Native(_) => true,
                     FrameEvent::Hud(_) => true,
                     FrameEvent::ConfigString { .. } => true,
+                    FrameEvent::StaticEntity(_) => true,
                 };
                 if submitted {
                     OutputSubmission::BestEffort
@@ -323,88 +324,57 @@ pub fn dispatch(
                                     OutputSubmission::BestEffort
                                 }
                             }
-                            FrameEvent::Sound(event) => {
-                                let projected = runtime.config_publications[slot].project_sound(
-                                    delivery.module,
-                                    event.source_ordinal,
-                                    event.sound,
-                                );
-                                if let Some((ordinal, readiness)) = projected {
-                                    match readiness {
-                                        crate::client_resources::ResourceReadiness::Pending => {
-                                            OutputSubmission::Unsent
+                            FrameEvent::Sound(_) | FrameEvent::StaticEntity(_) => {
+                                let encoded = connection
+                                    .commands
+                                    .as_ref()
+                                    .ok_or(qa_network::outputs::Error::Unsupported)
+                                    .and_then(|commands| {
+                                        encode_record(
+                                            record.event,
+                                            delivery,
+                                            commands.protocol,
+                                            client_id,
+                                            client.module,
+                                            &server.entities,
+                                            &mut runtime.native_numbers[slot],
+                                            &runtime.config_publications[slot],
+                                            &mut runtime.output_native_bytes,
+                                        )
+                                    });
+                                match encoded {
+                                    Err(qa_network::outputs::Error::Pending) => {
+                                        OutputSubmission::Unsent
+                                    }
+                                    Err(_) => {
+                                        counts.native_unsupported += 1;
+                                        OutputSubmission::BestEffort
+                                    }
+                                    Ok(length) => match native::submit_encoded(
+                                        connection,
+                                        record.sequence,
+                                        delivery,
+                                        &runtime.output_native_bytes[..length],
+                                        time,
+                                        |bytes| {
+                                            crate::transport::admit_output(
+                                                &mut runtime.loopback,
+                                                source,
+                                                route,
+                                                bytes,
+                                            )
+                                        },
+                                    ) {
+                                        Ok((submission, submitted)) => {
+                                            completed = submitted.complete;
+                                            counts.add_native(&submitted);
+                                            submission
                                         }
-                                        crate::client_resources::ResourceReadiness::Unsupported => {
+                                        Err(()) => {
                                             counts.native_unsupported += 1;
                                             OutputSubmission::BestEffort
                                         }
-                                        crate::client_resources::ResourceReadiness::Ready => {
-                                            let entity = sound_entity(
-                                                &server.entities,
-                                                &mut runtime.native_numbers[slot],
-                                                event.entity,
-                                                delivery.module,
-                                            );
-                                            if event.entity.is_some()
-                                                && entity.is_none()
-                                                && !matches!(
-                                                    event.entity,
-                                                    Some(SoundEmitter::Static { .. })
-                                                )
-                                            {
-                                                counts.native_unsupported += 1;
-                                                return OutputSubmission::BestEffort;
-                                            }
-                                            let positioned = delivery.reliable
-                                            && connection.commands.as_ref().is_some_and(|commands| commands.protocol == qa_network::commands::packet::Protocol::Quake2Repro1038);
-                                            match connection.commands.as_ref().ok_or(()).and_then(
-                                                |commands| {
-                                                    qa_network::outputs::sound(
-                                                        commands.protocol,
-                                                        event,
-                                                        ordinal,
-                                                        entity,
-                                                        positioned,
-                                                        &mut runtime.output_native_bytes,
-                                                    )
-                                                    .map_err(|_| ())
-                                                },
-                                            ) {
-                                                Ok(length) => match native::submit_encoded(
-                                                    connection,
-                                                    record.sequence,
-                                                    delivery,
-                                                    &runtime.output_native_bytes[..length],
-                                                    time,
-                                                    |bytes| {
-                                                        crate::transport::admit_output(
-                                                            &mut runtime.loopback,
-                                                            source,
-                                                            route,
-                                                            bytes,
-                                                        )
-                                                    },
-                                                ) {
-                                                    Ok((submission, submitted)) => {
-                                                        completed = submitted.complete;
-                                                        counts.add_native(&submitted);
-                                                        submission
-                                                    }
-                                                    Err(()) => {
-                                                        counts.native_unsupported += 1;
-                                                        OutputSubmission::BestEffort
-                                                    }
-                                                },
-                                                Err(()) => {
-                                                    counts.native_unsupported += 1;
-                                                    OutputSubmission::BestEffort
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    counts.native_unsupported += 1;
-                                    OutputSubmission::BestEffort
+                                    },
                                 }
                             }
                             _ => {
@@ -597,6 +567,74 @@ fn delivery_visible(
                 )
                 .unwrap_or(false)
         }),
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Native field projection uses the existing independently owned client/resource/entity boundaries."
+)]
+fn encode_record(
+    event: FrameEvent,
+    delivery: NativeDelivery,
+    protocol: qa_network::commands::packet::Protocol,
+    client: ClientId,
+    client_module: ModuleId,
+    entities: &qa_world::entities::EntityTable,
+    numbers: &mut crate::output_namespace::NativeNumbers,
+    publication: &crate::client_resources::ConfigPublication,
+    output: &mut [u8],
+) -> Result<usize, qa_network::outputs::Error> {
+    use crate::client_resources::ResourceReadiness;
+    use qa_network::{commands::packet::Protocol, outputs::Error};
+    let (ordinal, readiness) = match event {
+        FrameEvent::Sound(sound) => publication
+            .project_sound(delivery.module, sound.source_ordinal, sound.sound)
+            .ok_or(Error::Unsupported)?,
+        FrameEvent::StaticEntity(record) => {
+            if !matches!(protocol, Protocol::NetQuake15 | Protocol::QuakeWorld28) {
+                return Err(Error::Unsupported);
+            }
+            let layout = protocol.config_layout().ok_or(Error::Unsupported)?;
+            if let Some(reference) = record.appearance.models[0] {
+                let ordinal = crate::client_resources::model_ordinal(
+                    reference,
+                    Some(client_module),
+                    client,
+                    layout.resources[0].count,
+                )
+                .ok_or(Error::Unsupported)?;
+                (
+                    ordinal,
+                    publication.readiness(layout.resources[0].first as usize + ordinal as usize),
+                )
+            } else {
+                (0, ResourceReadiness::Ready)
+            }
+        }
+        _ => return Err(Error::Unsupported),
+    };
+    match readiness {
+        ResourceReadiness::Pending => return Err(Error::Pending),
+        ResourceReadiness::Unsupported => return Err(Error::Unsupported),
+        ResourceReadiness::Ready => {}
+    }
+    match event {
+        FrameEvent::Sound(sound) => {
+            let entity = sound_entity(entities, numbers, sound.entity, delivery.module);
+            if sound.entity.is_some()
+                && entity.is_none()
+                && !matches!(sound.entity, Some(SoundEmitter::Static { .. }))
+            {
+                return Err(Error::Unsupported);
+            }
+            let positioned = delivery.reliable && protocol == Protocol::Quake2Repro1038;
+            qa_network::outputs::sound(protocol, sound, ordinal, entity, positioned, output)
+        }
+        FrameEvent::StaticEntity(record) => {
+            qa_network::outputs::static_entity(protocol, &record, |_| Some(ordinal), output)
+        }
+        _ => Err(Error::Unsupported),
     }
 }
 

@@ -2,15 +2,10 @@
 //! This value borrows no engine ownership; namespaces remain caller-selected.
 use super::{Convert, Field};
 use crate::{commands::packet::Protocol, states};
-use qa_core::primitives::{EntityAppearance, ModelRef, ResourceNamespace, RuleSetId, Vec3};
+use qa_core::primitives::{
+    EntityAppearance, EntityRecord, ModelRef, ResourceNamespace, RuleSetId,
+};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct EntityRecord {
-    pub position: Vec3,
-    pub velocity: Vec3,
-    pub angles: Vec3,
-    pub appearance: EntityAppearance,
-}
 #[derive(Clone, Copy)]
 enum Source {
     Position(usize),

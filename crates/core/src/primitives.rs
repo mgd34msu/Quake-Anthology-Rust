@@ -621,6 +621,15 @@ impl Default for EntityAppearance {
     }
 }
 
+/// Retained entity presentation at a file, module or wire boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EntityRecord {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub angles: Vec3,
+    pub appearance: EntityAppearance,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewWeapon {
     pub model: Option<ModelRef>,

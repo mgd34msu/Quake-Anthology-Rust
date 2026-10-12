@@ -1,7 +1,8 @@
 use crate::primitives::{
-    ClientId, EffectEvent, HudEvent, ModuleId, NATIVE_CUE_CAPTURE_BYTES, NATIVE_PAYLOAD_BYTES,
-    NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES, NativeDelivery, NativePayload,
-    NativeTarget, PrintEvent, PrintKind, RuleSetId, SoundEvent, TextId, TextLease,
+    ClientId, EffectEvent, EntityRecord, HudEvent, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
+    NATIVE_PAYLOAD_BYTES, NATIVE_PAYLOAD_PAGES, NATIVE_WIRE_BYTES, NATIVE_WIRE_PAGES,
+    NativeDelivery, NativePayload, NativeTarget, PrintEvent, PrintKind, RuleSetId, SoundEvent,
+    TextId, TextLease,
 };
 use std::fmt::{self, Write};
 
@@ -15,6 +16,7 @@ pub const CONSOLE_DISPLAY_RECORDS: usize = 128;
 )]
 pub enum FrameEvent {
     Sound(SoundEvent),
+    StaticEntity(EntityRecord),
     Effect(EffectEvent),
     Print(PrintEvent),
     Hud(HudEvent),

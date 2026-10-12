@@ -535,10 +535,10 @@ impl FrameHost {
             }
         }
         self.bind_output_sounds(bank);
-        self.publish_module_ambients();
+        self.publish_module_signon();
         Ok(())
     }
-    pub(crate) fn publish_module_ambients(&mut self) {
+    pub(crate) fn publish_module_signon(&mut self) {
         let Some(modules) = &mut self.modules else {
             return;
         };
@@ -550,7 +550,7 @@ impl FrameHost {
             context.clock = row.time(self.time);
             if row
                 .storage
-                .publish_initial_ambients(&mut self.runtime.server, context)
+                .publish_initial_signon(&mut self.runtime.server, context)
                 .is_err()
             {
                 row.counts.rejected += 1;

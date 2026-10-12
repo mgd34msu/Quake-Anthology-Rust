@@ -58,6 +58,237 @@ fn reference(client: ClientId) -> ModelRef {
 }
 
 #[test]
+fn retained_static_aliases_share_the_dynamic_scene_path_without_source_edicts() {
+    use qa_app::client_resources::ClientResources;
+
+    let fixture = support::Fixture::models();
+    let mut assets = Assets::load().unwrap();
+    let palette = support::palette(&mut assets);
+    let request = ModelRequest::native("progs/test.mdl", RuleSetId::Quake, Some(palette));
+    let (assets, models) =
+        ModelCatalog::load(&fixture.vfs, assets, [request], [], ModelLimits::default()).unwrap();
+    let client = ClientId(7);
+    let mut resources = ClientResources::load(client, Protocol::QuakeWorld28, RuleSetId::Quake)
+        .unwrap()
+        .unwrap();
+    let model_index = resources.state.layout.resources[0].get(50).unwrap();
+    assert!(resources.apply(model_index, request.path.as_bytes(), None, None));
+    assert_eq!(
+        resources
+            .state
+            .models
+            .bind_all(&resources.state.configs, &models, request.profile()),
+        0
+    );
+    let mut source_edict = EntityRecord {
+        position: Vec3([12.0, 24.0, 48.0]),
+        angles: Vec3([20.0, 45.0, 10.0]),
+        appearance: EntityAppearance {
+            source: RuleSetId::QuakeWorld,
+            models: [
+                ModelRef::native(ResourceNamespace::Module(ModuleId(3)), 50),
+                None,
+                None,
+                None,
+            ],
+            frame: 1,
+            native: qa_core::primitives::NativeAppearanceTail {
+                colormap: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(resources.state.receive_static_entity(source_edict));
+    let retained = resources.state.static_entities()[0];
+    assert_eq!(retained.appearance.models[0], Some(reference(client)));
+    assert_eq!(retained.appearance.native.colormap, 3);
+    assert_eq!(retained.appearance.native.effects, 0);
+
+    let projection = EntityProjection::load(Protocol::QuakeWorld28);
+    let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
+    let player = PlayerState::default();
+    let input = ClientSceneInput {
+        client,
+        current: None,
+        previous: None,
+        projection: &projection,
+        player_projection: &player_projection,
+        bindings: &resources.state.models,
+        models: &models,
+        static_entities: resources.state.static_entities(),
+        player: &player,
+        alias_roll: AliasRoll::default(),
+        interpolation: Interpolation {
+            fraction: 0.25,
+            ..Default::default()
+        },
+        gun_animation: None,
+        gun_previous: None,
+        view_entity: Some(3),
+    };
+    let mut frontend = FrontEnd::load(Limits::default()).unwrap();
+    let mut frame = frontend.begin_frame([0; 4]).unwrap();
+    let counts = input.append(&mut frame, &assets, &Refdef::default(), true);
+    assert_eq!(counts.entities, 1);
+    assert_eq!(counts.models, 1);
+    assert_eq!(
+        (counts.rejected, counts.unsupported, counts.missing_models),
+        (0, 0, 0)
+    );
+    let scene = frame.finish();
+    let copied = scene.entity(0);
+    assert_eq!(copied.origin, retained.position);
+    assert_eq!(copied.frame, 1);
+    assert_eq!(copied.old_frame, 1);
+    assert_eq!(copied.back_lerp, 0.0);
+    assert_eq!(
+        copied.axes,
+        qa_core::math::angle_vectors(Vec3([-20.0, 45.0, 10.0])).axes()
+    );
+    let static_model = copied.model;
+    let static_material = copied.material;
+    assert!(frontend.recycle(scene).is_ok());
+
+    // Reusing the native source edict changes accepted dynamic rows, not the
+    // independent signon copy. A static colormap is the global colormap, even
+    // when its byte happens to equal a native player number.
+    source_edict.position = Vec3([100.0, 200.0, 300.0]);
+    source_edict.appearance.frame = 0;
+    source_edict.appearance.native.colormap = 0;
+    let mut words = [0; states::QW_ENTITY_WORDS];
+    assert!(projection.reduce(&source_edict, &mut words, |model| Some(model.ordinal)));
+    let rows = [Entity { number: 3, words }];
+    let native_player = [];
+    let current = Frame {
+        sequence: 2,
+        time: ThinkTime::Seconds(1.0),
+        command: 0,
+        flags: 0,
+        qw_peers: 0,
+        areas: &[],
+        player: &native_player,
+        entities: &rows,
+    };
+    let changed = ClientSceneInput {
+        current: Some(ReceivedFrame::QuakeWorld(current)),
+        ..input
+    };
+    let mut frame = frontend.begin_frame([0; 4]).unwrap();
+    let counts = changed.append(&mut frame, &assets, &Refdef::default(), true);
+    assert_eq!(counts.entities, 2);
+    assert_eq!(counts.models, 1);
+    let scene = frame.finish();
+    assert_eq!(scene.entity(0).origin, retained.position);
+    assert_eq!(scene.entity(0).model, static_model);
+    assert_eq!(scene.entity(0).material, static_material);
+    assert_eq!((scene.entity(0).frame, scene.entity(0).old_frame), (1, 1));
+    assert_eq!(scene.entity(0).back_lerp, 0.0);
+    assert_eq!(resources.state.static_entities(), &[retained]);
+}
+
+#[test]
+fn static_entity_admission_and_scene_capacity_reject_without_growing() {
+    use qa_app::client_resources::ClientResources;
+
+    let client = ClientId(9);
+    let mut resources = ClientResources::load(client, Protocol::QuakeWorld28, RuleSetId::Quake)
+        .unwrap()
+        .unwrap();
+    let capacity = resources.state.static_entity_capacity();
+    assert_eq!(
+        capacity,
+        qa_core::primitives::NATIVE_WIRE_BYTES / qa_network::outputs::STATIC_ENTITY_BYTES
+    );
+    for index in 0..capacity {
+        assert!(resources.state.receive_static_entity(EntityRecord {
+            position: Vec3([index as f32, 0.0, 0.0]),
+            ..Default::default()
+        }));
+    }
+    assert!(
+        !resources
+            .state
+            .receive_static_entity(EntityRecord::default())
+    );
+    assert_eq!(resources.state.rejected, 1);
+    assert_eq!(resources.state.static_entities().len(), capacity);
+    assert_eq!(
+        resources.state.static_entities()[capacity - 1].position.0[0],
+        (capacity - 1) as f32
+    );
+    // Ordinal zero remains an accepted invisible static value.
+    assert!(
+        resources.state.static_entities()[0]
+            .appearance
+            .models
+            .iter()
+            .all(Option::is_none)
+    );
+    let replacement = ClientResources::load(client, Protocol::QuakeWorld28, RuleSetId::Quake)
+        .unwrap()
+        .unwrap();
+    assert!(replacement.state.static_entities().is_empty());
+    assert_eq!(replacement.state.rejected, 0);
+
+    let (_fixture, assets, models, profile) = catalog(RuleSetId::Quake2);
+    let mut resources = replacement;
+    let model_index = resources.state.layout.resources[0].get(50).unwrap();
+    assert!(resources.apply(model_index, b"models/test/tris.md2", None, None));
+    assert_eq!(
+        resources
+            .state
+            .models
+            .bind_all(&resources.state.configs, &models, profile),
+        0
+    );
+    for position in [Vec3([1.0, 2.0, 3.0]), Vec3([4.0, 5.0, 6.0])] {
+        assert!(resources.state.receive_static_entity(EntityRecord {
+            position,
+            appearance: EntityAppearance {
+                source: RuleSetId::QuakeWorld,
+                models: [Some(reference(client)), None, None, None],
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+    }
+    let projection = EntityProjection::load(Protocol::QuakeWorld28);
+    let player_projection = PlayerProjection::load(Protocol::QuakeWorld28, &[]);
+    let player = PlayerState::default();
+    let input = ClientSceneInput {
+        client,
+        current: None,
+        previous: None,
+        projection: &projection,
+        player_projection: &player_projection,
+        bindings: &resources.state.models,
+        models: &models,
+        static_entities: resources.state.static_entities(),
+        player: &player,
+        alias_roll: AliasRoll::default(),
+        interpolation: Interpolation::default(),
+        gun_animation: None,
+        gun_previous: None,
+        view_entity: None,
+    };
+    let mut frontend = FrontEnd::load(Limits {
+        entities: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut frame = frontend.begin_frame([0; 4]).unwrap();
+    let counts = input.append(&mut frame, &assets, &Refdef::default(), true);
+    assert_eq!(counts.entities, 2);
+    assert_eq!(counts.models, 1);
+    assert_eq!(counts.rejected, 1);
+    assert_eq!(resources.state.static_entities().len(), 2);
+    assert_eq!(resources.state.rejected, 0);
+    assert_eq!(frame.finish().entity(0).origin, Vec3([1.0, 2.0, 3.0]));
+}
+
+#[test]
 fn connection_model_names_bind_once_and_reset_with_their_owner() {
     let (_fixture, _assets, catalog, profile) = catalog(RuleSetId::Quake2);
     let client = ClientId(7);
@@ -255,6 +486,7 @@ fn owned_client_snapshots_and_view_weapon_fill_the_same_scene_packet() {
         projection: &projection,
         player_projection: &player_projection,
         bindings: &bindings,
+        static_entities: &[],
         models: &catalog,
         player: &player,
         alias_roll: AliasRoll::default(),
@@ -463,6 +695,7 @@ fn received_qw_peer_velocity_and_raw_angles_use_registered_model_presentation() 
             projection: &projection,
             player_projection: &player_projection,
             bindings: &bindings,
+            static_entities: &[],
             models: &catalog,
             player: &player,
             alias_roll: AliasRoll {
@@ -705,6 +938,7 @@ fn rerelease_weapon_skin_pose_and_rate_use_received_player_words_and_transition_
         projection: &projection,
         player_projection: &player_projection,
         bindings: &bindings,
+        static_entities: &[],
         models: &catalog,
         player: &player,
         alias_roll: AliasRoll::default(),

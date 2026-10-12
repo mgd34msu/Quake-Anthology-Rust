@@ -1307,7 +1307,7 @@ pub(super) fn write_nq_frame(
     to: Frame<'_, { states::NQ_PLAYER_WORDS }, { states::NQ_ENTITY_WORDS }>,
 ) -> Result<(), packet::Error> {
     let seconds = to.time.seconds() as f32;
-    writer.write_bits(4, 8)?;
+    writer.write_bits(7, 8)?;
     writer.write_bits(seconds.to_bits(), 32)?;
     states::write_nq_player(writer, to.player)?;
     for entity in native_entities(to.entities, 1, 600) {

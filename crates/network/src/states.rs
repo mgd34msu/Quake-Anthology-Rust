@@ -1652,7 +1652,7 @@ pub const NQ_ENTITY_LAYOUT: [(&str, i8); 12] = [
     ("no_lerp", 0),
 ];
 pub const NQ_ENTITY_WORDS: usize = NQ_ENTITY_LAYOUT.len();
-static NQ_ENTITY_FIELDS: [Field; 11] = [
+const NQ_ENTITY_FIELDS: [Field; 11] = [
     Field::new(0, 8, 1 << 10, Value::FloatInt),
     Field::new(1, 8, 1 << 6, Value::FloatInt),
     Field::new(2, 8, 1 << 11, Value::FloatInt),
@@ -1693,6 +1693,45 @@ static NQ_ENTITY_GROUP: [Group<true, true, false, true>; 1] = [Group {
     fields: &NQ_ENTITY_FIELDS,
     presence: Presence::Fixed,
 }];
+// CL_ParseBaseline and PF_makestatic share the entity scalars, omitting only
+// effects and the update-only no-lerp bit. NQ and QW differ at angle export.
+const Q1_BASELINE_FIELDS: [Field; 10] = [
+    NQ_ENTITY_FIELDS[0],
+    NQ_ENTITY_FIELDS[1],
+    NQ_ENTITY_FIELDS[2],
+    NQ_ENTITY_FIELDS[3],
+    NQ_ENTITY_FIELDS[5],
+    NQ_ENTITY_FIELDS[6],
+    NQ_ENTITY_FIELDS[7],
+    NQ_ENTITY_FIELDS[8],
+    NQ_ENTITY_FIELDS[9],
+    NQ_ENTITY_FIELDS[10],
+];
+static Q1_BASELINE_GROUP: [Group<true, true, false, true>; 1] = [Group {
+    fields: &Q1_BASELINE_FIELDS,
+    presence: Presence::Fixed,
+}];
+static QW_BASELINE_GROUP: [Group<true, true, false, false>; 1] = [Group {
+    fields: &Q1_BASELINE_FIELDS,
+    presence: Presence::Fixed,
+}];
+pub(crate) fn read_q1_baseline(reader: &mut Reader<'_>) -> Result<[u32; NQ_ENTITY_WORDS], Error> {
+    let mut words = [0; NQ_ENTITY_WORDS];
+    delta::read(&Q1_BASELINE_GROUP, &mut words, u64::MAX, reader)?;
+    Ok(words)
+}
+pub(crate) fn write_q1_baseline(
+    writer: &mut Writer<'_>,
+    words: &[u32],
+    quake: bool,
+) -> Result<(), Error> {
+    let baseline = [0; NQ_ENTITY_WORDS];
+    if quake {
+        delta::write(&Q1_BASELINE_GROUP, &baseline, words, u64::MAX, writer)
+    } else {
+        delta::write(&QW_BASELINE_GROUP, &baseline, words, u64::MAX, writer)
+    }
+}
 pub type NqEntityUpdate = EntityDelta<NQ_ENTITY_WORDS>;
 
 /// Always emits a visible entity, including unchanged signon-baseline values.

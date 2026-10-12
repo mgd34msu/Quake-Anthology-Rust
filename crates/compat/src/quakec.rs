@@ -348,6 +348,20 @@ impl Vm {
         self.projection
             .quakec_remove(services, &mut self.entities, context, native)
     }
+    pub fn make_static(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+        native: u32,
+    ) -> Result<(), crate::services::CallError> {
+        self.projection.quakec_make_static(
+            services,
+            &mut self.entities,
+            &self.strings,
+            context,
+            native,
+        )
+    }
     pub fn resolve_entity(
         &self,
         entities: &qa_world::entities::EntityTable,

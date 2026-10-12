@@ -2124,7 +2124,7 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
     assert_eq!(
         &writer.bytes()[..5],
         &[
-            4,
+            7,
             seconds.to_bits() as u8,
             (seconds.to_bits() >> 8) as u8,
             (seconds.to_bits() >> 16) as u8,
@@ -2172,6 +2172,105 @@ fn nq_connected_snapshots_preserve_fractional_time_baselines_and_common_player_i
     )?;
     assert_eq!((snapshots, prints, connections.command_errors), (1, 1, 0));
     assert!(!server.set_snapshot_baseline(256, &baseline));
+    Ok(())
+}
+
+#[test]
+fn nq_original_literal_time_and_version_services_have_distinct_native_meanings() -> Result<(), Error>
+{
+    let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
+    // Original protocol.h: svc_version4 / LE protocol15 is not a float clock.
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x04\x0f\0\0\0",
+        |_, _, incoming| {
+            assert!(!matches!(incoming, Incoming::Snapshot(_)));
+        },
+    )?;
+    assert!(
+        connections
+            .get(ClientId(0), Endpoint::Client)
+            .ok_or(Error::Context)?
+            .channel
+            .current_snapshot()
+            .is_none()
+    );
+    // Literal MSG_WriteByte(svc_time7), MSG_WriteFloat(1.25), then svc_print8.
+    let mut times = Vec::new();
+    let mut prints = Vec::new();
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x04\x0f\0\0\0\x07\0\0\xa0\x3f\x08after\0",
+        |_, _, incoming| match incoming {
+            Incoming::Snapshot(frame) => times.push(frame.time()),
+            Incoming::Print(print) => prints.push(print.text.to_vec()),
+            _ => panic!("version/time/print service stream"),
+        },
+    )?;
+    assert_eq!(times, [ThinkTime::Seconds(1.25)]);
+    assert_eq!(prints, [b"after".to_vec()]);
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x04\x0f\0\0\0",
+        |_, _, incoming| {
+            assert!(!matches!(incoming, Incoming::Snapshot(_)));
+        },
+    )?;
+    let accepted = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?
+        .sequence();
+    let mut failures = 0;
+    for bytes in [
+        &b"\x04\x1c\0\0\0"[..],   // protocol28
+        &b"\x04\x9a\x02\0\0"[..], // protocol666 was not negotiated
+        &b"\x04\xe7\x03\0\0"[..], // protocol999 was not negotiated
+        &b"\x04\0\0\x80\x3f"[..], // old bug reinterpreted this as1.0seconds
+    ] {
+        server_payload(&mut server, &mut connections, bytes, |_, _, incoming| {
+            assert!(!matches!(incoming, Incoming::Snapshot(_)))
+        })?;
+        failures += 1;
+    }
+    for bytes in [&b"\x04\x0f\0\0\0"[..], &b"\x07\0\0\xa0\x3f"[..]] {
+        for cut in 1..bytes.len() {
+            server_payload(
+                &mut server,
+                &mut connections,
+                &bytes[..cut],
+                |_, _, incoming| assert!(!matches!(incoming, Incoming::Snapshot(_))),
+            )?;
+            failures += 1;
+        }
+    }
+    // Native parsing keeps prior print effects when a later version is bad.
+    prints.clear();
+    server_payload(
+        &mut server,
+        &mut connections,
+        b"\x08prefix\0\x04\x1c\0\0\0",
+        |_, _, incoming| match incoming {
+            Incoming::Print(print) => prints.push(print.text.to_vec()),
+            _ => panic!("rejected version must not publish a clock"),
+        },
+    )?;
+    failures += 1;
+    assert_eq!(prints, [b"prefix".to_vec()]);
+    assert_eq!(connections.command_errors, failures);
+    let frame = connections
+        .get(ClientId(0), Endpoint::Client)
+        .ok_or(Error::Context)?
+        .channel
+        .current_snapshot()
+        .ok_or(Error::Context)?;
+    assert_eq!(frame.sequence(), accepted);
+    assert_eq!(frame.time(), ThinkTime::Seconds(1.25));
     Ok(())
 }
 
@@ -2243,13 +2342,13 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
     check(&connections, 0.)?;
     let mut bytes = [0; 64];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    writer.write_bits(4, 8)?;
+    writer.write_bits(7, 8)?;
     writer.write_bits(1.234567f32.to_bits(), 32)?;
     server_payload(&mut server, &mut connections, writer.bytes(), |_, _, _| {})?;
     check(&connections, 1.234567)?;
     server_payload(&mut server, &mut connections, b"\x1aprint\0", |_, _, _| {})?;
     check(&connections, 1.234567)?;
-    server_payload(&mut server, &mut connections, &[4, 0, 0, 0], |_, _, _| {})?;
+    server_payload(&mut server, &mut connections, &[7, 0, 0, 0], |_, _, _| {})?;
     check(&connections, 1.234567)?;
     assert_eq!(connections.command_errors, 1);
     let channel = &connections
@@ -2262,7 +2361,7 @@ fn nq_move_timestamp_uses_admitted_current_native_time_without_selecting_duratio
     );
     assert_eq!(channel.state().next_datagram, 3);
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    writer.write_bits(4, 8)?;
+    writer.write_bits(7, 8)?;
     writer.write_bits((-0.0f32).to_bits(), 32)?;
     server
         .queue_reliable(writer.bytes())
@@ -2279,7 +2378,7 @@ fn nq_reliable_service_stream_waits_for_native_ack_after_client_publication() ->
     let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
     let mut payload = [0; 1400];
     let mut writer = Writer::new(&mut payload, Encoding::Bytes);
-    writer.write_bits(4, 8)?;
+    writer.write_bits(7, 8)?;
     writer.write_bits(1.0625f32.to_bits(), 32)?;
     let mut player = [0; states::NQ_PLAYER_WORDS];
     player[0] = 22.0f32.to_bits();
@@ -2356,7 +2455,7 @@ fn nq_native_entity_order_duplicates_and_message_times_use_the_shared_stamp_set(
         let mut payload = [0; 1400];
         let mut writer = Writer::new(&mut payload, Encoding::Bytes);
         if packet == 0 {
-            writer.write_bits(4, 8)?;
+            writer.write_bits(7, 8)?;
             writer.write_bits(1.5f32.to_bits(), 32)?;
             entity[5] = 10.0f32.to_bits();
             states::write_nq_entity(&mut writer, 5, &zero, &entity, false)?;
@@ -2370,7 +2469,7 @@ fn nq_native_entity_order_duplicates_and_message_times_use_the_shared_stamp_set(
         } else if packet == 2 {
             // Updates preceding a new svc_time still have the old msgtime.
             states::write_nq_entity(&mut writer, 5, &zero, &entity, false)?;
-            writer.write_bits(4, 8)?;
+            writer.write_bits(7, 8)?;
             writer.write_bits(2.25f32.to_bits(), 32)?;
             states::write_nq_entity(&mut writer, 7, &zero, &entity, true)?;
         } else {
@@ -2413,7 +2512,7 @@ fn nq_truncated_and_invalid_streams_do_not_publish_or_replace_an_accepted_frame(
     let (mut server, _, mut connections) = byte_connection(Protocol::NetQuake15)?;
     let mut bytes = [0; 1400];
     let mut writer = Writer::new(&mut bytes, Encoding::Bytes);
-    writer.write_bits(4, 8)?;
+    writer.write_bits(7, 8)?;
     writer.write_bits(1.25f32.to_bits(), 32)?;
     let mut entity = [0; states::NQ_ENTITY_WORDS];
     entity[0] = 1.0f32.to_bits();

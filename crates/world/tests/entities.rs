@@ -122,6 +122,7 @@ fn reserved_prefix_and_never_free_do_not_become_allocatable() -> Result<(), &'st
         .id;
     assert_eq!(id.slot, 64);
     assert!(table.set_never_free(id, true));
+    assert!(!table.can_release(id));
     assert!(!table.release(id, ThinkTime::Seconds(0.0)));
     assert!(
         table
@@ -133,6 +134,7 @@ fn reserved_prefix_and_never_free_do_not_become_allocatable() -> Result<(), &'st
             .is_none()
     );
     let world = table.id_at(0).ok_or("world")?;
+    assert!(!table.can_release(world));
     assert!(!table.release(world, ThinkTime::Seconds(0.0)));
     let client = table.id_at(63).ok_or("client")?;
     let reset = table.reset_client(client).ok_or("reset")?;
@@ -142,7 +144,9 @@ fn reserved_prefix_and_never_free_do_not_become_allocatable() -> Result<(), &'st
     assert!(table.resolve(reset).is_some());
     assert_eq!(table.len(), 65);
     assert!(table.set_never_free(id, false));
+    assert!(table.can_release(id));
     assert!(table.release(id, ThinkTime::Seconds(0.0)));
+    assert!(!table.can_release(id));
     let reused = table
         .allocate(
             ThinkTime::Seconds(0.0),

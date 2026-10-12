@@ -12,7 +12,7 @@ use qa_core::{
     events::FrameEvent,
     primitives::{
         Body, Bounds, ClientId, CollisionOwner, CollisionShape, CvarHandle, EffectEvent, EntityId,
-        GeometryId, IndexSpan, ModelRules, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
+        EntityRecord, GeometryId, IndexSpan, ModelRules, ModuleId, NATIVE_CUE_CAPTURE_BYTES,
         NATIVE_PAYLOAD_BYTES, NATIVE_WIRE_BYTES, NameId, NativeCueBinding, NativeDelivery,
         NativeEntity, PrintKind, RuleSetId, SoundEvent, UserCmd, Vec3,
     },
@@ -27,8 +27,8 @@ use qa_world::{
     entities::AllocationPolicy,
 };
 
-mod ambient;
-pub use ambient::{AMBIENT_CAPACITY, AmbientCursor, AmbientSound};
+mod signon;
+pub use signon::{AmbientSound, SIGNON_BYTES, SignonCursor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallError {
@@ -91,7 +91,7 @@ struct ConfigRange {
     entity_text: Option<EntityText>,
     sounds: Option<IndexSpan>,
     sound_bindings: Option<qa_audio::SoundBindings>,
-    ambients: ambient::AmbientRegistry,
+    signon: signon::SignonRegistry,
 }
 struct EntityText {
     bytes: std::sync::Arc<[u8]>,
@@ -195,8 +195,8 @@ impl ServiceStorage {
                 entity_text: None,
                 sounds: None,
                 sound_bindings: None,
-                ambients: ambient::AmbientRegistry::load(if resources.is_some() {
-                    AMBIENT_CAPACITY
+                signon: signon::SignonRegistry::load(if resources.is_some() {
+                    SIGNON_BYTES / 10
                 } else {
                     0
                 }),
@@ -231,7 +231,7 @@ impl ServiceStorage {
     pub fn bind_lifetime(&mut self, module: ModuleId, lifetime: EntityId) -> Result<(), CallError> {
         let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
         if range.lifetime.is_some_and(|old| old != lifetime) {
-            range.ambients.reset();
+            range.signon.reset();
         }
         range.lifetime = Some(lifetime);
         Ok(())
@@ -391,7 +391,7 @@ impl ServiceStorage {
                     let index = self.config(owner, ordinal)?;
                     self.bind_sound_at(owner, index)?;
                 }
-                self.ranges[i].ambients.freeze_initial();
+                self.ranges[i].signon.freeze_initial();
             }
         }
         Ok(())
@@ -655,6 +655,8 @@ pub struct EngineCallTable {
         f32,
     ),
     pub sound: fn(&mut EngineServices<'_>, NativeDelivery, SoundEvent) -> Result<u64, CallError>,
+    pub static_entity:
+        fn(&mut EngineServices<'_>, CallContext, EntityRecord) -> Result<u32, CallError>,
     pub ambient: fn(&mut EngineServices<'_>, CallContext, AmbientSound) -> Result<u32, CallError>,
     pub sound_id: fn(
         &EngineServices<'_>,
@@ -854,6 +856,13 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     sound: |s, delivery, e| s.sound(delivery, e),
     ambient: |s, context, sound| {
         let result = s.storage.register_ambient(context, sound);
+        if result == Err(CallError::Capacity) {
+            s.server.events.reject_publication();
+        }
+        result
+    },
+    static_entity: |s, context, entity| {
+        let result = s.storage.register_static(context, entity);
         if result == Err(CallError::Capacity) {
             s.server.events.reject_publication();
         }

@@ -644,6 +644,242 @@ fn cold_qc_styles_and_literal_sounds_reach_client_through_shared_publication() {
 }
 
 #[test]
+fn cold_qc_static_entities_survive_free_and_reuse_through_native_packets_and_scene() {
+    use qa_app::{
+        client_policy::ClientPolicy,
+        map::SpawnAnchor,
+        model_assets::{ModelCatalogBuilder, ModelRequest},
+    };
+    use qa_core::configstrings::ConfigLayout;
+    use qa_network::commands::packet::Protocol;
+    use std::{num::NonZeroU32, sync::Arc};
+
+    for rules in [RuleSetId::Quake, RuleSetId::QuakeWorld] {
+        let mut files = model_support::Fixture::models();
+        let mut assets = qa_render::Assets::load().unwrap();
+        let palette = model_support::palette(&mut assets);
+        let profile = ModelRequest::native("", rules, Some(palette)).profile();
+        let mut code = Code::new();
+        let precache = code.builtin(20);
+        let make_static = code.builtin(69);
+        let setmodel = code.builtin(3);
+        let setorigin = code.builtin(2);
+        let spawn = code.builtin(14);
+        let initialize = code.function(&[
+            (StoreS, 80, 4, 0),
+            (Call1, 82, 0, 0),
+            (Call0, 99, 0, 0),
+            (StoreEnt, 1, 81, 0),
+            (Return, 81, 0, 0),
+        ]);
+        let convert = code.function(&[
+            (StoreEnt, 81, 4, 0),
+            (StoreS, 80, 7, 0),
+            (Call2, 84, 0, 0),
+            (StoreEnt, 81, 4, 0),
+            (StoreV, 86, 7, 0),
+            (Call2, 85, 0, 0),
+            (Address, 81, 94, 78),
+            (StorePV, 89, 78, 0),
+            (Address, 81, 95, 78),
+            (StorePF, 96, 78, 0),
+            (Address, 81, 97, 78),
+            (StorePF, 98, 78, 0),
+            (StoreEnt, 81, 4, 0),
+            (Call1, 83, 0, 0),
+            (Return, 1, 0, 0),
+        ]);
+        let frame = code.function(&[(Return, 1, 0, 0)]);
+        let mut vm = code.vm();
+        let stride = vm.stride as u32;
+        let name = vm.insert_string(b"progs/test.mdl").unwrap() as u32;
+        vm.image.globals[80] = name;
+        vm.image.globals[81] = 40 * vm.stride as u32;
+        vm.image.globals[82] = precache;
+        vm.image.globals[83] = make_static;
+        vm.image.globals[84] = setmodel;
+        vm.image.globals[85] = setorigin;
+        vm.image.globals[86..89].copy_from_slice(&[
+            33.125f32.to_bits(),
+            (-4.25f32).to_bits(),
+            88.125f32.to_bits(),
+        ]);
+        vm.image.globals[89..92].copy_from_slice(&[
+            90.0f32.to_bits(),
+            180.0f32.to_bits(),
+            270.0f32.to_bits(),
+        ]);
+        vm.image.globals[94] = 6; // angles
+        vm.image.globals[95] = 28; // modelindex: string lookup owns the model.
+        vm.image.globals[96] = 255.0f32.to_bits();
+        vm.image.globals[97] = 31; // effects: absent from native static records.
+        vm.image.globals[98] = 8192.0f32.to_bits();
+        vm.image.globals[99] = spawn;
+        let mut runtime = Runtime::load(1, []).unwrap();
+        runtime.vfs = std::mem::take(&mut files.vfs);
+        runtime.model_loader =
+            Some(ModelCatalogBuilder::new(assets, [profile], [], Default::default()).unwrap());
+        let module = ModuleId(1);
+        let client = runtime
+            .connect_local(
+                SeatId::FIRST,
+                SpawnAnchor {
+                    position: Vec3::default(),
+                    angles: Vec3::default(),
+                    entity: 0,
+                    fixture_fallback: false,
+                },
+                ClientPolicy {
+                    client: RuleSetId::Quake,
+                    movement: RuleSetId::Quake3,
+                    trace: RuleSetId::Quake2,
+                },
+                Protocol::QuakeWorld28,
+                0,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .server
+                .bind_client_native(client, NativeEntity { module, slot: 1 })
+        );
+        let cursor = runtime
+            .server
+            .clients
+            .get(client.0 as usize)
+            .unwrap()
+            .output
+            .unwrap();
+        let (mut request, _) = request(
+            &mut runtime,
+            module,
+            rules,
+            vm,
+            vec![initialize, convert, frame],
+            frame,
+            10,
+            &[],
+        );
+        request.configstrings = ConfigLayout::for_rules(rules).count;
+        request.initialize = vec![Export::clocked(CallbackId(0))];
+        let mut host = load(runtime, vec![request]);
+        host.local_clients[0] = Some(client);
+        host.initialize_modules(Phase::Server);
+        assert_eq!(
+            host.module_state(module),
+            Some(qa_app::modules::State::Running)
+        );
+        let ModuleResult::QuakeC(native) = host.module_counts(module).unwrap().last_result.unwrap()
+        else {
+            panic!("QuakeC spawn result")
+        };
+        let source = host
+            .runtime
+            .server
+            .entities
+            .find_native(
+                NativeEntity {
+                    module,
+                    slot: (native[0] / stride) as i32,
+                },
+                None,
+            )
+            .unwrap();
+        host.call_module_export(
+            module,
+            Export::clocked(CallbackId(1)),
+            ThinkTime::Seconds(1.0),
+        )
+        .unwrap();
+        assert!(host.runtime.server.entities.resolve(source).is_none());
+        let replacement = host
+            .runtime
+            .server
+            .entities
+            .allocate(
+                ThinkTime::Seconds(100.0),
+                ModuleId(7),
+                AllocationPolicy::EDICT,
+            )
+            .unwrap()
+            .id;
+        assert_eq!(replacement.slot, source.slot);
+        assert_ne!(replacement.generation, source.generation);
+        host.runtime.server.entities.columns.position[replacement.slot as usize] = Vec3([999.0; 3]);
+        let paths: Vec<_> = host
+            .model_precaches()
+            .into_iter()
+            .map(|(source, path)| (source, std::str::from_utf8(path).unwrap().to_owned()))
+            .collect();
+        for (source, path) in paths {
+            host.runtime
+                .model_loader
+                .as_mut()
+                .unwrap()
+                .register_request(
+                    &host.runtime.vfs,
+                    ModelRequest::native(&path, source, Some(palette)),
+                )
+                .unwrap();
+        }
+        let (assets, catalog) = host.runtime.model_loader.take().unwrap().finish();
+        host.set_model_catalog(Arc::new(catalog), [(client, profile)]);
+        let bank = Arc::new(qa_audio::Bank::load(NonZeroU32::new(44100).unwrap(), vec![]).unwrap());
+        host.runtime.sound_bank = Some(Arc::clone(&bank));
+        host.bind_sounds(&bank).unwrap();
+        let end = host.runtime.server.events.sequence_range().end;
+        assert!(
+            host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .static_entities()
+                .is_empty()
+        );
+        for milliseconds in [0, 25, 50, 100, 200, 300] {
+            tick(&mut host, milliseconds);
+        }
+        let resources = &host.runtime.client_resources[client.0 as usize]
+            .as_ref()
+            .unwrap()
+            .state;
+        assert_eq!(resources.static_entities().len(), 1);
+        let retained = resources.static_entities()[0];
+        assert_eq!(retained.position, Vec3([33.125, -4.25, 88.125]));
+        assert_eq!(
+            retained.appearance.models[0],
+            ModelRef::native(ResourceNamespace::Client(client), 1)
+        );
+        assert_eq!(retained.appearance.native.effects, 0);
+        assert_eq!(host.runtime.network.command_errors, 0);
+        let counts = host.runtime.server.events.counters(cursor).unwrap();
+        assert!(counts.acknowledged_records >= 2);
+        assert_eq!(counts.resyncs, 0);
+        assert!(host.runtime.server.events.sequence_range().start >= end);
+        let mut frontend = qa_render::FrontEnd::load(Default::default()).unwrap();
+        let mut frame = frontend.begin_frame([0; 4]).unwrap();
+        let input = host.client_scene_inputs()[0].take().unwrap();
+        let counts = input.append(&mut frame, &assets, &qa_render::Refdef::default(), false);
+        assert_eq!(counts.models, 1);
+        assert_eq!(counts.missing_models, 0);
+        assert_eq!(frame.finish().entity(0).origin, retained.position);
+        host.bind_sounds(&bank).unwrap();
+        for milliseconds in [400, 500, 600] {
+            tick(&mut host, milliseconds);
+        }
+        assert_eq!(
+            host.runtime.client_resources[client.0 as usize]
+                .as_ref()
+                .unwrap()
+                .state
+                .static_entities(),
+            &[retained]
+        );
+        assert_eq!(host.module_counts(module).unwrap().traps, 0);
+    }
+}
+
+#[test]
 fn native_resources_initialize_through_runtime_and_setmodel_uses_frozen_catalog() {
     use qa_app::model_assets::{ModelCatalogBuilder, ModelRequest};
     use qa_compat::services::ModelLookup;

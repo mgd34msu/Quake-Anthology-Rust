@@ -2,7 +2,7 @@
 use crate::{client_scene::ClientModelBindings, model_assets::ModelCatalog};
 use qa_core::{
     configstrings::{ConfigLayout, ConfigStrings},
-    primitives::{ClientId, ModelRef, ModuleId, ResourceNamespace, RuleSetId},
+    primitives::{ClientId, EntityRecord, ModelRef, ModuleId, ResourceNamespace, RuleSetId},
 };
 use qa_network::commands::packet::Protocol;
 
@@ -18,6 +18,8 @@ pub struct ResourceState {
     sounds: qa_audio::SoundBindings,
     sound_rules: RuleSetId,
     static_sounds: u32,
+    static_entities: Box<[EntityRecord]>,
+    static_entity_count: usize,
 }
 impl ClientResources {
     pub fn load(
@@ -41,6 +43,13 @@ impl ClientResources {
                 sounds: qa_audio::SoundBindings::load(layout.resources[1].count as usize),
                 sound_rules,
                 static_sounds: 0,
+                static_entities: vec![
+                    EntityRecord::default();
+                    qa_core::primitives::NATIVE_WIRE_BYTES
+                        / qa_network::outputs::STATIC_ENTITY_BYTES
+                ]
+                .into_boxed_slice(),
+                static_entity_count: 0,
             },
         }))
     }
@@ -73,6 +82,33 @@ impl ClientResources {
     }
 }
 impl ResourceState {
+    /// Native signon copies survive freeing or reusing their source edicts.
+    pub fn receive_static_entity(&mut self, mut record: EntityRecord) -> bool {
+        let Some(slot) = self.static_entities.get_mut(self.static_entity_count) else {
+            self.rejected += 1;
+            return false;
+        };
+        for reference in &mut record.appearance.models {
+            *reference = reference.and_then(|model| {
+                ModelRef::native(
+                    ResourceNamespace::Client(self.models.client()),
+                    model.ordinal,
+                )
+            });
+        }
+        *slot = record;
+        self.static_entity_count += 1;
+        true
+    }
+
+    pub fn static_entities(&self) -> &[EntityRecord] {
+        &self.static_entities[..self.static_entity_count]
+    }
+
+    pub fn static_entity_capacity(&self) -> usize {
+        self.static_entities.len()
+    }
+
     pub(crate) fn static_emitter(
         &mut self,
         client: ClientId,

@@ -10,7 +10,8 @@ use qa_core::{
 };
 
 mod entity;
-pub use entity::{EntityProjection, EntityRecord};
+pub use entity::EntityProjection;
+pub use qa_core::primitives::EntityRecord;
 
 pub const MOVEMENT_WORDS: usize = 13;
 pub const PM_FLAGS_WORD: usize = 8;

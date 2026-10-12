@@ -358,7 +358,7 @@ impl FrameHost {
         self.run_pending_commands(frame_span);
         result.simulation_ns = simulation.elapsed().as_nanos() as u64;
         self.publish_module_configs();
-        self.publish_module_ambients();
+        self.publish_module_signon();
         for id in self.local_clients.into_iter().flatten() {
             let observation = self.snapshot_observation(id, server_time);
             self.runtime
@@ -483,6 +483,7 @@ impl FrameHost {
                 projection: entities.projection,
                 player_projection: snapshot.player_projection(),
                 bindings: &resources.state.models,
+                static_entities: resources.state.static_entities(),
                 models: self.runtime.models.as_deref()?,
                 player,
                 alias_roll,
@@ -615,6 +616,13 @@ impl FrameHost {
                                 );
                             }
                             Incoming::Cue { cue, current } => self.received_cue(id, cue, current),
+                            Incoming::StaticEntity(entity) => {
+                                if let Some(resources) =
+                                    self.runtime.client_resources[id.0 as usize].as_mut()
+                                {
+                                    resources.state.receive_static_entity(entity);
+                                }
+                            }
                             Incoming::ConfigString(config) => {
                                 if let Some(resources) =
                                     self.runtime.client_resources[id.0 as usize].as_mut()

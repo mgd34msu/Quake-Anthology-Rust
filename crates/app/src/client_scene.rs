@@ -42,6 +42,10 @@ impl ClientModelBindings {
         self.registrations.fill(None);
     }
 
+    pub(crate) fn client(&self) -> ClientId {
+        self.client
+    }
+
     /// Text decoding and canonical name lookup happen at configuration changes,
     /// never while walking visible entities each frame.
     pub fn config_changed(
@@ -233,6 +237,8 @@ pub struct ClientSceneInput<'a> {
     pub player_projection: &'a PlayerProjection,
     pub bindings: &'a ClientModelBindings,
     pub models: &'a ModelCatalog,
+    /// Owned signon values outlive the source edict and snapshot ring slots.
+    pub static_entities: &'a [EntityRecord],
     pub player: &'a PlayerState,
     pub alias_roll: AliasRoll,
     /// Snapshot-domain time is independent of shader/refdef time.
@@ -316,6 +322,25 @@ impl ClientSceneInput<'_> {
                 ReceivedFrame::Quake3(current) => append!(Quake3, current),
             }
         }
+        for &record in self.static_entities {
+            counts.entities += 1;
+            self.append_presented(
+                PresentedEntity {
+                    record,
+                    previous: None,
+                    origin: record.position,
+                    angles: record.angles,
+                    capabilities: qa_gameplay::rules::appearance::project(&record.appearance),
+                    qw_player: false,
+                },
+                None,
+                1.0,
+                frame,
+                assets,
+                software,
+                &mut counts,
+            );
+        }
         self.append_weapon(frame, assets, refdef, software, &mut counts);
         counts
     }
@@ -337,80 +362,106 @@ impl ClientSceneInput<'_> {
                 continue;
             };
             let pose = entities.present(entity.number, record, current.qw_player(entity.number));
-            let capabilities = pose.capabilities;
-            counts.unsupported += u32::from(capabilities.unsupported != 0);
-            if !capabilities.drawable
-                || self.view_entity == Some(entity.number)
-                || capabilities.viewer_model
-            {
+            self.append_presented(
+                pose,
+                Some(entity.number),
+                fraction,
+                frame,
+                assets,
+                software,
+                counts,
+            );
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Dynamic and retained static values share one scene submission path."
+    )]
+    fn append_presented(
+        &self,
+        pose: PresentedEntity,
+        number: Option<u32>,
+        fraction: f32,
+        frame: &mut Frame,
+        assets: &Assets,
+        software: bool,
+        counts: &mut SceneCounts,
+    ) {
+        let record = pose.record;
+        let capabilities = pose.capabilities;
+        counts.unsupported += u32::from(capabilities.unsupported != 0);
+        if !capabilities.drawable
+            || number.is_some_and(|number| self.view_entity == Some(number))
+            || capabilities.viewer_model
+        {
+            return;
+        }
+        let previous = pose.previous;
+        if capabilities.frame_lerp
+            && record.appearance.old_origin != record.position
+            && fraction != 1.0
+        {
+            counts.unsupported += 1;
+        }
+        for (slot, reference) in record.appearance.models.iter().enumerate() {
+            let Some(reference) = *reference else {
                 continue;
-            }
-            let previous = pose.previous;
-            if capabilities.frame_lerp
-                && record.appearance.old_origin != record.position
-                && fraction != 1.0
-            {
-                counts.unsupported += 1;
-            }
-            for (slot, reference) in record.appearance.models.iter().enumerate() {
-                let Some(reference) = *reference else {
-                    continue;
-                };
-                let Some(binding) = self.bindings.resolve(
-                    reference,
-                    record.appearance.skin,
-                    self.models,
-                    ModelMaterialPolicy {
-                        translucent: capabilities.alpha != 1.0,
-                        fullbright: capabilities.fullbright,
-                    },
-                ) else {
-                    counts.missing_models += 1;
-                    continue;
-                };
-                let Some(model) = assets.model(binding.model) else {
-                    counts.missing_models += 1;
-                    continue;
-                };
-                let current_frame = native_frame(record.appearance.frame, model.frame_count());
-                let old_frame = if capabilities.state_old_frame {
-                    native_frame(record.appearance.native.old_frame, model.frame_count())
-                } else {
-                    previous
-                        .filter(|old| old.appearance.models[slot] == Some(reference))
-                        .map_or(current_frame, |old| {
-                            native_frame(old.appearance.frame, model.frame_count())
-                        })
-                };
-                let angles = alias_pose_angles(
-                    binding.rules,
-                    pose.angles,
-                    record.velocity,
-                    pose.qw_player,
-                    software,
-                    self.alias_roll,
-                );
-                let axes = angle_vectors(angles)
-                    .axes()
-                    .map(|axis| axis * capabilities.scale);
-                let entity = SceneEntity {
-                    model: binding.model,
-                    material: Some(binding.material),
-                    origin: pose.origin,
-                    axes,
-                    non_normalized_axes: capabilities.scale != 1.0,
-                    color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
-                    frame: current_frame,
-                    old_frame,
-                    back_lerp: 1.0 - fraction,
-                    depth_hack: capabilities.depth_hack,
-                    lighting: Some(native_lighting(binding.rules, angles)),
-                    ..SceneEntity::default()
-                };
-                let added = frame.add_entity(entity);
-                counts.models += u32::from(added);
-                counts.rejected += u32::from(!added);
-            }
+            };
+            let Some(binding) = self.bindings.resolve(
+                reference,
+                record.appearance.skin,
+                self.models,
+                ModelMaterialPolicy {
+                    translucent: capabilities.alpha != 1.0,
+                    fullbright: capabilities.fullbright,
+                },
+            ) else {
+                counts.missing_models += 1;
+                continue;
+            };
+            let Some(model) = assets.model(binding.model) else {
+                counts.missing_models += 1;
+                continue;
+            };
+            let current_frame = native_frame(record.appearance.frame, model.frame_count());
+            let old_frame = if capabilities.state_old_frame {
+                native_frame(record.appearance.native.old_frame, model.frame_count())
+            } else {
+                previous
+                    .filter(|old| old.appearance.models[slot] == Some(reference))
+                    .map_or(current_frame, |old| {
+                        native_frame(old.appearance.frame, model.frame_count())
+                    })
+            };
+            let angles = alias_pose_angles(
+                binding.rules,
+                pose.angles,
+                record.velocity,
+                pose.qw_player,
+                software,
+                self.alias_roll,
+            );
+            let axes = angle_vectors(angles)
+                .axes()
+                .map(|axis| axis * capabilities.scale);
+            let entity = SceneEntity {
+                model: binding.model,
+                material: Some(binding.material),
+                origin: pose.origin,
+                axes,
+                non_normalized_axes: capabilities.scale != 1.0,
+                color: [255, 255, 255, (capabilities.alpha * 255.0) as u8],
+                frame: current_frame,
+                old_frame,
+                back_lerp: 1.0 - fraction,
+                depth_hack: capabilities.depth_hack,
+                lighting: Some(native_lighting(binding.rules, angles)),
+                ..SceneEntity::default()
+            };
+            let added = frame.add_entity(entity);
+            counts.models += u32::from(added);
+            counts.rejected += u32::from(!added);
         }
     }
 

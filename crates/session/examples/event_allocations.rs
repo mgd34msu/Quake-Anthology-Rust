@@ -13,6 +13,9 @@ struct Consumer {
 impl EventConsumer for Consumer {
     fn submit(&mut self, record: OutputRecord, texts: &mut TextStore) -> OutputSubmission {
         match record.event {
+            FrameEvent::StaticEntity(event) => {
+                std::hint::black_box(event);
+            }
             FrameEvent::ConfigString { text, .. } => {
                 std::hint::black_box(texts.get(text));
             }
