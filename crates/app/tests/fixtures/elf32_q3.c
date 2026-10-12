@@ -25,6 +25,27 @@ struct qa_q3_fixture_state {
 };
 
 struct qa_q3_fixture_state qa_q3_fixture_state;
+static gentity_t qa_entities[65];
+static gclient_t qa_clients[MAX_CLIENTS];
+
+static void entity_row(int number) {
+    gentity_t *entity = &qa_entities[number];
+    volatile unsigned char *bytes = (volatile unsigned char *)entity;
+    unsigned int index;
+    for (index = 0; index < sizeof(*entity); ++index) bytes[index] = 0;
+    entity->s.number = number;
+    entity->s.modelindex = 9;
+    entity->s.frame = 11;
+    entity->r.linked = 257; /* Native qboolean writes must clear every byte. */
+    entity->r.ownerNum = ENTITYNUM_WORLD;
+    entity->r.contents = CONTENTS_SOLID;
+    entity->r.mins[0] = entity->r.mins[1] = entity->r.mins[2] = -1.0f;
+    entity->r.maxs[0] = entity->r.maxs[1] = entity->r.maxs[2] = 1.0f;
+    entity->r.currentOrigin[0] = number * 4.0f - 2.0f;
+    entity->s.origin[0] = number;
+    entity->s.angles[1] = 45.0f;
+}
+
 
 static void record(unsigned int value) {
     unsigned int index = qa_q3_fixture_state.order_count++;
@@ -133,6 +154,15 @@ int vmMain(int command, int arg0, int arg1, int arg2,
             trap_FS_Read(qa_q3_fixture_state.file_tail, 3, file);
             trap_FS_FCloseFile(file);
         }
+        trap_LocateGameData(qa_entities, 64, sizeof(gentity_t),
+                           &qa_clients[0].ps, sizeof(gclient_t));
+        entity_row(0);
+        entity_row(1);
+        trap_LinkEntity(&qa_entities[0]);
+        trap_LinkEntity(&qa_entities[1]);
+        if (qa_entities[0].r.linked != 1 || qa_entities[1].r.linked != 1 ||
+            qa_entities[0].r.linkcount != 1 || qa_entities[1].r.linkcount != 1)
+            __builtin_trap();
         return 0;
     }
     case GAME_RUN_FRAME: {
@@ -141,6 +171,26 @@ int vmMain(int command, int arg0, int arg1, int arg2,
         if (qa_q3_fixture_state.frame_count >= 3 ||
             arg0 != frame_times[qa_q3_fixture_state.frame_count])
             __builtin_trap();
+        if (qa_q3_fixture_state.frame_count == 0) {
+            qa_entities[0].r.linked = 257;
+            trap_UnlinkEntity(&qa_entities[0]);
+            if (qa_entities[0].r.linked != 0 || qa_entities[0].r.linkcount != 1)
+                __builtin_trap();
+            qa_entities[1].r.currentOrigin[0] = 3.0f; /* No relink. */
+            qa_entities[1].s.frame = 12;
+        } else if (qa_q3_fixture_state.frame_count == 1) {
+            trap_UnlinkEntity(&qa_entities[1]);
+            entity_row(1); /* Native free/reuse is identified by reset linkcount. */
+            qa_entities[1].s.frame = 13;
+            trap_LinkEntity(&qa_entities[1]);
+            trap_LocateGameData(qa_entities, 65, sizeof(gentity_t),
+                               &qa_clients[0].ps, sizeof(gclient_t));
+            /* Registered count growth does not invent a live entity64. */
+        } else {
+            qa_entities[0].r.currentOrigin[0] = -3.0f;
+            trap_LinkEntity(&qa_entities[0]);
+            if (qa_entities[0].r.linkcount != 2) __builtin_trap();
+        }
         record(4);
         qa_q3_fixture_state.frame_count++;
         qa_q3_fixture_state.last_frame = arg0;
@@ -149,6 +199,8 @@ int vmMain(int command, int arg0, int arg1, int arg2,
     case GAME_SHUTDOWN:
         validate();
         record(6);
+        trap_UnlinkEntity(&qa_entities[0]);
+        trap_UnlinkEntity(&qa_entities[1]);
         trap_Printf("ELF32 Q3 fixture shutdown\n");
         return 0;
     default:

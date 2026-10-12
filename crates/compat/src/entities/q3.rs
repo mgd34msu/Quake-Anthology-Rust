@@ -1,0 +1,129 @@
+//! Q3's public game-memory registration feeds the existing entity projector.
+use super::*;
+
+pub(crate) const ENTITY_NONE: i32 = 1023;
+const ENTITY_BYTES: usize = 516;
+const PLAYER_BYTES: usize = 468;
+
+#[derive(Clone, Copy)]
+pub(super) struct GameData {
+    pub entities: Entities,
+    pub players: u64,
+    pub player_stride: u64,
+    pub player_count: u32,
+}
+impl GameData {
+    pub fn validate(self, memory: &ModuleMemory<'_>) -> Result<(), CallError> {
+        if self.entities.count > ENTITY_NONE as u32 + 1
+            || self.entities.stride < ENTITY_BYTES as u64
+            || self.player_count > 64
+            || self.player_stride < PLAYER_BYTES as u64
+        {
+            return Err(CallError::Entity);
+        }
+        for (address, stride, count) in [
+            (
+                self.entities.address,
+                self.entities.stride,
+                self.entities.count,
+            ),
+            (self.players, self.player_stride, self.player_count),
+        ] {
+            let bytes = stride
+                .checked_mul(u64::from(count))
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .ok_or(CallError::Memory)?;
+            memory.read(address, bytes)?;
+        }
+        Ok(())
+    }
+}
+
+const LAYOUT: EntityLayout = EntityLayout {
+    source: RuleSetId::Quake3,
+    bytes: ENTITY_BYTES,
+    in_use: None,
+    linked: Some((416, false)),
+    link_count: 420,
+    flags: 424,
+    player_flag: 0,
+    projectile_flag: 0,
+    // The common collision store has no capsule target representation yet.
+    unsupported_flags: 0x400,
+    mins: 436,
+    maxs: 448,
+    abs_min: 464,
+    abs_max: 476,
+    size: None,
+    solid: (432, false),
+    owner: 512,
+    owner_number: true,
+    origin: 488,
+    angles: 500,
+    contents: Some(460),
+    world_zero: false,
+    number: Some(0),
+    contents_pose: Some((92, 116)),
+    area: None,
+    area2: None,
+    clusters: None,
+    network_solid: 176,
+    appearance: AppearanceLayout {
+        models: [Some(160), Some(164), None, None],
+        frame: 172,
+        skin: None,
+        old_origin: 104,
+        effects: None,
+        effects_wide: false,
+        render_flags: 8,
+        loop_sound: 156,
+        event: (180, false),
+        extended: None,
+    },
+    model_rules: ModelRules {
+        rotation: qa_core::primitives::ModelRotation::TransposeBasis,
+        link_bounds: qa_core::primitives::RotatedLinkBounds::RadiusCube,
+    },
+};
+
+impl EntityProjection {
+    pub fn load_q3() -> Self {
+        let mut projection = Self::load(
+            0,
+            false,
+            LAYOUT,
+            Default::default(),
+            ENTITY_NONE as usize + 1,
+        );
+        projection.memory = EntityMemory::Registered(None);
+        projection
+    }
+    pub(crate) fn register_game_data(
+        &mut self,
+        memory: &ModuleMemory<'_>,
+        entities: Entities,
+        players: u64,
+        player_stride: u64,
+        player_count: u32,
+    ) -> Result<(), CallError> {
+        let EntityMemory::Registered(_) = self.memory else {
+            return Err(CallError::Entity);
+        };
+        let data = GameData {
+            entities,
+            players,
+            player_stride,
+            player_count,
+        };
+        data.validate(memory)?;
+        self.memory = EntityMemory::Registered(Some(data));
+        Ok(())
+    }
+}
+
+pub(super) fn pack_solid(bounds: Bounds) -> u32 {
+    let x = (bounds.maxs.0[0] as i32).clamp(1, 255);
+    let down = ((-bounds.mins.0[2]) as i32).clamp(1, 255);
+    let up = ((bounds.maxs.0[2] + 32.0) as i32).clamp(1, 255);
+    (up << 16 | down << 8 | x) as u32
+}

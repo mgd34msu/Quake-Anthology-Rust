@@ -238,8 +238,7 @@ impl EntityProjection {
         capacity: usize,
     ) -> Self {
         Self {
-            table_offset: 0,
-            wide_stride: false,
+            memory: EntityMemory::VmOwned,
             schema: EntitySchema::QuakeC(QuakeCLayout::load(image, stride, header)),
             models: qa_core::primitives::IndexSpan::default(),
             model_handles: Box::new([]),

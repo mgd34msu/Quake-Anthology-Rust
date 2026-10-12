@@ -237,70 +237,77 @@ pub fn load_q3(
                 }),
             ),
         };
-        let (program, entries, prepare, mut finalize) =
-            if bytes.starts_with(b"MZ") || bytes.starts_with(b"\x7fELF") {
-                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                {
-                    use qa_compat::native::{NamedExport, Vm};
-                    use qa_formats::program::native::Encoding;
-                    let image = parse_native(&bytes)?;
-                    if image.target.encoding == Encoding::Elf && image.tls.is_some() {
-                        return Err("native TLS provider is not bound".into());
-                    }
-                    let mut named: Vec<_> = (0..=10)
-                        .map(|command| NamedExport {
-                            parameters: &[qa_platform::native::NativeScalar::Word; 13],
-                            result: qa_platform::native::NativeScalar::Word,
-                            name: b"vmMain",
-                            command: Some(command),
-                        })
-                        .collect();
-                    named.push(NamedExport {
-                        parameters: &[qa_platform::native::NativeScalar::Word; 1],
-                        result: qa_platform::native::NativeScalar::Void,
-                        name: b"dllEntry",
-                        command: None,
-                    });
-                    let vm = Vm::map_image(image, &named, &[], std::time::Duration::from_secs(3))
-                        .map_err(|e| format!("native mapping: {e:?}"))?;
-                    let mut arguments = [Argument::Word(0); 9];
-                    arguments[0] = Argument::Word(vm.import_callback());
-                    let mut prepare: Vec<_> = vm.initializers().iter().map(native_export).collect();
-                    prepare.push(Export {
-                        client: None,
-                        callback: CallbackId(11),
-                        arguments,
-                    });
-                    let finalize: Vec<_> = vm.finalizers().iter().map(native_export).collect();
-                    let count = vm.export_count();
-                    (
-                        Program::Native {
-                            vm: Box::new(vm),
-                            imports,
-                        },
-                        (0..count as u32).collect(),
-                        prepare,
-                        finalize,
-                    )
+        let (program, entries, prepare, mut finalize) = if bytes.starts_with(b"MZ")
+            || bytes.starts_with(b"\x7fELF")
+        {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                use qa_compat::native::{NamedExport, Vm};
+                use qa_formats::program::native::Encoding;
+                let image = parse_native(&bytes)?;
+                if image.target.encoding == Encoding::Elf && image.tls.is_some() {
+                    return Err("native TLS provider is not bound".into());
                 }
-                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-                {
-                    return Err("native child backend unsupported on this host".into());
+                let mut named: Vec<_> = (0..=10)
+                    .map(|command| NamedExport {
+                        parameters: &[qa_platform::native::NativeScalar::Word; 13],
+                        result: qa_platform::native::NativeScalar::Word,
+                        name: b"vmMain",
+                        command: Some(command),
+                    })
+                    .collect();
+                named.push(NamedExport {
+                    parameters: &[qa_platform::native::NativeScalar::Word; 1],
+                    result: qa_platform::native::NativeScalar::Void,
+                    name: b"dllEntry",
+                    command: None,
+                });
+                let mut vm = Vm::map_image(image, &named, &[], std::time::Duration::from_secs(3))
+                    .map_err(|e| format!("native mapping: {e:?}"))?;
+                let mut arguments = [Argument::Word(0); 9];
+                arguments[0] = Argument::Word(vm.import_callback());
+                let mut prepare: Vec<_> = vm.initializers().iter().map(native_export).collect();
+                prepare.push(Export {
+                    client: None,
+                    callback: CallbackId(11),
+                    arguments,
+                });
+                let finalize: Vec<_> = vm.finalizers().iter().map(native_export).collect();
+                if matches!(spec.role, Q3Role::Game) {
+                    vm.configure_q3_game();
                 }
-            } else {
-                let image = qa_formats::program::qvm::Image::parse(&bytes)
-                    .map_err(|e| format!("QVM module: {e:?}"))?;
-                let vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
+                let count = vm.export_count();
                 (
-                    Program::Qvm {
+                    Program::Native {
                         vm: Box::new(vm),
                         imports,
                     },
-                    (0..=10).collect(),
-                    Vec::new(),
-                    Vec::new(),
+                    (0..count as u32).collect(),
+                    prepare,
+                    finalize,
                 )
-            };
+            }
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            {
+                return Err("native child backend unsupported on this host".into());
+            }
+        } else {
+            let image = qa_formats::program::qvm::Image::parse(&bytes)
+                .map_err(|e| format!("QVM module: {e:?}"))?;
+            let mut vm = qvm::Vm::load(image).map_err(|e| format!("QVM memory: {e:?}"))?;
+            if matches!(spec.role, Q3Role::Game) {
+                vm.configure_q3_game();
+            }
+            (
+                Program::Qvm {
+                    vm: Box::new(vm),
+                    imports,
+                },
+                (0..=10).collect(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
         finalize.insert(
             0,
             Export {

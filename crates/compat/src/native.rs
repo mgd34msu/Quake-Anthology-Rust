@@ -120,6 +120,9 @@ pub struct NativeCalls<'a, 'engine> {
     pub native_player: Option<qa_core::primitives::ClientId>,
 }
 impl Vm {
+    pub fn configure_q3_game(&mut self) {
+        self.entities = Some(EntityProjection::load_q3());
+    }
     pub fn resource_ranges(&self) -> Option<&[qa_core::primitives::IndexSpan; 3]> {
         self.resources.as_ref()
     }
@@ -417,7 +420,6 @@ impl Vm {
                     .map_err(Error::Service)?;
             }
         }
-        let table_address = self.table_address();
         let native_player = if self.client_think == Some(ordinal) {
             Some(
                 calls
@@ -454,7 +456,7 @@ impl Vm {
                     memory: &mut memory,
                     native_cvars: cvars.as_mut(),
                     native_resources: resources,
-                    native_entities: entities.as_mut().zip(table_address),
+                    native_entities: entities.as_mut(),
                     native_surfaces: surfaces,
                     native_command,
                     native_configs: native_configs.as_mut(),
@@ -522,12 +524,12 @@ impl Vm {
         if export.reject_zero && value == 0 {
             return Err(Error::DllAttach);
         }
-        if let Some(table) = self.table_address()
-            && let Some(entities) = &mut self.entities
+        if let Some(entities) = &mut self.entities
+            && entities.ready()
         {
             let mut memory = process_memory(&mut self.process)?;
             let table = entities
-                .project(calls.services, &mut memory, calls.context, table)
+                .project(calls.services, &mut memory, calls.context)
                 .map_err(Error::Service)?;
             if let Some(stats) = &mut self.player_stats {
                 stats
@@ -569,12 +571,11 @@ impl Vm {
             .map_err(Error::Service)
     }
     pub fn entities(&mut self) -> Result<Entities, Error> {
-        let table = self.table_address().ok_or(Error::Export)?;
         let layout = self.entities.as_ref().ok_or(Error::Export)?;
         let memory = process_memory(&mut self.process).map_err(|error| match error {
             ProcessMemoryError::Memory(_) => Error::Export,
             error => error.into(),
         })?;
-        layout.read(&memory, table).map_err(|_| Error::Export)
+        layout.read(&memory).map_err(|_| Error::Export)
     }
 }

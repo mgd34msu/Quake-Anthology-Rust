@@ -907,9 +907,14 @@ fn word_entry(host: &mut FrameHost, module: ModuleId, entry: u32, call: Callback
             for (output, word) in arguments[1..].iter_mut().zip(words) {
                 *output = word as u32 as i32;
             }
-            vm.call(&mut calls, arguments, row.request.instruction_budget, false)
-                .map(ModuleResult::Qvm)
-                .map_err(|_| ())
+            let result = vm
+                .call(&mut calls, arguments, row.request.instruction_budget, false)
+                .map_err(|_| ());
+            result.and_then(|value| {
+                vm.publish_entities(calls.services, call_context)
+                    .map(|()| ModuleResult::Qvm(value))
+                    .map_err(|_| ())
+            })
         }
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         Program::Native { vm, imports } => {

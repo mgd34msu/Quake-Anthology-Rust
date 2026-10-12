@@ -28,6 +28,7 @@ pub struct Vm {
     pub memory: ModuleMemory<'static>,
     pub image: Image,
     pub hooks: Hooks,
+    pub(crate) entities: Option<crate::entities::EntityProjection>,
     program_stack: usize,
     stack_bottom: usize,
     mask: u32,
@@ -41,9 +42,25 @@ impl Vm {
             memory,
             image,
             hooks: Hooks::load(program_stack),
+            entities: None,
             program_stack,
             stack_bottom: program_stack.saturating_sub(65536),
         })
+    }
+    pub fn configure_q3_game(&mut self) {
+        self.entities = Some(crate::entities::EntityProjection::load_q3());
+    }
+    pub fn publish_entities(
+        &mut self,
+        services: &mut crate::services::EngineServices<'_>,
+        context: crate::services::CallContext,
+    ) -> Result<(), crate::services::CallError> {
+        if let Some(entities) = &mut self.entities
+            && entities.ready()
+        {
+            entities.project(services, &mut self.memory, context)?;
+        }
+        Ok(())
     }
     pub fn masked_address(&self, address: i32) -> u64 {
         u64::from(address as u32 & self.mask)

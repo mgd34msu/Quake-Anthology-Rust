@@ -26,6 +26,8 @@ use std::time::Duration;
 mod native_image;
 use native_image::*;
 mod cues;
+#[path = "../elf32_q3.rs"]
+mod registered_q3;
 mod sound_routes;
 #[path = "../support/visibility_world.rs"]
 mod visibility_world;
@@ -4805,13 +4807,70 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
             assert_eq!(unicasts[0].dupe_key, 0x1234_5678);
             runtime.server.events.unbind(observer);
         }
-        let frame_code = if rr {
-            &[0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b, 0xc3][..]
-        } else {
-            &[0xc3][..]
+        // Reserved capacity may precede row publication during initialization.
+        let table_address = game.vm.table_address().unwrap() + entity_offset as u64;
+        let saved = {
+            let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            let saved = memory
+                .read(table_address, size as usize + 8)
+                .unwrap()
+                .to_vec();
+            memory.write_u64(table_address, 0).unwrap();
+            memory.write_word(table_address + size as u64, 0).unwrap();
+            memory
+                .write_word(table_address + size as u64 + 4, 1)
+                .unwrap();
+            saved
         };
+        let unpublished = game.entities().unwrap();
+        assert_eq!(unpublished.count, 0);
+        assert_eq!(unpublished.capacity, 1);
+        {
+            let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            memory.write_word(table_address + size as u64, 1).unwrap();
+        }
+        assert!(game.entities().is_err());
+        {
+            let mut memory = qa_compat::memory::ModuleMemory::borrow(
+                base,
+                game.vm.process.memory_mut().unwrap(),
+            )
+            .unwrap();
+            memory.write(table_address, &saved).unwrap();
+        }
+        let mut frame_code = if rr {
+            vec![0x80, 0xf9, 1, 0x74, 2, 0x0f, 0x0b]
+        } else {
+            Vec::new()
+        };
+        // Keep the established healthy-frame proof, then execute the actual
+        // NULL LinkEntity import as the final call. A service rejection stops
+        // that child/module; it is not a resumable native export result.
+        let counter = base + 0x1c38;
+        game.vm.process.memory_mut().unwrap()[0x1c38..0x1c3c].fill(0);
+        frame_code.extend([0x48, 0xb8]);
+        frame_code.extend(counter.to_le_bytes());
+        frame_code.extend([
+            0xff,
+            0x00,
+            0x83,
+            0x38,
+            if rr { 5 } else { 2 },
+            0x73,
+            1,
+            0xc3,
+        ]);
+        frame_code.extend(native_import_code(pointers[link_slot], &[0], false, &[], 0));
         game.vm.process.memory_mut().unwrap()[code_at..code_at + frame_code.len()]
-            .copy_from_slice(frame_code);
+            .copy_from_slice(&frame_code);
         // A session-owned frame is still callable after the trap.
         let imports_table = game.imports;
         let mut request = request(
@@ -4850,6 +4909,12 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
         assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
         assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
         assert!(host.module_counts(ModuleId(1)).unwrap().calls > 0);
+        let active_before = host.runtime.server.entities.active().count();
+        source.time = EventTime(200_000_000);
+        host.frame(&mut source, true);
+        assert_eq!(host.module_state(ModuleId(1)), Some(State::Failed));
+        assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 1);
+        assert_eq!(host.runtime.server.entities.active().count(), active_before);
     }
 }
 
@@ -5302,6 +5367,21 @@ mod pmove;
 mod appearance;
 
 pub fn run() {
+    if std::env::args().any(|arg| arg == "--q3-game-data") {
+        for (variable, bits) in [
+            ("QA_NATIVE_Q3_ELF32_FIXTURE", 32),
+            ("QA_NATIVE_Q3_ELF64_FIXTURE", 64),
+        ] {
+            let path = std::path::PathBuf::from(
+                std::env::var_os(variable).expect("explicit compiled original Q3 fixture"),
+            );
+            registered_q3::original_native_q3_exports_use_the_shared_session_and_call_table(
+                &path, bits,
+            );
+        }
+        println!("native Q3 registered-game-data checks passed for 32/64");
+        return;
+    }
     if std::env::args().any(|arg| arg == "--q2-sound-routes") {
         sound_routes::server_sounds_wait_for_resource_ack_without_stalling_other_clients();
         sound_routes::unsupported_resource_names_drop_only_the_unrepresentable_client_delivery();

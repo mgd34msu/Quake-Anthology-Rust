@@ -134,6 +134,9 @@ impl Vm {
         if let Some(table) = &mut self.table {
             table.address = Some(address);
         }
+        if let Some(entities) = &mut self.entities {
+            entities.bind_table(address);
+        }
         Ok(())
     }
     /// Engine-readable ABI data stays in the same parked-child memory.

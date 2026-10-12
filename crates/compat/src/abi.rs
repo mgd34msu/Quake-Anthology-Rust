@@ -27,7 +27,7 @@ pub struct Invocation<'a, 'engine, 'memory> {
     pub memory: &'a mut ModuleMemory<'memory>,
     pub native_cvars: Option<&'a mut crate::cvars::NativeCvars>,
     pub native_resources: Option<&'a [qa_core::primitives::IndexSpan; 3]>,
-    pub native_entities: Option<(&'a mut crate::entities::EntityProjection, u64)>,
+    pub native_entities: Option<&'a mut crate::entities::EntityProjection>,
     pub native_surfaces: Option<&'a crate::surfaces::NativeSurfaces>,
     pub native_command: Option<&'a crate::command::NativeCommand>,
     pub native_configs: Option<&'a mut crate::configstrings::NativeConfigs>,
@@ -315,6 +315,9 @@ const fn server() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command);
+    t.entries[15] = scalar!(q3_locate_game_data);
+    t.entries[30] = scalar!(native_link);
+    t.entries[31] = scalar!(native_unlink);
     t.entries[18] = scalar!(config_set);
     t.entries[19] = scalar!(config_get);
     t.entries[25] = scalar!(q3_point_contents);
@@ -1147,12 +1150,17 @@ impl qvm::SystemCalls for QvmCalls<'_, '_> {
             *to = u64::from(from as u32);
         }
         let mask = vm.memory.len() as u32 - 1;
+        if let Some(entities) = &mut vm.entities {
+            entities
+                .seed(&self.services.server.entities, self.context.module)
+                .map_err(|_| qvm::Trap::Syscall)?;
+        }
         let mut call = Invocation {
             services: self.services,
             memory: &mut vm.memory,
             native_cvars: None,
             native_resources: None,
-            native_entities: None,
+            native_entities: vm.entities.as_mut(),
             native_surfaces: None,
             native_command: None,
             native_configs: None,
@@ -1339,9 +1347,9 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool, const WIDE: bool>(
         }
         (None, Vec3::default(), true)
     } else {
-        let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+        let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
         let (entity, position, positioned) =
-            entities.sound_source(c.services, c.memory, c.context, *table, address)?;
+            entities.sound_source(c.services, c.memory, c.context, address)?;
         (Some(entity), position, positioned)
     };
     if origin != 0 {
@@ -1830,12 +1838,12 @@ fn native_trace<const WIDE: bool, const CLIP: bool>(
     };
     let (result, entity) = if CLIP {
         let address = c.pointer(1)?;
-        let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-        let target = entities.clip_target(c.services, c.memory, c.context, *table, address)?;
+        let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+        let target = entities.clip_target(c.services, c.memory, c.context, address)?;
         ((ENGINE_CALLS.clip)(c.services, query, target)?, address)
     } else {
-        let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-        let view = entities.trace_view(c.memory, c.context, *table)?;
+        let entities = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+        let view = entities.trace_view(c.memory, c.context)?;
         let query = TraceQuery {
             pass: view.pass(c.pointer(5)?)?,
             ..query
@@ -1851,8 +1859,8 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;
     let layout = c.native_pmove.as_ref().ok_or(CallError::Memory)?.layout;
     c.memory.read(address, layout.bytes)?;
-    let (entities, table_address) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-    let table = entities.boundary(c.memory, c.context, *table_address)?;
+    let entities = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let table = entities.boundary(c.memory, c.context)?;
     let id = if let Some(offset) = layout.player {
         let player = c.memory.read_u64(address + offset as u64)?;
         let id = native_client(c, player)?.ok_or(CallError::Entity)?;
@@ -1879,7 +1887,7 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     );
     let options = codec.options(c.memory, address)?;
     let result = {
-        let view = entities.trace_view(c.memory, c.context, *table_address)?;
+        let view = entities.trace_view(c.memory, c.context)?;
         (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options)?
     };
     let client = &c.services.server.clients[id.0 as usize];
@@ -2116,8 +2124,8 @@ fn native_client(
     c: &Invocation<'_, '_, '_>,
     address: u64,
 ) -> Result<Option<qa_core::primitives::ClientId>, CallError> {
-    let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-    let native = entities.identity(c.memory, c.context, *table, address)?;
+    let entities = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let native = entities.identity(c.memory, c.context, address)?;
     Ok(c.services.server.client_for_native(native))
 }
 fn native_delivery<const WIDE: bool>(
@@ -2238,8 +2246,8 @@ fn native_message_angle(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError
     Ok(0)
 }
 fn native_message_entity(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
-    let (entities, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-    let native = entities.identity(c.memory, c.context, *table, c.pointer(0)?)?;
+    let entities = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let native = entities.identity(c.memory, c.context, c.pointer(0)?)?;
     (ENGINE_CALLS.message_bits)(c.services, c.context.module, native.slot as u32, 16)?;
     Ok(0)
 }
@@ -2374,8 +2382,8 @@ fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result
         return Ok(0);
     }
     let output = c.pointer(2)?;
-    let (projection, table) = c.native_entities.as_ref().ok_or(CallError::Entity)?;
-    let native = projection.boundary(c.memory, c.context, *table)?;
+    let projection = c.native_entities.as_ref().ok_or(CallError::Entity)?;
+    let native = projection.boundary(c.memory, c.context)?;
     let list = if max != 0 && output != 0 {
         c.memory
             .read_mut(output, max.min(c.services.server.entities.capacity()) * 8)?
@@ -2401,35 +2409,70 @@ fn native_area_query<const WIDE: bool>(c: &mut Invocation<'_, '_, '_>) -> Result
     Ok(count as u64)
 }
 
+fn q3_locate_game_data(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? || c.null_pointer(3)? {
+        return Err(CallError::Memory);
+    }
+    let count = u32::try_from(c.arg(1)? as u32 as i32).map_err(|_| CallError::Entity)?;
+    let stride = u64::try_from(c.arg(2)? as u32 as i32).map_err(|_| CallError::Entity)?;
+    let player_stride = u64::try_from(c.arg(4)? as u32 as i32).map_err(|_| CallError::Entity)?;
+    let address = c.pointer(0)?;
+    let players = c.pointer(3)?;
+    let player_count = u32::try_from(
+        c.services
+            .storage
+            .max_clients(c.services.cvars, c.context.native_rules),
+    )
+    .map_err(|_| CallError::Entity)?;
+    let entities = crate::entities::Entities {
+        address,
+        stride,
+        count,
+        capacity: count,
+        server_flags: 0,
+    };
+    c.native_entities
+        .as_mut()
+        .ok_or(CallError::Entity)?
+        .register_game_data(c.memory, entities, players, player_stride, player_count)?;
+    Ok(0)
+}
+
 fn native_set_model(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;
     let name = c.pointer(1)?;
-    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-    entities.set_model(c.services, c.memory, c.context, *table, address, name)?;
+    let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.set_model(c.services, c.memory, c.context, address, name)?;
     Ok(0)
 }
 fn native_link(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Err(CallError::Entity);
+    }
     let address = c.pointer(0)?;
-    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-    entities.link(c.services, c.memory, c.context, *table, address)?;
+    let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.link(c.services, c.memory, c.context, address)?;
     Ok(0)
 }
 fn native_unlink(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    if c.null_pointer(0)? {
+        return Err(CallError::Entity);
+    }
     let address = c.pointer(0)?;
-    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-    entities.unlink(c.services, c.memory, c.context, *table, address)?;
+    let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.unlink(c.services, c.memory, c.context, address)?;
     Ok(0)
 }
 fn native_forget_observer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;
-    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-    entities.forget_observer(c.services, c.memory, c.context, *table, address)?;
+    let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.forget_observer(c.services, c.memory, c.context, address)?;
     Ok(0)
 }
 fn native_register_observer(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let address = c.pointer(0)?;
-    let (entities, table) = c.native_entities.as_mut().ok_or(CallError::Entity)?;
-    entities.register_observer(c.services, c.memory, c.context, *table, address)?;
+    let entities = c.native_entities.as_mut().ok_or(CallError::Entity)?;
+    entities.register_observer(c.services, c.memory, c.context, address)?;
     Ok(0)
 }
 fn config_set(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {

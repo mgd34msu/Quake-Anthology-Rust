@@ -7,17 +7,17 @@ use qa_app::{
 };
 use qa_compat::{
     memory::{ModuleMemory, Width},
-    native::{Error, NamedExport, ReturnedTable, TableFunction, Vm},
+    native::{Error, ReturnedTable, TableFunction},
 };
 use qa_console::{commands::Console, views::Context};
-use qa_core::{
-    names::NameTable,
-    primitives::{CallbackId, ModuleId, NameId, ThinkTime},
-};
+use qa_core::primitives::{CallbackId, ModuleId, ThinkTime};
 use qa_formats::program::native::{Image, LoadRole};
 use qa_platform::native::{NativeAbi, NativeScalar};
 use qa_session::timing::TickRate;
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
+
+#[path = "support/visibility_world.rs"]
+mod visibility_world;
 
 struct Files(PathBuf);
 impl Drop for Files {
@@ -42,9 +42,16 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
         std::env::var_os("QA_NATIVE_Q3_ELF32_FIXTURE")
             .expect("explicit compiled qagame32.so fixture"),
     );
+    original_native_q3_exports_use_the_shared_session_and_call_table(&fixture, 32);
+}
+
+pub(crate) fn original_native_q3_exports_use_the_shared_session_and_call_table(
+    fixture: &std::path::Path,
+    bits: u8,
+) {
     let bytes = std::fs::read(&fixture).unwrap();
     let image = Image::parse(&bytes, Some(0x2000_0000), LoadRole::Library).unwrap();
-    assert_eq!(image.target.bits, 32);
+    assert_eq!(image.target.bits, u32::from(bits));
     let entry = symbol(&image, b"dllEntry");
     let passfloat = symbol(&image, b"qa_fixture_passfloat");
     let layout = symbol(&image, b"qa_q3_layout");
@@ -54,6 +61,11 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
     std::fs::write(files.0.join("fixture.dat"), b"0123456789").unwrap();
     let mut runtime = Runtime::load(1, std::iter::empty()).unwrap();
     runtime.vfs.mount_directory(&files.0, 0).unwrap();
+    runtime.collision = Some(visibility_world::collision(
+        &runtime.geometry,
+        [Some(0), Some(1)],
+        qa_world::visibility::PvsRows::load(vec![Some(0), Some(1)], vec![3, 3]).unwrap(),
+    ));
     let mut requests = Vec::new();
     load_q3(
         &mut runtime,
@@ -66,26 +78,42 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
     let Program::Native { vm, .. } = &mut requests[0].program else {
         panic!("native program")
     };
-    assert!(matches!(
-        vm.declare_table(ReturnedTable {
-            version: 3,
-            bytes: 16,
-            functions: vec![TableFunction {
-                offset: 8,
-                parameters: &[],
-                result: NativeScalar::Void,
-            }]
-            .into_boxed_slice(),
-        }),
-        Err(Error::Process(
-            qa_platform::native::NativeError::Unsupported
-        ))
-    ));
+    if bits == 32 {
+        assert!(matches!(
+            vm.declare_table(ReturnedTable {
+                version: 3,
+                bytes: 16,
+                functions: vec![TableFunction {
+                    offset: 8,
+                    parameters: &[],
+                    result: NativeScalar::Void,
+                }]
+                .into_boxed_slice(),
+            }),
+            Err(Error::Process(
+                qa_platform::native::NativeError::Unsupported
+            ))
+        ));
+    }
     let base = vm.process.base();
     {
         let memory = ModuleMemory::borrow(base, vm.process.memory_mut().unwrap()).unwrap();
         let expected = [
-            4, 4, 4, 4, 272, 0, 4, 8, 12, 16, 56, 468, 208, 24, 516, 808, 776,
+            u32::from(bits / 8),
+            u32::from(bits / 8),
+            4,
+            4,
+            272,
+            0,
+            4,
+            8,
+            12,
+            16,
+            56,
+            468,
+            208,
+            24,
+            516,
         ];
         for (index, value) in expected.into_iter().enumerate() {
             assert_eq!(
@@ -95,6 +123,11 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
                 value
             );
         }
+    }
+    if bits == 32 {
+        let memory = ModuleMemory::borrow(base, vm.process.memory_mut().unwrap()).unwrap();
+        assert_eq!(memory.read_word(layout + 15 * 4).unwrap(), 808);
+        assert_eq!(memory.read_word(layout + 16 * 4).unwrap(), 776);
     }
     // Observe the actual original PASSFLOAT syscall words through the same gate.
     // Session execution below uses the production Q3 CallTable for services.
@@ -141,6 +174,35 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
     host.initialize_modules(Phase::Server);
     assert_eq!(host.module_state(ModuleId(1)), Some(State::Running));
     assert_eq!(host.module_counts(ModuleId(1)).unwrap().traps, 0);
+    let entity = |host: &FrameHost, number| {
+        host.runtime
+            .server
+            .entities
+            .active()
+            .find(|id| {
+                host.runtime.server.entities.columns.native_entity[id.slot as usize]
+                    == Some(qa_core::primitives::NativeEntity {
+                        module: ModuleId(1),
+                        slot: number,
+                    })
+            })
+            .unwrap()
+    };
+    let zero = entity(&host, 0);
+    let first = entity(&host, 1);
+    assert_ne!(zero, first);
+    assert_eq!(
+        host.runtime.server.entities.columns.appearance[first.slot as usize].frame,
+        11
+    );
+    let old_bounds = host.runtime.server.area.bounds(first).unwrap();
+    assert_eq!(
+        host.runtime.server.entities.columns.point_contents_pose[first.slot as usize],
+        Some(qa_core::primitives::EntityPose {
+            position: qa_core::primitives::Vec3([1.0, 0.0, 0.0]),
+            angles: qa_core::primitives::Vec3([0.0, 45.0, 0.0])
+        })
+    );
     for (index, time) in [100, 137, 1000].into_iter().enumerate() {
         host.call_module_export(
             ModuleId(1),
@@ -157,6 +219,49 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
         );
         assert_eq!(counts.traps, 0);
         assert_eq!(counts.rejected, 0);
+        match index {
+            0 => {
+                assert!(host.runtime.server.entities.resolve(zero).is_some());
+                assert!(host.runtime.server.area.bounds(zero).is_none());
+                assert_eq!(
+                    host.runtime.server.entities.columns.appearance[zero.slot as usize].models,
+                    [None; 4]
+                );
+                assert_eq!(
+                    host.runtime.server.entities.columns.position[first.slot as usize],
+                    qa_core::primitives::Vec3([3.0, 0.0, 0.0])
+                );
+                assert_eq!(host.runtime.server.area.bounds(first), Some(old_bounds));
+                assert_eq!(
+                    host.runtime.server.entities.columns.appearance[first.slot as usize].frame,
+                    12
+                );
+            }
+            1 => {
+                assert!(host.runtime.server.entities.resolve(first).is_none());
+                assert_ne!(entity(&host, 1), first);
+                assert_eq!(
+                    host.runtime.server.entities.columns.appearance[entity(&host, 1).slot as usize]
+                        .frame,
+                    13
+                );
+                assert!(host.runtime.server.entities.active().all(|id| {
+                    host.runtime.server.entities.columns.native_entity[id.slot as usize]
+                        != Some(qa_core::primitives::NativeEntity {
+                            module: ModuleId(1),
+                            slot: 64,
+                        })
+                }));
+            }
+            _ => {
+                assert_eq!(entity(&host, 0), zero);
+                assert_eq!(
+                    host.runtime.server.entities.columns.position[zero.slot as usize],
+                    qa_core::primitives::Vec3([-3.0, 0.0, 0.0])
+                );
+                assert!(host.runtime.server.area.bounds(zero).is_some());
+            }
+        }
     }
     let calls = host.module_counts(ModuleId(1)).unwrap().calls;
     host.shutdown_modules();
@@ -173,6 +278,9 @@ fn original_elf32_q3_exports_use_the_shared_session_and_call_table() {
 #[test]
 #[ignore = "requires the same compiled ELF32 original Q3 fixture"]
 fn elf32_binding_rejects_x64_and_unverified_hardening_versions() {
+    use qa_compat::native::{NamedExport, Vm};
+    use qa_core::{names::NameTable, primitives::NameId};
+    use std::time::Duration;
     let fixture = PathBuf::from(
         std::env::var_os("QA_NATIVE_Q3_ELF32_FIXTURE")
             .expect("explicit compiled qagame32.so fixture"),
