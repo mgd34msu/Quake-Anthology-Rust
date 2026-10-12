@@ -530,6 +530,7 @@ fn connected_heap() -> Result<(), String> {
                     duration_ms: 20,
                     ..Default::default()
                 },
+                0,
                 &client.channel,
                 &mut movement,
             )?;
@@ -539,7 +540,7 @@ fn connected_heap() -> Result<(), String> {
                 client.channel.send_state().sequence,
                 0,
                 &mut server,
-                |_, _| {},
+                |_, _, _| {},
             )?;
             if server_commands.delta_request() != Some(frame) {
                 return Err(qa_network::commands::packet::Error::Context);
@@ -652,7 +653,7 @@ fn connected_qw_heap() -> Result<(), String> {
                 movement: [300., 0., 0.],
                 ..Default::default()
             };
-            let length = codec.encode(&command, &client.channel, &mut payload)?;
+            let length = codec.encode(&command, 0, &client.channel, &mut payload)?;
             let base = codec.snapshot_request(&client.channel);
             let packet = client
                 .channel
@@ -676,7 +677,7 @@ fn connected_qw_heap() -> Result<(), String> {
             };
             let length = server_commands.stage(bytes)?;
             let mut received = None;
-            server_commands.decode(length, sequence, 0, &mut server, |command, _| {
+            server_commands.decode(length, sequence, 0, &mut server, |command, _, _| {
                 received = Some(command);
             })?;
             let received = received.ok_or(Error::Context)?;
@@ -924,7 +925,8 @@ fn connected_nq_heap() -> Result<(), String> {
                 .ok_or(Error::Context)?;
             let commands = client.commands.as_ref().ok_or(Error::Context)?;
             let mut move_bytes = [0; 1400];
-            let length = commands.encode(&Default::default(), &client.channel, &mut move_bytes)?;
+            let length =
+                commands.encode(&Default::default(), 0, &client.channel, &mut move_bytes)?;
             if move_bytes[1..5] != seconds.to_bits().to_le_bytes() || length != 16 {
                 return Err(Error::Context);
             }

@@ -36,7 +36,7 @@ fn each_boundary_roundtrips_its_original_shape() {
         buttons: 4095,
         weapon: 9,
     };
-    let decoded = from_q3_usercmd(q3, 87, WeaponId(700));
+    let decoded = from_q3_usercmd(q3, 87, Some(WeaponId(700)));
     assert_eq!(decoded.duration_ms, 13);
     assert_eq!(decoded.weapon, Some(WeaponId(700)));
     assert_eq!(to_q3_usercmd(&decoded, 9), q3);
@@ -79,7 +79,7 @@ fn every_original_short_angle_survives_the_boundary_projection() {
             weapon: 0,
         };
         assert_eq!(
-            to_q3_usercmd(&from_q3_usercmd(q3, 0, WeaponId(0)), 0).angles,
+            to_q3_usercmd(&from_q3_usercmd(q3, 0, None), 0).angles,
             q3.angles
         );
     }

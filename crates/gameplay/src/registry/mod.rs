@@ -90,36 +90,47 @@ pub struct Registry {
 const AMMO_GROUPS: &[&[(RuleSetId, &str)]] = &[
     &[
         (RuleSetId::Quake, "item_shells"),
+        (RuleSetId::QuakeWorld, "item_shells"),
         (RuleSetId::Quake2, "ammo_shells"),
+        (RuleSetId::Quake2Rerelease, "ammo_shells"),
         (RuleSetId::Quake3, "ammo_shells"),
     ],
     &[
         (RuleSetId::Quake, "item_spikes"),
+        (RuleSetId::QuakeWorld, "item_spikes"),
         (RuleSetId::Quake2, "ammo_bullets"),
+        (RuleSetId::Quake2Rerelease, "ammo_bullets"),
         (RuleSetId::Quake3, "ammo_bullets"),
         (RuleSetId::Quake3, "ammo_nails"),
         (RuleSetId::Quake3, "ammo_belt"),
     ],
     &[
         (RuleSetId::Quake, "item_rockets"),
+        (RuleSetId::QuakeWorld, "item_rockets"),
         (RuleSetId::Quake2, "ammo_rockets"),
+        (RuleSetId::Quake2Rerelease, "ammo_rockets"),
         (RuleSetId::Quake3, "ammo_rockets"),
     ],
     &[
         (RuleSetId::Quake, "item_rockets"),
+        (RuleSetId::QuakeWorld, "item_rockets"),
         (RuleSetId::Quake2, "ammo_grenades"),
+        (RuleSetId::Quake2Rerelease, "ammo_grenades"),
         (RuleSetId::Quake3, "ammo_grenades"),
         (RuleSetId::Quake3, "ammo_mines"),
     ],
     &[
         (RuleSetId::Quake, "item_cells"),
+        (RuleSetId::QuakeWorld, "item_cells"),
         (RuleSetId::Quake2, "ammo_cells"),
+        (RuleSetId::Quake2Rerelease, "ammo_cells"),
         (RuleSetId::Quake3, "ammo_cells"),
         (RuleSetId::Quake3, "ammo_lightning"),
         (RuleSetId::Quake3, "ammo_bfg"),
     ],
     &[
         (RuleSetId::Quake2, "ammo_slugs"),
+        (RuleSetId::Quake2Rerelease, "ammo_slugs"),
         (RuleSetId::Quake3, "ammo_slugs"),
     ],
 ];
@@ -272,6 +283,12 @@ impl Registry {
         self.weapon(id)
             .filter(|weapon| weapon.source == source)
             .map(|weapon| weapon.native)
+    }
+    /// Q3 usercmds carry one native weapon byte, with zero denoting NONE.
+    pub fn command_weapon_number(&self, id: Option<WeaponId>) -> u8 {
+        id.and_then(|id| self.native_weapon_number(RuleSetId::Quake3, id))
+            .and_then(|number| u8::try_from(number).ok())
+            .unwrap_or(0)
     }
     pub fn classname(&self, source: RuleSetId, name: NameId) -> Option<ItemId> {
         self.classnames

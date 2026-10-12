@@ -225,7 +225,11 @@ pub fn to_q3_usercmd(command: &UserCmd, weapon: u8) -> Q3Cmd {
         weapon,
     }
 }
-pub fn from_q3_usercmd(command: Q3Cmd, previous_server_time: i32, weapon: WeaponId) -> UserCmd {
+pub fn from_q3_usercmd(
+    command: Q3Cmd,
+    previous_server_time: i32,
+    weapon: Option<WeaponId>,
+) -> UserCmd {
     let vertical = vertical_buttons(f32::from(command.movement[2]), 10.0);
     UserCmd {
         duration_ms: command
@@ -236,7 +240,7 @@ pub fn from_q3_usercmd(command: Q3Cmd, previous_server_time: i32, weapon: Weapon
         view_angles: Vec3(command.angles.map(short_to_angle)),
         movement: command.movement.map(f32::from),
         buttons: from_buttons(command.buttons, &Q3_BITS) | vertical,
-        weapon: Some(weapon),
+        weapon,
         ..UserCmd::default()
     }
 }

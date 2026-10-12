@@ -40,6 +40,41 @@ fn numeric_stat_projection_preserves_independent_body_view_and_movement_state() 
 }
 
 #[test]
+fn trick_timer_uses_only_the_native_rerelease_flag_and_clears_on_receive() {
+    for (protocol, expected) in [
+        (Protocol::Quake2_34, 0),
+        (Protocol::Quake2Repro1038, 1024),
+        (Protocol::Quake3_68, 0),
+    ] {
+        let projection = PlayerProjection::load(protocol, &[]);
+        let mut source = PlayerState::default();
+        source.movement.timer = MovementTimer::TRICK;
+        source.movement.remaining_ms = 64;
+        let mut words = vec![0; projection.words()];
+        assert!(projection.reduce(&source, &PlayerContext::default(), &mut words));
+        let flags = if protocol == Protocol::Quake3_68 {
+            19
+        } else {
+            qa_network::projection::PM_FLAGS_WORD
+        };
+        assert_eq!(words[flags], expected);
+        assert_eq!(projection.movement_flag_mask() & 1024, expected);
+        let mut target = PlayerState::default();
+        assert!(projection.apply(&words, &mut target, &mut PlayerContext::default(), |_| None));
+        assert_eq!(
+            target.movement.timer.contains(MovementTimer::TRICK),
+            expected != 0
+        );
+        source.movement.timer = MovementTimer::NONE;
+        source.movement.remaining_ms = 0;
+        assert!(projection.reduce(&source, &PlayerContext::default(), &mut words));
+        assert!(projection.apply(&words, &mut target, &mut PlayerContext::default(), |_| None));
+        assert_eq!(target.movement.timer, MovementTimer::NONE);
+        assert_eq!(target.movement.remaining_ms, 0);
+    }
+}
+
+#[test]
 fn native_value_arrays_keep_hot_fields_authoritative_and_import_received_values() {
     for protocol in [
         Protocol::Quake2_34,

@@ -619,6 +619,7 @@ impl MovementTimer {
     pub const LAND: Self = Self(2);
     pub const TELEPORT: Self = Self(4);
     pub const KNOCKBACK: Self = Self(8);
+    pub const TRICK: Self = Self(16);
     pub fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 != 0
     }
@@ -667,6 +668,7 @@ pub struct MovementTuning {
     pub speed_multiplier: f32,
     pub fixed_step_ms: u16,
     pub no_step: bool,
+    pub n64_physics: bool,
 }
 impl Default for MovementTuning {
     fn default() -> Self {
@@ -684,6 +686,7 @@ impl Default for MovementTuning {
             speed_multiplier: 1.0,
             fixed_step_ms: 0,
             no_step: false,
+            n64_physics: false,
         }
     }
 }

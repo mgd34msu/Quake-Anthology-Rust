@@ -81,6 +81,7 @@ fn q3_spectator_clips_while_noclip_uses_direct_motion_and_foreign_trace_rules() 
             command(16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         if mode == MovementMode::Spectator {
             assert!(state.body.position.0[0] <= 225.0001);
@@ -126,6 +127,7 @@ fn q3_spectator_ignores_body_contents_and_resets_foreign_stance_bounds() {
         command(16, [0.0; 3], Vec3::default()),
         &mut state,
         &mut world,
+        Default::default(),
     );
     assert!(state.body.position.0[0] <= 225.0001);
 }
@@ -153,6 +155,7 @@ fn native_early_free_returns_clear_water_outputs_and_keep_native_ground_flags() 
             command(8, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.movement.water_level, 0, "{rules:?} {mode:?}");
         assert_eq!(state.movement.water_contents, 0);
@@ -186,8 +189,8 @@ fn released_q3_free_jump_does_not_inject_upmove_into_later_substeps() {
         let mut expected = player(RuleSetId::Quake3, mode);
         let mut world = World::new(actual.trace_rules);
         let cmd = command(150, [0.0; 3], Vec3::default());
-        let actual_result = pmove(cmd, &mut actual, &mut world);
-        let expected_result = pmove(cmd, &mut expected, &mut world);
+        let actual_result = pmove(cmd, &mut actual, &mut world, Default::default());
+        let expected_result = pmove(cmd, &mut expected, &mut world, Default::default());
         assert_eq!(actual_result.steps, 3);
         assert_eq!(actual_result.steps, expected_result.steps);
         assert_eq!(actual.body.position, expected.body.position, "{mode:?}");
@@ -213,8 +216,8 @@ fn switching_to_a_role_without_ladders_clears_stale_state_in_walk_and_free_modes
             expected.movement_rules = rules;
             let mut world = World::new(actual.trace_rules);
             let cmd = command(16, [127.0, 0.0, 0.0], Vec3::default());
-            pmove(cmd, &mut actual, &mut world);
-            pmove(cmd, &mut expected, &mut world);
+            pmove(cmd, &mut actual, &mut world, Default::default());
+            pmove(cmd, &mut expected, &mut world, Default::default());
             assert!(!actual.movement.ladder, "{rules:?} {mode:?}");
             assert_eq!(
                 actual.body.position, expected.body.position,
@@ -238,6 +241,7 @@ fn classic_spectator_snaps_without_rejecting_a_position_beyond_a_wall() {
         command(100, [300.0, 0.0, 0.0], Vec3::default()),
         &mut state,
         &mut world,
+        Default::default(),
     );
     assert_eq!(state.body.position.0[0], 250.0);
     assert_eq!(state.body.velocity.0[0], 300.0);
@@ -255,6 +259,7 @@ fn qw_spectator_has_an_independent_native_and_overridden_speed_cap() {
             command(50, [1000.0, 0.0, 0.0], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity.0[0], expected);
         assert_eq!(world.traces, 0);
@@ -276,6 +281,7 @@ fn rerelease_free_modes_double_the_capped_speed_and_reset_native_flags() {
             command(100, [1000.0, 0.0, 0.0], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity.0[0], 600.0);
         assert_eq!(state.body.position.0[0], 60.0);
@@ -310,7 +316,7 @@ fn rerelease_free_vertical_buttons_are_independent_and_ignore_raw_upmove() {
         let mut world = World::new(state.trace_rules);
         let mut cmd = command(100, [0.0, 0.0, 99.0], Vec3::default());
         cmd.buttons = buttons;
-        pmove(cmd, &mut state, &mut world);
+        pmove(cmd, &mut state, &mut world, Default::default());
         assert_eq!(state.body.velocity.0[2], expected);
     }
 }
@@ -337,6 +343,7 @@ fn rerelease_spectator_sends_world_only_queries_with_the_small_box() {
         command(100, [1000.0, 0.0, 0.0], Vec3::default()),
         &mut state,
         &mut world,
+        Default::default(),
     );
     assert!(state.body.position.0[0] <= 232.0);
     assert!(world.0.traces > 0);
@@ -357,6 +364,7 @@ fn pitched_forward_free_movement_uses_the_full_view_basis() {
             command(16, [forward, 0.0, 0.0], Vec3([45.0, 0.0, 0.0])),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert!(state.body.velocity.0[0] > 0.0, "{rules:?} {mode:?}");
         assert!(state.body.velocity.0[2] < 0.0, "{rules:?} {mode:?}");
@@ -377,6 +385,7 @@ fn rolled_free_strafe_keeps_the_right_vectors_vertical_component() {
             command(16, [0.0, 127.0, 0.0], Vec3([0.0, 0.0, 45.0])),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert!(state.body.velocity.0[1] < 0.0);
         assert!(state.body.velocity.0[2] < 0.0);
@@ -420,7 +429,12 @@ fn q3_free_wish_scaling_keeps_each_native_operation_order() {
         // Cached ordinary acceleration must not replace pm_flyaccelerate.
         state.movement.tuning.accelerate = Some(10.0);
         let mut world = World::new(state.trace_rules);
-        pmove(command(16, axes, angles), &mut state, &mut world);
+        pmove(
+            command(16, axes, angles),
+            &mut state,
+            &mut world,
+            Default::default(),
+        );
         assert_eq!(state.body.velocity, expected, "{mode:?}");
     }
 }
@@ -447,6 +461,7 @@ fn q3_free_friction_ignores_stale_ground_and_water_without_snapping_velocity() {
             command(16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity.0[2], expected, "{mode:?}");
         assert_ne!(expected, expected.round());
@@ -480,6 +495,7 @@ fn low_speed_native_free_modes_clear_the_correct_velocity_components() {
             command(16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity, expected, "{rules:?} {mode:?}");
     }
@@ -500,6 +516,7 @@ fn classic_spectator_applies_stop_friction_then_returns_without_integrating() {
             command(16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity.0[0], expected);
         assert_eq!(state.body.position, Vec3([0.0, 0.0, 64.0]));
@@ -521,6 +538,7 @@ fn q3_flight_adds_native_flight_friction_and_keeps_ordinary_final_snapping() {
             command(16, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity.0[0], velocity.round_ties_even());
         assert_eq!(state.body.position.0[0], velocity * dt);
@@ -544,7 +562,7 @@ fn talk_is_exclusive_in_every_q3_substep_and_preserves_view_angles() {
             buttons: buttons::TALK | buttons::ATTACK | buttons::JUMP | buttons::CROUCH,
             ..command(200, [127.0, 63.0, 127.0], Vec3([30.0, 60.0, 0.0]))
         };
-        let actual_result = pmove(command, &mut actual, &mut world);
+        let actual_result = pmove(command, &mut actual, &mut world, Default::default());
         let expected_result = pmove(
             UserCmd {
                 buttons: buttons::TALK,
@@ -553,6 +571,7 @@ fn talk_is_exclusive_in_every_q3_substep_and_preserves_view_angles() {
             },
             &mut expected,
             &mut world,
+            Default::default(),
         );
         assert_eq!(actual.body.position, expected.body.position, "{mode:?}");
         assert_eq!(actual.body.velocity, expected.body.velocity, "{mode:?}");
@@ -585,8 +604,9 @@ fn other_movement_roles_do_not_inherit_q3_talk_exclusivity() {
             },
             &mut actual,
             &mut world,
+            Default::default(),
         );
-        pmove(command, &mut expected, &mut world);
+        pmove(command, &mut expected, &mut world, Default::default());
         assert_eq!(actual.body.position, expected.body.position, "{rules:?}");
         assert_eq!(actual.body.velocity, expected.body.velocity, "{rules:?}");
         assert_eq!(actual.movement, expected.movement, "{rules:?}");
@@ -655,6 +675,7 @@ fn rerelease_slide_selects_a_secondary_plane_by_native_component_comparison() {
             command(8, [0.0; 3], Vec3::default()),
             &mut state,
             &mut world,
+            Default::default(),
         );
         assert_eq!(state.body.velocity, expected);
         assert_eq!(result.contact_count, 1);
@@ -688,6 +709,7 @@ fn rerelease_allsolid_slide_records_the_native_contact_before_returning() {
         command(8, [0.0; 3], Vec3::default()),
         &mut state,
         &mut SolidWorld,
+        Default::default(),
     );
     assert_eq!(state.body.velocity.0[2], 0.0);
     assert_eq!(result.contact_count, 1);

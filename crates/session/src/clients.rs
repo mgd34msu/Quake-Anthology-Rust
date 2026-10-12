@@ -367,7 +367,7 @@ impl Server {
                 scratch,
                 CollisionOwner::Lifetime(client.entity),
             );
-            qa_movement::pmove(command, &mut client.player, &mut trace)
+            qa_movement::pmove(command, &mut client.player, &mut trace, Default::default())
         };
         self.entities
             .columns

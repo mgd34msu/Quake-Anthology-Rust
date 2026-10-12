@@ -20,6 +20,6 @@ impl Prediction {
         self.player.ideal_pitch = source.ideal_pitch;
     }
     pub fn advance(&mut self, command: UserCmd, trace: &mut dyn TraceServices) -> MovementResult {
-        qa_movement::pmove(command, &mut self.player, trace)
+        qa_movement::pmove(command, &mut self.player, trace, Default::default())
     }
 }

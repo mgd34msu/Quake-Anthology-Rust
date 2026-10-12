@@ -93,9 +93,11 @@ impl Commands {
     }
     /// Native packet redundancy is caller-supplied. The development host has
     /// one current command and no input history, so its older entries are zero.
+    /// The registry supplies `native_weapon`; common IDs never enter the wire.
     pub fn encode(
         &self,
         command: &UserCmd,
+        native_weapon: u8,
         channel: &Channel,
         out: &mut [u8],
     ) -> Result<usize, packet::Error> {
@@ -131,9 +133,7 @@ impl Commands {
             },
             Protocol::Quake3_68 => {
                 let mut commands = [ZERO_Q3; 32];
-                // No registry/module binding exists in the development host.
-                // Weapon zero is native NONE, never an ItemId/WeaponId cast.
-                commands[0] = to_q3_usercmd(command, 0);
+                commands[0] = to_q3_usercmd(command, native_weapon);
                 Move::Quake3 {
                     commands,
                     count: 1,
@@ -168,7 +168,7 @@ impl Commands {
         sequence: u32,
         server_time: i32,
         channel: &mut Channel,
-        mut consume: impl FnMut(UserCmd, Option<SnapshotObservation>),
+        mut consume: impl FnMut(UserCmd, Option<u8>, Option<SnapshotObservation>),
     ) -> Result<usize, packet::Error> {
         if self.protocol == Protocol::QuakeWorld28 {
             // SV_ExecuteClientMessage starts each message with delta_sequence=-1.
@@ -209,7 +209,7 @@ impl Commands {
                 // when consuming the latest command for its queued frame span.
                 let command = from_q1_move(command, 0, server_time);
                 self.previous_time = command.server_time_ms;
-                consume(command, None);
+                consume(command, None, None);
                 1
             }
             Move::QuakeWorld {
@@ -234,7 +234,11 @@ impl Commands {
                     |native, observation| {
                         self.previous_time =
                             self.previous_time.wrapping_add(i32::from(native.msec));
-                        consume(from_qw_usercmd(native, self.previous_time), observation);
+                        consume(
+                            from_qw_usercmd(native, self.previous_time),
+                            None,
+                            observation,
+                        );
                     },
                 );
                 let mut previous = commands[2];
@@ -264,7 +268,11 @@ impl Commands {
                     |native, observation| {
                         self.previous_time =
                             self.previous_time.wrapping_add(i32::from(native.msec));
-                        consume(from_q2_usercmd(native, self.previous_time), observation);
+                        consume(
+                            from_q2_usercmd(native, self.previous_time),
+                            None,
+                            observation,
+                        );
                     },
                 );
                 self.previous_command = Some(NativeBackup::Quake2(commands[2], observation));
@@ -294,7 +302,11 @@ impl Commands {
                     |native, observation| {
                         self.previous_time =
                             self.previous_time.wrapping_add(i32::from(native.msec));
-                        consume(from_q2_rr_usercmd(native, self.previous_time), observation);
+                        consume(
+                            from_q2_rr_usercmd(native, self.previous_time),
+                            None,
+                            observation,
+                        );
                     },
                 );
                 self.previous_command = Some(NativeBackup::Quake2Repro(commands[2], observation));
@@ -314,13 +326,9 @@ impl Commands {
                     if native.server_time > final_time || native.server_time <= self.previous_time {
                         continue;
                     }
-                    let command = from_q3_usercmd(
-                        native,
-                        self.previous_time,
-                        qa_core::primitives::WeaponId::default(),
-                    );
+                    let command = from_q3_usercmd(native, self.previous_time, None);
                     self.previous_time = native.server_time;
-                    consume(command, observation);
+                    consume(command, Some(native.weapon), observation);
                     accepted += 1;
                 }
                 accepted

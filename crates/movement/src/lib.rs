@@ -1,8 +1,9 @@
 //! One movement entry per player rule set, over shared geometry and player state.
 mod physics;
+mod recovery;
 mod slide;
 mod special;
-pub use physics::{MovementResult, TraceServices, entry, pmove, set_bounds};
+pub use physics::{MoveOptions, MovementResult, TraceServices, entry, pmove, set_bounds};
 use qa_core::{
     primitives::{RuleSetId, UserCmd},
     sys_events::EventTime,

@@ -6,6 +6,46 @@ use qa_network::commands::{
 };
 
 #[test]
+fn q3_connection_preserves_every_projected_weapon_byte_without_casting_common_ids() {
+    use qa_core::{
+        loopback::Endpoint,
+        primitives::{UserCmd, WeaponId},
+    };
+    use qa_network::channel::Channel;
+
+    let client = Channel::load(Protocol::Quake3_68.channel(), Endpoint::Client, 8192, 8).unwrap();
+    let mut server =
+        Channel::load(Protocol::Quake3_68.channel(), Endpoint::Server, 8192, 8).unwrap();
+    let outgoing = Commands::load(Protocol::Quake3_68);
+    let mut incoming = Commands::load(Protocol::Quake3_68);
+    let mut bytes = [0; 1400];
+    for number in 0..=u8::MAX {
+        let command = UserCmd {
+            server_time_ms: (i32::from(number) + 1) * 16,
+            weapon: Some(WeaponId(u32::MAX)),
+            ..Default::default()
+        };
+        let length = outgoing
+            .encode(&command, number, &client, &mut bytes)
+            .unwrap();
+        let length = incoming.stage(&bytes[..length]).unwrap();
+        let mut received = None;
+        assert_eq!(
+            incoming
+                .decode(length, 0, 0, &mut server, |command, native_weapon, _| {
+                    received = Some((command, native_weapon));
+                })
+                .unwrap(),
+            1
+        );
+        let (decoded, native_weapon) = received.unwrap();
+        assert_eq!(native_weapon, Some(number));
+        assert_eq!(decoded.weapon, None);
+        assert_eq!(decoded.server_time_ms, command.server_time_ms);
+    }
+}
+
+#[test]
 fn qw_delta_requests_are_outside_crc_and_replace_per_message()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = [0; 128];
@@ -63,20 +103,20 @@ fn qw_delta_requests_are_outside_crc_and_replace_per_message()
     )?;
     let mut connection = Commands::load(Protocol::QuakeWorld28);
     let n = connection.stage(&message)?;
-    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_, _| {})?, 1);
+    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_, _, _| {})?, 1);
     assert_eq!(connection.delta_request(), Some(23));
     // The next message omits clc_delta and must not retain its predecessor.
     let n = connection.stage(&bytes[..length - 2])?;
-    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_, _| {})?, 1);
+    assert_eq!(connection.decode(n, 17, 0, &mut channel, |_, _, _| {})?, 1);
     assert_eq!(connection.delta_request(), None);
     let n = connection.stage(&message)?;
-    connection.decode(n, 17, 0, &mut channel, |_, _| {})?;
+    connection.decode(n, 17, 0, &mut channel, |_, _, _| {})?;
     assert_eq!(connection.delta_request(), Some(23));
     message.push(5);
     let n = connection.stage(&message)?;
     assert!(
         connection
-            .decode(n, 17, 0, &mut channel, |_, _| {})
+            .decode(n, 17, 0, &mut channel, |_, _, _| {})
             .is_err()
     );
     assert_eq!(connection.delta_request(), None);

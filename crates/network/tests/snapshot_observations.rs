@@ -180,7 +180,7 @@ fn moves(
     let length = codec.stage(body).unwrap();
     let mut result = Vec::new();
     codec
-        .decode(length, sequence, 9, channel, |command, observation| {
+        .decode(length, sequence, 9, channel, |command, _, observation| {
             result.push((command.movement[0], observation))
         })
         .unwrap();
@@ -317,7 +317,7 @@ fn different_protocol_ack_fields_project_the_same_native_provider_observation() 
         let length = commands.stage(&bytes[..length]).unwrap();
         let mut observed = Vec::new();
         commands
-            .decode(length, 1, 10, &mut channel, |_, observation| {
+            .decode(length, 1, 10, &mut channel, |_, _, observation| {
                 observed.push(observation)
             })
             .unwrap();

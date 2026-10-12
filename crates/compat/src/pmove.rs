@@ -10,10 +10,17 @@ use qa_network::projection::{
 
 use Width::*;
 /// Original x86-64 game.h offsets, checked with sizeof/offsetof on qsrc.
+pub(crate) struct Outputs {
+    pub jump_sound: usize,
+    pub step_clip: usize,
+    pub impact_delta: usize,
+}
 pub(crate) struct Layout {
     state: [(usize, Width); MOVEMENT_WORDS],
     pub bytes: usize,
     pub command: usize,
+    initial_snap: (usize, Width),
+    pub outputs: Option<Outputs>,
     pub touches: usize,
     pub touch_count: usize,
     pub view: usize,
@@ -47,6 +54,8 @@ pub(crate) const CLASSIC: Layout = Layout {
     ],
     bytes: 384,
     command: 28,
+    initial_snap: (44, Word),
+    outputs: None,
     touches: 56,
     touch_count: 48,
     view: 312,
@@ -80,6 +89,12 @@ pub(crate) const RERELEASE: Layout = Layout {
     ],
     bytes: 3320,
     command: 52,
+    initial_snap: (80, Byte),
+    outputs: Some(Outputs {
+        jump_sound: 3309,
+        step_clip: 3310,
+        impact_delta: 3312,
+    }),
     touches: 96,
     touch_count: 88,
     view: 3168,
@@ -102,6 +117,18 @@ pub struct Pmove {
     words: Box<[u32]>,
 }
 impl Pmove {
+    pub fn options(
+        &self,
+        memory: &ModuleMemory<'_>,
+        address: u64,
+    ) -> Result<qa_movement::MoveOptions, CallError> {
+        Ok(qa_movement::MoveOptions {
+            initial_snap: memory.read_field(
+                address + self.layout.initial_snap.0 as u64,
+                self.layout.initial_snap.1,
+            )? != 0,
+        })
+    }
     pub(crate) fn load(
         layout: &'static Layout,
         client: &'static crate::q2_abi::ClientLayout,
@@ -159,7 +186,7 @@ impl Pmove {
                     | qa_core::primitives::MovementMode::Noclip
             );
         if !clear_flags {
-            self.words[PM_FLAGS_WORD] |= flags & !63;
+            self.words[PM_FLAGS_WORD] |= flags & !self.projection.movement_flag_mask();
         }
         if self.layout.wide {
             self.words[PM_FLAGS_WORD] =

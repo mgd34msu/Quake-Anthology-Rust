@@ -174,6 +174,20 @@ fn modules_share_entity_lifetimes_cvars_command_buffer_and_byte_exact_output() {
             services.storage.configstring(ModuleId(2), 3).unwrap(),
             (&b""[..], 0)
         );
+        assert_eq!(services.storage.config_integer(ModuleId(1), 3), Some(0));
+        (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 3, b"  -7tail").unwrap();
+        assert_eq!(services.storage.config_integer(ModuleId(1), 3), Some(-7));
+        assert_eq!(services.storage.config_integer(ModuleId(2), 3), Some(0));
+        let revision = services.storage.config_revision(ModuleId(1)).unwrap();
+        (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 3, b"  -7tail").unwrap();
+        assert_eq!(
+            services.storage.config_revision(ModuleId(1)).unwrap(),
+            revision
+        );
+        (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 3, b"1").unwrap();
+        assert_eq!(services.storage.config_integer(ModuleId(1), 3), Some(1));
+        assert_eq!(services.storage.config_integer(ModuleId(1), 8), None);
+        assert_eq!(services.storage.config_integer(ModuleId(3), 0), None);
         assert_eq!(
             (ENGINE_CALLS.configstring)(&mut services, ModuleId(1), 8, b"bad"),
             Err(CallError::ConfigString)

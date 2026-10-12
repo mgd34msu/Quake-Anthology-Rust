@@ -81,7 +81,7 @@ fn main() {
                     0.0
                 };
             }
-            qa_movement::pmove(command, &mut player, &mut world);
+            qa_movement::pmove(command, &mut player, &mut world, Default::default());
             if arena {
                 let p = player.body.position.0;
                 let v = player.body.velocity.0;

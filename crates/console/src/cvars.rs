@@ -18,6 +18,16 @@ const MODULE_CVARS: usize = 1024;
 pub(crate) const USER_CREATED: u32 = 128;
 const ROLES: [Role; 3] = [Role::Engine, Role::Game, Role::Cgame];
 
+/// Q3 Cvar_Get/Cvar_Set validate names before lookup; other native sources
+/// keep their byte-exact spellings in the same table.
+pub fn registration_name(name: &str, source: RuleSetId) -> &str {
+    if source == RuleSetId::Quake3 && name.bytes().any(qa_core::text::info_delimiter) {
+        "BADNAME"
+    } else {
+        name
+    }
+}
+
 #[derive(Clone, Copy)]
 struct NameSlot {
     first: u16,
@@ -410,6 +420,7 @@ impl Cvars {
         flags: u32,
         context: Context,
     ) -> Result<View, WriteError> {
+        let name = registration_name(name, context.source);
         if name.is_empty()
             || (flags & 6 != 0
                 && (!info_text(name) || default.is_some_and(|text| !info_text(text))))

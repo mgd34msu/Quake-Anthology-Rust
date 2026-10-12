@@ -126,6 +126,7 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
     let registry = &runtime.catalog.registry;
     let highest_item = registry.items.last().unwrap().id;
     let highest_weapon = registry.weapons.last().unwrap().id;
+    let highest_weapon_item = registry.weapon(highest_weapon).unwrap().item;
     let loadouts: [Loadout; 3] = std::array::from_fn(|family| {
         let source = [RuleSetId::Quake, RuleSetId::Quake2, RuleSetId::Quake3][family];
         let weapon = registry
@@ -199,6 +200,10 @@ fn local_client_snapshots_project_mixed_inventory_and_timers_without_painting_re
     );
     // The last registry weapon and item are reachable, including the zero slot.
     runtime.server.clients[capacity - 1].player.inventory.weapon = highest_weapon;
+    runtime.server.clients[capacity - 1]
+        .player
+        .inventory
+        .item_counts[highest_weapon_item.0 as usize] = 1;
     let lease = runtime.server.events.texts.insert(b"keep\nthis").unwrap();
     let line = lease.id();
     let center = runtime.server.events.texts.lease(line).unwrap();

@@ -225,3 +225,39 @@ fn native_pitch_limits_keep_quake3_accumulation_and_quake2_delta_angles() {
     input.set_view_angles(SeatId::FIRST, Vec3([100.0, 0.0, 0.0]));
     assert_eq!(frame(&mut input, 40, q2).view_angles.0[0], 99.0);
 }
+
+#[test]
+fn client_module_zoom_scales_after_acceleration_and_preserves_zero_and_reset() {
+    use qa_core::primitives::WeaponId;
+    let mut input = input();
+    let seat = SeatId::FIRST;
+    let mut policy = InputPolicy::native(RuleSetId::Quake3);
+    policy.sensitivity = 1.7;
+    policy.acceleration = 0.9;
+    policy.mouse_scale = [0.031, 0.047];
+    input.set_usercmd_value(seat, Some(WeaponId(37)), 0.13);
+    mouse(&mut input, 1, 3, 4);
+    let command = frame(&mut input, 13, policy);
+    let mut gain = 1.7_f32 + (5.0_f32 / 13.0) * 0.9;
+    gain *= 0.13;
+    assert_eq!(
+        command.view_angles.0[0].to_bits(),
+        (4.0 * gain * 0.047).to_bits()
+    );
+    assert_eq!(
+        command.view_angles.0[1].to_bits(),
+        (-3.0 * gain * 0.031).to_bits()
+    );
+    assert_eq!(command.weapon, Some(WeaponId(37)));
+    input.set_usercmd_value(seat, None, 0.0);
+    mouse(&mut input, 14, 3, 4);
+    let zero = frame(&mut input, 26, policy);
+    assert_eq!(zero.view_angles, command.view_angles);
+    assert_eq!(zero.weapon, None);
+    input.reset_usercmd_value(seat);
+    mouse(&mut input, 27, 3, 4);
+    let reset = frame(&mut input, 39, policy);
+    assert!(reset.view_angles.0[0] > zero.view_angles.0[0]);
+    assert!(reset.view_angles.0[1] < zero.view_angles.0[1]);
+    assert_eq!(reset.weapon, None);
+}

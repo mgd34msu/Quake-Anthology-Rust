@@ -282,6 +282,9 @@ pub struct SpecialMovement {
     pub water_standing_cap: bool,
     pub water_duck_cap_after: Option<f32>,
     pub release_jump_below: Option<f32>,
+    pub lower_step_probe: bool,
+    pub settle_ground_step: bool,
+    pub recover_stuck: bool,
 }
 const POINT_JUMP: WaterJumpPolicy = WaterJumpPolicy {
     phase: ProbePhase::BeforeTimers,
@@ -314,6 +317,9 @@ const NO_SPECIAL: SpecialMovement = SpecialMovement {
     water_standing_cap: false,
     water_duck_cap_after: None,
     release_jump_below: None,
+    lower_step_probe: false,
+    settle_ground_step: false,
+    recover_stuck: false,
 };
 const SPECIAL: [SpecialMovement; 5] = [
     NO_SPECIAL,
@@ -355,6 +361,12 @@ const SPECIAL: [SpecialMovement; 5] = [
         water_jump: Some(WaterJumpPolicy {
             probe: WaterJumpProbe::Ballistic,
             duration: JumpTime::Milliseconds(2048),
+            ground_clear: MovementTimer(
+                MovementTimer::WATER_JUMP.0
+                    | MovementTimer::LAND.0
+                    | MovementTimer::TELEPORT.0
+                    | MovementTimer::TRICK.0,
+            ),
             ..POINT_JUMP
         }),
         current_speed: Some(400.0),
@@ -364,6 +376,9 @@ const SPECIAL: [SpecialMovement; 5] = [
         water_standing_cap: true,
         water_duck_cap_after: Some(100.0),
         release_jump_below: None,
+        lower_step_probe: true,
+        settle_ground_step: true,
+        recover_stuck: true,
     },
     SpecialMovement {
         release_jump_below: Some(10.0),
@@ -380,13 +395,139 @@ const SPECIAL: [SpecialMovement; 5] = [
     },
 ];
 #[derive(Clone, Copy)]
+pub struct FallLanding {
+    pub previous_velocity: bool,
+    pub threshold: f32,
+    pub duration: u32,
+    pub fast: Option<(f32, u32)>,
+}
+#[derive(Clone, Copy)]
+pub struct TrickLanding {
+    pub threshold: f32,
+    pub normal: f32,
+    pub duration: u32,
+}
+#[derive(Clone, Copy)]
+pub struct LandingPolicy {
+    pub fall: Option<FallLanding>,
+    pub trick: Option<TrickLanding>,
+    pub duck_duration: Option<u32>,
+    pub n64_duration: Option<u32>,
+    pub impact: bool,
+    pub publish_jump: bool,
+    pub recheck_jump: bool,
+    pub blocks_jump: bool,
+}
+const NO_LANDING: LandingPolicy = LandingPolicy {
+    fall: None,
+    trick: None,
+    duck_duration: None,
+    n64_duration: None,
+    impact: false,
+    publish_jump: false,
+    recheck_jump: false,
+    blocks_jump: false,
+};
+const LANDING: [LandingPolicy; 5] = [
+    NO_LANDING,
+    NO_LANDING,
+    LandingPolicy {
+        blocks_jump: true,
+        fall: Some(FallLanding {
+            previous_velocity: false,
+            threshold: -200.0,
+            duration: 144,
+            fast: Some((-400.0, 200)),
+        }),
+        ..NO_LANDING
+    },
+    LandingPolicy {
+        trick: Some(TrickLanding {
+            threshold: 100.0,
+            normal: 0.9,
+            duration: 64,
+        }),
+        duck_duration: Some(128),
+        n64_duration: Some(128),
+        impact: true,
+        publish_jump: true,
+        recheck_jump: true,
+        blocks_jump: true,
+        ..NO_LANDING
+    },
+    LandingPolicy {
+        fall: Some(FallLanding {
+            previous_velocity: true,
+            threshold: -200.0,
+            duration: 250,
+            fast: None,
+        }),
+        ..NO_LANDING
+    },
+];
+#[derive(Clone, Copy)]
+pub struct StancePolicy {
+    pub gib_bounds: bool,
+    pub dead_duck: bool,
+    pub grounded_duck: bool,
+    pub after_ground: bool,
+    pub button_only: bool,
+    pub above_water: bool,
+    pub forbid_ladder: bool,
+    pub forbid_n64: bool,
+    pub check_duck_hull: bool,
+    pub initial_snap: Option<f32>,
+}
+const NATIVE_STANCE: StancePolicy = StancePolicy {
+    gib_bounds: false,
+    dead_duck: false,
+    grounded_duck: false,
+    after_ground: false,
+    button_only: false,
+    above_water: false,
+    forbid_ladder: false,
+    forbid_n64: false,
+    check_duck_hull: false,
+    initial_snap: None,
+};
+const STANCE: [StancePolicy; 5] = [
+    NATIVE_STANCE,
+    NATIVE_STANCE,
+    StancePolicy {
+        gib_bounds: true,
+        dead_duck: true,
+        grounded_duck: true,
+        initial_snap: Some(0.125),
+        ..NATIVE_STANCE
+    },
+    StancePolicy {
+        gib_bounds: true,
+        dead_duck: true,
+        grounded_duck: true,
+        after_ground: true,
+        button_only: true,
+        above_water: true,
+        forbid_ladder: true,
+        forbid_n64: true,
+        check_duck_hull: true,
+        initial_snap: Some(1.0),
+    },
+    NATIVE_STANCE,
+];
+#[derive(Clone, Copy)]
 pub struct Capabilities {
     pub free: FreeModes,
     pub special: SpecialMovement,
+    pub landing: LandingPolicy,
+    pub stance: StancePolicy,
+    pub circular_pitch: bool,
 }
 pub fn capabilities(rules: RuleSetId) -> Capabilities {
     Capabilities {
         free: FREE_MODES[rules as usize],
         special: SPECIAL[rules as usize],
+        landing: LANDING[rules as usize],
+        stance: STANCE[rules as usize],
+        circular_pitch: [false, false, true, true, false][rules as usize],
     }
 }

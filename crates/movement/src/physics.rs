@@ -7,7 +7,7 @@ use qa_core::{
 };
 use qa_gameplay::rules::movement::{
     FreeAcceleration, FreeFinish, FreeFriction, FreeModes, FreeMotion, FreeMovePolicy, FreeWish,
-    ProbePhase, SpecialMovement, capabilities,
+    LandingPolicy, ProbePhase, SpecialMovement, StancePolicy, capabilities,
 };
 use qa_world::collision::{
     Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, TraceScope, WorldTrace,
@@ -32,8 +32,17 @@ pub struct MovementResult {
     pub traces: u32,
     pub contacts: [Option<Trace>; 32],
     pub contact_count: usize,
+    pub jump_sound: bool,
+    pub step_clip: bool,
+    pub impact_delta: f32,
 }
-pub type MoveEntry = fn(UserCmd, &mut PlayerState, &mut dyn TraceServices) -> MovementResult;
+/// Inputs belonging to this invocation, never retained as player state.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MoveOptions {
+    pub initial_snap: bool,
+}
+pub type MoveEntry =
+    fn(UserCmd, &mut PlayerState, &mut dyn TraceServices, MoveOptions) -> MovementResult;
 pub fn entry(rules: RuleSetId) -> MoveEntry {
     match rules {
         RuleSetId::Quake => quake,
@@ -47,8 +56,9 @@ pub fn pmove(
     command: UserCmd,
     player: &mut PlayerState,
     trace: &mut dyn TraceServices,
+    options: MoveOptions,
 ) -> MovementResult {
-    entry(player.movement_rules)(command, player, trace)
+    entry(player.movement_rules)(command, player, trace, options)
 }
 
 /// Spawn/stance initialization, independent of the module or map family.
@@ -83,6 +93,9 @@ pub(crate) struct Parameters {
     pub no_step: bool,
     free: FreeModes,
     pub special: SpecialMovement,
+    pub landing: LandingPolicy,
+    stance: StancePolicy,
+    circular_pitch: bool,
     fly_accel: f32,
     exclusive_button: Option<u32>,
 }
@@ -126,6 +139,9 @@ impl Parameters {
             no_step: t.no_step,
             free: capabilities.free,
             special: capabilities.special,
+            landing: capabilities.landing,
+            stance: capabilities.stance,
+            circular_pitch: capabilities.circular_pitch,
             fly_accel: 8.0,
             exclusive_button: if arena { Some(buttons::TALK) } else { None },
         }
@@ -144,6 +160,7 @@ pub(crate) struct Step<'a> {
     pub mask: Contents,
     pub scope: TraceScope,
     pub previous_velocity: Vec3,
+    options: MoveOptions,
 }
 impl Step<'_> {
     pub fn trace(&mut self, start: Vec3, end: Vec3) -> Trace {
@@ -320,17 +337,8 @@ impl Step<'_> {
                         .map_or(MovementTimer(u8::MAX), |policy| policy.ground_clear);
                     self.clear_timer_flags(mask);
                 }
-                if self.classic() && !was_grounded && self.player.body.velocity.0[2] < -200.0 {
-                    self.player.movement.timer.insert(MovementTimer::LAND);
-                    self.player.movement.remaining_ms = if self.player.body.velocity.0[2] < -400.0 {
-                        200
-                    } else {
-                        144
-                    };
-                }
-                if self.arena() && !was_grounded && self.previous_velocity.0[2] < -200.0 {
-                    self.player.movement.timer.insert(MovementTimer::LAND);
-                    self.player.movement.remaining_ms = 250;
+                if !was_grounded {
+                    self.landed(tr.plane.normal);
                 }
                 if self.qw() && !tr.start_solid && !tr.all_solid {
                     self.player.body.position = tr.end;
@@ -342,7 +350,48 @@ impl Step<'_> {
         }
         self.water_level();
     }
-    fn stance(&mut self) {
+    fn landed(&mut self, normal: Vec3) {
+        let policy = self.parameters.landing;
+        let velocity = self.player.body.velocity;
+        if let Some(fall) = policy.fall {
+            let z = if fall.previous_velocity {
+                self.previous_velocity.0[2]
+            } else {
+                velocity.0[2]
+            };
+            if z < fall.threshold {
+                let duration = fall
+                    .fast
+                    .filter(|&(threshold, _)| z < threshold)
+                    .map_or(fall.duration, |(_, time)| time);
+                self.start_timer(MovementTimer::LAND, duration);
+            }
+        }
+        let n64 = self.player.movement.tuning.n64_physics;
+        if !n64
+            && !self.player.movement.ducked
+            && let Some(trick) = policy.trick
+            && velocity.0[2] >= trick.threshold
+            && normal.0[2] >= trick.normal
+        {
+            self.start_timer(MovementTimer::TRICK, trick.duration);
+        }
+        if policy.impact {
+            let clipped = super::slide::clip(velocity, normal, self.parameters.rules);
+            self.result.impact_delta = self.previous_velocity.0[2] - clipped.0[2];
+        }
+        let duration = if n64 {
+            policy.n64_duration
+        } else if self.player.movement.ducked {
+            policy.duck_duration
+        } else {
+            None
+        };
+        if let Some(duration) = duration {
+            self.start_timer(MovementTimer::LAND, duration);
+        }
+    }
+    fn dimensions(&mut self) {
         if self.nq() || self.qw() {
             return;
         }
@@ -350,28 +399,13 @@ impl Step<'_> {
             self.player.body.mins.0[axis] = -self.parameters.radius;
             self.player.body.maxs.0[axis] = self.parameters.radius;
         }
-        if self.classic() && self.player.movement.mode == MovementMode::Gib {
+        if self.parameters.stance.gib_bounds && self.player.movement.mode == MovementMode::Gib {
             self.player.body.mins.0[2] = 0.0;
             self.player.body.maxs.0[2] = 16.0;
             self.player.view_offset.0[2] = 8.0;
             return;
         }
         self.player.body.mins.0[2] = -24.0;
-        let old_ducked = self.player.movement.ducked;
-        let duck = self.command.movement[2] < 0.0 || self.command.buttons & buttons::CROUCH != 0;
-        if duck && (!self.classic() || self.player.movement.grounded)
-            || self.classic() && self.player.movement.mode == MovementMode::Dead
-        {
-            self.player.movement.ducked = true;
-        } else if old_ducked {
-            let mut maxs = self.player.body.maxs;
-            maxs.0[2] = 32.0;
-            let p = self.player.body.position;
-            let tr = self.trace_bounds(p, p, self.player.body.mins, maxs);
-            if !tr.all_solid {
-                self.player.movement.ducked = false;
-            }
-        }
         let dead = self.arena()
             && matches!(
                 self.player.movement.mode,
@@ -379,18 +413,100 @@ impl Step<'_> {
             );
         self.player.body.maxs.0[2] = if dead {
             -8.0
-        } else if self.player.movement.ducked {
+        } else if self.player.movement.ducked
+            || self.parameters.stance.dead_duck && self.player.movement.mode == MovementMode::Dead
+        {
             if self.arena() { 16.0 } else { 4.0 }
         } else {
             32.0
         };
         self.player.view_offset.0[2] = if dead {
             -16.0
-        } else if self.player.movement.ducked {
+        } else if self.player.movement.ducked
+            || self.parameters.stance.dead_duck && self.player.movement.mode == MovementMode::Dead
+        {
             if self.arena() { 12.0 } else { -2.0 }
         } else {
             self.parameters.view_height
         };
+    }
+    fn above_water(&mut self) -> bool {
+        let origin = self.player.body.position;
+        let below = origin - Vec3([0.0, 0.0, 8.0]);
+        let mins = self.player.body.mins;
+        let maxs = self.player.body.maxs;
+        if self
+            .trace_mask(
+                origin,
+                below,
+                mins,
+                maxs,
+                Contents::SOLID | Contents::WINDOW,
+            )
+            .fraction
+            < 1.0
+        {
+            return false;
+        }
+        self.trace_mask(origin, below, mins, maxs, Contents::FLUID)
+            .fraction
+            < 1.0
+    }
+    fn stance(&mut self) -> bool {
+        if self.nq() || self.qw() {
+            return false;
+        }
+        if self.parameters.stance.gib_bounds && self.player.movement.mode == MovementMode::Gib {
+            self.dimensions();
+            return false;
+        }
+        let old_ducked = self.player.movement.ducked;
+        let policy = self.parameters.stance;
+        if !policy.after_ground {
+            self.dimensions();
+        }
+        let duck = self.command.buttons & buttons::CROUCH != 0
+            || !policy.button_only && self.command.movement[2] < 0.0;
+        if policy.dead_duck && self.player.movement.mode == MovementMode::Dead {
+            self.player.movement.ducked = true;
+        } else if duck
+            && (!policy.grounded_duck
+                || self.player.movement.grounded
+                || policy.above_water
+                    && self.player.movement.water_level <= 1
+                    && !self.above_water())
+            && !(policy.forbid_ladder && self.player.movement.ladder)
+            && !(policy.forbid_n64 && self.player.movement.tuning.n64_physics)
+        {
+            if !old_ducked {
+                let allowed = if policy.check_duck_hull {
+                    let mut maxs = self.player.body.maxs;
+                    maxs.0[2] = 4.0;
+                    let p = self.player.body.position;
+                    !self
+                        .trace_bounds(p, p, self.player.body.mins, maxs)
+                        .all_solid
+                } else {
+                    true
+                };
+                self.player.movement.ducked = allowed;
+            }
+        } else if old_ducked {
+            let mut maxs = self.player.body.maxs;
+            maxs.0[2] = 32.0;
+            let p = self.player.body.position;
+            if !self
+                .trace_bounds(p, p, self.player.body.mins, maxs)
+                .all_solid
+            {
+                self.player.movement.ducked = false;
+            }
+        }
+        let changed = old_ducked != self.player.movement.ducked;
+        if changed {
+            self.dimensions();
+        }
+        changed
     }
     fn friction(&mut self, context: FrictionContext) {
         let free = match context {
@@ -495,6 +611,11 @@ impl Step<'_> {
         if self.arena() && self.player.movement.water_level >= 2 {
             return false;
         }
+        if self.parameters.landing.blocks_jump
+            && self.player.movement.timer.contains(MovementTimer::LAND)
+        {
+            return false;
+        }
         let pressed = self.command.buttons & buttons::JUMP != 0 || self.command.movement[2] >= 10.0;
         if !pressed {
             self.player.movement.jump_held = false;
@@ -505,15 +626,11 @@ impl Step<'_> {
                 (self.player.movement.water_jump_seconds - self.dt).max(0.0);
             return false;
         }
-        if !self.arena() && self.player.movement.timer.contains(MovementTimer::LAND) {
-            return false;
-        }
         if self.player.movement.jump_held
             || matches!(
                 self.player.movement.mode,
                 MovementMode::Dead | MovementMode::Gib
             )
-            || !self.arena() && self.player.movement.timer.contains(MovementTimer::LAND)
         {
             return false;
         }
@@ -539,6 +656,7 @@ impl Step<'_> {
             return false;
         }
         self.player.movement.jump_held = true;
+        self.result.jump_sound |= self.parameters.landing.publish_jump;
         self.player.movement.grounded = false;
         self.player.movement.ground = None;
         self.ground_plane = false;
@@ -857,6 +975,14 @@ impl Step<'_> {
             return;
         }
         if !self.classic() {
+            if self.parameters.special.recover_stuck
+                && self.player.movement.mode != MovementMode::Noclip
+            {
+                let position = self.player.body.position;
+                if self.trace(position, position).all_solid {
+                    self.player.body.position = self.recover_position(position).unwrap_or(previous);
+                }
+            }
             return;
         }
         self.player.body.velocity.0 = self.player.body.velocity.0.map(math::narrow_eighth);
@@ -889,6 +1015,10 @@ impl Step<'_> {
     pub(crate) fn clear_timer_flags(&mut self, mask: MovementTimer) {
         self.player.movement.timer.0 &= !mask.0;
         self.player.movement.remaining_ms = 0;
+    }
+    pub(crate) fn start_timer(&mut self, flag: MovementTimer, duration: u32) {
+        self.player.movement.timer.insert(flag);
+        self.player.movement.remaining_ms = duration;
     }
     fn drop_timers(&mut self) {
         if self.player.movement.remaining_ms == 0 {
@@ -992,7 +1122,7 @@ impl Step<'_> {
             self.command.buttons = exclusive;
             self.command.movement = [0.0; 3];
         }
-        let previous = self.player.body.position;
+        let mut previous = self.player.body.position;
         self.player.view_angles = self.command.view_angles + self.player.movement.delta_angles;
         if self.classic() || self.arena() {
             for i in 0..3 {
@@ -1018,17 +1148,17 @@ impl Step<'_> {
                 }
                 self.player.view_angles.0[i] = math::short_to_angle(i32::from(angle));
             }
-            if self.classic() {
-                let pitch = &mut self.player.view_angles.0[0];
-                if *pitch > 89.0 && *pitch < 180.0 {
-                    *pitch = 89.0;
-                } else if *pitch < 271.0 && *pitch >= 180.0 {
-                    *pitch = 271.0;
-                }
-                if self.player.movement.timer.contains(MovementTimer::TELEPORT) {
-                    self.player.view_angles.0[0] = 0.0;
-                    self.player.view_angles.0[2] = 0.0;
-                }
+        }
+        if self.parameters.circular_pitch {
+            let pitch = &mut self.player.view_angles.0[0];
+            if *pitch > 89.0 && *pitch < 180.0 {
+                *pitch = 89.0;
+            } else if *pitch < 271.0 && *pitch >= 180.0 {
+                *pitch = 271.0;
+            }
+            if self.player.movement.timer.contains(MovementTimer::TELEPORT) {
+                self.player.view_angles.0[0] = 0.0;
+                self.player.view_angles.0[2] = 0.0;
             }
         }
         if self.parameters.special.ladder.is_none() {
@@ -1050,7 +1180,17 @@ impl Step<'_> {
             self.run_free(policy, previous);
             return;
         }
-        self.stance();
+        let stance_after_ground = self.parameters.stance.after_ground;
+        if !stance_after_ground {
+            self.stance();
+            if self.options.initial_snap
+                && let Some(scale) = self.parameters.stance.initial_snap
+            {
+                previous = self.initial_snap(previous, scale);
+            }
+        } else {
+            self.dimensions();
+        }
         if matches!(
             self.player.movement.mode,
             MovementMode::Dead | MovementMode::Gib
@@ -1063,6 +1203,16 @@ impl Step<'_> {
         } else {
             self.categorize();
         }
+        if stance_after_ground {
+            if self.options.initial_snap
+                && let Some(scale) = self.parameters.stance.initial_snap
+            {
+                previous = self.initial_snap(previous, scale);
+            }
+            if self.stance() {
+                self.categorize();
+            }
+        }
         self.check_special();
         self.drop_timers();
         if !self.player.movement.timer.contains(MovementTimer::TELEPORT) && !self.water_jump_move()
@@ -1072,6 +1222,11 @@ impl Step<'_> {
         }
         if !self.nq() {
             self.categorize();
+        }
+        if self.parameters.landing.recheck_jump
+            && self.player.movement.timer.contains(MovementTimer::TRICK)
+        {
+            self.jump();
         }
         self.snap(previous, true);
         self.player.movement.previous_position = previous;
@@ -1083,6 +1238,7 @@ fn run_step(
     world: &mut dyn TraceServices,
     parameters: Parameters,
     result: &mut MovementResult,
+    options: MoveOptions,
 ) {
     let exact_dt = if parameters.rules == RuleSetId::Quake {
         EventTime(command.duration_ns).seconds()
@@ -1116,6 +1272,7 @@ fn run_step(
         mask,
         scope: TraceScope::Scene,
         previous_velocity,
+        options,
     }
     .run();
 }
@@ -1123,17 +1280,19 @@ fn quake(
     command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
+    options: MoveOptions,
 ) -> MovementResult {
     let command = super::prepare_command(RuleSetId::Quake, command);
     let parameters = Parameters::load(RuleSetId::Quake, player);
     let mut result = MovementResult::default();
-    run_step(command, player, world, parameters, &mut result);
+    run_step(command, player, world, parameters, &mut result, options);
     result
 }
 fn quakeworld(
     command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
+    options: MoveOptions,
 ) -> MovementResult {
     let command = super::prepare_command(RuleSetId::QuakeWorld, command);
     let parameters = Parameters::load(RuleSetId::QuakeWorld, player);
@@ -1160,6 +1319,7 @@ fn quakeworld(
                 world,
                 parameters,
                 &mut result,
+                options,
             );
         }
     }
@@ -1169,6 +1329,7 @@ fn quake2(
     command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
+    options: MoveOptions,
 ) -> MovementResult {
     // Native pmove_state_t carries signed 16-bit coordinates and velocities
     // in eighth units. Rerelease deliberately keeps its floating ABI.
@@ -1177,24 +1338,26 @@ fn quake2(
     let command = super::prepare_command(RuleSetId::Quake2, command);
     let parameters = Parameters::load(RuleSetId::Quake2, player);
     let mut result = MovementResult::default();
-    run_step(command, player, world, parameters, &mut result);
+    run_step(command, player, world, parameters, &mut result, options);
     result
 }
 fn rerelease(
     command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
+    options: MoveOptions,
 ) -> MovementResult {
     let command = super::prepare_command(RuleSetId::Quake2Rerelease, command);
     let parameters = Parameters::load(RuleSetId::Quake2Rerelease, player);
     let mut result = MovementResult::default();
-    run_step(command, player, world, parameters, &mut result);
+    run_step(command, player, world, parameters, &mut result, options);
     result
 }
 fn arena(
     mut command: UserCmd,
     player: &mut PlayerState,
     world: &mut dyn TraceServices,
+    options: MoveOptions,
 ) -> MovementResult {
     let parameters = Parameters::load(RuleSetId::Quake3, player);
     let mut result = MovementResult::default();
@@ -1213,7 +1376,7 @@ fn arena(
         command.duration_ms = ms;
         player.movement.command_time_ms += i32::from(ms);
         command.server_time_ms = player.movement.command_time_ms;
-        run_step(command, player, world, parameters, &mut result);
+        run_step(command, player, world, parameters, &mut result, options);
         if player.movement.jump_held {
             command.movement[2] = 20.0;
         }

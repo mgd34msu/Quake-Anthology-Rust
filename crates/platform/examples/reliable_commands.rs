@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 server_time_ms: 16,
                 ..UserCmd::default()
             },
+            0,
             &client,
             &mut bytes,
         )?;
@@ -60,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("move payload".into());
         };
         let n = codec.stage(body)?;
-        codec.decode(n, sequence, 16, &mut server, |_, _| {})?;
+        codec.decode(n, sequence, 16, &mut server, |_, _, _| {})?;
         for _ in 0..count {
             server.queue_reliable(&string(&mut input)?)?;
         }

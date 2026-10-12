@@ -202,8 +202,7 @@ impl Step<'_> {
         self.player.body.velocity.0[2] = policy.vertical;
         match policy.duration {
             JumpTime::Milliseconds(ms) => {
-                self.player.movement.timer.insert(MovementTimer::WATER_JUMP);
-                self.player.movement.remaining_ms = ms;
+                self.start_timer(MovementTimer::WATER_JUMP, ms);
             }
             JumpTime::Seconds(seconds) => self.player.movement.water_jump_seconds = seconds,
         }

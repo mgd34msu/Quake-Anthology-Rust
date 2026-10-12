@@ -63,6 +63,7 @@ struct OpenFile {
 }
 struct ConfigString {
     text: FixedText<8192>,
+    integer: i32,
     revision: u64,
     resource_name: Option<NameId>,
 }
@@ -147,6 +148,7 @@ impl ServiceStorage {
             files: std::iter::repeat_with(|| None).take(files).collect(),
             configs: std::iter::repeat_with(|| ConfigString {
                 text: FixedText::default(),
+                integer: 0,
                 revision: 0,
                 resource_name: None,
             })
@@ -246,6 +248,12 @@ impl ServiceStorage {
         let row = &self.configs[self.config(module, ordinal)?];
         Ok((row.text.as_bytes(), row.revision))
     }
+    /// Numeric configstrings are projected once when their text changes.
+    /// A module's undeclared ordinal carries no configuration value.
+    pub fn config_integer(&self, module: ModuleId, ordinal: usize) -> Option<i32> {
+        let index = self.range(module)?.span.get(ordinal)?;
+        Some(self.configs[index].integer)
+    }
     /// Native ordinals share the load-bound cache with module sound imports.
     pub fn sound_id(
         &self,
@@ -340,6 +348,7 @@ impl ServiceStorage {
                 None
             };
             row.text.set_bytes(text).map_err(|_| CallError::Text)?;
+            row.integer = qa_core::text::atoi_prefix(text);
             row.resource_name = name;
             row.revision = row.revision.wrapping_add(1);
             let range = self.range_mut(module).ok_or(CallError::ConfigString)?;
@@ -399,6 +408,7 @@ impl ServiceStorage {
 /// buffer, VFS, geometry and output ring remain their existing single owners.
 pub struct EngineServices<'a> {
     pub server: &'a mut Server,
+    pub input: &'a mut qa_input::Input,
     pub cvars: &'a mut Cvars,
     pub commands: &'a mut CommandBuffer,
     pub vfs: &'a Vfs,
@@ -461,6 +471,7 @@ pub struct EngineCallTable {
         &mut EngineServices<'_>,
         ClientId,
         Option<&dyn NativeTraceEntities>,
+        qa_movement::MoveOptions,
     ) -> Result<qa_movement::MovementResult, CallError>,
     pub in_visibility: fn(
         &mut EngineServices<'_>,
@@ -488,6 +499,12 @@ pub struct EngineCallTable {
     pub console_formatted:
         fn(&mut EngineServices<'_>, std::fmt::Arguments<'_>) -> Result<u64, CallError>,
     pub usercmd: fn(&EngineServices<'_>, NativeEntity) -> Option<UserCmd>,
+    pub set_usercmd_value: fn(
+        &mut EngineServices<'_>,
+        qa_core::sys_events::SeatId,
+        Option<qa_core::primitives::WeaponId>,
+        f32,
+    ),
     pub sound: fn(&mut EngineServices<'_>, SoundEvent) -> Result<u64, CallError>,
     pub sound_id: fn(
         &EngineServices<'_>,
@@ -539,7 +556,7 @@ pub struct EngineCallTable {
 }
 
 pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
-    pmove: |services, id, native| services.pmove(id, native),
+    pmove: |services, id, native, options| services.pmove(id, native, options),
     in_visibility: |s, first, second, policy, check_portals| {
         let (world, _, row) = s.visibility.as_mut().ok_or(CallError::Geometry)?;
         world
@@ -619,6 +636,7 @@ pub const ENGINE_CALLS: EngineCallTable = EngineCallTable {
     console: |s, text| s.console(text),
     console_formatted: |s, text| EngineServices::console_formatted(&mut s.server.events, text),
     usercmd: |s, native| s.usercmd(native),
+    set_usercmd_value: |s, seat, weapon, scale| s.input.set_usercmd_value(seat, weapon, scale),
     sound: |s, e| s.sound(e),
     sound_id: |s, module, range, index| s.storage.sound_id(module, range, index),
     effect: |s, e| s.effect(e),
@@ -678,6 +696,7 @@ impl EngineServices<'_> {
         &mut self,
         id: ClientId,
         native: Option<&dyn NativeTraceEntities>,
+        options: qa_movement::MoveOptions,
     ) -> Result<qa_movement::MovementResult, CallError> {
         let player = &self
             .server
@@ -696,7 +715,7 @@ impl EngineServices<'_> {
         let client = &mut clients[id.0 as usize];
         let mut trace = trace.with_pass(CollisionOwner::Lifetime(client.entity));
         let base = std::mem::replace(&mut client.player.movement.tuning, tuning);
-        let result = qa_movement::pmove(client.command, &mut client.player, &mut trace);
+        let result = qa_movement::pmove(client.command, &mut client.player, &mut trace, options);
         client.player.movement.tuning = base;
         Ok(result)
     }
@@ -858,6 +877,7 @@ impl EngineServices<'_> {
         default: Option<&str>,
         flags: u32,
     ) -> Result<View, CallError> {
+        let name = self.cvar_name(name, context.source);
         self.cvars
             .register(name, default, flags, context)
             .map_err(|error| {
@@ -867,6 +887,20 @@ impl EngineServices<'_> {
                     CallError::Cvar
                 }
             })
+    }
+    pub fn cvar_name<'a>(
+        &mut self,
+        name: &'a str,
+        source: qa_core::primitives::RuleSetId,
+    ) -> &'a str {
+        let normalized = qa_console::cvars::registration_name(name, source);
+        if normalized != name {
+            let _ = Self::console_formatted(
+                &mut self.server.events,
+                format_args!("invalid cvar name string: {name}\n"),
+            );
+        }
+        normalized
     }
     pub fn cvar_set(&mut self, view: View, text: &str) -> Result<(), CallError> {
         self.cvars.write(view, text).map_err(|_| CallError::Cvar)

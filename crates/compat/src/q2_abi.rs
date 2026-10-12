@@ -4,6 +4,8 @@ use qa_core::primitives::{RuleSetId, UserCmd};
 
 pub const INFO_KEY_BYTES: usize = 64;
 pub const INFO_VALUE_BYTES: usize = 256;
+/// bg_local.h CONFIG_N64_PHYSICS, checked against the original header enum.
+pub const RERELEASE_N64_PHYSICS: usize = 12103;
 #[derive(Clone, Copy)]
 pub struct ClientLayout {
     pub userinfo_bytes: usize,

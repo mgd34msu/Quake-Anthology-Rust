@@ -295,6 +295,7 @@ const fn client() -> CallTable {
     t.entries[11] = scalar!(file_read);
     t.entries[13] = scalar!(file_close);
     t.entries[14] = scalar!(command_append);
+    t.entries[56] = scalar!(q3_set_usercmd_value);
     t.entries[71] = scalar!(snap_vector);
     t.entries[89] = scalar!(file_seek);
     t.entries[111] = scalar!(acos::<false>);
@@ -1012,6 +1013,7 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
 ) -> Result<u64, CallError> {
     let name = text_at(c.memory, c.pointer(0)?)?;
     if REGISTER && c.null_pointer(1)? {
+        let name = c.services.cvar_name(name, c.context.console.source);
         if let Some(view) = c.services.cvars.bind(name, c.context.console) {
             (ENGINE_CALLS.cvar_reset)(c.services, view, FORCE)?;
         }
@@ -1020,12 +1022,24 @@ fn cvar_set<const REGISTER: bool, const FORCE: bool>(
     let value = text_at(c.memory, c.pointer(1)?)?;
     write_cvar::<REGISTER, FORCE>(c.services, c.context.console, name, value)
 }
+fn q3_set_usercmd_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
+    // CL_FinishMove narrows cgame's integer weapon selection to its wire byte.
+    let number = c.arg(0)? as u8;
+    let weapon = c
+        .services
+        .registry
+        .native_weapon(qa_core::primitives::RuleSetId::Quake3, u16::from(number));
+    let scale = float::<false>(c, 1)? as f32;
+    (ENGINE_CALLS.set_usercmd_value)(c.services, c.context.console.seat, weapon, scale);
+    Ok(0)
+}
 fn write_cvar<const REGISTER: bool, const FORCE: bool>(
     services: &mut EngineServices<'_>,
     context: qa_console::views::Context,
     name: &str,
     value: &str,
 ) -> Result<u64, CallError> {
+    let name = services.cvar_name(name, context.source);
     let view = match services.cvars.bind(name, context) {
         Some(view) => view,
         None if REGISTER => (ENGINE_CALLS.cvar_register)(services, context, name, Some(value), 0)?,
@@ -1072,6 +1086,7 @@ fn cvar_set_value(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
 }
 fn cvar_reset(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let name = text_at(c.memory, c.pointer(0)?)?;
+    let name = c.services.cvar_name(name, c.context.console.source);
     if let Some(view) = c.services.cvars.bind(name, c.context.console) {
         (ENGINE_CALLS.cvar_reset)(c.services, view, false)?;
     }
@@ -1464,13 +1479,21 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
     let client = &mut c.services.server.clients[id.0 as usize];
     let codec = c.native_pmove.as_mut().ok_or(CallError::Memory)?;
     codec.read_state(c.memory, address, &mut client.player)?;
+    if layout.wide {
+        client.player.movement.tuning.n64_physics = c
+            .services
+            .storage
+            .config_integer(c.context.module, crate::q2_abi::RERELEASE_N64_PHYSICS)
+            .is_some_and(|value| value != 0);
+    }
     client.command = qa_movement::prepare_command(
         client.player.movement_rules,
         codec.command(c.memory, address, client.command.server_time_ms)?,
     );
+    let options = codec.options(c.memory, address)?;
     let result = {
         let view = entities.trace_view(c.memory, c.context, *table_address)?;
-        (ENGINE_CALLS.pmove)(c.services, id, Some(&view))?
+        (ENGINE_CALLS.pmove)(c.services, id, Some(&view), options)?
     };
     let client = &c.services.server.clients[id.0 as usize];
     let player = &client.player;
@@ -1491,9 +1514,19 @@ fn native_pmove(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
             player.view_offset.0[2].to_bits() as i32,
         )?;
     }
-    if layout.wide {
-        c.memory.write(address + 3309, &[0, 0])?;
-        c.memory.write_word(address + 3312, 0)?;
+    if let Some(outputs) = &layout.outputs {
+        c.memory.write(
+            address + outputs.jump_sound as u64,
+            &[u8::from(result.jump_sound)],
+        )?;
+        c.memory.write(
+            address + outputs.step_clip as u64,
+            &[u8::from(result.step_clip)],
+        )?;
+        c.memory.write_word(
+            address + outputs.impact_delta as u64,
+            result.impact_delta.to_bits() as i32,
+        )?;
     }
     c.memory.write_u64(
         address + layout.ground as u64,
@@ -1595,15 +1628,7 @@ fn q3_usercmd(c: &mut Invocation<'_, '_, '_>) -> Result<u64, CallError> {
         },
     )
     .unwrap_or_default();
-    let weapon = command
-        .weapon
-        .and_then(|id| {
-            c.services
-                .registry
-                .native_weapon_number(qa_core::primitives::RuleSetId::Quake3, id)
-        })
-        .and_then(|number| u8::try_from(number).ok())
-        .unwrap_or(0);
+    let weapon = c.services.registry.command_weapon_number(command.weapon);
     let native = qa_network::commands::to_q3_usercmd(&command, weapon);
     let target = c.pointer(1)?;
     let output = c.memory.read_mut(target, 24)?;

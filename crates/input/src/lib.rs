@@ -1,6 +1,6 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
-    primitives::{RuleSetId, UserCmd, Vec3, buttons},
+    primitives::{RuleSetId, UserCmd, Vec3, WeaponId, buttons},
     sys_events::{DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SeatId, SysEvent},
 };
 
@@ -135,6 +135,8 @@ struct Seat {
     mouse_previous: [f32; 2],
     center: bool,
     drift: view::PitchDrift,
+    weapon: Option<WeaponId>,
+    zoom_sensitivity: Option<f32>,
 }
 impl Seat {
     fn clear_mouse(&mut self) {
@@ -408,6 +410,19 @@ impl Default for Input {
     }
 }
 impl Input {
+    /// The client module supplies selection and zoom independently of physics.
+    pub fn set_usercmd_value(&mut self, seat: SeatId, weapon: Option<WeaponId>, scale: f32) {
+        let state = &mut self.seats[seat.index()];
+        state.weapon = weapon;
+        state.zoom_sensitivity = Some(scale);
+    }
+
+    pub fn reset_usercmd_value(&mut self, seat: SeatId) {
+        let state = &mut self.seats[seat.index()];
+        state.weapon = None;
+        state.zoom_sensitivity = None;
+    }
+
     pub fn load() -> Self {
         let mut input = Self {
             bindings: (0..CONTROLS).map(|_| None).collect(),
@@ -933,7 +948,10 @@ impl Input {
             seat.mouse_previous = raw;
             let rate = qa_core::math::length(Vec3([mouse[0], mouse[1], 0.0]))
                 / frame_milliseconds.max(1.0);
-            let gain = policy.sensitivity + rate * policy.acceleration;
+            let mut gain = policy.sensitivity + rate * policy.acceleration;
+            if let Some(scale) = seat.zoom_sensitivity {
+                gain *= scale;
+            }
             mouse.iter_mut().for_each(|value| *value *= gain);
             let horizontal_strafe = strafe || policy.look_strafe && look;
             let mouse_pitch = !strafe && (policy.freelook || look);
@@ -992,6 +1010,7 @@ impl Input {
                     [0.0; 2]
                 },
                 speed_modifier: speed_key,
+                weapon: seat.weapon,
                 ..CommandIntent::default()
             };
             if !horizontal_strafe {

@@ -109,6 +109,7 @@ impl Runtime {
         };
         qa_compat::services::EngineServices {
             server: &mut self.server,
+            input: &mut self.input,
             cvars,
             commands,
             vfs: &self.vfs,
@@ -207,6 +208,7 @@ impl Runtime {
             .connect(Connection::Local, ModuleId::default(), tail, None)
             .ok_or("no local client slot")?;
         self.network.unbind(id);
+        self.input.reset_usercmd_value(seat);
         self.loopback.clear_client(id);
         for endpoint in [
             qa_core::loopback::Endpoint::Client,
@@ -293,7 +295,9 @@ impl Runtime {
             return false;
         };
         let mut bytes = [0; 1400];
-        let Ok(length) = commands.encode(command, &connection.channel, &mut bytes) else {
+        let native_weapon = self.catalog.registry.command_weapon_number(command.weapon);
+        let Ok(length) = commands.encode(command, native_weapon, &connection.channel, &mut bytes)
+        else {
             return false;
         };
         let snapshot_request = commands.snapshot_request(&connection.channel);

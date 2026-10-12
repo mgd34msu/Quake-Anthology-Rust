@@ -200,7 +200,8 @@ pub struct PlayerProjection {
     words: usize,
     modes: [u32; 7],
     received_modes: &'static [MovementMode],
-    flags: [u32; 7],
+    flags: [u32; 8],
+    flag_mask: u32,
     client_limit: u32,
     bindings: Box<[(usize, ValueBinding)]>,
     write_bindings: Box<[(usize, ValueBinding)]>,
@@ -267,14 +268,14 @@ impl PlayerProjection {
     ) -> Self {
         use MovementMode as M;
         let (fields, words, modes, received_modes, flags) = match protocol {
-            Protocol::NetQuake15 => (NQ, states::NQ_PLAYER_WORDS, [0; 7], &[][..], [0; 7]),
-            Protocol::QuakeWorld28 => (QW, states::QW_PLAYER_WORDS, [0; 7], &[][..], [0; 7]),
+            Protocol::NetQuake15 => (NQ, states::NQ_PLAYER_WORDS, [0; 7], &[][..], [0; 8]),
+            Protocol::QuakeWorld28 => (QW, states::QW_PLAYER_WORDS, [0; 7], &[][..], [0; 8]),
             Protocol::Quake2_34 => (
                 Q2,
                 states::Q2_PLAYER_WORDS,
                 [0, 1, 1, 1, 2, 3, 4],
                 &[M::Walk, M::Spectator, M::Dead, M::Gib, M::Frozen][..],
-                [1, 2, 4, 8, 16, 32, 0],
+                [1, 2, 4, 8, 16, 32, 0, 0],
             ),
             Protocol::Quake2Repro1038 => (
                 Q2_REPRO,
@@ -289,7 +290,7 @@ impl PlayerProjection {
                     M::Gib,
                     M::Frozen,
                 ][..],
-                [1, 2, 4, 8, 16, 32, 0],
+                [1, 2, 4, 8, 16, 32, 0, 1024],
             ),
             Protocol::Quake3_68 => (
                 Q3,
@@ -304,7 +305,7 @@ impl PlayerProjection {
                     M::Frozen,
                     M::Frozen,
                 ][..],
-                [1, 2, 0, 256, 32, 0, 64],
+                [1, 2, 0, 256, 32, 0, 64, 0],
             ),
         };
         let admitted: Box<[_]> = bindings
@@ -324,6 +325,7 @@ impl PlayerProjection {
             modes,
             received_modes,
             flags,
+            flag_mask: flags.into_iter().fold(0, |mask, flag| mask | flag),
             client_limit: if protocol == Protocol::Quake2Repro1038 {
                 256
             } else {
@@ -336,6 +338,9 @@ impl PlayerProjection {
     }
     pub fn words(&self) -> usize {
         self.words
+    }
+    pub fn movement_flag_mask(&self) -> u32 {
+        self.flag_mask
     }
 
     /// The module can supply fields absent from the common hot columns through
@@ -432,6 +437,7 @@ impl PlayerProjection {
                         MovementTimer::LAND,
                         MovementTimer::TELEPORT,
                         MovementTimer::KNOCKBACK,
+                        MovementTimer::TRICK,
                     ]
                     .into_iter()
                     .zip(&self.flags[3..])
@@ -534,6 +540,7 @@ impl PlayerProjection {
                     p.movement.timer.contains(MovementTimer::LAND),
                     p.movement.timer.contains(MovementTimer::TELEPORT),
                     p.movement.timer.contains(MovementTimer::KNOCKBACK),
+                    p.movement.timer.contains(MovementTimer::TRICK),
                 ];
                 enabled
                     .into_iter()

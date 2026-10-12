@@ -1218,6 +1218,14 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
             let mut call_context = context();
             call_context.console.source = RuleSetId::Quake3;
             let ctx = call_context.console;
+            let foreign_context = Context {
+                source: RuleSetId::Quake2,
+                ..ctx
+            };
+            let foreign = console
+                .cvars
+                .register("bad;name", Some("q2"), 0, foreign_context)
+                .unwrap();
             let gamma = console.cvars.bind("gamma", ctx).unwrap();
             console.cvars.set_text(gamma.canonical(), "0").unwrap();
             assert!(console.cvars.read(gamma).is_err());
@@ -1241,12 +1249,15 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
             let mut unknown = UnknownCalls::load(1).unwrap();
             let mut memory = ModuleMemory::load(base, 512, &[]).unwrap();
             let mut services = runtime.engine_services(&mut console, &mut storage, &mut scratch);
-            for (name, value) in [
-                ("_qa_module_new", "17"),
-                ("_qa_module_rom", "4"),
-                ("_qa_module_latch", "3"),
-                ("_qa_module_new", "18"),
-                ("gamma", "1.000000"),
+            for (name, value, lookup) in [
+                ("_qa_module_new", "17", "_qa_module_new"),
+                ("_qa_module_rom", "4", "_qa_module_rom"),
+                ("_qa_module_latch", "3", "_qa_module_latch"),
+                ("_qa_module_new", "18", "_qa_module_new"),
+                ("gamma", "1.000000", "gamma"),
+                ("bad;name", "3", "BADNAME"),
+                ("bad\\name", "4", "BADNAME"),
+                ("bad\"name", "5", "BADNAME"),
             ] {
                 memory.write_string(base + 16, 64, name.as_bytes()).unwrap();
                 memory
@@ -1271,9 +1282,11 @@ fn q3_module_setters_create_cvars_and_force_readonly_and_latched_values() {
                     arguments: &arguments,
                 };
                 assert_eq!(table.invoke(ordinal, &mut call, &mut unknown), Ok(0));
-                let view = services.cvars.bind(name, ctx).unwrap();
+                let view = services.cvars.bind(lookup, ctx).unwrap();
                 assert_eq!(services.cvars.read(view).unwrap().as_str(), value);
             }
+            assert_eq!(services.cvars.read(foreign).unwrap().as_str(), "q2");
+            assert!(!services.server.events.is_empty());
             assert!(services.cvars.latched(latched).unwrap().is_none());
             assert_eq!(services.cvars.flags(readonly) & 64, 64);
             assert_eq!(unknown.calls, 0);

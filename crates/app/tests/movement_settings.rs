@@ -126,7 +126,7 @@ fn native_pmove_service_uses_the_same_resolver_and_retains_module_gravity() {
     };
     host.runtime
         .engine_services(&mut host.console, &mut storage, &mut scratch)
-        .pmove(id, None)
+        .pmove(id, None, Default::default())
         .unwrap();
     check_velocity(&host, id, -9.6, Some(600.0));
     let gravity = host.console.cvars.find("g_gravity").unwrap();
@@ -137,7 +137,7 @@ fn native_pmove_service_uses_the_same_resolver_and_retains_module_gravity() {
         .velocity = Vec3::default();
     host.runtime
         .engine_services(&mut host.console, &mut storage, &mut scratch)
-        .pmove(id, None)
+        .pmove(id, None, Default::default())
         .unwrap();
     check_velocity(&host, id, -9.6, Some(600.0));
 }

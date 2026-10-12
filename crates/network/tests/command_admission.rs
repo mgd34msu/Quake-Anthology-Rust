@@ -69,7 +69,7 @@ fn admit_bytes(
     let length = codec.stage(bytes).unwrap();
     let mut commands = Vec::new();
     let accepted = codec
-        .decode(length, sequence, 123, channel, |command, _| {
+        .decode(length, sequence, 123, channel, |command, _, _| {
             commands.push(command)
         })
         .unwrap();
@@ -327,7 +327,7 @@ fn malformed_or_bad_crc_moves_never_reach_the_command_callback() {
         let mut accepted = 0;
         assert!(
             codec
-                .decode(length, 1, 0, &mut channel, |_, _| accepted += 1)
+                .decode(length, 1, 0, &mut channel, |_, _, _| accepted += 1)
                 .is_err()
         );
         assert_eq!(accepted, 0);
@@ -336,7 +336,7 @@ fn malformed_or_bad_crc_moves_never_reach_the_command_callback() {
             bytes[1] ^= 1; // Protected checksum byte.
             let length = codec.stage(&bytes).unwrap();
             assert_eq!(
-                codec.decode(length, 1, 0, &mut channel, |_, _| accepted += 1),
+                codec.decode(length, 1, 0, &mut channel, |_, _, _| accepted += 1),
                 Err(packet::Error::Checksum)
             );
             assert_eq!(accepted, 0);

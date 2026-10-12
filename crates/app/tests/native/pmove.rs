@@ -77,6 +77,10 @@ pub(super) fn commands_move_a_native_client_once() {
         if rr {
             bytes[0x701c..0x701e].copy_from_slice(&0x4000u16.to_le_bytes());
             bytes[0x701e..0x7020].copy_from_slice(&500u16.to_le_bytes());
+            // Free movement must publish fresh native outputs, even when
+            // the previous call left nonzero result bytes in this buffer.
+            bytes[0x7000 + 3309..0x7000 + 3311].fill(0xff);
+            bytes[0x7000 + 3312..0x7000 + 3316].copy_from_slice(&99.0f32.to_le_bytes());
         } else {
             // Classic spectator retains ON_GROUND in pm_flags but publishes
             // a null groundentity. The boundary must preserve both facts.
@@ -221,6 +225,12 @@ pub(super) fn commands_move_a_native_client_once() {
             // Flags clear, while native pm_time survives the early return.
             code.extend([0x66, 0x41, 0x83, 0x7b, 28, 0, 0x74, 2, 0x0f, 0x0b]);
             code.extend([0x66, 0x41, 0x81, 0x7b, 30, 0xf4, 1, 0x74, 2, 0x0f, 0x0b]);
+            code.extend([0x66, 0x41, 0x83, 0xbb]);
+            code.extend(3309u32.to_le_bytes());
+            code.extend([0, 0x74, 2, 0x0f, 0x0b]);
+            code.extend([0x41, 0x83, 0xbb]);
+            code.extend(3312u32.to_le_bytes());
+            code.extend([0, 0x74, 2, 0x0f, 0x0b]);
         } else {
             code.extend([0x41, 0x80, 0x7b, 16, 4, 0x74, 2, 0x0f, 0x0b]);
             code.extend([0x49, 0x83, 0xbb]);
@@ -411,6 +421,7 @@ pub(super) fn commands_move_a_native_client_once() {
                 qa_movement::prepare_command(rules, command),
                 &mut expected,
                 &mut trace,
+                Default::default(),
             );
             assert!(host.runtime.send_local_command(
                 id,

@@ -423,3 +423,27 @@ fn native_views_count_each_change_and_keep_alias_contexts_and_latches() {
     assert_eq!(cvars.native_snapshot(first).unwrap().1, before + 1);
     assert_eq!(cvars.native_snapshot(second).unwrap().1, alias_before + 1);
 }
+
+#[test]
+fn q3_registration_maps_only_native_delimiters_to_badname_before_lookup() {
+    let mut cvars = Cvars::new().unwrap();
+    let q2 = context(RuleSetId::Quake2);
+    let q3 = context(RuleSetId::Quake3);
+    let foreign = cvars.register("bad;name", Some("q2"), 0, q2).unwrap();
+    let bad = cvars.register("bad;name", Some("first"), 0, q3).unwrap();
+    assert_ne!(bad.canonical(), foreign.canonical());
+    for name in ["bad\\name", "bad\"name", "bad;name"] {
+        let view = cvars.register(name, Some("ignored"), 0, q3).unwrap();
+        assert_eq!(view.canonical(), bad.canonical());
+        assert_eq!(cvars.read(view).unwrap().as_str(), "first");
+    }
+    assert_eq!(cvars.read(foreign).unwrap().as_str(), "q2");
+    assert!(cvars.bind("bad\\name", q3).is_none());
+    assert_eq!(
+        cvars.bind("BADNAME", q3).unwrap().canonical(),
+        bad.canonical()
+    );
+    // Cvar_ValidateString does not impose info-string control-byte rules.
+    let control = cvars.register("raw\u{1}name", Some("raw"), 0, q3).unwrap();
+    assert_ne!(control.canonical(), bad.canonical());
+}

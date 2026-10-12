@@ -479,7 +479,8 @@ impl FrameHost {
                 }
                 qa_core::loopback::Endpoint::Server => match incoming {
                     Incoming::Command {
-                        command,
+                        mut command,
+                        native_weapon,
                         observation,
                         execution,
                         output,
@@ -487,6 +488,12 @@ impl FrameHost {
                         if output.is_some()
                             && self.runtime.server.clients[id.0 as usize].output == output
                         {
+                            if let Some(number) = native_weapon {
+                                command.weapon = self.runtime.catalog.registry.native_weapon(
+                                    qa_core::primitives::RuleSetId::Quake3,
+                                    u16::from(number),
+                                );
+                            }
                             self.received_command(id, command, execution, observation);
                         }
                     }

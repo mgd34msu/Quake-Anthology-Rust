@@ -74,6 +74,8 @@ pub enum Incoming<'a> {
     Cue(crate::outputs::Cue),
     Command {
         command: qa_core::primitives::UserCmd,
+        /// Q3's byte ordinal is mapped through the registry before execution.
+        native_weapon: Option<u8>,
         observation: Option<qa_core::primitives::SnapshotObservation>,
         execution: crate::commands::packet::CommandExecution,
         output: Option<OutputConsumerId>,
@@ -256,12 +258,13 @@ impl Connections {
                                 sequence,
                                 time.milliseconds() as i32,
                                 &mut connection.channel,
-                                |command, observation| {
+                                |command, native_weapon, observation| {
                                     consume(
                                         client,
                                         endpoint,
                                         Incoming::Command {
                                             command,
+                                            native_weapon,
                                             observation,
                                             execution,
                                             output,

@@ -101,6 +101,11 @@ fn legacy_slide(step: &mut Step<'_>) -> u8 {
         {
             step.player.body.position.0[0] += tr.plane.normal.0[0] * 0.01;
             step.player.body.position.0[1] += tr.plane.normal.0[1] * 0.01;
+            if step.parameters.special.recover_stuck
+                && let Some(position) = step.recover_position(step.player.body.position)
+            {
+                step.player.body.position = position;
+            }
             continue;
         }
         planes[count] = tr.plane.normal;
@@ -308,9 +313,18 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
     } else {
         height
     };
+    let original_drop = drop;
+    if step.parameters.special.lower_step_probe && start.0[2] < drop.0[2] {
+        drop.0[2] = start.0[2] - 1.0;
+    }
     let dropped = step.trace(step.player.body.position, drop);
     if !dropped.all_solid {
-        step.player.body.position = dropped.end;
+        step.player.body.position = if step.parameters.special.lower_step_probe {
+            step.result.step_clip |= step.player.body.velocity.0[2] > 0.0;
+            step.trace(step.player.body.position, original_drop).end
+        } else {
+            dropped.end
+        };
     }
     if step.arena() {
         if dropped.fraction < 1.0 {
@@ -331,5 +345,18 @@ pub(crate) fn step_slide(step: &mut Step<'_>, gravity: bool) {
         step.player.body.velocity = down_velocity;
     } else if !step.nq() {
         step.player.body.velocity.0[2] = down_velocity.0[2];
+    }
+    if step.parameters.special.settle_ground_step
+        && step.player.movement.grounded
+        && !step.player.movement.ladder
+        && (step.player.movement.water_level < 2
+            || step.command.buttons & qa_core::primitives::buttons::JUMP == 0
+                && step.player.body.velocity.0[2] <= 0.0)
+    {
+        let origin = step.player.body.position;
+        let trace = step.trace(origin, origin - Vec3([0.0, 0.0, 18.0]));
+        if trace.fraction < 1.0 {
+            step.player.body.position = trace.end;
+        }
     }
 }

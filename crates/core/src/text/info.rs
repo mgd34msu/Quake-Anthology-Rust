@@ -18,13 +18,16 @@ pub enum InfoError {
     Invalid,
     Capacity,
 }
+pub fn info_delimiter(byte: u8) -> bool {
+    matches!(byte, b'\\' | b'"' | b';')
+}
 pub fn info_valid_field(text: &[u8], filter: InfoBytes) -> bool {
     text.iter().all(|&byte| {
         let tested = match filter {
             InfoBytes::Exact => byte,
             InfoBytes::Ascii7Printable => byte & 127,
         };
-        !matches!(tested, b'\\' | b'"' | b';') && (filter != InfoBytes::Exact || tested >= 32)
+        !info_delimiter(tested) && (filter != InfoBytes::Exact || tested >= 32)
     })
 }
 
