@@ -54,7 +54,7 @@ fn command_bindings_keep_release_metadata_quote_spans_and_capacity_atomicity() {
             SysEvent {
                 time: EventTime(ms * 1_000_000),
                 kind: EventKind::Key {
-                    device: DeviceId::Keyboard,
+                    device: DeviceId::Keyboard(0),
                     code: 10,
                     symbol: 0,
                     down,
@@ -95,7 +95,7 @@ fn both_ctrl_keys_hold_one_action_and_wheel_axes_dispatch_momentary_commands() {
             SysEvent {
                 time: EventTime(ms * 1_000_000),
                 kind: EventKind::Key {
-                    device: DeviceId::Keyboard,
+                    device: DeviceId::Keyboard(0),
                     code,
                     symbol: 0,
                     down,

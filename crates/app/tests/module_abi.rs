@@ -1943,7 +1943,6 @@ fn cached_native_sound_ordinal_rebinds_on_config_and_resource_changes() {
                             samples: vec![1024],
                             loop_start: None,
                         },
-                        RuleSetId::Quake2,
                     )
                 })
                 .collect(),

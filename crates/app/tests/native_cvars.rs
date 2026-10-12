@@ -179,6 +179,17 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
         assert_eq!(native.updates, updates + 1);
         assert_eq!(memory.cstring(value_pointer).unwrap(), b"17.25");
         if rr {
+            assert_eq!(memory.read_word(cvar + 48).unwrap(), 17);
+            for (text, integer) in [
+                ("0xFF", 0),
+                ("214748364999", i32::MAX),
+                ("-214748364999", i32::MIN),
+            ] {
+                services.cvars.force_write(view, text).unwrap();
+                native.refresh(services.cvars, &mut memory).unwrap();
+                assert_eq!(memory.read_word(cvar + 48).unwrap(), integer);
+                assert_eq!(memory.cstring(value_pointer).unwrap(), text.as_bytes());
+            }
             memory.write_word(cvar + 28, -1).unwrap();
             services.cvars.force_write(view, "19").unwrap();
             native.refresh(services.cvars, &mut memory).unwrap();
@@ -276,47 +287,59 @@ fn q2_cvar_layouts_preserve_cached_views_latches_and_native_modification_fields(
 
 #[test]
 fn native_bindings_keep_alias_projections_distinct_in_the_one_registry() {
-    let context = Context {
-        source: RuleSetId::Quake2,
-        role: Role::Game,
-        ..Context::default()
-    };
-    let mut cvars = qa_console::cvars::Cvars::with_context(context).unwrap();
-    let first = cvars.bind("s_khz", context).unwrap();
-    let second = cvars.bind("s_outputRate", context).unwrap();
-    assert_eq!(first.canonical(), second.canonical());
-    let base = 4096;
-    let mut memory = ModuleMemory::load(base, NativeCvars::byte_length(2).unwrap(), &[]).unwrap();
-    let mut native = NativeCvars::load(base, 2, false);
-    let khz = native.publish(&cvars, &mut memory, first, 0).unwrap();
-    let hz = native.publish(&cvars, &mut memory, second, 0).unwrap();
-    assert_ne!(khz, hz);
-    cvars.force_write(first, "22").unwrap();
-    native.refresh(&cvars, &mut memory).unwrap();
-    assert_eq!(memory.read_word(khz + 32).unwrap() as u32, 22f32.to_bits());
-    assert_eq!(
-        memory.read_word(hz + 32).unwrap() as u32,
-        22050f32.to_bits()
-    );
-    assert!(
-        native
-            .publish(&cvars, &mut memory, cvars.bind("fov", context).unwrap(), 0)
-            .is_err()
-    );
-    assert_eq!(native.capacity_drops, 1);
-    cvars.register("s_khz", Some("22"), 32, context).unwrap();
-    cvars.server_active = true;
-    cvars.write(first, "44").unwrap();
-    assert_eq!(cvars.latched(first).unwrap().unwrap().as_str(), "44");
-    assert_eq!(
-        cvars.latched(second).unwrap().unwrap().as_str(),
-        "44100.000000"
-    );
-    native.refresh(&cvars, &mut memory).unwrap();
-    assert_eq!(memory.read_word(khz + 32).unwrap() as u32, 22f32.to_bits());
-    assert_eq!(memory.cstring(pointer(&memory, khz + 16)).unwrap(), b"44");
-    assert_eq!(
-        memory.cstring(pointer(&memory, hz + 16)).unwrap(),
-        b"44100.000000"
-    );
+    for rules in [RuleSetId::Quake2, RuleSetId::Quake2Rerelease] {
+        let rr = rules == RuleSetId::Quake2Rerelease;
+        let context = Context {
+            source: rules,
+            role: Role::Game,
+            ..Context::default()
+        };
+        let mut cvars = qa_console::cvars::Cvars::with_context(context).unwrap();
+        let first = cvars.bind("s_khz", context).unwrap();
+        let second = cvars.bind("s_outputRate", context).unwrap();
+        assert_eq!(first.canonical(), second.canonical());
+        let base = 4096;
+        let mut memory =
+            ModuleMemory::load(base, NativeCvars::byte_length(2).unwrap(), &[]).unwrap();
+        let mut native = NativeCvars::load(base, 2, rr);
+        let khz = native.publish(&cvars, &mut memory, first, 0).unwrap();
+        let hz = native.publish(&cvars, &mut memory, second, 0).unwrap();
+        assert_ne!(khz, hz);
+        cvars.force_write(first, "22").unwrap();
+        native.refresh(&cvars, &mut memory).unwrap();
+        assert_eq!(memory.read_word(khz + 32).unwrap() as u32, 22f32.to_bits());
+        assert_eq!(
+            memory.read_word(hz + 32).unwrap() as u32,
+            22050f32.to_bits()
+        );
+        if rr {
+            assert_eq!(memory.read_word(khz + 48).unwrap(), 22);
+            assert_eq!(memory.read_word(hz + 48).unwrap(), 22050);
+        }
+        assert!(
+            native
+                .publish(&cvars, &mut memory, cvars.bind("fov", context).unwrap(), 0)
+                .is_err()
+        );
+        assert_eq!(native.capacity_drops, 1);
+        cvars.register("s_khz", Some("22"), 32, context).unwrap();
+        cvars.server_active = true;
+        cvars.write(first, "44").unwrap();
+        assert_eq!(cvars.latched(first).unwrap().unwrap().as_str(), "44");
+        assert_eq!(
+            cvars.latched(second).unwrap().unwrap().as_str(),
+            "44100.000000"
+        );
+        native.refresh(&cvars, &mut memory).unwrap();
+        assert_eq!(memory.read_word(khz + 32).unwrap() as u32, 22f32.to_bits());
+        assert_eq!(memory.cstring(pointer(&memory, khz + 16)).unwrap(), b"44");
+        assert_eq!(
+            memory.cstring(pointer(&memory, hz + 16)).unwrap(),
+            b"44100.000000"
+        );
+        if rr {
+            assert_eq!(memory.read_word(khz + 48).unwrap(), 22);
+            assert_eq!(memory.read_word(hz + 48).unwrap(), 22050);
+        }
+    }
 }

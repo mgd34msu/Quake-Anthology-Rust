@@ -487,7 +487,7 @@ mod tests {
         let Some(path) = std::env::var_os("QA_SKY_ENDPOINT_FIXTURE") else {
             return Ok(());
         };
-        let bytes = std::fs::read(path)?;
+        let bytes = qa_platform::files::read(path)?;
         assert_eq!(bytes.len() % 72, 0);
         for (index, row) in bytes.as_chunks::<72>().0.iter().enumerate() {
             let word = |at: usize| u32::from_le_bytes(std::array::from_fn(|i| row[at + i]));

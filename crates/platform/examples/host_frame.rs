@@ -85,7 +85,7 @@ impl FrameSource for Source {
 impl Source {
     fn input(&mut self, queue: &mut SysEventQueue) {
         let key = EventKind::Key {
-            device: DeviceId::Keyboard,
+            device: DeviceId::Keyboard(0),
             code: 26,
             symbol: 119,
             down: true,
@@ -103,7 +103,7 @@ impl Source {
                 let _ = queue.push(SysEvent {
                     time,
                     kind: EventKind::Key {
-                        device: DeviceId::Keyboard,
+                        device: DeviceId::Keyboard(0),
                         code: 10,
                         symbol: 103,
                         down,
@@ -113,7 +113,7 @@ impl Source {
                 let _ = queue.push(SysEvent {
                     time,
                     kind: EventKind::Key {
-                        device: DeviceId::Keyboard,
+                        device: DeviceId::Keyboard(0),
                         code: 11,
                         symbol: 104,
                         down,

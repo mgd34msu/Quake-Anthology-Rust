@@ -1,8 +1,8 @@
 //! PACK/ZIP offsets mined from muse-final:crates/content/src/archive.rs.
 //! Native contracts: Q1/Q2 pack headers and Q3 qcommon/unzip.c.
 use crate::FormatError;
+use qa_platform::files::ReadFile;
 use std::{
-    fs::File,
     io::{self, Read},
     sync::Arc,
 };
@@ -31,7 +31,7 @@ pub struct ArchiveEntry {
 pub struct Archive {
     pub kind: ArchiveKind,
     pub entries: Box<[ArchiveEntry]>,
-    file: Arc<File>,
+    file: Arc<ReadFile>,
 }
 
 /// Caller-owned inflate state, allocated once at load and reset between files.
@@ -63,42 +63,23 @@ fn short(bytes: &[u8], at: usize) -> u16 {
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
-fn io_error(error: io::Error) -> FormatError {
-    FormatError::Io(error.kind())
-}
-
-#[cfg(unix)]
-fn read_at(file: &File, out: &mut [u8], at: u64) -> io::Result<usize> {
-    use std::os::unix::fs::FileExt;
-    file.read_at(out, at)
-}
-#[cfg(windows)]
-fn read_at(file: &File, out: &mut [u8], at: u64) -> io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-    file.seek_read(out, at)
-}
-pub fn read_exact_at(file: &File, mut at: u64, mut out: &mut [u8]) -> Result<(), FormatError> {
-    while !out.is_empty() {
-        let count = match read_at(file, out, at) {
-            Ok(count) => count,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(io_error(error)),
-        };
-        if count == 0 {
-            return Err(FormatError::Truncated);
+impl FormatError {
+    pub fn from_io(error: io::Error) -> Self {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            Self::Truncated
+        } else {
+            Self::Io(error.kind())
         }
-        at += count as u64;
-        out = &mut out[count..];
     }
-    Ok(())
 }
-fn bytes(file: &File, size: u64, at: u64, length: u64) -> Result<Vec<u8>, FormatError> {
+fn bytes(file: &ReadFile, size: u64, at: u64, length: u64) -> Result<Vec<u8>, FormatError> {
     range(size, at, length)?;
     if length > 64 * 1024 * 1024 {
         return Err(FormatError::InvalidRange);
     }
     let mut out = vec![0; length as usize];
-    read_exact_at(file, at, &mut out)?;
+    file.read_exact_at(at, &mut out)
+        .map_err(FormatError::from_io)?;
     Ok(out)
 }
 
@@ -108,8 +89,8 @@ impl Archive {
             .iter()
             .position(|entry| entry.name.as_ref() == name)
     }
-    pub fn parse(file: Arc<File>) -> Result<Self, FormatError> {
-        let size = file.metadata().map_err(io_error)?.len();
+    pub fn parse(file: Arc<ReadFile>) -> Result<Self, FormatError> {
+        let size = file.length().map_err(FormatError::from_io)?;
         let header = bytes(&file, size, 0, 12)?;
         if &header[..4] == b"PACK" {
             Self::pak(file, size, &header)
@@ -118,7 +99,7 @@ impl Archive {
         }
     }
 
-    fn pak(file: Arc<File>, size: u64, header: &[u8]) -> Result<Self, FormatError> {
+    fn pak(file: Arc<ReadFile>, size: u64, header: &[u8]) -> Result<Self, FormatError> {
         let offset = u64::from(word(header, 4));
         let length = u64::from(word(header, 8));
         if offset < 12
@@ -155,7 +136,7 @@ impl Archive {
         })
     }
 
-    fn zip(file: Arc<File>, size: u64) -> Result<Self, FormatError> {
+    fn zip(file: Arc<ReadFile>, size: u64) -> Result<Self, FormatError> {
         let tail = bytes(&file, size, size.saturating_sub(65557), size.min(65557))?;
         let end = (0..=tail.len().checked_sub(22).ok_or(FormatError::Truncated)?)
             .rev()
@@ -299,7 +280,9 @@ impl Archive {
         let out = &mut destination[..count];
         match entry.compression {
             Compression::Stored => {
-                read_exact_at(&self.file, entry.offset + offset, out)?;
+                self.file
+                    .read_exact_at(entry.offset + offset, out)
+                    .map_err(FormatError::from_io)?;
                 if offset == 0
                     && count as u64 == entry.length
                     && entry.crc32.is_some_and(|crc| crc32fast::hash(out) != crc)
@@ -320,7 +303,9 @@ impl Archive {
                 let mut crc = crc32fast::Hasher::new();
                 loop {
                     if first == last {
-                        last = input.read(&mut reader.input).map_err(io_error)?;
+                        last = input
+                            .read(&mut reader.input)
+                            .map_err(FormatError::from_io)?;
                         first = 0;
                     }
                     let before_in = reader.decoder.total_in();
@@ -375,7 +360,7 @@ impl Archive {
 }
 
 struct FileWindow<'a> {
-    file: &'a File,
+    file: &'a ReadFile,
     at: u64,
     remaining: u64,
 }
@@ -384,7 +369,7 @@ impl Read for FileWindow<'_> {
         let count = out
             .len()
             .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
-        let read = read_at(self.file, &mut out[..count], self.at)?;
+        let read = self.file.read_at(self.at, &mut out[..count])?;
         self.at += read as u64;
         self.remaining -= read as u64;
         Ok(read)

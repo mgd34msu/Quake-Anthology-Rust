@@ -1,12 +1,11 @@
 //! Load-built native surface views; collision and names remain store-owned.
 use crate::{memory::ModuleMemory, services::CallError};
-use qa_core::primitives::{GeometryId, SurfaceId};
+use qa_core::primitives::{GeometryId, IndexSpan, SurfaceId};
 use qa_world::collision::CollisionStore;
 
 struct Range {
     geometry: GeometryId,
-    first: usize,
-    count: u32,
+    rows: IndexSpan,
 }
 pub struct NativeSurfaces {
     address: u64,
@@ -36,8 +35,10 @@ impl NativeSurfaces {
             let count = store.surface_count(geometry).ok_or(CallError::Geometry)?;
             ranges.push(Range {
                 geometry,
-                first,
-                count,
+                rows: IndexSpan {
+                    first: u32::try_from(first).map_err(|_| CallError::Capacity)?,
+                    count,
+                },
             });
             for index in 0..count {
                 let row = store
@@ -76,11 +77,15 @@ impl NativeSurfaces {
             .binary_search_by_key(&surface.geometry.slot, |range| range.geometry.slot)
             .map_err(|_| CallError::Geometry)?;
         let range = &self.ranges[index];
-        if range.geometry != surface.geometry || surface.index >= range.count {
+        if range.geometry != surface.geometry {
             return Err(CallError::Geometry);
         }
+        let row = range
+            .rows
+            .get(surface.index as usize)
+            .ok_or(CallError::Geometry)?;
         self.address
-            .checked_add(((range.first + surface.index as usize) * self.stride) as u64)
+            .checked_add((row * self.stride) as u64)
             .ok_or(CallError::Memory)
     }
 }

@@ -2,7 +2,6 @@
 use crate::{memory::ModuleMemory, services::CallError};
 use qa_console::{
     cvars::{Cvars, View},
-    numbers::integer,
     text::MAX_TEXT,
 };
 
@@ -129,7 +128,8 @@ impl NativeCvars {
             let number = cvars.numeric(row.view).map_err(|_| CallError::Cvar)?;
             memory.write(address + 32, &number.to_le_bytes())?;
             if self.count_modified {
-                memory.write_word(address + 48, integer(value))?;
+                let integer = cvars.integer_view(row.view).map_err(|_| CallError::Cvar)?;
+                memory.write_word(address + 48, integer)?;
             }
             let modified = if !self.count_modified || initial {
                 1

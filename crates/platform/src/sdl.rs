@@ -1,6 +1,8 @@
 //! SDL3 ABI definitions follow SDL 3.4 headers, never SDL2 byte offsets.
 use crate::clock::Clock;
-use qa_core::sys_events::{DeviceId, EventKind, SysEvent, SysEventQueue};
+use qa_core::sys_events::{
+    DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SysEvent, SysEventQueue,
+};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr::NonNull;
 
@@ -96,6 +98,14 @@ struct SdlDevice {
     which: u32,
 }
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct SdlWindow {
+    common: SdlCommon,
+    window: u32,
+    data1: i32,
+    data2: i32,
+}
+#[repr(C)]
 union SdlEvent {
     common: SdlCommon,
     key: SdlKey,
@@ -106,11 +116,13 @@ union SdlEvent {
     axis: SdlAxis,
     pad_button: SdlPadButton,
     device: SdlDevice,
+    window: SdlWindow,
     padding: [u8; 128],
 }
 
 const SUBSYSTEMS: u32 = 0x20 | 0x2000; // VIDEO | GAMEPAD
 const WINDOW_OPENGL: u64 = 0x2;
+const WINDOW_INPUT_FOCUS: u64 = 0x200;
 const PIXELFORMAT_ABGR8888: u32 = 0x16762004;
 const TEXTUREACCESS_STREAMING: c_int = 1;
 const GL_DOUBLEBUFFER: c_int = 5;
@@ -147,6 +159,10 @@ unsafe extern "C" {
     fn SDL_GetCurrentVideoDriver() -> *const c_char;
     fn SDL_CreateWindow(title: *const c_char, w: c_int, h: c_int, flags: u64) -> *mut c_void;
     fn SDL_SyncWindow(window: *mut c_void) -> bool;
+    fn SDL_GetWindowID(window: *mut c_void) -> u32;
+    fn SDL_GetWindowFlags(window: *mut c_void) -> u64;
+    fn SDL_SetWindowRelativeMouseMode(window: *mut c_void, enabled: bool) -> bool;
+    fn SDL_GetWindowRelativeMouseMode(window: *mut c_void) -> bool;
     fn SDL_DestroyWindow(window: *mut c_void);
     fn SDL_CreateRenderer(window: *mut c_void, name: *const c_char) -> *mut c_void;
     fn SDL_DestroyRenderer(renderer: *mut c_void);
@@ -293,12 +309,225 @@ pub(crate) fn error() -> String {
         .into_owned()
 }
 
+#[derive(Clone, Copy)]
+struct MouseRemainder {
+    id: u32,
+    fraction: [f32; 2],
+}
+
+fn synchronized_capture(
+    previous: bool,
+    desired: bool,
+    mut set: impl FnMut(bool) -> bool,
+    mut sync: impl FnMut() -> bool,
+) -> bool {
+    if !set(desired) {
+        return false;
+    }
+    if sync() {
+        return true;
+    }
+    set(previous);
+    sync();
+    false
+}
+
+/// SDL conversion state only: no queued input or borrowed text survives a poll.
+struct SdlInput {
+    window: u32,
+    focused: bool,
+    capture_requested: bool,
+    relative: bool,
+    mice: [Option<MouseRemainder>; MAX_INPUT_DEVICES],
+    dropped_text: u64,
+    dropped_mouse: u64,
+    capture_errors: u64,
+}
+impl SdlInput {
+    fn new(window: u32, focused: bool) -> Self {
+        Self {
+            window,
+            focused,
+            capture_requested: false,
+            relative: false,
+            mice: [None; MAX_INPUT_DEVICES],
+            dropped_text: 0,
+            dropped_mouse: 0,
+            capture_errors: 0,
+        }
+    }
+    fn reconcile_capture(
+        &mut self,
+        queue: &mut SysEventQueue,
+        time: EventTime,
+        notify: bool,
+        apply: &mut impl FnMut(bool) -> bool,
+    ) {
+        let desired = self.capture_requested && self.focused;
+        if desired == self.relative || notify && !queue.has_ordinary_room() {
+            return;
+        }
+        if !apply(desired) {
+            self.capture_errors = self.capture_errors.saturating_add(1);
+            return;
+        }
+        self.relative = desired;
+        self.mice.fill(None);
+        // Focus(false) already releases every device and its filter history.
+        if notify
+            && queue
+                .push(SysEvent {
+                    time,
+                    kind: EventKind::MouseCapture(desired),
+                })
+                .is_err()
+        {
+            self.capture_errors = self.capture_errors.saturating_add(1);
+        }
+    }
+    fn motion(&mut self, id: u32, delta: [f32; 2]) -> Option<[i32; 2]> {
+        if !delta.iter().all(|value| value.is_finite()) {
+            self.dropped_mouse = self.dropped_mouse.saturating_add(1);
+            return None;
+        }
+        let index = self
+            .mice
+            .iter()
+            .position(|slot| slot.is_some_and(|mouse| mouse.id == id))
+            .or_else(|| self.mice.iter().position(Option::is_none));
+        let Some(index) = index else {
+            self.dropped_mouse = self.dropped_mouse.saturating_add(1);
+            return None;
+        };
+        let mouse = self.mice[index].get_or_insert(MouseRemainder {
+            id,
+            fraction: [0.0; 2],
+        });
+        Some(std::array::from_fn(|axis| {
+            mouse.fraction[axis] += delta[axis];
+            let integer = mouse.fraction[axis] as i32;
+            mouse.fraction[axis] -= integer as f32;
+            integer
+        }))
+    }
+    /// SDL must initialize the tagged union and keep its text pointer alive
+    /// until queue admission has copied the returned payload.
+    unsafe fn decode<'a>(&mut self, event: &'a SdlEvent) -> Option<EventKind<'a>> {
+        // SAFETY: the caller supplies a correctly tagged SDL event, including
+        // the text pointer's validity through the immediately following push.
+        let kind = unsafe {
+            match event.common.kind {
+                0x300 | 0x301 => {
+                    let e = event.key;
+                    if e.window != self.window || !self.focused || !(0..512).contains(&e.scancode) {
+                        return None;
+                    }
+                    EventKind::Key {
+                        device: DeviceId::Keyboard(e.which),
+                        code: e.scancode as u16,
+                        symbol: e.key as i32,
+                        down: e.down,
+                        repeat: e.repeat,
+                    }
+                }
+                0x303 => {
+                    let e = event.text;
+                    if e.window != self.window || !self.focused || e.text.is_null() {
+                        return None;
+                    }
+                    let Ok(text) = CStr::from_ptr(e.text).to_str() else {
+                        self.dropped_text = self.dropped_text.saturating_add(1);
+                        return None;
+                    };
+                    // SDL text/IME has a window but no physical keyboard ID.
+                    EventKind::Text {
+                        device: DeviceId::Keyboard(0),
+                        text,
+                    }
+                }
+                0x400 => {
+                    let e = event.motion;
+                    if e.window != self.window || !self.focused || !self.relative {
+                        return None;
+                    }
+                    let [dx, dy] = self.motion(e.which, [e.dx, e.dy])?;
+                    EventKind::Mouse {
+                        device: DeviceId::Mouse(e.which),
+                        dx,
+                        dy,
+                    }
+                }
+                0x401 | 0x402 => {
+                    let e = event.button;
+                    if e.window != self.window || !self.focused || !self.relative {
+                        return None;
+                    }
+                    EventKind::MouseButton {
+                        device: DeviceId::Mouse(e.which),
+                        button: e.button,
+                        down: e.down,
+                    }
+                }
+                0x403 => {
+                    let e = event.wheel;
+                    if e.window != self.window || !self.focused || !self.relative {
+                        return None;
+                    }
+                    let sign = if e.direction == 1 { -1 } else { 1 };
+                    EventKind::MouseWheel {
+                        device: DeviceId::Mouse(e.which),
+                        x: e.integer_x.saturating_mul(sign),
+                        y: e.integer_y.saturating_mul(sign),
+                    }
+                }
+                0x650 if self.focused => {
+                    let e = event.axis;
+                    EventKind::ControllerAxis {
+                        device: DeviceId::Controller(e.which as i32),
+                        axis: e.axis,
+                        value: e.value,
+                    }
+                }
+                0x651 | 0x652 if self.focused => {
+                    let e = event.pad_button;
+                    EventKind::ControllerButton {
+                        device: DeviceId::Controller(e.which as i32),
+                        button: e.button,
+                        down: e.down,
+                    }
+                }
+                0x306 => EventKind::DeviceRemoved(DeviceId::Keyboard(event.device.which)),
+                0x405 => {
+                    let id = event.device.which;
+                    for slot in &mut self.mice {
+                        if slot.is_some_and(|mouse| mouse.id == id) {
+                            *slot = None;
+                        }
+                    }
+                    EventKind::DeviceRemoved(DeviceId::Mouse(id))
+                }
+                0x654 => EventKind::DeviceRemoved(DeviceId::Controller(event.device.which as i32)),
+                0x100 => EventKind::Quit,
+                0x210 if event.window.window == self.window => EventKind::Quit,
+                0x20e | 0x20f if event.window.window == self.window => {
+                    self.focused = event.common.kind == 0x20e;
+                    if !self.focused {
+                        self.mice.fill(None);
+                    }
+                    EventKind::Focus(self.focused)
+                }
+                _ => return None,
+            }
+        };
+        Some(kind)
+    }
+}
+
 pub struct Window {
     window: NonNull<c_void>,
     presentation: Presentation,
     gamepads: [Option<(u32, NonNull<c_void>)>; 16],
-    dropped_text: u64,
-    mouse_fraction: [f32; 2],
+    input: SdlInput,
 }
 impl Window {
     #[cfg(feature = "proof")]
@@ -316,6 +545,7 @@ impl Window {
             },
             scancode: unsafe { SDL_GetScancodeFromKey(key, std::ptr::null_mut()) },
             key,
+            window: self.input.window,
             down,
             ..SdlKey::default()
         };
@@ -334,6 +564,7 @@ impl Window {
             },
             dx: dx as f32,
             dy: dy as f32,
+            window: self.input.window,
             ..SdlMotion::default()
         };
         if !unsafe { SDL_PushEvent(&mut event) } {
@@ -352,7 +583,7 @@ impl Window {
                 kind: 0x303,
                 ..SdlCommon::default()
             },
-            window: 0,
+            window: self.input.window,
             text: text.as_ptr(),
         };
         if !unsafe { SDL_PushEvent(&mut event) } {
@@ -436,8 +667,10 @@ impl Window {
                 window,
                 presentation,
                 gamepads: [None; 16],
-                dropped_text: 0,
-                mouse_fraction: [0.0; 2],
+                input: SdlInput::new(
+                    SDL_GetWindowID(window.as_ptr()),
+                    SDL_GetWindowFlags(window.as_ptr()) & WINDOW_INPUT_FOCUS != 0,
+                ),
             };
             let mut count = 0;
             let ids = SDL_GetGamepads(&mut count);
@@ -478,112 +711,61 @@ impl Window {
         }
     }
     pub fn dropped_text_events(&self) -> u64 {
-        self.dropped_text
+        self.input.dropped_text
+    }
+    pub fn dropped_mouse_events(&self) -> u64 {
+        self.input.dropped_mouse
+    }
+    pub fn capture_errors(&self) -> u64 {
+        self.input.capture_errors
+    }
+    /// Selection only; SDL state changes occur inside the two physical intakes.
+    pub fn request_mouse_capture(&mut self, requested: bool) {
+        self.input.capture_requested = requested;
     }
     pub(crate) fn poll(&mut self, queue: &mut SysEventQueue, clock: &Clock) {
+        let window = self.window.as_ptr();
+        // SAFETY: the owned SDL window remains on its creating thread. Failed
+        // synchronization rolls back capture instead of claiming completion.
+        let mut apply_capture = |enabled| unsafe {
+            synchronized_capture(
+                SDL_GetWindowRelativeMouseMode(window),
+                enabled,
+                |mode| SDL_SetWindowRelativeMouseMode(window, mode),
+                || SDL_SyncWindow(window),
+            )
+        };
+        self.input
+            .reconcile_capture(queue, clock.now(), true, &mut apply_capture);
         let mut event = SdlEvent { padding: [0; 128] };
         while queue.has_ordinary_room() && unsafe { SDL_PollEvent(&mut event) } {
             let time = clock.now();
             // SAFETY: SDL initializes the union variant corresponding to type.
-            let kind = unsafe {
-                match event.common.kind {
-                    0x300 | 0x301 => {
-                        let e = event.key;
-                        if !(0..512).contains(&e.scancode) {
-                            continue;
-                        }
-                        EventKind::Key {
-                            device: DeviceId::Keyboard,
-                            code: e.scancode as u16,
-                            symbol: e.key as i32,
-                            down: e.down,
-                            repeat: e.repeat,
-                        }
-                    }
-                    0x303 => {
-                        let e = event.text;
-                        if e.text.is_null() {
-                            continue;
-                        }
-                        let Ok(text) = CStr::from_ptr(e.text).to_str() else {
-                            self.dropped_text = self.dropped_text.saturating_add(1);
-                            continue;
-                        };
-                        EventKind::Text {
-                            device: DeviceId::Keyboard,
-                            text,
-                        }
-                    }
-                    0x400 => {
-                        let e = event.motion;
-                        self.mouse_fraction[0] += e.dx;
-                        self.mouse_fraction[1] += e.dy;
-                        let dx = self.mouse_fraction[0] as i32;
-                        let dy = self.mouse_fraction[1] as i32;
-                        self.mouse_fraction[0] -= dx as f32;
-                        self.mouse_fraction[1] -= dy as f32;
-                        EventKind::Mouse {
-                            device: DeviceId::Mouse(e.which),
-                            dx,
-                            dy,
-                        }
-                    }
-                    0x401 | 0x402 => {
-                        let e = event.button;
-                        EventKind::MouseButton {
-                            device: DeviceId::Mouse(e.which),
-                            button: e.button,
-                            down: e.down,
-                        }
-                    }
-                    0x403 => {
-                        let e = event.wheel;
-                        let sign = if e.direction == 1 { -1 } else { 1 };
-                        EventKind::MouseWheel {
-                            device: DeviceId::Mouse(e.which),
-                            x: e.integer_x.saturating_mul(sign),
-                            y: e.integer_y.saturating_mul(sign),
-                        }
-                    }
-                    0x650 => {
-                        let e = event.axis;
-                        EventKind::ControllerAxis {
-                            device: DeviceId::Controller(e.which as i32),
-                            axis: e.axis,
-                            value: e.value,
-                        }
-                    }
-                    0x651 | 0x652 => {
-                        let e = event.pad_button;
-                        EventKind::ControllerButton {
-                            device: DeviceId::Controller(e.which as i32),
-                            button: e.button,
-                            down: e.down,
-                        }
-                    }
-                    0x653 => {
-                        self.open_gamepad(event.device.which);
-                        continue;
-                    }
-                    0x654 => {
-                        let id = event.device.which;
-                        self.close_gamepad(id);
-                        EventKind::DeviceRemoved(DeviceId::Controller(id as i32))
-                    }
-                    0x100 | 0x210 => EventKind::Quit,
-                    0x20e => EventKind::Focus(true),
-                    0x20f => {
-                        self.mouse_fraction = [0.0; 2];
-                        EventKind::Focus(false)
-                    }
-                    _ => continue,
+            match unsafe { event.common.kind } {
+                0x653 => {
+                    self.open_gamepad(unsafe { event.device.which });
+                    continue;
                 }
-            };
-            if queue.push(SysEvent { time, kind }).is_err()
-                && matches!(kind, EventKind::Text { .. })
-            {
-                self.dropped_text = self.dropped_text.saturating_add(1);
+                0x654 => self.close_gamepad(unsafe { event.device.which }),
+                _ => {}
             }
+            // SDL's text bytes stay valid until the next SDL_PollEvent. Queue
+            // admission copies them here and no pointer survives that poll.
+            let Some(kind) = (unsafe { self.input.decode(&event) }) else {
+                continue;
+            };
+            if queue.push(SysEvent { time, kind }).is_err() {
+                if matches!(kind, EventKind::Text { .. }) {
+                    self.input.dropped_text = self.input.dropped_text.saturating_add(1);
+                }
+                continue;
+            }
+            self.input.reconcile_capture(
+                queue,
+                time,
+                !matches!(kind, EventKind::Focus(false)),
+                &mut apply_capture,
+            );
         }
     }
     pub fn present(&mut self) {
@@ -665,6 +847,10 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         unsafe {
+            if self.input.relative {
+                SDL_SetWindowRelativeMouseMode(self.window.as_ptr(), false);
+                SDL_SyncWindow(self.window.as_ptr());
+            }
             for (_, pad) in self.gamepads.iter().flatten() {
                 SDL_CloseGamepad(pad.as_ptr());
             }
@@ -684,6 +870,10 @@ impl Drop for Window {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/sdl/events.rs"]
+mod input_tests;
 
 #[cfg(all(test, target_pointer_width = "64"))]
 mod abi_tests {

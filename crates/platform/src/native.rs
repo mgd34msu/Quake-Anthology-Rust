@@ -1,7 +1,7 @@
 //! Owned native children and memory published at stopped call boundaries.
 use std::{io, time::Duration};
 
-pub const PAGE_BYTES: usize = 4096;
+pub use qa_core::primitives::NATIVE_PAGE_BYTES as PAGE_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]

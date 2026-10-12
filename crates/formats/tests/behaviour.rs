@@ -1,10 +1,8 @@
 use qa_formats::{Bsp, BspFormat, FormatError, archive::Archive, model::Model};
-use std::{
-    fs::File,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use qa_platform::files::ReadFile;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -16,16 +14,16 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::write(&path, bytes).unwrap();
+        qa_platform::files::write(&path, bytes).unwrap();
         Self(path)
     }
     fn parse(&self) -> Result<Archive, FormatError> {
-        Archive::parse(Arc::new(File::open(&self.0).unwrap()))
+        Archive::parse(Arc::new(ReadFile::open(&self.0).unwrap()))
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.0).unwrap();
+        qa_platform::files::remove_file(&self.0).unwrap();
     }
 }
 
@@ -78,7 +76,7 @@ fn malformed_bsp_records_are_rejected_at_admission() {
 fn retail_e1m1_lumps_and_player_frames_match_observed_data() {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let path = std::env::var_os("QA_RETAIL_PAK").expect("QA_RETAIL_PAK");
-    let pak = Archive::parse(Arc::new(File::open(path).unwrap())).unwrap();
+    let pak = Archive::parse(Arc::new(ReadFile::open(path).unwrap())).unwrap();
     let mut load = |name: &[u8]| {
         let entry = pak.find(name).unwrap();
         let mut bytes = vec![0; pak.entries[entry].length as usize];

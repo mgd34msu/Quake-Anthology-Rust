@@ -67,7 +67,7 @@ impl FrameSource for Source {
             self.stamp(
                 queue,
                 EventKind::Key {
-                    device: DeviceId::Keyboard,
+                    device: DeviceId::Keyboard(0),
                     code: 26,
                     symbol: 119,
                     down: true,

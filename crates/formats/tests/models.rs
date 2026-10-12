@@ -167,9 +167,54 @@ fn tag_only_md3_accepts_native_empty_bounds_but_active_meshes_require_bounds() {
     assert!(m.meshes.is_empty());
     assert_eq!(m.tags.len(), 2);
     assert_eq!(m.bounds, qa_core::primitives::Bounds::default());
-    let mut b = MD3.to_vec();
-    b[108..112].copy_from_slice(&99999.0f32.to_le_bytes());
-    assert!(Model::parse(&b).is_err());
+    for axis in 0..3 {
+        let mut active = MD3.to_vec();
+        let at = 108 + axis * 4;
+        active[at..at + 4].copy_from_slice(&99999.0f32.to_le_bytes());
+        assert_eq!(Model::parse(&active).err(), Some(FormatError::InvalidRange));
+        for origin in [108, 120] {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                for mut bytes in [MD3.to_vec(), b.clone()] {
+                    let at = origin + axis * 4;
+                    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+                    assert_eq!(Model::parse(&bytes).err(), Some(FormatError::InvalidValue));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn md5_weight_spans_keep_empty_end_ranges_and_reject_overruns() {
+    let text = std::str::from_utf8(MD5).unwrap();
+    let last = "vert 2 ( 0 1 ) 2 1";
+    let empty = text.replace(last, "vert 2 ( 0 1 ) 3 0");
+    let model = Model::parse(empty.as_bytes()).unwrap();
+    assert_eq!(model.meshes[0].vertex_weights[2].range(), 3..3);
+    assert_eq!(model.meshes[0].vertices[2].position, Vec3::default());
+    for range in ["3 1", "4 0", "2 2", "2147483647 2147483647"] {
+        let invalid = text.replace(last, &format!("vert 2 ( 0 1 ) {range}"));
+        assert_eq!(
+            Model::parse(invalid.as_bytes()).err(),
+            Some(FormatError::InvalidRange)
+        );
+    }
+}
+
+#[test]
+fn md5_empty_mesh_retains_default_bounds() {
+    let bytes = br#"MD5Version 10
+commandline "empty"
+numJoints 1
+numMeshes 1
+joints { "origin" -1 ( 1 2 3 ) ( 0 0 0 ) }
+mesh { shader "textures/empty" numverts 0 numtris 0 numweights 0 }
+"#;
+    let model = Model::parse(bytes).unwrap();
+    assert_eq!(model.meshes.len(), 1);
+    assert!(model.meshes[0].vertices.is_empty());
+    assert_eq!(model.bounds, qa_core::primitives::Bounds::default());
+    assert_eq!(model.frames[0].bounds, model.bounds);
 }
 
 #[test]

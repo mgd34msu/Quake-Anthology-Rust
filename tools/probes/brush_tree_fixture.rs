@@ -45,22 +45,20 @@ fn vector(data: &mut &[u8]) -> Result<Vec3, &'static str> {
         f32::from_bits(word(data)?),
         f32::from_bits(word(data)?),
     ]);
-    if value.0.iter().any(|value| !value.is_finite()) {
+    if !value.is_finite() {
         return Err("nonfinite tree fixture vector");
     }
     Ok(value)
 }
 
+pub fn plane_axis(encoded: u32) -> Option<Option<Axis>> {
+    (encoded <= 3).then(|| Axis::from_index(encoded as usize))
+}
+
 fn plane(data: &mut &[u8]) -> Result<Plane, &'static str> {
     let normal = vector(data)?;
     let distance = f32::from_bits(word(data)?);
-    let axis = match word(data)? {
-        0 => Some(Axis::X),
-        1 => Some(Axis::Y),
-        2 => Some(Axis::Z),
-        3 => None,
-        _ => return Err("invalid tree fixture plane axis"),
-    };
+    let axis = plane_axis(word(data)?).ok_or("invalid tree fixture plane axis")?;
     if !distance.is_finite() {
         return Err("nonfinite tree fixture plane distance");
     }
@@ -105,11 +103,11 @@ pub fn load(
             }
             let bound_mins = vector(&mut data)?;
             let bound_maxs = vector(&mut data)?;
-            if bound_mins
-                .0
-                .iter()
-                .zip(bound_maxs.0)
-                .any(|(min, max)| *min > max)
+            if !(Bounds {
+                mins: bound_mins,
+                maxs: bound_maxs,
+            })
+            .is_valid()
             {
                 return Err("invalid fixture explicit native brush bounds");
             }
@@ -211,7 +209,7 @@ pub fn load(
         let point = vector(&mut data)?;
         if map >= geometries.len()
             || model >= model_counts[map]
-            || mins.0.iter().zip(maxs.0).any(|(min, max)| *min > max)
+            || !(Bounds { mins, maxs }).is_valid()
         {
             return Err("invalid tree fixture query");
         }
@@ -248,12 +246,7 @@ pub fn result(trace: Trace, point: Contents) -> [u32; WORDS] {
     let axis = if trace.plane.normal == Vec3::default() {
         3
     } else {
-        match trace.plane.axis {
-            Some(Axis::X) => 0,
-            Some(Axis::Y) => 1,
-            Some(Axis::Z) => 2,
-            None => 3,
-        }
+        trace.plane.axis.map_or(3, |axis| axis.index() as u32)
     };
     [
         trace.fraction.to_bits(),

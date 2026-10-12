@@ -8,7 +8,7 @@ use qa_formats::{
 };
 use qa_platform::Stopwatch;
 use qa_world::visibility::{ViewVisibility, VisibilityWorld};
-use std::{fmt::Write, fs::File, path::PathBuf, sync::Arc};
+use std::{fmt::Write, path::PathBuf, sync::Arc};
 
 const SEED: u32 = 0x5155414b;
 const SEEDED_POINTS: usize = 10_000;
@@ -254,7 +254,7 @@ struct Loaded {
 }
 fn load(spec: Spec) -> Result<Loaded, Box<dyn std::error::Error>> {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
-    let file = Arc::new(File::open(&spec.archive)?);
+    let file = Arc::new(qa_platform::files::ReadFile::open(&spec.archive)?);
     let archive = Arc::new(Archive::parse(file).map_err(|e| format!("archive: {e:?}"))?);
     let mut vfs = Vfs::default();
     vfs.mount_archive(&spec.archive, 0, archive)
@@ -563,7 +563,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     report.push_str("],\"limits\":\"Unfrustumed static compiled PVS and primary/secondary union membership. Reference uses parsed native BSP nodes and leaf face spans; no extracted C executable, area mask, image, dlight or gameplay proof. Rust allocations cover the calling thread. Surface id sums are arithmetic workload results, never identity or cache keys.\"}\n");
     if let Some(path) = output {
-        std::fs::write(path, &report)?;
+        qa_platform::files::write(path, &report)?;
     }
     print!("{report}");
     if allocations != 0 || requested_bytes != 0 {

@@ -61,7 +61,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
             mins: s.vector()?,
             maxs: s.vector()?,
         };
-        if (0..3).any(|a| bounds.mins.0[a] > bounds.maxs.0[a]) {
+        if !bounds.is_valid() {
             // Retail *_hand files contain tags and the exporter's empty-box
             // sentinel. There is no geometry to bound in those models.
             if surfaces != 0 {

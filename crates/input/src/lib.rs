@@ -1,7 +1,7 @@
 //! One device binding table and usercmd builder, independent of map/game rules.
 use qa_core::{
     primitives::{RuleSetId, UserCmd, Vec3, buttons},
-    sys_events::{DeviceId, EventKind, EventTime, SeatId, SysEvent},
+    sys_events::{DeviceId, EventKind, EventTime, MAX_INPUT_DEVICES, SeatId, SysEvent},
 };
 
 pub mod bindings;
@@ -135,6 +135,12 @@ struct Seat {
     mouse_previous: [f32; 2],
     center: bool,
     drift: view::PitchDrift,
+}
+impl Seat {
+    fn clear_mouse(&mut self) {
+        self.mouse = [0; 2];
+        self.mouse_previous = [0.0; 2];
+    }
 }
 
 /// Cached command tuning; map geometry and module formats never select it.
@@ -357,6 +363,13 @@ impl Default for Device {
 }
 
 impl Device {
+    fn assigned(id: DeviceId, seat: SeatId) -> Self {
+        Self {
+            id: Some(id),
+            seat: Some(seat),
+            ..Self::default()
+        }
+    }
     fn set_held(&mut self, control: u16, down: bool) -> Option<bool> {
         let held = self.held.get_mut(usize::from(control))?;
         let previous = std::mem::replace(held, down);
@@ -381,11 +394,13 @@ pub use qa_core::primitives::CommandIntent;
 
 pub struct Input {
     bindings: Box<[Option<Binding>]>,
-    devices: [Device; 16],
+    devices: [Device; MAX_INPUT_DEVICES],
     seats: [Seat; SeatId::COUNT],
     previous: Option<EventTime>,
     frame_ns: u64,
     freelook: [bool; SeatId::COUNT],
+    text_seat: SeatId,
+    rejected_devices: u64,
 }
 impl Default for Input {
     fn default() -> Self {
@@ -396,13 +411,15 @@ impl Input {
     pub fn load() -> Self {
         let mut input = Self {
             bindings: (0..CONTROLS).map(|_| None).collect(),
-            devices: [Device::default(); 16],
+            devices: [Device::default(); MAX_INPUT_DEVICES],
             seats: [Seat::default(); SeatId::COUNT],
             previous: None,
             frame_ns: 0,
             freelook: [true; SeatId::COUNT],
+            text_seat: SeatId::FIRST,
+            rejected_devices: 0,
         };
-        input.assign(DeviceId::Keyboard, SeatId::FIRST);
+        input.assign(DeviceId::Keyboard(0), SeatId::FIRST);
         input.assign(DeviceId::Mouse(0), SeatId::FIRST);
         for (control, action) in [
             (26, Action::Forward),
@@ -425,22 +442,21 @@ impl Input {
                 return false;
             }
             self.remove(id, self.previous.unwrap_or_default());
-            self.devices[index] = Device {
-                id: Some(id),
-                seat: Some(seat),
-                ..Device::default()
-            };
+            self.devices[index] = Device::assigned(id, seat);
             return true;
         }
         let Some(device) = self.devices.iter_mut().find(|device| device.id.is_none()) else {
             return false;
         };
-        *device = Device {
-            id: Some(id),
-            seat: Some(seat),
-            ..Device::default()
-        };
+        *device = Device::assigned(id, seat);
         true
+    }
+    /// Text/IME belongs to the editor's seat, not the last physical keyboard.
+    pub fn set_text_seat(&mut self, seat: SeatId) {
+        self.text_seat = seat;
+    }
+    pub fn rejected_devices(&self) -> u64 {
+        self.rejected_devices
     }
     /// The first clock event seeds input timing after window/startup work.
     pub fn seed(&mut self, time: EventTime) {
@@ -450,8 +466,7 @@ impl Input {
     /// The caller converts and validates external angles at the map/module ABI.
     pub fn set_view_angles(&mut self, seat: SeatId, angles: Vec3) {
         self.seats[seat.index()].angles = angles;
-        self.seats[seat.index()].mouse = [0; 2];
-        self.seats[seat.index()].mouse_previous = [0.0; 2];
+        self.seats[seat.index()].clear_mouse();
     }
     /// CLIENT resolves this request against its current native view policy.
     pub fn center_view(&mut self, seat: SeatId) {
@@ -587,7 +602,7 @@ impl Input {
         } else {
             button.set(
                 KeySource {
-                    device: DeviceId::Keyboard,
+                    device: DeviceId::Keyboard(0),
                     control: key.unwrap_or(u16::MAX),
                 },
                 down,
@@ -657,7 +672,9 @@ impl Input {
                 }
             }
             EventKind::Mouse { device, dx, dy } => {
-                if let Some(seat) = self.device_seat(device) {
+                if let Some(index) = self.ensure_device(device)
+                    && let Some(seat) = self.devices[index].seat
+                {
                     let state = &mut self.seats[seat.index()];
                     state.mouse[0] = state.mouse[0].saturating_add(i64::from(dx));
                     state.mouse[1] = state.mouse[1].saturating_add(i64::from(dy));
@@ -680,6 +697,14 @@ impl Input {
                 }
             }
             EventKind::Time => self.seed(event.time),
+            EventKind::MouseCapture(_) => {
+                for index in 0..self.devices.len() {
+                    if let Some(id @ DeviceId::Mouse(_)) = self.devices[index].id {
+                        self.release_device(id, event.time, target);
+                    }
+                }
+                self.clear_mouse();
+            }
             EventKind::Focus(false) => {
                 for index in 0..self.devices.len() {
                     if let Some(id) = self.devices[index].id {
@@ -688,9 +713,8 @@ impl Input {
                 }
                 for seat in &mut self.seats {
                     seat.actions.fill(Button::default());
-                    seat.mouse = [0; 2];
-                    seat.mouse_previous = [0.0; 2];
                 }
+                self.clear_mouse();
                 for device in &mut self.devices {
                     device.axes.fill(0);
                 }
@@ -705,12 +729,36 @@ impl Input {
     fn device_index(&self, id: DeviceId) -> Option<usize> {
         self.devices.iter().position(|device| device.id == Some(id))
     }
+    fn clear_mouse(&mut self) {
+        for seat in &mut self.seats {
+            seat.clear_mouse();
+        }
+    }
+    fn ensure_device(&mut self, id: DeviceId) -> Option<usize> {
+        if let Some(index) = self.device_index(id) {
+            return Some(index);
+        }
+        if !matches!(id, DeviceId::Keyboard(_) | DeviceId::Mouse(_)) {
+            return None;
+        }
+        let Some(index) = self.devices.iter().position(|device| device.id.is_none()) else {
+            self.rejected_devices = self.rejected_devices.saturating_add(1);
+            return None;
+        };
+        self.devices[index] = Device::assigned(id, SeatId::FIRST);
+        Some(index)
+    }
     fn device_seat(&self, id: DeviceId) -> Option<SeatId> {
         self.device_index(id)
             .and_then(|index| self.devices[index].seat)
     }
     fn character(&self, device: DeviceId, value: char, target: &mut impl Target) {
-        if let Some(seat) = self.device_seat(device) {
+        let seat = if device == DeviceId::Keyboard(0) {
+            Some(self.text_seat)
+        } else {
+            self.device_seat(device)
+        };
+        if let Some(seat) = seat {
             target.character(seat, value);
         }
     }
@@ -733,7 +781,15 @@ impl Input {
         time: EventTime,
         target: &mut impl Target,
     ) {
-        let Some(device_index) = self.device_index(id) else {
+        if usize::from(control) >= CONTROLS {
+            return;
+        }
+        let index = if down {
+            self.ensure_device(id)
+        } else {
+            self.device_index(id)
+        };
+        let Some(device_index) = index else {
             return;
         };
         let device = &mut self.devices[device_index];

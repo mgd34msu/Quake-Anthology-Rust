@@ -13,3 +13,4 @@ zune-core = "0.5.3"
 gif = "0.14.2"
 lewton = "0.10.2"
 qa-core = { path = "../core" }
+qa-platform = { path = "../platform" }

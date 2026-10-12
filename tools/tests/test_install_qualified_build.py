@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import install_qualified_build as installer
+from timing_guard import STAGES
 
 
 class InstallDestinations(unittest.TestCase):
@@ -46,9 +47,11 @@ class InstallDestinations(unittest.TestCase):
     def save_metadata(self):
         (self.build / "build.json").write_text(json.dumps(self.metadata))
 
-    def private_result(self, binary, profile, evidence, arguments, audio_driver="disk", timeout=30):
+    def private_result(self, binary, profile, evidence, arguments, audio_driver="disk", timeout=30,
+                       actions=None, input_after_first_frame=False):
         self.assertEqual(audio_driver, "dummy" if self.smoke else "disk")
         self.assertEqual(timeout, 60 if self.smoke else 30)
+        self.assertEqual(input_after_first_frame, bool(actions))
         self.calls.append(arguments)
         name = arguments[arguments.index("--map") + 1]
         renderer = arguments[arguments.index("--renderer") + 1]
@@ -66,10 +69,26 @@ class InstallDestinations(unittest.TestCase):
         (evidence / "result.json").write_text(json.dumps(result))
         return result
 
-    def install(self, destination, arguments=None, smoke=False):
+    def install(self, destination, arguments=None, smoke=False, timings=None, baseline=None):
         self.smoke = smoke
         return installer.install(self.build, destination, self.profile, self.root / "evidence",
-                                 arguments or [], owner_smoke=smoke)
+                                 arguments or [], timings=timings, baseline=baseline, owner_smoke=smoke)
+
+    def gameplay_timings(self):
+        self.gameplay = True
+        workload = dict(roles={"movement": "q2"}, settings={"r_swapInterval": 0},
+                        seed=17, simulation_steps=600, final_state={"position": [1, 2, 3]}, events=[])
+        row = dict(map="base1", renderer="gl", resolution="640x400", frames=600, warmup=60,
+                   debugger=False, vsync=False, workload=workload, cores=[23],
+                   stages={stage: dict(median_ms=1.0, p99_ms=2.0) for stage in STAGES})
+        report = dict(scope="gameplay", measured=True, commit=self.metadata["commit"],
+                      artifact_identity=installer.identity(self.binary), target_cpu="baseline",
+                      machine="isolated test fixture", rows=[row])
+        timings = self.root / "timings.json"
+        timings.write_text(json.dumps(report))
+        baseline = self.root / "baseline.json"
+        baseline.write_text(json.dumps(dict(report, commit="prior-test-commit")))
+        return timings, baseline
 
     def regular_unchanged(self):
         self.assertEqual(self.regular.read_bytes(), b"qualified original")
@@ -103,6 +122,57 @@ class InstallDestinations(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.install(self.regular, ["--map", "base1", "--renderer", "gl"])
         self.regular_unchanged()
+
+    def test_regular_refreshes_companion_notes_after_gameplay_and_timing_qualification(self):
+        timings, baseline = self.gameplay_timings()
+        notes = self.regular.with_suffix(".txt")
+        notes.write_text("obsolete development build")
+        receipt = self.install(self.regular, ["--map", "base1", "--renderer", "gl"],
+                               timings=timings, baseline=baseline)
+        self.assertEqual(self.regular.read_bytes(), self.binary.read_bytes())
+        self.assertEqual(receipt["qualification_scope"], "gameplay")
+        self.assertTrue(receipt["gameplay_qualified"])
+        self.assertEqual(receipt["performance"]["result"], "PASS")
+        text = notes.read_text()
+        self.assertIn(self.metadata["commit"], text)
+        self.assertIn(self.metadata["built_at_utc"], text)
+        self.assertIn("Qualification scope: gameplay and comparable gameplay timings", text)
+        self.assertIn("prior-test-commit", text)
+        self.assertIn("base1 gl 640x400", text)
+        self.assertNotIn("owner-authorized render smoke", text)
+        self.assertNotIn("obsolete development build", text)
+        self.assertEqual((self.profile / "owner.cfg").read_bytes(), b"saved settings")
+
+    def test_regular_timing_regression_preserves_previous_install_and_notes(self):
+        timings, baseline = self.gameplay_timings()
+        report = json.loads(timings.read_text())
+        report["rows"][0]["stages"]["draw"]["median_ms"] = 2.0
+        timings.write_text(json.dumps(report))
+        notes = self.regular.with_suffix(".txt")
+        notes.write_bytes(b"previous notes")
+        with self.assertRaises(ValueError):
+            self.install(self.regular, ["--map", "base1", "--renderer", "gl"],
+                         timings=timings, baseline=baseline)
+        self.regular_unchanged()
+        self.assertEqual(notes.read_bytes(), b"previous notes")
+
+    def assert_note_staging_failure_preserves_install(self, smoke):
+        notes = self.regular.with_suffix(".txt")
+        notes.write_bytes(b"previous notes")
+        timings, baseline = (None, None) if smoke else self.gameplay_timings()
+        arguments = [] if smoke else ["--map", "base1", "--renderer", "gl"]
+        with patch.object(installer, "stage_text", side_effect=OSError("staging failed")):
+            with self.assertRaises(OSError):
+                self.install(self.regular, arguments, smoke=smoke, timings=timings, baseline=baseline)
+        self.regular_unchanged()
+        self.assertEqual(notes.read_bytes(), b"previous notes")
+        self.assertEqual(sorted(path.name for path in self.destination.iterdir()), ["qa-rust", "qa-rust.txt"])
+
+    def test_regular_note_staging_failure_preserves_previous_install(self):
+        self.assert_note_staging_failure_preserves_install(False)
+
+    def test_smoke_note_staging_failure_preserves_previous_install(self):
+        self.assert_note_staging_failure_preserves_install(True)
 
     def test_smoke_rejects_missing_world_without_replacing_old_files(self):
         self.reject_map = "base1"

@@ -86,6 +86,7 @@ impl FrameHost {
             if let Some(sound) = self.muzzle_sounds.choose(recipe) {
                 self.present_sound(SoundEvent {
                     sound,
+                    spatial_rules: rules,
                     entity: Some(entity),
                     channel: recipe.channel,
                     position,
@@ -126,6 +127,7 @@ impl FrameHost {
             };
             Some(SoundEvent {
                 sound,
+                spatial_rules: row.request.context.console.source,
                 entity,
                 channel: u16::from(wire.channel),
                 position,

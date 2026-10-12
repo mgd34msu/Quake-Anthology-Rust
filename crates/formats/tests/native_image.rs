@@ -136,6 +136,37 @@ fn native_split_word_relocations_and_tls_callback_addresses_are_preserved() {
 }
 
 #[test]
+fn pe_relocation_offsets_keep_the_fixed_twelve_bit_field_at_page_end() {
+    for bits in [32, 64] {
+        let mut file = pe_fixture(bits);
+        let preferred = if bits == 64 { 0x180000000 } else { 0x10000000 };
+        let base = preferred + 0x100000;
+        let width = bits / 8;
+        let offset = 0x1000 - width;
+        let kind = if bits == 64 { 10 } else { 3 };
+        pe_directory(&mut file, bits, 5, 0x11e0, 12);
+        pe_rva(&mut file, 0x11e0, 0x1000, 4);
+        pe_rva(&mut file, 0x11e4, 12, 4);
+        pe_rva(&mut file, 0x11e8, (kind << 12 | offset) as u64, 2);
+        let image = Image::parse(&file, Some(base), LoadRole::Library).unwrap();
+        assert_eq!(
+            image.relocations[0].address,
+            base + (0x1000 + offset) as u64
+        );
+        assert_eq!(image.relocations[0].kind, kind as u32);
+        assert_eq!(
+            &image.bytes[0x1000 + offset..0x2000],
+            &0x100000u64.to_le_bytes()[..width]
+        );
+        pe_rva(&mut file, 0x11e0, 0x1001, 4);
+        assert_eq!(
+            Image::parse(&file, Some(base), LoadRole::Library).err(),
+            Some(FormatError::InvalidRange)
+        );
+    }
+}
+
+#[test]
 fn elf_library_and_program_keep_their_distinct_native_file_page_tails() {
     for bits in [32, 64] {
         let f = elf_fixture(bits, false);

@@ -4254,7 +4254,6 @@ fn q2_api_layouts_bind_the_full_table_and_name_missing_engine_services() {
                         samples: vec![1024],
                         loop_start: None,
                     },
-                    rules,
                 )],
             )
             .unwrap(),

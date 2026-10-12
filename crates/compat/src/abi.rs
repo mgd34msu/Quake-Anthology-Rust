@@ -980,6 +980,7 @@ fn native_sound<const POSITIONED: bool, const LOCAL: bool>(
         c.services,
         SoundEvent {
             sound,
+            spatial_rules: c.context.console.source,
             entity,
             position,
             client,
@@ -1141,8 +1142,8 @@ fn q3_cvar_project(c: &mut Invocation<'_, '_, '_>, address: u64) -> Result<(), C
         .cvars
         .numeric(view)
         .map_err(|_| CallError::Cvar)?;
-    // The native integer field uses atoi, not a cast from the float value.
-    let integer = qa_console::numbers::integer(text);
+    // The cached integer preserves atoi's projected decimal-prefix semantics.
+    let integer = (ENGINE_CALLS.cvar_integer)(c.services, view)?;
     // Q_strncpyz calls strncpy, which pads the native fixed-width field.
     c.memory.read_mut(address + 16, 256)?.fill(0);
     c.memory.write_string(address + 16, 256, text.as_bytes())?;

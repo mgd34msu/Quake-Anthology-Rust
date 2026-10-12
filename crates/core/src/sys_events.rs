@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 pub const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 pub const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const ORDINARY_RESERVED_SLOTS: usize = 1;
+pub const MAX_INPUT_DEVICES: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Peer {
@@ -38,7 +39,8 @@ impl EventTime {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceId {
-    Keyboard,
+    /// SDL physical instance; zero denotes unknown or virtual input.
+    Keyboard(u32),
     Mouse(u32),
     Controller(i32),
 }
@@ -98,6 +100,8 @@ pub enum EventKind<'a> {
     },
     DeviceRemoved(DeviceId),
     Focus(bool),
+    /// The owned window changed pointer mode; release old pointer identities.
+    MouseCapture(bool),
     Quit,
     ConsoleLine(&'a str),
     Packet {
@@ -246,6 +250,9 @@ impl SysEventQueue {
                 (StoredKind::Plain(EventKind::DeviceRemoved(device)), &[][..])
             }
             EventKind::Focus(value) => (StoredKind::Plain(EventKind::Focus(value)), &[][..]),
+            EventKind::MouseCapture(value) => {
+                (StoredKind::Plain(EventKind::MouseCapture(value)), &[][..])
+            }
             EventKind::Quit => (StoredKind::Plain(EventKind::Quit), &[][..]),
         };
         self.payloads.push(

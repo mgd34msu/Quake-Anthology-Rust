@@ -22,7 +22,7 @@ impl Target for Sink {
     }
 }
 fn key(input: &mut Input, sink: &mut Sink, ms: u64, code: u16, down: bool, repeat: bool) {
-    device_key(input, sink, DeviceId::Keyboard, ms, code, down, repeat);
+    device_key(input, sink, DeviceId::Keyboard(0), ms, code, down, repeat);
 }
 fn device_key(
     input: &mut Input,
@@ -65,7 +65,7 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
         device_key(
             &mut input,
             &mut sink,
-            DeviceId::Keyboard,
+            DeviceId::Keyboard(0),
             1,
             code,
             true,
@@ -74,20 +74,20 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
         device_key(
             &mut input,
             &mut sink,
-            DeviceId::Keyboard,
+            DeviceId::Keyboard(0),
             2,
             code,
             true,
             true,
         );
     }
-    assert!(!input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert!(!input.assign(DeviceId::Keyboard(0), SeatId::FIRST));
     assert_eq!(frame(&mut input, 3)[0].buttons, buttons::ANY);
     for code in 0..1023 {
         device_key(
             &mut input,
             &mut sink,
-            DeviceId::Keyboard,
+            DeviceId::Keyboard(0),
             4,
             code,
             false,
@@ -96,7 +96,7 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
         device_key(
             &mut input,
             &mut sink,
-            DeviceId::Keyboard,
+            DeviceId::Keyboard(0),
             5,
             code,
             false,
@@ -107,7 +107,7 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
     device_key(
         &mut input,
         &mut sink,
-        DeviceId::Keyboard,
+        DeviceId::Keyboard(0),
         7,
         1024,
         true,
@@ -116,14 +116,14 @@ fn physical_holds_survive_consumption_repeats_and_duplicate_releases() {
     device_key(
         &mut input,
         &mut sink,
-        DeviceId::Keyboard,
+        DeviceId::Keyboard(0),
         7,
         1023,
         false,
         false,
     );
     assert_eq!(frame(&mut input, 8)[0].buttons, 0);
-    assert!(input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert!(input.assign(DeviceId::Keyboard(0), SeatId::FIRST));
 }
 
 #[test]
@@ -141,13 +141,13 @@ fn rebind_keeps_both_modifier_holds_until_their_physical_releases() {
     assert!(input.bind(224, None, EventTime(2_000_000), &mut sink));
     key(&mut input, &mut sink, 3, 224, true, true);
     key(&mut input, &mut sink, 3, 228, true, true);
-    assert!(!input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert!(!input.assign(DeviceId::Keyboard(0), SeatId::FIRST));
     assert_eq!(frame(&mut input, 4)[0].buttons, buttons::ANY);
     key(&mut input, &mut sink, 5, 224, false, false);
     assert_eq!(frame(&mut input, 6)[0].buttons, buttons::ANY);
     key(&mut input, &mut sink, 7, 228, false, false);
     assert_eq!(frame(&mut input, 8)[0].buttons, 0);
-    assert!(input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert!(input.assign(DeviceId::Keyboard(0), SeatId::FIRST));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn removing_one_held_device_preserves_other_seats_and_focus_clears_all() {
     let mut sink = Sink::default();
     let second = SeatId::new(1).unwrap();
     assert!(input.assign(DeviceId::Controller(42), second));
-    for device in [DeviceId::Keyboard, DeviceId::Controller(42)] {
+    for device in [DeviceId::Keyboard(0), DeviceId::Controller(42)] {
         device_key(&mut input, &mut sink, device, 1, 1023, true, false);
     }
     assert!(!input.assign(DeviceId::Controller(42), second));
@@ -196,7 +196,7 @@ fn removing_one_held_device_preserves_other_seats_and_focus_clears_all() {
             .iter()
             .all(|command| command.buttons == 0)
     );
-    assert!(input.assign(DeviceId::Keyboard, SeatId::FIRST));
+    assert!(input.assign(DeviceId::Keyboard(0), SeatId::FIRST));
     assert!(input.assign(DeviceId::Controller(42), second));
 }
 fn frame(input: &mut Input, ms: u64) -> [qa_core::primitives::UserCmd; 4] {
@@ -329,7 +329,7 @@ fn queued_text_dispatches_unicode_without_a_private_remainder() {
         .push(SysEvent {
             time: EventTime(1),
             kind: EventKind::Text {
-                device: DeviceId::Keyboard,
+                device: DeviceId::Keyboard(0),
                 text: "aλ🦀",
             },
         })

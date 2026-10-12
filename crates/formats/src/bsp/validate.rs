@@ -30,37 +30,12 @@ fn child(value: i32, map: &Map<'_>, record: usize) -> Result<(), FormatError> {
     }
 }
 fn trees(count: usize, children: impl Fn(usize) -> [i32; 2]) -> Result<(), FormatError> {
-    let mut colors = vec![0u8; count];
-    let mut stack = Vec::with_capacity(count);
-    for root in 0..count {
-        if colors[root] == 2 {
-            continue;
-        }
-        stack.push((root, 0));
-        colors[root] = 1;
-        while let Some((node, next)) = stack.last_mut() {
-            if *next == 2 {
-                colors[*node] = 2;
-                stack.pop();
-                continue;
-            }
-            let value = children(*node)[*next];
-            *next += 1;
-            if value < 0 {
-                continue;
-            }
-            let value = value as usize;
-            match colors[value] {
-                1 => return Err(FormatError::Cycle),
-                0 => {
-                    colors[value] = 1;
-                    stack.push((value, 0));
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(())
+    qa_core::bsp::node_depths(count, children)
+        .map(|_| ())
+        .map_err(|error| match error {
+            qa_core::bsp::NodeError::Cycle => FormatError::Cycle,
+            qa_core::bsp::NodeError::Depth => FormatError::InvalidRange,
+        })
 }
 
 pub(super) fn map(map: &Map<'_>) -> Result<(), FormatError> {

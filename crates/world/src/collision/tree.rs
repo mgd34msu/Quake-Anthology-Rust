@@ -144,12 +144,11 @@ impl Topology {
         }
 
         let mut depths =
-            crate::bsp::node_depths(tree.nodes.len(), |index| tree.nodes[index].children).map_err(
-                |error| match error {
-                    crate::bsp::NodeError::Cycle => GeometryError::TreeCycle,
-                    crate::bsp::NodeError::Depth => GeometryError::Capacity,
-                },
-            )?;
+            qa_core::bsp::node_depths(tree.nodes.len(), |index| tree.nodes[index].children)
+                .map_err(|error| match error {
+                    qa_core::bsp::NodeError::Cycle => GeometryError::TreeCycle,
+                    qa_core::bsp::NodeError::Depth => GeometryError::Capacity,
+                })?;
         // Collision stacks include the terminal leaf, unlike raw node depth.
         for depth in &mut depths {
             *depth = depth.checked_add(1).ok_or(GeometryError::Capacity)?;

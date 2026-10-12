@@ -182,10 +182,11 @@ fn validate(nodes: &[ClipNode], plane_count: usize) -> Result<Box<[usize]>, Hull
             return Err(HullError::Node);
         }
     }
-    crate::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| match error
-    {
-        crate::bsp::NodeError::Cycle => HullError::Cycle,
-        crate::bsp::NodeError::Depth => HullError::Node,
+    qa_core::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| {
+        match error {
+            qa_core::bsp::NodeError::Cycle => HullError::Cycle,
+            qa_core::bsp::NodeError::Depth => HullError::Node,
+        }
     })
 }
 

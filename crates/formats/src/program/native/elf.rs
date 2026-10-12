@@ -1,4 +1,5 @@
 use super::*;
+use qa_core::primitives::NATIVE_PAGE_BYTES;
 
 mod metadata;
 mod relocations;
@@ -14,8 +15,8 @@ struct Segment {
 }
 fn page_end(value: u64) -> Result<u64, FormatError> {
     value
-        .checked_add(4095)
-        .map(|v| v & !4095)
+        .checked_add(NATIVE_PAGE_BYTES as u64 - 1)
+        .map(|v| v & !(NATIVE_PAGE_BYTES as u64 - 1))
         .ok_or(FormatError::InvalidRange)
 }
 pub(super) fn parse(
@@ -123,12 +124,13 @@ pub(super) fn parse(
             return Err(FormatError::InvalidRange);
         }
         if s.kind == 1
-            && (s.memory_bytes != 0 || (role == LoadRole::Library && s.address % 4096 != 0))
+            && (s.memory_bytes != 0
+                || (role == LoadRole::Library && s.address % NATIVE_PAGE_BYTES as u64 != 0))
         {
-            if s.address % 4096 != s.offset % 4096 {
+            if s.address % NATIVE_PAGE_BYTES as u64 != s.offset % NATIVE_PAGE_BYTES as u64 {
                 return Err(FormatError::InvalidRange);
             }
-            first = first.min(s.address & !4095);
+            first = first.min(s.address & !(NATIVE_PAGE_BYTES as u64 - 1));
             end = end.max(page_end(s.address + s.memory_bytes)?);
         } else if s.kind == 2 {
             if dynamic_segment.replace(s).is_some() {
@@ -150,7 +152,7 @@ pub(super) fn parse(
     let length = owned_length(end.checked_sub(first).ok_or(FormatError::InvalidRange)?)?;
     let base = requested.unwrap_or(first);
     let bias = base.checked_sub(first).ok_or(FormatError::InvalidRange)?;
-    if !bias.is_multiple_of(4096) || (kind == 2 && bias != 0) {
+    if !bias.is_multiple_of(NATIVE_PAGE_BYTES as u64) || (kind == 2 && bias != 0) {
         return Err(FormatError::InvalidRange);
     }
     if base.checked_add(length as u64).is_none()
@@ -162,14 +164,15 @@ pub(super) fn parse(
         return Err(FormatError::InvalidRange);
     }
     let mut bytes = vec![0; length].into_boxed_slice();
-    let mut permissions = vec![0u8; length / 4096];
+    let mut permissions = vec![0u8; length / NATIVE_PAGE_BYTES];
     for s in &segments {
         if s.kind != 1
-            || (s.memory_bytes == 0 && (role != LoadRole::Library || s.address % 4096 == 0))
+            || (s.memory_bytes == 0
+                && (role != LoadRole::Library || s.address % NATIVE_PAGE_BYTES as u64 == 0))
         {
             continue;
         }
-        let prefix = s.address % 4096;
+        let prefix = s.address % NATIVE_PAGE_BYTES as u64;
         let file_start = s
             .offset
             .checked_sub(prefix)
@@ -222,7 +225,8 @@ pub(super) fn parse(
                 bytes[(zero - first) as usize..(zero_end - first) as usize].fill(0);
             }
         }
-        permissions[((begin - first) / 4096) as usize..((limit - first) / 4096) as usize]
+        permissions[((begin - first) / NATIVE_PAGE_BYTES as u64) as usize
+            ..((limit - first) / NATIVE_PAGE_BYTES as u64) as usize]
             .fill(0x80 | (s.flags as u8 & 7));
     }
     let mut regions = Vec::new();
@@ -235,8 +239,8 @@ pub(super) fn parse(
         }
         if value & 0x80 != 0 {
             regions.push(Region {
-                offset: start * 4096,
-                length: (at - start) * 4096,
+                offset: start * NATIVE_PAGE_BYTES,
+                length: (at - start) * NATIVE_PAGE_BYTES,
                 read: value & 4 != 0,
                 write: value & 2 != 0,
                 execute: value & 1 != 0,
@@ -441,12 +445,12 @@ pub(super) fn parse(
         if s.kind == 0x6474e552 && s.memory_bytes != 0 {
             let count = usize::try_from(s.memory_bytes).map_err(|_| FormatError::InvalidRange)?;
             range(s.address, count)?;
-            let begin = s.address & !4095;
+            let begin = s.address & !(NATIVE_PAGE_BYTES as u64 - 1);
             let end = s
                 .address
                 .checked_add(s.memory_bytes)
                 .ok_or(FormatError::InvalidRange)?
-                & !4095;
+                & !(NATIVE_PAGE_BYTES as u64 - 1);
             if end > begin {
                 range(
                     begin,

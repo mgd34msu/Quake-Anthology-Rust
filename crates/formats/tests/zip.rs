@@ -2,8 +2,8 @@ use qa_formats::{
     FormatError,
     archive::{Archive, ArchiveKind},
 };
+use qa_platform::files::ReadFile;
 use std::{
-    fs::File,
     io::Write,
     sync::{
         Arc,
@@ -20,14 +20,14 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::write(&path, bytes).unwrap();
-        let archive = Archive::parse(Arc::new(File::open(&path).unwrap()));
+        qa_platform::files::write(&path, bytes).unwrap();
+        let archive = Archive::parse(Arc::new(ReadFile::open(&path).unwrap()));
         (Self(path), archive)
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        std::fs::remove_file(&self.0).unwrap();
+        qa_platform::files::remove_file(&self.0).unwrap();
     }
 }
 

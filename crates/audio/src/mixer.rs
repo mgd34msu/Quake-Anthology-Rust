@@ -6,6 +6,7 @@ use qa_core::{
 };
 use std::{num::NonZeroU32, sync::Arc};
 
+#[derive(Clone, Copy)]
 struct SpatialPolicy {
     distance_offset: f32,
     distance_scale: f32,
@@ -32,27 +33,23 @@ impl SpatialPolicy {
         }
     }
 }
-struct Sample {
-    pcm: Pcm,
-    policy: SpatialPolicy,
-}
 pub struct Bank {
     names: NameTable,
-    samples: Box<[Option<Sample>]>,
+    samples: Box<[Option<Pcm>]>,
     pub rate: NonZeroU32,
 }
 impl Bank {
     /// Native sound ordinals are mapped to these handles at the module boundary.
-    pub fn load(rate: NonZeroU32, sources: Vec<(String, Pcm, RuleSetId)>) -> Result<Self, String> {
+    pub fn load(rate: NonZeroU32, sources: Vec<(String, Pcm)>) -> Result<Self, String> {
         let paths: Vec<_> = sources
             .iter()
-            .map(|(name, _, _)| qa_core::names::canonical_path(name))
+            .map(|(name, _)| qa_core::names::canonical_path(name))
             .collect();
         let names =
             NameTable::load(paths.iter().map(|p| p.as_bytes())).map_err(|e| e.to_string())?;
-        let mut samples: Box<[Option<Sample>]> =
+        let mut samples: Box<[Option<Pcm>]> =
             std::iter::repeat_with(|| None).take(names.len()).collect();
-        for ((_, pcm, rules), path) in sources.into_iter().zip(paths) {
+        for ((_, pcm), path) in sources.into_iter().zip(paths) {
             let id = names.find(path.as_bytes()).ok_or("sound name missing")?;
             if samples[id.0 as usize].is_some() {
                 return Err("duplicate sound registration".into());
@@ -62,10 +59,7 @@ impl Bank {
             if pcm.frames() == 0 {
                 return Err("empty sound".into());
             }
-            samples[id.0 as usize] = Some(Sample {
-                pcm,
-                policy: SpatialPolicy::load(rules),
-            });
+            samples[id.0 as usize] = Some(pcm);
         }
         Ok(Self {
             names,
@@ -87,6 +81,7 @@ pub struct Listener {
 }
 struct Voice {
     event: SoundEvent,
+    policy: SpatialPolicy,
     frame: usize,
     gain: [i64; 2],
     begin: Option<u64>,
@@ -182,6 +177,7 @@ impl Mixer {
                 && voice.begin.is_none()
             {
                 voice.event = event;
+                voice.policy = SpatialPolicy::load(event.spatial_rules);
                 return true;
             }
         }
@@ -200,6 +196,7 @@ impl Mixer {
         self.counts.replaced += u64::from(replacement.is_some());
         self.voices[index] = Some(Voice {
             event,
+            policy: SpatialPolicy::load(event.spatial_rules),
             frame: 0,
             gain: [0; 2],
             begin,
@@ -260,9 +257,6 @@ impl Mixer {
             return false;
         }
         for voice in self.voices.iter_mut().flatten() {
-            let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {
-                continue;
-            };
             voice.gain = [0; 2];
             let mut listeners = 0;
             for listener in self
@@ -272,7 +266,7 @@ impl Mixer {
                 .filter(|l| voice.event.applies_to_client(l.client))
             {
                 listeners += 1;
-                let gain = gains(voice.event, listener, &sample.policy);
+                let gain = gains(voice.event, listener, &voice.policy);
                 for (to, from) in voice.gain.iter_mut().zip(gain) {
                     *to += i64::from(from);
                 }
@@ -300,16 +294,15 @@ impl Mixer {
                 let Some(sample) = self.bank.samples[voice.event.sound.0 as usize].as_ref() else {
                     continue;
                 };
-                let channels = sample.pcm.channels as usize;
+                let channels = sample.channels as usize;
                 let offset = voice.frame * channels;
                 for (side, total) in sum.iter_mut().enumerate() {
-                    let value = sample.pcm.samples[offset + side.min(channels - 1)];
+                    let value = sample.samples[offset + side.min(channels - 1)];
                     *total += (i64::from(value) * voice.gain[side]) >> 8;
                 }
                 voice.frame += 1;
-                if voice.frame == sample.pcm.frames() {
+                if voice.frame == sample.frames() {
                     let start = sample
-                        .pcm
                         .loop_start
                         .or_else(|| (voice.event.action == SoundAction::StartLoop).then_some(0));
                     if let Some(start) = start {

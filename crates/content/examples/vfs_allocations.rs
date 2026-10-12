@@ -5,8 +5,9 @@ use qa_content::vfs::Vfs;
 fn main() -> Result<(), &'static str> {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
     let root = std::env::temp_dir().join(format!("qa-rust-vfs-probe-{}", std::process::id()));
-    std::fs::create_dir_all(root.join("maps")).map_err(|_| "create fixture")?;
-    std::fs::write(root.join("maps/fixture.bsp"), [42; 256]).map_err(|_| "write fixture")?;
+    qa_platform::files::create_dir_all(root.join("maps")).map_err(|_| "create fixture")?;
+    qa_platform::files::write(root.join("maps/fixture.bsp"), [42; 256])
+        .map_err(|_| "write fixture")?;
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root, 0).map_err(|_| "mount")?;
     let reference = vfs.open(b"MAPS\\FIXTURE.BSP").ok_or("resolve")?;
@@ -31,7 +32,7 @@ fn main() -> Result<(), &'static str> {
     let allocations = allocation_counter::stop();
     let lookups = vfs.take_lookup_count();
     drop(vfs);
-    std::fs::remove_dir_all(root).map_err(|_| "remove own fixture")?;
+    qa_platform::files::remove_dir_all(root).map_err(|_| "remove own fixture")?;
     println!(
         "{{\"scope\":\"headless resolved VFS reads, not gameplay\",\"reads\":10000,\"path_lookups\":{lookups},\"allocations_after_load\":{allocations}}}"
     );

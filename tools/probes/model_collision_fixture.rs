@@ -1,6 +1,7 @@
 //! Developer model fixture transport; every trace calls the production store.
 use qa_core::primitives::{
-    Axis, Bounds, ClipNode, GeometryId, ModelRotation, ModelRules, Plane, RotatedLinkBounds, Vec3,
+    Bounds, ClipNode, GeometryId, ModelRotation, ModelRules, Plane, RotatedLinkBounds, RuleSetId,
+    Vec3,
 };
 use qa_world::collision::{
     CollisionStore, Contents, EntityTracePolicy, Trace, TraceQuery, TraceRules, TraceScratch,
@@ -11,59 +12,34 @@ use qa_world::collision::{
 mod brush;
 pub const WORDS: usize = brush::WORDS;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Rule {
-    Quake,
-    Quake2,
-    Quake3,
+pub fn parse_rule(value: &str) -> Result<RuleSetId, &'static str> {
+    RuleSetId::parse(value)
+        .filter(|rule| {
+            matches!(
+                rule,
+                RuleSetId::Quake | RuleSetId::Quake2 | RuleSetId::Quake3
+            )
+        })
+        .ok_or("expected q1, q2 or q3 caller/model rules")
 }
 
-impl Rule {
-    pub fn parse(value: &str) -> Result<Self, &'static str> {
-        match value {
-            "q1" => Ok(Self::Quake),
-            "q2" => Ok(Self::Quake2),
-            "q3" => Ok(Self::Quake3),
-            _ => Err("expected q1, q2 or q3 caller/model rules"),
-        }
-    }
+pub fn words(rule: RuleSetId) -> usize {
+    if rule == RuleSetId::Quake { 9 } else { WORDS }
+}
 
-    fn trace_rules(self) -> TraceRules {
-        if self == Self::Quake3 {
-            TraceRules::ARENA
-        } else {
-            TraceRules::LEGACY
+fn model_rules(rule: RuleSetId) -> ModelRules {
+    let (rotation, link_bounds) = match rule {
+        RuleSetId::Quake | RuleSetId::QuakeWorld => {
+            (ModelRotation::TranslationOnly, RotatedLinkBounds::Unrotated)
         }
-    }
-
-    fn entity_rules(self) -> EntityTracePolicy {
-        match self {
-            Self::Quake => {
-                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake).1
-            }
-            Self::Quake2 => {
-                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake2).1
-            }
-            Self::Quake3 => {
-                qa_world::collision::trace_policy(qa_core::primitives::RuleSetId::Quake3).1
-            }
+        RuleSetId::Quake2 | RuleSetId::Quake2Rerelease => {
+            (ModelRotation::NegativeEuler, RotatedLinkBounds::MaxAbsCube)
         }
-    }
-
-    fn model_rules(self) -> ModelRules {
-        let (rotation, link_bounds) = match self {
-            Self::Quake => (ModelRotation::TranslationOnly, RotatedLinkBounds::Unrotated),
-            Self::Quake2 => (ModelRotation::NegativeEuler, RotatedLinkBounds::MaxAbsCube),
-            Self::Quake3 => (ModelRotation::TransposeBasis, RotatedLinkBounds::RadiusCube),
-        };
-        ModelRules {
-            rotation,
-            link_bounds,
-        }
-    }
-
-    pub fn words(self) -> usize {
-        if self == Self::Quake { 9 } else { WORDS }
+        RuleSetId::Quake3 => (ModelRotation::TransposeBasis, RotatedLinkBounds::RadiusCube),
+    };
+    ModelRules {
+        rotation,
+        link_bounds,
     }
 }
 
@@ -78,7 +54,9 @@ pub struct Fixture {
     pub geometries: Vec<GeometryId>,
     pub queries: Vec<brush::Query>,
     pub poses: Vec<Pose>,
-    pub rule: Rule,
+    pub rule: RuleSetId,
+    model_rules: ModelRules,
+    entity_rules: EntityTracePolicy,
 }
 
 fn word(data: &mut &[u8]) -> Result<u32, &'static str> {
@@ -104,7 +82,7 @@ fn vector(data: &mut &[u8]) -> Result<Vec3, &'static str> {
         f32::from_bits(word(data)?),
         f32::from_bits(word(data)?),
     ]);
-    if value.0.iter().all(|component| component.is_finite()) {
+    if value.is_finite() {
         Ok(value)
     } else {
         Err("nonfinite model fixture vector")
@@ -124,13 +102,7 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
     for _ in 0..plane_count {
         let normal = vector(&mut data)?;
         let distance = f32::from_bits(word(&mut data)?);
-        let axis = match word(&mut data)? {
-            0 => Some(Axis::X),
-            1 => Some(Axis::Y),
-            2 => Some(Axis::Z),
-            3 => None,
-            _ => return Err("invalid hull-model axis"),
-        };
+        let axis = brush::plane_axis(word(&mut data)?).ok_or("invalid hull-model axis")?;
         if !distance.is_finite() {
             return Err("nonfinite hull-model distance");
         }
@@ -183,7 +155,7 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
         let mins = vector(&mut data)?;
         let maxs = vector(&mut data)?;
         let point = vector(&mut data)?;
-        if map != 0 || model >= model_count || mins.0.iter().zip(maxs.0).any(|(a, b)| *a > b) {
+        if map != 0 || model >= model_count || !(Bounds { mins, maxs }).is_valid() {
             return Err("invalid hull-model query");
         }
         queries.push(brush::Query {
@@ -216,15 +188,16 @@ fn hulls(mut data: &[u8]) -> Result<brush::Fixture, &'static str> {
     })
 }
 
-pub fn load(rule: Rule, data: &[u8], mut pose_data: &[u8]) -> Result<Fixture, &'static str> {
+pub fn load(rule: RuleSetId, data: &[u8], mut pose_data: &[u8]) -> Result<Fixture, &'static str> {
+    let (trace_rules, entity_rules) = qa_world::collision::trace_policy(rule);
     let brush::Fixture {
         store,
         geometries,
         queries,
-    } = if rule == Rule::Quake {
+    } = if rule == RuleSetId::Quake {
         hulls(data)?
     } else {
-        brush::load(data, rule.trace_rules(), rule.entity_rules())?
+        brush::load(data, trace_rules, entity_rules)?
     };
     if word(&mut pose_data)? != 0x45534f50
         || word(&mut pose_data)? != 1
@@ -248,6 +221,8 @@ pub fn load(rule: Rule, data: &[u8], mut pose_data: &[u8]) -> Result<Fixture, &'
         queries,
         poses,
         rule,
+        model_rules: model_rules(rule),
+        entity_rules,
     })
 }
 
@@ -262,10 +237,10 @@ impl Fixture {
             query.trace,
             pose.origin,
             pose.angles,
-            self.rule.model_rules(),
+            self.model_rules,
             scratch,
         );
-        let point = if self.rule == Rule::Quake {
+        let point = if self.rule == RuleSetId::Quake {
             Contents::EMPTY
         } else {
             self.store.point_contents_transformed(
@@ -274,12 +249,12 @@ impl Fixture {
                 query.point,
                 pose.origin,
                 pose.angles,
-                self.rule.model_rules(),
-                self.rule.entity_rules(),
+                self.model_rules,
+                self.entity_rules,
             )
         };
         let mut row = brush::result(trace, point);
-        if self.rule == Rule::Quake {
+        if self.rule == RuleSetId::Quake {
             // Q1 trace_t has no brush contents/surface fields. Match the nine
             // original fields used by check_hull_trace, including media flags.
             row[8] = u32::from(trace.start_solid)

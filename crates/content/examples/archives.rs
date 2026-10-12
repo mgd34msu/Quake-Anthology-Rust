@@ -1,9 +1,10 @@
+use qa_platform::files::ReadFile;
 #[path = "support/retail.rs"]
 mod retail;
 use qa_content::vfs::Vfs;
 use qa_formats::archive::Archive;
 use retail::{chromium_resources, visit};
-use std::{fs::File, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 fn main() -> Result<(), String> {
     let mut archive_reader = qa_formats::archive::ArchiveReader::default();
@@ -26,7 +27,7 @@ fn main() -> Result<(), String> {
             continue;
         }
         let archive = Arc::new(
-            Archive::parse(Arc::new(File::open(path).map_err(|e| e.to_string())?))
+            Archive::parse(Arc::new(ReadFile::open(path).map_err(|e| e.to_string())?))
                 .map_err(|e| format!("{}: {e:?}", path.display()))?,
         );
         members += archive.entries.len();

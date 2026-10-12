@@ -1,6 +1,6 @@
 use qa_core::names::NameTable;
+use qa_platform::files::{self, EntryKind, ReadFile};
 use std::{
-    fs::File,
     io,
     path::{Path, PathBuf},
     sync::{
@@ -48,7 +48,7 @@ struct Entry {
 }
 
 enum EntrySource {
-    Loose(Arc<File>),
+    Loose(Arc<ReadFile>),
     Archive { archive: Arc<Archive>, entry: usize },
 }
 
@@ -215,27 +215,24 @@ impl Vfs {
         priority: i32,
         settings_only: bool,
     ) -> Result<MountId, VfsError> {
-        let root = path.canonicalize()?;
+        let root = files::canonicalize(path)?;
         let mut pending = vec![root.clone()];
         let mut entries = Vec::new();
         while let Some(directory) = pending.pop() {
-            let mut children = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-            children.sort_unstable_by_key(|child| child.file_name());
-            for child in children {
-                let kind = child.file_type()?;
-                if kind.is_dir() {
+            for child in files::directory_entries(directory)? {
+                if child.kind == EntryKind::Directory {
                     if !settings_only
-                        || !(child.file_name().eq_ignore_ascii_case("assets")
-                            || child.file_name().eq_ignore_ascii_case("saves"))
+                        || !(child.name.eq_ignore_ascii_case("assets")
+                            || child.name.eq_ignore_ascii_case("saves"))
                     {
-                        pending.push(child.path());
+                        pending.push(child.path);
                     }
                     continue;
                 }
-                if !kind.is_file() {
+                if child.kind != EntryKind::File {
                     continue;
                 }
-                let full = child.path();
+                let full = child.path;
                 if settings_only
                     && !full.extension().is_some_and(|extension| {
                         extension.eq_ignore_ascii_case("cfg")
@@ -251,8 +248,8 @@ impl Vfs {
                     .replace(std::path::MAIN_SEPARATOR, "/")
                     .into_bytes();
                 let normalized = normalize(&name)?;
-                let file = Arc::new(File::open(full)?);
-                let length = file.metadata()?.len();
+                let file = Arc::new(ReadFile::open(full)?);
+                let length = file.length()?;
                 entries.push(Entry {
                     mount: self.mounts.len(),
                     name: normalized.into_boxed_slice(),
@@ -458,7 +455,8 @@ impl Vfs {
         let count = destination
             .len()
             .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        qa_formats::archive::read_exact_at(file, offset, &mut destination[..count])?;
+        file.read_exact_at(offset, &mut destination[..count])
+            .map_err(FormatError::from_io)?;
         Ok(count)
     }
 
@@ -480,7 +478,7 @@ impl Vfs {
 
     /// The product mount loader reuses loose archive handles already opened by
     /// mount_directory. This is a cold operation; it never reopens a package.
-    pub fn source_file(&self, reference: FileRef) -> Option<Arc<File>> {
+    pub fn source_file(&self, reference: FileRef) -> Option<Arc<ReadFile>> {
         match &self.entry(reference).ok()?.source {
             EntrySource::Loose(file) => Some(Arc::clone(file)),
             EntrySource::Archive { .. } => None,

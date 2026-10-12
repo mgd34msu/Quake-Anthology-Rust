@@ -335,7 +335,6 @@ pub(super) fn commands_move_a_native_client_once() {
                                 samples: vec![12000; 22050],
                                 loop_start: None,
                             },
-                            rules,
                         )
                     })
                     .collect(),

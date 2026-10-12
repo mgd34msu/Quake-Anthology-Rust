@@ -7,3 +7,4 @@ license.workspace = true
 [dependencies]
 qa-core = { path = "../core" }
 qa-formats = { path = "../formats" }
+qa-platform = { path = "../platform" }

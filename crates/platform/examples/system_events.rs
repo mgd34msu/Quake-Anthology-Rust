@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let timer = Stopwatch::start();
         for kind in [
             EventKind::Key {
-                device: DeviceId::Keyboard,
+                device: DeviceId::Keyboard(0),
                 code: 26,
                 symbol: 119,
                 down: true,
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 value: 16384,
             },
             EventKind::Text {
-                device: DeviceId::Keyboard,
+                device: DeviceId::Keyboard(0),
                 text: "λ",
             },
         ] {

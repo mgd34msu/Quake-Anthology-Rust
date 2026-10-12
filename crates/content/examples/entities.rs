@@ -13,7 +13,7 @@ fn main() -> Result<(), String> {
     let vfs = assets::mount(Path::new(&root))?;
     let evidence = std::env::args_os().nth(2).map(std::path::PathBuf::from);
     if let Some(ref path) = evidence {
-        std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+        qa_platform::files::create_dir_all(path).map_err(|e| e.to_string())?;
     }
     let mut selected = BTreeMap::new();
     let mut maps = 0;
@@ -41,8 +41,11 @@ fn main() -> Result<(), String> {
                         .or_insert(0usize) += 1;
                     if let Some(ref root) = evidence {
                         let stem = format!("{}-{}", syntax as u8, maps);
-                        std::fs::write(root.join(format!("{stem}.ent")), bsp.bytes(Lump::Entities))
-                            .map_err(|e| e.to_string())?;
+                        qa_platform::files::write(
+                            root.join(format!("{stem}.ent")),
+                            bsp.bytes(Lump::Entities),
+                        )
+                        .map_err(|e| e.to_string())?;
                         let mut encoded = Vec::new();
                         for record in &lump.records {
                             encoded.extend(((record.end - record.start) as u32).to_le_bytes());
@@ -57,7 +60,7 @@ fn main() -> Result<(), String> {
                                 }
                             }
                         }
-                        std::fs::write(root.join(format!("{stem}.raw")), encoded)
+                        qa_platform::files::write(root.join(format!("{stem}.raw")), encoded)
                             .map_err(|e| e.to_string())?;
                     }
                 }

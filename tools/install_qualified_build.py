@@ -100,18 +100,14 @@ def qualify_smoke(build, profile, evidence, content, movement=False):
     return metadata, summary
 
 
-def smoke_text(metadata, qualification):
-    draw_counts = "\n".join(f"{row['map']} {row['renderer']}: {row['surfaces']} surfaces presented, "
-                            f"{row['rejected']} rejected" for row in qualification["draws"])
-    movement = ""
-    if qualification.get("movement_checked"):
-        movement = "Real held/repeated key input moved the authoritative player through local QW28 packets in all six runs.\n"
-    return f"""Quake Anthology Rust: current development build
-Commit: {metadata['commit']}
-Built at UTC: {metadata['built_at_utc']}
-Build time: {metadata['build_time_seconds']:.2f} seconds
-CPU target: {metadata['target_cpu']}; normal build, proof input disabled.
-
+def installation_text(metadata, qualification, performance, owner_smoke):
+    if owner_smoke:
+        draw_counts = "\n".join(f"{row['map']} {row['renderer']}: {row['surfaces']} surfaces presented, "
+                                f"{row['rejected']} rejected" for row in qualification["draws"])
+        movement = ""
+        if qualification.get("movement_checked"):
+            movement = "Real held/repeated key input moved the authoritative player through local QW28 packets in all six runs.\n"
+        verified = f"""Qualification scope: owner-authorized render smoke; gameplay and timing NOT QUALIFIED.
 Verified: Q1 start, Q2 base1 and Q3 q3dm1 load and render on GL and CPU
 at 640x400, with copied saved settings, 300 frames and exit 0 for each.
 Runs use owned Xvfb, forced X11, dummy audio and private HOME.
@@ -120,12 +116,33 @@ GL driver identity is in the per-run logs; these runs do not qualify GL speed.
 First presented-frame counters, including current rendering limits:
 {draw_counts}
 
-Known gaps: native hosts and live entity-memory integration, entity/player
-snapshot delta tables, native sign-on and live legacy network interoperability,
-Q3 reliable command delivery and stock HUD drawing. Gameplay module lifecycle,
-monsters, weapons, game audio and save/load remain unfinished or unqualified.
-QuakeC/QVM reader/interpreter component checks do not prove retail gameplay.
 This owner-authorized smoke install is not gameplay or timing qualification.
+"""
+    else:
+        workloads = "\n".join(f"{row['map']} {row['renderer']} {row['resolution']}"
+                              for row in performance["workloads"])
+        verified = f"""Qualification scope: gameplay and comparable gameplay timings.
+Verified: this exact candidate reached gameplay with copied saved settings
+on a private display, using captured private audio, and quit normally.
+The timing guard passed against commit {performance['baseline_commit']},
+with at most {performance['maximum_regression_percent']}% regression in each checked median/p99 stage.
+Compared workloads:
+{workloads}
+
+This qualification covers the recorded workloads only; it does not prove
+complete campaigns, mods, native modules or live legacy interoperability.
+"""
+    return f"""Quake Anthology Rust: current development build
+Commit: {metadata['commit']}
+Built at UTC: {metadata['built_at_utc']}
+Build time: {metadata['build_time_seconds']:.2f} seconds
+CPU target: {metadata['target_cpu']}; normal build, proof input disabled.
+
+{verified}
+Known gaps and unqualified areas: complete native hosts/module compatibility,
+live delta channel and legacy network interoperability, original stock HUD
+drawing, campaign gameplay, mods, game audio and save/load. Component checks
+and the recorded qualification do not establish complete retail acceptance.
 The owner's original saved profile is preserved.
 
 Run from the qfiles directory:
@@ -191,13 +208,12 @@ def install(build, destination, profile, evidence, arguments, timings=None, base
     staged = stage(binary, destination, qualification["candidate_identity"])
     staged_notes = None
     try:
-        if owner_smoke:
-            staged_notes = stage_text(smoke_text(metadata, qualification), destination.with_suffix(".txt"))
+        staged_notes = stage_text(installation_text(metadata, qualification, performance, owner_smoke),
+                                  destination.with_suffix(".txt"))
         require(identity(binary) == qualification["candidate_identity"], "qualified candidate changed before install")
         require(original_profile == {str(p.relative_to(profile)): p.read_bytes() for p in settings(profile)}, "profile changed before install")
         os.replace(staged, destination)
-        if staged_notes is not None:
-            os.replace(staged_notes, destination.with_suffix(".txt"))
+        os.replace(staged_notes, destination.with_suffix(".txt"))
         require(equal_files(binary, destination), "installed bytes differ")
         receipt = {"result": "PASS", "commit": metadata["commit"], "build": metadata,
                    "qualification_scope": "render_smoke" if owner_smoke else "gameplay",

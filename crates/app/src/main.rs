@@ -207,13 +207,15 @@ fn run() -> Result<(), String> {
                     "{{\"event\":\"udp_listen\",\"socket\":{socket},\"address\":\"{address}\"}}"
                 );
             }
-            "--controller-seat" | "--mouse-seat" => {
+            "--controller-seat" | "--mouse-seat" | "--keyboard-seat" => {
                 let value = args.next().ok_or("device assignment needs instance:seat")?;
                 let (device, seat) = value
                     .split_once(':')
                     .ok_or("device assignment needs instance:seat")?;
                 let id = if arg == "--mouse-seat" {
                     DeviceId::Mouse(device.parse().map_err(|_| "invalid mouse instance")?)
+                } else if arg == "--keyboard-seat" {
+                    DeviceId::Keyboard(device.parse().map_err(|_| "invalid keyboard instance")?)
                 } else {
                     DeviceId::Controller(device.parse().map_err(|_| "invalid controller instance")?)
                 };

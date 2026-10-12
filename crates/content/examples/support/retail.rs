@@ -1,15 +1,12 @@
-use std::{
-    fs::File,
-    io::Read,
-    path::{Path, PathBuf},
-};
+use qa_platform::files::ReadFile;
+use std::path::{Path, PathBuf};
 
 // Inventory only: Chromium resource packs share the .pak suffix but have
 // numeric resource IDs, not Quake asset paths. They are not engine mounts.
 pub fn chromium_resources(path: &Path) -> std::io::Result<Option<u32>> {
-    let mut file = File::open(path)?;
+    let file = ReadFile::open(path)?;
     let mut header = [0; 9];
-    if file.read_exact(&mut header).is_err()
+    if file.read_exact_at(0, &mut header).is_err()
         || u32::from_le_bytes(header[..4].try_into().unwrap()) != 4
         || header[8] > 2
     {
@@ -20,12 +17,15 @@ pub fn chromium_resources(path: &Path) -> std::io::Result<Option<u32>> {
         return Ok(None);
     }
     let start = 9 + u64::from(count + 1) * 6;
-    let size = file.metadata()?.len();
+    let size = file.length()?;
     let mut previous_id = None;
     let mut previous_offset = start;
     for index in 0..=count {
         let mut row = [0; 6];
-        if file.read_exact(&mut row).is_err() {
+        if file
+            .read_exact_at(9 + u64::from(index) * 6, &mut row)
+            .is_err()
+        {
             return Ok(None);
         }
         let id = u16::from_le_bytes(row[..2].try_into().unwrap());
@@ -47,10 +47,9 @@ pub fn chromium_resources(path: &Path) -> std::io::Result<Option<u32>> {
 }
 
 pub fn visit(root: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
+    for entry in qa_platform::files::directory_entries(root)? {
+        let path = entry.path;
+        if entry.kind == qa_platform::files::EntryKind::Directory {
             visit(&path, files)?;
         } else if path
             .extension()

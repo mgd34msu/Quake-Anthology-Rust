@@ -213,6 +213,7 @@ version = "0.1.0"
 dependencies = [
  "qa-core",
  "qa-formats",
+ "qa-platform",
 ]
 
 [[package]]
@@ -229,6 +230,7 @@ dependencies = [
  "lewton",
  "png",
  "qa-core",
+ "qa-platform",
  "zune-core",
  "zune-jpeg",
 ]
@@ -301,6 +303,7 @@ dependencies = [
  "qa-content",
  "qa-core",
  "qa-formats",
+ "qa-platform",
  "qa-world",
 ]
 

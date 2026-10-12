@@ -3,6 +3,7 @@ mod clock;
 mod content;
 mod cpu;
 mod events;
+pub mod files;
 pub mod native;
 mod profile;
 mod sdl;

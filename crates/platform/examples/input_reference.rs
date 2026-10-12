@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SysEvent {
                     time: EventTime((time + u64::from(offset)) * 1_000_000),
                     kind: EventKind::Key {
-                        device: DeviceId::Keyboard,
+                        device: DeviceId::Keyboard(0),
                         code,
                         symbol: 0,
                         down,

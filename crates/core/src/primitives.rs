@@ -1,5 +1,8 @@
 //! Engine-owned values. Game formats and module ABIs convert at their boundaries.
 
+/// Fixed guest mapping granule shared by native images and owned child memory.
+pub const NATIVE_PAGE_BYTES: usize = 4096;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IndexSpan {
     pub first: u32,
@@ -873,6 +876,8 @@ impl DamageFlags {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SoundEvent {
     pub sound: SoundId,
+    /// Spatial behavior belongs to this emission, independently of shared PCM.
+    pub spatial_rules: RuleSetId,
     pub entity: Option<EntityId>,
     pub channel: u16,
     pub position: Vec3,

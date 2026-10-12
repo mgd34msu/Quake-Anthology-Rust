@@ -1,4 +1,5 @@
-use std::{fs::File, path::Path};
+use qa_platform::files::ReadFile;
+use std::path::Path;
 
 pub fn mount(root: &Path) -> Result<qa_content::vfs::Vfs, String> {
     use qa_formats::archive::Archive;
@@ -15,7 +16,7 @@ pub fn mount(root: &Path) -> Result<qa_content::vfs::Vfs, String> {
             continue;
         }
         let archive = Arc::new(
-            Archive::parse(Arc::new(File::open(path).map_err(|e| e.to_string())?))
+            Archive::parse(Arc::new(ReadFile::open(path).map_err(|e| e.to_string())?))
                 .map_err(|e| format!("{}: {e:?}", path.display()))?,
         );
         vfs.mount_archive(path, rank as i32, archive)

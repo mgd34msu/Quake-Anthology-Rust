@@ -14,7 +14,8 @@ pub struct Script {
 
 impl Script {
     pub fn load(path: &str) -> Result<Self, String> {
-        let content = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let content =
+            qa_platform::files::read_to_string(path).map_err(|error| error.to_string())?;
         let mut events = Vec::new();
         for line in content
             .lines()

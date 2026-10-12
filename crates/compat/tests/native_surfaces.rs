@@ -1,5 +1,5 @@
 use qa_compat::{memory::ModuleMemory, surfaces::NativeSurfaces};
-use qa_core::primitives::{Bounds, SurfaceFlags, SurfaceId};
+use qa_core::primitives::{Bounds, GeometryId, SurfaceFlags, SurfaceId};
 use qa_world::collision::{
     CollisionStore,
     brushes::BrushTree,
@@ -89,5 +89,110 @@ fn native_surfaces_reserve_exact_load_rows_and_keep_both_q2_layouts() {
         // A too-small view is rejected at this external memory boundary.
         let mut short = ModuleMemory::load(base, stride * 3 - 1, &[]).unwrap();
         assert!(NativeSurfaces::load(base, &store, wide, &mut short).is_err());
+    }
+}
+
+#[test]
+fn native_surfaces_keep_geometry_offsets_and_reject_reused_generations() {
+    let load = |store: &mut CollisionStore, names: &[&[u8]]| -> GeometryId {
+        store
+            .load_brushes(
+                vec![],
+                vec![],
+                SurfaceTable {
+                    records: names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| SurfaceInput {
+                            name,
+                            material: b"",
+                            flags: SurfaceFlags::from_q2(0),
+                            value: index as i32,
+                            source_index: index as u32,
+                        })
+                        .collect(),
+                    sides: vec![],
+                },
+                BrushTree::direct(0).unwrap(),
+                vec![Bounds::default()],
+            )
+            .unwrap()
+    };
+    for wide in [false, true] {
+        let mut store = CollisionStore::new();
+        let first = load(&mut store, &[b"first-a", b"first-b"]);
+        let second = load(&mut store, &[b"second"]);
+        let stride = if wide { 60 } else { 24 };
+        let base = 0x3000_0000;
+        assert_eq!(NativeSurfaces::byte_length(&store, wide), Some(stride * 4));
+        let mut memory = ModuleMemory::load(base, stride * 4, &[]).unwrap();
+        let native = NativeSurfaces::load(base, &store, wide, &mut memory).unwrap();
+        let second_address = native
+            .address(Some(SurfaceId {
+                geometry: second,
+                index: 0,
+            }))
+            .unwrap();
+        assert_eq!(second_address, base + (stride * 3) as u64);
+        assert_eq!(memory.cstring(second_address).unwrap(), b"second");
+        assert_eq!(
+            native
+                .address(Some(SurfaceId {
+                    geometry: first,
+                    index: 1
+                }))
+                .unwrap(),
+            base + (stride * 2) as u64
+        );
+        assert!(
+            native
+                .address(Some(SurfaceId {
+                    geometry: second,
+                    index: 1
+                }))
+                .is_err()
+        );
+
+        assert!(store.remove(first));
+        let replacement = load(&mut store, &[b"replacement"]);
+        assert_eq!(replacement.slot, first.slot);
+        assert_ne!(replacement.generation, first.generation);
+        assert!(
+            native
+                .address(Some(SurfaceId {
+                    geometry: replacement,
+                    index: 0
+                }))
+                .is_err()
+        );
+        let new_base = base + 0x10000;
+        assert_eq!(NativeSurfaces::byte_length(&store, wide), Some(stride * 3));
+        let mut memory = ModuleMemory::load(new_base, stride * 3, &[]).unwrap();
+        let native = NativeSurfaces::load(new_base, &store, wide, &mut memory).unwrap();
+        assert!(
+            native
+                .address(Some(SurfaceId {
+                    geometry: first,
+                    index: 0
+                }))
+                .is_err()
+        );
+        let replacement_address = native
+            .address(Some(SurfaceId {
+                geometry: replacement,
+                index: 0,
+            }))
+            .unwrap();
+        assert_eq!(replacement_address, new_base + stride as u64);
+        assert_eq!(memory.cstring(replacement_address).unwrap(), b"replacement");
+        let second_address = native
+            .address(Some(SurfaceId {
+                geometry: second,
+                index: 0,
+            }))
+            .unwrap();
+        assert_eq!(second_address, new_base + (stride * 2) as u64);
+        assert_eq!(memory.cstring(second_address).unwrap(), b"second");
+        assert_eq!(native.address(None).unwrap(), new_base);
     }
 }

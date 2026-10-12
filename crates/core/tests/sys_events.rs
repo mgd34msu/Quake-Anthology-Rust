@@ -1,6 +1,36 @@
 use qa_core::sys_events::{EventKind, EventTime, QueueError, SysEvent, SysEventQueue};
 
 #[test]
+fn physical_id_removal_and_capture_transitions_use_the_same_fifo() {
+    use qa_core::sys_events::DeviceId;
+    let mut queue = SysEventQueue::load(4, 1).unwrap();
+    let events = [
+        EventKind::DeviceRemoved(DeviceId::Keyboard(17)),
+        EventKind::MouseCapture(false),
+        EventKind::DeviceRemoved(DeviceId::Mouse(28)),
+        EventKind::Time,
+    ];
+    for kind in events {
+        queue
+            .push(SysEvent {
+                time: EventTime(42),
+                kind,
+            })
+            .unwrap();
+    }
+    for kind in events {
+        assert_eq!(
+            queue.pop(),
+            Some(SysEvent {
+                time: EventTime(42),
+                kind
+            })
+        );
+    }
+    assert!(queue.is_empty());
+}
+
+#[test]
 fn seconds_preserve_the_native_duration_division() {
     for ns in [
         0,
@@ -135,7 +165,7 @@ fn text_payload_is_owned_atomic_and_keeps_the_final_time_slot() {
     let mut text = String::from("λ🦀");
     fn kind(text: &str) -> EventKind<'_> {
         EventKind::Text {
-            device: DeviceId::Keyboard,
+            device: DeviceId::Keyboard(0),
             text,
         }
     }

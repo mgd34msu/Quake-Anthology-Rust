@@ -147,13 +147,10 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
         t.require(b"}")?;
         reserve(&mut mesh.vertices, vertices)?;
         for range in &mesh.vertex_weights {
-            let end = (range.first as usize)
-                .checked_add(range.count as usize)
-                .ok_or(FormatError::InvalidRange)?;
-            let weights = mesh
-                .weights
-                .get(range.first as usize..end)
-                .ok_or(FormatError::InvalidRange)?;
+            if !range.fits(mesh.weights.len()) {
+                return Err(FormatError::InvalidRange);
+            }
+            let weights = &mesh.weights[range.range()];
             let mut position = Vec3::default();
             for w in weights {
                 let bone = &m.bones[w.bone as usize];
@@ -173,7 +170,7 @@ pub(super) fn load<'a>(bytes: &'a [u8], mut m: Model<'a>) -> Result<Model<'a>, F
     if t.next()?.is_some() {
         return Err(FormatError::InvalidValue);
     }
-    if m.bounds.mins.0[0] > m.bounds.maxs.0[0] {
+    if !m.bounds.is_valid() {
         m.bounds = Bounds::default();
     }
     m.frames.push(Frame {

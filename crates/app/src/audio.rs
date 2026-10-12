@@ -167,7 +167,7 @@ pub fn load_bank(
         };
         let pcm = qa_formats::sound::decode(&bytes, policy)
             .map_err(|e| format!("sound decode: {e:?}"))?;
-        sources.push((path, pcm, rules));
+        sources.push((path, pcm));
     }
     let rate = NonZeroU32::new(44100).ok_or("invalid device rate")?;
     let bank = Arc::new(Bank::load(rate, sources)?);
@@ -179,7 +179,7 @@ pub fn play(
     _: &mut Console<Runtime>,
     runtime: &mut Runtime,
     args: &qa_console::command_text::Arguments<'_>,
-    _: Context,
+    context: Context,
 ) -> Result<(), CommandError> {
     if args.len() < 2 {
         return Err(CommandError::Usage);
@@ -191,6 +191,7 @@ pub fn play(
                 qa_core::events::OutputTarget::Presentation,
                 FrameEvent::Sound(SoundEvent {
                     sound,
+                    spatial_rules: context.source,
                     entity: None,
                     channel: 0,
                     position: Vec3::default(),

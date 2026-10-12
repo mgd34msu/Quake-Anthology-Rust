@@ -138,6 +138,16 @@ fn q3_vm_cvars_share_registry_and_match_native_layout_and_reference_rows() {
             );
             assert_eq!(call.memory.read_word(base + 268).unwrap(), 19);
             assert_eq!(call.memory.cstring(base + 272).unwrap(), b"19.5");
+            for (text, integer) in [
+                ("0xFF", 0),
+                ("214748364999", i32::MAX),
+                ("-214748364999", i32::MIN),
+            ] {
+                call.services.cvars.force_write(view, text).unwrap();
+                invoke(table, &mut call, &mut unknown, update, &[base + 256]).unwrap();
+                assert_eq!(call.memory.read_word(base + 268).unwrap(), integer);
+                assert_eq!(call.memory.cstring(base + 272).unwrap(), text.as_bytes());
+            }
             // Invalid native handles and extents reject before touching the row.
             call.memory.write_word(base + 256, -1).unwrap();
             let before = call.memory.read(base + 256, 272).unwrap().to_vec();

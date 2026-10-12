@@ -29,6 +29,8 @@ pub trait FrameSource {
     /// Starts measurement and samples platform time without collecting events.
     fn begin_frame(&mut self) -> Duration;
     fn poll_events(&mut self, queue: &mut SysEventQueue);
+    /// Selection only; SDL applies it during an existing physical intake.
+    fn request_mouse_capture(&mut self, _requested: bool) {}
     /// Waits on time only. Physical intake occurs in the two poll_events calls.
     fn wait_time(&mut self, remaining: Duration) -> Duration;
     fn elapsed(&self) -> Duration;
@@ -79,6 +81,9 @@ impl FrameSource for LiveFrame<'_> {
     fn poll_events(&mut self, queue: &mut SysEventQueue) {
         self.pump.poll_events(self.window, queue);
     }
+    fn request_mouse_capture(&mut self, requested: bool) {
+        self.window.request_mouse_capture(requested);
+    }
     fn wait_time(&mut self, remaining: Duration) -> Duration {
         self.pump.wait_time(remaining)
     }
@@ -126,6 +131,7 @@ pub struct FrameHost {
     notify_time: CvarHandle,
     center_time: CvarHandle,
     volume: CvarHandle,
+    mouse_enabled: CvarHandle,
     previous: Option<EventTime>,
     timeline: Timeline,
     providers: Box<[Provider]>,
@@ -180,6 +186,7 @@ impl FrameHost {
         }
         console.register("play", crate::audio::play);
         let volume = console.cvars.find("s_volume").ok_or("missing s_volume")?;
+        let mouse_enabled = console.cvars.find("in_mouse").ok_or("missing in_mouse")?;
         let developer = console.cvars.find("developer").ok_or("missing developer")?;
         let maxfps = console
             .cvars
@@ -231,6 +238,7 @@ impl FrameHost {
             notify_time,
             center_time,
             volume,
+            mouse_enabled,
             previous: None,
             timeline,
             providers: providers.into_boxed_slice(),
@@ -262,10 +270,12 @@ impl FrameHost {
         }
         // Owner ruling: both intake points physically poll SDL/stdin/UDP, and
         // neither the cap wait nor any other frame phase performs intake.
+        source.request_mouse_capture(self.mouse_capture_requested());
         source.poll_events(&mut self.queue);
         self.drain(&mut result);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
+            source.request_mouse_capture(false);
             self.shutdown_modules();
             self.dispatch_output(source, &mut result);
             return result;
@@ -316,11 +326,13 @@ impl FrameHost {
             self.runtime.send_local_snapshot(*id, server_time);
         }
         // Immediate server->client packets take this path in the same frame.
+        source.request_mouse_capture(self.mouse_capture_requested());
         source.poll_events(&mut self.queue);
         self.drain(&mut result);
         self.previous = Some(server_time);
         self.console.execute_frame(&mut self.runtime);
         if self.runtime.quit {
+            source.request_mouse_capture(false);
             self.shutdown_modules();
             self.dispatch_output(source, &mut result);
             return result;
@@ -371,6 +383,22 @@ impl FrameHost {
 
     pub fn native_input_policy_active(&self) -> bool {
         self.runtime.collision.is_some() && self.local_clients.iter().any(Option::is_some)
+    }
+    fn mouse_capture_requested(&self) -> bool {
+        !self.runtime.quit
+            && self.console.cvars.integer(self.mouse_enabled) != 0
+            && self
+                .local_worlds
+                .iter()
+                .zip(self.local_clients)
+                .any(|(world, client)| {
+                    world.is_some()
+                        && client
+                            .and_then(|id| self.runtime.server.clients.get(id.0 as usize))
+                            .is_some_and(|row| {
+                                row.connection == Some(qa_session::clients::Connection::Local)
+                            })
+                })
     }
 
     fn dispatch_output(&mut self, source: &mut impl FrameSource, result: &mut FrameResult) {
@@ -666,6 +694,7 @@ fn event_name(kind: EventKind<'_>) -> &'static str {
         EventKind::ControllerButton { .. } => "controller_button",
         EventKind::DeviceRemoved(_) => "device_removed",
         EventKind::Focus(_) => "focus",
+        EventKind::MouseCapture(_) => "mouse_capture",
         EventKind::Quit => "quit",
         EventKind::ConsoleLine(_) => "console_line",
         EventKind::Packet { .. } => "packet",

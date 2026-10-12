@@ -9,3 +9,6 @@ qa-core = { path = "../core" }
 qa-formats = { path = "../formats" }
 qa-world = { path = "../world" }
 qa-content = { path = "../content" }
+
+[dev-dependencies]
+qa-platform = { path = "../platform" }

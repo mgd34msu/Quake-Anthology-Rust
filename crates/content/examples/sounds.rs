@@ -10,7 +10,7 @@ fn main() -> Result<(), String> {
     let root = std::env::args_os().nth(1).ok_or("qfiles root required")?;
     let evidence = std::env::args_os().nth(2).map(std::path::PathBuf::from);
     if let Some(ref path) = evidence {
-        std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+        qa_platform::files::create_dir_all(path).map_err(|e| e.to_string())?;
     }
     let vfs = assets::mount(Path::new(&root))?;
     let mut counts = BTreeMap::new();
@@ -40,7 +40,7 @@ fn main() -> Result<(), String> {
                     let wav = Wav::parse(&bytes, WavPolicy::Quake).map_err(|e| format!("{e:?}"))?;
                     if wav.channels == qa_core::primitives::PcmChannels::Mono && wav.width <= 2 {
                         if let Some(ref root) = evidence {
-                            std::fs::write(root.join(format!("{ambient}.wav")), &bytes)
+                            qa_platform::files::write(root.join(format!("{ambient}.wav")), &bytes)
                                 .map_err(|e| e.to_string())?;
                             let info = format!(
                                 "{} {} {} {} {} {}\n",
@@ -51,7 +51,7 @@ fn main() -> Result<(), String> {
                                 wav.loop_start.map_or(-1, |i| i as i64),
                                 wav.data_offset
                             );
-                            std::fs::write(root.join(format!("{ambient}.info")), info)
+                            qa_platform::files::write(root.join(format!("{ambient}.info")), info)
                                 .map_err(|e| e.to_string())?;
                         }
                         ambient += 1;

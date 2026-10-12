@@ -2,13 +2,27 @@ name: Behaviour checks
 on: [push, pull_request]
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+      - name: Install SDL3 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libgl1-mesa-dev libegl1-mesa-dev libudev-dev
+      - name: Build SDL3 3.4.16
+        run: |
+          curl --fail --location --retry 3 https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-3.4.16.tar.gz --output "$RUNNER_TEMP/SDL3.tar.gz"
+          tar -xzf "$RUNNER_TEMP/SDL3.tar.gz" -C "$RUNNER_TEMP"
+          sdl_prefix="$RUNNER_TEMP/sdl3"
+          cmake -S "$RUNNER_TEMP/SDL3-3.4.16" -B "$RUNNER_TEMP/sdl3-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$sdl_prefix" -DCMAKE_INSTALL_LIBDIR=lib -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_EXAMPLES=OFF
+          cmake --build "$RUNNER_TEMP/sdl3-build" --parallel 2
+          cmake --install "$RUNNER_TEMP/sdl3-build"
+          echo "LIBRARY_PATH=$sdl_prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$sdl_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$sdl_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
       - run: python3 tools/build.py --check-only
       - run: python3 -m unittest discover -s tools/tests
       - run: python3 tools/verify_rules.py --evidence "$RUNNER_TEMP/rule-fixtures"

@@ -4,7 +4,7 @@ use qa_core::{
     sys_events::EventTime,
 };
 use qa_input::{InputPolicy, UserCmdBuilder};
-use std::{hint::black_box, time::Duration};
+use std::hint::black_box;
 #[cfg(any(debug_assertions, feature = "allocation-tracking"))]
 #[global_allocator]
 static ALLOCATOR: qa_platform::allocations::CountingAllocator =
@@ -79,7 +79,7 @@ fn heap_input() -> Result<(), Box<dyn std::error::Error>> {
     input.seed(EventTime(0));
     let mut sink = Sink;
     let devices = [
-        DeviceId::Keyboard,
+        DeviceId::Keyboard(0),
         DeviceId::Controller(1),
         DeviceId::Controller(2),
         DeviceId::Controller(3),

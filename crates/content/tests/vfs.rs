@@ -1,18 +1,19 @@
 use qa_content::vfs::*;
 use qa_formats::archive::Archive;
-use std::{fs::File, sync::Arc};
+use qa_platform::files::ReadFile;
+use std::sync::Arc;
 
 struct Fixture(std::path::PathBuf);
 impl Fixture {
     fn new(name: &str) -> Self {
         let path = std::env::temp_dir().join(format!("qa-rust-vfs-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
+        qa_platform::files::create_dir_all(&path).unwrap();
         Self(path)
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
+        qa_platform::files::remove_dir_all(&self.0).unwrap();
     }
 }
 
@@ -49,12 +50,12 @@ fn profile_mount_filters_binary_assets_and_preserves_read_authority() {
         "SaVeS/hidden.cfg",
     ] {
         let path = root.0.join(name);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"saved").unwrap();
+        qa_platform::files::create_dir_all(path.parent().unwrap()).unwrap();
+        qa_platform::files::write(path, b"saved").unwrap();
     }
     let product = root.0.join("product");
-    std::fs::create_dir_all(product.join("q1/id1")).unwrap();
-    std::fs::write(product.join("q1/id1/view.JSON"), b"impostor").unwrap();
+    qa_platform::files::create_dir_all(product.join("q1/id1")).unwrap();
+    qa_platform::files::write(product.join("q1/id1/view.JSON"), b"impostor").unwrap();
     let mut vfs = Vfs::default();
     let profile = vfs.mount_settings_directory(&root.0, -100).unwrap();
     vfs.mount_directory(&product, 0).unwrap();
@@ -96,8 +97,8 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
     let mut vfs = Vfs::default();
     for (product, map) in [("id1", "e1m1"), ("baseq2", "base1"), ("baseq3", "q3dm1")] {
         let directory = root.0.join(product);
-        std::fs::create_dir_all(directory.join("maps")).unwrap();
-        std::fs::write(directory.join("maps").join(format!("{map}.bsp")), map).unwrap();
+        qa_platform::files::create_dir_all(directory.join("maps")).unwrap();
+        qa_platform::files::write(directory.join("maps").join(format!("{map}.bsp")), map).unwrap();
         vfs.mount_directory(&directory, 0).unwrap();
     }
     let reference = vfs.open(b"MAPS\\E1M1.BSP").unwrap();
@@ -119,8 +120,8 @@ fn three_products_and_mod_share_one_index_and_numeric_reads_keep_origin() {
         assert!(vfs.open(map).is_some());
     }
     let mod_dir = root.0.join("mod");
-    std::fs::create_dir_all(mod_dir.join("maps")).unwrap();
-    std::fs::write(mod_dir.join("maps/E1M1.BSP"), b"mod").unwrap();
+    qa_platform::files::create_dir_all(mod_dir.join("maps")).unwrap();
+    qa_platform::files::write(mod_dir.join("maps/E1M1.BSP"), b"mod").unwrap();
     let mod_id = vfs.mount_directory(&mod_dir, 100).unwrap();
     let modified = vfs.open(b"maps/e1m1.bsp").unwrap();
     assert_ne!(reference, modified);
@@ -161,12 +162,12 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
         bytes
     }
     let skin = b"models/monsters/tank/../ctank/skin.pcx";
-    std::fs::write(
+    qa_platform::files::write(
         &path,
         pack(&[(b"A", b"first"), (b"a", b"second"), (skin, b"skin")]),
     )
     .unwrap();
-    let file = Arc::new(File::open(&path).unwrap());
+    let file = Arc::new(ReadFile::open(&path).unwrap());
     let mut vfs = Vfs::default();
     vfs.mount_archive(&path, 1, Arc::new(Archive::parse(file).unwrap()))
         .unwrap();
@@ -195,13 +196,13 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
     );
     assert_eq!(&buffer[..4], b"skin");
     let bad_path = root.0.join("escape.pak");
-    std::fs::write(&bad_path, pack(&[(b"models/../../escape", b"bad")])).unwrap();
-    let bad = Archive::parse(Arc::new(File::open(&bad_path).unwrap())).unwrap();
+    qa_platform::files::write(&bad_path, pack(&[(b"models/../../escape", b"bad")])).unwrap();
+    let bad = Archive::parse(Arc::new(ReadFile::open(&bad_path).unwrap())).unwrap();
     assert!(vfs.mount_archive(&bad_path, 100, Arc::new(bad)).is_err());
     assert_eq!(vfs.mounts().count(), 1);
     let next = root.0.join("pak1.pak");
-    std::fs::write(&next, pack(&[(b"a", b"last")])).unwrap();
-    let next_file = Arc::new(File::open(&next).unwrap());
+    qa_platform::files::write(&next, pack(&[(b"a", b"last")])).unwrap();
+    let next_file = Arc::new(ReadFile::open(&next).unwrap());
     let next_mount = vfs
         .mount_archive(&next, 1, Arc::new(Archive::parse(next_file).unwrap()))
         .unwrap();
@@ -236,8 +237,8 @@ fn higher_archive_priority_wins_but_first_duplicate_inside_one_archive_wins() {
 #[test]
 fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
     let root = Fixture::new("whole-file");
-    std::fs::write(root.0.join("a"), b"abcd").unwrap();
-    std::fs::write(root.0.join("empty"), b"").unwrap();
+    qa_platform::files::write(root.0.join("a"), b"abcd").unwrap();
+    qa_platform::files::write(root.0.join("empty"), b"").unwrap();
     let mut vfs = Vfs::default();
     vfs.mount_directory(&root.0, 0).unwrap();
     let mut reader = qa_formats::archive::ArchiveReader::default();
@@ -271,7 +272,7 @@ fn whole_file_reads_keep_caps_empty_files_and_truncation_errors() {
             .unwrap(),
         0
     );
-    std::fs::write(root.0.join("a"), b"ab").unwrap();
+    qa_platform::files::write(root.0.join("a"), b"ab").unwrap();
     assert!(matches!(
         vfs.read_to_vec(file, 4, &mut reader),
         Err(VfsError::Format(qa_formats::FormatError::Truncated))

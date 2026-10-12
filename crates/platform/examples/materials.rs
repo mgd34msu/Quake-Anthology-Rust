@@ -9,7 +9,7 @@ use qa_render::{
     material::load_catalog,
     shader::{Severity, canonical_path},
 };
-use std::{fmt::Write, fs::File, path::PathBuf, sync::Arc};
+use std::{fmt::Write, path::PathBuf, sync::Arc};
 
 #[expect(
     clippy::write_with_newline,
@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected argument".into());
     }
     let archive = Arc::new(
-        Archive::parse(Arc::new(File::open(&archive_path)?))
+        Archive::parse(Arc::new(qa_platform::files::ReadFile::open(&archive_path)?))
             .map_err(|error| format!("archive: {error:?}"))?,
     );
     let mut vfs = Vfs::default();
@@ -118,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         report,
         "],\"scripted_references\":{scripted},\"invalid_references\":{invalid},\"unsupported_runtime_references\":{unsupported},\"scripted_stages\":{stages},\"rendering_qualified\":false}}\n"
     )?;
-    std::fs::write(output, report)?;
+    qa_platform::files::write(output, report)?;
     println!(
         "scripts={scripts} definitions={} map_shaders={} scripted={scripted} invalid={invalid} unsupported={unsupported} stages={stages}",
         catalog.definitions.len(),

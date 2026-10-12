@@ -22,11 +22,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 5 && (args.len() != 8 || args[5] != "--timings") {
         return Err("expected q1|q2|q3, fixture, poses, output, optionally --timings native-rows JSON-output".into());
     }
-    let rule = fixture::Rule::parse(&args[1])?;
+    let rule = fixture::parse_rule(&args[1])?;
     let bytes = std::fs::read(&args[2])?;
     let poses = std::fs::read(&args[3])?;
     let fixture = fixture::load(rule, &bytes, &poses)?;
-    let words = rule.words();
+    let words = fixture::words(rule);
     let mut scratch = fixture.store.scratch();
     let mut results = vec![[0u32; fixture::WORDS]; fixture.queries.len()];
     let expected = if args.len() == 8 {
@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         samples.sort_unstable();
         let median = (samples[299] as f64 + samples[300] as f64) * 0.5;
         let p99 = samples[593];
-        let query_scope = if rule == fixture::Rule::Quake {
+        let query_scope = if rule == qa_core::primitives::RuleSetId::Quake {
             "trace_only"
         } else {
             "trace_and_point_contents"

@@ -87,10 +87,10 @@ impl VisibilityWorld {
                 return Err(VisibilityError::SurfaceReference(index));
             }
         }
-        crate::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| {
+        qa_core::bsp::node_depths(nodes.len(), |index| nodes[index].children).map_err(|error| {
             match error {
-                crate::bsp::NodeError::Cycle => VisibilityError::Cycle,
-                crate::bsp::NodeError::Depth => VisibilityError::Size,
+                qa_core::bsp::NodeError::Cycle => VisibilityError::Cycle,
+                qa_core::bsp::NodeError::Depth => VisibilityError::Size,
             }
         })?;
 

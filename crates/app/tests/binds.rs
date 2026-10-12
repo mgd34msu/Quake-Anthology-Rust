@@ -61,7 +61,7 @@ fn key(host: &mut FrameHost, ms: u64, code: u16, down: bool, repeat: bool) {
         host,
         ms,
         EventKind::Key {
-            device: DeviceId::Keyboard,
+            device: DeviceId::Keyboard(0),
             code,
             symbol: 0,
             down,

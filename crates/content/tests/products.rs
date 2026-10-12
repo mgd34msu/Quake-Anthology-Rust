@@ -13,8 +13,8 @@ fn standalone_products_and_two_rogue_packs_keep_their_own_default_sources() {
     let mut vfs = Vfs::default();
     for (dir, map) in recipes {
         let path = root.join(dir);
-        std::fs::create_dir_all(path.join("maps")).unwrap();
-        std::fs::write(path.join(format!("maps/{map}.bsp")), dir).unwrap();
+        qa_platform::files::create_dir_all(path.join("maps")).unwrap();
+        qa_platform::files::write(path.join(format!("maps/{map}.bsp")), dir).unwrap();
         vfs.mount_directory(&path, 0).unwrap();
     }
     let products = detect(&vfs);
@@ -35,5 +35,5 @@ fn standalone_products_and_two_rogue_packs_keep_their_own_default_sources() {
         assert_eq!(&content[..n], expected.as_bytes());
     }
     drop(vfs);
-    std::fs::remove_dir_all(root).unwrap();
+    qa_platform::files::remove_dir_all(root).unwrap();
 }
